@@ -24,6 +24,7 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "claude-replay",
+    version,
     about = "Read a Claude Code session transcript like a screen (read-only)."
 )]
 pub struct Args {

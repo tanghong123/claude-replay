@@ -1,0 +1,38 @@
+name: Release
+
+# Tag a version (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to cut a GitHub
+# release and automatically bump the Homebrew tap formula to that version.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  homebrew:
+    name: Bump Homebrew formula
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bump tanghong123/homebrew-tap formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: claude-replay
+          formula-path: Formula/claude-replay.rb
+          homebrew-tap: tanghong123/homebrew-tap
+          download-url: https://github.com/tanghong123/claude-replay/archive/refs/tags/${{ github.ref_name }}.tar.gz
+        env:
+          # A PAT (repo scope) that can push to tanghong123/homebrew-tap.
+          # Create one and add it:  gh secret set HOMEBREW_TAP_TOKEN
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

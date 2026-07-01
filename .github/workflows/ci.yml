@@ -24,3 +24,33 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+
+  guard:
+    name: secrets · blocked emails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so gitleaks + the email scan see every commit
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Block corporate / non-project emails
+        run: |
+          # Must match .githooks/pre-push. Extend as needed.
+          BLOCKED_EMAIL_DOMAINS="alibaba-inc.com"
+          fail=0
+          emails="$(git log --all --format='%ae%n%ce' | sort -u)"
+          for dom in $BLOCKED_EMAIL_DOMAINS; do
+            if printf '%s\n' "$emails" | grep -qiF "@$dom"; then
+              echo "::error::A commit author/committer email at @$dom is present in history."
+              printf '%s\n' "$emails" | grep -iF "@$dom"
+              fail=1
+            fi
+            if git grep -qiI "@$dom" -- . ':!.githooks' ':!.github'; then
+              echo "::error::Blocked email @$dom appears in tracked file contents."
+              fail=1
+            fi
+          done
+          exit $fail
