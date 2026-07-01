@@ -13,11 +13,23 @@ continuing or mutating the session.
 
 ## Install
 
-**Homebrew** (macOS / Linux):
+**Homebrew** (macOS / Linux) — recommended:
 
 ```bash
 brew install tanghong123/tap/claude-replay
 ```
+
+This taps `tanghong123/tap` and puts the `claude-replay` command on your `PATH`, so
+you can run it from anywhere:
+
+```bash
+claude-replay --latest      # open your most recent session
+claude-replay --version
+```
+
+Later, `brew upgrade claude-replay` updates it and `brew uninstall claude-replay`
+removes it. (Equivalent two-step: `brew tap tanghong123/tap` then
+`brew install claude-replay`.)
 
 **From source** (needs a Rust toolchain):
 
