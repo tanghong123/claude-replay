@@ -13,13 +13,19 @@ continuing or mutating the session.
 
 ## Install
 
+**Homebrew** (macOS / Linux):
+
+```bash
+brew install tanghong123/tap/claude-replay
+```
+
+**From source** (needs a Rust toolchain):
+
 ```bash
 cargo install --path .          # → ~/.cargo/bin/claude-replay
 # or
 cargo build --release           # → target/release/claude-replay
 ```
-
-A Homebrew release is planned (see [Roadmap](#roadmap)).
 
 ## Usage
 
@@ -70,9 +76,8 @@ render), `capture-golden.sh` (mint a golden from a session id via real `claude
 ## Roadmap
 
 - Lazy/viewport-only syntax highlighting (large transcripts open instantly).
-- Homebrew tap + formula for a `brew install` release; once shipped,
-  `claude-toolbox`'s `claude-jdi` installer switches to the brewed `claude-replay`
-  with bash `claude-peek` as the fallback.
+- Point `claude-toolbox`'s `claude-jdi` installer at the brewed `claude-replay`
+  (with bash `claude-peek` as the fallback).
 
 See [`DESIGN.md`](DESIGN.md) for the phased plan and design notes, and
 [`ATTRIBUTION.md`](ATTRIBUTION.md) for borrowed ideas.
