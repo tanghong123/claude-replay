@@ -24,8 +24,14 @@ jobs:
     name: Bump Homebrew formula
     needs: github-release
     runs-on: ubuntu-latest
+    # A PAT (repo scope) that can push to tanghong123/homebrew-tap. Create one and
+    # add it:  gh secret set HOMEBREW_TAP_TOKEN
+    # Until it's set, this job skips cleanly instead of failing.
+    env:
+      COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - name: Bump tanghong123/homebrew-tap formula
+        if: env.COMMITTER_TOKEN != ''
         uses: mislav/bump-homebrew-formula-action@v3
         with:
           formula-name: claude-replay
@@ -33,6 +39,4 @@ jobs:
           homebrew-tap: tanghong123/homebrew-tap
           download-url: https://github.com/tanghong123/claude-replay/archive/refs/tags/${{ github.ref_name }}.tar.gz
         env:
-          # A PAT (repo scope) that can push to tanghong123/homebrew-tap.
-          # Create one and add it:  gh secret set HOMEBREW_TAP_TOKEN
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
