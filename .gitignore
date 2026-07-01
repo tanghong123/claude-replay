@@ -1,0 +1,16 @@
+/target
+
+# Golden fixtures + captured transcripts live in the private claude-replay-eval
+# repo, NOT here — they may contain real Claude session content. Never commit.
+/golden/
+*.jsonl
+
+# Scratch / internal artifacts (analysis notes, autonomous-run briefs, comparison
+# tooling) — not part of the tracked source; may embed real session paths/ids.
+/claude-tasks-*.md
+/COMPARE-FINDINGS.md
+/COMPARE-CC-vs-peek-TASK.md
+/DIAGNOSIS-visual-parity.md
+/capture-peek.sh
+/compare-scroll.py
+/stitch-frames.py
