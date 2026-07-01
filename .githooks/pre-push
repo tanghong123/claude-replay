@@ -30,7 +30,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
   #    themselves define these patterns, so exclude them to avoid self-matching.
   patch="$(git log -p --no-color "$range" -- . ':!.githooks' ':!.github' 2>/dev/null || true)"
   added="$(printf '%s\n' "$patch" | grep '^+' || true)"
-  if printf '%s\n' "$added" | grep -qEi "$SECRET_PATTERNS"; then
+  if printf '%s\n' "$added" | grep -qEi -e "$SECRET_PATTERNS"; then
     echo "✖ pre-push: a secret-like token appears in the pushed diff." >&2
     fail=1
   fi
