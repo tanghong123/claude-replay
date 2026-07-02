@@ -4,6 +4,7 @@
 //! See justdoit/peek-v2/DESIGN.md for the full spec and phased plan.
 
 mod app;
+mod clipboard;
 mod discover;
 mod highlight;
 mod markdown;

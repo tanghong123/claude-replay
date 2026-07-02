@@ -131,10 +131,31 @@ fn event_loop<B: ratatui::backend::Backend>(
             Event::Mouse(m) => match m.kind {
                 MouseEventKind::ScrollDown => view.scroll_by(3),
                 MouseEventKind::ScrollUp => view.scroll_by(-3),
+                // Press begins a potential text selection (also the anchor for a
+                // click-to-fold if the mouse doesn't move before release).
                 MouseEventKind::Down(MouseButton::Left)
                     if (m.row as usize) < view.content_rows() =>
                 {
-                    view.click_row(m.row)
+                    view.sel_begin(m.row, m.column)
+                }
+                // Drag extends the selection.
+                MouseEventKind::Drag(MouseButton::Left)
+                    if (m.row as usize) < view.content_rows() =>
+                {
+                    view.sel_extend(m.row, m.column)
+                }
+                // Release: a drag copies the selected text; a plain click folds.
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if view.dragged() {
+                        if let Some(text) = view.take_selection_text() {
+                            crate::clipboard::copy(&text);
+                        }
+                    } else {
+                        view.clear_selection();
+                        if (m.row as usize) < view.content_rows() {
+                            view.click_row(m.row);
+                        }
+                    }
                 }
                 // Hover a foldable header to focus it (brighten).
                 MouseEventKind::Moved if (m.row as usize) < view.content_rows() => {

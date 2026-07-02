@@ -39,6 +39,11 @@ pub fn diff_del_bg() -> Color {
     Color::Indexed(52)
 }
 
+/// Background for a mouse text selection — a distinct blue, readable over any tier.
+pub fn selection_bg() -> Color {
+    Color::Rgb(38, 79, 120)
+}
+
 // --- beige background tiers (most → least prominent): user > shell/read > thinking.
 // Each pairs a faint background block with a foreground; thinking is the faintest
 // of both. (Tuned toward Claude Code; refine from screenshots.)

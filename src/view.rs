@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as WBlock, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::collections::HashSet;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Columns of uncolored left margin before a diff/code row's gutter — matches
 /// Claude Code's 6-space indent. `pub(crate)` so `render` can indent context rows
@@ -195,6 +195,52 @@ fn highlight_bg(line: &Line<'static>, strong: bool) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Recolor the background of display columns `[c0, c1)` of `line` to the selection
+/// colour (`c1 == usize::MAX` means "to end of line"). Splits spans at column
+/// boundaries so a partial-line selection highlights exactly the dragged cells.
+fn apply_selection(line: Line<'static>, c0: usize, c1: usize) -> Line<'static> {
+    if c0 >= c1 {
+        return line;
+    }
+    let sel = theme::selection_bg();
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    for span in line.spans {
+        let style = span.style;
+        let (mut buf, mut buf_sel) = (String::new(), false);
+        for ch in span.content.chars() {
+            let in_sel = col >= c0 && col < c1;
+            if !buf.is_empty() && in_sel != buf_sel {
+                let st = if buf_sel { style.bg(sel) } else { style };
+                out.push(Span::styled(std::mem::take(&mut buf), st));
+            }
+            buf_sel = in_sel;
+            buf.push(ch);
+            col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        if !buf.is_empty() {
+            let st = if buf_sel { style.bg(sel) } else { style };
+            out.push(Span::styled(buf, st));
+        }
+    }
+    Line::from(out)
+}
+
+/// The plain text of `line`'s display columns `[c0, c1)` (`c1 == usize::MAX` → EOL).
+fn cols_of_line(line: &Line<'static>, c0: usize, c1: usize) -> String {
+    let mut s = String::new();
+    let mut col = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if col >= c0 && col < c1 {
+                s.push(ch);
+            }
+            col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+    }
+    s
+}
+
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>,        // per-block fold state
@@ -219,6 +265,9 @@ pub struct View {
     fold: FoldPolicy,     // per-type default fold policy (applied to new content)
     focus: Option<usize>, // focused foldable block index ([ / ] / hover)
     show_help: bool,      // `?` help overlay visible
+    // mouse text selection (wrapped-line coords, so it survives scrolling):
+    sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
+    sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
 }
 
 impl View {
@@ -250,6 +299,8 @@ impl View {
             fold,
             focus: None,
             show_help: false,
+            sel_anchor: None,
+            sel_cursor: None,
         }
     }
 
@@ -646,6 +697,61 @@ impl View {
             .collect()
     }
 
+    // --- mouse text selection ---
+    /// Begin a selection at viewport (row, col); clears any prior selection.
+    pub fn sel_begin(&mut self, row: u16, col: u16) {
+        self.sel_anchor = Some((self.scroll + row as usize, col as usize));
+        self.sel_cursor = None;
+    }
+    /// Extend the in-progress selection to viewport (row, col) — a drag.
+    pub fn sel_extend(&mut self, row: u16, col: u16) {
+        if self.sel_anchor.is_some() {
+            let line = (self.scroll + row as usize).min(self.wrapped.len().saturating_sub(1));
+            self.sel_cursor = Some((line, col as usize));
+        }
+    }
+    /// True if the current press has become a drag (moved after pressing).
+    pub fn dragged(&self) -> bool {
+        self.sel_cursor.is_some()
+    }
+    /// The selected text (keeps the highlight visible so the user sees what copied).
+    pub fn take_selection_text(&mut self) -> Option<String> {
+        self.selection_text()
+    }
+    pub fn clear_selection(&mut self) {
+        self.sel_anchor = None;
+        self.sel_cursor = None;
+    }
+    /// Ordered (start, end) endpoints of the active selection, or None.
+    fn sel_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (a, c) = (self.sel_anchor?, self.sel_cursor?);
+        Some(if a <= c { (a, c) } else { (c, a) })
+    }
+    /// Selected display-column range `[c0, c1)` for wrapped line `ai` (`usize::MAX`
+    /// = to end of line), or None if the line isn't in the selection.
+    fn sel_cols(&self, ai: usize) -> Option<(usize, usize)> {
+        let (s, e) = self.sel_bounds()?;
+        if ai < s.0 || ai > e.0 {
+            return None;
+        }
+        let c0 = if ai == s.0 { s.1 } else { 0 };
+        let c1 = if ai == e.0 { e.1 } else { usize::MAX };
+        (c0 < c1).then_some((c0, c1))
+    }
+    /// Extract the selected text across wrapped lines, joined by newlines.
+    fn selection_text(&self) -> Option<String> {
+        let (s, e) = self.sel_bounds()?;
+        let last = self.wrapped.len().saturating_sub(1);
+        let mut lines = Vec::new();
+        for ai in s.0..=e.0.min(last) {
+            let c0 = if ai == s.0 { s.1 } else { 0 };
+            let c1 = if ai == e.0 { e.1 } else { usize::MAX };
+            lines.push(cols_of_line(&self.wrapped[ai], c0, c1));
+        }
+        let text = lines.join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         self.layout(area.width, area.height);
@@ -664,7 +770,13 @@ impl View {
             };
             let focused = self.focus.is_some() && self.wrapped_tag.get(ai).copied() == self.focus;
             let styled = focus_recolor(styled, focused);
-            view.push(fill_bg(styled, area.width as usize, inset));
+            let filled = fill_bg(styled, area.width as usize, inset);
+            // Mouse selection overlays everything else (drawn last).
+            let filled = match self.sel_cols(ai) {
+                Some((c0, c1)) => apply_selection(filled, c0, c1),
+                None => filled,
+            };
+            view.push(filled);
         }
         f.render_widget(
             Paragraph::new(view),
@@ -737,6 +849,79 @@ mod tests {
 
     fn row(buf: &Buffer, y: u16) -> String {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// A drag across two lines extracts the spanning text and paints the selection
+    /// background on the selected cells (and not on cells before the start column).
+    /// Uses one long token hard-wrapped at a narrow width, so the two lines are
+    /// deterministic: `⏺ 01234567` then `  89ABCDEF` (2-col hanging indent).
+    #[test]
+    fn mouse_selection_spans_lines_and_highlights() {
+        let mut v = View::new(
+            vec![Block::AssistantText("0123456789ABCDEFGHIJ".into())],
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        let w = 10u16;
+        let buf = draw(&mut v, w, 20);
+        let l0 = (0..20)
+            .find(|&y| row(&buf, y).contains("01234567"))
+            .unwrap();
+        let l1 = (0..20)
+            .find(|&y| row(&buf, y).contains("89ABCDEF"))
+            .unwrap();
+        // Press at the '0' (col 2, past the `⏺ ` marker) — not yet a drag.
+        v.sel_begin(l0, 2);
+        assert!(!v.dragged(), "a press with no move must not be a drag");
+        // Drag to col 5 of line 1 ("  89ABCDEF" → cols [0,5) = "  89A").
+        v.sel_extend(l1, 5);
+        assert!(v.dragged());
+        assert_eq!(v.take_selection_text().as_deref(), Some("01234567\n  89A"));
+        // The highlight shows on the selected cells but not before the start column.
+        let buf = draw(&mut v, w, 20);
+        let sel = Some(theme::selection_bg());
+        assert_eq!(
+            buf[(2u16, l0)].style().bg,
+            sel,
+            "selected cell not highlighted"
+        );
+        assert_ne!(
+            buf[(0u16, l0)].style().bg,
+            sel,
+            "cell before selection highlighted"
+        );
+    }
+
+    /// Single-line selection extracts exactly the dragged column range.
+    #[test]
+    fn mouse_selection_single_line_extract() {
+        let mut v = View::new(
+            vec![Block::AssistantText("alpha beta gamma".into())],
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        let _ = draw(&mut v, 40, 10);
+        // line 0 is "⏺ alpha beta gamma"; cols [2, 7) = "alpha".
+        v.sel_begin(0, 2);
+        v.sel_extend(0, 7);
+        assert_eq!(v.take_selection_text().as_deref(), Some("alpha"));
+    }
+
+    /// A press with no drag yields no selection (the caller treats it as a click).
+    #[test]
+    fn mouse_press_without_drag_is_not_a_selection() {
+        let mut v = View::new(
+            vec![Block::AssistantText("x".into())],
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        let _ = draw(&mut v, 40, 10);
+        v.sel_begin(0, 2);
+        assert!(!v.dragged());
+        assert!(v.take_selection_text().is_none());
     }
 
     /// Backlog invariant: a shell command and its output are ONE foldable block.

@@ -27,6 +27,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 nucleo = "0.5"
 notify = "7"
+# System clipboard for mouse-select auto-copy (falls back to an OSC 52 escape when
+# no clipboard/display is available, e.g. over SSH). Linux backend is pure-Rust.
+arboard = { version = "3", default-features = false }
 
 [profile.release]
 opt-level = 2
