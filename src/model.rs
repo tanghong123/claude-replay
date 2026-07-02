@@ -28,8 +28,8 @@ pub enum Block {
     /// A ✻ thinking block, grouped as a "turn" like Claude Code: the thinking text,
     /// the wall-clock seconds it took (floored, from transcript timestamps — `None`
     /// if not derivable), and the tool calls that ran just before it (whose results
-    /// it processed). Collapsed → `✻ Thought for Xs, <activities>`; expanded → the
-    /// tools followed by the thinking.
+    /// it processed). Collapsed → `<activities>, thought for Xs` (natural order —
+    /// tools ran first); expanded → the tools followed by the thinking.
     Thinking {
         text: String,
         duration_secs: Option<u64>,

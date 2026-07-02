@@ -569,24 +569,32 @@ fn push_capped_output(text: &str, bg: Color, fg: Color, out: &mut Vec<Line<'stat
     }
 }
 
-/// A turn's `Thought for Xs, <activities>` label: the floored duration (`Xs` or
-/// `Xm Ys`) plus a categorized count of the tool calls it grouped. Omits the
-/// duration when unknown and the activities when no tools ran.
+/// A turn's summary label, in **natural (chronological) order**: the grouped tool
+/// calls ran first (their results fed the thinking), so the activities lead and the
+/// thinking closes — `Ran 1 shell command (ls), thought for 8s`. This matches the
+/// expanded body (tools then thinking). A bare turn is just `Thought for 8s`. The
+/// duration (`Xs` / `Xm Ys`) is omitted when unknown.
 fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
-    let mut s = String::from("Thought");
-    if let Some(d) = duration_secs {
-        s.push_str(&if d >= 60 {
-            format!(" for {}m {}s", d / 60, d % 60)
-        } else {
-            format!(" for {d}s")
-        });
-    }
+    let thought = match duration_secs {
+        Some(d) if d >= 60 => format!("thought for {}m {}s", d / 60, d % 60),
+        Some(d) => format!("thought for {d}s"),
+        None => "thought".to_string(),
+    };
     let acts = activities(tools);
-    if !acts.is_empty() {
-        s.push_str(", ");
-        s.push_str(&acts);
+    if acts.is_empty() {
+        capitalize(&thought)
+    } else {
+        format!("{}, {thought}", capitalize(&acts))
     }
-    s
+}
+
+/// Uppercase the first character of `s` (ASCII-friendly; leaves the rest as-is).
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// The representative program name of a (possibly compound) shell command, e.g.
@@ -691,15 +699,14 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             duration_secs,
             tools,
         } => {
-            // `✻ Thought for Xs, <activities>` — falls back to a line count when the
-            // duration isn't derivable and no tools ran.
+            // `<activities>, thought for Xs` (natural order) — falls back to a line
+            // count when the duration isn't derivable and no tools ran.
             let summary = if duration_secs.is_some() || !tools.is_empty() {
                 turn_summary(*duration_secs, tools)
             } else {
                 format!("Thought ({} lines)", text.lines().count())
             };
-            // No `✻` glyph on the collapsed summary — CC shows a plain 2-space-indented
-            // `Thought for …` line.
+            // No `✻` glyph on the collapsed summary — a plain 2-space-indented line.
             vec![Line::from(Span::styled(format!("  {summary}"), header))]
         }
         Block::ToolUse { name, .. } if name == "Bash" => {
@@ -1430,7 +1437,7 @@ mod tests {
         };
         let coll = texts(&render_collapsed(&turn));
         assert_eq!(
-            coll[0], "  Thought for 1m 12s, read 1 file, ran 1 shell command (ls)",
+            coll[0], "  Read 1 file, ran 1 shell command (ls), thought for 1m 12s",
             "collapsed summary: {:?}",
             coll[0]
         );
