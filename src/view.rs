@@ -268,6 +268,10 @@ pub struct View {
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
+    // Per-block rendered-body cache (keyed by collapsed state), so a fold toggle
+    // re-renders only the toggled block instead of re-highlighting the whole doc.
+    body_cache: Vec<Option<(bool, Vec<Line<'static>>)>>,
+    cache_width: Option<u16>, // width the cache was built at; a change invalidates it
 }
 
 impl View {
@@ -301,6 +305,8 @@ impl View {
             show_help: false,
             sel_anchor: None,
             sel_cursor: None,
+            body_cache: Vec::new(),
+            cache_width: None,
         }
     }
 
@@ -309,11 +315,34 @@ impl View {
         self.metrics = m;
     }
 
-    /// Re-render the raw (unwrapped) lines at the current width — needed both when
-    /// content changes (fold/ingest/reset) and when the width changes, since
-    /// tables lay out width-aware.
+    /// Re-render the raw (unwrapped) lines at the current width. Each block's body
+    /// is cached (keyed by its collapsed state); a fold toggle only re-renders the
+    /// block(s) whose state flipped, reusing every other cached body — so a toggle
+    /// is O(one block) of syntax-highlighting instead of the whole document. A width
+    /// change invalidates the cache (bodies are width-aware for tables). Appended
+    /// blocks (live tail) render fresh; the rest of the cache is preserved.
     fn render_raw(&mut self) {
-        let r = render::render_blocks_folded(&self.blocks, &self.collapsed, self.width as usize);
+        if self.cache_width != Some(self.width) {
+            self.body_cache.clear();
+            self.cache_width = Some(self.width);
+        }
+        self.body_cache.resize(self.blocks.len(), None);
+        let width = self.width as usize;
+        let mut bodies: Vec<Vec<Line<'static>>> = Vec::with_capacity(self.blocks.len());
+        for (i, b) in self.blocks.iter().enumerate() {
+            let is_collapsed =
+                self.collapsed.get(i).copied().unwrap_or(false) && render::foldable(b);
+            let body = match &self.body_cache[i] {
+                Some((cached, body)) if *cached == is_collapsed => body.clone(),
+                _ => {
+                    let body = render::block_body(b, is_collapsed, width);
+                    self.body_cache[i] = Some((is_collapsed, body.clone()));
+                    body
+                }
+            };
+            bodies.push(body);
+        }
+        let r = render::assemble(bodies);
         self.raw = r.lines;
         self.raw_tag = r.block_of;
     }
@@ -635,6 +664,7 @@ impl View {
     pub fn reset(&mut self, blocks: Vec<Block>) {
         self.collapsed = self.fold.collapsed_for(&blocks);
         self.blocks = blocks;
+        self.body_cache.clear(); // indices no longer map to the old blocks
         self.rebuild_raw();
     }
 

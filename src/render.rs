@@ -844,30 +844,33 @@ fn body_len(b: &Block) -> usize {
 /// Render all blocks, honoring per-block collapse state, tagging each line with
 /// its block index. A collapsed foldable block shows its first line + a
 /// one-line placeholder.
-pub fn render_blocks_folded(blocks: &[Block], collapsed: &[bool], width: usize) -> Rendered {
+/// Render a single block's body: its one-line summary when `is_collapsed`, else its
+/// full expanded lines. This is the syntax-highlighting-heavy part, so the viewer
+/// caches it per block (keyed by collapsed state) to keep fold toggles cheap.
+pub fn block_body(b: &Block, is_collapsed: bool, width: usize) -> Vec<Line<'static>> {
+    if is_collapsed {
+        render_collapsed(b)
+    } else {
+        render_one(b, width)
+    }
+}
+
+/// Assemble per-block bodies (`bodies[i]` = block `i`) into the final tagged line
+/// list: a blank separator after each non-empty block, then collapse runs of ≥2
+/// blank lines into one (markdown spacing + separators otherwise stack up).
+pub fn assemble(bodies: Vec<Vec<Line<'static>>>) -> Rendered {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut block_of: Vec<usize> = Vec::new();
-    for (i, b) in blocks.iter().enumerate() {
-        let is_collapsed = collapsed.get(i).copied().unwrap_or(false) && foldable(b);
-        // Collapsed blocks build only their summary (lazy — body never rendered).
-        let body = if is_collapsed {
-            render_collapsed(b)
-        } else {
-            render_one(b, width)
-        };
+    for (i, body) in bodies.into_iter().enumerate() {
         for l in body {
             lines.push(l);
             block_of.push(i);
         }
-        // blank separator between blocks (tagged to this block)
         if lines.last().map(|l| l.width() != 0).unwrap_or(false) {
             lines.push(Line::from(""));
             block_of.push(i);
         }
     }
-
-    // Collapse runs of ≥2 blank lines into a single blank (markdown spacing +
-    // block separators can otherwise stack up).
     let mut out_lines: Vec<Line<'static>> = Vec::with_capacity(lines.len());
     let mut out_tags: Vec<usize> = Vec::with_capacity(block_of.len());
     let mut prev_blank = false;
@@ -884,6 +887,21 @@ pub fn render_blocks_folded(blocks: &[Block], collapsed: &[bool], width: usize) 
         lines: out_lines,
         block_of: out_tags,
     }
+}
+
+/// Convenience wrapper (block_body → assemble) used by tests; the viewer drives
+/// `block_body`/`assemble` directly so it can cache bodies across fold toggles.
+#[cfg(test)]
+pub fn render_blocks_folded(blocks: &[Block], collapsed: &[bool], width: usize) -> Rendered {
+    let bodies = blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let is_collapsed = collapsed.get(i).copied().unwrap_or(false) && foldable(b);
+            block_body(b, is_collapsed, width)
+        })
+        .collect();
+    assemble(bodies)
 }
 
 /// Width `--dump` falls back to when there's no terminal to measure.
