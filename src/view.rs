@@ -384,8 +384,11 @@ impl View {
             let (w, t) = wrap::wrap_all_tagged(&self.raw, &self.raw_tag, width as usize);
             self.wrapped = w;
             self.wrapped_tag = t;
+            // Match indices are into `wrapped`, so only recompute when it was rebuilt.
+            // A query change recomputes directly (search_input/backspace); a plain
+            // scroll rebuilds nothing, so it no longer rescans every line.
+            self.recompute_matches();
         }
-        self.recompute_matches();
         let max = self.max_scroll();
         if self.follow {
             self.scroll = max;
