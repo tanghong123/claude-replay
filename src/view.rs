@@ -298,6 +298,11 @@ impl View {
     pub fn is_collapsed(&self, i: usize) -> bool {
         self.collapsed[i]
     }
+    /// The source-block index that wrapped line `line` was rendered from.
+    #[cfg(test)]
+    pub fn block_of_line(&self, line: usize) -> Option<usize> {
+        self.wrapped_tag.get(line).copied()
+    }
 
     fn max_scroll(&self) -> usize {
         self.wrapped.len().saturating_sub(self.view_h)
@@ -732,6 +737,67 @@ mod tests {
 
     fn row(buf: &Buffer, y: u16) -> String {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// Backlog invariant: a shell command and its output are ONE foldable block.
+    /// The `⏺ Bash` header and its `⎿` output share a source block (distinct from
+    /// the neighbouring block), and a single `t` toggle folds/expands both —
+    /// collapsing to the one-line `Ran 1 shell command` summary.
+    #[test]
+    fn shell_command_and_output_are_one_foldable_block() {
+        let bash = Block::ToolUse {
+            name: "Bash".into(),
+            target: "echo hi".into(),
+            output: Some("hi\nthere".into()),
+            diffs: vec![],
+            patch: None,
+            read_lines: None,
+        };
+        // A trailing assistant block gives a distinct neighbour tag to compare with.
+        let mut v = View::new(
+            vec![bash, Block::AssistantText("after".into())],
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        let w = 60u16;
+        let buf = draw(&mut v, w, 14);
+
+        let find = |needle: &str| {
+            (0..14)
+                .find(|&y| row(&buf, y).contains(needle))
+                .unwrap_or_else(|| panic!("no row containing {needle:?}"))
+        };
+        let header_y = find("Bash");
+        let output_y = find("there");
+        let after_y = find("after");
+
+        // (a) header + output are the SAME block, distinct from the next block.
+        let hb = v.block_of_line(header_y as usize);
+        assert_eq!(
+            hb,
+            v.block_of_line(output_y as usize),
+            "command header and its output are different blocks"
+        );
+        assert_ne!(
+            hb,
+            v.block_of_line(after_y as usize),
+            "bash block bled into the next block"
+        );
+
+        // (b) one toggle folds both — output gone, single summary remains.
+        v.toggle_at_cursor();
+        let buf = draw(&mut v, w, 14);
+        assert!(v.is_collapsed(0), "bash block did not collapse");
+        let text: String = (0..14).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
+        assert!(
+            !text.contains("there"),
+            "output still visible after folding:\n{text}"
+        );
+        assert!(
+            text.contains("Ran 1 shell command"),
+            "no collapsed one-line summary:\n{text}"
+        );
     }
 
     /// An added diff row's background is **inset** `INSET` columns on each side:
