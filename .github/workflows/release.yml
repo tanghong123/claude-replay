@@ -24,19 +24,33 @@ jobs:
     name: Bump Homebrew formula
     needs: github-release
     runs-on: ubuntu-latest
-    # A PAT (repo scope) that can push to tanghong123/homebrew-tap. Create one and
-    # add it:  gh secret set HOMEBREW_TAP_TOKEN
+    # A PAT that can push to tanghong123/homebrew-tap (fine-grained: Contents R/W on
+    # that repo). Add it:  gh secret set HOMEBREW_TAP_TOKEN --repo tanghong123/claude-replay
     # Until it's set, this job skips cleanly instead of failing.
     env:
-      COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
+      # Self-contained bump (no third-party action): recompute the tarball sha256 and
+      # rewrite the formula's url + sha256, then push to the tap. Robust to the token
+      # type (works with fine-grained PATs, unlike the previous action).
       - name: Bump tanghong123/homebrew-tap formula
-        if: env.COMMITTER_TOKEN != ''
-        uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: claude-replay
-          formula-path: Formula/claude-replay.rb
-          homebrew-tap: tanghong123/homebrew-tap
-          download-url: https://github.com/tanghong123/claude-replay/archive/refs/tags/${{ github.ref_name }}.tar.gz
-        env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          ver="${tag#v}"
+          url="https://github.com/tanghong123/claude-replay/archive/refs/tags/${tag}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | awk '{print $1}')
+          echo "bumping claude-replay to ${ver} (sha256 ${sha})"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tanghong123/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s#archive/refs/tags/v[0-9][0-9.]*\.tar\.gz#archive/refs/tags/${tag}.tar.gz#" Formula/claude-replay.rb
+          sed -i -E "s/sha256 \"[0-9a-f]{64}\"/sha256 \"${sha}\"/" Formula/claude-replay.rb
+          git config user.name "Hong Tang"
+          git config user.email "hong.tang@gmail.com"
+          if git diff --quiet; then
+            echo "formula already at ${ver}; nothing to do"
+          else
+            git commit -am "claude-replay ${ver}"
+            git push
+          fi
