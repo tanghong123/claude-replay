@@ -117,7 +117,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::PageUp => view.full_page(false),
                     KeyCode::Char('g') => view.jump_top(),
                     KeyCode::Char('G') => view.jump_bottom(),
-                    KeyCode::Char('t') => view.toggle_at_cursor(),
+                    KeyCode::Char(' ') => view.toggle_at_cursor(),
                     KeyCode::Char('T') => view.toggle_all(),
                     KeyCode::Char(']') => view.focus_next(),
                     KeyCode::Char('[') => view.focus_prev(),

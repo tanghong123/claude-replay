@@ -625,7 +625,7 @@ impl View {
         };
         Line::styled(
             format!(
-                " {}  ·  {mark}{live}  ·  {}/{}  ·  {pct}%{m}   ?·[ ]·↵·t·/·n·g·q ",
+                " {}  ·  {mark}{live}  ·  {}/{}  ·  {pct}%{m}   ?·[ ]·␣↵·/·n·g·q ",
                 self.title,
                 (self.scroll + 1).min(self.wrapped.len().max(1)),
                 self.wrapped.len().max(1),
@@ -687,7 +687,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         ("Ctrl-d / Ctrl-u", "half page down / up"),
         ("PageDown / PageUp", "full page down / up"),
         ("g / G", "jump to top / bottom"),
-        ("t", "toggle fold (focused, else first visible)"),
+        ("Space", "toggle fold (focused, else first visible)"),
         ("T", "toggle all folds"),
         ("[ / ]", "focus previous / next foldable"),
         ("Enter", "toggle the focused fold"),

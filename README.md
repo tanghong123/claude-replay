@@ -64,8 +64,9 @@ tool_result, command`).
 
 ### Keys
 `j`/`k` line · `C-d`/`C-u` half-page · `PageDown`/`PageUp` page · `g`/`G` top/bottom ·
-`t` toggle the focused/first-visible fold · `T` toggle all · `]`/`[` next/prev foldable ·
-`Enter` toggle focused · `/` search, `n`/`N` next/prev · `?` help · `q`/`Esc` quit.
+`Space` toggle the focused/first-visible fold (`Enter` toggles the focused one) ·
+`T` toggle all · `]`/`[` next/prev foldable · `/` search, `n`/`N` next/prev ·
+`?` help · `q`/`Esc` quit.
 
 ## Develop
 
