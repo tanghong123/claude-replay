@@ -264,7 +264,9 @@ fn epoch_secs(ts: &str) -> Option<f64> {
 /// Tools Claude Code summarizes into a `Thought for …` turn line (transient reads/
 /// searches whose results feed the thinking) rather than showing expanded. Edit/
 /// Write/other tools produce durable output (diffs, etc.) and stay expanded.
-fn is_activity_tool(name: &str) -> bool {
+/// `pub(crate)` so the live-tail path (`view::ingest`) can re-group a thinking
+/// block with activity tools that arrived in an earlier poll.
+pub(crate) fn is_activity_tool(name: &str) -> bool {
     matches!(
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"

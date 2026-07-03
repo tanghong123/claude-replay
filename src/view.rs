@@ -378,6 +378,11 @@ impl View {
     pub fn is_collapsed(&self, i: usize) -> bool {
         self.collapsed[i]
     }
+    /// The fold-key of every top-level block (for asserting live-tail grouping).
+    #[cfg(test)]
+    pub fn block_kinds(&self) -> Vec<&'static str> {
+        self.blocks.iter().map(crate::model::fold_key).collect()
+    }
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
     pub fn block_of_line(&self, line: usize) -> Option<usize> {
@@ -647,9 +652,36 @@ impl View {
     }
 
     /// Append newly-tailed blocks; bumps the new-message count while scrolled back.
-    pub fn ingest(&mut self, new_blocks: Vec<Block>) {
+    pub fn ingest(&mut self, mut new_blocks: Vec<Block>) {
         if new_blocks.is_empty() {
             return;
+        }
+        // Re-group across the poll boundary. `group_turns` runs per parse batch, so
+        // a thinking block whose preceding activity tools were delivered in an
+        // EARLIER poll couldn't absorb them — they'd linger as separate expanded
+        // blocks until a restart re-parsed the whole file. If this batch opens with
+        // a thinking turn, pull the trailing run of activity tool calls off the tail
+        // of the existing blocks into it, matching a full re-parse.
+        if let Some(Block::Thinking { tools, .. }) = new_blocks.first_mut() {
+            let mut stolen: Vec<Block> = Vec::new();
+            while matches!(
+                self.blocks.last(),
+                Some(Block::ToolUse { name, .. }) if crate::model::is_activity_tool(name)
+            ) {
+                stolen.push(self.blocks.pop().unwrap());
+                self.collapsed.pop();
+            }
+            if !stolen.is_empty() {
+                // `stolen` is tail-first; restore chronological order, then append
+                // the tools this batch already grouped in.
+                stolen.reverse();
+                stolen.extend(std::mem::take(tools));
+                *tools = stolen;
+                // The popped blocks vacated their cache slots — drop the stale tail
+                // so `render_raw`'s positional cache doesn't serve them for the new
+                // blocks that take their place.
+                self.body_cache.truncate(self.blocks.len());
+            }
         }
         let n = new_blocks.len();
         self.collapsed.extend(self.fold.collapsed_for(&new_blocks));
@@ -1234,6 +1266,55 @@ mod tests {
         assert_eq!(v.new_count(), 0);
         let buf = draw(&mut v, 40, 10);
         assert!(!row(&buf, 9).contains("new"));
+    }
+
+    /// Live tail: activity tools that arrive in one poll and a thinking block that
+    /// arrives in a LATER poll must still group — the thinking absorbs the earlier
+    /// tools instead of leaving them as separate expanded blocks (which only a
+    /// restart used to fix).
+    #[test]
+    fn live_thinking_absorbs_tools_from_an_earlier_poll() {
+        let tool = |name: &str, target: &str| Block::ToolUse {
+            name: name.into(),
+            target: target.into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let mut v = View::new(
+            vec![Block::UserText("go".into())],
+            "t",
+            true,
+            FoldPolicy::default(),
+        );
+        draw(&mut v, 60, 20);
+
+        // Poll 1: the tools land as their own top-level blocks.
+        v.ingest(vec![tool("Bash", "ls"), tool("Read", "x.rs")]);
+        assert_eq!(v.block_kinds(), vec!["user", "bash", "read"]);
+
+        // Poll 2: the thinking block arrives alone — it should swallow both tools.
+        v.ingest(vec![Block::Thinking {
+            text: "pondering the plan".into(),
+            duration_secs: None,
+            tools: vec![],
+        }]);
+        assert_eq!(
+            v.block_kinds(),
+            vec!["user", "thinking"],
+            "thinking did not absorb the earlier-poll tools"
+        );
+
+        // The thinking folds by default; its collapsed summary names the absorbed
+        // activities, and the tool bodies are hidden (grouped, not expanded).
+        assert!(v.is_collapsed(1), "thinking should fold by default");
+        let buf = draw(&mut v, 60, 20);
+        let body: String = (0..19).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("(ls)") && body.contains("thought"),
+            "collapsed summary missing absorbed activities:\n{body}"
+        );
     }
 
     #[test]
