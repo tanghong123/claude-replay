@@ -604,10 +604,13 @@ fn capitalize(s: &str) -> String {
 /// wrapper prefixes (`sudo`/`time`/`do`/…) are stepped over to the real command.
 /// Falls back to the first token's basename. `None` only for an empty command.
 fn command_name(cmd: &str) -> Option<String> {
-    // Whole segment is noise (its arguments aren't commands).
+    // Whole segment is noise (its arguments aren't commands). Includes the shell
+    // block-closer keywords (`fi`/`done`/`esac`/`in`) so a compound script's control
+    // structure isn't mistaken for a command.
     const SKIP_SEGMENT: &[&str] = &[
         "echo", "printf", "cd", "true", "false", ":", "set", "export", "unset", "source", ".",
-        "for", "while", "until", "if", "case", "test", "[", "[[", "return", "eval",
+        "for", "while", "until", "if", "case", "test", "[", "[[", "return", "eval", "fi", "done",
+        "esac", "in",
     ];
     // Prefix wrapper: the real command is the next token.
     const SKIP_PREFIX: &[&str] = &[
@@ -620,6 +623,18 @@ fn command_name(cmd: &str) -> Option<String> {
                 && k.chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         })
+    };
+    // A token that actually looks like a command word — a program/function name,
+    // not shell punctuation. Rejects block terminators (`}`), case labels
+    // (`completion)`), function-definition headers (`run_wire()`), comments (`#`),
+    // and `var=value` — all of which flattened heredoc scripts scatter into
+    // separators, and none of which should surface as a command name.
+    let plausible = |t: &str| {
+        let mut cs = t.chars();
+        cs.next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '/')
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_.-+/@".contains(c))
     };
     let base = |t: &str| t.rsplit(['/', '\\']).next().unwrap_or(t).to_string();
     for seg in cmd.split([';', '|', '&', '\n']) {
@@ -636,11 +651,16 @@ fn command_name(cmd: &str) -> Option<String> {
                 None => break,
             }
         }
-        if !name.is_empty() {
+        // Only accept a real command word; otherwise this segment is structural
+        // noise (a brace, case label, comment, …) — move on to the next.
+        if plausible(&name) {
             return Some(name);
         }
     }
-    cmd.split_whitespace().next().map(base)
+    cmd.split_whitespace()
+        .map(base)
+        .find(|t| plausible(t))
+        .or_else(|| cmd.split_whitespace().next().map(base))
 }
 
 /// Summarize grouped tool calls as `listed N directories, searched for N patterns,
@@ -1424,6 +1444,17 @@ mod tests {
         assert_eq!(c("PROFILE=1 zsh -i -c exit | tail -1"), "zsh"); // env assign + pipe filter
         assert_eq!(c("git status | grep modified"), "git");
         assert_eq!(c("{ zmodload zsh/zprof; exit; }"), "zmodload"); // step into the brace group
+
+        // A flattened heredoc script that defines functions/case blocks must not
+        // surface shell punctuation as the "program" — it lands on the first real
+        // invocation instead of a bare `}` / `completion)` / `run_wire()`.
+        let script = "cd /tmp # note  run_wire() { info() { printf '%s' \"$*\"; }  \
+            rowt() { case \"$1\" in shell-init) echo x; return 0;; completion) return 0;; esac; } }  \
+            rc=fresh.zshrc; : > \"$rc\" run_wire \"$rc\"; run_wire \"$rc\"";
+        let got = command_name(script).unwrap();
+        assert_eq!(got, "run_wire", "leaked shell punctuation: {got:?}");
+        // Direct: a segment that is only a block terminator yields no name.
+        assert_eq!(c("} ; grep -n x y"), "grep");
     }
 
     /// A grouped turn collapses to `Thought for Xs, <activities>` (no `✻` glyph),
