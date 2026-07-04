@@ -80,6 +80,52 @@ the spec/scope of record.
 - Pin schema expectations to a Claude Code version (scrollback pins ~v2.1.x) and
   snapshot-test against real transcript fixtures; skip/҂log unknown event types.
 
+## Live-tail turn grouping (current behavior)
+
+How a thinking block and the activity tools it processed collapse into one
+`✻ Ran N …, thought for Xs` line — and why the live path differs from a full
+re-parse.
+
+**Transcript event order (the ground truth).** Claude Code writes a `thinking`
+content block to the JSONL **only once it is complete** — as a field inside an
+assistant message (`model.rs` `parse`, the `"thinking"` arm). There is **no**
+"thinking started" or "thinking ended" marker; the block is atomic on disk. What
+lands incrementally during a run is the **tool calls** — each `Bash`/`Read`/… is
+its own assistant message, written as the tool runs. The thinking block that
+"owns" them is the reasoning step that processed their *results*, so it appears in
+the stream **after** those tools. Accordingly `model::group_turns` folds a
+`Thinking` together with the contiguous run of **activity** tools
+(`is_activity_tool`: Bash/Read/NotebookRead/Grep/Glob/LS) that **immediately
+precede** it; Edit/Write and other durable-output tools stay expanded.
+
+**Full parse (quit+restart, `--dump`).** `parse` sees the whole file and runs
+`group_turns` once at the end, so every thinking block is correctly grouped and
+carries a duration (`thinking_ts − trigger_ts`, floored — `trigger_ts` is the last
+user/tool-result timestamp).
+
+**Live tail.** `tail.rs::TailReader::poll` returns only the *new* complete lines
+since the last poll; `app.rs` parses just those and calls `View::ingest`. So there
+is no single "begin/finish thinking" UI phase — the transcript gives us nothing to
+render there. The observable sequence is two states:
+1. Tools stream in **expanded and linear** (`⏺ Bash(ls)`, `⏺ Read(x.rs)`, …),
+   growing — no thinking line yet, because none has landed.
+2. The thinking block lands → on that poll, `View::ingest`'s **seam-merge**
+   retroactively steals the trailing activity tools off the already-ingested block
+   list, folds them into the new `Thinking`, truncates the positional `body_cache`,
+   and the whole run collapses to the one-line summary (`render.rs` `turn_summary`).
+
+It flips **directly** from "expanded tools" to "one collapsed summary" — there is
+no transient "finishing…" line. (Before the seam-merge fix, `group_turns` ran per
+poll-batch and never absorbed tools from an earlier poll, so grouping only appeared
+after quit+restart.)
+
+**Known residual.** A live-collapsed line reads `…, thought` **without** the
+`for Xs` (and a tool-less thinking falls back to `Thought (N lines)`). Duration is
+`thinking_ts − trigger_ts`, but `trigger_ts` is only known *within* one parse batch
+(`model.rs`); when the thinking block arrives in a later poll than its triggering
+user/tool-result event, the duration comes out `None`. Quit+restart (a full
+re-parse) recovers it. See the backlog item below.
+
 ## Borrow map (all MIT)
 
 - **claude-code-scrollback** → tail (byte-offset incremental), line-cache scroll,
@@ -273,6 +319,19 @@ The residual diff is **not** decision-free rendering:
 - [x] **Match CC table font styling.** ✅ shipped `74d81c0` — default border colour (no
   gray), non-bold header cells. (Table *column widths* stay on our fair-share algorithm —
   intentionally not matched to CC.)
+
+- [ ] **Carry `trigger_ts` across poll batches so live-tailed thinking shows its
+  duration.** See "Live-tail turn grouping" above: a thinking block ingested in a
+  later poll than its triggering user/tool-result event renders `…, thought` (no
+  `for Xs`) because `parse` computes duration only within a single batch. Persist
+  the last-seen trigger timestamp on `View` (or thread it through `ingest`): when a
+  batch's opening `Thinking` has `duration_secs == None`, recompute it from the
+  stored `trigger_ts` and the thinking message's own timestamp. Needs the thinking
+  block's timestamp to survive into `ingest` — either stash it on `Block::Thinking`
+  or pass it alongside the batch. Add a `TestBackend`/`ingest` test: poll 1 = a
+  user turn + activity tools, poll 2 = a lone `Thinking`; assert the collapsed
+  summary reads `…, thought for Xs`, matching a full re-parse of the same lines.
+  *(Deferred once as "minimal benefit"; captured here so the fix is scoped.)*
 
 ### Cleanup tasks
 
