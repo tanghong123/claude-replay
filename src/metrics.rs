@@ -49,15 +49,21 @@ fn price(model: &str) -> Option<(f64, f64)> {
     }
 }
 
-pub fn parse(jsonl: &str) -> Metrics {
+/// Stream the metrics pass straight from a reader, so a large transcript never
+/// has to be fully resident as a `String` (one line at a time).
+pub fn parse_reader<R: std::io::BufRead>(reader: R) -> Metrics {
+    parse_from_lines(reader.lines().map_while(Result::ok))
+}
+
+fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
     let mut input = 0u64;
     let mut output = 0u64;
     let mut model = String::new();
     let mut tmin: Option<i64> = None;
     let mut tmax: Option<i64> = None;
 
-    for line in jsonl.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         if let Some(u) = v.pointer("/message/usage") {
@@ -160,7 +166,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-28T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500}}}
 {"type":"assistant","timestamp":"2026-06-28T10:02:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":2000,"output_tokens":1500}}}
 "#;
-        let m = parse(jsonl);
+        let m = parse_reader(std::io::Cursor::new(jsonl));
         assert_eq!(m.input_tokens, 3000);
         assert_eq!(m.output_tokens, 2000);
         assert_eq!(m.duration_secs, 120);

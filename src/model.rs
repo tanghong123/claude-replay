@@ -383,64 +383,117 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
     }
 }
 
-/// Parse JSONL text into the **complete** block list. Nothing is dropped or
-/// truncated here. Each tool_use is joined with its tool_result's `toolUseResult`
-/// metadata (output, structuredPatch line numbers, read line count); the
-/// no-information Edit/Write boilerplate result is stripped. `_args` is unused
-/// (fold flags are resolved in `view`).
-pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
-    let parsed: Vec<Value> = jsonl
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .collect();
+/// Parse JSONL text into the **complete** block list. Kept for tests and the
+/// live-tail path (small in-memory batches); makes two cheap passes over the str.
+pub fn parse(jsonl: &str, args: &Args) -> Vec<Block> {
+    let tool_ids = scan_tool_ids(jsonl.lines());
+    parse_main(jsonl.lines(), &tool_ids, args)
+}
 
-    // Pass 1: index each tool_result (text + toolUseResult) by tool_use_id, and
-    // collect the set of tool_use ids so we can skip results we merged.
-    let mut results: HashMap<String, (String, Value)> = HashMap::new();
-    let mut tool_ids: HashSet<String> = HashSet::new();
-    for v in &parsed {
-        let ty = v.get("type").and_then(|t| t.as_str());
-        if ty == Some("user") {
-            let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
-            if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
-                for blk in arr {
-                    if blk.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                        if let Some(id) = blk.get("tool_use_id").and_then(|s| s.as_str()) {
-                            let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
-                            results.insert(id.to_string(), (txt, tur.clone()));
-                        }
-                    }
-                }
-            }
-        } else if ty == Some("assistant") {
+/// Parse a transcript file by **streaming** it — one line resident at a time, in
+/// two passes (each a fresh read) — so a large transcript never balloons into a
+/// whole-file `Vec<Value>` (~5–8× the file in RAM) or a whole-file `String`. See
+/// `STREAMING-PARSE-DESIGN.md`.
+pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Block>> {
+    use std::io::BufRead;
+    let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
+    // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
+    // tell a genuine orphan tool_result from one whose tool_use appears later.
+    let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
+    Ok(parse_main(
+        open()?.lines().map_while(|r| r.ok()),
+        &tool_ids,
+        args,
+    ))
+}
+
+/// Pass 1: the set of every `tool_use` id in the transcript.
+fn scan_tool_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for line in lines {
+        let line = line.as_ref().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
             if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
                 for blk in arr {
                     if blk.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                         if let Some(id) = blk.get("id").and_then(|s| s.as_str()) {
-                            tool_ids.insert(id.to_string());
+                            ids.insert(id.to_string());
                         }
                     }
                 }
             }
         }
     }
+    ids
+}
 
+/// Fill a `tool_use` block's result fields (output / diff line numbers / read
+/// count) from its matching `tool_result`'s `toolUseResult` metadata + text.
+fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
+    if let Block::ToolUse {
+        name,
+        output,
+        patch,
+        read_lines,
+        ..
+    } = block
+    {
+        *output = tool_output(name, Some(tur), txt);
+        *patch = parse_patch(tur);
+        *read_lines = tur
+            .pointer("/file/numLines")
+            .and_then(|n| n.as_u64())
+            .map(|n| n as usize);
+    }
+}
+
+/// Pass 2: build blocks in order, streaming one line at a time. Nothing is dropped
+/// or truncated. A `tool_use` is emitted immediately with an empty result; its
+/// `tool_result` **back-patches** the already-emitted block in place (via
+/// `tool_slot`: id → block index). Transcripts are **not** strictly ordered — a
+/// result can precede its tool_use (compaction / sidechain reordering) — so a
+/// result whose tool_use we haven't emitted yet is held in `pending` and applied
+/// when that tool_use arrives (its id is in `tool_ids`); only a result whose id is
+/// in **no** tool_use is a genuine orphan, emitted inline. This reproduces the old
+/// two-pass semantics exactly while keeping at most one line's `Value` live.
+/// `_args` is unused (fold flags are resolved in `view`).
+fn parse_main<S: AsRef<str>>(
+    lines: impl Iterator<Item = S>,
+    tool_ids: &HashSet<String>,
+    _args: &Args,
+) -> Vec<Block> {
+    let mut out: Vec<Block> = Vec::new();
+    // tool_use id -> index of its ToolUse block in `out`, for result back-patching.
+    let mut tool_slot: HashMap<String, usize> = HashMap::new();
+    // Results seen before their tool_use (id is in `tool_ids`), awaiting it.
+    let mut pending: HashMap<String, (String, Value)> = HashMap::new();
     // The session's cwd (from the transcript) — tool targets are shown relative to
-    // it, exactly as Claude Code does. Use the first event that records one.
-    let cwd = parsed
-        .iter()
-        .find_map(|v| v.get("cwd").and_then(|c| c.as_str()))
-        .unwrap_or("")
-        .to_string();
-
-    // Pass 2: build blocks in order. `trigger_ts` tracks the timestamp of the last
-    // user/tool-result event — the moment the model's next generation was requested
-    // — so a thinking block's duration is `its message ts − trigger_ts` (as CC shows).
-    let mut out = Vec::new();
+    // it. CC records it on every event, so it's set from the first line, before any
+    // tool_use; fall back to "" (absolute paths) if a tool_use somehow precedes it.
+    let mut cwd = String::new();
+    // Timestamp of the last user/tool-result event — the moment the model's next
+    // generation was requested — so a thinking block's duration is `its ts − this`.
     let mut trigger_ts: Option<f64> = None;
-    for v in &parsed {
+
+    for line in lines {
+        let line = line.as_ref().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if cwd.is_empty() {
+            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                cwd = c.to_string();
+            }
+        }
         let ev_ts = v
             .get("timestamp")
             .and_then(|t| t.as_str())
@@ -483,20 +536,22 @@ pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
                             let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                             let input = blk.get("input").cloned().unwrap_or(Value::Null);
                             let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
-                            let res = results.get(id);
-                            let res_txt = res.map(|(t, _)| t.as_str()).unwrap_or("");
-                            let tur = res.map(|(_, u)| u);
                             out.push(Block::ToolUse {
                                 name: name.to_string(),
                                 target: tool_target(&input, &cwd),
                                 diffs: extract_diffs(name, &input),
-                                output: tool_output(name, tur, res_txt),
-                                patch: tur.and_then(parse_patch),
-                                read_lines: tur
-                                    .and_then(|u| u.pointer("/file/numLines"))
-                                    .and_then(|n| n.as_u64())
-                                    .map(|n| n as usize),
+                                output: None,
+                                patch: None,
+                                read_lines: None,
                             });
+                            let idx = out.len() - 1;
+                            if !id.is_empty() {
+                                tool_slot.insert(id.to_string(), idx);
+                                // A result that arrived before this tool_use? Apply it now.
+                                if let Some((txt, tur)) = pending.remove(id) {
+                                    apply_result(&mut out[idx], &txt, &tur);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -507,6 +562,8 @@ pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
                 if let Some(t) = ev_ts {
                     trigger_ts = Some(t);
                 }
+                // The message-level toolUseResult metadata (shared by its result blocks).
+                let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
                 let Some(content) = v.pointer("/message/content") else {
                     continue;
                 };
@@ -527,16 +584,19 @@ pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
                                 }
                             }
                             Some("tool_result") => {
-                                // Skip results we merged into their tool_use block.
                                 let tid = blk
                                     .get("tool_use_id")
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("");
-                                if tool_ids.contains(tid) {
-                                    continue;
-                                }
                                 let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
-                                if !txt.trim().is_empty() && !is_boilerplate(&txt) {
+                                if let Some(&idx) = tool_slot.get(tid) {
+                                    // Its tool_use is already emitted — back-patch in place.
+                                    apply_result(&mut out[idx], &txt, &tur);
+                                } else if tool_ids.contains(tid) {
+                                    // Its tool_use appears later — hold until then (last wins).
+                                    pending.insert(tid.to_string(), (txt, tur.clone()));
+                                } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
+                                    // No tool_use anywhere — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
                                 }
                             }
@@ -797,6 +857,68 @@ mod tests {
             panic!("expected Bash ToolUse");
         };
         assert_eq!(output.as_deref(), Some("file1\nfile2"));
+    }
+
+    /// Transcripts are NOT strictly ordered: a `tool_result` can appear *before*
+    /// its `tool_use` (compaction / sidechain reordering — seen in real 78/298 MB
+    /// sessions). The streaming parse must still join them (via the tool_use id
+    /// pre-scan + a pending buffer), or the Edit loses its structuredPatch line
+    /// numbers and a Read loses its content.
+    #[test]
+    fn result_before_tool_use_still_joins() {
+        let jsonl = r#"
+{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /x.rs has been updated successfully."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+"#;
+        let blocks = parse(jsonl, &args());
+        // The out-of-order result joined its Edit — no stray orphan block.
+        assert_eq!(kinds(&blocks), vec!["edit"], "{blocks:?}");
+        let Block::ToolUse { patch, .. } = &blocks[0] else {
+            panic!("expected Edit ToolUse");
+        };
+        assert_eq!(
+            patch.as_ref().expect("patch joined from earlier result")[0].new_start,
+            88,
+            "structuredPatch line number lost — result-before-use not joined"
+        );
+    }
+
+    /// A `tool_result` whose id belongs to no `tool_use` anywhere is a genuine
+    /// orphan and is shown inline (not swallowed).
+    #[test]
+    fn orphan_result_with_no_tool_use_shown_inline() {
+        let jsonl = r#"
+{"type":"user","message":{"content":"go"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"ghost","content":"orphan output"}]}}
+"#;
+        let blocks = parse(jsonl, &args());
+        assert_eq!(kinds(&blocks), vec!["user", "tool_result"], "{blocks:?}");
+        let Block::ToolResult(t) = &blocks[1] else {
+            panic!("expected orphan ToolResult");
+        };
+        assert_eq!(t, "orphan output");
+    }
+
+    /// `parse_path` (streaming file read, two passes) must produce exactly what
+    /// `parse(&str)` produces for the same content.
+    #[test]
+    fn parse_path_matches_parse_str() {
+        let jsonl = concat!(
+            r#"{"type":"user","cwd":"/p","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","toolUseResult":{"stdout":"out","stderr":""},"message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}"#,
+            "\n",
+        );
+        let via_str = parse(jsonl, &args());
+        let file = std::env::temp_dir().join("claude-replay-parse-path-test.jsonl");
+        std::fs::write(&file, jsonl).unwrap();
+        let via_path = parse_path(&file, &args()).unwrap();
+        std::fs::remove_file(&file).ok();
+        assert_eq!(format!("{via_str:?}"), format!("{via_path:?}"));
     }
 
     #[test]

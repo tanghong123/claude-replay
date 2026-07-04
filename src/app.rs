@@ -21,8 +21,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub fn run(args: &Args, path: &Path) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let blocks = model::parse(&content, args);
+    // Stream the parse from the file (one line resident at a time) instead of
+    // reading the whole transcript into a `String` + `Vec<Value>` — a 298 MB
+    // session otherwise peaks at ~2 GB. See `STREAMING-PARSE-DESIGN.md`.
+    let blocks = model::parse_path(path, args)?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -31,7 +33,9 @@ pub fn run(args: &Args, path: &Path) -> Result<()> {
     let mut reader = args.follow.then(|| TailReader::open_at_end(path));
     let fold = crate::view::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, reader.is_some(), fold);
-    view.set_metrics(crate::metrics::parse(&content).footer());
+    // Re-open for the metrics pass (also streaming) rather than hold the content.
+    let metrics = crate::metrics::parse_reader(std::io::BufReader::new(std::fs::File::open(path)?));
+    view.set_metrics(metrics.footer());
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -73,8 +77,8 @@ fn event_loop<B: ratatui::backend::Backend>(
             if let Some(r) = reader.as_mut() {
                 let p = r.poll().unwrap_or_default();
                 if p.reset {
-                    if let Ok(content) = std::fs::read_to_string(path) {
-                        view.reset(model::parse(&content, args));
+                    if let Ok(blocks) = model::parse_path(path, args) {
+                        view.reset(blocks);
                     }
                 }
                 if !p.lines.is_empty() {
@@ -173,12 +177,16 @@ fn event_loop<B: ratatui::backend::Backend>(
 /// Show the session picker; returns the chosen transcript path, or None if the
 /// user cancelled.
 pub fn pick() -> Result<Option<PathBuf>> {
-    let cands = discover::candidates();
+    let mut cands = discover::candidates();
     if cands.is_empty() {
         anyhow::bail!(
             "no transcripts found under {}",
             discover::projects_dir().display()
         );
+    }
+    // Nothing to pick between — open the only session directly.
+    if cands.len() == 1 {
+        return Ok(Some(cands.remove(0).path));
     }
     let mut picker = Picker::new(cands);
 
@@ -240,8 +248,7 @@ fn dump_width(args: &Args) -> usize {
 /// text to stdout (`--dump -`) or write `<stem>.txt` + `<stem>.ansi` (the `.ansi`
 /// carries SGR colour). With no `<stem>`, the stem is deduced from the session.
 pub fn dump(args: &Args, path: &Path) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let blocks = model::parse(&content, args);
+    let blocks = model::parse_path(path, args)?;
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.
@@ -260,7 +267,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
             return Ok(());
         }
         Some(s) => s.to_string(),
-        None => deduce_stem(&content, path, width),
+        None => deduce_stem(path, width),
     };
 
     let txt: String = lines.iter().map(plain_line).collect::<Vec<_>>().join("\n");
@@ -383,8 +390,27 @@ fn json_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
 /// Deduce the default dump stem: `<basename>-<pathhash>-<sessionid>-<width>` where
 /// basename/pathhash come from the session's project cwd, sessionid is its first 6
 /// chars, and width is the render width. cwd/sessionId are read from the transcript.
-fn deduce_stem(content: &str, path: &Path, width: usize) -> String {
+fn deduce_stem(path: &Path, width: usize) -> String {
     use std::hash::{Hash, Hasher};
+    use std::io::BufRead;
+    // cwd/sessionId live in the transcript's first event; read a bounded prefix
+    // rather than pull the whole (possibly huge) file into memory.
+    let mut content = String::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        for line in std::io::BufReader::new(f)
+            .lines()
+            .map_while(Result::ok)
+            .take(50)
+        {
+            content.push_str(&line);
+            content.push('\n');
+            if json_field(&content, "cwd").is_some() && json_field(&content, "sessionId").is_some()
+            {
+                break;
+            }
+        }
+    }
+    let content = content.as_str();
     let cwd = json_field(content, "cwd").unwrap_or("");
     let basename = Path::new(cwd)
         .file_name()
@@ -455,9 +481,15 @@ mod tests {
 
     #[test]
     fn deduced_stem_shape() {
+        // deduce_stem now reads cwd/sessionId from a bounded prefix of the file,
+        // so write the first line to a temp transcript and point it there.
         let content =
             r#"{"sessionId":"094539f2-40d7-4abc","cwd":"/Users/dev/projects/claude-replay"}"#;
-        let stem = deduce_stem(content, Path::new("/x/094539f2-40d7-4abc.jsonl"), 140);
+        let dir = std::env::temp_dir();
+        let file = dir.join("claude-replay-deduce-stem-test-094539f2-40d7-4abc.jsonl");
+        std::fs::write(&file, format!("{content}\n")).unwrap();
+        let stem = deduce_stem(&file, 140);
+        std::fs::remove_file(&file).ok();
         assert!(stem.starts_with("claude-replay-"), "basename: {stem}");
         assert!(stem.ends_with("-094539-140"), "sessionid6 + width: {stem}");
         let hex = stem
