@@ -6,9 +6,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    # TEMP (remove before merge): lets a branch push exercise the build matrix in
-    # dry-run mode without cutting a release.
-    branches: ["feat/prebuilt-binaries"]
   workflow_dispatch:
 
 permissions:
