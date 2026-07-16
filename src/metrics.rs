@@ -5,7 +5,15 @@ use serde_json::Value;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Metrics {
+    /// Genuinely-new input tokens (excludes cached content — see the two cache
+    /// fields below). Small on cache-heavy sessions.
     pub input_tokens: u64,
+    /// Tokens written to the prompt cache the first time content is seen.
+    pub cache_creation_tokens: u64,
+    /// Cached tokens re-read on later turns. This dominates a long session (the
+    /// whole context is re-read every turn), so it's tallied separately from
+    /// `input_tokens` rather than lumped in.
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
     pub model: String,
     pub duration_secs: i64,
@@ -57,20 +65,27 @@ pub fn parse_reader<R: std::io::BufRead>(reader: R) -> Metrics {
 
 fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
     let mut input = 0u64;
+    let mut cache_creation = 0u64;
+    let mut cache_read = 0u64;
     let mut output = 0u64;
     let mut model = String::new();
     let mut tmin: Option<i64> = None;
     let mut tmax: Option<i64> = None;
 
+    let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
     for line in lines {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         if let Some(u) = v.pointer("/message/usage") {
-            // Only genuinely-new tokens: cache_read re-counts the whole context
-            // every turn, so summing it across a session wildly over-counts.
-            input += u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-            output += u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+            // Three distinct buckets so the footer can tell them apart: new input,
+            // cache writes (new content, cached on first sight), and cache reads
+            // (the whole context re-read every turn — the dominant number, kept
+            // separate so it doesn't drown out genuinely-new input).
+            input += field(u, "input_tokens");
+            cache_creation += field(u, "cache_creation_input_tokens");
+            cache_read += field(u, "cache_read_input_tokens");
+            output += field(u, "output_tokens");
         }
         if let Some(m) = v.pointer("/message/model").and_then(|x| x.as_str()) {
             model = m.to_string();
@@ -86,9 +101,16 @@ fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,
     };
-    let cost_usd = price(&model).map(|(pi, po)| input as f64 / 1e6 * pi + output as f64 / 1e6 * po);
+    // Price each tier at its own rate: cache writes bill at ~1.25× base input,
+    // cache reads at ~0.1× (Anthropic prompt-caching pricing).
+    let cost_usd = price(&model).map(|(pi, po)| {
+        (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
+            + output as f64 / 1e6 * po
+    });
     Metrics {
         input_tokens: input,
+        cache_creation_tokens: cache_creation,
+        cache_read_tokens: cache_read,
         output_tokens: output,
         model,
         duration_secs,
@@ -97,7 +119,9 @@ fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
 }
 
 fn human_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1e6)
     } else if n >= 1_000 {
         format!("{:.1}k", n as f64 / 1e3)
@@ -147,8 +171,16 @@ impl Metrics {
             .cost_usd
             .map(|c| format!(" · ~${c:.2}"))
             .unwrap_or_default();
+        // Show the cache tier only when there is one — cache-less transcripts keep
+        // the plain "in / out" shape.
+        let cached = self.cache_creation_tokens + self.cache_read_tokens;
+        let cached = if cached > 0 {
+            format!("{} cached · ", human_tokens(cached))
+        } else {
+            String::new()
+        };
         format!(
-            "{model}{} in / {} out · {}{cost}",
+            "{model}{} in · {cached}{} out · {}{cost}",
             human_tokens(self.input_tokens),
             human_tokens(self.output_tokens),
             human_dur(self.duration_secs),
@@ -174,6 +206,33 @@ mod tests {
         let f = m.footer();
         assert!(f.contains("opus4.8"), "footer: {f}");
         assert!(f.contains("2m"), "footer: {f}");
+        // No cache tokens → no "cached" tier in the footer.
+        assert!(!f.contains("cached"), "footer: {f}");
+    }
+
+    #[test]
+    fn sums_cache_tiers_and_shows_them() {
+        let jsonl = r#"
+{"type":"assistant","timestamp":"2026-06-28T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"cache_creation_input_tokens":40000,"cache_read_input_tokens":2000000,"output_tokens":5000}}}
+{"type":"assistant","timestamp":"2026-06-28T10:01:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":500,"cache_creation_input_tokens":10000,"cache_read_input_tokens":3000000,"output_tokens":5000}}}
+"#;
+        let m = parse_reader(std::io::Cursor::new(jsonl));
+        assert_eq!(m.input_tokens, 1500);
+        assert_eq!(m.cache_creation_tokens, 50000);
+        assert_eq!(m.cache_read_tokens, 5000000);
+        assert_eq!(m.output_tokens, 10000);
+        let f = m.footer();
+        // All three token tiers are present, cache reads dominating.
+        assert!(f.contains("1.5k in"), "footer: {f}");
+        assert!(f.contains("5.0M cached"), "footer: {f}");
+        assert!(f.contains("10.0k out"), "footer: {f}");
+        // Cached tokens can reach billions on long sessions.
+        assert_eq!(human_tokens(2_728_200_000), "2.7B");
+        // Cost prices reads (0.1×) and writes (1.25×) on top of new input.
+        let c = m.cost_usd.unwrap();
+        let expected =
+            (1500.0 + 50000.0 * 1.25 + 5_000_000.0 * 0.10) / 1e6 * 15.0 + 10000.0 / 1e6 * 75.0;
+        assert!((c - expected).abs() < 1e-9, "cost {c} vs {expected}");
     }
 
     #[test]
