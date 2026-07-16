@@ -8,7 +8,7 @@ use nucleo::{Config, Matcher, Utf32Str};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -108,6 +108,9 @@ impl Picker {
 
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
+        // Clear first: when reopened from the viewer (session switch) the frame
+        // still holds transcript content underneath.
+        f.render_widget(Clear, area);
         self.view_h = area.height.saturating_sub(2) as usize; // header + query rows
         let rows = self.view_h.max(1);
 

@@ -78,7 +78,8 @@ tool_result, command`).
 `j`/`k` line · `C-d`/`C-u` half-page · `PageDown`/`PageUp` page · `g`/`G` top/bottom ·
 `Space` toggle the focused/first-visible fold (`Enter` toggles the focused one) ·
 `T` toggle all · `]`/`[` next/prev foldable · `/` search, `n`/`N` next/prev ·
-`?` help · `q`/`Esc` quit.
+`?` help · `q` quit. When launched from the session picker (more than one session),
+`Esc` returns to that list to pick another; otherwise `Esc` quits too.
 
 ## Develop
 

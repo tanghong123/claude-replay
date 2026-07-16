@@ -86,15 +86,12 @@ pub struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    // No id/path/--latest and we have a TUI → show the session picker.
-    let path = if args.target.is_none() && !args.latest && args.dump.is_none() {
-        match app::pick()? {
-            Some(p) => p,
-            None => return Ok(()), // user cancelled the picker
-        }
-    } else {
-        discover::resolve(args.target.as_deref(), args.latest)?
-    };
+    // No id/path/--latest and not dumping → interactive picker ↔ viewer flow
+    // (Esc in the viewer returns to the session list when there's more than one).
+    if args.target.is_none() && !args.latest && args.dump.is_none() {
+        return app::run_interactive(&args);
+    }
+    let path = discover::resolve(args.target.as_deref(), args.latest)?;
     if args.dump.is_some() {
         app::dump(&args, &path)
     } else {

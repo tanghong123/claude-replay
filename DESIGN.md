@@ -194,6 +194,10 @@ The residual diff is **not** decision-free rendering:
 - [x] **P4 fold/expand.** Collapsible tool/result/thinking/long blocks; `t`/`T` +
   mouse-click headers. (feature 5)
 - [x] **P5 session picker.** Dir-affinity ranked, nucleo fuzzy. (feature 7)
+  `Esc` in the viewer returns to the picker to switch sessions (when launched from
+  it, i.e. more than one session); `q` always quits. Picker ↔ viewer run in one
+  terminal session (`app::run_interactive`), reusing the `Picker` so its query and
+  selection survive a round trip.
 - [x] **P6 in-transcript search.** `/`, highlight, `n`/`N`. (feature 8)
 - [x] **P7 diffs + metrics.** Word-level Edit diffs; metrics footer. (features 9,10)
 - [x] **P8 integration.** `justdoit/install.sh` builds+installs `claude-replay`

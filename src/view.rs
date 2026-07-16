@@ -265,6 +265,7 @@ pub struct View {
     fold: FoldPolicy,     // per-type default fold policy (applied to new content)
     focus: Option<usize>, // focused foldable block index ([ / ] / hover)
     show_help: bool,      // `?` help overlay visible
+    can_go_back: bool,    // launched via the picker → Esc returns to the session list
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
@@ -303,6 +304,7 @@ impl View {
             fold,
             focus: None,
             show_help: false,
+            can_go_back: false,
             sel_anchor: None,
             sel_cursor: None,
             body_cache: Vec::new(),
@@ -313,6 +315,12 @@ impl View {
     /// Set the footer metrics text (tokens/cost/duration/model).
     pub fn set_metrics(&mut self, m: String) {
         self.metrics = m;
+    }
+
+    /// Mark that this viewer was reached through the session picker, so `Esc`
+    /// returns to the list (rather than quitting) and the help reflects that.
+    pub fn set_can_go_back(&mut self, v: bool) {
+        self.can_go_back = v;
     }
 
     /// Re-render the raw (unwrapped) lines at the current width. Each block's body
@@ -852,14 +860,14 @@ impl View {
             Rect::new(area.x, area.y + self.view_h as u16, area.width, 1),
         );
         if self.show_help {
-            render_help(f, area);
+            render_help(f, area, self.can_go_back);
         }
     }
 }
 
 /// The `?` help overlay: a centered bordered panel listing every hotkey.
-fn render_help(f: &mut Frame, area: Rect) {
-    let rows: &[(&str, &str)] = &[
+fn render_help(f: &mut Frame, area: Rect, can_go_back: bool) {
+    let mut rows: Vec<(&str, &str)> = vec![
         ("j / k   ↓ / ↑", "scroll one line"),
         ("Ctrl-d / Ctrl-u", "half page down / up"),
         ("PageDown / PageUp", "full page down / up"),
@@ -871,10 +879,16 @@ fn render_help(f: &mut Frame, area: Rect) {
         ("/   n / N", "search, then next / prev match"),
         ("mouse", "wheel scrolls · click a header to fold"),
         ("?", "toggle this help"),
-        ("q / Esc", "quit"),
     ];
+    // `Esc` returns to the session list only when we came from the picker.
+    if can_go_back {
+        rows.push(("Esc", "back to session list"));
+        rows.push(("q", "quit"));
+    } else {
+        rows.push(("q / Esc", "quit"));
+    }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len());
-    for (k, d) in rows {
+    for (k, d) in &rows {
         lines.push(Line::from(vec![
             Span::styled(format!("  {k:<17}"), theme::user()),
             Span::styled((*d).to_string(), theme::status()),
@@ -1111,6 +1125,37 @@ mod tests {
         assert!(
             !txt(&b2).contains("toggle fold"),
             "help hidden after toggle"
+        );
+    }
+
+    /// The help footer reflects whether Esc goes back to the session list.
+    #[test]
+    fn help_esc_line_depends_on_can_go_back() {
+        let txt = |b: &Buffer| {
+            (0..b.area.height)
+                .map(|y| row(b, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Default (direct launch): Esc quits, no "back to session list".
+        let mut v = View::new(blocks(5), "t", false, FoldPolicy::none());
+        v.toggle_help();
+        let t = txt(&draw(&mut v, 80, 20));
+        assert!(t.contains("quit"), "help mentions quit:\n{t}");
+        assert!(
+            !t.contains("back to session list"),
+            "no back-nav when direct-launched:\n{t}"
+        );
+
+        // Launched via the picker: Esc backs to the list.
+        let mut v = View::new(blocks(5), "t", false, FoldPolicy::none());
+        v.set_can_go_back(true);
+        v.toggle_help();
+        let t = txt(&draw(&mut v, 80, 20));
+        assert!(
+            t.contains("back to session list"),
+            "back-nav listed when launched via picker:\n{t}"
         );
     }
 

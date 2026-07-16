@@ -20,29 +20,15 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// View a single session (explicit target / `--latest` / the only session). There
+/// is no list to return to, so both `q` and `Esc` quit.
 pub fn run(args: &Args, path: &Path) -> Result<()> {
-    // Stream the parse from the file (one line resident at a time) instead of
-    // reading the whole transcript into a `String` + `Vec<Value>` — a 298 MB
-    // session otherwise peaks at ~2 GB. See `STREAMING-PARSE-DESIGN.md`.
-    let blocks = model::parse_path(path, args)?;
-    let title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session")
-        .to_string();
-    let mut reader = args.follow.then(|| TailReader::open_at_end(path));
-    let fold = crate::view::FoldPolicy::from_args(args);
-    let mut view = View::new(blocks, title, reader.is_some(), fold);
-    // Re-open for the metrics pass (also streaming) rather than hold the content.
-    let metrics = crate::metrics::parse_reader(std::io::BufReader::new(std::fs::File::open(path)?));
-    view.set_metrics(metrics.footer());
-
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
-    let res = event_loop(&mut term, args, path, &mut view, &mut reader);
+    let res = view_session(&mut term, args, path, false);
 
     disable_raw_mode().ok();
     execute!(
@@ -62,13 +48,107 @@ pub fn run(args: &Args, path: &Path) -> Result<()> {
     std::process::exit(0);
 }
 
+/// Interactive entry when no target/`--latest`/`--dump` was given: discover the
+/// sessions and, when there's more than one, loop between the picker and the
+/// viewer so `Esc` in the viewer returns to the list instead of quitting.
+pub fn run_interactive(args: &Args) -> Result<()> {
+    let mut cands = discover::candidates();
+    if cands.is_empty() {
+        anyhow::bail!(
+            "no transcripts found under {}",
+            discover::projects_dir().display()
+        );
+    }
+    // Only one session — open it directly; there's no list to go back to.
+    if cands.len() == 1 {
+        return run(args, &cands.remove(0).path);
+    }
+
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut term = Terminal::new(CrosstermBackend::new(out))?;
+
+    let mut picker = Picker::new(cands);
+    let res = picker_viewer_loop(&mut term, args, &mut picker);
+
+    disable_raw_mode().ok();
+    execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
+    term.show_cursor().ok();
+
+    res?;
+    std::io::Write::flush(&mut stdout()).ok();
+    std::process::exit(0);
+}
+
+/// Alternate picker ↔ viewer in one terminal session. The picker's `Esc` quits;
+/// the viewer's `Esc` (Outcome::Back) returns here to re-pick, `q` quits. Reusing
+/// the same `Picker` preserves the query and selection across a round trip.
+fn picker_viewer_loop<B: ratatui::backend::Backend>(
+    term: &mut Terminal<B>,
+    args: &Args,
+    picker: &mut Picker,
+) -> Result<()> {
+    loop {
+        let path = match pick_loop(term, picker)? {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        match view_session(term, args, &path, true)? {
+            Outcome::Quit => return Ok(()),
+            Outcome::Back => continue,
+        }
+    }
+}
+
+/// Build a `View` for `path` and run its input loop. `can_go_back` marks that we
+/// arrived via the picker, so `Esc` returns to the list (Outcome::Back).
+fn view_session<B: ratatui::backend::Backend>(
+    term: &mut Terminal<B>,
+    args: &Args,
+    path: &Path,
+    can_go_back: bool,
+) -> Result<Outcome> {
+    // Stream the parse from the file (one line resident at a time) instead of
+    // reading the whole transcript into a `String` + `Vec<Value>` — a 298 MB
+    // session otherwise peaks at ~2 GB. See `STREAMING-PARSE-DESIGN.md`.
+    let blocks = model::parse_path(path, args)?;
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session")
+        .to_string();
+    let mut reader = args.follow.then(|| TailReader::open_at_end(path));
+    let fold = crate::view::FoldPolicy::from_args(args);
+    let mut view = View::new(blocks, title, reader.is_some(), fold);
+    view.set_can_go_back(can_go_back);
+    // Re-open for the metrics pass (also streaming) rather than hold the content.
+    let metrics = crate::metrics::parse_reader(std::io::BufReader::new(std::fs::File::open(path)?));
+    view.set_metrics(metrics.footer());
+
+    event_loop(term, args, path, &mut view, &mut reader)
+}
+
+/// How the viewer's input loop ended.
+enum Outcome {
+    /// Leave the program.
+    Quit,
+    /// Return to the session picker (honored only when launched via it).
+    Back,
+}
+
 fn event_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     args: &Args,
     path: &Path,
     view: &mut View,
     reader: &mut Option<TailReader>,
-) -> Result<()> {
+) -> Result<Outcome> {
     loop {
         term.draw(|f| view.draw(f))?;
 
@@ -112,7 +192,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 match k.code {
                     KeyCode::Char('?') => view.toggle_help(),
-                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    // `q` always leaves; `Esc` steps back to the session list when
+                    // we came from the picker (the driver maps Back→quit otherwise).
+                    KeyCode::Char('q') => return Ok(Outcome::Quit),
+                    KeyCode::Esc => return Ok(Outcome::Back),
                     KeyCode::Char('j') | KeyCode::Down => view.scroll_by(1),
                     KeyCode::Char('k') | KeyCode::Up => view.scroll_by(-1),
                     KeyCode::Char('d') if ctrl => view.half_page(true),
@@ -171,41 +254,10 @@ fn event_loop<B: ratatui::backend::Backend>(
             _ => {}
         }
     }
-    Ok(())
 }
 
-/// Show the session picker; returns the chosen transcript path, or None if the
-/// user cancelled.
-pub fn pick() -> Result<Option<PathBuf>> {
-    let mut cands = discover::candidates();
-    if cands.is_empty() {
-        anyhow::bail!(
-            "no transcripts found under {}",
-            discover::projects_dir().display()
-        );
-    }
-    // Nothing to pick between — open the only session directly.
-    if cands.len() == 1 {
-        return Ok(Some(cands.remove(0).path));
-    }
-    let mut picker = Picker::new(cands);
-
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    let mut term = Terminal::new(CrosstermBackend::new(out))?;
-    let res = pick_loop(&mut term, &mut picker);
-    disable_raw_mode().ok();
-    execute!(
-        term.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )
-    .ok();
-    term.show_cursor().ok();
-    res
-}
-
+/// Run the picker's input loop against an already-set-up terminal. Returns the
+/// chosen transcript path, or None if the user pressed Esc/Ctrl-c (quit).
 fn pick_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     picker: &mut Picker,
