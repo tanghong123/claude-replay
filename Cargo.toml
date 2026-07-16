@@ -14,6 +14,14 @@ categories = ["command-line-utilities"]
 name = "claude-replay"
 path = "src/main.rs"
 
+# `cargo binstall claude-replay` pulls the matching prebuilt tarball from the
+# GitHub release instead of compiling. Assets are named `claude-replay-<target>.tar.gz`
+# with the binary at the archive root (see .github/workflows/release.yml).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

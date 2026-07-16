@@ -27,9 +27,21 @@ claude-replay --latest      # open your most recent session
 claude-replay --version
 ```
 
-Later, `brew upgrade claude-replay` updates it and `brew uninstall claude-replay`
-removes it. (Equivalent two-step: `brew tap tanghong123/tap` then
-`brew install claude-replay`.)
+On macOS and Linux (x86_64 and arm64) this downloads a prebuilt binary — no Rust
+toolchain, no compile. Later, `brew upgrade claude-replay` updates it and
+`brew uninstall claude-replay` removes it. (Equivalent two-step: `brew tap
+tanghong123/tap` then `brew install claude-replay`.)
+
+**Prebuilt binary** (no Homebrew, no Rust) — `cargo-binstall` grabs the release
+tarball for your platform:
+
+```bash
+cargo binstall claude-replay
+```
+
+Or download a `claude-replay-<target>.tar.gz` from the
+[releases page](https://github.com/tanghong123/claude-replay/releases) directly
+(static musl builds for Linux; run on any distro).
 
 **From source** (needs a Rust toolchain):
 

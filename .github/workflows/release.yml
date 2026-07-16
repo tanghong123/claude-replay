@@ -1,10 +1,15 @@
 name: Release
 
 # Tag a version (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to cut a GitHub
-# release and automatically bump the Homebrew tap formula to that version.
+# release, attach prebuilt binaries for macOS + Linux (x86_64 and aarch64), and
+# bump the Homebrew tap formula to install those binaries.
 on:
   push:
     tags: ["v*"]
+    # TEMP (remove before merge): lets a branch push exercise the build matrix in
+    # dry-run mode without cutting a release.
+    branches: ["feat/prebuilt-binaries"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,6 +17,7 @@ permissions:
 jobs:
   github-release:
     name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +26,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: github-release
+    # Run even when github-release is skipped (branch push / dry-run) so the
+    # cross-builds still get exercised in CI.
+    if: always() && (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # taiki-e/upload-rust-binary-action is the de-facto standard for this: it
+      # installs the target (using `cross` for aarch64-musl), builds --release,
+      # tars the binary as `claude-replay-<target>.tar.gz`, emits a .sha256, and
+      # uploads both to the release. `dry-run` builds+archives without uploading,
+      # so branch pushes verify the cross-builds without needing a release.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: claude-replay
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          checksum: sha256
+          dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   homebrew:
     name: Bump Homebrew formula
-    needs: github-release
+    needs: [github-release, build-binaries]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     # A PAT that can push to tanghong123/homebrew-tap (fine-grained: Contents R/W on
     # that repo). Add it:  gh secret set HOMEBREW_TAP_TOKEN --repo tanghong123/claude-replay
@@ -30,22 +72,66 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
-      # Self-contained bump (no third-party action): recompute the tarball sha256 and
-      # rewrite the formula's url + sha256, then push to the tap. Robust to the token
-      # type (works with fine-grained PATs, unlike the previous action).
+      # Regenerate the formula as a per-platform binary formula: pull each release
+      # tarball's sha256 and write url/sha256 blocks for macOS + Linux, arm + intel.
+      # `brew install` then downloads the prebuilt binary (fast, no Rust toolchain)
+      # on both Homebrew and Linuxbrew.
       - name: Bump tanghong123/homebrew-tap formula
         if: env.TAP_TOKEN != ''
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           ver="${tag#v}"
-          url="https://github.com/tanghong123/claude-replay/archive/refs/tags/${tag}.tar.gz"
-          sha=$(curl -fsSL "$url" | sha256sum | awk '{print $1}')
-          echo "bumping claude-replay to ${ver} (sha256 ${sha})"
+          base="https://github.com/tanghong123/claude-replay/releases/download/${tag}"
+
+          sha() { curl -fsSL "${base}/claude-replay-$1.tar.gz" | sha256sum | awk '{print $1}'; }
+          mac_arm=$(sha aarch64-apple-darwin)
+          mac_x86=$(sha x86_64-apple-darwin)
+          lin_arm=$(sha aarch64-unknown-linux-musl)
+          lin_x86=$(sha x86_64-unknown-linux-musl)
+
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/tanghong123/homebrew-tap.git" tap
+          cat > tap/Formula/claude-replay.rb <<EOF
+          class ClaudeReplay < Formula
+            desc "Interactive, read-only viewer for Claude Code session transcripts"
+            homepage "https://github.com/tanghong123/claude-replay"
+            version "${ver}"
+            license "MIT"
+            head "https://github.com/tanghong123/claude-replay.git", branch: "main"
+
+            on_macos do
+              on_arm do
+                url "${base}/claude-replay-aarch64-apple-darwin.tar.gz"
+                sha256 "${mac_arm}"
+              end
+              on_intel do
+                url "${base}/claude-replay-x86_64-apple-darwin.tar.gz"
+                sha256 "${mac_x86}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/claude-replay-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${lin_arm}"
+              end
+              on_intel do
+                url "${base}/claude-replay-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${lin_x86}"
+              end
+            end
+
+            def install
+              bin.install "claude-replay"
+            end
+
+            test do
+              assert_match "claude-replay #{version}", shell_output("#{bin}/claude-replay --version")
+            end
+          end
+          EOF
+
           cd tap
-          sed -i -E "s#archive/refs/tags/v[0-9][0-9.]*\.tar\.gz#archive/refs/tags/${tag}.tar.gz#" Formula/claude-replay.rb
-          sed -i -E "s/sha256 \"[0-9a-f]{64}\"/sha256 \"${sha}\"/" Formula/claude-replay.rb
           git config user.name "Hong Tang"
           git config user.email "hong.tang@gmail.com"
           if git diff --quiet; then
