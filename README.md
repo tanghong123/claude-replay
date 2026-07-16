@@ -79,7 +79,9 @@ tool_result, command`).
 `Space` toggle the focused/first-visible fold (`Enter` toggles the focused one) ·
 `T` toggle all · `]`/`[` next/prev foldable · `/` search, `n`/`N` next/prev ·
 `?` help · `q` quit. When launched from the session picker (more than one session),
-`Esc` returns to that list to pick another; otherwise `Esc` quits too.
+`Esc` returns to that list to pick another; otherwise `Esc` quits too. After
+`--latest`, `s` opens the session switcher (a picker overlay) so you can hop to
+another session — `Enter` switches, `Esc` returns to where you were.
 
 ## Develop
 

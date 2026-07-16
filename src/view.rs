@@ -1,7 +1,9 @@
 //! The viewer's state machine + drawing, decoupled from the terminal so it can
 //! be driven headless (ratatui `TestBackend`) without a real TTY.
 
+use crate::discover::Candidate;
 use crate::model::Block;
+use crate::picker::Picker;
 use crate::{render, theme, wrap, Args};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -9,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as WBlock, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Columns of uncolored left margin before a diff/code row's gutter — matches
@@ -257,15 +260,17 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,        // current needle (empty = no search)
-    searching: bool,      // in `/` input mode
-    matches: Vec<usize>,  // wrapped-line indices containing the needle
-    match_pos: usize,     // index into `matches`
-    metrics: String,      // footer text (tokens/cost/duration/model)
-    fold: FoldPolicy,     // per-type default fold policy (applied to new content)
-    focus: Option<usize>, // focused foldable block index ([ / ] / hover)
-    show_help: bool,      // `?` help overlay visible
-    can_go_back: bool,    // launched via the picker → Esc returns to the session list
+    query: String,            // current needle (empty = no search)
+    searching: bool,          // in `/` input mode
+    matches: Vec<usize>,      // wrapped-line indices containing the needle
+    match_pos: usize,         // index into `matches`
+    metrics: String,          // footer text (tokens/cost/duration/model)
+    fold: FoldPolicy,         // per-type default fold policy (applied to new content)
+    focus: Option<usize>,     // focused foldable block index ([ / ] / hover)
+    show_help: bool,          // `?` help overlay visible
+    can_go_back: bool,        // launched via the picker → Esc returns to the session list
+    can_open_picker: bool,    // `s` opens the session switcher overlay (--latest launch)
+    switcher: Option<Picker>, // session switcher overlay, when open
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
@@ -305,6 +310,8 @@ impl View {
             focus: None,
             show_help: false,
             can_go_back: false,
+            can_open_picker: false,
+            switcher: None,
             sel_anchor: None,
             sel_cursor: None,
             body_cache: Vec::new(),
@@ -321,6 +328,56 @@ impl View {
     /// returns to the list (rather than quitting) and the help reflects that.
     pub fn set_can_go_back(&mut self, v: bool) {
         self.can_go_back = v;
+    }
+
+    /// Enable the `s` session-switcher overlay (used on a `--latest` launch, where
+    /// `Esc` can't return to a list because none was shown).
+    pub fn set_can_open_picker(&mut self, v: bool) {
+        self.can_open_picker = v;
+    }
+    /// Whether `s` should open the switcher (also gates the help line).
+    pub fn can_open_picker(&self) -> bool {
+        self.can_open_picker
+    }
+
+    /// Open the session-switcher overlay over the current view (built from `cands`).
+    pub fn open_switcher(&mut self, cands: Vec<Candidate>) {
+        self.switcher = Some(Picker::new(cands));
+    }
+    /// Is the switcher overlay currently open?
+    pub fn is_switcher_open(&self) -> bool {
+        self.switcher.is_some()
+    }
+    /// Close the switcher without switching (keeps the current session/position).
+    pub fn switcher_close(&mut self) {
+        self.switcher = None;
+    }
+    pub fn switcher_up(&mut self) {
+        if let Some(p) = self.switcher.as_mut() {
+            p.up();
+        }
+    }
+    pub fn switcher_down(&mut self) {
+        if let Some(p) = self.switcher.as_mut() {
+            p.down();
+        }
+    }
+    pub fn switcher_input(&mut self, c: char) {
+        if let Some(p) = self.switcher.as_mut() {
+            p.push_char(c);
+        }
+    }
+    pub fn switcher_backspace(&mut self) {
+        if let Some(p) = self.switcher.as_mut() {
+            p.backspace();
+        }
+    }
+    /// Confirm the switcher's selection: close the overlay and return the chosen
+    /// transcript path (None if there was no selection).
+    pub fn switcher_confirm(&mut self) -> Option<PathBuf> {
+        let path = self.switcher.as_ref().and_then(|p| p.selected_path());
+        self.switcher = None;
+        path
     }
 
     /// Re-render the raw (unwrapped) lines at the current width. Each block's body
@@ -860,13 +917,17 @@ impl View {
             Rect::new(area.x, area.y + self.view_h as u16, area.width, 1),
         );
         if self.show_help {
-            render_help(f, area, self.can_go_back);
+            render_help(f, area, self.can_go_back, self.can_open_picker);
+        }
+        // The switcher overlay (Picker clears the frame itself) sits on top.
+        if let Some(p) = self.switcher.as_mut() {
+            p.draw(f);
         }
     }
 }
 
 /// The `?` help overlay: a centered bordered panel listing every hotkey.
-fn render_help(f: &mut Frame, area: Rect, can_go_back: bool) {
+fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bool) {
     let mut rows: Vec<(&str, &str)> = vec![
         ("j / k   ↓ / ↑", "scroll one line"),
         ("Ctrl-d / Ctrl-u", "half page down / up"),
@@ -880,6 +941,10 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool) {
         ("mouse", "wheel scrolls · click a header to fold"),
         ("?", "toggle this help"),
     ];
+    // `s` opens the session switcher (only offered on a --latest launch).
+    if can_open_picker {
+        rows.push(("s", "switch session (picker)"));
+    }
     // `Esc` returns to the session list only when we came from the picker.
     if can_go_back {
         rows.push(("Esc", "back to session list"));
@@ -1157,6 +1222,56 @@ mod tests {
             t.contains("back to session list"),
             "back-nav listed when launched via picker:\n{t}"
         );
+
+        // `--latest` launch: help lists the `s` switcher.
+        let mut v = View::new(blocks(5), "t", false, FoldPolicy::none());
+        v.set_can_open_picker(true);
+        v.toggle_help();
+        let t = txt(&draw(&mut v, 80, 20));
+        assert!(t.contains("switch session"), "help lists s:\n{t}");
+    }
+
+    /// `s` opens the switcher overlay over the current view; Enter confirms a
+    /// selection and closes it; Esc (via switcher_close) leaves the view intact.
+    #[test]
+    fn switcher_overlay_opens_lists_and_confirms() {
+        use crate::discover::Candidate;
+        use std::time::SystemTime;
+        let cand = |name: &str| Candidate {
+            path: std::path::PathBuf::from(format!("/tmp/{name}.jsonl")),
+            mtime: SystemTime::now(),
+            project: "proj".into(),
+            snippet: format!("{name} snippet"),
+            cwd_affinity: false,
+        };
+        let txt = |b: &Buffer| {
+            (0..b.area.height)
+                .map(|y| row(b, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let mut v = View::new(blocks(3), "t", false, FoldPolicy::none());
+        assert!(!v.is_switcher_open());
+        v.open_switcher(vec![cand("alpha"), cand("beta")]);
+        assert!(v.is_switcher_open());
+        // The picker header is drawn on top of the transcript.
+        let t = txt(&draw(&mut v, 80, 20));
+        assert!(t.contains("pick a session"), "switcher drawn:\n{t}");
+
+        // Confirm returns the selected transcript and closes the overlay.
+        let p = v.switcher_confirm();
+        assert!(
+            p.map(|p| p.to_string_lossy().contains("alpha"))
+                .unwrap_or(false),
+            "confirm returns the selected path"
+        );
+        assert!(!v.is_switcher_open(), "closed after confirm");
+
+        // Close (Esc) just dismisses without a switch.
+        v.open_switcher(vec![cand("alpha")]);
+        v.switcher_close();
+        assert!(!v.is_switcher_open(), "closed after switcher_close");
     }
 
     #[test]

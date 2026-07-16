@@ -175,3 +175,98 @@ fn esc_returns_from_viewer_to_session_list() {
     );
     assert!(quit_ok, "q did not quit the viewer; screen:\n{s4}");
 }
+
+/// A `--latest` launch opens a session directly (no list). `s` opens the switcher
+/// overlay; `Esc` closes it back to the same session; `Enter` picks one.
+#[test]
+#[ignore = "needs tmux; run with --ignored"]
+fn s_opens_session_switcher_on_latest() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux not installed");
+        return;
+    }
+    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let dir = std::env::temp_dir().join(format!("peekv2-slatest-{}", std::process::id()));
+    let proj = dir.join("-tmp-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let write = |name: &str, marker: &str| {
+        std::fs::write(
+            proj.join(name),
+            format!(
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{marker} hello\"}}}}\n"
+            ),
+        )
+        .unwrap();
+    };
+    write("a.jsonl", "AAAMARKER");
+    write("b.jsonl", "BBBMARKER");
+
+    let socket = format!("peekv2-slatest-{}", std::process::id());
+    tmux(&socket, &["kill-server"]);
+
+    let out = tmux(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-x",
+            "120",
+            "-y",
+            "30",
+            &format!("CLAUDE_PROJECTS_DIR={} {bin} --latest", dir.display()),
+        ],
+    );
+    assert!(out.status.success(), "tmux new-session failed (no TTY?)");
+
+    let capture = |socket: &str| -> String {
+        let cap = tmux(socket, &["capture-pane", "-p", "-t", "0"]);
+        String::from_utf8_lossy(&cap.stdout).to_string()
+    };
+    let wait = |socket: &str, pred: &dyn Fn(&str) -> bool| -> (bool, String) {
+        let mut screen = String::new();
+        for _ in 0..20 {
+            sleep(Duration::from_millis(150));
+            screen = capture(socket);
+            if pred(&screen) {
+                return (true, screen);
+            }
+        }
+        (false, screen)
+    };
+
+    // 1. --latest opens a session directly — no picker.
+    let (viewer_ok, s1) = wait(&socket, &|s| s.contains("MARKER"));
+    let direct_not_picker = !s1.contains("pick a session");
+    // 2. `s` opens the switcher overlay.
+    tmux(&socket, &["send-keys", "-t", "0", "s"]);
+    let (open_ok, s2) = wait(&socket, &|s| s.contains("pick a session"));
+    // 3. `Esc` closes the overlay back to the same session (no list to quit to).
+    tmux(&socket, &["send-keys", "-t", "0", "Escape"]);
+    let (closed_ok, s3) = wait(&socket, &|s| {
+        !s.contains("pick a session") && s.contains("MARKER")
+    });
+    // 4. `s` again, then `Enter` picks a session (overlay gone, viewer shown).
+    tmux(&socket, &["send-keys", "-t", "0", "s"]);
+    wait(&socket, &|s| s.contains("pick a session"));
+    tmux(&socket, &["send-keys", "-t", "0", "Enter"]);
+    let (picked_ok, s4) = wait(&socket, &|s| {
+        !s.contains("pick a session") && s.contains("MARKER")
+    });
+
+    tmux(&socket, &["send-keys", "-t", "0", "q"]);
+    sleep(Duration::from_millis(200));
+    tmux(&socket, &["kill-server"]);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(viewer_ok, "--latest did not open a session; screen:\n{s1}");
+    assert!(
+        direct_not_picker,
+        "--latest should skip the picker; screen:\n{s1}"
+    );
+    assert!(open_ok, "`s` did not open the switcher; screen:\n{s2}");
+    assert!(
+        closed_ok,
+        "Esc did not close the switcher back to the session; screen:\n{s3}"
+    );
+    assert!(picked_ok, "Enter did not pick a session; screen:\n{s4}");
+}

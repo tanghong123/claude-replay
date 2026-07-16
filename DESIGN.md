@@ -197,7 +197,11 @@ The residual diff is **not** decision-free rendering:
   `Esc` in the viewer returns to the picker to switch sessions (when launched from
   it, i.e. more than one session); `q` always quits. Picker ↔ viewer run in one
   terminal session (`app::run_interactive`), reusing the `Picker` so its query and
-  selection survive a round trip.
+  selection survive a round trip. On a `--latest` launch (no list shown), `s`
+  opens the picker as an overlay over the current session — `Enter` switches
+  (`Outcome::Switch`, re-viewed by `run_view_loop`), `Esc` closes it in place with
+  no reload. The `s` key and the `Esc`-back line are gated by per-launch flags
+  (`View::set_can_open_picker` / `set_can_go_back`), reflected in the `?` help.
 - [x] **P6 in-transcript search.** `/`, highlight, `n`/`N`. (feature 8)
 - [x] **P7 diffs + metrics.** Word-level Edit diffs; metrics footer. (features 9,10)
 - [x] **P8 integration.** `justdoit/install.sh` builds+installs `claude-replay`

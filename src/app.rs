@@ -21,14 +21,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// View a single session (explicit target / `--latest` / the only session). There
-/// is no list to return to, so both `q` and `Esc` quit.
+/// is no list to return to, so both `q` and `Esc` quit. A `--latest` launch can
+/// still hop to another session via the `s` switcher (`run_view_loop` handles it).
 pub fn run(args: &Args, path: &Path) -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
-    let res = view_session(&mut term, args, path, false);
+    let res = run_view_loop(&mut term, args, path.to_path_buf(), false).map(|_| ());
 
     disable_raw_mode().ok();
     execute!(
@@ -99,9 +100,25 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
             Some(p) => p,
             None => return Ok(()),
         };
-        match view_session(term, args, &path, true)? {
-            Outcome::Quit => return Ok(()),
+        match run_view_loop(term, args, path, true)? {
             Outcome::Back => continue,
+            _ => return Ok(()), // Quit (run_view_loop never returns Switch)
+        }
+    }
+}
+
+/// View a session, staying in the viewer across `s`-switches: an `Outcome::Switch`
+/// swaps the path and re-views. Returns only `Quit` or `Back`.
+fn run_view_loop<B: ratatui::backend::Backend>(
+    term: &mut Terminal<B>,
+    args: &Args,
+    mut path: PathBuf,
+    can_go_back: bool,
+) -> Result<Outcome> {
+    loop {
+        match view_session(term, args, &path, can_go_back)? {
+            Outcome::Switch(p) => path = p,
+            other => return Ok(other),
         }
     }
 }
@@ -127,6 +144,8 @@ fn view_session<B: ratatui::backend::Backend>(
     let fold = crate::view::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, reader.is_some(), fold);
     view.set_can_go_back(can_go_back);
+    // `--latest` didn't show a list, so offer `s` to reach the session picker.
+    view.set_can_open_picker(args.latest);
     // Re-open for the metrics pass (also streaming) rather than hold the content.
     let metrics = crate::metrics::parse_reader(std::io::BufReader::new(std::fs::File::open(path)?));
     view.set_metrics(metrics.footer());
@@ -140,6 +159,8 @@ enum Outcome {
     Quit,
     /// Return to the session picker (honored only when launched via it).
     Back,
+    /// Switch to another session (chosen via the `s` switcher overlay).
+    Switch(PathBuf),
 }
 
 fn event_loop<B: ratatui::backend::Backend>(
@@ -188,6 +209,23 @@ fn event_loop<B: ratatui::backend::Backend>(
                     view.toggle_help();
                 }
             }
+            // While the session switcher is open, route keys to it. Enter switches
+            // (reloads the chosen session); Esc closes it, keeping the current view.
+            Event::Key(k) if k.kind != KeyEventKind::Release && view.is_switcher_open() => {
+                match k.code {
+                    KeyCode::Esc => view.switcher_close(),
+                    KeyCode::Enter => {
+                        if let Some(p) = view.switcher_confirm() {
+                            return Ok(Outcome::Switch(p));
+                        }
+                    }
+                    KeyCode::Up => view.switcher_up(),
+                    KeyCode::Down => view.switcher_down(),
+                    KeyCode::Backspace => view.switcher_backspace(),
+                    KeyCode::Char(c) => view.switcher_input(c),
+                    _ => {}
+                }
+            }
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 match k.code {
@@ -212,6 +250,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('/') => view.search_start(),
                     KeyCode::Char('n') => view.search_next(),
                     KeyCode::Char('N') => view.search_prev(),
+                    // Open the session switcher (only when enabled, i.e. --latest).
+                    KeyCode::Char('s') if view.can_open_picker() => {
+                        view.open_switcher(discover::candidates())
+                    }
                     _ => {}
                 }
             }
