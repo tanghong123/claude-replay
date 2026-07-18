@@ -18,6 +18,10 @@ path = "src/main.rs"
 name = "codex-replay"
 path = "src/bin/codex-replay.rs"
 
+[[bin]]
+name = "codex-jdi"
+path = "src/bin/codex-jdi.rs"
+
 # `cargo binstall claude-replay` pulls the matching prebuilt tarball from the
 # GitHub release instead of compiling. Assets are named `claude-replay-<target>.tar.gz`
 # with the binary at the archive root (see .github/workflows/release.yml).

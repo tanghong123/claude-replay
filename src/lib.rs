@@ -7,6 +7,7 @@ mod codex_metrics;
 mod codex_model;
 mod discover;
 mod highlight;
+pub mod jdi;
 mod markdown;
 mod metrics;
 mod model;

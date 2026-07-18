@@ -214,10 +214,6 @@ pub(crate) fn latest_interactive_for_cwd_in(root: &Path, cwd: &Path) -> Result<C
         })
 }
 
-pub(crate) fn latest_interactive_for_cwd(cwd: &Path) -> Result<CodexSession> {
-    latest_interactive_for_cwd_in(&sessions_dir(), cwd)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
