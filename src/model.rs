@@ -398,7 +398,7 @@ pub fn parse(jsonl: &str, args: &Args) -> Vec<Block> {
 pub fn parse_for(backend: Backend, jsonl: &str, args: &Args) -> Vec<Block> {
     match backend {
         Backend::Claude => parse(jsonl, args),
-        Backend::Codex => Vec::new(),
+        Backend::Codex => crate::codex_model::parse_codex(jsonl, args),
     }
 }
 
@@ -426,7 +426,7 @@ pub fn parse_path_for(
 ) -> std::io::Result<Vec<Block>> {
     match backend {
         Backend::Claude => parse_path(path, args),
-        Backend::Codex => Ok(Vec::new()),
+        Backend::Codex => crate::codex_model::parse_codex_path(path, args),
     }
 }
 
