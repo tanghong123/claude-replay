@@ -51,6 +51,73 @@ cargo install --path .          # → ~/.cargo/bin/claude-replay
 cargo build --release           # → target/release/claude-replay
 ```
 
+## Codex version: `codex-replay` + `codex-jdi`
+
+The same read-only TUI is available for local Codex sessions, with a supervisor
+that continues an exited interactive session in the background.
+
+First install the official Codex CLI on macOS or Linux and sign in:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex login
+codex --version
+```
+
+Official alternative install methods are `npm install -g @openai/codex` and
+`brew install --cask codex`. Then install both Codex replay commands:
+
+```bash
+brew install tanghong123/tap/codex-replay
+codex-replay --version
+codex-jdi --version
+```
+
+The intended handoff is:
+
+1. Finish or pause work in interactive Codex and enter `/quit`.
+2. Stay in the same repository directory.
+3. Run `codex-jdi resume`.
+
+`codex-jdi` finds the newest interactive Codex session recorded for that exact
+working directory, resumes its UUID with `codex exec resume`, starts the worker
+without a TUI, and immediately opens `codex-replay --follow` on the same rollout.
+Press `q` to leave the viewer; the Codex worker keeps running. Reattach later:
+
+```bash
+codex-jdi log
+```
+
+An extra instruction can be appended without replacing the built-in persistence
+prompt:
+
+```bash
+codex-jdi resume "Prioritize tests and finish the smallest complete slice"
+```
+
+The headless worker uses `approval_policy="never"` so it cannot stop on a hidden
+approval prompt, plus `sandbox_mode="workspace-write"` so it can edit the current
+repository while retaining the filesystem sandbox. It never enables
+`--dangerously-bypass-approvals-and-sandbox` implicitly. If an operation is
+blocked, the built-in prompt tells Codex to try safe alternatives and record the
+remaining blocker.
+
+Use the viewer directly when no continuation is needed:
+
+```bash
+codex-replay                         # current-repository session picker
+codex-replay --latest                # newest local Codex rollout
+codex-replay <session-id> -f         # follow one session by UUID
+codex-replay path/to/rollout -v      # open an explicit rollout, fully expanded
+codex-replay --latest --dump -       # plain text for pipes
+```
+
+Install the Codex commands from this checkout with Rust:
+
+```bash
+cargo install --path . --bin codex-replay --bin codex-jdi
+```
+
 ## Usage
 
 ```
