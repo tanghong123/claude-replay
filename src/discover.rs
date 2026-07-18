@@ -19,13 +19,7 @@ pub fn projects_dir() -> PathBuf {
 pub fn root_for(backend: Backend) -> PathBuf {
     match backend {
         Backend::Claude => projects_dir(),
-        Backend::Codex => {
-            let home = std::env::var("CODEX_HOME").unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-                Path::new(&home).join(".codex").display().to_string()
-            });
-            PathBuf::from(home).join("sessions")
-        }
+        Backend::Codex => crate::codex_discover::sessions_dir(),
     }
 }
 
@@ -187,7 +181,7 @@ pub fn candidates() -> Vec<Candidate> {
 pub fn candidates_for(backend: Backend) -> Vec<Candidate> {
     match backend {
         Backend::Claude => candidates(),
-        Backend::Codex => Vec::new(),
+        Backend::Codex => crate::codex_discover::candidates(),
     }
 }
 
@@ -229,15 +223,7 @@ pub fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
 pub fn resolve_for(backend: Backend, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     match backend {
         Backend::Claude => resolve(target, latest),
-        Backend::Codex => {
-            if let Some(path) = target.map(PathBuf::from).filter(|p| p.is_file()) {
-                return Ok(path);
-            }
-            Err(anyhow!(
-                "no Codex transcripts found under {}",
-                root_for(Backend::Codex).display()
-            ))
-        }
+        Backend::Codex => crate::codex_discover::resolve(target, latest),
     }
 }
 

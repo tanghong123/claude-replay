@@ -2,6 +2,7 @@
 
 mod app;
 mod clipboard;
+mod codex_discover;
 mod discover;
 mod highlight;
 mod markdown;
