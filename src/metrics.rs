@@ -1,6 +1,7 @@
 //! Session metrics parsed from the transcript: token totals, wall-clock
 //! duration, model, and a best-effort USD cost estimate.
 
+use crate::Backend;
 use serde_json::Value;
 
 #[derive(Debug, Default, PartialEq)]
@@ -61,6 +62,13 @@ fn price(model: &str) -> Option<(f64, f64)> {
 /// has to be fully resident as a `String` (one line at a time).
 pub fn parse_reader<R: std::io::BufRead>(reader: R) -> Metrics {
     parse_from_lines(reader.lines().map_while(Result::ok))
+}
+
+pub fn parse_reader_for<R: std::io::BufRead>(backend: Backend, reader: R) -> Metrics {
+    match backend {
+        Backend::Claude => parse_reader(reader),
+        Backend::Codex => Metrics::default(),
+    }
 }
 
 fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {

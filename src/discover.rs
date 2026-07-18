@@ -1,5 +1,6 @@
 //! Locating a session transcript: by explicit path, by session id, or `--latest`.
 
+use crate::Backend;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -11,6 +12,21 @@ pub fn projects_dir() -> PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".claude").join("projects")
+}
+
+/// Transcript root for the selected product. Codex discovery is filled in by
+/// the dedicated backend module; this shell keeps CLI error messages accurate.
+pub fn root_for(backend: Backend) -> PathBuf {
+    match backend {
+        Backend::Claude => projects_dir(),
+        Backend::Codex => {
+            let home = std::env::var("CODEX_HOME").unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                Path::new(&home).join(".codex").display().to_string()
+            });
+            PathBuf::from(home).join("sessions")
+        }
+    }
 }
 
 /// All transcript files under the projects dir, newest first (by mtime).
@@ -168,6 +184,13 @@ pub fn candidates() -> Vec<Candidate> {
     out
 }
 
+pub fn candidates_for(backend: Backend) -> Vec<Candidate> {
+    match backend {
+        Backend::Claude => candidates(),
+        Backend::Codex => Vec::new(),
+    }
+}
+
 /// Resolve the transcript to open.
 ///
 /// - `target` that is an existing file path -> that file.
@@ -201,6 +224,21 @@ pub fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
     Err(anyhow!(
         "give a session id or a path, or use --latest (no session picker yet)"
     ))
+}
+
+pub fn resolve_for(backend: Backend, target: Option<&str>, latest: bool) -> Result<PathBuf> {
+    match backend {
+        Backend::Claude => resolve(target, latest),
+        Backend::Codex => {
+            if let Some(path) = target.map(PathBuf::from).filter(|p| p.is_file()) {
+                return Ok(path);
+            }
+            Err(anyhow!(
+                "no Codex transcripts found under {}",
+                root_for(Backend::Codex).display()
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
