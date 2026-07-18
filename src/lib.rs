@@ -3,6 +3,7 @@
 mod app;
 mod clipboard;
 mod codex_discover;
+mod codex_metrics;
 mod codex_model;
 mod discover;
 mod highlight;

@@ -190,7 +190,16 @@ fn event_loop<B: ratatui::backend::Backend>(
                     }
                 }
                 if !p.lines.is_empty() {
-                    view.ingest(model::parse_for(backend, &p.lines.join("\n"), args));
+                    if backend == Backend::Codex {
+                        // A Codex call and its output commonly land in different
+                        // tail polls. Reparse the append-only file so call-id
+                        // joining can back-patch the original tool block.
+                        if let Ok(blocks) = model::parse_path_for(backend, path, args) {
+                            view.reset(blocks);
+                        }
+                    } else {
+                        view.ingest(model::parse_for(backend, &p.lines.join("\n"), args));
+                    }
                 }
             }
             continue;
@@ -522,6 +531,7 @@ fn deduce_stem(path: &Path, width: usize) -> String {
     cwd.hash(&mut h);
     let pathhash: String = format!("{:016x}", h.finish())[..6].to_string();
     let sid = json_field(content, "sessionId")
+        .or_else(|| json_field(content, "id"))
         .map(str::to_string)
         .unwrap_or_else(|| {
             path.file_stem()
