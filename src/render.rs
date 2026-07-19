@@ -756,7 +756,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             }
             if total > 1 {
                 v.push(Line::styled(
-                    format!("  ⋯ {} folded (t / click to expand)", total - 1),
+                    format!("  ⋯ {} folded (space / click to expand)", total - 1),
                     theme::dim(),
                 ));
             }
@@ -767,7 +767,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             let mut v = vec![render_header(b)];
             if hidden > 0 {
                 v.push(Line::styled(
-                    format!("  ⋯ {hidden} folded (t / click to expand)"),
+                    format!("  ⋯ {hidden} folded (space / click to expand)"),
                     theme::dim(),
                 ));
             }

@@ -52,18 +52,26 @@ fn fill_bg(mut line: Line<'static>, width: usize, inset: bool) -> Line<'static> 
     line
 }
 
-/// When a foldable block is focused (via `[`/`]`/hover), brighten its summary:
-/// swap the resting fold-header color for the focused one on every span.
-fn focus_recolor(line: Line<'static>, focused: bool) -> Line<'static> {
+/// When a foldable block is focused (via `[`/`]`/hover), highlight it. Fold-header
+/// summaries brighten (swap the resting fold-header color for the focused one); and
+/// the block's *header* row gets a background bar — a universal cue that shows for
+/// every block type, including ones whose header isn't fold-header-colored (Edit's
+/// `⏺ Edit`/`└ Updated`, `⎿` results, command headers). `fill_bg` extends the bar
+/// to the full row width.
+fn focus_recolor(line: Line<'static>, focused: bool, header: bool) -> Line<'static> {
     if !focused {
         return line;
     }
+    let bar = header.then(theme::focus_bg);
     let spans: Vec<Span<'static>> = line
         .spans
         .into_iter()
         .map(|mut s| {
             if s.style.fg == Some(theme::fold_header()) {
                 s.style = s.style.fg(theme::fold_header_focused());
+            }
+            if let Some(bg) = bar {
+                s.style = s.style.bg(bg);
             }
             s
         })
@@ -899,7 +907,11 @@ impl View {
                 line.clone()
             };
             let focused = self.focus.is_some() && self.wrapped_tag.get(ai).copied() == self.focus;
-            let styled = focus_recolor(styled, focused);
+            // The header row is the first wrapped line of the focused block (its
+            // predecessor belongs to a different block) — only it gets the focus bar.
+            let is_header =
+                focused && (ai == 0 || self.wrapped_tag.get(ai - 1).copied() != self.focus);
+            let styled = focus_recolor(styled, focused, is_header);
             let filled = fill_bg(styled, area.width as usize, inset);
             // Mouse selection overlays everything else (drawn last).
             let filled = match self.sel_cols(ai) {
@@ -1508,6 +1520,11 @@ mod tests {
         );
         let body: String = (0..28).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
         assert!(body.contains("folded"), "placeholder missing:\n{body}");
+        // The hint names the real fold key (space), not a stale one.
+        assert!(
+            body.contains("space / click to expand"),
+            "placeholder should name the space key:\n{body}"
+        );
 
         v.toggle_block(0); // expand
         draw(&mut v, 60, 30);
@@ -1710,6 +1727,54 @@ mod tests {
         // Hovering a row focuses the foldable under it.
         v.hover_row(y);
         assert_eq!(v.focused_block(), Some(2));
+    }
+
+    /// Blocks whose header isn't fold-header-colored (Edit `⏺ Edit`, `⎿` results)
+    /// still get a visible focus cue: a full-width background bar on the header row.
+    #[test]
+    fn focus_draws_a_bar_on_non_fold_header_blocks() {
+        let edit = Block::ToolUse {
+            name: "Edit".into(),
+            target: "x".into(),
+            diffs: vec![("old".into(), "new".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        let result = Block::ToolResult("some output line".into());
+        let blocks = vec![Block::AssistantText("hi".into()), edit, result];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::none());
+
+        // Focus the Edit block: its header ("⏺ Edit(x)") uses tool color, which
+        // focus_recolor can't brighten — the bar is the only cue.
+        v.focus_next();
+        assert_eq!(v.focused_block(), Some(1));
+        let buf = draw(&mut v, 60, 20);
+        // Edit's header renders as "⏺ Update(x)" (display_name maps Edit → Update).
+        let y = (0..19)
+            .find(|&y| row(&buf, y).contains("Update"))
+            .expect("edit header row");
+        assert_eq!(
+            buf[(0, y)].style().bg,
+            Some(theme::focus_bg()),
+            "focus bar missing on the Edit header"
+        );
+        // fill_bg extends the bar across the whole row.
+        assert_eq!(
+            buf[(58, y)].style().bg,
+            Some(theme::focus_bg()),
+            "focus bar should span the full row width"
+        );
+
+        // A row that belongs to no focused block carries no focus bar.
+        let assistant_y = (0..19).find(|&y| row(&buf, y).contains("hi"));
+        if let Some(ay) = assistant_y {
+            assert_ne!(
+                buf[(0, ay)].style().bg,
+                Some(theme::focus_bg()),
+                "unfocused row should not have the focus bar"
+            );
+        }
     }
 
     /// A slash-command block starts collapsed under the default policy, showing

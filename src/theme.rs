@@ -44,6 +44,14 @@ pub fn selection_bg() -> Color {
     Color::Rgb(38, 79, 120)
 }
 
+/// Background bar for the header row of the `[`/`]`/hover-focused foldable block —
+/// a subtle slate that reads over any header colour without competing with the
+/// selection blue. This is the universal focus cue (colours alone don't suffice:
+/// only fold-header summaries carry the brightenable colour).
+pub fn focus_bg() -> Color {
+    Color::Rgb(48, 50, 66)
+}
+
 // --- beige background tiers (most → least prominent): user > shell/read > thinking.
 // Each pairs a faint background block with a foreground; thinking is the faintest
 // of both. (Tuned toward Claude Code; refine from screenshots.)
