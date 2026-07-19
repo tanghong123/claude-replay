@@ -226,9 +226,14 @@ fn tool_target(input: &Value, cwd: &str) -> String {
             return relativize(v, cwd);
         }
     }
-    // Commands/descriptions/patterns/skill-names are kept in full (no truncation —
-    // nothing is dropped); newlines are flattened so the header stays one line.
-    for k in ["command", "description", "pattern", "skill"] {
+    // A shell command keeps its line breaks — the header lays a multi-line command
+    // out across rows (see `render::tool_header_lines`), matching Claude Code.
+    if let Some(v) = input.get("command").and_then(|v| v.as_str()) {
+        return v.to_string();
+    }
+    // Descriptions/patterns/skill-names are kept in full (no truncation), but their
+    // newlines are flattened so these one-line headers stay one line.
+    for k in ["description", "pattern", "skill"] {
         if let Some(v) = input.get(k).and_then(|v| v.as_str()) {
             return v.replace('\n', " ");
         }
@@ -997,5 +1002,16 @@ mod tests {
         // A path outside the session cwd is left absolute.
         let outside = serde_json::json!({ "file_path": "/etc/hosts" });
         assert_eq!(tool_target(&outside, base), "/etc/hosts");
+    }
+
+    #[test]
+    fn tool_target_keeps_command_newlines_but_flattens_others() {
+        // A multi-line shell command keeps its line breaks (the header lays it out
+        // across rows); descriptions/patterns stay one line.
+        let cmd = serde_json::json!({ "command": "cd /x\ncargo test" });
+        assert_eq!(tool_target(&cmd, "/x"), "cd /x\ncargo test");
+
+        let desc = serde_json::json!({ "description": "line one\nline two" });
+        assert_eq!(tool_target(&desc, "/x"), "line one line two");
     }
 }

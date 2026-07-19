@@ -467,7 +467,7 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 // expanded shell/read background block (medium-dark gray, full
                 // row width via `fill_bg`).
                 let bg = theme::shell_expanded_bg();
-                out.push(tool_header(name, target, Some(bg)));
+                out.extend(tool_header_lines(name, target, Some(bg)));
                 if let Some(o) = output {
                     push_capped_output(o, bg, theme::shell_fg(), &mut out);
                 }
@@ -548,6 +548,42 @@ fn tool_header(name: &str, target: &str, bg: Option<Color>) -> Line<'static> {
         Span::styled(display_name(name).to_string(), patch(theme::tool())),
         Span::styled(format!("({target})"), patch(Style::default())),
     ])
+}
+
+/// Like `tool_header`, but preserves a multi-line `target` (a multi-line shell
+/// command) across rows instead of flattening its newlines — matching Claude Code:
+/// `⏺ Bash(<line 1>` then each further line indented, the closing `)` on the last.
+/// A single-line target is unchanged (one `⏺ Name(target)` row).
+fn tool_header_lines(name: &str, target: &str, bg: Option<Color>) -> Vec<Line<'static>> {
+    let cmd: Vec<&str> = target.lines().collect();
+    if cmd.len() <= 1 {
+        return vec![tool_header(name, target, bg)];
+    }
+    let patch = |s: Style| match bg {
+        Some(c) => s.bg(c),
+        None => s,
+    };
+    let last = cmd.len() - 1;
+    let mut out = Vec::with_capacity(cmd.len());
+    for (i, line) in cmd.iter().enumerate() {
+        if i == 0 {
+            out.push(Line::from(vec![
+                Span::styled("⏺", patch(theme::tool())),
+                Span::styled(" ", patch(Style::default())),
+                Span::styled(display_name(name).to_string(), patch(theme::tool())),
+                Span::styled(format!("({line}"), patch(Style::default())),
+            ]));
+        } else {
+            // Continuation rows are indented two columns; the last one closes `)`.
+            let text = if i == last {
+                format!("  {line})")
+            } else {
+                format!("  {line}")
+            };
+            out.push(Line::from(Span::styled(text, patch(Style::default()))));
+        }
+    }
+    out
 }
 
 /// Push a tool's output, capped at `OUTPUT_CAP` lines (then "… N lines
@@ -942,6 +978,45 @@ mod tests {
     /// True if any span on the line carries this background color.
     fn has_bg(line: &Line, bg: Color) -> bool {
         line.spans.iter().any(|s| s.style.bg == Some(bg))
+    }
+
+    /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`
+    /// header instead of being reflowed into one line (the newline-flatten bug).
+    #[test]
+    fn multiline_bash_command_header_preserves_line_breaks() {
+        let b = Block::ToolUse {
+            name: "Bash".into(),
+            target: "cd /x\ncargo test\ngit status".into(),
+            diffs: vec![],
+            output: Some("ok".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let lines = render_one(&b, 200);
+        let t = texts(&lines);
+        let all = t.join("\n");
+
+        // Header opens on the first command line; the last closes the paren.
+        assert!(
+            t.iter()
+                .any(|l| l.contains("⏺") && l.contains("Bash(cd /x")),
+            "header should open with the first command line:\n{all}"
+        );
+        assert!(
+            t.iter().any(|l| l.trim_end().ends_with("git status)")),
+            "last command line should close the paren:\n{all}"
+        );
+        // The middle line stands on its own — not merged with a neighbor.
+        assert!(
+            t.iter()
+                .any(|l| l.contains("cargo test") && !l.contains("cd /x")),
+            "cargo test should be its own row:\n{all}"
+        );
+        assert!(
+            !t.iter()
+                .any(|l| l.contains("cd /x") && l.contains("cargo test")),
+            "command lines must not be flattened onto one row:\n{all}"
+        );
     }
 
     /// A line inserted in the middle must keep the surrounding lines as context,
