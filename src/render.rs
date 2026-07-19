@@ -397,20 +397,22 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
         } => {
             // Expanded turn: the tool calls that ran (chronological), then the
             // thinking they informed. A summary line heads it when tools ran.
+            // The whole turn shares the shell/read block background so a coalesced
+            // command+thinking region reads as one shaded block (matching Claude
+            // Code); thinking is set apart by a fainter font, not a darker bg.
+            let turn_bg = theme::shell_expanded_bg();
             if !tools.is_empty() {
                 out.push(Line::from(Span::styled(
                     format!("✻ {}", turn_summary(*duration_secs, tools)),
-                    theme::thinking(),
+                    theme::thinking().bg(turn_bg),
                 )));
                 for t in tools {
                     out.extend(render_one(t, width));
                 }
             }
-            // The faintest tier: dimmest fg on the faintest bg, ✻ glyph (CC's
+            // Faintest font (dim thinking fg) on the shared turn bg, ✻ glyph (CC's
             // thinking marker).
-            let base = Style::default()
-                .fg(theme::thinking_fg())
-                .bg(theme::thinking_bg());
+            let base = Style::default().fg(theme::thinking_fg()).bg(turn_bg);
             for (i, line) in text.lines().enumerate() {
                 let prefix = if i == 0 { "✻ " } else { "  " };
                 out.push(Line::from(Span::styled(format!("{prefix}{line}"), base)));
@@ -1412,8 +1414,8 @@ mod tests {
         assert!(
             t0.spans
                 .iter()
-                .any(|s| s.style.bg == Some(theme::thinking_bg())),
-            "thinking has no thinking bg"
+                .any(|s| s.style.bg == Some(theme::shell_expanded_bg())),
+            "thinking should share the shell/turn background"
         );
         assert!(
             t0.spans
