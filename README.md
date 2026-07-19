@@ -118,6 +118,34 @@ Install the Codex commands from this checkout with Rust:
 cargo install --path . --bin codex-replay --bin codex-jdi
 ```
 
+### Verify the Codex TUI from source
+
+The repository includes a small, deterministic, non-sensitive Codex rollout
+fixture. It does not require a Codex account or access to your local sessions:
+
+```bash
+cargo run --quiet --bin codex-replay -- \
+  tests/fixtures/codex-basic.fixture
+```
+
+The default folded view should show `Fix the parser`, `Thought for 1s`,
+`Ran 1 shell command`, and `Done`, with model `gpt-5.6` in the footer. Press `T`
+to expand every block; the expanded view should also show `Inspect parser`,
+`cargo test`, and `tests passed`.
+
+Useful smoke checks:
+
+- `?` opens the hotkey help.
+- `/Done` searches the transcript.
+- `q` exits the viewer.
+
+For a non-interactive rendering check:
+
+```bash
+cargo run --quiet --bin codex-replay -- \
+  tests/fixtures/codex-basic.fixture --dump - --full
+```
+
 ## Usage
 
 ```
