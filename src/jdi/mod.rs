@@ -21,6 +21,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use state::Session;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -43,6 +44,20 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Start a FRESH unattended run of a task (default agent: claude), and follow it.
+    Start {
+        /// The task to run (or use --task-file).
+        task: Vec<String>,
+        /// Read the task from a file instead of the positional args.
+        #[arg(long, value_name = "PATH")]
+        task_file: Option<PathBuf>,
+        /// Seconds between relaunch attempts (default 600).
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Give up after this many attempts (0 = never; default 0).
+        #[arg(long)]
+        max_attempts: Option<u32>,
+    },
     /// Resume the most-recent session for this directory, unattended, and follow it.
     Resume {
         /// Extra instruction folded into the persistence prompt.
@@ -110,6 +125,20 @@ pub fn run() -> Result<()> {
     let config = Config::from_env();
     let dry = cli.dry_run;
     match cli.command {
+        Command::Start {
+            task,
+            task_file,
+            interval,
+            max_attempts,
+        } => cmd_start(
+            &config,
+            cli.agent,
+            &task.join(" "),
+            task_file,
+            interval,
+            max_attempts,
+            dry,
+        ),
         Command::Resume {
             instruction,
             interval,
@@ -241,6 +270,134 @@ fn cmd_resume(
         resumable.id
     );
     follow_viewer(&resumable.transcript)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_start(
+    config: &Config,
+    forced: Option<Agent>,
+    task_arg: &str,
+    task_file: Option<PathBuf>,
+    interval: Option<u64>,
+    max_attempts: Option<u32>,
+    dry_run: bool,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let task = match task_file {
+        Some(p) => std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?,
+        None => task_arg.to_string(),
+    };
+    if task.trim().is_empty() {
+        bail!("start needs a task (positional text or --task-file)");
+    }
+    // A fresh start has no existing session to detect from — default to Claude,
+    // override with --agent.
+    let agent = forced.unwrap_or(Agent::Claude);
+    let adapter = agent::adapter(agent);
+    adapter.preflight()?;
+    adapter.resolve_binary()?;
+
+    let run_id = state::new_run_id();
+    // Claude pins the id (`--session-id`); Codex assigns one, so leave it empty and
+    // recover it after the first turn via the nonce.
+    let (session_id, nonce) = if adapter.pins_session_id() {
+        (run_id.clone(), run_id)
+    } else {
+        (String::new(), run_id)
+    };
+    let brief = agent::Brief {
+        text: task.clone(),
+        backlog: Vec::new(),
+    };
+
+    if dry_run {
+        let ctx = agent::TurnContext {
+            mode: agent::Mode::Start,
+            session_id: &session_id,
+            session_created: false,
+            cwd: &cwd,
+            brief: &brief,
+            extra_args: &[],
+        };
+        let inv = adapter.fresh_invocation(&ctx, &nonce);
+        println!("agent:      {}", agent.label());
+        println!(
+            "binary:     {}",
+            adapter
+                .resolve_binary()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| format!("(unresolved: {e})"))
+        );
+        println!(
+            "session:    {}",
+            if session_id.is_empty() {
+                "(assigned by the agent, captured after turn 1)"
+            } else {
+                &session_id
+            }
+        );
+        println!("mode:       start");
+        println!(
+            "would run:  {} {}",
+            inv.program.display(),
+            shell_join(&inv.args)
+        );
+        return Ok(());
+    }
+
+    let slot = state::slot_id(&cwd);
+    let session = Session::new(&config.home, &slot);
+    let _lock = match lock::acquire(&session.dir, || session.alive())? {
+        lock::Acquire::Acquired(l) => l,
+        lock::Acquire::AlreadyRunning => {
+            bail!("a supervisor is already running for {}", cwd.display())
+        }
+        lock::Acquire::SetupInFlight => bail!("another agent-jdi is setting up this directory"),
+    };
+
+    session.ensure_dir()?;
+    session.meta_set("id", &slot)?;
+    session.meta_set("agent", agent.label())?;
+    session.meta_set("cwd", &cwd.to_string_lossy())?;
+    session.meta_set("session_id", &session_id)?;
+    session.meta_set("nonce", &nonce)?;
+    session.meta_set("resumed", "false")?;
+    session.meta_set("interval", &interval.unwrap_or(600).to_string())?;
+    session.meta_set("max_attempts", &max_attempts.unwrap_or(0).to_string())?;
+    session.meta_set("mode", agent::Mode::Start.as_str())?;
+    session.meta_set("state", "starting")?;
+    std::fs::write(session.dir.join("task.md"), &task).ok();
+    detect::mark_legacy_superseded(&cwd);
+
+    let pid = supervisor::spawn_detached(&config.home, &slot)?;
+    session.meta_set("pid", &pid.to_string())?;
+    session.meta_set("state", "running")?;
+    let follow = adapter.expected_transcript(&session_id, &cwd);
+    drop(_lock);
+
+    eprintln!(
+        "agent-jdi: started {} run (worker {pid}) in {} — press q to leave; it keeps going.",
+        agent.label(),
+        cwd.display()
+    );
+    // Claude's transcript path is known up front → wait briefly for the file, then
+    // follow. Codex's id/path isn't known until capture, so point at `log` instead.
+    match follow {
+        Some(p) => {
+            for _ in 0..40 {
+                if p.exists() {
+                    return follow_viewer(&p);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            eprintln!("(transcript not visible yet — run `agent-jdi log` to watch)");
+            Ok(())
+        }
+        None => {
+            eprintln!("run `agent-jdi log` once it's underway to watch it live.");
+            Ok(())
+        }
+    }
 }
 
 fn cmd_log(config: &Config, id: Option<&str>) -> Result<()> {

@@ -35,7 +35,13 @@ Each **agent** implements `AgentAdapter`:
 | `classify(rc, out, ctx)` | dump→advance; execute + task-queue-empty→Done; "No conversation found"→recreate; UNRECOVERABLE→failed | rc 0→Done; 130/143→stopped; else retry |
 | `discover_resumable(cwd)` | newest `~/.claude/projects/<slug>/*.jsonl` | newest `~/.codex/sessions/**` for cwd |
 | `task_queue()` *(optional)* | `Some` (`~/.claude/tasks/`) | `None` |
-| `supports_fresh_run()` | `true` | `false` (Codex assigns ids) |
+| `pins_session_id()` | `true` (`--session-id`) | `false` (Codex assigns; captured after turn 1) |
+| `fresh_invocation()` / `capture_session_id()` | pins → default reuse | `codex exec …` + nonce scan / `--json` |
+
+**`start` (fresh run).** The first turn feeds the task (`Mode::Start`); the spine
+then captures the assigned id — pinned up front for Claude, recovered for Codex from
+the rollout carrying a per-run nonce (or the `--json` stream) — and drops into
+`continue_mode()` for relaunches. `new_run_id()` mints the UUID/nonce.
 
 The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 `classify`: the spine just acts on the returned `TurnOutcome`
@@ -66,7 +72,7 @@ resume+log and fill in a task queue / fresh-run later.
 ## Known gaps / TODO
 
 - **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`.
-- Backlog **drain-as-a-run**, `supports_fresh_run` enforcement, the interactive
+- Backlog **drain-as-a-run**, the interactive
   stale-session picker, and `status`'s rich progress rendering are simplified vs.
   the bash original; the contract (trait + spine) is in place to wire them.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached

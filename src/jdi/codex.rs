@@ -24,9 +24,13 @@ impl AgentAdapter for CodexAdapter {
         Agent::Codex
     }
 
-    /// Codex has no plan/dump step — resume executes directly.
-    fn initial_mode(&self, _trigger: Trigger) -> Mode {
-        Mode::Execute
+    /// Codex has no plan/dump step: `start` is a fresh turn, everything else runs
+    /// (resumes) directly.
+    fn initial_mode(&self, trigger: Trigger) -> Mode {
+        match trigger {
+            Trigger::Start => Mode::Start,
+            _ => Mode::Execute,
+        }
     }
 
     fn resolve_binary(&self) -> Result<PathBuf> {
@@ -97,9 +101,63 @@ impl AgentAdapter for CodexAdapter {
         }
     }
 
-    /// Codex assigns session ids itself — no fresh-run-with-pinned-id.
-    fn supports_fresh_run(&self) -> bool {
+    /// Codex assigns session ids itself — `start` captures the id afterward.
+    fn pins_session_id(&self) -> bool {
         false
+    }
+
+    fn continue_mode(&self) -> Mode {
+        Mode::Execute
+    }
+
+    /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
+    /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
+    fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
+        let program = self
+            .resolve_binary()
+            .unwrap_or_else(|_| PathBuf::from("codex"));
+        let mut args = vec![
+            "exec".into(),
+            "-c".into(),
+            "approval_policy=\"never\"".into(),
+            "-c".into(),
+            "sandbox_mode=\"workspace-write\"".into(),
+            "--json".into(),
+        ];
+        args.extend(ctx.extra_args.iter().cloned());
+        let prompt = format!(
+            "{}\n\n<!-- agent-jdi run: {nonce} -->",
+            self.prompt_for(ctx.mode, ctx.brief)
+        );
+        args.push(prompt);
+        Invocation { program, args }
+    }
+
+    /// Recover the id Codex assigned: first from the `--json` output stream
+    /// (TODO(verify) the event/field), then by finding the rollout whose first user
+    /// message carries our nonce.
+    fn capture_session_id(&self, output: &str, _cwd: &Path, nonce: &str) -> Option<String> {
+        // 1) Parse the --json stream for a session id (field name unverified).
+        for line in output.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            for ptr in [
+                "/session_id",
+                "/id",
+                "/payload/id",
+                "/payload/session_id",
+                "/session/id",
+            ] {
+                if let Some(id) = v.pointer(ptr).and_then(|x| x.as_str()) {
+                    if !id.is_empty() {
+                        return Some(id.to_string());
+                    }
+                }
+            }
+        }
+        // 2) Fallback: the rollout whose first user message contains the nonce.
+        codex_discover::session_id_with_marker(nonce)
     }
 }
 
@@ -145,6 +203,23 @@ mod tests {
         assert_eq!(a.classify(130, "", &c), TurnOutcome::Stopped(130));
         assert_eq!(a.classify(143, "", &c), TurnOutcome::Stopped(143));
         assert_eq!(a.classify(1, "", &c), TurnOutcome::Retry);
+    }
+
+    #[test]
+    fn fresh_invocation_is_exec_not_resume_and_carries_the_nonce() {
+        let a = CodexAdapter;
+        let brief = Brief {
+            text: "do the thing".into(),
+            backlog: vec![],
+        };
+        let inv = a.fresh_invocation(&ctx("", &brief, &[]), "NONCE-abc123");
+        assert!(inv.args.iter().any(|x| x == "exec"));
+        assert!(!inv.args.iter().any(|x| x == "resume"), "fresh ≠ resume");
+        assert!(inv.args.iter().any(|x| x == "--json"));
+        assert!(
+            inv.args.iter().any(|x| x.contains("NONCE-abc123")),
+            "nonce embedded for id capture"
+        );
     }
 
     #[test]

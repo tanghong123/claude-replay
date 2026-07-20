@@ -34,12 +34,18 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     /// Claude plans then executes: a dump turn enqueues the plan and STOPs, an
-    /// execute turn drains it.
+    /// execute turn drains it. `start` feeds the task on the first turn.
     fn initial_mode(&self, trigger: Trigger) -> Mode {
         match trigger {
+            Trigger::Start => Mode::Start,
             Trigger::Resume => Mode::ResumeDump,
             Trigger::BacklogDrain => Mode::BacklogDump,
         }
+    }
+
+    /// After the fresh/dump turn, drain the task list on relaunches.
+    fn continue_mode(&self) -> Mode {
+        Mode::ResumeExecute
     }
 
     fn resolve_binary(&self) -> Result<PathBuf> {
@@ -74,8 +80,10 @@ impl AgentAdapter for ClaudeAdapter {
             match ctx.mode {
                 Mode::ResumeDump => return TurnOutcome::AdvanceMode(Mode::ResumeExecute),
                 Mode::BacklogDump => return TurnOutcome::AdvanceMode(Mode::BacklogExecute),
-                Mode::ResumeExecute | Mode::BacklogExecute | Mode::Execute => {
-                    // Done only if the native task queue is empty; unknown ⇒ trust rc.
+                // Start/execute turns: done only if the native task queue is empty;
+                // unknown ⇒ trust rc. (After the fresh turn the supervisor has already
+                // moved to `continue_mode`, so `Start` here is just for exhaustiveness.)
+                Mode::Start | Mode::ResumeExecute | Mode::BacklogExecute | Mode::Execute => {
                     return match self.task_queue().and_then(|q| q.open_count(ctx.session_id)) {
                         Some(0) | None => TurnOutcome::Done,
                         Some(_) => TurnOutcome::Retry, // stopped early with work left
@@ -110,8 +118,15 @@ impl AgentAdapter for ClaudeAdapter {
         discover::transcript_by_id(session_id)
     }
 
-    fn prompt_for(&self, mode: Mode, _brief: &Brief) -> String {
+    /// Claude pins the id, so the transcript path is deterministic even before the
+    /// file exists.
+    fn expected_transcript(&self, session_id: &str, cwd: &Path) -> Option<PathBuf> {
+        Some(discover::claude_transcript_path(cwd, session_id))
+    }
+
+    fn prompt_for(&self, mode: Mode, brief: &Brief) -> String {
         match mode {
+            Mode::Start => format!("{START_PREAMBLE}\n\n{}", brief.text),
             Mode::ResumeDump | Mode::BacklogDump => DUMP_PROMPT.to_string(),
             _ => EXECUTE_PROMPT.to_string(),
         }
@@ -121,6 +136,8 @@ impl AgentAdapter for ClaudeAdapter {
         Some(&ClaudeTaskQueue)
     }
 }
+
+const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
 
 const DUMP_PROMPT: &str = "You are running UNATTENDED and headless. Enqueue the agreed work using your task-management tools (TaskCreate; set blockedBy where needed), write a one-line receipt, then STOP. Do not begin executing yet.";
 
@@ -252,6 +269,26 @@ mod tests {
         assert_eq!(
             a.classify(0, "", &ctx(Mode::ResumeExecute, true, "no-such", &brief)),
             TurnOutcome::Done
+        );
+    }
+
+    #[test]
+    fn fresh_start_invocation_pins_id_and_feeds_the_task() {
+        let a = ClaudeAdapter;
+        let brief = Brief {
+            text: "add a HELLO file".into(),
+            backlog: vec![],
+        };
+        // A pinned fresh run: session_created=false → --session-id; prompt = the task.
+        let inv = a.fresh_invocation(&ctx(Mode::Start, false, "the-uuid", &brief), "n");
+        assert!(inv
+            .args
+            .windows(2)
+            .any(|w| w == ["--session-id", "the-uuid"]));
+        assert!(!inv.args.iter().any(|x| x == "--resume"));
+        assert!(
+            inv.args.last().unwrap().contains("add a HELLO file"),
+            "task fed as the prompt"
         );
     }
 

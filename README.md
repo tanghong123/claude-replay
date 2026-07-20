@@ -102,6 +102,7 @@ viewer. It's multi-agent and **auto-detects** the agent from the directory's
 sessions (Claude or Codex), so one tool covers both.
 
 ```bash
+agent-jdi start "refactor the parser and add tests"   # fresh unattended run (default: claude)
 agent-jdi resume            # resume this dir's newest session, unattended, and follow it
 agent-jdi resume --agent codex   # force an agent
 agent-jdi log               # reattach the viewer to the supervised session
@@ -111,9 +112,14 @@ agent-jdi takeover          # stop the worker (state left intact)
 agent-jdi list
 ```
 
-Any command that would affect a real agent (`resume`/`backlog`/`takeover`) accepts
-**`--dry-run`** — it prints exactly what it would do (agent, resolved binary, the
-full invocation, what it would kill/queue) and exits with **no** spawn, kill, or
+`start` runs a **fresh** task (vs. `resume`, which continues an existing session).
+The session id is pinned up front for Claude (`--session-id`) and **captured** for
+Codex (which assigns its own id — recovered after the first turn via a nonce). `start`
+needs an explicit agent for anything but the default Claude (`--agent codex`).
+
+Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`)
+accepts **`--dry-run`** — it prints exactly what it would do (agent, resolved binary,
+the full invocation, what it would kill/queue) and exits with **no** spawn, kill, or
 state change. Use it to verify before committing to a real run.
 
 Install: `brew install tanghong123/tap/agent-jdi` (depends on the viewer formula).

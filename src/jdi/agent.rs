@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 /// turn drains it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
+    /// The first turn of a fresh `start` run — feed the task brief.
+    Start,
     /// Plain run of the brief.
     Execute,
     /// Resume: enqueue the agreed plan, then STOP.
@@ -26,6 +28,7 @@ pub enum Mode {
 impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Start => "start",
             Self::Execute => "execute",
             Self::ResumeDump => "resume-dump",
             Self::ResumeExecute => "resume-execute",
@@ -35,6 +38,7 @@ impl Mode {
     }
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
+            "start" => Self::Start,
             "execute" => Self::Execute,
             "resume-dump" => Self::ResumeDump,
             "resume-execute" => Self::ResumeExecute,
@@ -65,6 +69,8 @@ pub struct Brief {
 /// What kicked off a supervised run — selects the adapter's initial mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
+    /// `start`: a fresh unattended run of a task.
+    Start,
     /// `resume`: continue the most-recent session.
     Resume,
     /// A backlog drain (queued follow-up work).
@@ -150,8 +156,37 @@ pub trait AgentAdapter {
     /// Locate a session's transcript (for `log` / progress).
     fn transcript_path(&self, session_id: &str, cwd: &Path) -> Option<PathBuf>;
 
+    /// The transcript a fresh run *will* write, if deterministic from a pinned id
+    /// (Claude). Lets `start` follow before the file exists. Default `None` (Codex
+    /// assigns the id, so the path isn't known until capture).
+    fn expected_transcript(&self, _session_id: &str, _cwd: &Path) -> Option<PathBuf> {
+        None
+    }
+
     /// Prompt text for a mode (adapter-specific — task tools vs. a plain prompt).
     fn prompt_for(&self, mode: Mode, brief: &Brief) -> String;
+
+    // --- fresh-run (`start`) hooks ---
+
+    /// Build the FIRST turn of a fresh `start` run (feeds the task brief, not a
+    /// continue prompt). `nonce` is embedded so the assigned session can be
+    /// identified afterward (Codex). Default: reuse `build_invocation`.
+    fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
+        let _ = nonce;
+        self.build_invocation(ctx)
+    }
+
+    /// After a fresh turn, learn the session id the agent assigned — from the turn's
+    /// captured output (+ cwd + nonce for a transcript fallback). Default `None`;
+    /// only agents that *don't* pin an id (Codex) implement this.
+    fn capture_session_id(&self, _output: &str, _cwd: &Path, _nonce: &str) -> Option<String> {
+        None
+    }
+
+    /// The mode a run drops into after its first (dump/start) turn, for relaunches.
+    fn continue_mode(&self) -> Mode {
+        Mode::Execute
+    }
 
     // --- optional capabilities (defaults = unsupported) ---
 
@@ -160,9 +195,9 @@ pub trait AgentAdapter {
         None
     }
 
-    /// Whether the agent supports a fresh run with a pinned session id (Claude:
-    /// yes; Codex assigns ids after the fact, so resume-only).
-    fn supports_fresh_run(&self) -> bool {
+    /// Whether the agent pins its own session id up front (Claude `--session-id`).
+    /// If false (Codex assigns ids), `start` captures the id after the first turn.
+    fn pins_session_id(&self) -> bool {
         true
     }
 }

@@ -49,7 +49,8 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
     let agent = get("agent")
         .and_then(|a| Agent::from_label(&a))
         .context("meta missing/invalid agent")?;
-    let session_id = get("session_id").unwrap_or_default();
+    let mut session_id = get("session_id").unwrap_or_default();
+    let nonce = get("nonce").unwrap_or_default();
     let interval: u64 = get("interval").and_then(|s| s.parse().ok()).unwrap_or(600);
     let max_attempts: u32 = get("max_attempts")
         .and_then(|s| s.parse().ok())
@@ -76,6 +77,9 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
 
     let cwd_path = Path::new(&cwd);
     let mut session_created = get("resumed").as_deref() == Some("true");
+    // The first turn of a `start` run is a *fresh* invocation (feed the task); after
+    // it we capture the assigned id (Codex) and drop into the continue mode.
+    let mut fresh = mode == Mode::Start;
     let mut attempt: u32 = 0;
 
     loop {
@@ -84,6 +88,52 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
         session.meta_set("state", "running").ok();
         session.meta_set("mode", mode.as_str()).ok();
 
+        let turn_ctx = TurnContext {
+            mode,
+            session_id: &session_id,
+            session_created,
+            cwd: cwd_path,
+            brief: &brief,
+            extra_args: &extra_args,
+        };
+        let inv = if fresh {
+            adapter.fresh_invocation(&turn_ctx, &nonce)
+        } else {
+            adapter.build_invocation(&turn_ctx)
+        };
+        let (rc, capture) = run_turn(&inv, &session, cwd_path)?;
+
+        if fresh {
+            // Learn the id the agent assigned (Claude pinned it; Codex must capture).
+            if session_id.is_empty() {
+                match adapter.capture_session_id(&capture, cwd_path, &nonce) {
+                    Some(id) => {
+                        session_id = id;
+                        session.meta_set("session_id", &session_id).ok();
+                    }
+                    None => {
+                        session.meta_set("state", "failed").ok();
+                        session
+                            .meta_set("last_reason", "could not capture session id")
+                            .ok();
+                        return Ok(());
+                    }
+                }
+            }
+            // Record the transcript the run writes, so `log` can follow it.
+            if let Some(t) = adapter
+                .expected_transcript(&session_id, cwd_path)
+                .or_else(|| adapter.transcript_path(&session_id, cwd_path))
+            {
+                session.meta_set("transcript", &t.to_string_lossy()).ok();
+            }
+            mode = adapter.continue_mode();
+            session.meta_set("mode", mode.as_str()).ok();
+            fresh = false;
+        }
+        session_created = true;
+
+        // Classify against the current (post-fresh-transition) mode.
         let ctx = TurnContext {
             mode,
             session_id: &session_id,
@@ -92,10 +142,6 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
             brief: &brief,
             extra_args: &extra_args,
         };
-        let inv = adapter.build_invocation(&ctx);
-        let (rc, capture) = run_turn(&inv, &session, cwd_path)?;
-        session_created = true;
-
         match adapter.classify(rc, &capture, &ctx) {
             TurnOutcome::Done => {
                 session.meta_set("state", "done").ok();
@@ -287,6 +333,60 @@ mod tests {
     fn failing_turn_retries_then_gives_up_at_max_attempts() {
         let (state, root) = drive("echo boom >&2; exit 1", 1);
         assert_eq!(state, state::RunState::GaveUp);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A Codex `start` runs a fresh `codex exec` (no id), then recovers the id Codex
+    /// assigned by finding the rollout carrying our nonce.
+    #[test]
+    fn codex_start_captures_the_assigned_session_id() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = tmp();
+        let home = root.join("home");
+        let repo = root.join("repo");
+        let sessions = root.join("codex-sessions");
+        fs::create_dir_all(&repo).unwrap();
+
+        // Fake codex: on `exec`, write a rollout whose session_meta id is "cap-sid"
+        // and whose body echoes all args (so it contains our nonce), then exit 0.
+        let codex = root.join("codex");
+        let script = r#"#!/bin/sh
+if [ "$1" = exec ]; then
+  D="$CODEX_SESSIONS_DIR/2026/07/21"; mkdir -p "$D"
+  printf '{"type":"session_meta","payload":{"id":"cap-sid","cwd":"%s"}}\n' "$PWD" > "$D/rollout-cap.jsonl"
+  printf '%s\n' "$*" >> "$D/rollout-cap.jsonl"
+  exit 0
+fi
+exit 0
+"#;
+        fs::write(&codex, script).unwrap();
+        let mut perm = fs::metadata(&codex).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&codex, perm).unwrap();
+
+        let s = Session::new(&home, "sess");
+        s.ensure_dir().unwrap();
+        s.meta_set("agent", "codex").unwrap();
+        s.meta_set("cwd", &repo.to_string_lossy()).unwrap();
+        s.meta_set("session_id", "").unwrap();
+        s.meta_set("nonce", "NONCE-run-1").unwrap();
+        s.meta_set("interval", "0").unwrap();
+        s.meta_set("max_attempts", "1").unwrap();
+        s.meta_set("mode", "start").unwrap();
+        s.meta_set("resumed", "false").unwrap();
+
+        std::env::set_var("AGENT_JDI_CODEX_BIN", &codex);
+        std::env::set_var("CODEX_SESSIONS_DIR", &sessions);
+        run_loop(&home, "sess").unwrap();
+        std::env::remove_var("AGENT_JDI_CODEX_BIN");
+        std::env::remove_var("CODEX_SESSIONS_DIR");
+
+        assert_eq!(
+            s.meta_get("session_id").as_deref(),
+            Some("cap-sid"),
+            "captured the assigned id via the nonce"
+        );
+        assert_eq!(s.state(), Some(state::RunState::Done));
         fs::remove_dir_all(&root).ok();
     }
 }

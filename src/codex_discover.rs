@@ -200,6 +200,23 @@ pub(crate) fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
     resolve_in(&sessions_dir(), target, latest)
 }
 
+/// The session id of the newest rollout whose contents contain `marker` (a nonce
+/// embedded in a fresh-run prompt) — used by `agent-jdi start` to recover the id
+/// Codex assigned. Scans newest-first and stops at the first match.
+pub(crate) fn session_id_with_marker(marker: &str) -> Option<String> {
+    for s in sessions_in(&sessions_dir()) {
+        let Ok(file) = File::open(&s.path) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok).take(300) {
+            if line.contains(marker) {
+                return Some(s.id);
+            }
+        }
+    }
+    None
+}
+
 /// The newest Codex session recorded for `cwd` (exact cwd match preferred, else the
 /// newest overall). Used by the `agent-jdi` Codex adapter to pick a resume target.
 pub(crate) fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {

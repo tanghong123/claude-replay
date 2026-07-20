@@ -190,6 +190,15 @@ pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
     })
 }
 
+/// The deterministic transcript path for a Claude `session_id` in `cwd` — the file
+/// Claude Code *will* write. May not exist yet (used by `agent-jdi start` to follow
+/// a fresh run whose id was pinned via `--session-id`).
+pub fn claude_transcript_path(cwd: &Path, id: &str) -> PathBuf {
+    projects_dir()
+        .join(slug_for(cwd))
+        .join(format!("{id}.jsonl"))
+}
+
 /// Find a Claude transcript by session id (`<id>.jsonl`) anywhere under the projects
 /// dir.
 pub fn transcript_by_id(id: &str) -> Option<PathBuf> {

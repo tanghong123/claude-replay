@@ -151,6 +151,36 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// A fresh UUID-v4-shaped run id — used as Claude's pinned `--session-id` and as
+/// the Codex capture nonce. Not cryptographic; just needs to be unique per run.
+pub fn new_run_id() -> String {
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let mix = |salt: u64| {
+        let mut h = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut h);
+        std::process::id().hash(&mut h);
+        CTR.fetch_add(1, Ordering::Relaxed).hash(&mut h);
+        salt.hash(&mut h);
+        h.finish()
+    };
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&mix(0x9e37).to_le_bytes());
+    b[8..].copy_from_slice(&mix(0x1234).to_le_bytes());
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant
+    let h = |r: std::ops::Range<usize>| b[r].iter().map(|x| format!("{x:02x}")).collect::<String>();
+    format!(
+        "{}-{}-{}-{}-{}",
+        h(0..4),
+        h(4..6),
+        h(6..8),
+        h(8..10),
+        h(10..16)
+    )
+}
+
 /// One tracked slot per project directory: `<sanitized-basename>-<6-hex hash>`.
 /// (Our own key — distinct from claude-jdi's sha1-based key, which keeps the two
 /// tools' state dirs from colliding; the deprecation check computes the legacy key
@@ -216,6 +246,19 @@ mod tests {
         assert_eq!(a, b, "same dir → same slot");
         assert_ne!(a, c, "different dir → different slot");
         assert!(a.starts_with("foo-"), "keeps basename: {a}");
+    }
+
+    #[test]
+    fn new_run_id_is_uuid_v4_shaped_and_unique() {
+        let id = new_run_id();
+        let parts: Vec<usize> = id.split('-').map(str::len).collect();
+        assert_eq!(parts, vec![8, 4, 4, 4, 12], "uuid layout: {id}");
+        assert!(
+            id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+            "hex only: {id}"
+        );
+        assert_eq!(id.as_bytes()[14], b'4', "version nibble: {id}");
+        assert_ne!(new_run_id(), new_run_id(), "ids are unique");
     }
 
     #[test]
