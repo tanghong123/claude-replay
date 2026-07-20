@@ -49,6 +49,9 @@ enum Command {
         /// Give up after this many attempts (0 = never; default 0).
         #[arg(long)]
         max_attempts: Option<u32>,
+        /// Print what would run (agent, session, invocation) and exit — no spawn.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Reattach the viewer to a supervised session's transcript.
     Log {
@@ -101,12 +104,14 @@ pub fn run() -> Result<()> {
             instruction,
             interval,
             max_attempts,
+            dry_run,
         } => cmd_resume(
             &config,
             cli.agent,
             &instruction.join(" "),
             interval,
             max_attempts,
+            dry_run,
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
@@ -136,12 +141,49 @@ fn cmd_resume(
     instruction: &str,
     interval: Option<u64>,
     max_attempts: Option<u32>,
+    dry_run: bool,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
     let resumable = adapter.discover_resumable(&cwd)?;
+
+    // `--dry-run`: show what would run, with no side effects (no slot, no spawn, no
+    // viewer). Safe way to verify agent detection + the exact invocation.
+    if dry_run {
+        let brief = agent::Brief {
+            text: instruction.to_string(),
+            backlog: Vec::new(),
+        };
+        let mode = adapter.initial_mode(agent::Trigger::Resume);
+        let ctx = agent::TurnContext {
+            mode,
+            session_id: &resumable.id,
+            session_created: true,
+            cwd: &cwd,
+            brief: &brief,
+            extra_args: &[],
+        };
+        let inv = adapter.build_invocation(&ctx);
+        println!("agent:      {}", agent.label());
+        println!(
+            "binary:     {}",
+            adapter
+                .resolve_binary()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| format!("(unresolved: {e})"))
+        );
+        println!("session:    {}", resumable.id);
+        println!("transcript: {}", resumable.transcript.display());
+        println!("mode:       {}", mode.as_str());
+        println!(
+            "would run:  {} {}",
+            inv.program.display(),
+            shell_join(&inv.args)
+        );
+        return Ok(());
+    }
 
     let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
@@ -299,6 +341,39 @@ fn follow_viewer(path: &Path) -> Result<()> {
         width: None,
     };
     crate::app::run(&args, path)
+}
+
+/// Quote args for readable display (single-line preview; not for execution).
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.is_empty()
+                || a.chars()
+                    .any(|c| c.is_whitespace() || "\"'\\$`\n".contains(c))
+            {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_join;
+
+    #[test]
+    fn shell_join_quotes_only_when_needed() {
+        assert_eq!(
+            shell_join(&["--resume".into(), "abc".into()]),
+            "--resume abc"
+        );
+        // Args with spaces / quotes get single-quoted for a readable preview.
+        assert_eq!(shell_join(&["a b".into()]), "'a b'");
+        assert_eq!(shell_join(&["it's".into()]), "'it'\\''s'");
+    }
 }
 
 fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
