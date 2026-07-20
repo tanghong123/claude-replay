@@ -132,6 +132,7 @@ fn first_user_snippet(path: &Path) -> String {
     String::new()
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // exercised by tests with an explicit root
 pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
     let wanted = normalized(cwd);
     let mut out: Vec<_> = sessions_in(root)
@@ -162,9 +163,47 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
     out
 }
 
-pub(crate) fn candidates() -> Vec<Candidate> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    candidates_in(&sessions_dir(), &cwd)
+/// Codex sessions scoped strictly to `cwd` or its **nearest ancestor that has
+/// sessions** — no global fallback (so a session for an unrelated directory never
+/// leaks into another directory's picker).
+pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+    candidates_scoped_in(&sessions_dir(), cwd)
+}
+
+fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
+    let sessions = sessions_in(root); // newest-first
+    let cwd_n = normalized(cwd);
+    for anc in crate::discover::ancestors_of(cwd) {
+        let anc_n = normalized(&anc);
+        let matched: Vec<&CodexSession> = sessions
+            .iter()
+            .filter(|s| normalized(&s.cwd) == anc_n)
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        let is_exact = anc_n == cwd_n;
+        return matched
+            .into_iter()
+            .map(|s| {
+                let project = s
+                    .cwd
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("session")
+                    .to_string();
+                Candidate {
+                    path: s.path.clone(),
+                    mtime: s.mtime,
+                    project,
+                    snippet: first_user_snippet(&s.path),
+                    cwd_affinity: is_exact,
+                    agent: Agent::Codex,
+                }
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 pub(crate) fn resolve_in(root: &Path, target: Option<&str>, latest: bool) -> Result<PathBuf> {
@@ -310,5 +349,26 @@ mod tests {
         );
         let candidates = candidates_in(&fixture.sessions, &cwd);
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
+    }
+
+    #[test]
+    fn scoped_does_not_leak_sessions_from_unrelated_dirs() {
+        let fixture = Fixture::new();
+        let repo_a = fixture.root.join("a");
+        let repo_b = fixture.root.join("b");
+        fs::create_dir_all(&repo_a).unwrap();
+        fs::create_dir_all(&repo_b).unwrap();
+        // A session only for repo_a.
+        fixture.rollout("2026/07/20", "sa", &repo_a, "codex-tui");
+
+        // From repo_b (and its ancestors), repo_a's session must NOT show.
+        assert!(
+            candidates_scoped_in(&fixture.sessions, &repo_b).is_empty(),
+            "a sibling dir's session leaked in"
+        );
+        // From repo_a itself, it shows (exact cwd → affinity).
+        let here = candidates_scoped_in(&fixture.sessions, &repo_a);
+        assert_eq!(here.len(), 1);
+        assert!(here[0].cwd_affinity);
     }
 }

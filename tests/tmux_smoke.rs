@@ -93,8 +93,13 @@ fn esc_returns_from_viewer_to_session_list() {
     }
     let bin = env!("CARGO_BIN_EXE_claude-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-switch-{}", std::process::id()));
-    // A single project dir holding two sessions → a 2-entry picker.
-    let proj = dir.join("-tmp-proj");
+    // Two sessions for a shared work dir; launch the picker there so strict cwd
+    // scoping surfaces them (canonicalize — the process resolves /var → /private/var).
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let work = std::fs::canonicalize(&work).unwrap();
+    let work_str = work.to_string_lossy().to_string();
+    let proj = dir.join(work_str.replace(['/', '.'], "-"));
     std::fs::create_dir_all(&proj).unwrap();
     let write = |name: &str, marker: &str| {
         std::fs::write(
@@ -111,12 +116,14 @@ fn esc_returns_from_viewer_to_session_list() {
     let socket = format!("peekv2-switch-{}", std::process::id());
     tmux(&socket, &["kill-server"]);
 
-    // No args → picker. CLAUDE_PROJECTS_DIR scopes discovery to our temp tree.
+    // No args → picker, launched in the sessions' cwd.
     let out = tmux(
         &socket,
         &[
             "new-session",
             "-d",
+            "-c",
+            &work_str,
             "-x",
             "120",
             "-y",
@@ -283,9 +290,19 @@ fn picker_merges_claude_and_codex_sessions() {
     let bin = env!("CARGO_BIN_EXE_claude-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-multi-{}", std::process::id()));
 
-    // A Claude session: <CLAUDE_PROJECTS_DIR>/<slug>/<id>.jsonl.
+    // Both sessions record the SAME cwd (a shared work dir), and we launch the picker
+    // *there* — so strict cwd-scoping surfaces both (no unrelated-dir leakage).
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    // Canonicalize: the launched process's `current_dir()` resolves symlinks
+    // (/var → /private/var on macOS), and scoping matches on the resolved path.
+    let work = std::fs::canonicalize(&work).unwrap();
+    let work_str = work.to_string_lossy().to_string();
+    let slug = work_str.replace(['/', '.'], "-"); // Claude's cwd → project-dir slug
+
+    // A Claude session for `work`: <CLAUDE_PROJECTS_DIR>/<slug>/<id>.jsonl.
     let claude_root = dir.join("claude");
-    let claude_proj = claude_root.join("-tmp-proj");
+    let claude_proj = claude_root.join(&slug);
     std::fs::create_dir_all(&claude_proj).unwrap();
     std::fs::write(
         claude_proj.join("csession.jsonl"),
@@ -293,13 +310,15 @@ fn picker_merges_claude_and_codex_sessions() {
     )
     .unwrap();
 
-    // A Codex rollout: <CODEX_SESSIONS_DIR>/<date>/rollout-<id>.jsonl.
+    // A Codex rollout whose session_meta cwd == `work`.
     let codex_root = dir.join("codex");
     let codex_day = codex_root.join("2026/07/20");
     std::fs::create_dir_all(&codex_day).unwrap();
     std::fs::write(
         codex_day.join("rollout-xsession.jsonl"),
-        b"{\"timestamp\":\"2026-07-20T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"xsession\",\"cwd\":\"/tmp/other\",\"originator\":\"codex-tui\"}}\n{\"timestamp\":\"2026-07-20T01:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"CODEXMARKER hi\"}]}}\n",
+        format!(
+            "{{\"timestamp\":\"2026-07-20T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"xsession\",\"cwd\":\"{work_str}\",\"originator\":\"codex-tui\"}}}}\n{{\"timestamp\":\"2026-07-20T01:00:01Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"CODEXMARKER hi\"}}]}}}}\n"
+        ),
     )
     .unwrap();
 
@@ -310,6 +329,8 @@ fn picker_merges_claude_and_codex_sessions() {
         &[
             "new-session",
             "-d",
+            "-c",
+            &work_str, // launch the picker in the sessions' cwd
             "-x",
             "140",
             "-y",

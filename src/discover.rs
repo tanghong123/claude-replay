@@ -78,23 +78,66 @@ fn transcripts_in_project(slug: &str) -> Vec<(SystemTime, PathBuf)> {
     out
 }
 
-/// Directories from the cwd up to (and including) `$HOME` — the ancestors we
-/// probe for a matching project, nearest first.
-fn ancestor_dirs() -> Vec<PathBuf> {
-    let Ok(cwd) = std::env::current_dir() else {
-        return Vec::new();
-    };
+/// Directories from `cwd` up to (and including) `$HOME` — the ancestors we probe
+/// for a matching project, nearest first. Never climbs above `$HOME`.
+pub(crate) fn ancestors_of(cwd: &Path) -> Vec<PathBuf> {
     let home = std::env::var("HOME").ok().map(PathBuf::from);
     let mut dirs = Vec::new();
-    let mut cur: Option<&Path> = Some(cwd.as_path());
+    let mut cur: Option<&Path> = Some(cwd);
     while let Some(d) = cur {
         dirs.push(d.to_path_buf());
         if home.as_deref() == Some(d) {
-            break; // don't climb above $HOME
+            break;
         }
         cur = d.parent();
     }
     dirs
+}
+
+fn ancestor_dirs() -> Vec<PathBuf> {
+    match std::env::current_dir() {
+        Ok(cwd) => ancestors_of(&cwd),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Claude sessions scoped strictly to `cwd` or its **nearest ancestor that has
+/// sessions** — no global fallback (a directory with no session history up its
+/// chain yields nothing, so unrelated projects never leak in).
+pub(crate) fn claude_candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+    let cwd_slug = slug_for(cwd);
+    let mut scoped: Vec<(SystemTime, PathBuf)> = Vec::new();
+    for dir in ancestors_of(cwd) {
+        let t = transcripts_in_project(&slug_for(&dir));
+        if !t.is_empty() {
+            scoped = t;
+            break;
+        }
+    }
+    scoped.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+    scoped
+        .into_iter()
+        .map(|(mtime, path)| {
+            let proj_slug = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let project = proj_slug
+                .rsplit('-')
+                .next()
+                .unwrap_or(&proj_slug)
+                .to_string();
+            Candidate {
+                path: path.clone(),
+                mtime,
+                project,
+                snippet: first_user_snippet(&path),
+                cwd_affinity: proj_slug == cwd_slug,
+                agent: Agent::Claude,
+            }
+        })
+        .collect()
 }
 
 fn first_user_snippet(path: &Path) -> String {
@@ -211,16 +254,15 @@ pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
 /// Sessions for the current directory across **every** agent, filtered to `only`
 /// when set (else all agents), sorted cwd-matches-first then most-recent.
 pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut out: Vec<Candidate> = Vec::new();
+    // Each agent is scoped to cwd-or-nearest-ancestor-with-sessions, with no global
+    // fallback — so a session for an unrelated directory never shows here.
     if only != Some(Agent::Codex) {
-        out.extend(candidates());
+        out.extend(claude_candidates_scoped(&cwd));
     }
     if only != Some(Agent::Claude) {
-        // Scope Codex to this directory (cwd match); fall back to all Codex
-        // sessions when none match, mirroring the Claude side's fallback.
-        let codex = crate::codex_discover::candidates();
-        let scoped: Vec<Candidate> = codex.iter().filter(|c| c.cwd_affinity).cloned().collect();
-        out.extend(if scoped.is_empty() { codex } else { scoped });
+        out.extend(crate::codex_discover::candidates_scoped(&cwd));
     }
     out.sort_by(|a, b| {
         b.cwd_affinity
