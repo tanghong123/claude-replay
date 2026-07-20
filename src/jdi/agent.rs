@@ -23,6 +23,28 @@ pub enum Mode {
     BacklogExecute,
 }
 
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Execute => "execute",
+            Self::ResumeDump => "resume-dump",
+            Self::ResumeExecute => "resume-execute",
+            Self::BacklogDump => "backlog-dump",
+            Self::BacklogExecute => "backlog-execute",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "execute" => Self::Execute,
+            "resume-dump" => Self::ResumeDump,
+            "resume-execute" => Self::ResumeExecute,
+            "backlog-dump" => Self::BacklogDump,
+            "backlog-execute" => Self::BacklogExecute,
+            _ => return None,
+        })
+    }
+}
+
 /// A resumable session an adapter found for a cwd.
 #[derive(Debug, Clone)]
 pub struct ResumableSession {
@@ -38,6 +60,15 @@ pub struct Brief {
     pub text: String,
     /// Claimed backlog items to fold in.
     pub backlog: Vec<String>,
+}
+
+/// What kicked off a supervised run — selects the adapter's initial mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// `resume`: continue the most-recent session.
+    Resume,
+    /// A backlog drain (queued follow-up work).
+    BacklogDrain,
 }
 
 /// Everything an adapter needs to build one turn's invocation.
@@ -94,6 +125,10 @@ pub trait TaskQueue {
 pub trait AgentAdapter {
     fn id(&self) -> Agent;
 
+    /// The mode a run starts in for a given trigger. Claude uses a plan→execute
+    /// two-step (`ResumeDump`→`ResumeExecute`); Codex has no plan step (`Execute`).
+    fn initial_mode(&self, trigger: Trigger) -> Mode;
+
     /// Resolve the agent's CLI binary (PATH + known locations); must never resolve
     /// our own executable (the supervisor).
     fn resolve_binary(&self) -> Result<PathBuf>;
@@ -130,4 +165,34 @@ pub trait AgentAdapter {
     fn supports_fresh_run(&self) -> bool {
         true
     }
+}
+
+/// The adapter registry: the one place that knows every agent. Adding an agent is
+/// a new module + one arm here.
+pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
+    match agent {
+        Agent::Claude => Box::new(super::claude::ClaudeAdapter),
+        Agent::Codex => Box::new(super::codex::CodexAdapter),
+    }
+}
+
+/// Locate an agent CLI on PATH (then the usual install dirs), never returning our
+/// own executable. Used by adapters' `resolve_binary`.
+pub fn which(name: &str) -> Option<PathBuf> {
+    let self_exe = std::env::current_exe().ok();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    for d in dirs {
+        let p = d.join(name);
+        if p.is_file() && self_exe.as_ref() != Some(&p) {
+            return Some(p);
+        }
+    }
+    None
 }

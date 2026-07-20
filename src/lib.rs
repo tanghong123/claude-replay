@@ -41,6 +41,15 @@ impl Agent {
             Self::Codex => "codex",
         }
     }
+
+    /// Parse a `label()` string (round-trips `meta`'s `agent=` field).
+    pub fn from_label(s: &str) -> Option<Self> {
+        match s {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
 }
 
 /// View flags. Defaults mirror the bash `claude-peek`: thinking + user turns +

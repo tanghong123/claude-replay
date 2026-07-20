@@ -175,6 +175,30 @@ pub fn candidates() -> Vec<Candidate> {
     out
 }
 
+/// The newest Claude transcript for `cwd` (its cwd-slug project dir): the session
+/// id (filename stem), path, and mtime. Used by the `agent-jdi` Claude adapter.
+pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
+    let mut ts = transcripts_in_project(&slug_for(cwd));
+    ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+    ts.into_iter().next().map(|(m, p)| {
+        let id = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        (id, p, m)
+    })
+}
+
+/// Find a Claude transcript by session id (`<id>.jsonl`) anywhere under the projects
+/// dir.
+pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
+    let needle = format!("{id}.jsonl");
+    all_transcripts()
+        .into_iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(needle.as_str()))
+}
+
 /// Sessions for the current directory across **every** agent, filtered to `only`
 /// when set (else all agents), sorted cwd-matches-first then most-recent.
 pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {

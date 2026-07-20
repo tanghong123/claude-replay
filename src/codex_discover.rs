@@ -200,6 +200,17 @@ pub(crate) fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
     resolve_in(&sessions_dir(), target, latest)
 }
 
+/// The newest Codex session recorded for `cwd` (exact cwd match preferred, else the
+/// newest overall). Used by the `agent-jdi` Codex adapter to pick a resume target.
+pub(crate) fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
+    let wanted = normalized(cwd);
+    let all = sessions_in(&sessions_dir());
+    all.iter()
+        .find(|s| normalized(&s.cwd) == wanted)
+        .or_else(|| all.first())
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
