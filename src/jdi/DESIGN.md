@@ -55,8 +55,9 @@ resume+log and fill in a task queue / fresh-run later.
 
 ## State & compatibility
 
-- Own state root `~/.claude/agent-jdi/<slot>/` (clean cutover from bash `claude-jdi`;
-  `AGENT_JDI_HOME` overrides). Files: `meta` (key=value), `task.md`, `supervisor.log`,
+- Own state root `$XDG_STATE_HOME/agent-jdi/<slot>/` (default `~/.local/state/agent-jdi`;
+  neutral, not under `~/.claude`; `AGENT_JDI_HOME` overrides the whole path). Files:
+  `meta` (key=value), `task.md`, `supervisor.log`,
   `output.log`, `backlog/{pending,draining,drained}/`, `.lock/owner`.
 - **Deprecation handoff:** on `resume`, if the cwd was managed by the bash
   `claude-jdi` (matched by a `cwd=` line in its `meta`), drop a

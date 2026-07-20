@@ -111,8 +111,14 @@ agent-jdi takeover          # stop the worker (state left intact)
 agent-jdi list
 ```
 
+Any command that would affect a real agent (`resume`/`backlog`/`takeover`) accepts
+**`--dry-run`** — it prints exactly what it would do (agent, resolved binary, the
+full invocation, what it would kill/queue) and exits with **no** spawn, kill, or
+state change. Use it to verify before committing to a real run.
+
 Install: `brew install tanghong123/tap/agent-jdi` (depends on the viewer formula).
-It uses its own state under `~/.claude/agent-jdi/` (override `AGENT_JDI_HOME`); it
+It uses its own state under `~/.local/state/agent-jdi/` (`$XDG_STATE_HOME`; override
+the whole path with `AGENT_JDI_HOME`) — not under `~/.claude`, since it's agent-neutral. It
 supersedes the bash `claude-jdi` from `claude-toolbox`, which now warns when a
 directory has moved to `agent-jdi`.
 

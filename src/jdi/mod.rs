@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long, value_enum, global = true)]
     agent: Option<Agent>,
 
+    /// Print what a command would do and exit — no spawn, kill, or state change.
+    #[arg(long, global = true)]
+    dry_run: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -49,9 +53,6 @@ enum Command {
         /// Give up after this many attempts (0 = never; default 0).
         #[arg(long)]
         max_attempts: Option<u32>,
-        /// Print what would run (agent, session, invocation) and exit — no spawn.
-        #[arg(long)]
-        dry_run: bool,
     },
     /// Reattach the viewer to a supervised session's transcript.
     Log {
@@ -76,8 +77,9 @@ enum Command {
     Run { id: String },
 }
 
-/// Resolved runtime config. `agent-jdi` uses its own state root (clean cutover from
-/// the bash `claude-jdi`); override with `AGENT_JDI_HOME`.
+/// Resolved runtime config. `agent-jdi` is agent-neutral, so its state lives in a
+/// neutral state dir — `$XDG_STATE_HOME/agent-jdi` (default `~/.local/state/agent-jdi`),
+/// **not** under `~/.claude`. Override the whole path with `AGENT_JDI_HOME`.
 struct Config {
     home: PathBuf,
 }
@@ -86,38 +88,47 @@ impl Config {
     fn from_env() -> Self {
         let home = std::env::var_os("AGENT_JDI_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let base = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("."));
-                base.join(".claude").join("agent-jdi")
-            });
+            .unwrap_or_else(|| state_home().join("agent-jdi"));
         Self { home }
     }
+}
+
+/// The base state directory: `$XDG_STATE_HOME` if set, else `~/.local/state`.
+fn state_home() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|x| !x.is_empty()) {
+        return PathBuf::from(x);
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("state")
 }
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::from_env();
+    let dry = cli.dry_run;
     match cli.command {
         Command::Resume {
             instruction,
             interval,
             max_attempts,
-            dry_run,
         } => cmd_resume(
             &config,
             cli.agent,
             &instruction.join(" "),
             interval,
             max_attempts,
-            dry_run,
+            dry,
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
         Command::List => cmd_list(&config),
-        Command::Backlog { message, id } => cmd_backlog(&config, id.as_deref(), &message.join(" ")),
-        Command::Takeover { id } => cmd_takeover(&config, id.as_deref()),
+        Command::Backlog { message, id } => {
+            cmd_backlog(&config, id.as_deref(), &message.join(" "), dry)
+        }
+        Command::Takeover { id } => cmd_takeover(&config, id.as_deref(), dry),
         Command::Run { id } => supervisor::run_loop(&config.home, &id),
     }
 }
@@ -298,7 +309,7 @@ fn cmd_list(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_backlog(config: &Config, id: Option<&str>, message: &str) -> Result<()> {
+fn cmd_backlog(config: &Config, id: Option<&str>, message: &str, dry_run: bool) -> Result<()> {
     let session = resolve_session(config, id)?;
     let bl = backlog::Backlog::new(session.backlog_root());
     if message.trim().is_empty() {
@@ -309,13 +320,33 @@ fn cmd_backlog(config: &Config, id: Option<&str>, message: &str) -> Result<()> {
         );
         return Ok(());
     }
+    if dry_run {
+        println!(
+            "[dry-run] would queue for {}: {message}",
+            session.dir.display()
+        );
+        return Ok(());
+    }
     let path = bl.add(message)?;
     println!("queued: {}", path.display());
     Ok(())
 }
 
-fn cmd_takeover(config: &Config, id: Option<&str>) -> Result<()> {
+fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool) -> Result<()> {
     let session = resolve_session(config, id)?;
+    if dry_run {
+        match session.pid() {
+            Some(pid) => println!(
+                "[dry-run] would stop session {} (kill worker pid {pid} + its children)",
+                session.dir.display()
+            ),
+            None => println!(
+                "[dry-run] session {} has no recorded worker pid",
+                session.dir.display()
+            ),
+        }
+        return Ok(());
+    }
     supervisor::takeover(&session)?;
     println!("stopped session {}", session.dir.display());
     Ok(())
