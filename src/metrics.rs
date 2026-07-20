@@ -1,6 +1,7 @@
 //! Session metrics parsed from the transcript: token totals, wall-clock
 //! duration, model, and a best-effort USD cost estimate.
 
+use crate::Agent;
 use serde_json::Value;
 
 #[derive(Debug, Default, PartialEq)]
@@ -30,7 +31,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds.
-fn parse_ts(s: &str) -> Option<i64> {
+pub(crate) fn parse_ts(s: &str) -> Option<i64> {
     if s.len() < 19 {
         return None;
     }
@@ -61,6 +62,14 @@ fn price(model: &str) -> Option<(f64, f64)> {
 /// has to be fully resident as a `String` (one line at a time).
 pub fn parse_reader<R: std::io::BufRead>(reader: R) -> Metrics {
     parse_from_lines(reader.lines().map_while(Result::ok))
+}
+
+/// Metrics via the reader for `agent`.
+pub fn parse_reader_for<R: std::io::BufRead>(agent: Agent, reader: R) -> Metrics {
+    match agent {
+        Agent::Claude => parse_reader(reader),
+        Agent::Codex => crate::codex_metrics::parse_codex_reader(reader),
+    }
 }
 
 fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
@@ -144,8 +153,12 @@ fn human_dur(secs: i64) -> String {
     }
 }
 
-/// "claude-opus-4-8" -> "opus4.8".
+/// "claude-opus-4-8" -> "opus4.8". Non-Claude models (e.g. Codex "gpt-5.6") are
+/// shown verbatim.
 fn short_model(model: &str) -> String {
+    if !model.starts_with("claude-") {
+        return model.to_string();
+    }
     let m = model.strip_prefix("claude-").unwrap_or(model);
     let mut parts = m.split('-');
     let name = parts.next().unwrap_or(m);

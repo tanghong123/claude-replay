@@ -3,7 +3,7 @@
 //! content; what's shown collapsed is a fold-policy decision made in `view`.
 //! One JSONL line can yield several blocks.
 
-use crate::Args;
+use crate::{Agent, Args};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -395,6 +395,14 @@ pub fn parse(jsonl: &str, args: &Args) -> Vec<Block> {
     parse_main(jsonl.lines(), &tool_ids, args)
 }
 
+/// Parse JSONL text with the parser for `agent`.
+pub fn parse_for(agent: Agent, jsonl: &str, args: &Args) -> Vec<Block> {
+    match agent {
+        Agent::Claude => parse(jsonl, args),
+        Agent::Codex => crate::codex_model::parse_codex(jsonl, args),
+    }
+}
+
 /// Parse a transcript file by **streaming** it — one line resident at a time, in
 /// two passes (each a fresh read) — so a large transcript never balloons into a
 /// whole-file `Vec<Value>` (~5–8× the file in RAM) or a whole-file `String`. See
@@ -410,6 +418,18 @@ pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Bl
         &tool_ids,
         args,
     ))
+}
+
+/// Streaming file parse with the parser for `agent`.
+pub fn parse_path_for(
+    agent: Agent,
+    path: &std::path::Path,
+    args: &Args,
+) -> std::io::Result<Vec<Block>> {
+    match agent {
+        Agent::Claude => parse_path(path, args),
+        Agent::Codex => crate::codex_model::parse_codex_path(path, args),
+    }
 }
 
 /// Pass 1: the set of every `tool_use` id in the transcript.
@@ -672,6 +692,7 @@ mod tests {
     fn args() -> Args {
         Args {
             target: None,
+            agent: None,
             latest: false,
             follow: false,
             no_thinking: false,

@@ -1255,6 +1255,7 @@ mod tests {
             project: "proj".into(),
             snippet: format!("{name} snippet"),
             cwd_affinity: false,
+            agent: crate::Agent::Claude,
         };
         let txt = |b: &Buffer| {
             (0..b.area.height)
@@ -1597,6 +1598,7 @@ mod tests {
     fn args_with(fold: Option<&str>, unfold: Option<&str>, full: bool) -> Args {
         Args {
             target: None,
+            agent: None,
             latest: false,
             follow: false,
             no_thinking: false,

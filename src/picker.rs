@@ -126,7 +126,11 @@ impl Picker {
             let marker = if off == self.sel { "❯ " } else { "  " };
             let age = human_age(self.now, c.mtime);
             let aff = if c.cwd_affinity { "*" } else { " " };
-            let text = format!("{marker}{aff}{age:>4}  {:<16}  {}", c.project, c.snippet);
+            let agent = c.agent.label();
+            let text = format!(
+                "{marker}{aff}{age:>4}  {agent:<6}  {:<16}  {}",
+                c.project, c.snippet
+            );
             let style = if off == self.sel {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
@@ -179,6 +183,7 @@ mod tests {
             project: project.to_string(),
             snippet: snippet.to_string(),
             cwd_affinity: affinity,
+            agent: crate::Agent::Claude,
         }
     }
 

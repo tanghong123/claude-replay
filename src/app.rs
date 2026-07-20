@@ -4,7 +4,7 @@
 use crate::picker::Picker;
 use crate::tail::TailReader;
 use crate::view::View;
-use crate::{discover, model, Args};
+use crate::{discover, model, Agent, Args};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -53,12 +53,10 @@ pub fn run(args: &Args, path: &Path) -> Result<()> {
 /// sessions and, when there's more than one, loop between the picker and the
 /// viewer so `Esc` in the viewer returns to the list instead of quitting.
 pub fn run_interactive(args: &Args) -> Result<()> {
-    let mut cands = discover::candidates();
+    // Merge sessions from every agent (filtered by --agent) for this directory.
+    let mut cands = discover::candidates_all(args.agent);
     if cands.is_empty() {
-        anyhow::bail!(
-            "no transcripts found under {}",
-            discover::projects_dir().display()
-        );
+        anyhow::bail!("no transcripts found for any agent in this directory");
     }
     // Only one session — open it directly; there's no list to go back to.
     if cands.len() == 1 {
@@ -131,10 +129,13 @@ fn view_session<B: ratatui::backend::Backend>(
     path: &Path,
     can_go_back: bool,
 ) -> Result<Outcome> {
+    // The agent is a property of the file — detect it from the contents so the
+    // right parser/metrics run, whether we got here from the picker or a path.
+    let agent = discover::detect_agent(path);
     // Stream the parse from the file (one line resident at a time) instead of
     // reading the whole transcript into a `String` + `Vec<Value>` — a 298 MB
     // session otherwise peaks at ~2 GB. See `STREAMING-PARSE-DESIGN.md`.
-    let blocks = model::parse_path(path, args)?;
+    let blocks = model::parse_path_for(agent, path, args)?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -147,10 +148,13 @@ fn view_session<B: ratatui::backend::Backend>(
     // `--latest` didn't show a list, so offer `s` to reach the session picker.
     view.set_can_open_picker(args.latest);
     // Re-open for the metrics pass (also streaming) rather than hold the content.
-    let metrics = crate::metrics::parse_reader(std::io::BufReader::new(std::fs::File::open(path)?));
+    let metrics = crate::metrics::parse_reader_for(
+        agent,
+        std::io::BufReader::new(std::fs::File::open(path)?),
+    );
     view.set_metrics(metrics.footer());
 
-    event_loop(term, args, path, &mut view, &mut reader)
+    event_loop(term, agent, args, path, &mut view, &mut reader)
 }
 
 /// How the viewer's input loop ended.
@@ -165,6 +169,7 @@ enum Outcome {
 
 fn event_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
+    agent: Agent,
     args: &Args,
     path: &Path,
     view: &mut View,
@@ -177,13 +182,15 @@ fn event_loop<B: ratatui::backend::Backend>(
         if !event::poll(Duration::from_millis(250))? {
             if let Some(r) = reader.as_mut() {
                 let p = r.poll().unwrap_or_default();
-                if p.reset {
-                    if let Ok(blocks) = model::parse_path(path, args) {
+                // Codex splits a call and its output across polls, and joins them
+                // by call-id — so re-parse the whole (append-only) file to back-patch
+                // the original tool block, rather than ingesting the batch alone.
+                if p.reset || (agent == Agent::Codex && !p.lines.is_empty()) {
+                    if let Ok(blocks) = model::parse_path_for(agent, path, args) {
                         view.reset(blocks);
                     }
-                }
-                if !p.lines.is_empty() {
-                    view.ingest(model::parse(&p.lines.join("\n"), args));
+                } else if !p.lines.is_empty() {
+                    view.ingest(model::parse_for(agent, &p.lines.join("\n"), args));
                 }
             }
             continue;
@@ -252,7 +259,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('N') => view.search_prev(),
                     // Open the session switcher (only when enabled, i.e. --latest).
                     KeyCode::Char('s') if view.can_open_picker() => {
-                        view.open_switcher(discover::candidates())
+                        view.open_switcher(discover::candidates_all(args.agent))
                     }
                     _ => {}
                 }
@@ -342,7 +349,8 @@ fn dump_width(args: &Args) -> usize {
 /// text to stdout (`--dump -`) or write `<stem>.txt` + `<stem>.ansi` (the `.ansi`
 /// carries SGR colour). With no `<stem>`, the stem is deduced from the session.
 pub fn dump(args: &Args, path: &Path) -> Result<()> {
-    let blocks = model::parse_path(path, args)?;
+    let agent = discover::detect_agent(path);
+    let blocks = model::parse_path_for(agent, path, args)?;
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.

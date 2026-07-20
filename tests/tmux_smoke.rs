@@ -270,3 +270,81 @@ fn s_opens_session_switcher_on_latest() {
     );
     assert!(picked_ok, "Enter did not pick a session; screen:\n{s4}");
 }
+
+/// The picker merges sessions from every agent (Claude + Codex) for the current
+/// directory into one list, each row tagged with its agent.
+#[test]
+#[ignore = "needs tmux; run with --ignored"]
+fn picker_merges_claude_and_codex_sessions() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux not installed");
+        return;
+    }
+    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let dir = std::env::temp_dir().join(format!("peekv2-multi-{}", std::process::id()));
+
+    // A Claude session: <CLAUDE_PROJECTS_DIR>/<slug>/<id>.jsonl.
+    let claude_root = dir.join("claude");
+    let claude_proj = claude_root.join("-tmp-proj");
+    std::fs::create_dir_all(&claude_proj).unwrap();
+    std::fs::write(
+        claude_proj.join("csession.jsonl"),
+        b"{\"sessionId\":\"csession\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"CLAUDEMARKER hi\"}}\n",
+    )
+    .unwrap();
+
+    // A Codex rollout: <CODEX_SESSIONS_DIR>/<date>/rollout-<id>.jsonl.
+    let codex_root = dir.join("codex");
+    let codex_day = codex_root.join("2026/07/20");
+    std::fs::create_dir_all(&codex_day).unwrap();
+    std::fs::write(
+        codex_day.join("rollout-xsession.jsonl"),
+        b"{\"timestamp\":\"2026-07-20T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"xsession\",\"cwd\":\"/tmp/other\",\"originator\":\"codex-tui\"}}\n{\"timestamp\":\"2026-07-20T01:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"CODEXMARKER hi\"}]}}\n",
+    )
+    .unwrap();
+
+    let socket = format!("peekv2-multi-{}", std::process::id());
+    tmux(&socket, &["kill-server"]);
+    let out = tmux(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-x",
+            "140",
+            "-y",
+            "30",
+            &format!(
+                "CLAUDE_PROJECTS_DIR={} CODEX_SESSIONS_DIR={} {bin}",
+                claude_root.display(),
+                codex_root.display()
+            ),
+        ],
+    );
+    assert!(out.status.success(), "tmux new-session failed (no TTY?)");
+
+    let mut screen = String::new();
+    let mut ok = false;
+    for _ in 0..20 {
+        sleep(Duration::from_millis(150));
+        let cap = tmux(&socket, &["capture-pane", "-p", "-t", "0"]);
+        screen = String::from_utf8_lossy(&cap.stdout).to_string();
+        if screen.contains("pick a session")
+            && screen.contains("claude")
+            && screen.contains("codex")
+        {
+            ok = true;
+            break;
+        }
+    }
+
+    tmux(&socket, &["send-keys", "-t", "0", "Escape"]);
+    sleep(Duration::from_millis(150));
+    tmux(&socket, &["kill-server"]);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        ok,
+        "picker should merge claude + codex rows; last screen:\n{screen}"
+    );
+}

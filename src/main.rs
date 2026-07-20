@@ -5,6 +5,9 @@
 
 mod app;
 mod clipboard;
+mod codex_discover;
+mod codex_metrics;
+mod codex_model;
 mod discover;
 mod highlight;
 mod markdown;
@@ -18,7 +21,25 @@ mod view;
 mod wrap;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+/// Which agent produced a session. Detected per file from its contents; the
+/// `--agent` flag only *filters* the picker/`--latest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Agent {
+    Claude,
+    Codex,
+}
+
+impl Agent {
+    /// Short label for the picker row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
 
 /// View flags. Defaults mirror the bash `claude-peek`: thinking + user turns +
 /// code-modifying actions shown; non-modifying ops, tool output hidden.
@@ -31,6 +52,10 @@ use clap::Parser;
 pub struct Args {
     /// Session id, or a path to a .jsonl transcript.
     pub target: Option<String>,
+
+    /// Only show sessions from this agent (claude or codex). Default: all agents.
+    #[arg(long, value_enum)]
+    pub agent: Option<Agent>,
 
     /// Open the most-recently-active transcript anywhere.
     #[arg(long)]
@@ -86,12 +111,14 @@ pub struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    // No id/path/--latest and not dumping → interactive picker ↔ viewer flow
-    // (Esc in the viewer returns to the session list when there's more than one).
+    // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The
+    // picker merges sessions from every agent (filtered by --agent) for this dir.
     if args.target.is_none() && !args.latest && args.dump.is_none() {
         return app::run_interactive(&args);
     }
-    let path = discover::resolve(args.target.as_deref(), args.latest)?;
+    // Explicit path / session id / --latest: resolve across agents (honoring the
+    // --agent filter). The agent for each opened file is auto-detected downstream.
+    let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
     if args.dump.is_some() {
         app::dump(&args, &path)
     } else {

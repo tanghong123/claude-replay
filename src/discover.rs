@@ -1,6 +1,10 @@
 //! Locating a session transcript: by explicit path, by session id, or `--latest`.
+//! Discovery spans every agent (Claude + Codex); each session's agent is a
+//! property of the file, auto-detected from its contents by [`detect_agent`].
 
+use crate::Agent;
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -40,12 +44,14 @@ pub fn all_transcripts() -> Vec<PathBuf> {
 }
 
 /// A pickable session, with metadata for the picker UI.
+#[derive(Clone)]
 pub struct Candidate {
     pub path: PathBuf,
     pub mtime: SystemTime,
     pub project: String,    // human-ish project name (last path segment)
     pub snippet: String,    // first user message, truncated
     pub cwd_affinity: bool, // belongs to the current working directory's project
+    pub agent: Agent,       // which agent produced this session
 }
 
 /// The slug Claude Code uses for a directory: '/' and '.' replaced by '-'.
@@ -158,6 +164,7 @@ pub fn candidates() -> Vec<Candidate> {
             project,
             snippet: first_user_snippet(&path),
             cwd_affinity,
+            agent: Agent::Claude,
         });
     }
     out.sort_by(|a, b| {
@@ -168,35 +175,109 @@ pub fn candidates() -> Vec<Candidate> {
     out
 }
 
-/// Resolve the transcript to open.
-///
-/// - `target` that is an existing file path -> that file.
-/// - `target` that looks like a session id -> `<projects>/<slug>/<id>.jsonl`.
-/// - otherwise, if `latest`, the most-recently-modified transcript anywhere.
-pub fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
+/// Sessions for the current directory across **every** agent, filtered to `only`
+/// when set (else all agents), sorted cwd-matches-first then most-recent.
+pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    if only != Some(Agent::Codex) {
+        out.extend(candidates());
+    }
+    if only != Some(Agent::Claude) {
+        // Scope Codex to this directory (cwd match); fall back to all Codex
+        // sessions when none match, mirroring the Claude side's fallback.
+        let codex = crate::codex_discover::candidates();
+        let scoped: Vec<Candidate> = codex.iter().filter(|c| c.cwd_affinity).cloned().collect();
+        out.extend(if scoped.is_empty() { codex } else { scoped });
+    }
+    out.sort_by(|a, b| {
+        b.cwd_affinity
+            .cmp(&a.cwd_affinity)
+            .then(b.mtime.cmp(&a.mtime))
+    });
+    out
+}
+
+/// Auto-detect which agent wrote a transcript by sniffing its first lines: a
+/// Codex rollout opens with a `session_meta` event and wraps events in `payload`;
+/// a Claude transcript has top-level `sessionId`/`message`. Defaults to Claude.
+pub fn detect_agent(path: &Path) -> Agent {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(path) else {
+        return Agent::Claude;
+    };
+    for line in std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .take(5)
+    {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let ty = v.get("type").and_then(Value::as_str);
+        if ty == Some("session_meta")
+            || (v.get("payload").is_some()
+                && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
+        {
+            return Agent::Codex;
+        }
+        if v.get("sessionId").is_some() || v.get("message").is_some() {
+            return Agent::Claude;
+        }
+    }
+    Agent::Claude
+}
+
+fn mtime_of(path: &Path) -> SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// Resolve a transcript across agents (honoring the `only` filter): an existing
+/// file path (agent auto-detected on open), a session id searched in each agent's
+/// store, or — with `latest` — the most-recent transcript across agents.
+pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     if let Some(t) = target {
         let as_path = PathBuf::from(t);
         if as_path.is_file() {
             return Ok(as_path);
         }
-        // Treat as a session id: search for "<id>.jsonl" under the projects dir.
-        let needle = format!("{t}.jsonl");
-        if let Some(hit) = all_transcripts()
-            .into_iter()
-            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(needle.as_str()))
-        {
-            return Ok(hit);
+        // Session id: look in each in-scope agent's store.
+        if only != Some(Agent::Codex) {
+            let needle = format!("{t}.jsonl");
+            if let Some(hit) = all_transcripts()
+                .into_iter()
+                .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(needle.as_str()))
+            {
+                return Ok(hit);
+            }
+        }
+        if only != Some(Agent::Claude) {
+            if let Ok(hit) = crate::codex_discover::resolve(Some(t), false) {
+                return Ok(hit);
+            }
         }
         return Err(anyhow!(
-            "no transcript found for '{t}' (not a file, and no session id match under {})",
-            projects_dir().display()
+            "no transcript found for '{t}' (not a file, and no session id match)"
         ));
     }
     if latest {
-        return all_transcripts()
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no transcripts found under {}", projects_dir().display()));
+        let mut best: Option<PathBuf> = None;
+        if only != Some(Agent::Codex) {
+            best = all_transcripts().into_iter().next();
+        }
+        if only != Some(Agent::Claude) {
+            if let Ok(codex) = crate::codex_discover::resolve(None, true) {
+                if best
+                    .as_deref()
+                    .map(|b| mtime_of(&codex) > mtime_of(b))
+                    .unwrap_or(true)
+                {
+                    best = Some(codex);
+                }
+            }
+        }
+        return best.ok_or_else(|| anyhow!("no transcripts found"));
     }
     Err(anyhow!(
         "give a session id or a path, or use --latest (no session picker yet)"
@@ -211,6 +292,31 @@ mod tests {
     fn slug_matches_claude_code_convention() {
         let p = Path::new("/Users/dev/projects/claude-toolbox");
         assert_eq!(slug_for(p), "-Users-dev-projects-claude-toolbox");
+    }
+
+    #[test]
+    fn detect_agent_sniffs_transcript_shape() {
+        let dir = std::env::temp_dir();
+        let codex = dir.join(format!("detect-codex-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &codex,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/x\"}}\n",
+        )
+        .unwrap();
+        let claude = dir.join(format!("detect-claude-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &claude,
+            "{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_agent(&codex), Agent::Codex);
+        assert_eq!(detect_agent(&claude), Agent::Claude);
+        // A missing/empty file falls back to Claude.
+        assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::Claude);
+
+        std::fs::remove_file(&codex).ok();
+        std::fs::remove_file(&claude).ok();
     }
 
     #[test]

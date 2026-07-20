@@ -1,9 +1,10 @@
 # claude-replay
 
-An interactive, **read-only** viewer for Claude Code session transcripts — *like
-`claude --resume`, but you can only read*: scroll, fold, search, and live-tail the
-JSONL files Claude Code writes under `~/.claude/projects/`. A Rust + [ratatui](https://ratatui.rs)
-TUI that renders a session the way Claude Code does (assistant text, thinking,
+An interactive, **read-only** viewer for AI coding-agent session transcripts —
+*like `claude --resume`, but you can only read*: scroll, fold, search, and
+live-tail. Reads both **Claude Code** (`~/.claude/projects/`) and **Codex**
+(`~/.codex/sessions/`) transcripts, auto-detecting each. A Rust + [ratatui](https://ratatui.rs)
+TUI that renders a session the way the agent does (assistant text, thinking,
 tool calls, `+/-` diffs, markdown, syntect-highlighted code) without ever
 continuing or mutating the session.
 
@@ -54,14 +55,24 @@ cargo build --release           # → target/release/claude-replay
 ## Usage
 
 ```
-claude-replay <session-id | path/to.jsonl>   render that transcript
-claude-replay --latest                        the most-recently-active transcript
+claude-replay                                 pick from this dir's sessions (Claude + Codex)
+claude-replay <session-id | path/to.jsonl>   render that transcript (agent auto-detected)
+claude-replay --latest                        the most-recently-active transcript (any agent)
+claude-replay --agent codex                   only show Codex sessions (or --agent claude)
 claude-replay <id> -f                         follow a running session live
 claude-replay <id|--latest> --dump -          plain text to stdout (no TUI) — for pipes/tests
 claude-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
 claude-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
 claude-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
 ```
+
+**Multi-agent.** With no argument, the picker merges this directory's sessions from
+**every agent** — Claude Code (`~/.claude/projects/`) and Codex
+(`~/.codex/sessions/`) — into one list, each row tagged with its agent; one session
+opens straight in. The agent for any opened file is auto-detected from its contents,
+so an explicit path or `--latest` just works. `--agent claude|codex` filters the
+picker/`--latest` to a single agent. (`CODEX_HOME` / `CODEX_SESSIONS_DIR` override
+the Codex root.)
 
 `--dump` renders through the same pipeline as the live viewer and applies the same
 default fold policy, so its output matches what the TUI shows (add `--full` to expand
