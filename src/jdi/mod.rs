@@ -226,7 +226,7 @@ fn cmd_resume(
         return Ok(());
     }
 
-    guard_no_conflict(&cwd)?;
+    guard_no_conflict(config, &cwd)?;
     let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
 
@@ -269,9 +269,16 @@ fn cmd_resume(
     follow_viewer(&resumable.transcript)
 }
 
-/// Refuse to supervise a directory the bash `claude-jdi` is already live in — one
-/// supervisor per directory (two would fight over the same session).
-fn guard_no_conflict(cwd: &Path) -> Result<()> {
+/// One supervisor per directory: refuse if another `agent-jdi` — or the bash
+/// `claude-jdi` — is already live for this cwd (two would fight over the session).
+/// The own-tool check also catches a symlink-aliased cwd the slot lock would miss.
+fn guard_no_conflict(config: &Config, cwd: &Path) -> Result<()> {
+    if let Some(pid) = detect::live_supervisor_pid(&config.home, cwd) {
+        bail!(
+            "agent-jdi is already supervising {} (pid {pid}) — stop it first: `agent-jdi takeover`.",
+            cwd.display()
+        );
+    }
     if let Some(pid) = detect::claude_jdi_live_for_cwd(cwd) {
         bail!(
             "claude-jdi is already supervising {} (pid {pid}) — use one supervisor per directory. \
@@ -369,7 +376,7 @@ fn cmd_start(
         return Ok(());
     }
 
-    guard_no_conflict(&cwd)?;
+    guard_no_conflict(config, &cwd)?;
     let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
     let _lock = match lock::acquire(&session.dir, || session.alive())? {

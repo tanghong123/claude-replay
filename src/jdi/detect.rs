@@ -36,13 +36,13 @@ fn legacy_home() -> PathBuf {
     home.join(".claude").join("claude-jdi")
 }
 
-/// If the bash `claude-jdi` is **actively supervising** `cwd` right now, return its
-/// live worker pid — so `agent-jdi` can refuse to also manage the same directory
-/// (two supervisors on one session would fight). Matches on a `cwd=` line in each
-/// legacy `meta` whose recorded `pid` is alive. `None` = no conflict.
-pub fn claude_jdi_live_for_cwd(cwd: &Path) -> Option<u32> {
+/// The live supervisor pid managing `cwd` under state root `home`, if any — a
+/// `cwd=` match in some session's `meta` whose recorded `pid` is alive. Canonicalizes
+/// both paths, so it also catches the same directory reached via a symlink (which the
+/// path-keyed slot lock would miss). `None` = no live supervisor there.
+pub fn live_supervisor_pid(home: &Path, cwd: &Path) -> Option<u32> {
     let wanted = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let entries = std::fs::read_dir(legacy_home()).ok()?;
+    let entries = std::fs::read_dir(home).ok()?;
     for e in entries.flatten() {
         let Ok(text) = std::fs::read_to_string(e.path().join("meta")) else {
             continue;
@@ -62,6 +62,12 @@ pub fn claude_jdi_live_for_cwd(cwd: &Path) -> Option<u32> {
         }
     }
     None
+}
+
+/// If the bash `claude-jdi` is **actively supervising** `cwd`, its live worker pid —
+/// so `agent-jdi` can refuse to also manage the same directory.
+pub fn claude_jdi_live_for_cwd(cwd: &Path) -> Option<u32> {
+    live_supervisor_pid(&legacy_home(), cwd)
 }
 
 #[cfg(test)]
