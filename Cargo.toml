@@ -10,9 +10,17 @@ readme = "README.md"
 keywords = ["claude", "tui", "ratatui", "transcript", "viewer"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "claude_replay"
+path = "src/lib.rs"
+
 [[bin]]
 name = "claude-replay"
 path = "src/main.rs"
+
+[[bin]]
+name = "agent-jdi"
+path = "src/bin/agent-jdi.rs"
 
 # `cargo binstall claude-replay` pulls the matching prebuilt tarball from the
 # GitHub release instead of compiling. Assets are named `claude-replay-<target>.tar.gz`
