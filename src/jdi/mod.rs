@@ -360,6 +360,13 @@ fn shell_join(args: &[String]) -> String {
         .join(" ")
 }
 
+fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "no resumable Claude or Codex session found for {} (use --agent to force one)",
+        cwd.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::shell_join;
@@ -374,11 +381,4 @@ mod tests {
         assert_eq!(shell_join(&["a b".into()]), "'a b'");
         assert_eq!(shell_join(&["it's".into()]), "'it'\\''s'");
     }
-}
-
-fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
-    anyhow::anyhow!(
-        "no resumable Claude or Codex session found for {} (use --agent to force one)",
-        cwd.display()
-    )
 }
