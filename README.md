@@ -127,8 +127,9 @@ state change. Use it to verify before committing to a real run.
 Install: `brew install tanghong123/tap/agent-jdi` (depends on the viewer formula).
 It uses its own state under `~/.local/state/agent-jdi/` (`$XDG_STATE_HOME`; override
 the whole path with `AGENT_JDI_HOME`) — not under `~/.claude`, since it's agent-neutral. It
-supersedes the bash `claude-jdi` from `claude-toolbox`, which now warns when a
-directory has moved to `agent-jdi`.
+supersedes the bash `claude-jdi` from `claude-toolbox`. The two enforce **one
+supervisor per directory**: each refuses to `start`/`resume` a directory the other
+is already live in (stop the other first, or use it).
 
 Architecture: an **agent-agnostic supervisor spine** (detached worker, slot lock,
 `meta` state, backlog queue, retry loop) drives per-agent **`AgentAdapter`s**

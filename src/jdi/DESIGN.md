@@ -15,7 +15,7 @@ src/jdi/
   lock.rs        mkdir-atomic slot lock (owner pidfile + stale reclaim) ── spine
   backlog.rs     pending→draining→drained crash-safe queue             ── spine
   agent.rs       the AgentAdapter trait + shared types + the registry
-  detect.rs      pick the agent for a cwd + the claude-jdi deprecation marker
+  detect.rs      pick the agent for a cwd + the claude-jdi live-conflict check
   claude.rs      Claude adapter (native task queue, plan→execute, ~/.claude/projects)
   codex.rs       Codex adapter (codex exec resume, no task queue, exit-code done)
 ```
@@ -65,9 +65,11 @@ resume+log and fill in a task queue / fresh-run later.
   neutral, not under `~/.claude`; `AGENT_JDI_HOME` overrides the whole path). Files:
   `meta` (key=value), `task.md`, `supervisor.log`,
   `output.log`, `backlog/{pending,draining,drained}/`, `.lock/owner`.
-- **Deprecation handoff:** on `resume`, if the cwd was managed by the bash
-  `claude-jdi` (matched by a `cwd=` line in its `meta`), drop a
-  `.superseded-by-agent-jdi` marker in that legacy dir; the bash tool warns on it.
+- **One supervisor per directory:** before `start`/`resume`, refuse if the bash
+  `claude-jdi` is *live* for this cwd (`detect::claude_jdi_live_for_cwd` — a `cwd=`
+  match in a legacy `meta` whose `pid` is alive). The bash tool has the symmetric
+  check against `agent-jdi`'s state. Each tool's own slot lock covers same-tool
+  concurrency; these cross-checks cover the two-tool case.
 
 ## Known gaps / TODO
 

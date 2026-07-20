@@ -226,6 +226,7 @@ fn cmd_resume(
         return Ok(());
     }
 
+    guard_no_conflict(&cwd)?;
     let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
 
@@ -255,11 +256,6 @@ fn cmd_resume(
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), instruction).ok();
 
-    // Nudge the deprecated bash claude-jdi if it managed this dir.
-    if detect::mark_legacy_superseded(&cwd) {
-        eprintln!("note: this directory was managed by claude-jdi; it's now on agent-jdi.");
-    }
-
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
     session.meta_set("state", "running")?;
@@ -271,6 +267,19 @@ fn cmd_resume(
         resumable.id
     );
     follow_viewer(&resumable.transcript)
+}
+
+/// Refuse to supervise a directory the bash `claude-jdi` is already live in — one
+/// supervisor per directory (two would fight over the same session).
+fn guard_no_conflict(cwd: &Path) -> Result<()> {
+    if let Some(pid) = detect::claude_jdi_live_for_cwd(cwd) {
+        bail!(
+            "claude-jdi is already supervising {} (pid {pid}) — use one supervisor per directory. \
+             Stop it first: `claude-jdi takeover`.",
+            cwd.display()
+        );
+    }
+    Ok(())
 }
 
 /// The default agent for a fresh `start` in `cwd`: the last agent-jdi run here, else
@@ -360,6 +369,7 @@ fn cmd_start(
         return Ok(());
     }
 
+    guard_no_conflict(&cwd)?;
     let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
     let _lock = match lock::acquire(&session.dir, || session.alive())? {
@@ -382,7 +392,6 @@ fn cmd_start(
     session.meta_set("mode", agent::Mode::Start.as_str())?;
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), &task).ok();
-    detect::mark_legacy_superseded(&cwd);
 
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
