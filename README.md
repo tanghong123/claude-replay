@@ -94,6 +94,38 @@ tool_result, command`).
 `--latest`, `s` opens the session switcher (a picker overlay) so you can hop to
 another session — `Enter` switches, `Esc` returns to where you were.
 
+## `agent-jdi` — supervise unattended runs
+
+The repo also ships a second binary, **`agent-jdi`**: it runs an AI agent
+*unattended* (relaunching on recoverable exits) and follows it live with the
+viewer. It's multi-agent and **auto-detects** the agent from the directory's
+sessions (Claude or Codex), so one tool covers both.
+
+```bash
+agent-jdi resume            # resume this dir's newest session, unattended, and follow it
+agent-jdi resume --agent codex   # force an agent
+agent-jdi log               # reattach the viewer to the supervised session
+agent-jdi status            # state, mode, task-queue / progress
+agent-jdi backlog "also update the changelog"   # queue follow-up for the next drain
+agent-jdi takeover          # stop the worker (state left intact)
+agent-jdi list
+```
+
+Install: `brew install tanghong123/tap/agent-jdi` (depends on the viewer formula).
+It uses its own state under `~/.claude/agent-jdi/` (override `AGENT_JDI_HOME`); it
+supersedes the bash `claude-jdi` from `claude-toolbox`, which now warns when a
+directory has moved to `agent-jdi`.
+
+Architecture: an **agent-agnostic supervisor spine** (detached worker, slot lock,
+`meta` state, backlog queue, retry loop) drives per-agent **`AgentAdapter`s**
+(`src/jdi/{claude,codex}.rs`). Adding an agent is one module + one registry arm;
+adapters may leave optional capabilities (e.g. a native task queue) unimplemented.
+See [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md).
+
+> ⚠️ Codex's CLI surface (`codex exec resume` flags, `--json`, whether resume
+> writes a new rollout file) is **unverified** — isolated in `codex.rs` as
+> `TODO(verify)` until validated against a real `codex`.
+
 ## Develop
 
 It is **fully testable headless (no TTY)** — see [`CLAUDE.md`](CLAUDE.md).

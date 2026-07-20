@@ -2,7 +2,10 @@
 //!
 //! The spine (state, lock, backlog, retry loop) is agent-neutral; each agent is a
 //! `AgentAdapter` (claude.rs / codex.rs). New agents = one module + one registry arm.
-#![allow(dead_code)] // some spine helpers are used across stages / by future agents
+// The spine + `AgentAdapter` expose a complete contract; a few pieces (backlog-drain
+// runs, `GaveUp`/`supports_fresh_run`, `ctx.cwd`) are wired by later flows / future
+// agents rather than the current command set, so keep them without dead-code noise.
+#![allow(dead_code)]
 
 mod agent;
 mod backlog;
