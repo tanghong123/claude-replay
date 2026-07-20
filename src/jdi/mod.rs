@@ -44,7 +44,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start a FRESH unattended run of a task (default agent: claude), and follow it.
+    /// Start a FRESH unattended run of a task, and follow it. Default agent: the
+    /// latest run's in this directory (override with --agent).
     Start {
         /// The task to run (or use --task-file).
         task: Vec<String>,
@@ -272,6 +273,16 @@ fn cmd_resume(
     follow_viewer(&resumable.transcript)
 }
 
+/// The default agent for a fresh `start` in `cwd`: the last agent-jdi run here, else
+/// the agent of the most recent session of any kind, else Claude.
+fn default_agent(config: &Config, cwd: &Path) -> Agent {
+    let slot = Session::new(&config.home, &state::slot_id(cwd));
+    if let Some(a) = slot.meta_get("agent").and_then(|s| Agent::from_label(&s)) {
+        return a;
+    }
+    detect::agent_for(cwd, None).unwrap_or(Agent::Claude)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_start(
     config: &Config,
@@ -290,9 +301,13 @@ fn cmd_start(
     if task.trim().is_empty() {
         bail!("start needs a task (positional text or --task-file)");
     }
-    // A fresh start has no existing session to detect from — default to Claude,
-    // override with --agent.
-    let agent = forced.unwrap_or(Agent::Claude);
+    // A fresh start has no session of its own to detect from, so default to the
+    // agent of the *latest run* in this directory (its last agent-jdi run, else the
+    // most recent session of any kind); Claude only when there's no history.
+    let agent = match forced {
+        Some(a) => a,
+        None => default_agent(config, &cwd),
+    };
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
     adapter.resolve_binary()?;
@@ -557,7 +572,23 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_join;
+    use super::*;
+
+    #[test]
+    fn default_agent_reuses_the_last_run_in_this_dir() {
+        let base = std::env::temp_dir().join(format!("ajdi-defagent-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let home = base.join("home");
+        let cwd = base.join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let config = Config { home };
+        // Record a prior Codex run for this dir's slot → a fresh start reuses it.
+        Session::new(&config.home, &state::slot_id(&cwd))
+            .meta_set("agent", "codex")
+            .unwrap();
+        assert_eq!(default_agent(&config, &cwd), Agent::Codex);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn shell_join_quotes_only_when_needed() {

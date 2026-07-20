@@ -102,7 +102,7 @@ viewer. It's multi-agent and **auto-detects** the agent from the directory's
 sessions (Claude or Codex), so one tool covers both.
 
 ```bash
-agent-jdi start "refactor the parser and add tests"   # fresh unattended run (default: claude)
+agent-jdi start "refactor the parser and add tests"   # fresh unattended run (agent: latest run's here)
 agent-jdi resume            # resume this dir's newest session, unattended, and follow it
 agent-jdi resume --agent codex   # force an agent
 agent-jdi log               # reattach the viewer to the supervised session
@@ -114,8 +114,10 @@ agent-jdi list
 
 `start` runs a **fresh** task (vs. `resume`, which continues an existing session).
 The session id is pinned up front for Claude (`--session-id`) and **captured** for
-Codex (which assigns its own id — recovered after the first turn via a nonce). `start`
-needs an explicit agent for anything but the default Claude (`--agent codex`).
+Codex (which assigns its own id — recovered after the first turn via a nonce). With
+no `--agent`, `start` reuses the agent of the **latest run in this directory** (its
+last `agent-jdi` run, else the most recent session of any kind), defaulting to Claude
+only when the directory has no history.
 
 Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`)
 accepts **`--dry-run`** — it prints exactly what it would do (agent, resolved binary,
