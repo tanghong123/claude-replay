@@ -2,7 +2,46 @@
 //! with hard-break fallback for over-long tokens. Unicode-width correct.
 
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Tab stop for expanding `\t` in rendered content.
+const TAB_STOP: usize = 8;
+
+/// Make a line safe to write to the terminal: expand tabs to spaces (to the next
+/// tab stop) and drop other C0 control bytes. A raw `\t` desyncs the terminal
+/// cursor from ratatui's column accounting (the terminal jumps to a tab stop while
+/// ratatui counts width 1), which corrupts the display with stale-cell fragments —
+/// seen on Codex `cat -n`-style tool output. Runs once, before wrapping/measuring.
+fn sanitize_line(line: &Line<'static>) -> Line<'static> {
+    let needs = line
+        .spans
+        .iter()
+        .any(|s| s.content.chars().any(|c| c.is_control()));
+    if !needs {
+        return line.clone();
+    }
+    let mut col = 0usize;
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+    for sp in &line.spans {
+        let mut s = String::with_capacity(sp.content.len());
+        for ch in sp.content.chars() {
+            match ch {
+                '\t' => {
+                    let n = TAB_STOP - (col % TAB_STOP);
+                    s.push_str(&" ".repeat(n));
+                    col += n;
+                }
+                c if c.is_control() => {} // drop stray \r, \0, ESC, etc.
+                c => {
+                    s.push(c);
+                    col += UnicodeWidthChar::width(c).unwrap_or(0);
+                }
+            }
+        }
+        out.push(Span::styled(s, sp.style));
+    }
+    Line::from(out)
+}
 
 /// Wrap one line's spans to `width` columns, returning one or more display lines.
 /// Preserves each span's style across the wrap (used for styled table cells too).
@@ -11,6 +50,9 @@ use unicode_width::UnicodeWidthStr;
 /// (its leading spaces, or a leading marker glyph + space, e.g. `⏺ `/`❯ `), so a
 /// wrapped paragraph stays block-aligned under its first line, matching Claude Code.
 pub(crate) fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    // Expand tabs / drop control bytes before anything measures or writes them.
+    let sanitized = sanitize_line(line);
+    let line = &sanitized;
     if width == 0 {
         return vec![line.clone()];
     }
@@ -166,6 +208,23 @@ mod tests {
 
     fn text(line: &Line) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn expands_tabs_and_drops_control_bytes() {
+        // Codex `cat -n` style: "    35\t// code" — the tab must become spaces so no
+        // raw \t reaches the terminal (which would desync the cursor).
+        let line = Line::from("    35\t// code");
+        let rows = wrap_line(&line, 100);
+        let out = text(&rows[0]);
+        assert!(!out.contains('\t'), "tab not expanded: {out:?}");
+        // "    35" is 6 cols → next tab stop is 8 → 2 spaces before the code.
+        assert!(out.starts_with("    35  // code"), "bad tab stop: {out:?}");
+
+        // Other control bytes (stray ESC / CR) are dropped, not written raw.
+        let line = Line::from("ab\x1b[31mcd\re");
+        let out = text(&wrap_line(&line, 100)[0]);
+        assert_eq!(out, "ab[31mcde", "control bytes not stripped: {out:?}");
     }
 
     /// A marker-led line (`⏺ …`) keeps its continuation rows indented two columns,
