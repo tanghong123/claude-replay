@@ -309,6 +309,39 @@ fn group_turns(blocks: Vec<Block>) -> Vec<Block> {
     out
 }
 
+/// Coalesce a contiguous run (≥2) of *activity* tool calls that isn't part of a
+/// thinking turn into one `<activities>` summary block — matching Claude Code, which
+/// shows e.g. "Searched for 1 pattern, ran 9 shell commands" rather than nine
+/// separate lines. A lone activity tool keeps its own detailed summary; Edit/Write
+/// and other non-activity tools break a run and stay expanded. (A tools-only
+/// `Thinking` — empty text, no duration — is how such a run is represented; `render`
+/// shows it as the activities line without a "thought".)
+fn coalesce_activity_runs(blocks: Vec<Block>) -> Vec<Block> {
+    fn flush(run: &mut Vec<Block>, out: &mut Vec<Block>) {
+        if run.len() >= 2 {
+            out.push(Block::Thinking {
+                text: String::new(),
+                duration_secs: None,
+                tools: std::mem::take(run),
+            });
+        } else {
+            out.append(run);
+        }
+    }
+    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
+    let mut run: Vec<Block> = Vec::new();
+    for b in blocks {
+        if matches!(&b, Block::ToolUse { name, .. } if is_activity_tool(name)) {
+            run.push(b);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(b);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 fn result_text(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
@@ -633,7 +666,7 @@ fn parse_main<S: AsRef<str>>(
             _ => {}
         }
     }
-    group_turns(out)
+    coalesce_activity_runs(group_turns(out))
 }
 
 fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
@@ -829,9 +862,19 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"tool_result","content":"FILE CONTENTS"}]}}
 "#;
         let blocks = parse(jsonl, &args());
+        // Nothing is dropped — but the consecutive Read + Bash coalesce into one
+        // activity run (their blocks live inside it), and Edit stays expanded.
         assert_eq!(
             kinds(&blocks),
-            vec!["user", "assistant", "read", "bash", "edit", "tool_result"]
+            vec!["user", "assistant", "thinking", "edit", "tool_result"]
+        );
+        let Block::Thinking { tools, .. } = &blocks[2] else {
+            panic!("expected the coalesced Read+Bash run");
+        };
+        assert_eq!(
+            kinds(tools),
+            vec!["read", "bash"],
+            "both preserved in the run"
         );
     }
 
@@ -865,8 +908,9 @@ mod tests {
 {"type":"user","toolUseResult":{"stdout":"file1\nfile2","stderr":"","interrupted":false},"message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"file1\nfile2"}]}}
 "#;
         let blocks = parse(jsonl, &args());
-        // 3 tool blocks; the boilerplate Edit result is NOT a separate block.
-        assert_eq!(kinds(&blocks), vec!["edit", "read", "bash"]);
+        // Edit stays expanded; the boilerplate Edit result is NOT a separate block.
+        // Read + Bash are consecutive activity tools → coalesced into one activity run.
+        assert_eq!(kinds(&blocks), vec!["edit", "thinking"]);
 
         let Block::ToolUse { patch, output, .. } = &blocks[0] else {
             panic!("expected Edit ToolUse");
@@ -874,15 +918,47 @@ mod tests {
         assert_eq!(patch.as_ref().unwrap()[0].new_start, 12, "real newStart");
         assert!(output.is_none(), "edit boilerplate dropped");
 
-        let Block::ToolUse { read_lines, .. } = &blocks[1] else {
+        // Metadata is joined into the tools *before* coalescing — dig into the run.
+        let Block::Thinking { tools, .. } = &blocks[1] else {
+            panic!("expected a coalesced activity run");
+        };
+        let Block::ToolUse { read_lines, .. } = &tools[0] else {
             panic!("expected Read ToolUse");
         };
         assert_eq!(*read_lines, Some(3));
 
-        let Block::ToolUse { output, .. } = &blocks[2] else {
+        let Block::ToolUse { output, .. } = &tools[1] else {
             panic!("expected Bash ToolUse");
         };
         assert_eq!(output.as_deref(), Some("file1\nfile2"));
+    }
+
+    #[test]
+    fn consecutive_activity_tools_coalesce_into_one_summary() {
+        // A run of activity tools with no thinking → one activity block (like CC's
+        // "Searched for 1 pattern, ran N shell commands"); a lone one stays itself.
+        let mut jsonl = String::from(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+        );
+        jsonl.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"g\",\"name\":\"Grep\",\"input\":{\"pattern\":\"foo\"}}]}}\n");
+        for i in 0..9 {
+            jsonl.push_str(&format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"b{i}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {i}\"}}}}]}}}}\n"));
+        }
+        let blocks = parse(&jsonl, &args());
+        assert_eq!(kinds(&blocks), vec!["assistant", "thinking"]);
+        let Block::Thinking {
+            tools,
+            text,
+            duration_secs,
+        } = &blocks[1]
+        else {
+            panic!("expected a coalesced activity run");
+        };
+        assert_eq!(tools.len(), 10, "1 grep + 9 bash coalesced");
+        assert!(
+            text.is_empty() && duration_secs.is_none(),
+            "pure activity run"
+        );
     }
 
     /// Transcripts are NOT strictly ordered: a `tool_result` can appear *before*

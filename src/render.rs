@@ -401,11 +401,16 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
             // command+thinking region reads as one shaded block (matching Claude
             // Code); thinking is set apart by a fainter font, not a darker bg.
             let turn_bg = theme::shell_expanded_bg();
+            // A coalesced pure-activity run (no thinking text/duration) expands to
+            // just its tool calls — no `✻` summary header.
+            let pure_activity = text.trim().is_empty() && duration_secs.is_none();
             if !tools.is_empty() {
-                out.push(Line::from(Span::styled(
-                    format!("✻ {}", turn_summary(*duration_secs, tools)),
-                    theme::thinking().bg(turn_bg),
-                )));
+                if !pure_activity {
+                    out.push(Line::from(Span::styled(
+                        format!("✻ {}", turn_summary(*duration_secs, tools)),
+                        theme::thinking().bg(turn_bg),
+                    )));
+                }
                 for t in tools {
                     out.extend(render_one(t, width));
                 }
@@ -734,10 +739,17 @@ fn activities(tools: &[Block]) -> String {
     }
     if !shell_names.is_empty() {
         let n = shell_names.len();
+        // Distinct program names, first-seen order — 9 `git`s read as "(git)".
+        let mut seen = std::collections::HashSet::new();
+        let uniq: Vec<&str> = shell_names
+            .iter()
+            .map(String::as_str)
+            .filter(|nm| seen.insert(*nm))
+            .collect();
         parts.push(format!(
             "ran {n} shell command{} ({})",
             s(n),
-            shell_names.join(", ")
+            uniq.join(", ")
         ));
     }
     if other > 0 {
@@ -758,8 +770,13 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             tools,
         } => {
             // `<activities>, thought for Xs` (natural order) — falls back to a line
-            // count when the duration isn't derivable and no tools ran.
-            let summary = if duration_secs.is_some() || !tools.is_empty() {
+            // count when the duration isn't derivable and no tools ran. A coalesced
+            // pure-activity run (empty text, no duration) is just the activities, with
+            // no "thought" (it isn't thinking — matches Claude Code's "ran N …" line).
+            let summary = if text.trim().is_empty() && duration_secs.is_none() && !tools.is_empty()
+            {
+                capitalize(&activities(tools))
+            } else if duration_secs.is_some() || !tools.is_empty() {
                 turn_summary(*duration_secs, tools)
             } else {
                 format!("Thought ({} lines)", text.lines().count())
