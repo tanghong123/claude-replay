@@ -41,6 +41,8 @@ pub(crate) fn parse_codex_reader<R: BufRead>(reader: R) -> Metrics {
         }
     }
 
+    // Codex has no cache-write tier; cached input bills at the read discount.
+    let cost_usd = crate::metrics::estimate_cost(&model, input, 0, cached, output);
     Metrics {
         input_tokens: input,
         cache_creation_tokens: 0,
@@ -51,7 +53,7 @@ pub(crate) fn parse_codex_reader<R: BufRead>(reader: R) -> Metrics {
             (Some(start), Some(end)) => (end - start).max(0),
             _ => 0,
         },
-        cost_usd: None,
+        cost_usd,
     }
 }
 
@@ -72,10 +74,14 @@ mod tests {
         assert_eq!(metrics.output_tokens, 80);
         assert_eq!(metrics.model, "gpt-5.6");
         assert_eq!(metrics.duration_secs, 60);
-        assert_eq!(metrics.cost_usd, None);
+        // gpt-5 family is priced: 100 in + 200 cached·0.10 + 80 out → non-zero.
+        let cost = metrics.cost_usd.expect("gpt-5 should be priced");
+        let expected = (100.0 + 200.0 * 0.10) / 1e6 * 1.25 + 80.0 / 1e6 * 10.0;
+        assert!((cost - expected).abs() < 1e-9, "cost: {cost}");
         let footer = metrics.footer();
         assert!(footer.contains("gpt-5.6"), "footer: {footer}");
         assert!(footer.contains("100 in"), "footer: {footer}");
         assert!(footer.contains("200 cached"), "footer: {footer}");
+        assert!(footer.contains('$'), "footer: {footer}");
     }
 }

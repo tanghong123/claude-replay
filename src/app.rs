@@ -182,6 +182,7 @@ fn event_loop<B: ratatui::backend::Backend>(
         if !event::poll(Duration::from_millis(250))? {
             if let Some(r) = reader.as_mut() {
                 let p = r.poll().unwrap_or_default();
+                let advanced = p.reset || !p.lines.is_empty();
                 // Codex splits a call and its output across polls, and joins them
                 // by call-id — so re-parse the whole (append-only) file to back-patch
                 // the original tool block, rather than ingesting the batch alone.
@@ -191,6 +192,16 @@ fn event_loop<B: ratatui::backend::Backend>(
                     }
                 } else if !p.lines.is_empty() {
                     view.ingest(model::parse_for(agent, &p.lines.join("\n"), args));
+                }
+                // The footer tokens/cost/duration must track the growing live
+                // session, not stay frozen at load — re-run the (streaming)
+                // metrics pass whenever the tail advanced.
+                if advanced {
+                    if let Ok(file) = std::fs::File::open(path) {
+                        let metrics =
+                            crate::metrics::parse_reader_for(agent, std::io::BufReader::new(file));
+                        view.set_metrics(metrics.footer());
+                    }
                 }
             }
             continue;

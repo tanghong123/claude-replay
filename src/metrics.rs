@@ -44,7 +44,8 @@ pub(crate) fn parse_ts(s: &str) -> Option<i64> {
     Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se)
 }
 
-/// Rough USD/1M-token (input, output) prices for cost estimation.
+/// Rough USD/1M-token (input, output) list prices for cost estimation.
+/// Best-effort — rates are approximate and drift over time.
 fn price(model: &str) -> Option<(f64, f64)> {
     let m = model.to_lowercase();
     if m.contains("opus") {
@@ -53,9 +54,28 @@ fn price(model: &str) -> Option<(f64, f64)> {
         Some((3.0, 15.0))
     } else if m.contains("haiku") {
         Some((1.0, 5.0))
+    } else if m.contains("codex") || m.contains("gpt-5") || m.contains("gpt5") {
+        // OpenAI GPT-5 family (Codex uses these), best-effort list price.
+        Some((1.25, 10.0))
     } else {
         None
     }
+}
+
+/// Best-effort USD cost from a model name and its token tiers. Cache writes bill
+/// at ~1.25× base input, cache reads at ~0.1× (prompt-caching discount). Returns
+/// `None` when the model isn't in the price table.
+pub(crate) fn estimate_cost(
+    model: &str,
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+) -> Option<f64> {
+    price(model).map(|(pi, po)| {
+        (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
+            + output as f64 / 1e6 * po
+    })
 }
 
 /// Stream the metrics pass straight from a reader, so a large transcript never
@@ -110,12 +130,7 @@ fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,
     };
-    // Price each tier at its own rate: cache writes bill at ~1.25× base input,
-    // cache reads at ~0.1× (Anthropic prompt-caching pricing).
-    let cost_usd = price(&model).map(|(pi, po)| {
-        (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
-            + output as f64 / 1e6 * po
-    });
+    let cost_usd = estimate_cost(&model, input, cache_creation, cache_read, output);
     Metrics {
         input_tokens: input,
         cache_creation_tokens: cache_creation,
