@@ -142,11 +142,12 @@ fn diff_counts(old: &str, new: &str) -> (usize, usize) {
 const WRITE_PREVIEW: usize = 10;
 
 /// Render a whole-new-file write as syntax-highlighted, line-numbered code (no
-/// `+` gutter), capped to a preview like Claude Code: `{6 spaces}{num right-aligned}
-/// {code}` for the first `WRITE_PREVIEW` lines, then `     … +N lines`.
-fn write_numbered(content: &str, token: &str, out: &mut Vec<Line<'static>>) {
+/// `+` gutter): `{6 spaces}{num right-aligned} {code}`. `limit` caps the shown
+/// lines (the collapsed preview shows `Some(WRITE_PREVIEW)` then `     … +N lines`,
+/// like Claude Code; the expanded view passes `None` to dump the whole file).
+fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Vec<Line<'static>>) {
     let lines: Vec<&str> = content.lines().collect();
-    let shown = lines.len().min(WRITE_PREVIEW);
+    let shown = limit.map_or(lines.len(), |cap| lines.len().min(cap));
     // Gutter width from the largest *shown* number (min 2), as CC does.
     let gutter = shown.to_string().len().max(2);
     let hl = highlight::highlight_spans(content, token);
@@ -446,7 +447,9 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                     format!("  ⎿ \u{a0}Wrote {n} lines to {target}"),
                     theme::result(),
                 ));
-                write_numbered(content, token, &mut out);
+                // Expanded: the whole file (folding controls cost). The collapsed
+                // preview caps at WRITE_PREVIEW — see `render_collapsed`.
+                write_numbered(content, token, None, &mut out);
             } else if matches!(name.as_str(), "Edit" | "MultiEdit") {
                 out.push(tool_header(name, target, None));
                 let (adds, dels) = diffs
@@ -535,11 +538,21 @@ fn edit_summary(adds: usize, dels: usize) -> String {
 
 /// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
 /// `Update`; everything else keeps its tool name.
-fn display_name(name: &str) -> &str {
+pub(crate) fn display_name(name: &str) -> &str {
     match name {
         "Edit" | "MultiEdit" => "Update",
         other => other,
     }
+}
+
+/// The display-column span `[start, end)` of the `(target)` region in a tool
+/// header (`⏺ Name(target)`) — so the viewer can hit-test clicks on the path.
+/// Mirrors `tool_header`'s layout: `⏺`(1) + ` `(1) + display_name + `(target)`.
+pub(crate) fn tool_header_target_span(name: &str, target: &str) -> (usize, usize) {
+    use unicode_width::UnicodeWidthStr;
+    let start = 2 + UnicodeWidthStr::width(display_name(name));
+    let end = start + UnicodeWidthStr::width(format!("({target})").as_str());
+    (start, end)
 }
 
 /// The `⏺ Name(target)` header line, optionally with a background fill applied to
@@ -787,6 +800,32 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
         Block::ToolUse { name, .. } if name == "Bash" => {
             vec![Line::from(Span::styled("  Ran 1 shell command", header))]
         }
+        // A file write collapses to a Claude-Code-style preview — the header, the
+        // `Wrote N lines` result, then the first `WRITE_PREVIEW` lines + `… +N lines`
+        // (not a generic `⋯ N folded`). Expanding shows the whole file.
+        Block::ToolUse {
+            name,
+            target,
+            diffs,
+            ..
+        } if name == "Write" || name == "NotebookEdit" => {
+            let content = diffs
+                .iter()
+                .map(|(_, n)| n.as_str())
+                .find(|n| !n.is_empty())
+                .unwrap_or("");
+            let n = content.lines().count();
+            let token = highlight::token_for_target(target);
+            let mut v = vec![
+                tool_header(name, target, None),
+                Line::styled(
+                    format!("  ⎿ \u{a0}Wrote {n} lines to {target}"),
+                    theme::result(),
+                ),
+            ];
+            write_numbered(content, token, Some(WRITE_PREVIEW), &mut v);
+            v
+        }
         Block::ToolUse {
             name,
             target,
@@ -883,14 +922,14 @@ fn body_len(b: &Block) -> usize {
             ..
         } => match name.as_str() {
             "Write" | "NotebookEdit" => {
+                // Expanded height: ⎿ result line + every content line (Write has its
+                // own `render_collapsed` arm, so this feeds only length checks).
                 let content = diffs
                     .iter()
                     .map(|(_, n)| n.as_str())
                     .find(|n| !n.is_empty())
                     .unwrap_or("");
-                let n = content.lines().count();
-                let shown = n.min(WRITE_PREVIEW);
-                1 + shown + usize::from(n > shown) // ⎿ header + preview + "… +N lines"
+                1 + content.lines().count()
             }
             "Edit" | "MultiEdit" => {
                 let body: usize = if let Some(hunks) = patch {
@@ -1115,10 +1154,11 @@ mod tests {
         );
     }
 
-    /// Write renders as a `⎿ Wrote N lines` header + a capped numbered preview
-    /// (first WRITE_PREVIEW lines) then `… +N lines`, like Claude Code.
+    /// Like Claude Code: a Write **collapses** to a `⎿ Wrote N lines` header + a
+    /// capped numbered preview (first WRITE_PREVIEW lines) then `… +N lines`, and
+    /// **expands** to the whole file — the inverse of the old (always-capped) render.
     #[test]
-    fn write_shows_capped_numbered_preview() {
+    fn write_collapses_to_preview_and_expands_to_whole_file() {
         let content = (1..=25)
             .map(|i| format!("row{i}"))
             .collect::<Vec<_>>()
@@ -1131,25 +1171,41 @@ mod tests {
             patch: None,
             read_lines: None,
         };
-        let t = texts(&render_one(&block, 80));
-        let all = t.join("\n");
+
+        // Collapsed → 10-line preview + "… +15 lines".
+        let c = texts(&render_collapsed(&block));
+        let call = c.join("\n");
         assert!(
-            t.iter()
+            c.iter()
                 .any(|l| l.contains("⎿ \u{a0}Wrote 25 lines to src/x.rs")),
-            "no header:\n{all}"
+            "no header:\n{call}"
         );
-        // numbered, not `+`-prefixed
-        assert!(t.iter().any(|l| l.contains(" 1 ") && l.contains("row1")));
-        assert!(!all.contains("+ row1"), "should not be a +diff:\n{all}");
-        // capped at WRITE_PREVIEW: last preview line shown, the rest summarised.
+        assert!(c.iter().any(|l| l.contains(" 1 ") && l.contains("row1")));
+        assert!(!call.contains("+ row1"), "should not be a +diff:\n{call}");
         assert!(
-            t.iter().any(|l| l.contains("row10")),
-            "preview tail missing:\n{all}"
+            c.iter().any(|l| l.contains("row10")),
+            "tail missing:\n{call}"
         );
-        assert!(!all.contains("row11"), "should cap at 10:\n{all}");
+        assert!(!call.contains("row11"), "collapsed caps at 10:\n{call}");
         assert!(
-            t.iter().any(|l| l.contains("… +15 lines")),
-            "no cap marker:\n{all}"
+            c.iter().any(|l| l.contains("… +15 lines")),
+            "no cap marker:\n{call}"
+        );
+
+        // Expanded → the whole file, no cap marker.
+        let e = texts(&render_one(&block, 80));
+        let eall = e.join("\n");
+        assert!(
+            e.iter().any(|l| l.contains("row11")),
+            "expanded truncated:\n{eall}"
+        );
+        assert!(
+            e.iter().any(|l| l.contains("row25")),
+            "expanded truncated:\n{eall}"
+        );
+        assert!(
+            !eall.contains("… +"),
+            "expanded should not summarise:\n{eall}"
         );
     }
 

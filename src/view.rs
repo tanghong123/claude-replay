@@ -286,6 +286,7 @@ pub struct View {
     // re-renders only the toggled block instead of re-highlighting the whole doc.
     body_cache: Vec<Option<(bool, Vec<Line<'static>>)>>,
     cache_width: Option<u16>, // width the cache was built at; a change invalidates it
+    cwd: Option<PathBuf>,     // session working dir — reverses a header's relativized path
 }
 
 impl View {
@@ -324,12 +325,19 @@ impl View {
             sel_cursor: None,
             body_cache: Vec::new(),
             cache_width: None,
+            cwd: None,
         }
     }
 
     /// Set the footer metrics text (tokens/cost/duration/model).
     pub fn set_metrics(&mut self, m: String) {
         self.metrics = m;
+    }
+
+    /// Record the session's working directory, so a click on a tool header's path
+    /// can reverse its relativized display (`~/…`, `src/…`) to an absolute path.
+    pub fn set_cwd(&mut self, cwd: Option<PathBuf>) {
+        self.cwd = cwd;
     }
 
     /// Mark that this viewer was reached through the session picker, so `Esc`
@@ -587,12 +595,60 @@ impl View {
         }
         self.rebuild_raw();
     }
-    /// Mouse click on a content row (0-based from the top of the content area).
-    pub fn click_row(&mut self, row: u16) {
+    /// Mouse click at a content cell (0-based row/col from the top-left of the
+    /// content area). A click on the **path** in a tool header (`⏺ Write(<path>)`)
+    /// returns that path (absolute) for the caller to reveal in the OS file
+    /// manager; a click anywhere else in a foldable block toggles its fold and
+    /// returns `None`.
+    pub fn click_at(&mut self, row: u16, col: u16) -> Option<PathBuf> {
         let idx = self.scroll + row as usize;
-        if let Some(&b) = self.wrapped_tag.get(idx) {
-            self.focus = Some(b);
-            self.toggle_block(b);
+        let &b = self.wrapped_tag.get(idx)?;
+        self.focus = Some(b);
+        if let Some(path) = self.header_path_hit(b, idx, col as usize) {
+            return Some(path);
+        }
+        self.toggle_block(b);
+        None
+    }
+
+    /// The absolute file path a click at `(idx, col)` lands on, if `idx` is the
+    /// first (header) row of a tool block and `col` falls within its `(target)`
+    /// span — and the resolved path actually exists (so a `Bash(ls)` command or a
+    /// `Grep(pattern)` header never masquerades as a file). Else `None`.
+    fn header_path_hit(&self, b: usize, idx: usize, col: usize) -> Option<PathBuf> {
+        // Only the header's own first row carries the path.
+        if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
+            return None;
+        }
+        let Block::ToolUse { name, target, .. } = self.blocks.get(b)? else {
+            return None;
+        };
+        if target.is_empty() {
+            return None;
+        }
+        let (start, end) = render::tool_header_target_span(name, target);
+        if col < start || col >= end {
+            return None;
+        }
+        let abs = self.resolve_target_path(target);
+        abs.exists().then_some(abs)
+    }
+
+    /// Reverse a header's relativized `target` (`~/…` → `$HOME/…`, a bare relative
+    /// path → under the session cwd, an absolute path unchanged) to a real path.
+    fn resolve_target_path(&self, target: &str) -> PathBuf {
+        if let Some(rest) = target.strip_prefix("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join(rest);
+            }
+        }
+        let p = PathBuf::from(target);
+        if p.is_absolute() {
+            return p;
+        }
+        match &self.cwd {
+            Some(cwd) => cwd.join(target),
+            None => p,
         }
     }
 
@@ -1078,6 +1134,52 @@ mod tests {
         v.sel_begin(0, 2);
         assert!(!v.dragged());
         assert!(v.take_selection_text().is_none());
+    }
+
+    /// Clicking the **path** in a tool header reveals it (returns the absolute
+    /// path); clicking elsewhere in the block toggles its fold and returns `None`.
+    /// A header whose target isn't a real path (a Bash command) never reveals.
+    #[test]
+    fn clicking_header_path_reveals_else_toggles() {
+        let file = std::env::temp_dir().join(format!("cr-click-{}.txt", std::process::id()));
+        std::fs::write(&file, "hi").unwrap();
+        let target = file.to_string_lossy().to_string();
+        let write = Block::ToolUse {
+            name: "Write".into(),
+            target,
+            diffs: vec![(String::new(), "a\nb\nc".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        // A Bash header whose "target" is a command, not a path.
+        let bash = Block::ToolUse {
+            name: "Bash".into(),
+            target: "echo hi".into(),
+            output: Some("hi".into()),
+            diffs: vec![],
+            patch: None,
+            read_lines: None,
+        };
+        let mut v = View::new(vec![write, bash], "t", false, FoldPolicy::none());
+        let _ = draw(&mut v, 200, 20); // wide → the header never wraps
+
+        // `⏺ Write(` is 7 cols; a click at col 9 lands inside the path.
+        assert_eq!(
+            v.click_at(0, 9).as_deref(),
+            Some(file.as_path()),
+            "path click should reveal the file"
+        );
+        // The `⏺` marker (col 0) is outside the path span → toggles, no reveal.
+        assert!(v.click_at(0, 0).is_none(), "marker click should not reveal");
+        // The Bash header's "path" doesn't exist on disk → never a reveal.
+        let bash_row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        assert!(
+            v.click_at(bash_row, 8).is_none(),
+            "a command header must not masquerade as a file path"
+        );
+
+        std::fs::remove_file(&file).ok();
     }
 
     /// Backlog invariant: a shell command and its output are ONE foldable block.

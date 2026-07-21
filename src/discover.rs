@@ -275,6 +275,33 @@ pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
 /// Auto-detect which agent wrote a transcript by sniffing its first lines: a
 /// Codex rollout opens with a `session_meta` event and wraps events in `payload`;
 /// a Claude transcript has top-level `sessionId`/`message`. Defaults to Claude.
+/// The working directory a session ran in, read from the transcript head — the
+/// top-level `cwd` (Claude) or `payload.cwd` of `session_meta` (Codex). Used to
+/// resolve a header's relativized path back to an absolute one (for reveal-in-
+/// file-manager). `None` when no cwd is recorded.
+pub fn session_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    for line in std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .take(50)
+    {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(cwd) = v.get("cwd").and_then(Value::as_str) {
+            return Some(PathBuf::from(cwd));
+        }
+        if v.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(cwd) = v.pointer("/payload/cwd").and_then(Value::as_str) {
+                return Some(PathBuf::from(cwd));
+            }
+        }
+    }
+    None
+}
+
 pub fn detect_agent(path: &Path) -> Agent {
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {

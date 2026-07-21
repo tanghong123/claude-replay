@@ -145,6 +145,8 @@ fn view_session<B: ratatui::backend::Backend>(
     let fold = crate::view::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, reader.is_some(), fold);
     view.set_can_go_back(can_go_back);
+    // Session cwd → lets a click on a tool header's path reveal the real file.
+    view.set_cwd(discover::session_cwd(path));
     // `--latest` didn't show a list, so offer `s` to reach the session picker.
     view.set_can_open_picker(args.latest);
     // Re-open for the metrics pass (also streaming) rather than hold the content.
@@ -300,7 +302,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                     } else {
                         view.clear_selection();
                         if (m.row as usize) < view.content_rows() {
-                            view.click_row(m.row);
+                            if let Some(path) = view.click_at(m.row, m.column) {
+                                reveal_in_file_manager(&path);
+                            }
                         }
                     }
                 }
@@ -313,6 +317,34 @@ fn event_loop<B: ratatui::backend::Backend>(
             Event::Resize(_, _) => view.invalidate_wrap(),
             _ => {}
         }
+    }
+}
+
+/// Reveal a path in the OS file manager (a benign, read-only side effect from an
+/// explicit click). macOS: `open -R <file>` selects it in Finder / `open <dir>`
+/// for a directory. Linux: `xdg-open` the containing directory. Spawned detached
+/// so it never blocks or disturbs the TUI; failures are ignored (no file manager).
+fn reveal_in_file_manager(path: &Path) {
+    let is_dir = path.is_dir();
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if is_dir {
+            cmd.arg(path);
+        } else {
+            cmd.arg("-R").arg(path);
+        }
+        let _ = cmd.spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No generic reveal-and-select on Linux/other; open the folder itself.
+        let dir = if is_dir {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
 
