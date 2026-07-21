@@ -1,6 +1,6 @@
 [package]
 name = "claude-replay"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 default-run = "claude-replay"
 description = "Interactive, read-only viewer for Claude Code session transcripts (like `claude --resume`, but you can't type)."
