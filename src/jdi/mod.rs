@@ -106,9 +106,40 @@ enum Command {
         #[arg(long)]
         no_launch: bool,
     },
+    /// Hand THIS interactive session over to an unattended agent-jdi run — the
+    /// mirror of `takeover`. Run from inside a claude/codex session: it quits the
+    /// session and resumes it in the background. Use --armed to quit it yourself.
+    Handoff {
+        /// Instruction folded into the unattended resume prompt.
+        instruction: Vec<String>,
+        /// Seconds between relaunch attempts (default 600).
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Give up after this many attempts (0 = never; default 0).
+        #[arg(long)]
+        max_attempts: Option<u32>,
+        /// Arm only — don't quit the session for you (you press /exit).
+        #[arg(long)]
+        armed: bool,
+    },
     /// Internal: the detached supervisor loop (do not call directly).
     #[command(name = "__run", hide = true)]
     Run { id: String },
+    /// Internal: wait for the interactive session to exit, then resume (handoff).
+    #[command(name = "__handoff", hide = true)]
+    HandoffWait {
+        #[arg(long)]
+        watch_pid: u32,
+        #[arg(long)]
+        cwd: PathBuf,
+        #[arg(long)]
+        interval: Option<u64>,
+        #[arg(long)]
+        max_attempts: Option<u32>,
+        #[arg(long)]
+        agent: Option<Agent>,
+        instruction: Vec<String>,
+    },
 }
 
 /// Resolved runtime config. `agent-jdi` is agent-neutral, so its state lives in a
@@ -181,7 +212,37 @@ pub fn run() -> Result<()> {
             cmd_backlog(&config, id.as_deref(), &message.join(" "), dry)
         }
         Command::Takeover { id, no_launch } => cmd_takeover(&config, id.as_deref(), dry, no_launch),
+        Command::Handoff {
+            instruction,
+            interval,
+            max_attempts,
+            armed,
+        } => cmd_handoff(
+            &config,
+            cli.agent,
+            &instruction.join(" "),
+            interval,
+            max_attempts,
+            armed,
+            dry,
+        ),
         Command::Run { id } => supervisor::run_loop(&config.home, &id),
+        Command::HandoffWait {
+            watch_pid,
+            cwd,
+            interval,
+            max_attempts,
+            agent,
+            instruction,
+        } => cmd_handoff_wait(
+            &config,
+            watch_pid,
+            &cwd,
+            agent,
+            &instruction.join(" "),
+            interval,
+            max_attempts,
+        ),
     }
 }
 
@@ -946,6 +1007,187 @@ fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool, no_launch: boo
         std::process::exit(status.code().unwrap_or(0));
     }
     Ok(())
+}
+
+/// Hand the current interactive session to an unattended run: arm a detached
+/// watcher that resumes it once the session exits, then (by default) quit the
+/// session for you. The mirror of `takeover`.
+#[allow(clippy::too_many_arguments)]
+fn cmd_handoff(
+    config: &Config,
+    forced: Option<Agent>,
+    instruction: &str,
+    interval: Option<u64>,
+    max_attempts: Option<u32>,
+    armed: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
+    let bin = match agent {
+        Agent::Claude => "claude",
+        Agent::Codex => "codex",
+    };
+    // Watch the nearest ancestor process that is the interactive agent — that's the
+    // session we're inside, whose exit should trigger the unattended resume.
+    let watch_pid = ancestor_pid_running(bin);
+
+    if dry_run {
+        println!(
+            "[dry-run] handoff: agent={} cwd={}",
+            agent.label(),
+            cwd.display()
+        );
+        match watch_pid {
+            Some(p) => println!(
+                "[dry-run] would watch pid {p}; on its exit run: agent-jdi resume {instruction}"
+            ),
+            None => println!("[dry-run] (could not find the interactive {bin} process to watch)"),
+        }
+        println!(
+            "[dry-run] then {}",
+            if armed {
+                "wait for you to quit"
+            } else {
+                "quit this session (SIGTERM)"
+            }
+        );
+        return Ok(());
+    }
+
+    let Some(watch_pid) = watch_pid else {
+        bail!(
+            "couldn't find the interactive {bin} process to hand off — run `agent-jdi handoff` \
+             from inside a {bin} session, or quit and use `agent-jdi resume`."
+        );
+    };
+
+    // Spawn the detached watcher (its own process group, so it survives the session).
+    let exe = std::env::current_exe().context("locate agent-jdi executable")?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("__handoff")
+        .arg("--watch-pid")
+        .arg(watch_pid.to_string())
+        .arg("--cwd")
+        .arg(&cwd)
+        .arg("--agent")
+        .arg(agent.label());
+    if let Some(i) = interval {
+        cmd.arg("--interval").arg(i.to_string());
+    }
+    if let Some(m) = max_attempts {
+        cmd.arg("--max-attempts").arg(m.to_string());
+    }
+    if !instruction.is_empty() {
+        cmd.arg("--").arg(instruction);
+    }
+    cmd.env("AGENT_JDI_HOME", &config.home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn().context("spawn handoff watcher")?;
+
+    println!(
+        "▶ handoff armed for this {} session (pid {watch_pid}).",
+        agent.label()
+    );
+    println!(
+        "  when it exits, agent-jdi resumes it unattended in {}.",
+        cwd.display()
+    );
+    if armed {
+        println!("  quit now (/exit or Ctrl-D) to hand off.");
+    } else {
+        println!("  quitting this session now…");
+        // SIGTERM the interactive agent; the watcher then resumes it. (Spawn the
+        // watcher first — above — so it's independent of this session's death.)
+        std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(watch_pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok();
+    }
+    Ok(())
+}
+
+/// The detached handoff watcher: wait for the interactive session (`watch_pid`) to
+/// exit, then resume it unattended in `cwd`. Runs with no TTY (stdio is /dev/null).
+fn cmd_handoff_wait(
+    config: &Config,
+    watch_pid: u32,
+    cwd: &Path,
+    agent: Option<Agent>,
+    instruction: &str,
+    interval: Option<u64>,
+    max_attempts: Option<u32>,
+) -> Result<()> {
+    // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
+    for _ in 0..7200 {
+        if !state::pid_alive(watch_pid) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // Let the transcript flush before we discover + resume it.
+    std::thread::sleep(Duration::from_secs(1));
+    std::env::set_current_dir(cwd).with_context(|| format!("chdir into {}", cwd.display()))?;
+    // Resume unattended (no follow — this process has no terminal).
+    cmd_resume(
+        config,
+        agent,
+        instruction,
+        interval,
+        max_attempts,
+        false,
+        false,
+    )
+}
+
+/// The nearest ancestor process whose command line contains `needle` (the agent
+/// binary name) — i.e. the interactive session we're running inside. Unix-only.
+#[cfg(unix)]
+fn ancestor_pid_running(needle: &str) -> Option<u32> {
+    let mut pid = std::process::id();
+    for _ in 0..64 {
+        let ppid = ps_field(pid, "ppid=")?.trim().parse::<u32>().ok()?;
+        if ppid <= 1 {
+            return None;
+        }
+        if ps_field(ppid, "command=").is_some_and(|c| c.contains(needle)) {
+            return Some(ppid);
+        }
+        pid = ppid;
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn ancestor_pid_running(_needle: &str) -> Option<u32> {
+    None
+}
+
+/// One `ps -o <field> -p <pid>` value (e.g. `ppid=`, `command=`), trimmed.
+#[cfg(unix)]
+fn ps_field(pid: u32, field: &str) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .arg("-o")
+        .arg(field)
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 /// Launch the read-only viewer on `path`, following live. Runs in-process (the
