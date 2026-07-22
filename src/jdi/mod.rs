@@ -59,8 +59,12 @@ enum Command {
         #[arg(long)]
         max_attempts: Option<u32>,
     },
-    /// Resume the most-recent session for this directory, unattended, and follow it.
+    /// Resume a tracked slot by --id, or this directory's most-recent session.
     Resume {
+        /// Resume an exact tracked slot from `agent-jdi list` instead of discovering
+        /// the newest session for the current directory.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
         /// Extra instruction folded into the persistence prompt.
         instruction: Vec<String>,
         /// Seconds between relaunch attempts (default 600).
@@ -141,12 +145,14 @@ pub fn run() -> Result<()> {
             dry,
         ),
         Command::Resume {
+            id,
             instruction,
             interval,
             max_attempts,
         } => cmd_resume(
             &config,
             cli.agent,
+            id.as_deref(),
             &instruction.join(" "),
             interval,
             max_attempts,
@@ -166,7 +172,18 @@ pub fn run() -> Result<()> {
 /// Resolve the session for a command: an explicit id, else this directory's slot.
 fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     let sid = match id {
-        Some(id) => id.to_string(),
+        Some(id) => {
+            let mut components = Path::new(id).components();
+            if !matches!(
+                (components.next(), components.next()),
+                (Some(std::path::Component::Normal(_)), None)
+            ) {
+                bail!(
+                    "invalid tracked session id '{id}' — expected one name from `agent-jdi list`"
+                );
+            }
+            id.to_string()
+        }
         None => state::slot_id(&std::env::current_dir()?),
     };
     let s = Session::new(&config.home, &sid);
@@ -176,19 +193,89 @@ fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     Ok(s)
 }
 
+struct ResumeTarget {
+    slot: String,
+    cwd: PathBuf,
+    agent: Agent,
+    resumable: agent::ResumableSession,
+}
+
+fn resolve_resume_target(
+    config: &Config,
+    forced: Option<Agent>,
+    tracked_id: Option<&str>,
+    current_cwd: &Path,
+) -> Result<ResumeTarget> {
+    if let Some(slot) = tracked_id {
+        let tracked = resolve_session(config, Some(slot))?;
+        let meta = |key: &str| {
+            tracked.meta_get(key).ok_or_else(|| {
+                anyhow::anyhow!("tracked session '{slot}' is missing required {key}= metadata")
+            })
+        };
+        let cwd = PathBuf::from(meta("cwd")?);
+        let recorded_agent = meta("agent")?;
+        let agent = Agent::from_label(&recorded_agent).ok_or_else(|| {
+            anyhow::anyhow!("tracked session '{slot}' has unsupported agent '{recorded_agent}'")
+        })?;
+        if let Some(forced) = forced {
+            if forced != agent {
+                bail!(
+                    "tracked session '{slot}' uses agent {}, but --agent {} was requested",
+                    agent.label(),
+                    forced.label()
+                );
+            }
+        }
+        let session_id = meta("session_id")?;
+        let transcript = PathBuf::from(meta("transcript")?);
+        let idle_secs = std::fs::metadata(&transcript)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|mtime| mtime.elapsed().ok())
+            .map(|idle| idle.as_secs())
+            .unwrap_or(0);
+        return Ok(ResumeTarget {
+            slot: slot.to_string(),
+            cwd,
+            agent,
+            resumable: agent::ResumableSession {
+                id: session_id,
+                transcript,
+                idle_secs,
+            },
+        });
+    }
+
+    let cwd = current_cwd.to_path_buf();
+    let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
+    let resumable = agent::adapter(agent).discover_resumable(&cwd)?;
+    Ok(ResumeTarget {
+        slot: state::slot_id(&cwd),
+        cwd,
+        agent,
+        resumable,
+    })
+}
+
 fn cmd_resume(
     config: &Config,
     forced: Option<Agent>,
+    tracked_id: Option<&str>,
     instruction: &str,
     interval: Option<u64>,
     max_attempts: Option<u32>,
     dry_run: bool,
 ) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
+    let current_cwd = std::env::current_dir()?;
+    let ResumeTarget {
+        slot,
+        cwd,
+        agent,
+        resumable,
+    } = resolve_resume_target(config, forced, tracked_id, &current_cwd)?;
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
-    let resumable = adapter.discover_resumable(&cwd)?;
 
     // `--dry-run`: show what would run, with no side effects (no slot, no spawn, no
     // viewer). Safe way to verify agent detection + the exact invocation.
@@ -227,7 +314,6 @@ fn cmd_resume(
     }
 
     guard_no_conflict(config, &cwd)?;
-    let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
 
     // Take the slot (single-instance guard) before writing anything.
@@ -589,6 +675,70 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_accepts_a_tracked_slot_id() {
+        assert!(Cli::try_parse_from(["agent-jdi", "resume", "--id", "avatar-kit-5ce3fb",]).is_ok());
+    }
+
+    #[test]
+    fn explicit_session_id_rejects_paths() {
+        let config = Config {
+            home: PathBuf::from("/state/agent-jdi"),
+        };
+        for id in [
+            "../outside",
+            "nested/session",
+            "/absolute/session",
+            ".",
+            "..",
+        ] {
+            let error = match resolve_session(&config, Some(id)) {
+                Ok(_) => panic!("path-like id {id:?} was accepted"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("invalid tracked session id"),
+                "unexpected error for {id:?}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_resume_target_comes_from_tracked_slot_metadata() {
+        let base = std::env::temp_dir().join(format!("ajdi-resume-id-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let config = Config {
+            home: base.join("home"),
+        };
+        let tracked = Session::new(&config.home, "avatar-kit-5ce3fb");
+        tracked
+            .meta_set("cwd", "/work/repos/project-h/avatar-kit")
+            .unwrap();
+        tracked.meta_set("agent", "codex").unwrap();
+        tracked.meta_set("session_id", "codex-session-123").unwrap();
+        tracked
+            .meta_set("transcript", "/sessions/codex-session-123.jsonl")
+            .unwrap();
+
+        let target = resolve_resume_target(
+            &config,
+            Some(Agent::Codex),
+            Some("avatar-kit-5ce3fb"),
+            Path::new("/an/unrelated/current/directory"),
+        )
+        .unwrap();
+
+        assert_eq!(target.slot, "avatar-kit-5ce3fb");
+        assert_eq!(target.cwd, Path::new("/work/repos/project-h/avatar-kit"));
+        assert_eq!(target.agent, Agent::Codex);
+        assert_eq!(target.resumable.id, "codex-session-123");
+        assert_eq!(
+            target.resumable.transcript,
+            Path::new("/sessions/codex-session-123.jsonl")
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn default_agent_reuses_the_last_run_in_this_dir() {

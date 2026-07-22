@@ -256,15 +256,25 @@ pub(crate) fn session_id_with_marker(marker: &str) -> Option<String> {
     None
 }
 
-/// The newest Codex session recorded for `cwd` (exact cwd match preferred, else the
-/// newest overall). Used by the `agent-jdi` Codex adapter to pick a resume target.
+/// The newest Codex session recorded for `cwd` or its nearest ancestor with
+/// sessions. Used by the `agent-jdi` Codex adapter to pick a resume target without
+/// falling back to an unrelated directory.
+fn latest_for_cwd_in(root: &Path, cwd: &Path) -> Option<CodexSession> {
+    let sessions = sessions_in(root); // newest-first
+    for ancestor in crate::discover::ancestors_of(cwd) {
+        let wanted = normalized(&ancestor);
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| normalized(&session.cwd) == wanted)
+        {
+            return Some(session.clone());
+        }
+    }
+    None
+}
+
 pub(crate) fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
-    let wanted = normalized(cwd);
-    let all = sessions_in(&sessions_dir());
-    all.iter()
-        .find(|s| normalized(&s.cwd) == wanted)
-        .or_else(|| all.first())
-        .cloned()
+    latest_for_cwd_in(&sessions_dir(), cwd)
 }
 
 #[cfg(test)]
@@ -370,5 +380,29 @@ mod tests {
         let here = candidates_scoped_in(&fixture.sessions, &repo_a);
         assert_eq!(here.len(), 1);
         assert!(here[0].cwd_affinity);
+    }
+
+    #[test]
+    fn latest_for_cwd_does_not_fall_back_to_an_unrelated_session() {
+        let fixture = Fixture::new();
+        let repo_a = fixture.root.join("a");
+        let repo_b = fixture.root.join("b");
+        fs::create_dir_all(&repo_b).unwrap();
+        fixture.rollout("2026/07/20", "sa", &repo_a, "codex-tui");
+
+        assert!(latest_for_cwd_in(&fixture.sessions, &repo_b).is_none());
+    }
+
+    #[test]
+    fn latest_for_cwd_uses_the_nearest_ancestor_with_sessions() {
+        let fixture = Fixture::new();
+        let parent = fixture.root.join("github");
+        let child = parent.join("claude-toolbox");
+        fs::create_dir_all(&child).unwrap();
+        fixture.rollout("2026/07/20", "grandparent", &fixture.root, "codex-tui");
+        fixture.rollout("2026/07/21", "parent", &parent, "codex-tui");
+
+        let found = latest_for_cwd_in(&fixture.sessions, &child).unwrap();
+        assert_eq!(found.id, "parent");
     }
 }
