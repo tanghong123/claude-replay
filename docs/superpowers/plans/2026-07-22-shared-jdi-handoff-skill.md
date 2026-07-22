@@ -28,7 +28,7 @@
 - Consumes: `integrations/install-jdi-handoff.sh`, `--agents-dir`, and `--claude-dir`.
 - Produces: an executable integration test that exits nonzero until the installer and shared layout exist.
 
-- [ ] **Step 1: Write a failing POSIX shell test**
+- [ ] **Step 1: Write a failing macOS/Linux `/bin/sh` test**
 
 The test creates a temporary path containing spaces, invokes:
 

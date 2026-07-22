@@ -45,10 +45,6 @@ install_managed_file() {
     if [ -d "$target_file" ] && [ ! -L "$target_file" ]; then
         die "managed file target is a directory: $target_file"
     fi
-    if [ -L "$target_file" ]; then
-        rm "$target_file"
-    fi
-
     temporary=$(mktemp "$target_dir/.jdi-handoff-install.XXXXXX")
     if ! cp "$source_file" "$temporary"; then
         rm -f "$temporary"
@@ -110,15 +106,21 @@ canonical_dir="$agents_dir/jdi-handoff"
 claude_skills_dir="$claude_dir/skills"
 claude_skill_dir="$claude_dir/skills/jdi-handoff"
 claude_command_dir="$claude_dir/commands"
+canonical_skill="$canonical_dir/SKILL.md"
+claude_skill="$claude_skill_dir/SKILL.md"
+claude_command="$claude_command_dir/jdi-handoff.md"
+
+if [ "$canonical_skill" = "$claude_skill" ]; then
+    die "canonical and Claude Skill targets overlap: $canonical_skill"
+fi
+
 ensure_managed_dir "$canonical_dir" "canonical Skill directory"
 ensure_managed_dir "$claude_skills_dir" "Claude skills directory"
 ensure_managed_dir "$claude_skill_dir" "Claude jdi-handoff Skill directory"
 ensure_managed_dir "$claude_command_dir" "Claude commands directory"
 
-canonical_skill="$canonical_dir/SKILL.md"
 install_managed_file "$skill_source" "$canonical_skill"
 
-claude_skill="$claude_skill_dir/SKILL.md"
 if [ -L "$claude_skill" ]; then
     rm "$claude_skill"
 elif [ -e "$claude_skill" ]; then
@@ -131,7 +133,6 @@ elif [ -e "$claude_skill" ]; then
 fi
 ln -s "$canonical_skill" "$claude_skill"
 
-claude_command="$claude_command_dir/jdi-handoff.md"
 install_managed_file "$command_source" "$claude_command"
 
 printf 'Installed shared Skill: %s\n' "$canonical_skill"

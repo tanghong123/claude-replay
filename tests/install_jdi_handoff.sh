@@ -107,6 +107,23 @@ assert_rejects_managed_dir_link \
     "$attack/three/outside" \
     "$attack/three/.agents/skills" \
     "$attack/three/.claude"
+assert_rejects_managed_dir_link \
+    "Claude jdi-handoff Skill" \
+    "$attack/four/.claude/skills/jdi-handoff" \
+    "$attack/four/outside" \
+    "$attack/four/.agents/skills" \
+    "$attack/four/.claude"
+
+# Public destination overrides may share parents, but their managed files must
+# never collapse to the same path and become a self-referential link.
+overlap="$fixture_root/overlapping-targets"
+mkdir -p "$overlap"
+if sh "$installer" \
+    --agents-dir "$overlap/skills" \
+    --claude-dir "$overlap" >/dev/null 2>&1; then
+    fail "overlapping canonical and Claude Skill targets were accepted"
+fi
+test ! -e "$overlap/skills/jdi-handoff/SKILL.md" || fail "overlap rejection happened after writing a Skill"
 
 # Relative destinations beginning with '-' are valid paths, not tool options.
 leading="$fixture_root/leading-dash"
