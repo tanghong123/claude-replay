@@ -138,8 +138,10 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String {
+        // `Start`'s task text is appended last (below), after the queue-file note, so
+        // the prompt reads instructions → mechanics → "The task:" → the task itself.
         let mut out = match mode {
-            Mode::Start => format!("{START_PREAMBLE}\n\n{}", brief.text),
+            Mode::Start => START_PREAMBLE.to_string(),
             Mode::ResumeDump | Mode::BacklogDump => DUMP_PROMPT.to_string(),
             _ => EXECUTE_PROMPT.to_string(),
         };
@@ -171,20 +173,23 @@ impl AgentAdapter for ClaudeAdapter {
             .filter(|_| !has_native_tasks(session_id))
         {
             out.push_str(&format!(
-                "\n\nIf this session has no task-management tools, keep the same list in \
-                 `{}` instead — one `- [ ]` line per remaining item, flipped to `- [x]` \
-                 the moment it is finished. Keep it current; it is how completion is \
-                 tracked when the tools are absent.",
+                "\n\nThe queue file, if this session has no task-management tools: `{}` — \
+                 one `- [ ]` line per queued item in order, flipped to `- [x]` the moment \
+                 that item is finished, with any blocker noted on its line. Keep it \
+                 current: when the tools are absent this file is the queue, and it is how \
+                 completion is tracked.",
                 path.display()
             ));
         }
         // The operator's instruction applies to every mode, not just a fresh start —
-        // on resume it was previously dropped on the floor.
-        if !matches!(mode, Mode::Start) && !brief.text.trim().is_empty() {
-            out.push_str(&format!(
-                "\n\nAdditional instruction: {}",
-                brief.text.trim()
-            ));
+        // on resume it was previously dropped on the floor. A fresh start puts the
+        // same text last, as the task itself.
+        if !brief.text.trim().is_empty() {
+            out.push_str(&if matches!(mode, Mode::Start) {
+                format!("\n\nThe task:\n\n{}", brief.text.trim())
+            } else {
+                format!("\n\nAdditional instruction: {}", brief.text.trim())
+            });
         }
         out
     }
@@ -260,20 +265,30 @@ fn open_checklist_items(path: &Path) -> Option<usize> {
     )
 }
 
-const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
+/// Fresh-run turn (`start`). Unlike resume, this one plan *and* executes in a single
+/// turn, so it carries a condensed form of both disciplines — build the durable
+/// queue, then work it FIFO with the same skip-on-blocked and prerequisite-now rules.
+/// A fresh run has no prior conversation to re-derive from: the task text below is
+/// the whole input.
+const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm.\n\nFirst break the task below into a durable QUEUE of fully-scoped units of work — your task-management tools if this session has them (one task per unit), otherwise the queue file named below. Give each a clear subject and a self-contained description, in the order they should be done; the queue is the source of truth for the run, so it must outlive this turn.\n\nThen work it to completion, FIFO — oldest pending task first:\n  - Mark a task in_progress before you begin, completed the moment it's done.\n  - Commit the work for each task as you finish it, so progress is durable if the run is interrupted.\n  - If a task is blocked — it needs a human decision, or something outside this run — write the blocker onto it and SKIP to the next one rather than stopping.\n  - New work you identify: if the CURRENT task genuinely needs it as a prerequisite, do it now and record it; otherwise append it to the END of the queue. Only fully-scoped work — never speculative or ambiguous items.\n\nKeep going until every task is either completed or explicitly documented as blocked. Do not end the turn early while actionable work remains.";
 
-/// Dump turn. Ported from the bash claude-jdi's `resume_dump_prompt`, whose
-/// specificity is what actually gets the native queue populated: one TaskCreate per
-/// unit of work, a self-contained subject + description, `pending` status, and
-/// blocks/blockedBy wiring — plus explicit rules against speculative or duplicate
-/// entries. Kept conditional ("if this session has them") so a session without the
-/// tools falls back rather than arguing with the instruction.
-const DUMP_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input or wait for confirmation.\n\nEnqueue the work we have ALREADY discussed and agreed on in THIS conversation. Use your task-management tools if this session has them: one TaskCreate per unit of work, each with a clear subject and a self-contained description a fresh session could act on with no extra context, status \"pending\"; where one task must finish before another can start, wire that with blocks/blockedBy.\n\nRules for what to enqueue:\n  - ONLY fully-scoped tasks that need no human decision. Exclude anything ambiguous or still open — do not enqueue it and do not act on it.\n  - Re-derive a FRESH list of what is agreed and still OUTSTANDING right now. Skip anything already completed. Do NOT copy an earlier task dump.\n  - If tasks from this conversation are ALREADY in your list, reconcile with them — update or reuse; do not create duplicates.\n\nWhen the list is populated, write ONE line as a receipt: either \"queued: <N> task(s)\" with the count, or \"queued: 0 task(s) — nothing actionable\" if there was no agreed, fully-scoped work.\n\nThen STOP. Do not start implementing — execution is a separate step. Your only job this turn is to populate the list and write that receipt.";
+/// Dump turn. Ported from the bash claude-jdi's `resume_dump_prompt` — the
+/// specificity (self-contained descriptions, blockedBy wiring, the anti-duplicate
+/// rules, the receipt) is what actually gets a usable queue built. Two deltas on the
+/// original: it leads with the durable *queue* rather than with `TaskCreate`, so a
+/// session lacking the tools follows the same discipline into the fallback file
+/// instead of arguing with the instruction; and it states the FIFO contract up
+/// front, since ordering decided at build time is what execution relies on.
+const DUMP_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input or wait for confirmation.\n\nPut the work we have ALREADY discussed and agreed on in THIS conversation into a durable QUEUE — it is the source of truth for the run, so it must outlive this turn rather than staying in your reply. Record it with your task-management tools if this session has them (one task per unit of work); if it does not have them, keep the queue in the file named below. The queue is worked FIFO, so put the entries in the order they should be done.\n\nEach entry is ONE unit of work with a clear subject and a self-contained description a fresh session could act on with no extra context, status \"pending\"; where one entry must finish before another can start, wire that with blocks/blockedBy.\n\nRules for what to enqueue:\n  - ONLY fully-scoped tasks that need no human decision. Exclude anything ambiguous or still open — do not enqueue it and do not act on it.\n  - Re-derive a FRESH list of what is agreed and still OUTSTANDING right now. Skip anything already completed. Do NOT copy an earlier task dump.\n  - If tasks from this conversation are ALREADY in the queue, reconcile with them — update or reuse; do not create duplicates.\n\nWhen the queue is populated, write ONE line as a receipt: either \"queued: <N> task(s)\" with the count, or \"queued: 0 task(s) — nothing actionable\" if there was no agreed, fully-scoped work.\n\nThen STOP. Do not start implementing — execution is a separate step. Your only job this turn is to populate the queue and write that receipt.";
 
-/// Execute turn — ported from the bash `resume_execute_prompt`. The guardrails that
-/// matter are the last paragraph's: an unattended run that "ends the turn early with
-/// tasks outstanding" is the failure mode this whole supervisor exists to prevent.
-const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm.\n\nWork through your task list to completion. Use your task-management tools if this session has them:\n  - Pick the next actionable task (respect blockedBy — never start a task whose blockers aren't completed).\n  - Mark it in_progress before you begin, completed the moment it's done.\n  - Commit the work for each task as you finish it, so progress is durable if the run is interrupted.\n  - If completing a task reveals necessary, fully-scoped sub-work, enqueue it (TaskCreate) and complete it too. Do NOT enqueue speculative or ambiguous work.\n\nKeep going until EVERY task is completed — nothing left pending or in_progress. Do not end the turn early with tasks outstanding. If a task is genuinely blocked by something only a human can resolve, note that in its description and move on to the other tasks rather than stopping.";
+/// Execute turn. The bash `resume_execute_prompt` plus three deltas that keep an
+/// unattended run moving: FIFO (deterministic order, no re-planning each turn);
+/// skip-on-blocked promoted from an afterthought to a rule, so one blocker documents
+/// itself and yields instead of stalling the queue; and new work split by kind — a
+/// prerequisite of the CURRENT task must be done now, because appending it to the
+/// end (correct for ordinary follow-ups) would leave the task that needs it
+/// permanently unfinishable.
+const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm.\n\nWork the queue to completion — your task-management tools if this session has them, otherwise the queue file named below:\n  - Take the oldest still-pending task first (FIFO), respecting blockedBy — never start a task whose blockers aren't completed.\n  - Mark it in_progress before you begin, completed the moment it's done.\n  - Commit the work for each task as you finish it, so progress is durable if the run is interrupted.\n\nIf a task turns out to be blocked — it needs a human decision, or something outside this run — write what the blocker is onto that task and SKIP it, then carry on with the next one. Never end the run over a single blocked task; make as much progress as the rest of the queue allows.\n\nWhen you identify NEW work along the way:\n  - if it is a prerequisite the CURRENT task genuinely needs, do it now and record it — do not push it to the back, or the task that needs it can never finish;\n  - otherwise append it to the END of the queue and carry on in order.\n  - Enqueue only fully-scoped work; never speculative or ambiguous items.\n\nKeep going until EVERY task is either completed or explicitly documented as blocked — nothing silently left pending or in_progress. Do not end the turn early while actionable work remains.";
 
 /// Reads Claude's native task queue under `~/.claude/tasks/<session>/*.json`.
 struct ClaudeTaskQueue;
@@ -487,6 +502,55 @@ mod tests {
         assert_eq!(open_checklist_items(&list), None);
         assert_eq!(a.classify(0, "", &ctx), TurnOutcome::Done);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every phase that plans or executes must carry the same queue discipline —
+    /// including `Start`, which does both in one turn. The prerequisite carve-out is
+    /// the subtle one: appending a prereq to the END would leave the task that needs
+    /// it permanently unfinishable.
+    #[test]
+    fn all_phases_state_the_queue_discipline() {
+        let _g = lock_env();
+        let a = ClaudeAdapter;
+        let brief = Brief {
+            text: "do the thing".into(),
+            ..Default::default()
+        };
+
+        // Planning phases build a durable, ordered queue.
+        for mode in [Mode::Start, Mode::ResumeDump, Mode::BacklogDump] {
+            let p = a.prompt_for(mode, &brief, "");
+            assert!(p.contains("QUEUE"), "{mode:?} must name the queue: {p}");
+            assert!(p.contains("self-contained"), "{mode:?}: {p}");
+            // Behaviour first: never demand the tools unconditionally.
+            assert!(
+                p.contains("if this session has them"),
+                "{mode:?} must stay conditional about tools: {p}"
+            );
+        }
+
+        // Executing phases work it FIFO, skip blockers, and place new work by kind.
+        for mode in [
+            Mode::Start,
+            Mode::ResumeExecute,
+            Mode::BacklogExecute,
+            Mode::Execute,
+        ] {
+            let p = a.prompt_for(mode, &brief, "");
+            assert!(p.contains("FIFO"), "{mode:?} must state FIFO order: {p}");
+            assert!(
+                p.contains("SKIP"),
+                "{mode:?} must skip blockers, not stall: {p}"
+            );
+            assert!(
+                p.contains("prerequisite") && p.contains("END of the queue"),
+                "{mode:?} must split prerequisites from appended follow-ups: {p}"
+            );
+            assert!(
+                p.contains("Do not end the turn early"),
+                "{mode:?} must forbid stopping with work left: {p}"
+            );
+        }
     }
 
     /// Queued backlog follow-ups must reach the dump prompt — that turn is what

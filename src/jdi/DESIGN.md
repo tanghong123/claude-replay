@@ -89,14 +89,28 @@ Claude, "planned ≠ done" comes from `task_queue().open_count()` — `Some(0)`/
 (unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain.
 
 **Prompts are ported from the bash claude-jdi**, whose specificity is what actually
-gets the native queue driven: the dump turn asks for one `TaskCreate` per unit of
-work with a self-contained subject + description, `pending` status, blocks/blockedBy
-wiring, explicit rules (only fully-scoped work; re-derive fresh; reconcile rather
-than duplicate) and a `queued: <N> task(s)` receipt; the execute turn adds the
-guardrails that matter — mark `in_progress` before starting, commit per task so
-progress survives an interrupt, and **do not end the turn early with tasks
-outstanding**. Queued `Brief::backlog` items are folded into dump turns ("go through
-them ONE BY ONE"), since that turn is what converts them into tasks.
+gets a usable queue built: a self-contained subject + description per unit of work,
+`pending` status, blocks/blockedBy wiring, explicit rules (only fully-scoped work;
+re-derive fresh; reconcile rather than duplicate) and a `queued: <N> task(s)`
+receipt; the execute turn adds mark-`in_progress`-before-starting and commit-per-task
+so progress survives an interrupt. Queued `Brief::backlog` items are folded into dump
+turns ("go through them ONE BY ONE"), since that turn is what converts them to tasks.
+
+**Every phase states the same queue discipline** — including `Start`, which plans and
+executes in one turn:
+
+- *Behaviour first, mechanism second.* Each prompt describes the durable **queue**,
+  then names the task tools "if this session has them" and the queue file otherwise.
+  Tool-first phrasing ("use TaskCreate…") derails a session that lacks them into
+  arguing with the instruction and inventing an unreadable file of its own.
+- *FIFO*, decided at build time ("put the entries in the order they should be
+  done"), so execution never re-plans.
+- *Skip on blocked*: write the blocker onto the task and move to the next one. One
+  blocked item must never stall the queue, and the run must not "end the turn early
+  while actionable work remains".
+- *New work is placed by kind*: a prerequisite of the **current** task is done now;
+  ordinary follow-ups append to the END. Appending a prerequisite would leave the
+  task that needs it permanently unfinishable.
 
 **Task tools are not guaranteed.** A session may have no `TaskCreate`/`TaskUpdate`,
 in which case the queue is empty, `open_count` is `None`, and an unfinished run would
