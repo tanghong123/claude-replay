@@ -75,6 +75,9 @@ fn run_loop_body(session: &Session) -> Result<()> {
     let brief = Brief {
         text: fs::read_to_string(session.dir.join("task.md")).unwrap_or_default(),
         backlog: Vec::new(),
+        // Lives in the session state dir (not the repo) so an unattended run never
+        // leaves stray files in the user's tree.
+        checklist: Some(session.dir.join("checklist.md")),
     };
 
     let adapter = agent::adapter(agent);

@@ -64,6 +64,10 @@ pub struct Brief {
     pub text: String,
     /// Claimed backlog items to fold in.
     pub backlog: Vec<String>,
+    /// Where the agent should keep a durable `- [ ]` / `- [x]` checklist when it has
+    /// no native task-management tools. Doubles as the fallback done-signal: the
+    /// supervisor counts unchecked items, so "planned ≠ done" survives without them.
+    pub checklist: Option<PathBuf>,
 }
 
 /// What kicked off a supervised run — selects the adapter's initial mode.

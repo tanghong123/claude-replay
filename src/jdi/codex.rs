@@ -251,7 +251,7 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief {
             text: "do the thing".into(),
-            backlog: vec![],
+            ..Default::default()
         };
         let inv = a.fresh_invocation(&ctx("", &brief, &[]), "NONCE-abc123");
         assert!(inv.args.iter().any(|x| x == "exec"));
@@ -268,7 +268,7 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief {
             text: "prioritize tests".into(),
-            backlog: vec![],
+            ..Default::default()
         };
         let p = a.prompt_for(Mode::Execute, &brief);
         assert!(p.contains("UNATTENDED"));

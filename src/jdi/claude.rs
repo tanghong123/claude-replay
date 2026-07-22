@@ -84,7 +84,20 @@ impl AgentAdapter for ClaudeAdapter {
                 // unknown ⇒ trust rc. (After the fresh turn the supervisor has already
                 // moved to `continue_mode`, so `Start` here is just for exhaustiveness.)
                 Mode::Start | Mode::ResumeExecute | Mode::BacklogExecute | Mode::Execute => {
-                    return match self.task_queue().and_then(|q| q.open_count(ctx.session_id)) {
+                    // "planned ≠ done": prefer the native task queue, but fall back to
+                    // the checklist file when this session has no task tools (they
+                    // aren't always available) — otherwise an unknown count would be
+                    // read as "finished" and a half-done run would stop after one turn.
+                    let open = self
+                        .task_queue()
+                        .and_then(|q| q.open_count(ctx.session_id))
+                        .or_else(|| {
+                            ctx.brief
+                                .checklist
+                                .as_deref()
+                                .and_then(open_checklist_items)
+                        });
+                    return match open {
                         Some(0) | None => TurnOutcome::Done,
                         Some(_) => TurnOutcome::Retry, // stopped early with work left
                     };
@@ -125,11 +138,32 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn prompt_for(&self, mode: Mode, brief: &Brief) -> String {
-        match mode {
+        let base = match mode {
             Mode::Start => format!("{START_PREAMBLE}\n\n{}", brief.text),
             Mode::ResumeDump | Mode::BacklogDump => DUMP_PROMPT.to_string(),
             _ => EXECUTE_PROMPT.to_string(),
+        };
+        let mut out = base;
+        // Tell the agent where to keep the checklist when it has no task tools —
+        // this is also how the supervisor detects "planned ≠ done" without them.
+        if let Some(path) = &brief.checklist {
+            out.push_str(&format!(
+                "\n\nIf you do NOT have task-management tools in this session, keep the \
+                 checklist in `{}` instead — one `- [ ]` line per remaining item, and \
+                 flip it to `- [x]` the moment that item is finished. Keep that file \
+                 current; it is how completion is tracked.",
+                path.display()
+            ));
         }
+        // The operator's instruction applies to every mode, not just a fresh start —
+        // on resume it was previously dropped on the floor.
+        if !matches!(mode, Mode::Start) && !brief.text.trim().is_empty() {
+            out.push_str(&format!(
+                "\n\nAdditional instruction: {}",
+                brief.text.trim()
+            ));
+        }
+        out
     }
 
     fn task_queue(&self) -> Option<&dyn TaskQueue> {
@@ -177,11 +211,28 @@ impl AgentAdapter for ClaudeAdapter {
     }
 }
 
+/// Unchecked `- [ ]` items in the fallback checklist. `None` when the file doesn't
+/// exist (⇒ unknown, so the caller trusts the exit code rather than assuming work).
+fn open_checklist_items(path: &Path) -> Option<usize> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(
+        text.lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                // `- [ ]` / `* [ ]`, any amount of inner space, but not `- [x]`.
+                (t.starts_with("- [") || t.starts_with("* ["))
+                    && t[3..].starts_with(' ')
+                    && t[3..].trim_start().starts_with(']')
+            })
+            .count(),
+    )
+}
+
 const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
 
-const DUMP_PROMPT: &str = "You are running UNATTENDED and headless. Enqueue the agreed work using your task-management tools (TaskCreate; set blockedBy where needed), write a one-line receipt, then STOP. Do not begin executing yet.";
+const DUMP_PROMPT: &str = "You are running UNATTENDED and headless. Record the agreed remaining work as a durable checklist you can resume from: use your task-management tools if this session has them (TaskCreate; set blockedBy where needed), and otherwise the checklist file described below — do not skip this step just because the tools are missing. Then write a one-line receipt and STOP. Do not begin executing yet.";
 
-const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — do NOT ask for input. Drain your task list to completion: pick the next actionable task (respect blockedBy), mark it in_progress, complete it, and commit the work per task. Keep going until every task is completed; nothing left pending or in_progress. If a task is genuinely blocked by something only a human can resolve, note it and move on.";
+const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — do NOT ask for input. Drain the checklist to completion, in whichever form it exists (task-management tools if this session has them, else the checklist file described below): take the next actionable item (respect any blockedBy), do it, mark it completed, and commit the work per item. Keep going until every item is completed and none are left pending or in progress. If an item is genuinely blocked by something only a human can resolve, record that and move on.";
 
 /// Reads Claude's native task queue under `~/.claude/tasks/<session>/*.json`.
 struct ClaudeTaskQueue;
@@ -314,6 +365,72 @@ mod tests {
             .any(|x| x == "--dangerously-skip-permissions"));
     }
 
+    /// The operator's instruction (what `handoff`/`resume` pass) must reach the agent
+    /// on **resume**, not just a fresh start — it used to be written to task.md and
+    /// then dropped, so a handoff message never appeared in the transcript.
+    #[test]
+    fn resume_prompts_carry_the_operator_instruction() {
+        let a = ClaudeAdapter;
+        let brief = Brief {
+            text: "finish the refactor and commit".into(),
+            ..Default::default()
+        };
+        for mode in [Mode::ResumeDump, Mode::ResumeExecute, Mode::Execute] {
+            let p = a.prompt_for(mode, &brief);
+            assert!(
+                p.contains("finish the refactor and commit"),
+                "{mode:?} dropped the instruction: {p}"
+            );
+        }
+        // A fresh start already embedded it in the preamble — don't duplicate it.
+        let start = a.prompt_for(Mode::Start, &brief);
+        assert_eq!(start.matches("finish the refactor").count(), 1, "{start}");
+    }
+
+    /// Task-management tools aren't available in every session. The prompt must not
+    /// hard-require them, and the done-signal must fall back to the checklist file —
+    /// otherwise an unknown count reads as "finished" and a half-done run stops.
+    #[test]
+    fn checklist_fallback_drives_the_done_signal_without_task_tools() {
+        let a = ClaudeAdapter;
+        let dir = std::env::temp_dir().join(format!("jdi-checklist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = dir.join("checklist.md");
+        let brief = Brief {
+            checklist: Some(list.clone()),
+            ..Default::default()
+        };
+
+        // The prompt points at the file and doesn't demand TaskCreate exist.
+        let p = a.prompt_for(Mode::ResumeDump, &brief);
+        assert!(p.contains(&list.display().to_string()), "{p}");
+        assert!(
+            p.contains("if this session has them"),
+            "must be conditional: {p}"
+        );
+
+        // Unchecked items left → not done, even though the native queue is absent.
+        std::fs::write(
+            &list,
+            "- [x] shipped it\n- [ ] still open\n* [ ] also open\n",
+        )
+        .unwrap();
+        assert_eq!(open_checklist_items(&list), Some(2));
+        let ctx = ctx(Mode::ResumeExecute, true, "no-such-session", &brief);
+        assert_eq!(a.classify(0, "", &ctx), TurnOutcome::Retry);
+
+        // All checked → done.
+        std::fs::write(&list, "- [x] shipped it\n- [x] and this\n").unwrap();
+        assert_eq!(open_checklist_items(&list), Some(0));
+        assert_eq!(a.classify(0, "", &ctx), TurnOutcome::Done);
+
+        // No file at all → unknown → trust the exit code (unchanged behavior).
+        std::fs::remove_file(&list).unwrap();
+        assert_eq!(open_checklist_items(&list), None);
+        assert_eq!(a.classify(0, "", &ctx), TurnOutcome::Done);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn interactive_takeover_keeps_the_runs_permission_posture() {
         let a = ClaudeAdapter;
@@ -371,7 +488,7 @@ mod tests {
         let a = ClaudeAdapter;
         let brief = Brief {
             text: "add a HELLO file".into(),
-            backlog: vec![],
+            ..Default::default()
         };
         // A pinned fresh run: session_created=false → --session-id; prompt = the task.
         let inv = a.fresh_invocation(&ctx(Mode::Start, false, "the-uuid", &brief), "n");

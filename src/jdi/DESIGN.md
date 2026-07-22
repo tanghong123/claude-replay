@@ -88,6 +88,19 @@ The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 Claude, "planned ≠ done" comes from `task_queue().open_count()` — `Some(0)`/`None`
 (unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain.
 
+**Task tools are not guaranteed.** A session may have no `TaskCreate`/`TaskUpdate`,
+in which case the queue is empty, `open_count` is `None`, and an unfinished run would
+read as "done" after one turn. So `Brief::checklist` names a `checklist.md` in the
+session's state dir: prompts ask for the native tools *if present* and that file
+otherwise, and `classify` falls back to counting its unchecked `- [ ]` items. The
+prompt must stay conditional — demanding `TaskCreate` outright made agents improvise
+their own file, which the supervisor then couldn't read.
+
+**The operator instruction reaches every mode.** `Brief::text` (what `resume`/
+`handoff` pass) is appended as `Additional instruction:` on resume/execute turns, not
+only folded into a fresh `Start` preamble — it was previously written to `task.md` and
+then dropped, so a handoff message never reached the agent.
+
 ## Adding an agent
 
 1. New `src/jdi/<agent>.rs` implementing `AgentAdapter`.

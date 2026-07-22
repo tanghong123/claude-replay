@@ -311,6 +311,12 @@ fn cmd_resume(
         let brief = agent::Brief {
             text: instruction.to_string(),
             backlog: Vec::new(),
+            // Same path the real run uses, so the previewed prompt matches it.
+            checklist: Some(
+                Session::new(&config.home, &state::slot_id(&cwd))
+                    .dir
+                    .join("checklist.md"),
+            ),
         };
         let mode = adapter.initial_mode(agent::Trigger::Resume);
         let ctx = agent::TurnContext {
@@ -535,6 +541,11 @@ fn cmd_start(
     let brief = agent::Brief {
         text: task.clone(),
         backlog: Vec::new(),
+        checklist: Some(
+            Session::new(&config.home, &state::slot_id(&cwd))
+                .dir
+                .join("checklist.md"),
+        ),
     };
 
     if dry_run {
