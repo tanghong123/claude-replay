@@ -57,10 +57,18 @@ so `status` can show both.
 **Human ↔ jdi boundary (`takeover` / `handoff`).** Mirrors. `takeover` stops a run and
 launches `interactive_invocation()` so a human continues it (`--no-launch` prints the
 `resume_commands()` block instead). `handoff` runs *inside* an interactive session:
-it finds the session's process (nearest ancestor whose command line is the agent
-binary), spawns a detached `__handoff` watcher that waits for that pid to exit then
-runs `resume`, and — unless `--armed` — SIGTERMs the session so it's fully hands-off.
-The deferral is required: two agents can't drive the same transcript at once.
+it finds the session's process (nearest ancestor whose **executable name** — `ps -o
+comm=`, never the full argv — is the agent binary), spawns a detached `__handoff`
+watcher that waits for that pid to exit then runs `resume`, and — unless `--armed` —
+SIGTERMs the session (the watcher escalates to SIGKILL after a 10s grace) so it's
+fully hands-off. The deferral is required: two agents can't drive the same
+transcript at once.
+
+> Matching on argv instead of `comm` was a real bug: a Claude Code tool shell runs
+> `zsh -c source ~/.claude/shell-snapshots/…`, whose argv contains "claude", so the
+> *shell* matched first — handoff signalled it (leaving the TUI alive but wedged) and
+> the watcher, seeing it die instantly, fired the resume while the session was still
+> running, draining the task queue underneath it.
 
 The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 `classify`: the spine just acts on the returned `TurnOutcome`

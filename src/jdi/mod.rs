@@ -138,6 +138,9 @@ enum Command {
         max_attempts: Option<u32>,
         #[arg(long)]
         agent: Option<Agent>,
+        /// The session was sent SIGTERM — escalate to SIGKILL if it ignores it.
+        #[arg(long)]
+        escalate: bool,
         instruction: Vec<String>,
     },
 }
@@ -233,6 +236,7 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             agent,
+            escalate,
             instruction,
         } => cmd_handoff_wait(
             &config,
@@ -242,6 +246,7 @@ pub fn run() -> Result<()> {
             &instruction.join(" "),
             interval,
             max_attempts,
+            escalate,
         ),
     }
 }
@@ -1078,6 +1083,10 @@ fn cmd_handoff(
     if let Some(m) = max_attempts {
         cmd.arg("--max-attempts").arg(m.to_string());
     }
+    if !armed {
+        // We're about to SIGTERM the session; let the watcher escalate if needed.
+        cmd.arg("--escalate");
+    }
     if !instruction.is_empty() {
         cmd.arg("--").arg(instruction);
     }
@@ -1119,6 +1128,7 @@ fn cmd_handoff(
 
 /// The detached handoff watcher: wait for the interactive session (`watch_pid`) to
 /// exit, then resume it unattended in `cwd`. Runs with no TTY (stdio is /dev/null).
+#[allow(clippy::too_many_arguments)]
 fn cmd_handoff_wait(
     config: &Config,
     watch_pid: u32,
@@ -1127,11 +1137,25 @@ fn cmd_handoff_wait(
     instruction: &str,
     interval: Option<u64>,
     max_attempts: Option<u32>,
+    escalate: bool,
 ) -> Result<()> {
     // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
-    for _ in 0..7200 {
+    // If we asked it to quit (SIGTERM) and it's still alive after a grace period,
+    // escalate to SIGKILL — otherwise an agent that ignores SIGTERM would leave the
+    // handoff armed forever.
+    const GRACE_SECS: usize = 10;
+    for elapsed in 0..7200usize {
         if !state::pid_alive(watch_pid) {
             break;
+        }
+        if escalate && elapsed == GRACE_SECS {
+            std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(watch_pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .ok();
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -1150,8 +1174,8 @@ fn cmd_handoff_wait(
     )
 }
 
-/// The nearest ancestor process whose command line contains `needle` (the agent
-/// binary name) — i.e. the interactive session we're running inside. Unix-only.
+/// The nearest ancestor process that **is** the agent binary — i.e. the interactive
+/// session we're running inside. Unix-only.
 #[cfg(unix)]
 fn ancestor_pid_running(needle: &str) -> Option<u32> {
     let mut pid = std::process::id();
@@ -1160,12 +1184,36 @@ fn ancestor_pid_running(needle: &str) -> Option<u32> {
         if ppid <= 1 {
             return None;
         }
-        if ps_field(ppid, "command=").is_some_and(|c| c.contains(needle)) {
+        if is_agent_process(ppid, needle) {
             return Some(ppid);
         }
         pid = ppid;
     }
     None
+}
+
+/// Is `pid` the agent process itself? Compares the **executable name** (`ps -o comm=`)
+/// and never the full command line.
+///
+/// This distinction is load-bearing: a Claude Code tool shell runs
+/// `zsh -c source ~/.claude/shell-snapshots/snapshot-….sh`, whose *argv* contains the
+/// substring "claude". Matching argv therefore selected that shell — the nearest
+/// ancestor — instead of the session, so `handoff` signalled the shell (leaving the
+/// TUI alive but broken) and its watcher, seeing that shell die at once, fired the
+/// unattended resume *while the interactive session was still running* — two agents
+/// on one transcript, draining the task queue underneath it.
+#[cfg(unix)]
+fn is_agent_process(pid: u32, agent_bin: &str) -> bool {
+    let Some(comm) = ps_field(pid, "comm=") else {
+        return false;
+    };
+    // `comm` may be a path (…/bin/claude) and a login shell shows as `-zsh`.
+    let name = comm
+        .rsplit('/')
+        .next()
+        .unwrap_or(&comm)
+        .trim_start_matches('-');
+    name == agent_bin
 }
 
 #[cfg(not(unix))]
@@ -1239,6 +1287,42 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a Claude Code tool shell runs
+    /// `zsh -c source ~/.claude/shell-snapshots/…`, so its *argv* contains "claude".
+    /// Matching argv made `handoff` target that shell instead of the session — it
+    /// signalled the shell (TUI left alive but wedged) and the watcher, seeing the
+    /// shell die instantly, fired the unattended resume while the session was still
+    /// running, draining its task queue. Identity must come from the executable
+    /// name (`comm`), never the command line.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_whose_argv_mentions_claude_is_not_the_agent() {
+        // A shell whose command line contains "claude" — like the tool shell.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 5 # /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn decoy shell");
+        let pid = child.id();
+        // Its argv really does contain the substring the old matcher keyed on...
+        let argv = ps_field(pid, "command=").unwrap_or_default();
+        assert!(
+            argv.contains("claude"),
+            "decoy argv should mention claude: {argv}"
+        );
+        // ...but it is NOT the agent: comm is `sh`, not `claude`.
+        assert!(
+            !is_agent_process(pid, "claude"),
+            "a shell that merely mentions claude in argv must not match: {argv}"
+        );
+        // And our own test process isn't the agent either.
+        assert!(!is_agent_process(std::process::id(), "claude"));
+        child.kill().ok();
+        child.wait().ok();
+    }
 
     #[test]
     fn human_ago_is_compact() {
