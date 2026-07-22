@@ -137,9 +137,10 @@ mirrors: `takeover` stops an unattended run and **launches the agent interactive
 resumed** on the session so you continue it yourself (`--no-launch` to just stop and
 print the resume commands); `handoff`, run from *inside* an interactive session,
 hands it the other way — it quits your session and resumes it unattended in the
-background (`--armed` to arm without auto-quitting). A ready-made `/jdi-handoff`
-slash command and a `jdi-handoff` skill (triggers on "hand this off to jdi" /
-"justdoit") wrap `handoff` — see [`integrations/claude/`](integrations/claude/).
+background (`--armed` to arm without auto-quitting). The shared `jdi-handoff`
+Skill wraps this flow for both clients: use `$jdi-handoff` in Codex or the native
+`/jdi-handoff` command in Claude Code. Install and usage details are in
+[`integrations/`](integrations/).
 
 Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`/
 `handoff`) accepts **`--dry-run`** — it prints exactly what it would do (agent,
