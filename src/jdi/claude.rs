@@ -14,6 +14,18 @@ use std::path::{Path, PathBuf};
 
 pub struct ClaudeAdapter;
 
+impl ClaudeAdapter {
+    fn interactive_invocation_for(program: PathBuf, session_id: &str) -> Option<Invocation> {
+        if session_id.is_empty() {
+            return None;
+        }
+        Some(Invocation {
+            program,
+            args: vec!["--resume".into(), session_id.to_string()],
+        })
+    }
+}
+
 /// Terminal errors: matching these in a turn's output marks the run failed rather
 /// than retrying (port of claude-jdi's `UNRECOVERABLE_RE`).
 const UNRECOVERABLE: &[&str] = &[
@@ -147,10 +159,7 @@ impl AgentAdapter for ClaudeAdapter {
             return None;
         }
         let program = self.resolve_binary().ok()?;
-        Some(Invocation {
-            program,
-            args: vec!["--resume".into(), session_id.to_string()],
-        })
+        Self::interactive_invocation_for(program, session_id)
     }
 
     fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
@@ -309,9 +318,7 @@ mod tests {
 
     #[test]
     fn interactive_takeover_is_a_plain_resume_no_autonomy_flags() {
-        let a = ClaudeAdapter;
-        let inv = a
-            .interactive_invocation("sid", Path::new("/tmp/repo"))
+        let inv = ClaudeAdapter::interactive_invocation_for(PathBuf::from("claude"), "sid")
             .expect("claude resumes interactively");
         assert_eq!(inv.args, vec!["--resume".to_string(), "sid".to_string()]);
         // A human is present: no unattended `-p` / skip-permissions.
@@ -321,9 +328,7 @@ mod tests {
             .iter()
             .any(|x| x == "--dangerously-skip-permissions"));
         // No id yet → nothing to resume.
-        assert!(a
-            .interactive_invocation("", Path::new("/tmp/repo"))
-            .is_none());
+        assert!(ClaudeAdapter::interactive_invocation_for(PathBuf::from("claude"), "").is_none());
     }
 
     #[test]
