@@ -162,19 +162,21 @@ impl ClaudeTaskQueue {
             })
     }
 
-    /// Collect task objects (each with a `status`) from a session's json files.
-    /// Returns `None` if the dir is missing or nothing parses (⇒ "unknown", so the
+    /// Collect `(status, title)` for each task in a session's json files, in file
+    /// order. `None` if the dir is missing or nothing parses (⇒ "unknown", so the
     /// caller trusts the exit code rather than assuming zero).
-    fn statuses(session_id: &str) -> Option<Vec<String>> {
+    fn tasks(session_id: &str) -> Option<Vec<(String, String)>> {
         let dir = Self::tasks_root().join(session_id);
-        let entries = std::fs::read_dir(&dir).ok()?;
-        let mut out: Vec<String> = Vec::new();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        entries.sort(); // stable task order across files
+        let mut out: Vec<(String, String)> = Vec::new();
         let mut parsed_any = false;
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
+        for p in entries {
             let Ok(text) = std::fs::read_to_string(&p) else {
                 continue;
             };
@@ -182,32 +184,28 @@ impl ClaudeTaskQueue {
                 continue;
             };
             parsed_any = true;
-            collect_statuses(&v, &mut out);
+            collect_tasks(&v, &mut out);
         }
-        if parsed_any {
-            Some(out)
-        } else {
-            None
-        }
+        parsed_any.then_some(out)
     }
 }
 
-/// Pull every `status` string out of a tasks document (array of tasks, `{tasks:[…]}`,
-/// or a single task object).
-fn collect_statuses(v: &Value, out: &mut Vec<String>) {
+/// Pull every `(status, title)` out of a tasks document (array of tasks,
+/// `{tasks:[…]}`, or a single task object). Title = the first present of
+/// `content`/`description`/`title`/`activeForm`.
+fn collect_tasks(v: &Value, out: &mut Vec<(String, String)>) {
     match v {
-        Value::Array(items) => {
-            for it in items {
-                collect_statuses(it, out);
-            }
-        }
+        Value::Array(items) => items.iter().for_each(|it| collect_tasks(it, out)),
         Value::Object(map) => {
             if let Some(Value::Array(items)) = map.get("tasks") {
-                for it in items {
-                    collect_statuses(it, out);
-                }
-            } else if let Some(s) = map.get("status").and_then(Value::as_str) {
-                out.push(s.to_string());
+                items.iter().for_each(|it| collect_tasks(it, out));
+            } else if let Some(status) = map.get("status").and_then(Value::as_str) {
+                let title = ["content", "description", "title", "activeForm"]
+                    .iter()
+                    .find_map(|k| map.get(*k).and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_string();
+                out.push((status.to_string(), title));
             }
         }
         _ => {}
@@ -216,18 +214,38 @@ fn collect_statuses(v: &Value, out: &mut Vec<String>) {
 
 impl TaskQueue for ClaudeTaskQueue {
     fn open_count(&self, session_id: &str) -> Option<usize> {
-        Self::statuses(session_id).map(|ss| ss.iter().filter(|s| s.as_str() != "completed").count())
+        Self::tasks(session_id).map(|ts| ts.iter().filter(|(s, _)| s != "completed").count())
     }
 
+    /// A live checklist: `✓`/`▶`/`·` per task with its title, then `done/total`.
     fn render(&self, session_id: &str) -> String {
-        match Self::statuses(session_id) {
-            None => "task queue: (none)".to_string(),
-            Some(ss) => {
-                let total = ss.len();
-                let done = ss.iter().filter(|s| s.as_str() == "completed").count();
-                format!("tasks: {done}/{total} completed")
-            }
+        let Some(ts) = Self::tasks(session_id) else {
+            return "  (no task queue for this session)".to_string();
+        };
+        if ts.is_empty() {
+            return "  (task queue is empty)".to_string();
         }
+        let mut done = 0usize;
+        let mut s = String::new();
+        for (i, (status, title)) in ts.iter().enumerate() {
+            let marker = match status.as_str() {
+                "completed" => {
+                    done += 1;
+                    "✓"
+                }
+                "in_progress" => "▶",
+                _ => "·",
+            };
+            let t: String = title.replace('\n', " ");
+            let t = if t.chars().count() > 68 {
+                format!("{}…", t.chars().take(67).collect::<String>())
+            } else {
+                t
+            };
+            s.push_str(&format!("  {marker} [{}] {t}\n", i + 1));
+        }
+        s.push_str(&format!("  ── {done}/{} completed", ts.len()));
+        s
     }
 }
 
@@ -328,6 +346,21 @@ mod tests {
         let q = ClaudeTaskQueue;
         assert_eq!(q.open_count(sid), Some(2)); // 2 not completed
         assert_eq!(q.open_count("missing"), None); // unknown
+
+        // The detailed render is a per-task checklist with a completion tally.
+        std::fs::write(
+            sdir.join("a.json"),
+            r#"[{"status":"completed","content":"Commit the guard"},
+                {"status":"in_progress","content":"Install the skill"},
+                {"status":"pending","content":"Interactive multi-select"}]"#,
+        )
+        .unwrap();
+        let out = q.render(sid);
+        assert!(out.contains("✓ [1] Commit the guard"), "{out}");
+        assert!(out.contains("▶ [2] Install the skill"), "{out}");
+        assert!(out.contains("· [3] Interactive multi-select"), "{out}");
+        assert!(out.contains("── 1/3 completed"), "{out}");
+
         std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
         std::fs::remove_dir_all(&dir).ok();
     }

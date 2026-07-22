@@ -568,28 +568,233 @@ fn cmd_log(config: &Config, id: Option<&str>) -> Result<()> {
 fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     let session = resolve_session(config, id)?;
     let get = |k: &str| session.meta_get(k).unwrap_or_else(|| "-".into());
+    let sid = get("session_id");
+    let cwd = PathBuf::from(get("cwd"));
+    let agent = session
+        .meta_get("agent")
+        .and_then(|a| Agent::from_label(&a));
+
+    // --- header (meta) ---
     println!("id:        {}", get("id"));
     println!("agent:     {}", get("agent"));
-    println!("cwd:       {}", get("cwd"));
-    println!("session:   {}", get("session_id"));
+    println!("cwd:       {}", cwd.display());
+    println!("session:   {sid}");
     let live = if session.alive() { " (live)" } else { "" };
     println!("state:     {}{live}", get("state"));
     println!("mode:      {}", get("mode"));
-    println!("attempts:  {}", get("attempts"));
-    if let Some(agent) = session
-        .meta_get("agent")
-        .and_then(|a| Agent::from_label(&a))
-    {
-        if let Some(q) = agent::adapter(agent).task_queue() {
-            println!("{}", q.render(&get("session_id")));
+    println!(
+        "attempts:  {}    retry every {}s, max {}",
+        get("attempts"),
+        get("interval"),
+        get("max_attempts")
+    );
+    if let Some(r) = session.meta_get("last_reason") {
+        println!("last:      {r}");
+    }
+    println!("logs:      {}", session.supervisor_log().display());
+
+    // --- supervisor log tail ---
+    let tail = tail_lines(&session.supervisor_log(), 12);
+    if !tail.is_empty() {
+        println!("\n── supervisor log (last {}) ──", tail.len());
+        for l in &tail {
+            println!("{l}");
         }
     }
+
+    // --- live progress (from the session transcript) ---
+    let transcript = session
+        .meta_get("transcript")
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .or_else(|| {
+            agent
+                .and_then(|a| agent::adapter(a).transcript_path(&sid, &cwd))
+                .filter(|p| p.exists())
+        });
+    if let (Some(a), Some(tp)) = (agent, &transcript) {
+        print_live_progress(a, tp);
+    }
+
+    // --- task queue (live) ---
+    if let Some(a) = agent {
+        if let Some(q) = agent::adapter(a).task_queue() {
+            println!("\n── task queue (live) ──");
+            println!("{}", q.render(&sid));
+        }
+    }
+
+    // --- recent commits in cwd ---
+    let commits = recent_commits(&cwd, 8);
+    if !commits.is_empty() {
+        println!("\n── recent commits in cwd ──");
+        for c in &commits {
+            println!("  {c}");
+        }
+    }
+
+    // --- backlog ---
     let bl = backlog::Backlog::new(session.backlog_root());
     let (p, d) = (bl.pending_count(), bl.draining_count());
     if p + d > 0 {
-        println!("backlog:   {p} pending, {d} draining");
+        println!("\nbacklog:   {p} pending, {d} draining");
     }
     Ok(())
+}
+
+/// Last `n` lines of a file (empty if unreadable). Reads the whole file — the
+/// supervisor log is small.
+fn tail_lines(path: &Path, n: usize) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// `git log --oneline` for the last `n` commits in `cwd` (empty if not a git repo).
+fn recent_commits(cwd: &Path, n: usize) -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["log", "--oneline", "--decorate", "-n"])
+        .arg(n.to_string())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Parse the transcript and print a claude-jdi-style live-progress block: size +
+/// last-activity, a tool-call histogram, the last few actions, and what the agent
+/// is currently doing. Best-effort — silently skips on a parse/read error.
+fn print_live_progress(agent: Agent, path: &Path) {
+    let args = crate::Args {
+        target: None,
+        agent: None,
+        latest: false,
+        follow: false,
+        no_thinking: false,
+        reads: true, // count Reads/greps too
+        results: true,
+        no_user: false,
+        full: false,
+        fold: None,
+        unfold: None,
+        read_match: None,
+        dump: None,
+        width: None,
+    };
+    let Ok(blocks) = crate::model::parse_path_for(agent, path, &args) else {
+        return;
+    };
+    let mut tools: Vec<(String, String)> = Vec::new();
+    let mut currently: Option<String> = None;
+    collect_tool_activity(&blocks, &mut tools, &mut currently);
+
+    println!("\n── live progress (from session transcript) ──");
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let ago = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| human_ms(d.as_secs()))
+        .unwrap_or_else(|| "?".into());
+    println!(
+        "transcript:    {} ({}, last active {ago} ago)",
+        path.display(),
+        human_bytes(size)
+    );
+
+    // Histogram: counts per tool name, most-used first.
+    let mut hist: Vec<(String, usize)> = Vec::new();
+    for (name, _) in &tools {
+        match hist.iter_mut().find(|(n, _)| n == name) {
+            Some((_, c)) => *c += 1,
+            None => hist.push((name.clone(), 1)),
+        }
+    }
+    hist.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    if !hist.is_empty() {
+        let cells: Vec<String> = hist.iter().map(|(n, c)| format!("{n}×{c}")).collect();
+        println!("tool calls:    {}", cells.join("  "));
+    }
+    if let Some(c) = &currently {
+        println!("currently:     {}", truncate_flat(c, 72));
+    }
+    let recent = &tools[tools.len().saturating_sub(6)..];
+    if !recent.is_empty() {
+        println!("recent actions:");
+        for (name, target) in recent {
+            println!("  {name:<7} {}", truncate_flat(target, 60));
+        }
+    }
+}
+
+/// Walk blocks (descending into coalesced activity runs) collecting `(tool, target)`
+/// in order, and tracking the latest assistant line as "currently".
+fn collect_tool_activity(
+    blocks: &[crate::model::Block],
+    tools: &mut Vec<(String, String)>,
+    currently: &mut Option<String>,
+) {
+    use crate::model::Block;
+    for b in blocks {
+        match b {
+            Block::ToolUse { name, target, .. } => {
+                tools.push((name.clone(), target.clone()));
+            }
+            Block::Thinking { tools: inner, .. } => {
+                collect_tool_activity(inner, tools, currently);
+            }
+            Block::AssistantText(t) => {
+                if let Some(line) = t.lines().find(|l| !l.trim().is_empty()) {
+                    *currently = Some(line.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Flatten newlines and truncate to `max` display chars with an ellipsis.
+fn truncate_flat(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', "\\n");
+    if flat.chars().count() > max {
+        format!(
+            "{}…",
+            flat.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    } else {
+        flat
+    }
+}
+
+/// "0m 13s", "3m 5s", "2h 4m" — a compact elapsed time for the progress block.
+fn human_ms(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+/// Human byte size: "5.0M", "812K", "45B".
+fn human_bytes(n: u64) -> String {
+    if n >= 1 << 20 {
+        format!("{:.1}M", n as f64 / (1u64 << 20) as f64)
+    } else if n >= 1 << 10 {
+        format!("{:.0}K", n as f64 / (1u64 << 10) as f64)
+    } else {
+        format!("{n}B")
+    }
 }
 
 fn cmd_list(config: &Config) -> Result<()> {
