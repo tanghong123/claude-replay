@@ -111,6 +111,7 @@ sessions (Claude or Codex), so one tool covers both.
 ```bash
 agent-jdi start "refactor the parser and add tests"   # fresh unattended run (prints a summary; -f to watch live)
 agent-jdi resume            # resume this dir's newest session, unattended (prints a summary; -f to watch live)
+agent-jdi resume --id avatar-kit-5ce3fb   # resume an exact tracked slot from `agent-jdi list`
 agent-jdi resume --agent codex   # force an agent
 agent-jdi handoff "finish the refactor and commit"    # hand THIS interactive session to an unattended run
 agent-jdi log               # reattach the viewer to the supervised session
