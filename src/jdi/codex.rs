@@ -2,10 +2,10 @@
 //! resume` with sandboxed, no-approval defaults. Codex has **no** native task queue,
 //! so the done-signal is the exit code and `task_queue()` stays `None`.
 //!
-//! NOTE: the exact `codex` CLI surface (subcommand path, `-c` override keys/quoting,
-//! `--json`, whether resume writes a *new* rollout file) is **unverified** — it's all
-//! isolated here as `TODO(verify)` so one edit corrects it once a real `codex` is
-//! available.
+//! The `codex exec resume` / `codex resume` command shapes, config overrides, and
+//! `--json` placement were verified against Codex CLI 0.145.0. The remaining
+//! compatibility gap is the content of a real network turn's JSON event stream and
+//! whether a resumed turn writes a new rollout file.
 
 use super::agent::{
     self, AgentAdapter, Brief, Invocation, Mode, ResumableSession, Trigger, TurnContext,
@@ -42,7 +42,8 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
-    // TODO(verify): `codex login status` is the auth probe — confirm subcommand.
+    // `codex login status` exists in CLI 0.145.0; keep preflight side-effect-free
+    // for now rather than spawning an extra subprocess for every start/resume.
     fn preflight(&self) -> Result<()> {
         Ok(())
     }
@@ -51,7 +52,6 @@ impl AgentAdapter for CodexAdapter {
         let program = self
             .resolve_binary()
             .unwrap_or_else(|_| PathBuf::from("codex"));
-        // TODO(verify): subcommand path + `-c key="val"` override syntax + `--json`.
         let mut args = vec![
             "exec".into(),
             "resume".into(),
@@ -115,7 +115,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
-    /// the sandboxed `exec` turn. TODO(verify): interactive resume subcommand/flags.
+    /// the sandboxed `exec` turn.
     fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
         if session_id.is_empty() {
             return None;
@@ -131,7 +131,6 @@ impl AgentAdapter for CodexAdapter {
         if session_id.is_empty() {
             return Vec::new();
         }
-        // TODO(verify): interactive resume subcommand.
         vec![(
             "# resume the interactive session:".into(),
             format!("codex resume {session_id}"),
@@ -139,7 +138,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
-    /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
+    /// assigns one, which `capture_session_id` then recovers).
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
         let program = self
             .resolve_binary()
@@ -209,17 +208,32 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief::default();
         let inv = a.build_invocation(&ctx("sess-1", &brief, &[]));
-        assert!(inv
-            .args
-            .windows(2)
-            .any(|w| w == ["-c", "approval_policy=\"never\""]));
-        assert!(inv
-            .args
-            .windows(2)
-            .any(|w| w == ["-c", "sandbox_mode=\"workspace-write\""]));
-        assert!(inv.args.iter().any(|x| x == "resume"));
-        assert!(inv.args.iter().any(|x| x == "sess-1"));
+        assert_eq!(
+            &inv.args[..7],
+            [
+                "exec",
+                "resume",
+                "-c",
+                "approval_policy=\"never\"",
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
+                "--json",
+            ]
+        );
+        assert_eq!(inv.args[7], "sess-1");
         assert!(!inv.args.iter().any(|x| x.contains("dangerously")));
+    }
+
+    #[test]
+    fn takeover_resume_command_matches_the_interactive_codex_cli() {
+        let a = CodexAdapter;
+        assert_eq!(
+            a.resume_commands("sess-1"),
+            vec![(
+                "# resume the interactive session:".to_string(),
+                "codex resume sess-1".to_string(),
+            )]
+        );
     }
 
     #[test]

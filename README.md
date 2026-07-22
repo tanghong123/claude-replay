@@ -131,7 +131,7 @@ only when the directory has no history.
 By default `start`/`resume` launch the worker **detached in the background** and
 print a summary (session, retry policy, autonomy, follow-up commands), then return —
 add **`-f`/`--follow`** to open the live viewer instead (equivalent to `agent-jdi log
-<id> -f` afterward).
+<id>` afterward; `log` follows by default).
 
 **Handing sessions across the human ↔ jdi boundary.** `takeover` and `handoff` are
 mirrors: `takeover` stops an unattended run and **launches the agent interactively
@@ -160,9 +160,11 @@ Architecture: an **agent-agnostic supervisor spine** (detached worker, slot lock
 adapters may leave optional capabilities (e.g. a native task queue) unimplemented.
 See [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md).
 
-> ⚠️ Codex's CLI surface (`codex exec resume` flags, `--json`, whether resume
-> writes a new rollout file) is **unverified** — isolated in `codex.rs` as
-> `TODO(verify)` until validated against a real `codex`.
+> Codex's unattended `codex exec resume` and interactive `codex resume` command
+> shapes were verified against Codex CLI 0.145.0. The remaining compatibility
+> risk is the content of a real network turn's JSON event stream and whether a
+> resumed turn writes a new rollout file; those details remain isolated in
+> `codex.rs`.
 
 ## Develop
 

@@ -93,8 +93,10 @@ resume+log and fill in a task queue / fresh-run later.
 
 ## Known gaps / TODO
 
-- **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`,
-  including the interactive `codex resume` used by `takeover`/`handoff`.
+- **Codex event compatibility** — the unattended `codex exec resume` and
+  interactive `codex resume` command shapes are verified against CLI 0.145.0,
+  including config/`--json` placement. A real network turn's JSON event fields
+  and resumed-rollout behavior still need compatibility coverage.
 - Backlog **drain-as-a-run** and the interactive stale-session picker are simplified
   vs. the bash original; the contract (trait + spine) is in place to wire them.
   (`status` now renders the rich progress block — live tool histogram, task

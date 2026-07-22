@@ -505,7 +505,7 @@ fn supervisor_summary(
          runs with:  {unattended}\n\n  \
          it will:    {plan}\n  \
          check:      agent-jdi status {slot}\n  \
-         watch:      agent-jdi log {slot} -f\n  \
+         watch:      agent-jdi log {slot}\n  \
          take over:  agent-jdi takeover {slot}\n",
         cwd = cwd.display(),
         agent = agent.label(),
@@ -1372,7 +1372,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("  watch:      agent-jdi log knack-98db47 -f\n"),
+            s.contains("  watch:      agent-jdi log knack-98db47\n"),
             "{s}"
         );
         assert!(
