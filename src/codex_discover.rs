@@ -105,10 +105,14 @@ fn first_user_snippet(path: &Path) -> String {
     let Ok(file) = File::open(path) else {
         return String::new();
     };
+    let mut fallback = None;
     for line in BufReader::new(file).lines().map_while(Result::ok).take(300) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if fallback.is_none() {
+            fallback = subagent_snippet(&value);
+        }
         if value.get("type").and_then(Value::as_str) != Some("response_item")
             || value.pointer("/payload/type").and_then(Value::as_str) != Some("message")
             || value.pointer("/payload/role").and_then(Value::as_str) != Some("user")
@@ -130,7 +134,34 @@ fn first_user_snippet(path: &Path) -> String {
             return compact.chars().take(72).collect();
         }
     }
-    String::new()
+    fallback.unwrap_or_else(|| "(no user prompt)".to_string())
+}
+
+fn subagent_snippet(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let is_subagent = payload.get("thread_source").and_then(Value::as_str) == Some("subagent")
+        || payload.pointer("/source/subagent").is_some();
+    if !is_subagent {
+        return None;
+    }
+    let label = payload
+        .get("agent_path")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .pointer("/source/subagent/thread_spawn/agent_path")
+                .and_then(Value::as_str)
+        })
+        .and_then(|path| path.trim_end_matches('/').rsplit('/').next())
+        .filter(|name| !name.is_empty())
+        .or_else(|| payload.get("agent_nickname").and_then(Value::as_str));
+    Some(match label {
+        Some(label) => format!("↳ subagent {label}"),
+        None => "↳ subagent".to_string(),
+    })
 }
 
 #[cfg_attr(not(test), allow(dead_code))] // exercised by tests with an explicit root
@@ -328,6 +359,35 @@ mod tests {
             path
         }
 
+        fn subagent_rollout(&self, id: &str, cwd: &Path, agent_path: &str) -> PathBuf {
+            let path = self.rollout("2026/07/18", id, cwd, "codex-tui");
+            let meta = serde_json::json!({
+                "timestamp": "2026-07-18T01:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": id,
+                    "cwd": cwd,
+                    "originator": "codex-tui",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "parent-session",
+                                "depth": 1,
+                                "agent_path": agent_path,
+                                "agent_nickname": "Nash"
+                            }
+                        }
+                    },
+                    "thread_source": "subagent",
+                    "agent_path": agent_path,
+                    "agent_nickname": "Nash",
+                    "cli_version": "test"
+                }
+            });
+            fs::write(&path, format!("{meta}\n")).unwrap();
+            path
+        }
+
         fn append_user(path: &Path, message: &str) {
             let user = serde_json::json!({
                 "timestamp": "2026-07-18T01:00:01Z",
@@ -384,6 +444,36 @@ mod tests {
         let candidates = candidates_in(&fixture.sessions, &cwd);
 
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
+    }
+
+    #[test]
+    fn picker_snippet_labels_subagent_without_user_prompt() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let path = fixture.subagent_rollout("abc", &cwd, "/root/review_picker_fix");
+        Fixture::append_user(
+            &path,
+            "<recommended_plugins>available but not installed</recommended_plugins>",
+        );
+
+        let candidates = candidates_in(&fixture.sessions, &cwd);
+
+        assert_eq!(candidates[0].snippet, "↳ subagent review_picker_fix");
+    }
+
+    #[test]
+    fn picker_snippet_labels_regular_session_without_user_prompt() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let path = fixture.rollout("2026/07/18", "abc", &cwd, "codex-tui");
+        Fixture::append_user(
+            &path,
+            "<recommended_plugins>available but not installed</recommended_plugins>",
+        );
+
+        let candidates = candidates_in(&fixture.sessions, &cwd);
+
+        assert_eq!(candidates[0].snippet, "(no user prompt)");
     }
 
     #[test]
