@@ -214,6 +214,13 @@ pub trait AgentAdapter {
     fn interactive_invocation(&self, _session_id: &str, _cwd: &Path) -> Option<Invocation> {
         None
     }
+
+    /// Human-facing resume commands for `takeover`'s "resume it yourself" block:
+    /// `(comment, command)` pairs (e.g. an autonomous and a supervised variant),
+    /// shown verbatim with the readable binary name. Empty = no printable hint.
+    fn resume_commands(&self, _session_id: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// The adapter registry: the one place that knows every agent. Adding an agent is

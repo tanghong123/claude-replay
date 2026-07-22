@@ -152,6 +152,22 @@ impl AgentAdapter for ClaudeAdapter {
             args: vec!["--resume".into(), session_id.to_string()],
         })
     }
+
+    fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
+        if session_id.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            (
+                "# autonomous — keeps running tools without asking:".into(),
+                format!("claude --resume {session_id} --dangerously-skip-permissions"),
+            ),
+            (
+                "# supervised — approve each action:".into(),
+                format!("claude --resume {session_id}"),
+            ),
+        ]
+    }
 }
 
 const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";

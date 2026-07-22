@@ -902,14 +902,40 @@ fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool, no_launch: boo
 
     supervisor::takeover(&session)?;
 
-    // Default: launch the agent interactively so you continue the session yourself.
+    // Rich "resume it yourself" block (claude-jdi parity): the session slot, how to
+    // resume by hand (autonomous vs supervised), and where to see remaining work.
+    let slot = session
+        .meta_get("id")
+        .or_else(|| {
+            session
+                .dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "session".into());
+    let cmds = session
+        .meta_get("agent")
+        .and_then(|a| Agent::from_label(&a))
+        .map(|a| agent::adapter(a).resume_commands(&sid))
+        .unwrap_or_default();
+
+    println!("■ stopped session: {slot}\n");
+    if let (Some(c), false) = (&cwd, cmds.is_empty()) {
+        println!("Resume it yourself (full context preserved):\n");
+        println!("  cd {}\n", c.display());
+        for (comment, cmd) in &cmds {
+            println!("  {comment}");
+            println!("  {cmd}\n");
+        }
+    }
+    println!("See remaining work via: agent-jdi status {slot}");
+
+    // Default: also launch the supervised resume so you continue right away. The
+    // block above stays in the scrollback for when you exit the agent.
     if let Some(inv) = interactive {
         let cwd = cwd.expect("interactive implies a cwd");
-        println!(
-            "stopped the supervisor — handing you session {sid}:\n  {} {}\n",
-            inv.program.display(),
-            shell_join(&inv.args)
-        );
+        println!("\nLaunching the supervised resume now… (--no-launch to skip)\n");
         // Inherit the terminal so the agent's interactive UI takes over; exit with
         // its status when the human is done.
         let status = std::process::Command::new(&inv.program)
@@ -918,11 +944,6 @@ fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool, no_launch: boo
             .status()
             .with_context(|| format!("launch {}", inv.program.display()))?;
         std::process::exit(status.code().unwrap_or(0));
-    }
-
-    println!("stopped session {}", session.dir.display());
-    if !no_launch {
-        println!("(no interactive resume available for this agent — session left stopped)");
     }
     Ok(())
 }

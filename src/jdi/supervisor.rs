@@ -242,16 +242,23 @@ pub fn takeover(session: &Session) -> Result<()> {
     };
     #[cfg(unix)]
     {
-        // Kill the agent children first, then the supervisor.
-        Command::new("pkill")
-            .arg("-P")
-            .arg(pid.to_string())
-            .status()
-            .ok();
-        Command::new("kill").arg(pid.to_string()).status().ok();
+        // Kill the agent children first, then the supervisor. Silence stdout/stderr:
+        // a stale/dead pid makes `kill` print "No such process", which would leak
+        // into takeover's output — the worker being already gone is not an error.
+        let quiet = |mut c: Command| {
+            c.stdout(Stdio::null()).stderr(Stdio::null()).status().ok();
+        };
+        let mut pk = Command::new("pkill");
+        pk.arg("-P").arg(pid.to_string());
+        quiet(pk);
+        let mut k = Command::new("kill");
+        k.arg(pid.to_string());
+        quiet(k);
         if let Some(sid) = session.meta_get("session_id") {
             if !sid.is_empty() {
-                Command::new("pkill").arg("-f").arg(&sid).status().ok();
+                let mut pf = Command::new("pkill");
+                pf.arg("-f").arg(&sid);
+                quiet(pf);
             }
         }
     }

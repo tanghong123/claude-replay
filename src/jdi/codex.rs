@@ -127,6 +127,17 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
+    fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
+        if session_id.is_empty() {
+            return Vec::new();
+        }
+        // TODO(verify): interactive resume subcommand.
+        vec![(
+            "# resume the interactive session:".into(),
+            format!("codex resume {session_id}"),
+        )]
+    }
+
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
     /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
