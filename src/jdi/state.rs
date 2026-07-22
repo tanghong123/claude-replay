@@ -116,6 +116,15 @@ impl Session {
         self.meta_get("state").and_then(|s| RunState::parse(&s))
     }
 
+    /// Stamp `key` with the current **local** wall-clock time (`YYYY-MM-DD HH:MM:SS`).
+    /// Best-effort — a no-op if it can't be formatted (so it never fails a run).
+    pub fn meta_stamp(&self, key: &str) {
+        let now = now_stamp();
+        if !now.is_empty() {
+            self.meta_set(key, &now).ok();
+        }
+    }
+
     /// The supervisor pid recorded in `meta`, if any.
     pub fn pid(&self) -> Option<u32> {
         self.meta_get("pid").and_then(|p| p.parse().ok())
@@ -149,6 +158,19 @@ pub fn pid_alive(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// The current **local** wall-clock time as `YYYY-MM-DD HH:MM:SS`, via `date`
+/// (matches claude-jdi's timestamps; correct across time zones without pulling in a
+/// datetime crate). Empty string if `date` isn't available.
+pub fn now_stamp() -> String {
+    std::process::Command::new("date")
+        .arg("+%Y-%m-%d %H:%M:%S")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 /// A fresh UUID-v4-shaped run id — used as Claude's pinned `--session-id` and as

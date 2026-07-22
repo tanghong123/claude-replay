@@ -276,6 +276,8 @@ fn cmd_resume(
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
     session.meta_set("state", "running")?;
+    session.meta_stamp("started");
+    session.meta_set("finished", "")?; // clear any prior run's finish stamp
     drop(_lock); // the worker runs lock-free; liveness is via its pid
 
     // `-f/--follow`: take over the terminal with the live viewer. Otherwise (the
@@ -499,6 +501,8 @@ fn cmd_start(
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
     session.meta_set("state", "running")?;
+    session.meta_stamp("started");
+    session.meta_set("finished", "")?; // clear any prior run's finish stamp
     let expected = adapter.expected_transcript(&session_id, &cwd);
     drop(_lock);
 
@@ -582,6 +586,12 @@ fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     let live = if session.alive() { " (live)" } else { "" };
     println!("state:     {}{live}", get("state"));
     println!("mode:      {}", get("mode"));
+    if let Some(t) = session.meta_get("started").filter(|s| !s.is_empty()) {
+        println!("started:   {t}");
+    }
+    if let Some(t) = session.meta_get("finished").filter(|s| !s.is_empty()) {
+        println!("finished:  {t}");
+    }
     println!(
         "attempts:  {}    retry every {}s, max {}",
         get("attempts"),

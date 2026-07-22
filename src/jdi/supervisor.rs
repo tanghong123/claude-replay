@@ -43,6 +43,15 @@ pub fn spawn_detached(home: &Path, id: &str) -> Result<u32> {
 /// The detached worker body (`__run <id>`): load state, pick the adapter, and loop.
 pub fn run_loop(home: &Path, id: &str) -> Result<()> {
     let session = Session::new(home, id);
+    // The loop returns only at a terminal outcome (done/stopped/failed/gaveup) or a
+    // setup error — stamp `finished` here so every exit path records it once. (Retry
+    // loops internally and never returns, so a retrying run stays unfinished.)
+    let result = run_loop_body(&session);
+    session.meta_stamp("finished");
+    result
+}
+
+fn run_loop_body(session: &Session) -> Result<()> {
     let get = |k: &str| session.meta_get(k);
 
     let cwd = get("cwd").context("meta missing cwd")?;
@@ -101,7 +110,7 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
         } else {
             adapter.build_invocation(&turn_ctx)
         };
-        let (rc, capture) = run_turn(&inv, &session, cwd_path)?;
+        let (rc, capture) = run_turn(&inv, session, cwd_path)?;
 
         if fresh {
             // Learn the id the agent assigned (Claude pinned it; Codex must capture).
@@ -251,6 +260,8 @@ pub fn takeover(session: &Session) -> Result<()> {
         bail!("takeover is only supported on unix");
     }
     session.meta_set("state", "stopped")?;
+    // The worker was killed mid-turn, so its run_loop wrapper won't stamp `finished`.
+    session.meta_stamp("finished");
     Ok(())
 }
 
@@ -321,11 +332,17 @@ mod tests {
     fn clean_turn_marks_done_and_captures_output() {
         let (state, root) = drive("echo hello-from-codex; exit 0", 0);
         assert_eq!(state, state::RunState::Done);
+        let session = Session::new(&root.join("home"), "sess");
         // The turn's output was appended to output.log.
-        let log = Session::new(&root.join("home"), "sess").output_log();
-        assert!(fs::read_to_string(log)
+        assert!(fs::read_to_string(session.output_log())
             .unwrap()
             .contains("hello-from-codex"));
+        // A terminal run stamps `finished` (via the run_loop wrapper) so `status`
+        // can show when it ended.
+        assert!(
+            session.meta_get("finished").is_some_and(|s| !s.is_empty()),
+            "run_loop should stamp `finished` on a terminal outcome"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
