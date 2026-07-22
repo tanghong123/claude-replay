@@ -1136,19 +1136,20 @@ mod tests {
         assert!(v.take_selection_text().is_none());
     }
 
-    /// Clicking the **path** in a tool header reveals it (returns the absolute
-    /// path); clicking elsewhere in the block toggles its fold and returns `None`.
-    /// A header whose target isn't a real path (a Bash command) never reveals.
+    /// Clicking the **path** in *any* file-tool header (Write, Update/Edit, Read,
+    /// …) reveals it (returns the absolute path); clicking elsewhere toggles the
+    /// fold (`None`). A header whose target isn't a real path (a Bash command)
+    /// never reveals — matching Claude Code, where every file tool's path is live.
     #[test]
     fn clicking_header_path_reveals_else_toggles() {
         let file = std::env::temp_dir().join(format!("cr-click-{}.txt", std::process::id()));
         std::fs::write(&file, "hi").unwrap();
-        let target = file.to_string_lossy().to_string();
-        let write = Block::ToolUse {
-            name: "Write".into(),
-            target,
+        let path = file.to_string_lossy().to_string();
+        let file_tool = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: path.clone(),
             diffs: vec![(String::new(), "a\nb\nc".into())],
-            output: None,
+            output: Some("x".into()),
             patch: None,
             read_lines: None,
         };
@@ -1161,22 +1162,32 @@ mod tests {
             patch: None,
             read_lines: None,
         };
-        let mut v = View::new(vec![write, bash], "t", false, FoldPolicy::none());
-        let _ = draw(&mut v, 200, 20); // wide → the header never wraps
+        // (block, a column that lands inside its `(path)` span). Header layout is
+        // `⏺ <DisplayName>(` — Write=7, Update=8, Read=6 cols before the path.
+        let blocks = vec![
+            file_tool("Write"),
+            file_tool("Edit"),
+            file_tool("Read"),
+            bash,
+        ];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::none());
+        let _ = draw(&mut v, 200, 40); // wide → no header wraps
 
-        // `⏺ Write(` is 7 cols; a click at col 9 lands inside the path.
-        assert_eq!(
-            v.click_at(0, 9).as_deref(),
-            Some(file.as_path()),
-            "path click should reveal the file"
-        );
-        // The `⏺` marker (col 0) is outside the path span → toggles, no reveal.
+        for (idx, col, name) in [(0usize, 9u16, "Write"), (1, 10, "Update"), (2, 8, "Read")] {
+            let row = v.wrapped_tag.iter().position(|&t| t == idx).unwrap() as u16;
+            assert_eq!(
+                v.click_at(row, col).as_deref(),
+                Some(file.as_path()),
+                "clicking {name}'s path should reveal the file"
+            );
+        }
+        // The `⏺` marker (col 0) of the first block is outside any path span.
         assert!(v.click_at(0, 0).is_none(), "marker click should not reveal");
-        // The Bash header's "path" doesn't exist on disk → never a reveal.
-        let bash_row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        // A command header never masquerades as a file path.
+        let bash_row = v.wrapped_tag.iter().position(|&t| t == 3).unwrap() as u16;
         assert!(
             v.click_at(bash_row, 8).is_none(),
-            "a command header must not masquerade as a file path"
+            "a command header must not reveal"
         );
 
         std::fs::remove_file(&file).ok();
