@@ -115,16 +115,29 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
-    /// the sandboxed `exec` turn. TODO(verify): interactive resume subcommand/flags.
-    fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
+    /// the sandboxed `exec` turn. `autonomous` keeps the no-approval posture the
+    /// unattended run had. TODO(verify): interactive resume subcommand/flags.
+    fn interactive_invocation(
+        &self,
+        session_id: &str,
+        _cwd: &Path,
+        autonomous: bool,
+    ) -> Option<Invocation> {
         if session_id.is_empty() {
             return None;
         }
         let program = self.resolve_binary().ok()?;
-        Some(Invocation {
-            program,
-            args: vec!["resume".into(), session_id.to_string()],
-        })
+        let mut args = vec!["resume".into(), session_id.to_string()];
+        if autonomous {
+            // TODO(verify): the interactive equivalent of the exec sandbox flags.
+            args.extend([
+                "-c".into(),
+                "approval_policy=\"never\"".into(),
+                "-c".into(),
+                "sandbox_mode=\"workspace-write\"".into(),
+            ]);
+        }
+        Some(Invocation { program, args })
     }
 
     fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {

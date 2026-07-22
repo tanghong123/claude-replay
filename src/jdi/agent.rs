@@ -208,10 +208,17 @@ pub trait AgentAdapter {
     }
 
     /// The **interactive** invocation that hands a stopped session back to a human
-    /// (`takeover` launches this) — a normal, human-in-the-loop resume, NOT the
-    /// unattended `-p`/`--dangerously-skip-permissions` turn. `None` = the agent
-    /// can't be resumed interactively (or no id yet), so `takeover` just reports.
-    fn interactive_invocation(&self, _session_id: &str, _cwd: &Path) -> Option<Invocation> {
+    /// (`takeover` launches this) — a real interactive session, never the unattended
+    /// `-p` batch turn. `autonomous` keeps the run's permission posture (Claude's
+    /// `--dangerously-skip-permissions`): a session supervised unattended was already
+    /// running that way, so dropping it would prompt on every tool call. `false`
+    /// resumes with approvals on. `None` = no interactive resume (or no id yet).
+    fn interactive_invocation(
+        &self,
+        _session_id: &str,
+        _cwd: &Path,
+        _autonomous: bool,
+    ) -> Option<Invocation> {
         None
     }
 

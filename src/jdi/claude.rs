@@ -140,17 +140,24 @@ impl AgentAdapter for ClaudeAdapter {
         "--dangerously-skip-permissions (unattended)"
     }
 
-    /// Hand the session to a human: `claude --resume <id>` — interactive, with
-    /// permissions ON (no `-p`, no skip-permissions).
-    fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
+    /// Hand the session to a human: `claude --resume <id>` — a real interactive
+    /// session (never `-p`). `autonomous` keeps `--dangerously-skip-permissions`, so
+    /// a run that was already unattended doesn't start prompting on every tool call.
+    fn interactive_invocation(
+        &self,
+        session_id: &str,
+        _cwd: &Path,
+        autonomous: bool,
+    ) -> Option<Invocation> {
         if session_id.is_empty() {
             return None;
         }
         let program = self.resolve_binary().ok()?;
-        Some(Invocation {
-            program,
-            args: vec!["--resume".into(), session_id.to_string()],
-        })
+        let mut args = vec!["--resume".into(), session_id.to_string()];
+        if autonomous {
+            args.push("--dangerously-skip-permissions".into());
+        }
+        Some(Invocation { program, args })
     }
 
     fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
@@ -308,22 +315,39 @@ mod tests {
     }
 
     #[test]
-    fn interactive_takeover_is_a_plain_resume_no_autonomy_flags() {
+    fn interactive_takeover_keeps_the_runs_permission_posture() {
         let a = ClaudeAdapter;
-        let inv = a
-            .interactive_invocation("sid", Path::new("/tmp/repo"))
+        let cwd = Path::new("/tmp/repo");
+
+        // Default (autonomous): the session was running unattended, so keep
+        // --dangerously-skip-permissions — otherwise takeover would start
+        // prompting on every tool call. Still interactive: never `-p`.
+        let auto = a
+            .interactive_invocation("sid", cwd, true)
             .expect("claude resumes interactively");
-        assert_eq!(inv.args, vec!["--resume".to_string(), "sid".to_string()]);
-        // A human is present: no unattended `-p` / skip-permissions.
-        assert!(!inv.args.iter().any(|x| x == "-p"));
-        assert!(!inv
+        assert_eq!(
+            auto.args,
+            vec![
+                "--resume".to_string(),
+                "sid".to_string(),
+                "--dangerously-skip-permissions".to_string()
+            ]
+        );
+        assert!(
+            !auto.args.iter().any(|x| x == "-p"),
+            "must not be a batch turn"
+        );
+
+        // --supervised: approvals on.
+        let sup = a.interactive_invocation("sid", cwd, false).unwrap();
+        assert_eq!(sup.args, vec!["--resume".to_string(), "sid".to_string()]);
+        assert!(!sup
             .args
             .iter()
             .any(|x| x == "--dangerously-skip-permissions"));
+
         // No id yet → nothing to resume.
-        assert!(a
-            .interactive_invocation("", Path::new("/tmp/repo"))
-            .is_none());
+        assert!(a.interactive_invocation("", cwd, true).is_none());
     }
 
     #[test]

@@ -55,14 +55,26 @@ summary and return (`-f/--follow` opens the viewer instead). The worker stamps
 so `status` can show both.
 
 **Human ↔ jdi boundary (`takeover` / `handoff`).** Mirrors. `takeover` stops a run and
-launches `interactive_invocation()` so a human continues it (`--no-launch` prints the
-`resume_commands()` block instead). `handoff` runs *inside* an interactive session:
+launches `interactive_invocation(autonomous)` so a human continues it — autonomous by
+default, since the run was already unattended and dropping the flag would prompt on
+every action (`--supervised` flips it; `--no-launch` prints the `resume_commands()`
+block instead). With no tracked run for the cwd it falls back to taking over the
+newest **unmanaged** session: it refuses when another agent still holds that
+transcript (`live_agent_for_session`) unless `--force` kills it first.
+
+`handoff` runs *inside* an interactive session:
 it finds the session's process (nearest ancestor whose **executable name** — `ps -o
 comm=`, never the full argv — is the agent binary), spawns a detached `__handoff`
 watcher that waits for that pid to exit then runs `resume`, and — unless `--armed` —
 SIGTERMs the session (the watcher escalates to SIGKILL after a 10s grace) so it's
 fully hands-off. The deferral is required: two agents can't drive the same
 transcript at once.
+
+Because `handoff` executes during a live agent turn, it does the **bare minimum**
+there: the ancestor walk identifies the agent from the process itself (so nothing
+scans sessions on disk), then it spawns the watcher and signals. Discovery, the
+conflict guard and the resume all happen later in the headless watcher. Process
+lookups are targeted (`ps -p <pid>`, one per level) rather than a whole-table dump.
 
 > Matching on argv instead of `comm` was a real bug: a Claude Code tool shell runs
 > `zsh -c source ~/.claude/shell-snapshots/…`, whose argv contains "claude", so the

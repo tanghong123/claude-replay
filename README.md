@@ -141,6 +141,13 @@ background (`--armed` to arm without auto-quitting). A ready-made `/jdi-handoff`
 slash command and a `jdi-handoff` skill (triggers on "hand this off to jdi" /
 "justdoit") wrap `handoff` — see [`integrations/claude/`](integrations/claude/).
 
+`takeover` resumes with the run's **unattended posture** (Claude's
+`--dangerously-skip-permissions`) so it doesn't start prompting on every action;
+`--supervised` resumes with approvals on instead. With **no agent-jdi run tracked**
+for the directory it takes over the newest *unmanaged* claude/codex session there:
+if another agent is already live on that session it refuses and prints the resume
+command, unless `--force`, which kills that agent first.
+
 Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`/
 `handoff`) accepts **`--dry-run`** — it prints exactly what it would do (agent,
 resolved binary, the full invocation, what it would kill/queue) and exits with
