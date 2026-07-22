@@ -128,6 +128,20 @@ Claude's on-disk schema is one `<n>.json` per task,
 `{id, subject, description, activeForm, status, blocks, blockedBy}` — read `subject`
 (not the prose `description`) and sort **numerically** (a string sort gives 18, 19, 2).
 
+**Backlog drain-as-a-run.** `agent-jdi backlog "…"` queues a follow-up into
+`backlog/pending/`. When a run's main work reaches `Done`, the spine claims the queue
+(`pending/ → draining/`) and runs a **full cycle of its own** over the claimed items —
+`initial_mode(Trigger::BacklogDrain)`, i.e. dump→execute for Claude — then, only once
+that cycle comes back clean, confirms them (`draining/ → drained/`). Items queued
+*during* a drain are picked up by the next cycle; `MAX_DRAIN_CYCLES` is a backstop
+against a failing `finalize()` re-claiming forever. A stopped session is drained on
+demand with `backlog --drain`, which relaunches the worker straight into the drain
+mode (it refuses if a supervisor is already live — that one drains on its own).
+
+Both adapters must render `Brief::backlog` in their prompts: the spine marks items
+`drained/` on a clean turn, so a prompt that omitted them would silently discard the
+human's queued work.
+
 **The operator instruction reaches every mode.** `Brief::text` (what `resume`/
 `handoff` pass) is appended as `Additional instruction:` on resume/execute turns, not
 only folded into a fresh `Start` preamble — it was previously written to `task.md` and
@@ -169,10 +183,8 @@ resume+log and fill in a task queue / fresh-run later.
   guesswork. Do it in the same pass as the flag verification, against a real
   `codex`. No correctness risk meanwhile: Codex's done-signal is the exit code, which
   doesn't consult a queue.
-- Backlog **drain-as-a-run** and the interactive stale-session picker are simplified
-  vs. the bash original; the contract (trait + spine) is in place to wire them.
-  (`status` now renders the rich progress block — live tool histogram, task
-  checklist, recent commits, start/finish — from the transcript + task queue.)
+- The interactive stale-session picker is simplified vs. the bash original; the
+  contract (trait + spine) is in place to wire it.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
 

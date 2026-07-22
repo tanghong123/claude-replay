@@ -115,7 +115,8 @@ agent-jdi resume --agent codex   # force an agent
 agent-jdi handoff "finish the refactor and commit"    # hand THIS interactive session to an unattended run
 agent-jdi log               # reattach the viewer to the supervised session
 agent-jdi status            # rich status: live progress, task checklist, recent commits, start/finish
-agent-jdi backlog "also update the changelog"   # queue follow-up for the next drain
+agent-jdi backlog "also update the changelog"   # queue follow-up; a live run drains it when its work finishes
+agent-jdi backlog --drain   # drain the queue now (relaunches a stopped session)
 agent-jdi takeover          # stop the run and hand it back to you (launches the resumed agent)
 agent-jdi list
 ```

@@ -106,11 +106,32 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn prompt_for(&self, _mode: Mode, brief: &Brief, _session_id: &str) -> String {
-        if brief.text.trim().is_empty() {
+        let mut out = if brief.text.trim().is_empty() {
             PERSISTENCE.to_string()
         } else {
             format!("{PERSISTENCE}\n\nAdditional instruction: {}", brief.text)
+        };
+        // Claimed backlog items MUST reach the agent: the supervisor moves them to
+        // `drained/` when the turn comes back clean, so a prompt that omitted them
+        // would silently discard the human's queued follow-ups.
+        if !brief.backlog.is_empty() {
+            let items = brief
+                .backlog
+                .iter()
+                .enumerate()
+                .map(|(i, b)| format!("### Backlog item {}\n{}", i + 1, b.trim()))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            out.push_str(&format!(
+                "\n\nThe human queued the following {} follow-up message(s) for THIS \
+                 session while you were working. Go through them ONE BY ONE: understand \
+                 each request and carry out the concrete, fully-scoped work it implies. \
+                 Anything ambiguous: do not act on it — record it as a blocker instead.\
+                 \n\n{items}",
+                brief.backlog.len()
+            ));
         }
+        out
     }
 
     /// Codex assigns session ids itself — `start` captures the id afterward.

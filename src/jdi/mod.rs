@@ -91,11 +91,16 @@ enum Command {
     /// List tracked sessions.
     List,
     /// Queue follow-up work for a session's next drain (omit text to list the queue).
+    /// A live run drains it automatically once its current work finishes; use
+    /// --drain to start a drain now for a session that has already stopped.
     Backlog {
         message: Vec<String>,
         /// Session id (default: this directory's).
         #[arg(long)]
         id: Option<String>,
+        /// Drain the queue now (relaunches a stopped session to work through it).
+        #[arg(long)]
+        drain: bool,
     },
     /// Stop a supervised session and hand it back to you — launches the agent
     /// interactively resumed on the session (state left intact). Use --no-launch
@@ -223,8 +228,8 @@ pub fn run() -> Result<()> {
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
         Command::List => cmd_list(&config),
-        Command::Backlog { message, id } => {
-            cmd_backlog(&config, id.as_deref(), &message.join(" "), dry)
+        Command::Backlog { message, id, drain } => {
+            cmd_backlog(&config, id.as_deref(), &message.join(" "), dry, drain)
         }
         Command::Takeover {
             id,
@@ -938,26 +943,99 @@ fn cmd_list(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_backlog(config: &Config, id: Option<&str>, message: &str, dry_run: bool) -> Result<()> {
+fn cmd_backlog(
+    config: &Config,
+    id: Option<&str>,
+    message: &str,
+    dry_run: bool,
+    drain: bool,
+) -> Result<()> {
     let session = resolve_session(config, id)?;
     let bl = backlog::Backlog::new(session.backlog_root());
-    if message.trim().is_empty() {
+
+    if !message.trim().is_empty() {
+        if dry_run {
+            println!(
+                "[dry-run] would queue for {}: {message}",
+                session.dir.display()
+            );
+        } else {
+            println!("queued: {}", bl.add(message)?.display());
+        }
+    }
+
+    let (pending, draining) = (bl.pending_count(), bl.draining_count());
+    if message.trim().is_empty() && !drain {
+        println!("backlog: {pending} pending, {draining} draining");
+        return Ok(());
+    }
+
+    if !drain {
+        // A live worker drains on its own once the current work finishes.
+        if session.alive() {
+            println!("the running supervisor will drain it when its current work finishes.");
+        } else {
+            println!(
+                "no supervisor is running — drain it with `agent-jdi backlog --drain`{}.",
+                id.map(|i| format!(" --id {i}")).unwrap_or_default()
+            );
+        }
+        return Ok(());
+    }
+
+    // --drain: a live worker already picks the queue up, so never start a second one.
+    if session.alive() {
         println!(
-            "backlog: {} pending, {} draining",
-            bl.pending_count(),
-            bl.draining_count()
+            "a supervisor is already running (pid {}) — it drains the queue when its \
+             current work finishes.",
+            session.pid().unwrap_or(0)
         );
+        return Ok(());
+    }
+    if pending + draining == 0 {
+        println!("backlog is empty — nothing to drain.");
         return Ok(());
     }
     if dry_run {
         println!(
-            "[dry-run] would queue for {}: {message}",
+            "[dry-run] would relaunch {} to drain {pending} pending + {draining} in-flight item(s)",
             session.dir.display()
         );
         return Ok(());
     }
-    let path = bl.add(message)?;
-    println!("queued: {}", path.display());
+
+    let cwd = session
+        .meta_get("cwd")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    guard_no_conflict(config, &cwd)?;
+    let agent = session
+        .meta_get("agent")
+        .and_then(|a| Agent::from_label(&a))
+        .context("session meta has no agent")?;
+    // Start the worker straight in the drain mode; run_loop claims the items.
+    session.meta_set(
+        "mode",
+        agent::adapter(agent)
+            .initial_mode(agent::Trigger::BacklogDrain)
+            .as_str(),
+    )?;
+    session.meta_set("state", "draining")?;
+    let slot = session.meta_get("id").unwrap_or_else(|| {
+        session
+            .dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("session")
+            .to_string()
+    });
+    let pid = supervisor::spawn_detached(&config.home, &slot)?;
+    session.meta_set("pid", &pid.to_string())?;
+    session.meta_stamp("started");
+    session.meta_set("finished", "")?;
+    println!("draining {pending} pending + {draining} in-flight item(s) — worker {pid}.");
+    println!("  watch:  agent-jdi log {} -f", slot);
+    println!("  check:  agent-jdi status {}", slot);
     Ok(())
 }
 
