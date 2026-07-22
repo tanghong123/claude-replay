@@ -17,6 +17,18 @@ use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
 
+/// TODO(deferred): bring this in line with the Claude adapter's queue discipline —
+/// a durable FIFO queue, skip-on-blocked, prerequisites done now vs. follow-ups
+/// appended, and "don't end the turn while actionable work remains" (see
+/// `claude.rs`'s START/DUMP/EXECUTE prompts and `jdi/DESIGN.md`).
+///
+/// Deliberately NOT done yet. Codex has no native task queue, so the discipline
+/// would have to hang entirely off `Brief::checklist`, and its whole CLI surface is
+/// still `TODO(verify)` — writing untested prompt text against unverified flags
+/// would just be guesswork layered on guesswork. Do it together with the flag
+/// verification, so both can be checked against a real `codex` in one pass. Until
+/// then Codex keeps this short persistence nudge, and the done-signal stays the
+/// exit code (`classify`), which does not depend on any queue.
 const PERSISTENCE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm. Do as much as you can. If an action is blocked, try safe alternatives and clearly record any remaining blocker in your final response.";
 
 impl AgentAdapter for CodexAdapter {

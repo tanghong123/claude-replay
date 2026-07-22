@@ -160,6 +160,15 @@ resume+log and fill in a task queue / fresh-run later.
 
 - **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`,
   including the interactive `codex resume` used by `takeover`/`handoff`.
+- **Codex prompts don't carry the queue discipline** (`TODO(deferred)` on
+  `PERSISTENCE` in `codex.rs`). The Claude adapter states a durable FIFO queue with
+  skip-on-blocked and the prerequisite/append split in every phase; Codex still has
+  only a short persistence nudge. Held back on purpose: Codex has no native task
+  queue, so the discipline would rest entirely on `Brief::checklist`, and its CLI
+  surface is unverified — untested prompts against unverified flags is guesswork on
+  guesswork. Do it in the same pass as the flag verification, against a real
+  `codex`. No correctness risk meanwhile: Codex's done-signal is the exit code, which
+  doesn't consult a queue.
 - Backlog **drain-as-a-run** and the interactive stale-session picker are simplified
   vs. the bash original; the contract (trait + spine) is in place to wire them.
   (`status` now renders the rich progress block — live tool histogram, task
