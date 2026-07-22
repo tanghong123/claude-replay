@@ -51,6 +51,10 @@ install_managed_file() {
         die "cannot copy managed file: $target_file"
     fi
     chmod 644 "$temporary"
+    if [ -L "$target_file" ] && ! rm "$target_file"; then
+        rm -f "$temporary"
+        die "cannot replace managed symlink: $target_file"
+    fi
     if ! mv -f "$temporary" "$target_file"; then
         rm -f "$temporary"
         die "cannot replace managed file: $target_file"

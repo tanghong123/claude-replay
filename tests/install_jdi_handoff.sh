@@ -71,6 +71,27 @@ test "$(cat "$victim")" = "do not overwrite" || fail "installer followed a comma
 test ! -L "$claude_command" || fail "managed Claude command remained a symlink"
 cmp -s "$command_source" "$claude_command" || fail "Claude command was not safely refreshed"
 
+# A file target may also be a symlink to a directory. `mv target` can follow
+# that link on supported platforms, so neither managed file may write into it.
+command_victim_dir="$fixture/command-victim-dir"
+mkdir -p "$command_victim_dir"
+rm "$claude_command"
+ln -s "$command_victim_dir" "$claude_command"
+install_fixture
+test -z "$(find "$command_victim_dir" -mindepth 1 -print -quit)" || fail "installer followed a command link to a directory"
+test ! -L "$claude_command" || fail "directory-linked Claude command was not replaced"
+cmp -s "$command_source" "$claude_command" || fail "directory-linked Claude command was not refreshed"
+
+canonical="$agents_dir/jdi-handoff/SKILL.md"
+canonical_victim_dir="$fixture/canonical-victim-dir"
+mkdir -p "$canonical_victim_dir"
+rm "$canonical"
+ln -s "$canonical_victim_dir" "$canonical"
+install_fixture
+test -z "$(find "$canonical_victim_dir" -mindepth 1 -print -quit)" || fail "installer followed a canonical Skill link to a directory"
+test ! -L "$canonical" || fail "directory-linked canonical Skill was not replaced"
+cmp -s "$shared_source" "$canonical" || fail "directory-linked canonical Skill was not refreshed"
+
 # Installer-owned directory components must not be symlinks. Reject them before
 # a Skill or command can be written outside the selected roots.
 assert_rejects_managed_dir_link() {
@@ -124,6 +145,7 @@ if sh "$installer" \
     fail "overlapping canonical and Claude Skill targets were accepted"
 fi
 test ! -e "$overlap/skills/jdi-handoff/SKILL.md" || fail "overlap rejection happened after writing a Skill"
+test ! -L "$overlap/skills/jdi-handoff/SKILL.md" || fail "overlap rejection left a Skill symlink"
 
 # Relative destinations beginning with '-' are valid paths, not tool options.
 leading="$fixture_root/leading-dash"
