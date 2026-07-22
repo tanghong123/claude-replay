@@ -139,6 +139,19 @@ impl AgentAdapter for ClaudeAdapter {
     fn unattended_note(&self) -> &'static str {
         "--dangerously-skip-permissions (unattended)"
     }
+
+    /// Hand the session to a human: `claude --resume <id>` — interactive, with
+    /// permissions ON (no `-p`, no skip-permissions).
+    fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let program = self.resolve_binary().ok()?;
+        Some(Invocation {
+            program,
+            args: vec!["--resume".into(), session_id.to_string()],
+        })
+    }
 }
 
 const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
@@ -276,6 +289,25 @@ mod tests {
             .args
             .iter()
             .any(|x| x == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn interactive_takeover_is_a_plain_resume_no_autonomy_flags() {
+        let a = ClaudeAdapter;
+        let inv = a
+            .interactive_invocation("sid", Path::new("/tmp/repo"))
+            .expect("claude resumes interactively");
+        assert_eq!(inv.args, vec!["--resume".to_string(), "sid".to_string()]);
+        // A human is present: no unattended `-p` / skip-permissions.
+        assert!(!inv.args.iter().any(|x| x == "-p"));
+        assert!(!inv
+            .args
+            .iter()
+            .any(|x| x == "--dangerously-skip-permissions"));
+        // No id yet → nothing to resume.
+        assert!(a
+            .interactive_invocation("", Path::new("/tmp/repo"))
+            .is_none());
     }
 
     #[test]

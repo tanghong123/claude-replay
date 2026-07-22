@@ -97,8 +97,15 @@ enum Command {
         #[arg(long)]
         id: Option<String>,
     },
-    /// Stop a supervised session (state left intact).
-    Takeover { id: Option<String> },
+    /// Stop a supervised session and hand it back to you — launches the agent
+    /// interactively resumed on the session (state left intact). Use --no-launch
+    /// to just stop and report, without opening the agent.
+    Takeover {
+        id: Option<String>,
+        /// Only stop the supervisor; don't launch the interactive agent.
+        #[arg(long)]
+        no_launch: bool,
+    },
     /// Internal: the detached supervisor loop (do not call directly).
     #[command(name = "__run", hide = true)]
     Run { id: String },
@@ -173,7 +180,7 @@ pub fn run() -> Result<()> {
         Command::Backlog { message, id } => {
             cmd_backlog(&config, id.as_deref(), &message.join(" "), dry)
         }
-        Command::Takeover { id } => cmd_takeover(&config, id.as_deref(), dry),
+        Command::Takeover { id, no_launch } => cmd_takeover(&config, id.as_deref(), dry, no_launch),
         Command::Run { id } => supervisor::run_loop(&config.home, &id),
     }
 }
@@ -852,8 +859,26 @@ fn cmd_backlog(config: &Config, id: Option<&str>, message: &str, dry_run: bool) 
     Ok(())
 }
 
-fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool) -> Result<()> {
+fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool, no_launch: bool) -> Result<()> {
     let session = resolve_session(config, id)?;
+    // The interactive resume to hand the human, unless --no-launch (or the agent
+    // can't be resumed interactively / has no id yet).
+    let sid = session.meta_get("session_id").unwrap_or_default();
+    let cwd = session.meta_get("cwd").map(PathBuf::from);
+    let interactive = if no_launch {
+        None
+    } else {
+        match (
+            session
+                .meta_get("agent")
+                .and_then(|a| Agent::from_label(&a)),
+            &cwd,
+        ) {
+            (Some(a), Some(c)) => agent::adapter(a).interactive_invocation(&sid, c),
+            _ => None,
+        }
+    };
+
     if dry_run {
         match session.pid() {
             Some(pid) => println!(
@@ -865,10 +890,40 @@ fn cmd_takeover(config: &Config, id: Option<&str>, dry_run: bool) -> Result<()> 
                 session.dir.display()
             ),
         }
+        if let Some(inv) = &interactive {
+            println!(
+                "[dry-run] then hand you: {} {}",
+                inv.program.display(),
+                shell_join(&inv.args)
+            );
+        }
         return Ok(());
     }
+
     supervisor::takeover(&session)?;
+
+    // Default: launch the agent interactively so you continue the session yourself.
+    if let Some(inv) = interactive {
+        let cwd = cwd.expect("interactive implies a cwd");
+        println!(
+            "stopped the supervisor — handing you session {sid}:\n  {} {}\n",
+            inv.program.display(),
+            shell_join(&inv.args)
+        );
+        // Inherit the terminal so the agent's interactive UI takes over; exit with
+        // its status when the human is done.
+        let status = std::process::Command::new(&inv.program)
+            .args(&inv.args)
+            .current_dir(&cwd)
+            .status()
+            .with_context(|| format!("launch {}", inv.program.display()))?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
+
     println!("stopped session {}", session.dir.display());
+    if !no_launch {
+        println!("(no interactive resume available for this agent — session left stopped)");
+    }
     Ok(())
 }
 

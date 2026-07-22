@@ -206,6 +206,14 @@ pub trait AgentAdapter {
     fn unattended_note(&self) -> &'static str {
         "unattended (no human in the loop)"
     }
+
+    /// The **interactive** invocation that hands a stopped session back to a human
+    /// (`takeover` launches this) — a normal, human-in-the-loop resume, NOT the
+    /// unattended `-p`/`--dangerously-skip-permissions` turn. `None` = the agent
+    /// can't be resumed interactively (or no id yet), so `takeover` just reports.
+    fn interactive_invocation(&self, _session_id: &str, _cwd: &Path) -> Option<Invocation> {
+        None
+    }
 }
 
 /// The adapter registry: the one place that knows every agent. Adding an agent is

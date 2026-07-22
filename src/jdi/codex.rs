@@ -114,6 +114,19 @@ impl AgentAdapter for CodexAdapter {
         "sandbox=workspace-write, approvals=never (unattended)"
     }
 
+    /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
+    /// the sandboxed `exec` turn. TODO(verify): interactive resume subcommand/flags.
+    fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let program = self.resolve_binary().ok()?;
+        Some(Invocation {
+            program,
+            args: vec!["resume".into(), session_id.to_string()],
+        })
+    }
+
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
     /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
