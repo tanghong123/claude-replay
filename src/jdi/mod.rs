@@ -257,10 +257,13 @@ fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     let sid = match id {
         Some(id) => {
             let mut components = Path::new(id).components();
-            if !matches!(
-                (components.next(), components.next()),
-                (Some(std::path::Component::Normal(_)), None)
-            ) {
+            if id.contains('/')
+                || id.contains('\\')
+                || !matches!(
+                    (components.next(), components.next()),
+                    (Some(std::path::Component::Normal(_)), None)
+                )
+            {
                 bail!(
                     "invalid tracked session id '{id}' — expected one name from `agent-jdi list`"
                 );
@@ -1440,6 +1443,10 @@ mod tests {
             "../outside",
             "nested/session",
             "/absolute/session",
+            "tracked-session/",
+            "tracked-session/.",
+            "tracked-session//",
+            "tracked-session\\child",
             ".",
             "..",
         ] {
