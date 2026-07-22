@@ -60,7 +60,7 @@ enum Command {
         #[arg(long)]
         max_attempts: Option<u32>,
         /// After launching, open the live replay viewer instead of printing a
-        /// summary and returning (like `log -f`).
+        /// summary and returning (`agent-jdi log` follows by default).
         #[arg(long, short = 'f')]
         follow: bool,
     },
@@ -81,7 +81,7 @@ enum Command {
         #[arg(long)]
         max_attempts: Option<u32>,
         /// After launching, open the live replay viewer instead of printing a
-        /// summary and returning (like `log -f`).
+        /// summary and returning (`agent-jdi log` follows by default).
         #[arg(long, short = 'f')]
         follow: bool,
     },
@@ -1410,7 +1410,7 @@ mod tests {
 
     #[test]
     fn start_and_resume_expose_the_follow_flag() {
-        use clap::Parser;
+        use clap::{CommandFactory, Parser};
         // `-f` parses on both subcommands and defaults to false.
         let start = Cli::parse_from(["agent-jdi", "start", "do it"]);
         assert!(matches!(
@@ -1427,6 +1427,20 @@ mod tests {
             resume_f.command,
             Command::Resume { follow: true, .. }
         ));
+
+        let mut command = Cli::command();
+        for subcommand in ["start", "resume"] {
+            let help = command
+                .find_subcommand_mut(subcommand)
+                .expect("subcommand exists")
+                .render_long_help()
+                .to_string();
+            assert!(!help.contains("log -f"), "{subcommand} help: {help}");
+            assert!(
+                help.contains("`agent-jdi log` follows by default"),
+                "{subcommand} help: {help}"
+            );
+        }
     }
 
     #[test]
