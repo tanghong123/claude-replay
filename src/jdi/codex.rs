@@ -110,6 +110,10 @@ impl AgentAdapter for CodexAdapter {
         Mode::Execute
     }
 
+    fn unattended_note(&self) -> &'static str {
+        "sandbox=workspace-write, approvals=never (unattended)"
+    }
+
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
     /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {

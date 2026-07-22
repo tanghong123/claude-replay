@@ -200,6 +200,12 @@ pub trait AgentAdapter {
     fn pins_session_id(&self) -> bool {
         true
     }
+
+    /// One-line description of the autonomy the agent runs under (for the `resume`/
+    /// `start` summary's `runs with:` line). Default is generic.
+    fn unattended_note(&self) -> &'static str {
+        "unattended (no human in the loop)"
+    }
 }
 
 /// The adapter registry: the one place that knows every agent. Adding an agent is

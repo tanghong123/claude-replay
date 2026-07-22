@@ -261,12 +261,74 @@ fn cmd_resume(
     session.meta_set("state", "running")?;
     drop(_lock); // the worker runs lock-free; liveness is via its pid
 
-    eprintln!(
-        "agent-jdi: {} worker {pid} running for session {} — press q to leave; it keeps going.",
-        agent.label(),
-        resumable.id
+    // Like `claude-jdi resume`: the worker is now running detached in the
+    // background — print a summary and return, rather than taking over the
+    // terminal with the viewer (use `agent-jdi log <id> -f` to follow).
+    let plan = if adapter.initial_mode(agent::Trigger::Resume) == agent::Mode::ResumeDump {
+        "1) dump the agreed plan, then 2) execute it."
+    } else {
+        "resume the session and drive the work to completion."
+    };
+    print!(
+        "{}",
+        supervisor_summary(
+            "resume",
+            &slot,
+            &cwd,
+            agent,
+            &resumable.id,
+            resumable.idle_secs,
+            interval.unwrap_or(600),
+            max_attempts.unwrap_or(0),
+            adapter.unattended_note(),
+            plan,
+        )
     );
-    follow_viewer(&resumable.transcript)
+    Ok(())
+}
+
+/// The `claude-jdi`-style run summary shown after a supervisor is launched: what it
+/// is, where, which session, its retry/autonomy policy, and the follow-up commands.
+/// Purely informational (the worker already runs detached).
+#[allow(clippy::too_many_arguments)]
+fn supervisor_summary(
+    verb: &str,
+    slot: &str,
+    cwd: &Path,
+    agent: Agent,
+    session_id: &str,
+    idle_secs: u64,
+    interval: u64,
+    max_attempts: u32,
+    unattended: &str,
+    plan: &str,
+) -> String {
+    format!(
+        "▶ agent-jdi {verb}: {slot}\n  \
+         cwd:        {cwd}\n  \
+         agent:      {agent}\n  \
+         session:    {session_id}  (last active {ago} ago)\n  \
+         retry:      every {interval}s, max-attempts={max_attempts} (0=unlimited)\n  \
+         runs with:  {unattended}\n\n  \
+         it will:    {plan}\n  \
+         check:      agent-jdi status {slot}\n  \
+         watch:      agent-jdi log {slot} -f\n  \
+         take over:  agent-jdi takeover {slot}\n",
+        cwd = cwd.display(),
+        agent = agent.label(),
+        ago = human_ago(idle_secs),
+    )
+}
+
+/// "7s", "3m", "2h4m" — a compact "how long ago" for the summary.
+fn human_ago(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 /// One supervisor per directory: refuse if another `agent-jdi` — or the bash
@@ -589,6 +651,57 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_ago_is_compact() {
+        assert_eq!(human_ago(7), "7s");
+        assert_eq!(human_ago(59), "59s");
+        assert_eq!(human_ago(600), "10m");
+        assert_eq!(human_ago(3600), "1h0m");
+        assert_eq!(human_ago(7 * 3600 + 4 * 60), "7h4m");
+    }
+
+    #[test]
+    fn resume_summary_matches_claude_jdi_shape_and_uses_real_commands() {
+        let s = supervisor_summary(
+            "resume",
+            "knack-98db47",
+            Path::new("/Users/hong/code/knack"),
+            Agent::Claude,
+            "a3cdd86e-398b-498f-807c-185332447c5c",
+            7,
+            600,
+            0,
+            "--dangerously-skip-permissions (unattended)",
+            "1) dump the agreed plan, then 2) execute it.",
+        );
+        // Header + all the labelled fields, claude-jdi style.
+        assert!(s.starts_with("▶ agent-jdi resume: knack-98db47\n"), "{s}");
+        assert!(s.contains("  cwd:        /Users/hong/code/knack\n"), "{s}");
+        assert!(s.contains("(last active 7s ago)"), "{s}");
+        assert!(
+            s.contains("  retry:      every 600s, max-attempts=0 (0=unlimited)\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  runs with:  --dangerously-skip-permissions (unattended)\n"),
+            "{s}"
+        );
+        // Follow-up hints must be the *real* agent-jdi commands (copy-pasteable),
+        // not claude-jdi, and must NOT auto-launch the viewer.
+        assert!(
+            s.contains("  check:      agent-jdi status knack-98db47\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  watch:      agent-jdi log knack-98db47 -f\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  take over:  agent-jdi takeover knack-98db47\n"),
+            "{s}"
+        );
+    }
 
     #[test]
     fn default_agent_reuses_the_last_run_in_this_dir() {

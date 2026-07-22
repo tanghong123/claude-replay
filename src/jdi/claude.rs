@@ -135,6 +135,10 @@ impl AgentAdapter for ClaudeAdapter {
     fn task_queue(&self) -> Option<&dyn TaskQueue> {
         Some(&ClaudeTaskQueue)
     }
+
+    fn unattended_note(&self) -> &'static str {
+        "--dangerously-skip-permissions (unattended)"
+    }
 }
 
 const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
