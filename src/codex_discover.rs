@@ -122,6 +122,7 @@ fn first_user_snippet(path: &Path) -> String {
             .flatten()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
             .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .filter(|text| !crate::codex_model::is_host_context(text))
             .collect::<Vec<_>>()
             .join(" ");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -323,6 +324,11 @@ mod tests {
 
         fn rollout_with_user(&self, id: &str, cwd: &Path, message: &str) -> PathBuf {
             let path = self.rollout("2026/07/18", id, cwd, "codex-tui");
+            Self::append_user(&path, message);
+            path
+        }
+
+        fn append_user(path: &Path, message: &str) {
             let user = serde_json::json!({
                 "timestamp": "2026-07-18T01:00:01Z",
                 "type": "response_item",
@@ -334,11 +340,10 @@ mod tests {
             });
             use std::io::Write;
             writeln!(
-                fs::OpenOptions::new().append(true).open(&path).unwrap(),
+                fs::OpenOptions::new().append(true).open(path).unwrap(),
                 "{user}"
             )
             .unwrap();
-            path
         }
     }
 
@@ -358,6 +363,26 @@ mod tests {
             path
         );
         let candidates = candidates_in(&fixture.sessions, &cwd);
+        assert_eq!(candidates[0].snippet, "Fix the parser carefully");
+    }
+
+    #[test]
+    fn picker_snippet_skips_host_context_messages() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let path = fixture.rollout("2026/07/18", "abc", &cwd, "codex-tui");
+        for context in [
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>...</INSTRUCTIONS>",
+            "<recommended_plugins>available but not installed</recommended_plugins>",
+            "<environment_context><cwd>/repo</cwd></environment_context>",
+            "<permissions instructions>read only</permissions instructions>",
+        ] {
+            Fixture::append_user(&path, context);
+        }
+        Fixture::append_user(&path, "Fix the parser carefully");
+
+        let candidates = candidates_in(&fixture.sessions, &cwd);
+
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
     }
 
