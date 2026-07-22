@@ -59,10 +59,11 @@ commands are not an extension surface.
 
 ## Verification
 
-A POSIX shell integration test installs into temporary directories containing
+A macOS/Linux `/bin/sh` integration test installs into temporary directories containing
 spaces and verifies canonical content, symlink targets, Claude command content,
-idempotent reinstall, and migration from the previous regular-file layout. CI
-runs this test alongside the existing Rust gates.
+idempotent reinstall, migration from the previous regular-file layout, safe
+replacement of managed file symlinks, and rejection of installer-owned directory
+symlinks. CI runs this test alongside the existing Rust gates.
 
 ## Scope boundaries
 

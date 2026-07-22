@@ -20,6 +20,47 @@ die() {
     exit 2
 }
 
+absolute_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "$(pwd -P)" "$1" ;;
+    esac
+}
+
+ensure_managed_dir() {
+    path=$1
+    label=$2
+    [ ! -L "$path" ] || die "$label must not be a symbolic link: $path"
+    if [ -e "$path" ] && [ ! -d "$path" ]; then
+        die "$label is not a directory: $path"
+    fi
+    mkdir -p "$path"
+}
+
+install_managed_file() {
+    source_file=$1
+    target_file=$2
+    target_dir=${target_file%/*}
+
+    if [ -d "$target_file" ] && [ ! -L "$target_file" ]; then
+        die "managed file target is a directory: $target_file"
+    fi
+    if [ -L "$target_file" ]; then
+        rm "$target_file"
+    fi
+
+    temporary=$(mktemp "$target_dir/.jdi-handoff-install.XXXXXX")
+    if ! cp "$source_file" "$temporary"; then
+        rm -f "$temporary"
+        die "cannot copy managed file: $target_file"
+    fi
+    chmod 644 "$temporary"
+    if ! mv -f "$temporary" "$target_file"; then
+        rm -f "$temporary"
+        die "cannot replace managed file: $target_file"
+    fi
+}
+
 agents_dir=
 claude_dir=
 while [ "$#" -gt 0 ]; do
@@ -53,26 +94,29 @@ if [ -z "$agents_dir" ] || [ -z "$claude_dir" ]; then
     [ -n "$claude_dir" ] || claude_dir="$user_home/.claude"
 fi
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 skill_source="$script_dir/shared/skills/jdi-handoff/SKILL.md"
 command_source="$script_dir/claude/commands/jdi-handoff.md"
 [ -f "$skill_source" ] || die "shared Skill source is missing: $skill_source"
 [ -f "$command_source" ] || die "Claude command source is missing: $command_source"
 
+agents_dir=$(absolute_path "$agents_dir")
+claude_dir=$(absolute_path "$claude_dir")
 mkdir -p "$agents_dir" "$claude_dir"
-agents_dir=$(CDPATH= cd -- "$agents_dir" && pwd -P)
-claude_dir=$(CDPATH= cd -- "$claude_dir" && pwd -P)
+agents_dir=$(CDPATH= cd "$agents_dir" && pwd -P)
+claude_dir=$(CDPATH= cd "$claude_dir" && pwd -P)
 
 canonical_dir="$agents_dir/jdi-handoff"
+claude_skills_dir="$claude_dir/skills"
 claude_skill_dir="$claude_dir/skills/jdi-handoff"
 claude_command_dir="$claude_dir/commands"
-mkdir -p "$canonical_dir" "$claude_skill_dir" "$claude_command_dir"
+ensure_managed_dir "$canonical_dir" "canonical Skill directory"
+ensure_managed_dir "$claude_skills_dir" "Claude skills directory"
+ensure_managed_dir "$claude_skill_dir" "Claude jdi-handoff Skill directory"
+ensure_managed_dir "$claude_command_dir" "Claude commands directory"
 
 canonical_skill="$canonical_dir/SKILL.md"
-if [ -L "$canonical_skill" ]; then
-    rm "$canonical_skill"
-fi
-cp "$skill_source" "$canonical_skill"
+install_managed_file "$skill_source" "$canonical_skill"
 
 claude_skill="$claude_skill_dir/SKILL.md"
 if [ -L "$claude_skill" ]; then
@@ -88,7 +132,7 @@ fi
 ln -s "$canonical_skill" "$claude_skill"
 
 claude_command="$claude_command_dir/jdi-handoff.md"
-cp "$command_source" "$claude_command"
+install_managed_file "$command_source" "$claude_command"
 
 printf 'Installed shared Skill: %s\n' "$canonical_skill"
 printf 'Linked Claude Skill:   %s -> %s\n' "$claude_skill" "$canonical_skill"

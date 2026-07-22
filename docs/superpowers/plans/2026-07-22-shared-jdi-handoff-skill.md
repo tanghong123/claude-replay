@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the agent-neutral Skill under `integrations/shared`, copy it to the standard user agent-skills directory, and link Claude's Skill entry to that installed copy. Keep only the Claude slash-command adapter client-specific and validate the installer in temporary directories.
 
-**Tech Stack:** POSIX shell, GitHub Actions, Markdown, existing Rust/Cargo verification gates
+**Tech Stack:** macOS/Linux `/bin/sh`, GitHub Actions, Markdown, existing Rust/Cargo verification gates
 
 ## Global Constraints
 
@@ -40,8 +40,9 @@ sh integrations/install-jdi-handoff.sh \
 
 It asserts that the canonical file and Claude command match their repository
 sources, the Claude Skill file is a symlink to the installed canonical file, a
-second install is idempotent, and an old regular Claude Skill is backed up during
-migration.
+second install is idempotent, an old regular Claude Skill is backed up during
+migration, managed file symlinks are replaced rather than followed, and managed
+directory symlinks are rejected without an out-of-root write.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -135,11 +136,12 @@ sh tests/install_jdi_handoff.sh
 sh -n integrations/install-jdi-handoff.sh tests/install_jdi_handoff.sh
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-cargo test --all
+AGENT_JDI_CLAUDE_BIN=/usr/bin/true cargo test --all
 ```
 
-Expected: every command exits 0; the Rust baseline remains green and the shell
-test reports success.
+Expected: every command exits 0; the explicit test binary supplies main's
+currently missing Claude CLI fixture, the Rust baseline remains green, and the
+shell test reports success. PR #3 removes the need for this environment override.
 
 - [ ] **Step 5: Review the fixed diff and commit**
 

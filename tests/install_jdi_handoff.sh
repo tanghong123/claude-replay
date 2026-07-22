@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+repo_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
 installer="$repo_root/integrations/install-jdi-handoff.sh"
 shared_source="$repo_root/integrations/shared/skills/jdi-handoff/SKILL.md"
 command_source="$repo_root/integrations/claude/commands/jdi-handoff.md"
@@ -27,7 +27,7 @@ install_fixture() {
 }
 
 assert_install() {
-    canonical_dir=$(CDPATH= cd -- "$agents_dir/jdi-handoff" && pwd -P)
+    canonical_dir=$(CDPATH= cd "$agents_dir/jdi-handoff" && pwd -P)
     canonical="$canonical_dir/SKILL.md"
     claude_skill="$claude_dir/skills/jdi-handoff/SKILL.md"
     claude_command="$claude_dir/commands/jdi-handoff.md"
@@ -55,8 +55,70 @@ assert_install
 backup="$claude_skill.pre-shared-backup"
 test -f "$backup" || fail "previous Claude Skill was not backed up"
 cmp -s "$shared_source" "$backup" || fail "Claude Skill backup content changed"
+install_fixture
+assert_install
+cmp -s "$shared_source" "$backup" || fail "reinstall changed the preserved backup"
 
-sh "$installer" --help | grep -q -- '--agents-dir PATH' || fail "help omits --agents-dir"
+# Replacing a managed command symlink must replace the link itself, never write
+# through it to an arbitrary file.
+claude_command="$claude_dir/commands/jdi-handoff.md"
+victim="$fixture/victim.txt"
+printf 'do not overwrite\n' >"$victim"
+rm "$claude_command"
+ln -s "$victim" "$claude_command"
+install_fixture
+test "$(cat "$victim")" = "do not overwrite" || fail "installer followed a command symlink"
+test ! -L "$claude_command" || fail "managed Claude command remained a symlink"
+cmp -s "$command_source" "$claude_command" || fail "Claude command was not safely refreshed"
+
+# Installer-owned directory components must not be symlinks. Reject them before
+# a Skill or command can be written outside the selected roots.
+assert_rejects_managed_dir_link() {
+    label=$1
+    linked_path=$2
+    outside=$3
+    attack_agents=$4
+    attack_claude=$5
+
+    mkdir -p "$(dirname "$linked_path")" "$outside"
+    ln -s "$outside" "$linked_path"
+    if sh "$installer" --agents-dir "$attack_agents" --claude-dir "$attack_claude" >/dev/null 2>&1; then
+        fail "$label managed-directory symlink was accepted"
+    fi
+    test -z "$(find "$outside" -mindepth 1 -print -quit)" || fail "$label link was followed outside its root"
+}
+
+attack="$fixture_root/managed-link-attacks"
+assert_rejects_managed_dir_link \
+    "canonical Skill" \
+    "$attack/one/.agents/skills/jdi-handoff" \
+    "$attack/one/outside" \
+    "$attack/one/.agents/skills" \
+    "$attack/one/.claude"
+assert_rejects_managed_dir_link \
+    "Claude skills root" \
+    "$attack/two/.claude/skills" \
+    "$attack/two/outside" \
+    "$attack/two/.agents/skills" \
+    "$attack/two/.claude"
+assert_rejects_managed_dir_link \
+    "Claude command root" \
+    "$attack/three/.claude/commands" \
+    "$attack/three/outside" \
+    "$attack/three/.agents/skills" \
+    "$attack/three/.claude"
+
+# Relative destinations beginning with '-' are valid paths, not tool options.
+leading="$fixture_root/leading-dash"
+mkdir -p "$leading"
+(
+    cd "$leading"
+    sh "$installer" --agents-dir -agents --claude-dir -claude
+)
+test -f "$leading/-agents/jdi-handoff/SKILL.md" || fail "leading-dash agents path was not installed"
+test -L "$leading/-claude/skills/jdi-handoff/SKILL.md" || fail "leading-dash Claude path was not linked"
+
+sh "$installer" --help | grep -q 'agents-dir PATH' || fail "help omits --agents-dir"
 if sh "$installer" --unknown >/dev/null 2>&1; then
     fail "unknown arguments must be rejected"
 fi

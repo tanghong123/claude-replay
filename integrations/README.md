@@ -25,6 +25,9 @@ The installed Skill is copied out of the Git checkout, so moving or deleting the
 checkout does not break the clients. Re-running the installer refreshes managed
 files. When migrating an older copied Claude Skill, the previous regular file is
 preserved once as `SKILL.md.pre-shared-backup` before the symlink is created.
+Managed command-file symlinks are replaced rather than followed, and the
+installer refuses installer-owned directories that are themselves symlinks so
+it cannot write outside the selected client roots.
 
 Open a new client session after installation. Then use:
 
