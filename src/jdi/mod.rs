@@ -44,8 +44,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start a FRESH unattended run of a task, and follow it. Default agent: the
-    /// latest run's in this directory (override with --agent).
+    /// Start a FRESH unattended run of a task. The worker runs detached in the
+    /// background; a summary is printed (use -f to open the live viewer instead).
+    /// Default agent: the latest run's in this directory (override with --agent).
     Start {
         /// The task to run (or use --task-file).
         task: Vec<String>,
@@ -58,8 +59,14 @@ enum Command {
         /// Give up after this many attempts (0 = never; default 0).
         #[arg(long)]
         max_attempts: Option<u32>,
+        /// After launching, open the live replay viewer instead of printing a
+        /// summary and returning (like `log -f`).
+        #[arg(long, short = 'f')]
+        follow: bool,
     },
-    /// Resume the most-recent session for this directory, unattended, and follow it.
+    /// Resume the most-recent session for this directory, unattended. The worker
+    /// runs detached in the background; a summary is printed (use -f to open the
+    /// live viewer instead).
     Resume {
         /// Extra instruction folded into the persistence prompt.
         instruction: Vec<String>,
@@ -69,6 +76,10 @@ enum Command {
         /// Give up after this many attempts (0 = never; default 0).
         #[arg(long)]
         max_attempts: Option<u32>,
+        /// After launching, open the live replay viewer instead of printing a
+        /// summary and returning (like `log -f`).
+        #[arg(long, short = 'f')]
+        follow: bool,
     },
     /// Reattach the viewer to a supervised session's transcript.
     Log {
@@ -131,6 +142,7 @@ pub fn run() -> Result<()> {
             task_file,
             interval,
             max_attempts,
+            follow,
         } => cmd_start(
             &config,
             cli.agent,
@@ -139,11 +151,13 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             dry,
+            follow,
         ),
         Command::Resume {
             instruction,
             interval,
             max_attempts,
+            follow,
         } => cmd_resume(
             &config,
             cli.agent,
@@ -151,6 +165,7 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             dry,
+            follow,
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
@@ -176,6 +191,7 @@ fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     Ok(s)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_resume(
     config: &Config,
     forced: Option<Agent>,
@@ -183,6 +199,7 @@ fn cmd_resume(
     interval: Option<u64>,
     max_attempts: Option<u32>,
     dry_run: bool,
+    follow: bool,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
@@ -261,9 +278,17 @@ fn cmd_resume(
     session.meta_set("state", "running")?;
     drop(_lock); // the worker runs lock-free; liveness is via its pid
 
-    // Like `claude-jdi resume`: the worker is now running detached in the
-    // background — print a summary and return, rather than taking over the
-    // terminal with the viewer (use `agent-jdi log <id> -f` to follow).
+    // `-f/--follow`: take over the terminal with the live viewer. Otherwise (the
+    // default, like `claude-jdi resume`) the worker keeps running detached and we
+    // just print a summary and return.
+    if follow {
+        eprintln!(
+            "agent-jdi: {} worker {pid} running for session {} — press q to leave; it keeps going.",
+            agent.label(),
+            resumable.id
+        );
+        return follow_viewer(&resumable.transcript);
+    }
     let plan = if adapter.initial_mode(agent::Trigger::Resume) == agent::Mode::ResumeDump {
         "1) dump the agreed plan, then 2) execute it."
     } else {
@@ -277,7 +302,7 @@ fn cmd_resume(
             &cwd,
             agent,
             &resumable.id,
-            resumable.idle_secs,
+            Some(resumable.idle_secs),
             interval.unwrap_or(600),
             max_attempts.unwrap_or(0),
             adapter.unattended_note(),
@@ -297,17 +322,26 @@ fn supervisor_summary(
     cwd: &Path,
     agent: Agent,
     session_id: &str,
-    idle_secs: u64,
+    idle_secs: Option<u64>,
     interval: u64,
     max_attempts: u32,
     unattended: &str,
     plan: &str,
 ) -> String {
+    // The session line adapts: a fresh Codex `start` has no id yet (assigned after
+    // turn 1); a resume shows the id + how long since it was last active.
+    let session_line = if session_id.is_empty() {
+        "(assigned by the agent after turn 1)".to_string()
+    } else if let Some(idle) = idle_secs {
+        format!("{session_id}  (last active {} ago)", human_ago(idle))
+    } else {
+        session_id.to_string()
+    };
     format!(
         "▶ agent-jdi {verb}: {slot}\n  \
          cwd:        {cwd}\n  \
          agent:      {agent}\n  \
-         session:    {session_id}  (last active {ago} ago)\n  \
+         session:    {session_line}\n  \
          retry:      every {interval}s, max-attempts={max_attempts} (0=unlimited)\n  \
          runs with:  {unattended}\n\n  \
          it will:    {plan}\n  \
@@ -316,7 +350,6 @@ fn supervisor_summary(
          take over:  agent-jdi takeover {slot}\n",
         cwd = cwd.display(),
         agent = agent.label(),
-        ago = human_ago(idle_secs),
     )
 }
 
@@ -370,6 +403,7 @@ fn cmd_start(
     interval: Option<u64>,
     max_attempts: Option<u32>,
     dry_run: bool,
+    follow: bool,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let task = match task_file {
@@ -465,32 +499,53 @@ fn cmd_start(
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
     session.meta_set("state", "running")?;
-    let follow = adapter.expected_transcript(&session_id, &cwd);
+    let expected = adapter.expected_transcript(&session_id, &cwd);
     drop(_lock);
 
-    eprintln!(
-        "agent-jdi: started {} run (worker {pid}) in {} — press q to leave; it keeps going.",
-        agent.label(),
-        cwd.display()
-    );
-    // Claude's transcript path is known up front → wait briefly for the file, then
-    // follow. Codex's id/path isn't known until capture, so point at `log` instead.
-    match follow {
-        Some(p) => {
-            for _ in 0..40 {
-                if p.exists() {
-                    return follow_viewer(&p);
+    // `-f/--follow`: take over the terminal with the live viewer. Claude's
+    // transcript path is known up front → wait briefly for the file, then follow;
+    // Codex's id/path isn't known until capture, so point at `log`.
+    if follow {
+        eprintln!(
+            "agent-jdi: started {} run (worker {pid}) in {} — press q to leave; it keeps going.",
+            agent.label(),
+            cwd.display()
+        );
+        match expected {
+            Some(p) => {
+                for _ in 0..40 {
+                    if p.exists() {
+                        return follow_viewer(&p);
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
                 }
-                std::thread::sleep(Duration::from_millis(250));
+                eprintln!("(transcript not visible yet — run `agent-jdi log` to watch)");
+                return Ok(());
             }
-            eprintln!("(transcript not visible yet — run `agent-jdi log` to watch)");
-            Ok(())
-        }
-        None => {
-            eprintln!("run `agent-jdi log` once it's underway to watch it live.");
-            Ok(())
+            None => {
+                eprintln!("run `agent-jdi log` once it's underway to watch it live.");
+                return Ok(());
+            }
         }
     }
+
+    // Default (like `resume`): the worker runs detached — print a summary and return.
+    print!(
+        "{}",
+        supervisor_summary(
+            "start",
+            &slot,
+            &cwd,
+            agent,
+            &session_id,
+            None,
+            interval.unwrap_or(600),
+            max_attempts.unwrap_or(0),
+            adapter.unattended_note(),
+            "run the task to completion, committing per step.",
+        )
+    );
+    Ok(())
 }
 
 fn cmd_log(config: &Config, id: Option<&str>) -> Result<()> {
@@ -669,7 +724,7 @@ mod tests {
             Path::new("/Users/hong/code/knack"),
             Agent::Claude,
             "a3cdd86e-398b-498f-807c-185332447c5c",
-            7,
+            Some(7),
             600,
             0,
             "--dangerously-skip-permissions (unattended)",
@@ -701,6 +756,54 @@ mod tests {
             s.contains("  take over:  agent-jdi takeover knack-98db47\n"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn start_summary_handles_an_unassigned_session_id() {
+        // A fresh Codex `start` has no id yet (assigned after turn 1) and no
+        // last-active time → the session line says so, no `(last active …)`.
+        let s = supervisor_summary(
+            "start",
+            "knack-98db47",
+            Path::new("/Users/hong/code/knack"),
+            Agent::Codex,
+            "", // not pinned
+            None,
+            600,
+            0,
+            "sandbox=workspace-write, approvals=never (unattended)",
+            "run the task to completion, committing per step.",
+        );
+        assert!(s.starts_with("▶ agent-jdi start: knack-98db47\n"), "{s}");
+        assert!(
+            s.contains("  session:    (assigned by the agent after turn 1)\n"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("last active"),
+            "no last-active for a fresh start: {s}"
+        );
+    }
+
+    #[test]
+    fn start_and_resume_expose_the_follow_flag() {
+        use clap::Parser;
+        // `-f` parses on both subcommands and defaults to false.
+        let start = Cli::parse_from(["agent-jdi", "start", "do it"]);
+        assert!(matches!(
+            start.command,
+            Command::Start { follow: false, .. }
+        ));
+        let start_f = Cli::parse_from(["agent-jdi", "start", "do it", "-f"]);
+        assert!(matches!(
+            start_f.command,
+            Command::Start { follow: true, .. }
+        ));
+        let resume_f = Cli::parse_from(["agent-jdi", "resume", "--follow"]);
+        assert!(matches!(
+            resume_f.command,
+            Command::Resume { follow: true, .. }
+        ));
     }
 
     #[test]

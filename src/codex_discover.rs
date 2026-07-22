@@ -256,15 +256,25 @@ pub(crate) fn session_id_with_marker(marker: &str) -> Option<String> {
     None
 }
 
-/// The newest Codex session recorded for `cwd` (exact cwd match preferred, else the
-/// newest overall). Used by the `agent-jdi` Codex adapter to pick a resume target.
+/// The newest Codex session recorded for `cwd` **or its nearest ancestor that has
+/// sessions** — never a session from an unrelated directory (no global fallback).
+/// Used by the `agent-jdi` Codex adapter to pick a resume target, so `resume` in a
+/// directory with no Codex history fails cleanly instead of hijacking some other
+/// project's session.
 pub(crate) fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
-    let wanted = normalized(cwd);
-    let all = sessions_in(&sessions_dir());
-    all.iter()
-        .find(|s| normalized(&s.cwd) == wanted)
-        .or_else(|| all.first())
-        .cloned()
+    latest_for_cwd_in(&sessions_dir(), cwd)
+}
+
+fn latest_for_cwd_in(root: &Path, cwd: &Path) -> Option<CodexSession> {
+    let sessions = sessions_in(root); // newest-first
+    for anc in crate::discover::ancestors_of(cwd) {
+        let anc_n = normalized(&anc);
+        // `sessions` is newest-first, so the first match at this ancestor is newest.
+        if let Some(s) = sessions.iter().find(|s| normalized(&s.cwd) == anc_n) {
+            return Some(s.clone());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -370,5 +380,28 @@ mod tests {
         let here = candidates_scoped_in(&fixture.sessions, &repo_a);
         assert_eq!(here.len(), 1);
         assert!(here[0].cwd_affinity);
+    }
+
+    #[test]
+    fn latest_for_cwd_never_returns_an_unrelated_dirs_session() {
+        let fixture = Fixture::new();
+        let repo_a = fixture.root.join("a");
+        let repo_b = fixture.root.join("b");
+        fs::create_dir_all(&repo_a).unwrap();
+        fs::create_dir_all(&repo_b).unwrap();
+        // The only Codex session anywhere belongs to repo_a.
+        fixture.rollout("2026/07/20", "sa", &repo_a, "codex-tui");
+
+        // From repo_b (no session of its own, no ancestor with one under the root),
+        // the resume target must be None — NOT repo_a's session.
+        assert!(
+            latest_for_cwd_in(&fixture.sessions, &repo_b).is_none(),
+            "leaked a sibling dir's session as the resume target"
+        );
+        // From repo_a itself it resolves.
+        assert_eq!(
+            latest_for_cwd_in(&fixture.sessions, &repo_a).map(|s| s.id),
+            Some("sa".to_string())
+        );
     }
 }

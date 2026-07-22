@@ -218,19 +218,25 @@ pub fn candidates() -> Vec<Candidate> {
     out
 }
 
-/// The newest Claude transcript for `cwd` (its cwd-slug project dir): the session
-/// id (filename stem), path, and mtime. Used by the `agent-jdi` Claude adapter.
+/// The newest Claude transcript for `cwd` **or its nearest ancestor that has one**:
+/// the session id (filename stem), path, and mtime — never a session from an
+/// unrelated directory. Used by the `agent-jdi` Claude adapter to pick a resume
+/// target, so `resume` in a directory with no history fails cleanly rather than
+/// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    let mut ts = transcripts_in_project(&slug_for(cwd));
-    ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
-    ts.into_iter().next().map(|(m, p)| {
-        let id = p
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        (id, p, m)
-    })
+    for anc in ancestors_of(cwd) {
+        let mut ts = transcripts_in_project(&slug_for(&anc));
+        ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+        if let Some((m, p)) = ts.into_iter().next() {
+            let id = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            return Some((id, p, m));
+        }
+    }
+    None
 }
 
 /// The deterministic transcript path for a Claude `session_id` in `cwd` — the file
