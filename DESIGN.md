@@ -297,7 +297,11 @@ The residual diff is **not** decision-free rendering:
   child tags against a real transcript; reuse `tag_inner`. (The `<system-reminder>`
   background-task event variant should fold the same way.)
 
-- [ ] **Full-document dump to files at a chosen width, in both txt and ansi.** Today
+- [x] **Full-document dump to files at a chosen width, in both txt and ansi.** ✅ shipped
+  (`--dump [stem]` writes `<stem>.txt` + `<stem>.ansi`, `--dump -` → stdout, `--width N`;
+  routed through the View pipeline in `fb2f2d1`, `.ansi` span coalescing in `c699bdb`,
+  default fold in `d89cdcc`). Original design note below.
+  Today
   `--dump` (`app::dump`) renders the transcript flat (no folding) at a hard-coded
   `DUMP_WIDTH = 100`, **plain text only**, to **stdout**. Extend it to render the whole
   transcript as one infinitely long document laid out to a chosen width and write BOTH a

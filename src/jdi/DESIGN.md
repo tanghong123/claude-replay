@@ -9,7 +9,7 @@ restructured as an **agent-agnostic spine + per-agent adapters**.
 ```
 src/bin/agent-jdi.rs   thin shim → claude_replay::jdi::run()
 src/jdi/
-  mod.rs         CLI (clap) + Config + command dispatch (resume/log/status/list/backlog/takeover/__run)
+  mod.rs         CLI (clap) + Config + dispatch (start/resume/handoff/log/status/list/backlog/takeover + __run/__handoff)
   supervisor.rs  detached __run worker + the retry loop + takeover     ── spine
   state.rs       <home>/<id>/ layout, atomic `meta` key=value, RunState, slot_id, liveness
   lock.rs        mkdir-atomic slot lock (owner pidfile + stale reclaim) ── spine
@@ -37,11 +37,30 @@ Each **agent** implements `AgentAdapter`:
 | `task_queue()` *(optional)* | `Some` (`~/.claude/tasks/`) | `None` |
 | `pins_session_id()` | `true` (`--session-id`) | `false` (Codex assigns; captured after turn 1) |
 | `fresh_invocation()` / `capture_session_id()` | pins → default reuse | `codex exec …` + nonce scan / `--json` |
+| `interactive_invocation()` / `resume_commands()` *(optional)* | `claude --resume <id>` (+ the autonomous variant for the printout) | `codex resume <id>` |
+| `unattended_note()` | `--dangerously-skip-permissions (unattended)` | `sandbox=workspace-write, approvals=never` |
+
+`interactive_invocation` is the **human-in-the-loop** resume (no `-p`/skip flags) that
+`takeover` launches and `handoff` schedules; `resume_commands` are the copy-paste
+resume lines `takeover` prints.
 
 **`start` (fresh run).** The first turn feeds the task (`Mode::Start`); the spine
 then captures the assigned id — pinned up front for Claude, recovered for Codex from
 the rollout carrying a per-run nonce (or the `--json` stream) — and drops into
 `continue_mode()` for relaunches. `new_run_id()` mints the UUID/nonce.
+
+**`start`/`resume` output.** Both launch the detached worker and, by default, print a
+summary and return (`-f/--follow` opens the viewer instead). The worker stamps
+`started` at launch and `finished` on any terminal exit (via the `run_loop` wrapper),
+so `status` can show both.
+
+**Human ↔ jdi boundary (`takeover` / `handoff`).** Mirrors. `takeover` stops a run and
+launches `interactive_invocation()` so a human continues it (`--no-launch` prints the
+`resume_commands()` block instead). `handoff` runs *inside* an interactive session:
+it finds the session's process (nearest ancestor whose command line is the agent
+binary), spawns a detached `__handoff` watcher that waits for that pid to exit then
+runs `resume`, and — unless `--armed` — SIGTERMs the session so it's fully hands-off.
+The deferral is required: two agents can't drive the same transcript at once.
 
 The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 `classify`: the spine just acts on the returned `TurnOutcome`
@@ -63,7 +82,8 @@ resume+log and fill in a task queue / fresh-run later.
 
 - Own state root `$XDG_STATE_HOME/agent-jdi/<slot>/` (default `~/.local/state/agent-jdi`;
   neutral, not under `~/.claude`; `AGENT_JDI_HOME` overrides the whole path). Files:
-  `meta` (key=value), `task.md`, `supervisor.log`,
+  `meta` (key=value — id/agent/cwd/session_id/nonce/state/mode/attempts/interval/
+  max_attempts/started/finished/…), `task.md`, `supervisor.log`,
   `output.log`, `backlog/{pending,draining,drained}/`, `.lock/owner`.
 - **One supervisor per directory:** before `start`/`resume`, refuse if the bash
   `claude-jdi` is *live* for this cwd (`detect::claude_jdi_live_for_cwd` — a `cwd=`
@@ -73,10 +93,12 @@ resume+log and fill in a task queue / fresh-run later.
 
 ## Known gaps / TODO
 
-- **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`.
-- Backlog **drain-as-a-run**, the interactive
-  stale-session picker, and `status`'s rich progress rendering are simplified vs.
-  the bash original; the contract (trait + spine) is in place to wire them.
+- **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`,
+  including the interactive `codex resume` used by `takeover`/`handoff`.
+- Backlog **drain-as-a-run** and the interactive stale-session picker are simplified
+  vs. the bash original; the contract (trait + spine) is in place to wire them.
+  (`status` now renders the rich progress block — live tool histogram, task
+  checklist, recent commits, start/finish — from the transcript + task queue.)
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
 

@@ -94,6 +94,13 @@ tool_result, command`).
 `--latest`, `s` opens the session switcher (a picker overlay) so you can hop to
 another session — `Enter` switches, `Esc` returns to where you were.
 
+**Mouse.** Scroll-wheel scrolls; click a block to toggle its fold; click the **path**
+in a file tool's header (`⏺ Write(…)`, `Update(…)`, `Read(…)`) to reveal that file in
+your OS file manager; drag to select text (auto-copied to the clipboard, or an OSC 52
+escape over SSH). A `Write` folds to a 10-line numbered preview and expands to the
+whole file, and consecutive tool calls coalesce into one activity line — matching
+Claude Code.
+
 ## `agent-jdi` — supervise unattended runs
 
 The repo also ships a second binary, **`agent-jdi`**: it runs an AI agent
@@ -102,13 +109,14 @@ viewer. It's multi-agent and **auto-detects** the agent from the directory's
 sessions (Claude or Codex), so one tool covers both.
 
 ```bash
-agent-jdi start "refactor the parser and add tests"   # fresh unattended run (agent: latest run's here)
-agent-jdi resume            # resume this dir's newest session, unattended, and follow it
+agent-jdi start "refactor the parser and add tests"   # fresh unattended run (prints a summary; -f to watch live)
+agent-jdi resume            # resume this dir's newest session, unattended (prints a summary; -f to watch live)
 agent-jdi resume --agent codex   # force an agent
+agent-jdi handoff "finish the refactor and commit"    # hand THIS interactive session to an unattended run
 agent-jdi log               # reattach the viewer to the supervised session
-agent-jdi status            # state, mode, task-queue / progress
+agent-jdi status            # rich status: live progress, task checklist, recent commits, start/finish
 agent-jdi backlog "also update the changelog"   # queue follow-up for the next drain
-agent-jdi takeover          # stop the worker (state left intact)
+agent-jdi takeover          # stop the run and hand it back to you (launches the resumed agent)
 agent-jdi list
 ```
 
@@ -119,10 +127,24 @@ no `--agent`, `start` reuses the agent of the **latest run in this directory** (
 last `agent-jdi` run, else the most recent session of any kind), defaulting to Claude
 only when the directory has no history.
 
-Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`)
-accepts **`--dry-run`** — it prints exactly what it would do (agent, resolved binary,
-the full invocation, what it would kill/queue) and exits with **no** spawn, kill, or
-state change. Use it to verify before committing to a real run.
+By default `start`/`resume` launch the worker **detached in the background** and
+print a summary (session, retry policy, autonomy, follow-up commands), then return —
+add **`-f`/`--follow`** to open the live viewer instead (equivalent to `agent-jdi log
+<id> -f` afterward).
+
+**Handing sessions across the human ↔ jdi boundary.** `takeover` and `handoff` are
+mirrors: `takeover` stops an unattended run and **launches the agent interactively
+resumed** on the session so you continue it yourself (`--no-launch` to just stop and
+print the resume commands); `handoff`, run from *inside* an interactive session,
+hands it the other way — it quits your session and resumes it unattended in the
+background (`--armed` to arm without auto-quitting). A ready-made `/jdi-handoff`
+slash command and a `jdi-handoff` skill (triggers on "hand this off to jdi" /
+"justdoit") wrap `handoff` — see [`integrations/claude/`](integrations/claude/).
+
+Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`/
+`handoff`) accepts **`--dry-run`** — it prints exactly what it would do (agent,
+resolved binary, the full invocation, what it would kill/queue) and exits with
+**no** spawn, kill, or state change. Use it to verify before committing to a real run.
 
 Install: `brew install tanghong123/tap/agent-jdi` (depends on the viewer formula).
 It uses its own state under `~/.local/state/agent-jdi/` (`$XDG_STATE_HOME`; override

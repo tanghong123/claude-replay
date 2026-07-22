@@ -28,6 +28,8 @@ never skip, stub, or defer a feature "because it needs a terminal."
 - `render.rs` blocks → styled lines · `wrap.rs` width-aware wrapping
 - `view.rs` state machine + draw (TestBackend-testable) · `app.rs` terminal + input
 - `tail.rs` byte-offset live tail · `discover.rs` find transcript · `theme.rs` styles
+- `metrics.rs` footer tokens/cost · `highlight.rs` syntect · `codex_{model,discover,metrics}.rs` Codex
+- `jdi/` the **`agent-jdi`** binary (unattended-run supervisor); see `src/jdi/DESIGN.md`
 
-See `DESIGN.md` for the phased plan and remaining work (P4 fold · P5 picker ·
-P6 search · P7 diffs+metrics). Borrowed ideas are credited in `ATTRIBUTION.md`.
+The viewer's phased plan (P0–P8) is **built** — see `DESIGN.md` for the design
+notes and the open backlog. Borrowed ideas are credited in `ATTRIBUTION.md`.
