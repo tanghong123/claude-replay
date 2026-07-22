@@ -168,7 +168,10 @@ pub trait AgentAdapter {
     }
 
     /// Prompt text for a mode (adapter-specific — task tools vs. a plain prompt).
-    fn prompt_for(&self, mode: Mode, brief: &Brief) -> String;
+    /// The prompt for a turn. `session_id` lets an adapter tailor it to what this
+    /// session actually has — e.g. Claude omits the checklist-fallback paragraph
+    /// when the session demonstrably uses the native task queue.
+    fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String;
 
     // --- fresh-run (`start`) hooks ---
 

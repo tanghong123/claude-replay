@@ -88,13 +88,31 @@ The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 Claude, "planned ≠ done" comes from `task_queue().open_count()` — `Some(0)`/`None`
 (unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain.
 
+**Prompts are ported from the bash claude-jdi**, whose specificity is what actually
+gets the native queue driven: the dump turn asks for one `TaskCreate` per unit of
+work with a self-contained subject + description, `pending` status, blocks/blockedBy
+wiring, explicit rules (only fully-scoped work; re-derive fresh; reconcile rather
+than duplicate) and a `queued: <N> task(s)` receipt; the execute turn adds the
+guardrails that matter — mark `in_progress` before starting, commit per task so
+progress survives an interrupt, and **do not end the turn early with tasks
+outstanding**. Queued `Brief::backlog` items are folded into dump turns ("go through
+them ONE BY ONE"), since that turn is what converts them into tasks.
+
 **Task tools are not guaranteed.** A session may have no `TaskCreate`/`TaskUpdate`,
 in which case the queue is empty, `open_count` is `None`, and an unfinished run would
 read as "done" after one turn. So `Brief::checklist` names a `checklist.md` in the
 session's state dir: prompts ask for the native tools *if present* and that file
 otherwise, and `classify` falls back to counting its unchecked `- [ ]` items. The
 prompt must stay conditional — demanding `TaskCreate` outright made agents improvise
-their own file, which the supervisor then couldn't read.
+their own file, which the supervisor then couldn't read. The fallback paragraph is
+**adaptive**: it is omitted for a session that has already written real task files
+(`has_native_tasks`), so a session that doesn't need it doesn't pay for it. Dir
+existence alone proves nothing — the harness pre-creates `.lock`/`.highwatermark`
+even where the tools never appear.
+
+Claude's on-disk schema is one `<n>.json` per task,
+`{id, subject, description, activeForm, status, blocks, blockedBy}` — read `subject`
+(not the prose `description`) and sort **numerically** (a string sort gives 18, 19, 2).
 
 **The operator instruction reaches every mode.** `Brief::text` (what `resume`/
 `handoff` pass) is appended as `Additional instruction:` on resume/execute turns, not

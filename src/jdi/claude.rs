@@ -70,7 +70,7 @@ impl AgentAdapter for ClaudeAdapter {
         args.push("--dangerously-skip-permissions".into());
         args.extend(ctx.extra_args.iter().cloned());
         args.push("-p".into());
-        args.push(self.prompt_for(ctx.mode, ctx.brief));
+        args.push(self.prompt_for(ctx.mode, ctx.brief, ctx.session_id));
         Invocation { program, args }
     }
 
@@ -137,21 +137,44 @@ impl AgentAdapter for ClaudeAdapter {
         Some(discover::claude_transcript_path(cwd, session_id))
     }
 
-    fn prompt_for(&self, mode: Mode, brief: &Brief) -> String {
-        let base = match mode {
+    fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String {
+        let mut out = match mode {
             Mode::Start => format!("{START_PREAMBLE}\n\n{}", brief.text),
             Mode::ResumeDump | Mode::BacklogDump => DUMP_PROMPT.to_string(),
             _ => EXECUTE_PROMPT.to_string(),
         };
-        let mut out = base;
-        // Tell the agent where to keep the checklist when it has no task tools —
-        // this is also how the supervisor detects "planned ≠ done" without them.
-        if let Some(path) = &brief.checklist {
+        // Follow-ups the human queued for this session while it ran. A dump turn is
+        // what turns them into tasks, so they MUST reach the prompt — they were being
+        // dropped entirely. (Port of the bash "ALSO fold in …" paragraph.)
+        if matches!(mode, Mode::ResumeDump | Mode::BacklogDump) && !brief.backlog.is_empty() {
+            let items = brief
+                .backlog
+                .iter()
+                .enumerate()
+                .map(|(i, b)| format!("### Backlog item {}\n{}", i + 1, b.trim()))
+                .collect::<Vec<_>>()
+                .join("\n\n");
             out.push_str(&format!(
-                "\n\nIf you do NOT have task-management tools in this session, keep the \
-                 checklist in `{}` instead — one `- [ ]` line per remaining item, and \
-                 flip it to `- [x]` the moment that item is finished. Keep that file \
-                 current; it is how completion is tracked.",
+                "\n\nALSO fold in the {} follow-up message(s) the human queued for THIS \
+                 session while you were working. Go through them ONE BY ONE: understand \
+                 each request, do a brief diagnosis of what it entails, and enqueue the \
+                 concrete, fully-scoped work it implies. Anything ambiguous: do NOT \
+                 enqueue it.\n\n{items}",
+                brief.backlog.len()
+            ));
+        }
+        // Adaptive: a session that demonstrably drives the native queue doesn't need
+        // the fallback paragraph, so don't spend tokens on it.
+        if let Some(path) = brief
+            .checklist
+            .as_ref()
+            .filter(|_| !has_native_tasks(session_id))
+        {
+            out.push_str(&format!(
+                "\n\nIf this session has no task-management tools, keep the same list in \
+                 `{}` instead — one `- [ ]` line per remaining item, flipped to `- [x]` \
+                 the moment it is finished. Keep it current; it is how completion is \
+                 tracked when the tools are absent.",
                 path.display()
             ));
         }
@@ -211,6 +234,15 @@ impl AgentAdapter for ClaudeAdapter {
     }
 }
 
+/// Does this session demonstrably drive Claude's native task queue? True once it has
+/// written at least one task file — the harness pre-creates the dir (`.lock`,
+/// `.highwatermark`) even for sessions that never get the tools, so dir existence
+/// alone proves nothing. Used to drop the checklist-fallback paragraph when it's
+/// dead weight.
+fn has_native_tasks(session_id: &str) -> bool {
+    !session_id.is_empty() && ClaudeTaskQueue::tasks(session_id).is_some_and(|t| !t.is_empty())
+}
+
 /// Unchecked `- [ ]` items in the fallback checklist. `None` when the file doesn't
 /// exist (⇒ unknown, so the caller trusts the exit code rather than assuming work).
 fn open_checklist_items(path: &Path) -> Option<usize> {
@@ -230,9 +262,18 @@ fn open_checklist_items(path: &Path) -> Option<usize> {
 
 const START_PREAMBLE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer. Do NOT ask for input. Use your task-management tools to plan and complete the task below, committing per task, until everything is done. The task:";
 
-const DUMP_PROMPT: &str = "You are running UNATTENDED and headless. Record the agreed remaining work as a durable checklist you can resume from: use your task-management tools if this session has them (TaskCreate; set blockedBy where needed), and otherwise the checklist file described below — do not skip this step just because the tools are missing. Then write a one-line receipt and STOP. Do not begin executing yet.";
+/// Dump turn. Ported from the bash claude-jdi's `resume_dump_prompt`, whose
+/// specificity is what actually gets the native queue populated: one TaskCreate per
+/// unit of work, a self-contained subject + description, `pending` status, and
+/// blocks/blockedBy wiring — plus explicit rules against speculative or duplicate
+/// entries. Kept conditional ("if this session has them") so a session without the
+/// tools falls back rather than arguing with the instruction.
+const DUMP_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input or wait for confirmation.\n\nEnqueue the work we have ALREADY discussed and agreed on in THIS conversation. Use your task-management tools if this session has them: one TaskCreate per unit of work, each with a clear subject and a self-contained description a fresh session could act on with no extra context, status \"pending\"; where one task must finish before another can start, wire that with blocks/blockedBy.\n\nRules for what to enqueue:\n  - ONLY fully-scoped tasks that need no human decision. Exclude anything ambiguous or still open — do not enqueue it and do not act on it.\n  - Re-derive a FRESH list of what is agreed and still OUTSTANDING right now. Skip anything already completed. Do NOT copy an earlier task dump.\n  - If tasks from this conversation are ALREADY in your list, reconcile with them — update or reuse; do not create duplicates.\n\nWhen the list is populated, write ONE line as a receipt: either \"queued: <N> task(s)\" with the count, or \"queued: 0 task(s) — nothing actionable\" if there was no agreed, fully-scoped work.\n\nThen STOP. Do not start implementing — execution is a separate step. Your only job this turn is to populate the list and write that receipt.";
 
-const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — do NOT ask for input. Drain the checklist to completion, in whichever form it exists (task-management tools if this session has them, else the checklist file described below): take the next actionable item (respect any blockedBy), do it, mark it completed, and commit the work per item. Keep going until every item is completed and none are left pending or in progress. If an item is genuinely blocked by something only a human can resolve, record that and move on.";
+/// Execute turn — ported from the bash `resume_execute_prompt`. The guardrails that
+/// matter are the last paragraph's: an unattended run that "ends the turn early with
+/// tasks outstanding" is the failure mode this whole supervisor exists to prevent.
+const EXECUTE_PROMPT: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm.\n\nWork through your task list to completion. Use your task-management tools if this session has them:\n  - Pick the next actionable task (respect blockedBy — never start a task whose blockers aren't completed).\n  - Mark it in_progress before you begin, completed the moment it's done.\n  - Commit the work for each task as you finish it, so progress is durable if the run is interrupted.\n  - If completing a task reveals necessary, fully-scoped sub-work, enqueue it (TaskCreate) and complete it too. Do NOT enqueue speculative or ambiguous work.\n\nKeep going until EVERY task is completed — nothing left pending or in_progress. Do not end the turn early with tasks outstanding. If a task is genuinely blocked by something only a human can resolve, note that in its description and move on to the other tasks rather than stopping.";
 
 /// Reads Claude's native task queue under `~/.claude/tasks/<session>/*.json`.
 struct ClaudeTaskQueue;
@@ -260,7 +301,14 @@ impl ClaudeTaskQueue {
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
             .collect();
-        entries.sort(); // stable task order across files
+        // Claude writes one `<n>.json` per task, so order numerically — a plain
+        // string sort gives 18, 19, 2, 20, 3.
+        entries.sort_by_key(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(u64::MAX)
+        });
         let mut out: Vec<(String, String)> = Vec::new();
         let mut parsed_any = false;
         for p in entries {
@@ -278,8 +326,9 @@ impl ClaudeTaskQueue {
 }
 
 /// Pull every `(status, title)` out of a tasks document (array of tasks,
-/// `{tasks:[…]}`, or a single task object). Title = the first present of
-/// `content`/`description`/`title`/`activeForm`.
+/// `{tasks:[…]}`, or a single task object). Title prefers `subject` — Claude's real
+/// schema is `{id, subject, description, activeForm, status, blocks, blockedBy}`,
+/// and `description` is long prose that would swamp the checklist.
 fn collect_tasks(v: &Value, out: &mut Vec<(String, String)>) {
     match v {
         Value::Array(items) => items.iter().for_each(|it| collect_tasks(it, out)),
@@ -287,7 +336,7 @@ fn collect_tasks(v: &Value, out: &mut Vec<(String, String)>) {
             if let Some(Value::Array(items)) = map.get("tasks") {
                 items.iter().for_each(|it| collect_tasks(it, out));
             } else if let Some(status) = map.get("status").and_then(Value::as_str) {
-                let title = ["content", "description", "title", "activeForm"]
+                let title = ["subject", "content", "title", "description", "activeForm"]
                     .iter()
                     .find_map(|k| map.get(*k).and_then(Value::as_str))
                     .unwrap_or("")
@@ -340,6 +389,14 @@ impl TaskQueue for ClaudeTaskQueue {
 mod tests {
     use super::*;
 
+    /// `CLAUDE_JDI_TASKS_ROOT` is process-global, so tests that point it at their own
+    /// fixture must not run concurrently (Rust runs tests in parallel threads).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn ctx<'a>(mode: Mode, created: bool, id: &'a str, brief: &'a Brief) -> TurnContext<'a> {
         TurnContext {
             mode,
@@ -376,14 +433,14 @@ mod tests {
             ..Default::default()
         };
         for mode in [Mode::ResumeDump, Mode::ResumeExecute, Mode::Execute] {
-            let p = a.prompt_for(mode, &brief);
+            let p = a.prompt_for(mode, &brief, "");
             assert!(
                 p.contains("finish the refactor and commit"),
                 "{mode:?} dropped the instruction: {p}"
             );
         }
         // A fresh start already embedded it in the preamble — don't duplicate it.
-        let start = a.prompt_for(Mode::Start, &brief);
+        let start = a.prompt_for(Mode::Start, &brief, "");
         assert_eq!(start.matches("finish the refactor").count(), 1, "{start}");
     }
 
@@ -392,6 +449,7 @@ mod tests {
     /// otherwise an unknown count reads as "finished" and a half-done run stops.
     #[test]
     fn checklist_fallback_drives_the_done_signal_without_task_tools() {
+        let _g = lock_env();
         let a = ClaudeAdapter;
         let dir = std::env::temp_dir().join(format!("jdi-checklist-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -402,7 +460,7 @@ mod tests {
         };
 
         // The prompt points at the file and doesn't demand TaskCreate exist.
-        let p = a.prompt_for(Mode::ResumeDump, &brief);
+        let p = a.prompt_for(Mode::ResumeDump, &brief, "");
         assert!(p.contains(&list.display().to_string()), "{p}");
         assert!(
             p.contains("if this session has them"),
@@ -429,6 +487,115 @@ mod tests {
         assert_eq!(open_checklist_items(&list), None);
         assert_eq!(a.classify(0, "", &ctx), TurnOutcome::Done);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Queued backlog follow-ups must reach the dump prompt — that turn is what
+    /// converts them into tasks. They were being dropped on the floor entirely.
+    #[test]
+    fn dump_prompts_fold_in_queued_backlog_items() {
+        let _g = lock_env();
+        let a = ClaudeAdapter;
+        let brief = Brief {
+            backlog: vec![
+                "also update the changelog".into(),
+                "bump the version".into(),
+            ],
+            ..Default::default()
+        };
+        for mode in [Mode::ResumeDump, Mode::BacklogDump] {
+            let p = a.prompt_for(mode, &brief, "");
+            assert!(p.contains("2 follow-up message(s)"), "{mode:?}: {p}");
+            assert!(p.contains("also update the changelog"), "{mode:?}: {p}");
+            assert!(p.contains("bump the version"), "{mode:?}: {p}");
+        }
+        // An execute turn drains the queue; it doesn't re-triage the backlog.
+        let exec = a.prompt_for(Mode::ResumeExecute, &brief, "");
+        assert!(!exec.contains("also update the changelog"), "{exec}");
+        // No backlog → no stray section.
+        let empty = a.prompt_for(Mode::ResumeDump, &Brief::default(), "");
+        assert!(!empty.contains("ALSO fold in"), "{empty}");
+    }
+
+    /// The fallback paragraph is insurance, not boilerplate: a session that
+    /// demonstrably drives the native queue shouldn't pay tokens for it. The harness
+    /// pre-creates the task dir (.lock/.highwatermark) even when the tools never
+    /// appear, so presence is judged on actual task files.
+    #[test]
+    fn checklist_paragraph_is_omitted_when_the_session_uses_native_tasks() {
+        let _g = lock_env();
+        let root = std::env::temp_dir().join(format!("jdi-adaptive-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &root);
+
+        let a = ClaudeAdapter;
+        let brief = Brief {
+            checklist: Some(root.join("checklist.md")),
+            ..Default::default()
+        };
+        let marker = "no task-management tools";
+
+        // A dir with only the harness's bookkeeping files ⇒ no proof of tools.
+        let bare = root.join("bare-session");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::write(bare.join(".lock"), "").unwrap();
+        std::fs::write(bare.join(".highwatermark"), "7").unwrap();
+        assert!(!has_native_tasks("bare-session"));
+        assert!(
+            a.prompt_for(Mode::ResumeDump, &brief, "bare-session")
+                .contains(marker),
+            "fallback must be offered when tools are unproven"
+        );
+
+        // A real task file ⇒ the queue works here; drop the paragraph.
+        let live = root.join("live-session");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("3.json"),
+            r#"{"id":"3","subject":"Ship it","status":"pending","blockedBy":[]}"#,
+        )
+        .unwrap();
+        assert!(has_native_tasks("live-session"));
+        assert!(
+            !a.prompt_for(Mode::ResumeDump, &brief, "live-session")
+                .contains(marker),
+            "should not spend tokens on a fallback this session doesn't need"
+        );
+
+        std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Claude's real schema is `{id, subject, description, activeForm, status, …}`
+    /// with one `<n>.json` per task: show `subject` (not the long `description`) and
+    /// order numerically (a string sort gives 18, 19, 2, 20, 3).
+    #[test]
+    fn task_queue_reads_subject_in_numeric_file_order() {
+        let _g = lock_env();
+        let root = std::env::temp_dir().join(format!("jdi-schema-{}", std::process::id()));
+        let sid = "s";
+        let dir = root.join(sid);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, subject) in [(2, "second"), (18, "eighteenth"), (3, "third")] {
+            std::fs::write(
+                dir.join(format!("{n}.json")),
+                format!(
+                    r#"{{"id":"{n}","subject":"{subject}","description":"long prose that should not be shown","activeForm":"doing","status":"pending"}}"#
+                ),
+            )
+            .unwrap();
+        }
+        std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &root);
+        let out = ClaudeTaskQueue.render(sid);
+        std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
+
+        assert!(out.contains("[1] second"), "{out}");
+        assert!(out.contains("[2] third"), "numeric order (2,3,18): {out}");
+        assert!(out.contains("[3] eighteenth"), "{out}");
+        assert!(
+            !out.contains("long prose"),
+            "description must not swamp it: {out}"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -522,6 +689,7 @@ mod tests {
 
     #[test]
     fn task_queue_open_count_from_json() {
+        let _g = lock_env();
         let dir = std::env::temp_dir().join(format!("claude-tasks-{}", std::process::id()));
         let sid = "sess-x";
         let sdir = dir.join(sid);

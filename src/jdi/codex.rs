@@ -63,7 +63,7 @@ impl AgentAdapter for CodexAdapter {
         ];
         args.extend(ctx.extra_args.iter().cloned());
         args.push(ctx.session_id.to_string());
-        args.push(self.prompt_for(ctx.mode, ctx.brief));
+        args.push(self.prompt_for(ctx.mode, ctx.brief, ctx.session_id));
         Invocation { program, args }
     }
 
@@ -93,7 +93,7 @@ impl AgentAdapter for CodexAdapter {
         codex_discover::resolve(Some(session_id), false).ok()
     }
 
-    fn prompt_for(&self, _mode: Mode, brief: &Brief) -> String {
+    fn prompt_for(&self, _mode: Mode, brief: &Brief, _session_id: &str) -> String {
         if brief.text.trim().is_empty() {
             PERSISTENCE.to_string()
         } else {
@@ -168,7 +168,7 @@ impl AgentAdapter for CodexAdapter {
         args.extend(ctx.extra_args.iter().cloned());
         let prompt = format!(
             "{}\n\n<!-- agent-jdi run: {nonce} -->",
-            self.prompt_for(ctx.mode, ctx.brief)
+            self.prompt_for(ctx.mode, ctx.brief, ctx.session_id)
         );
         args.push(prompt);
         Invocation { program, args }
@@ -270,7 +270,7 @@ mod tests {
             text: "prioritize tests".into(),
             ..Default::default()
         };
-        let p = a.prompt_for(Mode::Execute, &brief);
+        let p = a.prompt_for(Mode::Execute, &brief, "");
         assert!(p.contains("UNATTENDED"));
         assert!(p.contains("prioritize tests"));
     }
