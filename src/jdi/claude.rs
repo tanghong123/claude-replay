@@ -14,6 +14,23 @@ use std::path::{Path, PathBuf};
 
 pub struct ClaudeAdapter;
 
+impl ClaudeAdapter {
+    fn interactive_invocation_for(
+        program: PathBuf,
+        session_id: &str,
+        autonomous: bool,
+    ) -> Option<Invocation> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let mut args = vec!["--resume".into(), session_id.to_string()];
+        if autonomous {
+            args.push("--dangerously-skip-permissions".into());
+        }
+        Some(Invocation { program, args })
+    }
+}
+
 /// Terminal errors: matching these in a turn's output marks the run failed rather
 /// than retrying (port of claude-jdi's `UNRECOVERABLE_RE`).
 const UNRECOVERABLE: &[&str] = &[
@@ -227,15 +244,8 @@ impl AgentAdapter for ClaudeAdapter {
         _cwd: &Path,
         autonomous: bool,
     ) -> Option<Invocation> {
-        if session_id.is_empty() {
-            return None;
-        }
         let program = self.resolve_binary().ok()?;
-        let mut args = vec!["--resume".into(), session_id.to_string()];
-        if autonomous {
-            args.push("--dangerously-skip-permissions".into());
-        }
-        Some(Invocation { program, args })
+        Self::interactive_invocation_for(program, session_id, autonomous)
     }
 
     fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
@@ -680,14 +690,10 @@ mod tests {
 
     #[test]
     fn interactive_takeover_keeps_the_runs_permission_posture() {
-        let a = ClaudeAdapter;
-        let cwd = Path::new("/tmp/repo");
-
         // Default (autonomous): the session was running unattended, so keep
         // --dangerously-skip-permissions — otherwise takeover would start
         // prompting on every tool call. Still interactive: never `-p`.
-        let auto = a
-            .interactive_invocation("sid", cwd, true)
+        let auto = ClaudeAdapter::interactive_invocation_for(PathBuf::from("claude"), "sid", true)
             .expect("claude resumes interactively");
         assert_eq!(
             auto.args,
@@ -703,7 +709,8 @@ mod tests {
         );
 
         // --supervised: approvals on.
-        let sup = a.interactive_invocation("sid", cwd, false).unwrap();
+        let sup = ClaudeAdapter::interactive_invocation_for(PathBuf::from("claude"), "sid", false)
+            .unwrap();
         assert_eq!(sup.args, vec!["--resume".to_string(), "sid".to_string()]);
         assert!(!sup
             .args
@@ -711,7 +718,9 @@ mod tests {
             .any(|x| x == "--dangerously-skip-permissions"));
 
         // No id yet → nothing to resume.
-        assert!(a.interactive_invocation("", cwd, true).is_none());
+        assert!(
+            ClaudeAdapter::interactive_invocation_for(PathBuf::from("claude"), "", true).is_none()
+        );
     }
 
     #[test]

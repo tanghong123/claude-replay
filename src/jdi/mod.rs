@@ -60,7 +60,7 @@ enum Command {
         #[arg(long)]
         max_attempts: Option<u32>,
         /// After launching, open the live replay viewer instead of printing a
-        /// summary and returning (like `log -f`).
+        /// summary and returning (`agent-jdi log` follows by default).
         #[arg(long, short = 'f')]
         follow: bool,
     },
@@ -68,6 +68,9 @@ enum Command {
     /// runs detached in the background; a summary is printed (use -f to open the
     /// live viewer instead).
     Resume {
+        /// Resume an exact tracked slot from `agent-jdi list`.
+        #[arg(long, value_name = "ID", conflicts_with = "session")]
+        id: Option<String>,
         /// Extra instruction folded into the persistence prompt.
         instruction: Vec<String>,
         /// Seconds between relaunch attempts (default 600).
@@ -77,12 +80,12 @@ enum Command {
         #[arg(long)]
         max_attempts: Option<u32>,
         /// After launching, open the live replay viewer instead of printing a
-        /// summary and returning (like `log -f`).
+        /// summary and returning (`agent-jdi log` follows by default).
         #[arg(long, short = 'f')]
         follow: bool,
         /// Resume this exact session id (skips discovery + the stale-session
         /// prompt). Default: the newest session for this directory.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "id")]
         session: Option<String>,
     },
     /// Reattach the viewer to a supervised session's transcript.
@@ -222,6 +225,7 @@ pub fn run() -> Result<()> {
             follow,
         ),
         Command::Resume {
+            id,
             instruction,
             interval,
             max_attempts,
@@ -230,6 +234,7 @@ pub fn run() -> Result<()> {
         } => cmd_resume(
             &config,
             cli.agent,
+            id.as_deref(),
             &instruction.join(" "),
             interval,
             max_attempts,
@@ -300,7 +305,21 @@ pub fn run() -> Result<()> {
 /// Resolve the session for a command: an explicit id, else this directory's slot.
 fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     let sid = match id {
-        Some(id) => id.to_string(),
+        Some(id) => {
+            let mut components = Path::new(id).components();
+            if id.contains('/')
+                || id.contains('\\')
+                || !matches!(
+                    (components.next(), components.next()),
+                    (Some(std::path::Component::Normal(_)), None)
+                )
+            {
+                bail!(
+                    "invalid tracked session id '{id}' — expected one name from `agent-jdi list`"
+                );
+            }
+            id.to_string()
+        }
         None => state::slot_id(&std::env::current_dir()?),
     };
     let s = Session::new(&config.home, &sid);
@@ -308,6 +327,76 @@ fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
         bail!("no tracked session '{sid}' — run `agent-jdi resume` here first");
     }
     Ok(s)
+}
+
+struct ResumeTarget {
+    slot: String,
+    cwd: PathBuf,
+    agent: Agent,
+    resumable: agent::ResumableSession,
+}
+
+fn resolve_resume_target(
+    config: &Config,
+    forced: Option<Agent>,
+    tracked_id: Option<&str>,
+    raw_session_id: Option<&str>,
+    current_cwd: &Path,
+) -> Result<ResumeTarget> {
+    if let Some(slot) = tracked_id {
+        let tracked = resolve_session(config, Some(slot))?;
+        let meta = |key: &str| {
+            tracked.meta_get(key).ok_or_else(|| {
+                anyhow::anyhow!("tracked session '{slot}' is missing required {key}= metadata")
+            })
+        };
+        let cwd = PathBuf::from(meta("cwd")?);
+        let recorded_agent = meta("agent")?;
+        let agent = Agent::from_label(&recorded_agent).ok_or_else(|| {
+            anyhow::anyhow!("tracked session '{slot}' has unsupported agent '{recorded_agent}'")
+        })?;
+        if let Some(forced) = forced {
+            if forced != agent {
+                bail!(
+                    "tracked session '{slot}' uses agent {}, but --agent {} was requested",
+                    agent.label(),
+                    forced.label()
+                );
+            }
+        }
+        let session_id = meta("session_id")?;
+        let transcript = PathBuf::from(meta("transcript")?);
+        let idle_secs = std::fs::metadata(&transcript)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|mtime| mtime.elapsed().ok())
+            .map(|idle| idle.as_secs())
+            .unwrap_or(0);
+        return Ok(ResumeTarget {
+            slot: slot.to_string(),
+            cwd,
+            agent,
+            resumable: agent::ResumableSession {
+                id: session_id,
+                transcript,
+                idle_secs,
+            },
+        });
+    }
+
+    let cwd = current_cwd.to_path_buf();
+    let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
+    let adapter = agent::adapter(agent);
+    let resumable = match raw_session_id {
+        Some(id) => explicit_resumable(adapter.as_ref(), &cwd, id)?,
+        None => adapter.discover_resumable(&cwd)?,
+    };
+    Ok(ResumeTarget {
+        slot: state::slot_id(&cwd),
+        cwd,
+        agent,
+        resumable,
+    })
 }
 
 /// Build a `ResumableSession` for an explicit id (no discovery). Errors if no
@@ -408,6 +497,7 @@ fn confirm_if_stale(
 fn cmd_resume(
     config: &Config,
     forced: Option<Agent>,
+    tracked_id: Option<&str>,
     instruction: &str,
     interval: Option<u64>,
     max_attempts: Option<u32>,
@@ -415,19 +505,18 @@ fn cmd_resume(
     follow: bool,
     session: Option<&str>,
 ) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    // An explicit `--session <id>` pins the agent too (an id belongs to one agent),
-    // so detection can lean on it; otherwise detect from the directory.
-    let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
+    let current_cwd = std::env::current_dir()?;
+    let ResumeTarget {
+        slot,
+        cwd,
+        agent,
+        mut resumable,
+    } = resolve_resume_target(config, forced, tracked_id, session, &current_cwd)?;
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
-    // Pick the session to resume: an explicit id (air-tight — no discovery, no
-    // picker), else the newest for this cwd, with a stale-confirmation prompt when
-    // that newest is old *and* there's more than one session *and* a human is here.
-    let resumable = match session {
-        Some(id) => explicit_resumable(adapter.as_ref(), &cwd, id)?,
-        None => confirm_if_stale(adapter.as_ref(), &cwd, adapter.discover_resumable(&cwd)?)?,
-    };
+    if tracked_id.is_none() && session.is_none() {
+        resumable = confirm_if_stale(adapter.as_ref(), &cwd, resumable)?;
+    }
 
     // `--dry-run`: show what would run, with no side effects (no slot, no spawn, no
     // viewer). Safe way to verify agent detection + the exact invocation.
@@ -436,11 +525,7 @@ fn cmd_resume(
             text: instruction.to_string(),
             backlog: Vec::new(),
             // Same path the real run uses, so the previewed prompt matches it.
-            checklist: Some(
-                Session::new(&config.home, &state::slot_id(&cwd))
-                    .dir
-                    .join("checklist.md"),
-            ),
+            checklist: Some(Session::new(&config.home, &slot).dir.join("checklist.md")),
         };
         let mode = adapter.initial_mode(agent::Trigger::Resume);
         let ctx = agent::TurnContext {
@@ -472,7 +557,6 @@ fn cmd_resume(
     }
 
     guard_no_conflict(config, &cwd)?;
-    let slot = state::slot_id(&cwd);
     let session = Session::new(&config.home, &slot);
 
     // Take the slot (single-instance guard) before writing anything.
@@ -576,7 +660,7 @@ fn supervisor_summary(
          runs with:  {unattended}\n\n  \
          it will:    {plan}\n  \
          check:      agent-jdi status {slot}\n  \
-         watch:      agent-jdi log {slot} -f\n  \
+         watch:      agent-jdi log {slot}\n  \
          take over:  agent-jdi takeover {slot}\n",
         cwd = cwd.display(),
         agent = agent.label(),
@@ -1284,7 +1368,7 @@ fn takeover_unmanaged(
         Agent::Claude => "claude",
         Agent::Codex => "codex",
     };
-    let live = live_agent_for_session(bin, &resumable.id, &cwd);
+    let live = live_agent_for_session(bin, &resumable.id, &cwd)?;
     let cmds = adapter.resume_commands(&resumable.id);
 
     if dry_run {
@@ -1397,7 +1481,7 @@ fn kill_and_wait(pid: u32) {
 /// processes and their argv, then — only if no argv named the session — a single
 /// batched `lsof` for every agent process's working directory.
 #[cfg(unix)]
-fn live_agent_for_session(bin: &str, session_id: &str, cwd: &Path) -> Option<u32> {
+fn live_agent_for_session(bin: &str, session_id: &str, cwd: &Path) -> Result<Option<u32>> {
     let want = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let me = std::process::id();
 
@@ -1405,9 +1489,10 @@ fn live_agent_for_session(bin: &str, session_id: &str, cwd: &Path) -> Option<u32
     let out = std::process::Command::new("ps")
         .args(["-Ao", "pid=,comm=,args="])
         .output()
-        .ok()?;
+        .context("list live agent processes")?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut agent_pids: Vec<u32> = Vec::new();
+    let mut exact_pids: Vec<u32> = Vec::new();
     for line in text.lines() {
         let t = line.trim_start();
         let Some((pid_s, rest)) = t.split_once(char::is_whitespace) else {
@@ -1427,25 +1512,50 @@ fn live_agent_for_session(bin: &str, session_id: &str, cwd: &Path) -> Option<u32
             continue;
         }
         // Strongest signal: the session id appears in its argv (`--resume <id>`).
-        if !session_id.is_empty() && args.contains(session_id) {
-            return Some(pid);
+        if !session_id.is_empty() && args.split_whitespace().any(|token| token == session_id) {
+            exact_pids.push(pid);
         }
         agent_pids.push(pid);
     }
-    if agent_pids.is_empty() {
-        return None;
+    if !exact_pids.is_empty() {
+        return select_live_agent(&exact_pids, &[]);
     }
 
     // Pass 2: match on working directory, batched over all agent processes.
-    agent_cwds(bin)
+    let cwd_pids = agent_cwds(bin)
         .into_iter()
-        .find(|(pid, dir)| agent_pids.contains(pid) && *dir == want)
+        .filter(|(pid, dir)| agent_pids.contains(pid) && *dir == want)
         .map(|(pid, _)| pid)
+        .collect::<Vec<_>>();
+    select_live_agent(&[], &cwd_pids)
 }
 
 #[cfg(not(unix))]
-fn live_agent_for_session(_bin: &str, _session_id: &str, _cwd: &Path) -> Option<u32> {
-    None
+fn live_agent_for_session(_bin: &str, _session_id: &str, _cwd: &Path) -> Result<Option<u32>> {
+    Ok(None)
+}
+
+fn select_live_agent(exact_pids: &[u32], cwd_pids: &[u32]) -> Result<Option<u32>> {
+    let candidates = if exact_pids.is_empty() {
+        cwd_pids
+    } else {
+        exact_pids
+    };
+    match candidates {
+        [] => Ok(None),
+        [pid] => Ok(Some(*pid)),
+        many => {
+            let pids = many
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "ambiguous live agent processes ({pids}) for this session — \
+                 refusing to choose or kill one; close the extra session or pass an exact session id"
+            )
+        }
+    }
 }
 
 /// `(pid, cwd)` for every process named `bin` — one call, not one per pid.
@@ -1522,12 +1632,13 @@ fn cmd_handoff(
     // Pin the exact session id NOW, so the deferred resume targets the session this
     // handoff came from — never "whatever's newest later", which could be a sibling
     // session in the same dir. Air-tight order: an explicit id → the id in our own
-    // agent process's argv (`--resume <id>` / `codex resume <id>`) → the newest for
-    // this cwd captured at arm time (we are that session, so it's newest right now).
+    // `CODEX_THREAD_ID` exposed by Codex itself → the id in our own agent process's
+    // argv (`--resume <id>` / `codex resume <id>`) → the newest for this cwd captured
+    // at arm time (we are that session, so it's newest right now).
     let session_id = found.and_then(|(pid, agent)| {
-        session
-            .map(str::to_string)
-            .or_else(|| session_id_from_argv(pid, agent))
+        let thread_env = std::env::var("CODEX_THREAD_ID").ok();
+        let argv_id = session_id_from_argv(pid, agent);
+        pinned_handoff_session_id(session, agent, thread_env.as_deref(), argv_id.as_deref())
             .or_else(|| {
                 agent::adapter(agent)
                     .discover_resumable(&cwd)
@@ -1634,6 +1745,24 @@ fn cmd_handoff(
     Ok(())
 }
 
+fn pinned_handoff_session_id(
+    explicit: Option<&str>,
+    agent: Agent,
+    codex_thread_id: Option<&str>,
+    argv_id: Option<&str>,
+) -> Option<String> {
+    explicit
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            (agent == Agent::Codex)
+                .then_some(codex_thread_id)
+                .flatten()
+                .filter(|id| !id.is_empty())
+        })
+        .or_else(|| argv_id.filter(|id| !id.is_empty()))
+        .map(str::to_string)
+}
+
 /// The detached handoff watcher: wait for the interactive session (`watch_pid`) to
 /// exit, then resume it unattended in `cwd`. Runs with no TTY (stdio is /dev/null).
 #[allow(clippy::too_many_arguments)]
@@ -1676,6 +1805,7 @@ fn cmd_handoff_wait(
     cmd_resume(
         config,
         agent,
+        None,
         instruction,
         interval,
         max_attempts,
@@ -1961,6 +2091,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_handoff_prefers_thread_environment_over_argv_and_discovery() {
+        assert_eq!(
+            pinned_handoff_session_id(None, Agent::Codex, Some("env-thread"), Some("argv-thread"),)
+                .as_deref(),
+            Some("env-thread")
+        );
+        assert_eq!(
+            pinned_handoff_session_id(
+                Some("explicit-thread"),
+                Agent::Codex,
+                Some("env-thread"),
+                Some("argv-thread"),
+            )
+            .as_deref(),
+            Some("explicit-thread")
+        );
+        assert_eq!(
+            pinned_handoff_session_id(
+                None,
+                Agent::Claude,
+                Some("stale-codex-env"),
+                Some("claude-id")
+            )
+            .as_deref(),
+            Some("claude-id"),
+            "Codex environment must never leak into Claude handoff"
+        );
+        assert_eq!(
+            pinned_handoff_session_id(None, Agent::Codex, None, None),
+            None,
+            "None tells the caller to use cwd-scoped discovery"
+        );
+    }
+
+    #[test]
+    fn live_agent_selection_refuses_ambiguous_same_cwd_processes() {
+        assert_eq!(select_live_agent(&[], &[]).unwrap(), None);
+        assert_eq!(select_live_agent(&[], &[41]).unwrap(), Some(41));
+        assert_eq!(select_live_agent(&[17], &[41, 42]).unwrap(), Some(17));
+
+        let error = select_live_agent(&[], &[41, 42]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("ambiguous"), "{message}");
+        assert!(
+            message.contains("41") && message.contains("42"),
+            "{message}"
+        );
+
+        let error = select_live_agent(&[17, 18], &[]).unwrap_err();
+        assert!(error.to_string().contains("17"));
+        assert!(error.to_string().contains("18"));
+    }
+
     /// The stale-confirm picker must never block an unattended run: with no TTY (as
     /// in `cargo test`, and in the detached handoff watcher) it returns the newest
     /// session unchanged even when it's stale, rather than waiting for input.
@@ -2041,7 +2225,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("  watch:      agent-jdi log knack-98db47 -f\n"),
+            s.contains("  watch:      agent-jdi log knack-98db47\n"),
             "{s}"
         );
         assert!(
@@ -2079,7 +2263,7 @@ mod tests {
 
     #[test]
     fn start_and_resume_expose_the_follow_flag() {
-        use clap::Parser;
+        use clap::{CommandFactory, Parser};
         // `-f` parses on both subcommands and defaults to false.
         let start = Cli::parse_from(["agent-jdi", "start", "do it"]);
         assert!(matches!(
@@ -2096,6 +2280,102 @@ mod tests {
             resume_f.command,
             Command::Resume { follow: true, .. }
         ));
+
+        let mut command = Cli::command();
+        for subcommand in ["start", "resume"] {
+            let help = command
+                .find_subcommand_mut(subcommand)
+                .expect("subcommand exists")
+                .render_long_help()
+                .to_string();
+            assert!(!help.contains("log -f"), "{subcommand} help: {help}");
+            assert!(
+                help.contains("`agent-jdi log` follows by default"),
+                "{subcommand} help: {help}"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_accepts_a_tracked_slot_id_alongside_raw_session_id() {
+        assert!(Cli::try_parse_from(["agent-jdi", "resume", "--id", "avatar-kit-5ce3fb"]).is_ok());
+        assert!(Cli::try_parse_from(["agent-jdi", "resume", "--session", "thread-123"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "agent-jdi",
+                "resume",
+                "--id",
+                "avatar-kit-5ce3fb",
+                "--session",
+                "thread-123",
+            ])
+            .is_err(),
+            "tracked slot and raw session id must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn explicit_session_id_rejects_paths() {
+        let config = Config {
+            home: PathBuf::from("/state/agent-jdi"),
+        };
+        for id in [
+            "../outside",
+            "nested/session",
+            "/absolute/session",
+            "tracked-session/",
+            "tracked-session/.",
+            "tracked-session//",
+            "tracked-session\\child",
+            ".",
+            "..",
+        ] {
+            let error = match resolve_session(&config, Some(id)) {
+                Ok(_) => panic!("path-like id {id:?} was accepted"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("invalid tracked session id"),
+                "unexpected error for {id:?}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_resume_target_comes_from_tracked_slot_metadata() {
+        let base = std::env::temp_dir().join(format!("ajdi-resume-id-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let config = Config {
+            home: base.join("home"),
+        };
+        let tracked = Session::new(&config.home, "avatar-kit-5ce3fb");
+        tracked
+            .meta_set("cwd", "/work/repos/project-h/avatar-kit")
+            .unwrap();
+        tracked.meta_set("agent", "codex").unwrap();
+        tracked.meta_set("session_id", "codex-session-123").unwrap();
+        tracked
+            .meta_set("transcript", "/sessions/codex-session-123.jsonl")
+            .unwrap();
+
+        let target = resolve_resume_target(
+            &config,
+            Some(Agent::Codex),
+            Some("avatar-kit-5ce3fb"),
+            None,
+            Path::new("/an/unrelated/current/directory"),
+        )
+        .unwrap();
+
+        assert_eq!(target.slot, "avatar-kit-5ce3fb");
+        assert_eq!(target.cwd, Path::new("/work/repos/project-h/avatar-kit"));
+        assert_eq!(target.agent, Agent::Codex);
+        assert_eq!(target.resumable.id, "codex-session-123");
+        assert_eq!(
+            target.resumable.transcript,
+            Path::new("/sessions/codex-session-123.jsonl")
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

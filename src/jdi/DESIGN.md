@@ -172,26 +172,22 @@ resume+log and fill in a task queue / fresh-run later.
 
 ## Known gaps / TODO
 
-- **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`,
-  including the interactive `codex resume` used by `takeover`/`handoff`.
 - **Codex prompts don't carry the queue discipline** (`TODO(deferred)` on
   `PERSISTENCE` in `codex.rs`). The Claude adapter states a durable FIFO queue with
   skip-on-blocked and the prerequisite/append split in every phase; Codex still has
   only a short persistence nudge. Held back on purpose: Codex has no native task
-  queue, so the discipline would rest entirely on `Brief::checklist`, and its CLI
-  surface is unverified — untested prompts against unverified flags is guesswork on
-  guesswork. Do it in the same pass as the flag verification, against a real
-  `codex`. No correctness risk meanwhile: Codex's done-signal is the exit code, which
-  doesn't consult a queue.
-- (Wired) `resume` with no `--session` resolves the newest session for the cwd, but
+  queue, so the discipline would rest entirely on `Brief::checklist`. Add it as a
+  separately reviewed behavior change. Codex's done-signal is currently the exit
+  code, which does not consult a queue.
+- (Wired) `resume` with no `--id` or `--session` resolves the newest session for the cwd, but
   when that newest is **stale** (idle > `AGENT_JDI_STALE`, default 1h) *and* there's
   more than one session *and* a human is at the terminal, it shows a numbered picker
   (Enter = newest, `q` = abort). Unattended (no TTY), single-session, or fresh → no
-  prompt. `--session <id>` pins an exact session and skips discovery + the picker.
-  `handoff` uses that pin to stay **air-tight**: it reads the session id from the
-  interactive agent's own command line (`--resume <id>` / `codex resume <id>`), and
-  only if that carries no id (a fresh session) falls back to the cwd's newest
-  captured at arm time — so the deferred resume can never land on a sibling session.
+  prompt. `--id <slot>` resumes a tracked agent-jdi slot; `--session <id>` pins a
+  raw agent session and skips discovery + the picker. `handoff` uses that pin to
+  stay **air-tight**: explicit `--session` wins, then Codex's `CODEX_THREAD_ID`,
+  then the interactive agent's own argv (`--resume <id>` / `codex resume <id>`),
+  and only then cwd-scoped discovery captured at arm time.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
 

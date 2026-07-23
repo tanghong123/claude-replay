@@ -2,20 +2,49 @@
 //! resume` with sandboxed, no-approval defaults. Codex has **no** native task queue,
 //! so the done-signal is the exit code and `task_queue()` stays `None`.
 //!
-//! NOTE: the exact `codex` CLI surface (subcommand path, `-c` override keys/quoting,
-//! `--json`, whether resume writes a *new* rollout file) is **unverified** — it's all
-//! isolated here as `TODO(verify)` so one edit corrects it once a real `codex` is
-//! available.
+//! The CLI contract here is verified against Codex CLI 0.145.0: `codex exec`,
+//! `codex exec resume`, `codex resume`, `codex login status`, and the JSON
+//! `thread.started` event carrying `thread_id`.
 
 use super::agent::{
     self, AgentAdapter, Brief, Invocation, Mode, ResumableSession, Trigger, TurnContext,
     TurnOutcome,
 };
 use crate::{codex_discover, Agent};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
+
+impl CodexAdapter {
+    fn preflight_program(program: &Path) -> Result<()> {
+        let output = std::process::Command::new(program)
+            .args(["login", "status"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .with_context(|| format!("run `{} login status`", program.display()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        bail!(
+            "`{} login status` failed ({}): {}",
+            program.display(),
+            output.status,
+            if detail.is_empty() {
+                "no diagnostic output"
+            } else {
+                detail
+            }
+        )
+    }
+}
 
 /// TODO(deferred): bring this in line with the Claude adapter's queue discipline —
 /// a durable FIFO queue, skip-on-blocked, prerequisites done now vs. follow-ups
@@ -23,12 +52,10 @@ pub struct CodexAdapter;
 /// `claude.rs`'s START/DUMP/EXECUTE prompts and `jdi/DESIGN.md`).
 ///
 /// Deliberately NOT done yet. Codex has no native task queue, so the discipline
-/// would have to hang entirely off `Brief::checklist`, and its whole CLI surface is
-/// still `TODO(verify)` — writing untested prompt text against unverified flags
-/// would just be guesswork layered on guesswork. Do it together with the flag
-/// verification, so both can be checked against a real `codex` in one pass. Until
-/// then Codex keeps this short persistence nudge, and the done-signal stays the
-/// exit code (`classify`), which does not depend on any queue.
+/// would have to hang entirely off `Brief::checklist`. Keep that behavior change
+/// separate from the now-verified CLI integration. Until then Codex keeps this
+/// short persistence nudge, and the done-signal stays the exit code (`classify`),
+/// which does not depend on any queue.
 const PERSISTENCE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm. Do as much as you can. If an action is blocked, try safe alternatives and clearly record any remaining blocker in your final response.";
 
 impl AgentAdapter for CodexAdapter {
@@ -54,16 +81,14 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
-    // TODO(verify): `codex login status` is the auth probe — confirm subcommand.
     fn preflight(&self) -> Result<()> {
-        Ok(())
+        Self::preflight_program(&self.resolve_binary()?)
     }
 
     fn build_invocation(&self, ctx: &TurnContext) -> Invocation {
         let program = self
             .resolve_binary()
             .unwrap_or_else(|_| PathBuf::from("codex"));
-        // TODO(verify): subcommand path + `-c key="val"` override syntax + `--json`.
         let mut args = vec![
             "exec".into(),
             "resume".into(),
@@ -160,7 +185,7 @@ impl AgentAdapter for CodexAdapter {
 
     /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
     /// the sandboxed `exec` turn. `autonomous` keeps the no-approval posture the
-    /// unattended run had. TODO(verify): interactive resume subcommand/flags.
+    /// unattended run had.
     fn interactive_invocation(
         &self,
         session_id: &str,
@@ -173,7 +198,6 @@ impl AgentAdapter for CodexAdapter {
         let program = self.resolve_binary().ok()?;
         let mut args = vec!["resume".into(), session_id.to_string()];
         if autonomous {
-            // TODO(verify): the interactive equivalent of the exec sandbox flags.
             args.extend([
                 "-c".into(),
                 "approval_policy=\"never\"".into(),
@@ -188,7 +212,6 @@ impl AgentAdapter for CodexAdapter {
         if session_id.is_empty() {
             return Vec::new();
         }
-        // TODO(verify): interactive resume subcommand.
         vec![(
             "# resume the interactive session:".into(),
             format!("codex resume {session_id}"),
@@ -196,7 +219,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
-    /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
+    /// assigns one, which `capture_session_id` then recovers).
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
         let program = self
             .resolve_binary()
@@ -218,16 +241,17 @@ impl AgentAdapter for CodexAdapter {
         Invocation { program, args }
     }
 
-    /// Recover the id Codex assigned: first from the `--json` output stream
-    /// (TODO(verify) the event/field), then by finding the rollout whose first user
-    /// message carries our nonce.
+    /// Recover the id Codex assigned: first from the `thread.started` JSON event,
+    /// then by finding the rollout whose first user message carries our nonce.
     fn capture_session_id(&self, output: &str, _cwd: &Path, nonce: &str) -> Option<String> {
-        // 1) Parse the --json stream for a session id (field name unverified).
+        // 1) Parse the --json stream. Codex 0.145.0 emits
+        // `{"type":"thread.started","thread_id":"…"}`.
         for line in output.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
             for ptr in [
+                "/thread_id",
                 "/session_id",
                 "/id",
                 "/payload/id",
@@ -266,17 +290,75 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief::default();
         let inv = a.build_invocation(&ctx("sess-1", &brief, &[]));
-        assert!(inv
-            .args
-            .windows(2)
-            .any(|w| w == ["-c", "approval_policy=\"never\""]));
-        assert!(inv
-            .args
-            .windows(2)
-            .any(|w| w == ["-c", "sandbox_mode=\"workspace-write\""]));
-        assert!(inv.args.iter().any(|x| x == "resume"));
-        assert!(inv.args.iter().any(|x| x == "sess-1"));
+        assert_eq!(
+            &inv.args[..8],
+            [
+                "exec",
+                "resume",
+                "-c",
+                "approval_policy=\"never\"",
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
+                "--json",
+                "sess-1",
+            ]
+        );
         assert!(!inv.args.iter().any(|x| x.contains("dangerously")));
+    }
+
+    #[test]
+    fn takeover_resume_command_matches_the_interactive_codex_cli() {
+        let a = CodexAdapter;
+        assert_eq!(
+            a.resume_commands("sess-1"),
+            vec![(
+                "# resume the interactive session:".to_string(),
+                "codex resume sess-1".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn captures_thread_id_from_real_codex_json_event() {
+        let a = CodexAdapter;
+        let output = r#"{"type":"thread.started","thread_id":"thread-123"}"#;
+        assert_eq!(
+            a.capture_session_id(output, Path::new("/tmp"), "missing-nonce"),
+            Some("thread-123".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_invokes_codex_login_status_and_reports_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("agent-jdi-codex-preflight-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let ok = root.join("codex-ok");
+        let failed = root.join("codex-failed");
+        for (path, exit) in [(&ok, 0), (&failed, 7)] {
+            std::fs::write(
+                path,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\necho login-state >&2\nexit {exit}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        CodexAdapter::preflight_program(&ok).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("codex-ok.args")).unwrap(),
+            "login\nstatus\n"
+        );
+        let error = CodexAdapter::preflight_program(&failed).unwrap_err();
+        assert!(error.to_string().contains("login status"), "{error:#}");
+        assert!(error.to_string().contains("login-state"), "{error:#}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
