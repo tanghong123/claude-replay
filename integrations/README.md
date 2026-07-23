@@ -6,8 +6,17 @@ clients use the same agent-neutral Skill; Claude Code also gets its native
 
 Both entry points run `agent-jdi handoff`, which arms a detached watcher and
 quits the interactive session. After that process exits, `agent-jdi` resumes the
-same session unattended. Install the `agent-jdi` binary first, then install the
-integration from this checkout:
+same session unattended. A Codex handoff preserves the current turn's sandbox
+(`read-only`, `workspace-write`, or `danger-full-access`) and the exact
+workspace-write network setting. If that policy cannot be captured, handoff
+fails before the watcher starts or the current session is stopped. A direct
+`agent-jdi start` or `resume` instead uses the safe default
+`workspace-write` with network disabled; Claude behavior is unchanged.
+Retries and backlog drains reuse the tracked handoff policy. The Skill requires
+no additional permission flag.
+
+Install the `agent-jdi` binary first, then install the integration from this
+checkout:
 
 ```sh
 ./integrations/install-jdi-handoff.sh
@@ -48,6 +57,10 @@ Use `--armed` if you want to exit the interactive session yourself:
 ```sh
 agent-jdi handoff --armed <what remains to do>
 ```
+
+Use `agent-jdi handoff --dry-run` to preview the captured Codex permission
+policy without spawning a watcher or stopping the session. After handoff,
+`agent-jdi status` reports the effective persisted policy.
 
 To install into non-default client roots, pass both or either destination:
 

@@ -31,14 +31,14 @@ Each **agent** implements `AgentAdapter`:
 | method | Claude | Codex |
 |---|---|---|
 | `initial_mode(trigger)` | `ResumeDump`→`ResumeExecute` (plan then do) | `Execute` (no plan step) |
-| `build_invocation(ctx)` | `claude --resume\|--session-id … --dangerously-skip-permissions -p <prompt>` | `codex exec resume -c approval_policy=… -c sandbox_mode=… <id> <prompt>` |
+| `build_invocation(ctx)` | `claude --resume\|--session-id … --dangerously-skip-permissions -p <prompt>` | `codex exec resume -c approval_policy=never -c sandbox_mode=… [-c sandbox_workspace_write.network_access=…] <id> --json <prompt>` |
 | `classify(rc, out, ctx)` | dump→advance; execute + task-queue-empty→Done; "No conversation found"→recreate; UNRECOVERABLE→failed | rc 0→Done; 130/143→stopped; else retry |
 | `discover_resumable(cwd)` | newest `~/.claude/projects/<slug>/*.jsonl` | newest `~/.codex/sessions/**` for cwd |
 | `task_queue()` *(optional)* | `Some` (`~/.claude/tasks/`) | `None` |
 | `pins_session_id()` | `true` (`--session-id`) | `false` (Codex assigns; captured after turn 1) |
 | `fresh_invocation()` / `capture_session_id()` | pins → default reuse | `codex exec …` + nonce scan / `--json` |
 | `interactive_invocation()` / `resume_commands()` *(optional)* | `claude --resume <id>` (+ the autonomous variant for the printout) | `codex resume <id>` |
-| `unattended_note()` | `--dangerously-skip-permissions (unattended)` | `sandbox=workspace-write, approvals=never` |
+| `unattended_note()` | `--dangerously-skip-permissions (unattended)` | direct start/resume: `workspace-write`, network disabled, approvals never; handoff: captured sandbox/network |
 
 `interactive_invocation` is the **human-in-the-loop** resume (no `-p`/skip flags) that
 `takeover` launches and `handoff` schedules; `resume_commands` are the copy-paste
@@ -69,6 +69,22 @@ watcher that waits for that pid to exit then runs `resume`, and — unless `--ar
 SIGTERMs the session (the watcher escalates to SIGKILL after a 10s grace) so it's
 fully hands-off. The deferral is required: two agents can't drive the same
 transcript at once.
+
+For Codex, the live command first pins the exact thread and reads the newest
+`turn_context` from its rollout. It normalizes only three supported policies:
+`read-only`, `workspace-write` plus an explicit boolean `network_access`, and
+`danger-full-access`. The watcher receives those values as typed internal flags;
+the tracked session persists them as Codex `-c` arguments, so retries and backlog
+drains reuse the same policy. Raw rollout JSON is never passed through argv.
+
+Permission capture is **fail-closed and happens before any destructive action**:
+missing, malformed, or unsupported current context aborts before watcher spawn
+and before SIGTERM, leaving the interactive Codex session alive. There is no
+fallback that can silently reduce or elevate permissions. An ordinary external
+`start`/`resume` clears any stale persisted Codex args and uses
+`workspace-write` with network disabled. Claude's handoff behavior is unchanged.
+The effective Codex policy is visible in handoff dry-run output and in `status`.
+The shared Skill needs no extra permission flag; capture is automatic.
 
 Because `handoff` executes during a live agent turn, it does the **bare minimum**
 there: the ancestor walk identifies the agent from the process itself (so nothing

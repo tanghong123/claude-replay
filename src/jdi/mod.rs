@@ -645,6 +645,15 @@ fn persist_codex_permissions(
     permissions: Option<&codex::CodexPermissionSnapshot>,
 ) -> Result<()> {
     if agent != Agent::Codex {
+        // Preserve arbitrary Claude cargs, but remove a file we know was generated
+        // from a previous Codex permission snapshot when the slot changes agent.
+        if session
+            .meta_get("permissions")
+            .is_some_and(|value| !value.is_empty())
+        {
+            remove_cargs_if_present(session)?;
+            session.meta_set("permissions", "")?;
+        }
         return Ok(());
     }
     session.ensure_dir()?;
@@ -659,15 +668,19 @@ fn persist_codex_permissions(
             )?;
         }
         None => {
-            match std::fs::remove_file(session.cargs_path()) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            remove_cargs_if_present(session)?;
             session.meta_set("permissions", "workspace-write, network disabled (default)")?;
         }
     }
     Ok(())
+}
+
+fn remove_cargs_if_present(session: &Session) -> Result<()> {
+    match std::fs::remove_file(session.cargs_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn handoff_permission_args(permissions: Option<&codex::CodexPermissionSnapshot>) -> Vec<String> {
@@ -894,6 +907,7 @@ fn cmd_start(
     session.meta_set("mode", agent::Mode::Start.as_str())?;
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), &task).ok();
+    persist_codex_permissions(&session, agent, None)?;
 
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
@@ -966,6 +980,13 @@ fn cmd_log(config: &Config, id: Option<&str>) -> Result<()> {
     follow_viewer(&path)
 }
 
+fn permission_status_line(session: &Session) -> Option<String> {
+    session
+        .meta_get("permissions")
+        .filter(|permissions| !permissions.is_empty())
+        .map(|permissions| format!("permissions: {permissions}"))
+}
+
 fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     let session = resolve_session(config, id)?;
     let get = |k: &str| session.meta_get(k).unwrap_or_else(|| "-".into());
@@ -983,6 +1004,9 @@ fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     let live = if session.alive() { " (live)" } else { "" };
     println!("state:     {}{live}", get("state"));
     println!("mode:      {}", get("mode"));
+    if let Some(permissions) = permission_status_line(&session) {
+        println!("{permissions}");
+    }
     if let Some(t) = session.meta_get("started").filter(|s| !s.is_empty()) {
         println!("started:   {t}");
     }
@@ -1758,9 +1782,10 @@ fn cmd_handoff(
                 );
                 if let Some(permissions) = codex_permissions.as_ref() {
                     println!(
-                        "[dry-run] permissions: {} (preserved from current Codex turn)",
+                        "[dry-run] permissions: preserving {} from the current Codex turn",
                         permissions.summary()
                     );
+                    println!("[dry-run] approvals:   never (unattended)");
                 }
             }
             None => println!("[dry-run] (not inside a claude/codex session — nothing to hand off)"),
@@ -1831,9 +1856,10 @@ fn cmd_handoff(
     );
     if let Some(permissions) = codex_permissions.as_ref() {
         println!(
-            "  permissions: {} (preserved from current Codex turn).",
+            "  permissions: preserving {} from the current Codex turn.",
             permissions.summary()
         );
+        println!("  approvals:   never (unattended).");
     }
     if armed {
         println!("  quit now (/exit or Ctrl-D) to hand off.");
@@ -2194,6 +2220,35 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_claude_clears_cargs_owned_by_codex_permissions() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-jdi-agent-switch-state-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let session = Session::new(&root, "slot");
+        session.ensure_dir().unwrap();
+        std::fs::write(
+            session.cargs_path(),
+            "-c\nsandbox_mode=\"danger-full-access\"\n",
+        )
+        .unwrap();
+        session
+            .meta_set(
+                "permissions",
+                "danger-full-access (preserved from current Codex turn)",
+            )
+            .unwrap();
+
+        persist_codex_permissions(&session, Agent::Claude, None).unwrap();
+
+        assert!(!session.cargs_path().exists());
+        assert_eq!(permission_status_line(&session), None);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn watcher_args_carry_normalized_workspace_network_policy() {
         let snapshot = codex::CodexPermissionSnapshot::from_handoff_parts(
             codex::CodexSandboxMode::WorkspaceWrite,
@@ -2250,6 +2305,33 @@ mod tests {
             handoff_permission_snapshot(Agent::Claude, None, None).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn status_permission_line_renders_only_when_metadata_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-jdi-permission-status-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let session = Session::new(&root, "slot");
+        assert_eq!(permission_status_line(&session), None);
+
+        session
+            .meta_set(
+                "permissions",
+                "workspace-write, network enabled (preserved from current Codex turn)",
+            )
+            .unwrap();
+        assert_eq!(
+            permission_status_line(&session).as_deref(),
+            Some(
+                "permissions: workspace-write, network enabled \
+                 (preserved from current Codex turn)"
+            )
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// Regression: a Claude Code tool shell runs

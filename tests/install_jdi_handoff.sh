@@ -34,6 +34,8 @@ assert_install() {
 
     test -f "$canonical" || fail "canonical Skill is missing"
     cmp -s "$shared_source" "$canonical" || fail "canonical Skill differs from its source"
+    grep -Fq "preserves the current Codex permission context" "$canonical" ||
+        fail "canonical Skill omits Codex permission preservation"
     test -L "$claude_skill" || fail "Claude Skill is not a symbolic link"
     test "$(readlink "$claude_skill")" = "$canonical" || fail "Claude Skill points at the wrong target"
     cmp -s "$command_source" "$claude_command" || fail "Claude command differs from its source"
