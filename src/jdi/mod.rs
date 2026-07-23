@@ -698,6 +698,16 @@ fn handoff_permission_args(permissions: Option<&codex::CodexPermissionSnapshot>)
     args
 }
 
+fn handoff_permission_lines(permissions: &codex::CodexPermissionSnapshot) -> (String, String) {
+    (
+        format!(
+            "permissions: preserving {} from the current Codex turn",
+            permissions.summary()
+        ),
+        "approvals:   never (unattended)".to_owned(),
+    )
+}
+
 fn handoff_permission_snapshot(
     agent: Agent,
     session_id: Option<&str>,
@@ -1781,11 +1791,9 @@ fn cmd_handoff(
                     "[dry-run] would watch pid {pid}; on its exit run: agent-jdi resume {target} {instruction}"
                 );
                 if let Some(permissions) = codex_permissions.as_ref() {
-                    println!(
-                        "[dry-run] permissions: preserving {} from the current Codex turn",
-                        permissions.summary()
-                    );
-                    println!("[dry-run] approvals:   never (unattended)");
+                    let (policy, approvals) = handoff_permission_lines(permissions);
+                    println!("[dry-run] {policy}");
+                    println!("[dry-run] {approvals}");
                 }
             }
             None => println!("[dry-run] (not inside a claude/codex session — nothing to hand off)"),
@@ -1855,11 +1863,9 @@ fn cmd_handoff(
         cwd.display()
     );
     if let Some(permissions) = codex_permissions.as_ref() {
-        println!(
-            "  permissions: preserving {} from the current Codex turn.",
-            permissions.summary()
-        );
-        println!("  approvals:   never (unattended).");
+        let (policy, approvals) = handoff_permission_lines(permissions);
+        println!("  {policy}.");
+        println!("  {approvals}.");
     }
     if armed {
         println!("  quit now (/exit or Ctrl-D) to hand off.");
@@ -2278,6 +2284,24 @@ mod tests {
             ["--codex-sandbox", "danger-full-access"]
         );
         assert!(handoff_permission_args(None).is_empty());
+    }
+
+    #[test]
+    fn workspace_write_permission_output_reports_exact_network_policy() {
+        let snapshot = codex::CodexPermissionSnapshot::from_handoff_parts(
+            codex::CodexSandboxMode::WorkspaceWrite,
+            Some(false),
+        )
+        .unwrap();
+        assert_eq!(
+            handoff_permission_lines(&snapshot),
+            (
+                "permissions: preserving workspace-write, network disabled \
+                 from the current Codex turn"
+                    .to_owned(),
+                "approvals:   never (unattended)".to_owned(),
+            )
+        );
     }
 
     #[test]
