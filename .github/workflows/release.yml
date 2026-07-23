@@ -17,7 +17,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Create release
         run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
         env:
@@ -43,7 +43,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # taiki-e/upload-rust-binary-action is the de-facto standard for this: it
       # installs the target (using `cross` for aarch64-musl), builds --release,
       # tars the binary as `claude-replay-<target>.tar.gz`, emits a .sha256, and

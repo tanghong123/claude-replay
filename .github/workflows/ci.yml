@@ -13,7 +13,7 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Shared jdi-handoff installer
         run: sh tests/install_jdi_handoff.sh
       - uses: dtolnay/rust-toolchain@stable
@@ -31,7 +31,7 @@ jobs:
     name: secrets · blocked emails
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # full history so gitleaks + the email scan see every commit
       - name: Scan for secrets (gitleaks)
