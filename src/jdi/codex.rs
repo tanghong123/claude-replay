@@ -2,20 +2,192 @@
 //! resume` with sandboxed, no-approval defaults. Codex has **no** native task queue,
 //! so the done-signal is the exit code and `task_queue()` stays `None`.
 //!
-//! NOTE: the exact `codex` CLI surface (subcommand path, `-c` override keys/quoting,
-//! `--json`, whether resume writes a *new* rollout file) is **unverified** — it's all
-//! isolated here as `TODO(verify)` so one edit corrects it once a real `codex` is
-//! available.
+//! The CLI contract here is verified against Codex CLI 0.145.0: `codex exec`,
+//! `codex exec resume`, `codex resume`, `codex login status`, and the JSON
+//! `thread.started` event carrying `thread_id`.
 
 use super::agent::{
     self, AgentAdapter, Brief, Invocation, Mode, ResumableSession, Trigger, TurnContext,
     TurnOutcome,
 };
 use crate::{codex_discover, Agent};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexSandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl CodexSandboxMode {
+    pub(crate) fn as_config_value(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexPermissionSnapshot {
+    sandbox: CodexSandboxMode,
+    workspace_network: Option<bool>,
+}
+
+impl CodexPermissionSnapshot {
+    pub(crate) fn from_handoff_parts(
+        sandbox: CodexSandboxMode,
+        workspace_network: Option<bool>,
+    ) -> Result<Self> {
+        let coherent = match sandbox {
+            CodexSandboxMode::WorkspaceWrite => workspace_network.is_some(),
+            CodexSandboxMode::ReadOnly | CodexSandboxMode::DangerFullAccess => {
+                workspace_network.is_none()
+            }
+        };
+        if !coherent {
+            bail!("cannot preserve the current Codex permission context: incoherent network value");
+        }
+        Ok(Self {
+            sandbox,
+            workspace_network,
+        })
+    }
+
+    pub(crate) fn from_rollout(path: &Path) -> Result<Self> {
+        let file =
+            File::open(path).with_context(|| format!("open Codex rollout {}", path.display()))?;
+        let mut latest = None;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(|value| value.as_str()) == Some("turn_context") {
+                latest = Some(value);
+            }
+        }
+
+        let policy = latest
+            .as_ref()
+            .and_then(|value| value.pointer("/payload/sandbox_policy"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "cannot preserve the current Codex permission context from {}",
+                    path.display()
+                )
+            })?;
+        let kind = policy.get("type").and_then(|value| value.as_str());
+        let (sandbox, workspace_network) = match kind {
+            Some("read-only") => (CodexSandboxMode::ReadOnly, None),
+            Some("workspace-write") => (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(
+                    policy
+                        .get("network_access")
+                        .and_then(|value| value.as_bool())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "cannot preserve the current Codex permission context: \
+                                 workspace-write network_access is missing or invalid"
+                            )
+                        })?,
+                ),
+            ),
+            Some("danger-full-access") => (CodexSandboxMode::DangerFullAccess, None),
+            _ => {
+                bail!(
+                    "cannot preserve the current Codex permission context: \
+                     unsupported sandbox mode"
+                )
+            }
+        };
+        Ok(Self {
+            sandbox,
+            workspace_network,
+        })
+    }
+
+    pub(crate) fn sandbox(&self) -> CodexSandboxMode {
+        self.sandbox
+    }
+
+    pub(crate) fn workspace_network(&self) -> Option<bool> {
+        self.workspace_network
+    }
+
+    pub(crate) fn config_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "-c".into(),
+            format!("sandbox_mode=\"{}\"", self.sandbox.as_config_value()),
+        ];
+        if let Some(enabled) = self.workspace_network {
+            args.extend([
+                "-c".into(),
+                format!("sandbox_workspace_write.network_access={enabled}"),
+            ]);
+        }
+        args
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        match (self.sandbox, self.workspace_network) {
+            (CodexSandboxMode::WorkspaceWrite, Some(true)) => {
+                "workspace-write, network enabled".into()
+            }
+            (CodexSandboxMode::WorkspaceWrite, Some(false)) => {
+                "workspace-write, network disabled".into()
+            }
+            (mode, None) => mode.as_config_value().into(),
+            _ => unreachable!("constructor enforces the workspace network invariant"),
+        }
+    }
+}
+
+impl CodexAdapter {
+    fn unattended_config_args(extra_args: &[String]) -> Vec<String> {
+        if !extra_args.is_empty() {
+            return extra_args.to_vec();
+        }
+        CodexPermissionSnapshot::from_handoff_parts(CodexSandboxMode::WorkspaceWrite, Some(false))
+            .expect("the static unattended default must be coherent")
+            .config_args()
+    }
+
+    fn preflight_program(program: &Path) -> Result<()> {
+        let output = std::process::Command::new(program)
+            .args(["login", "status"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .with_context(|| format!("run `{} login status`", program.display()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        bail!(
+            "`{} login status` failed ({}): {}",
+            program.display(),
+            output.status,
+            if detail.is_empty() {
+                "no diagnostic output"
+            } else {
+                detail
+            }
+        )
+    }
+}
 
 /// TODO(deferred): bring this in line with the Claude adapter's queue discipline —
 /// a durable FIFO queue, skip-on-blocked, prerequisites done now vs. follow-ups
@@ -23,12 +195,10 @@ pub struct CodexAdapter;
 /// `claude.rs`'s START/DUMP/EXECUTE prompts and `jdi/DESIGN.md`).
 ///
 /// Deliberately NOT done yet. Codex has no native task queue, so the discipline
-/// would have to hang entirely off `Brief::checklist`, and its whole CLI surface is
-/// still `TODO(verify)` — writing untested prompt text against unverified flags
-/// would just be guesswork layered on guesswork. Do it together with the flag
-/// verification, so both can be checked against a real `codex` in one pass. Until
-/// then Codex keeps this short persistence nudge, and the done-signal stays the
-/// exit code (`classify`), which does not depend on any queue.
+/// would have to hang entirely off `Brief::checklist`. Keep that behavior change
+/// separate from the now-verified CLI integration. Until then Codex keeps this
+/// short persistence nudge, and the done-signal stays the exit code (`classify`),
+/// which does not depend on any queue.
 const PERSISTENCE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm. Do as much as you can. If an action is blocked, try safe alternatives and clearly record any remaining blocker in your final response.";
 
 impl AgentAdapter for CodexAdapter {
@@ -54,26 +224,22 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
-    // TODO(verify): `codex login status` is the auth probe — confirm subcommand.
     fn preflight(&self) -> Result<()> {
-        Ok(())
+        Self::preflight_program(&self.resolve_binary()?)
     }
 
     fn build_invocation(&self, ctx: &TurnContext) -> Invocation {
         let program = self
             .resolve_binary()
             .unwrap_or_else(|_| PathBuf::from("codex"));
-        // TODO(verify): subcommand path + `-c key="val"` override syntax + `--json`.
         let mut args = vec![
             "exec".into(),
             "resume".into(),
             "-c".into(),
             "approval_policy=\"never\"".into(),
-            "-c".into(),
-            "sandbox_mode=\"workspace-write\"".into(),
-            "--json".into(),
         ];
-        args.extend(ctx.extra_args.iter().cloned());
+        args.extend(Self::unattended_config_args(ctx.extra_args));
+        args.push("--json".into());
         args.push(ctx.session_id.to_string());
         args.push(self.prompt_for(ctx.mode, ctx.brief, ctx.session_id));
         Invocation { program, args }
@@ -160,7 +326,7 @@ impl AgentAdapter for CodexAdapter {
 
     /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
     /// the sandboxed `exec` turn. `autonomous` keeps the no-approval posture the
-    /// unattended run had. TODO(verify): interactive resume subcommand/flags.
+    /// unattended run had.
     fn interactive_invocation(
         &self,
         session_id: &str,
@@ -173,7 +339,6 @@ impl AgentAdapter for CodexAdapter {
         let program = self.resolve_binary().ok()?;
         let mut args = vec!["resume".into(), session_id.to_string()];
         if autonomous {
-            // TODO(verify): the interactive equivalent of the exec sandbox flags.
             args.extend([
                 "-c".into(),
                 "approval_policy=\"never\"".into(),
@@ -188,7 +353,6 @@ impl AgentAdapter for CodexAdapter {
         if session_id.is_empty() {
             return Vec::new();
         }
-        // TODO(verify): interactive resume subcommand.
         vec![(
             "# resume the interactive session:".into(),
             format!("codex resume {session_id}"),
@@ -196,7 +360,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Fresh run: `codex exec <task+nonce> --json …` (no `resume`, no id — Codex
-    /// assigns one, which `capture_session_id` then recovers). TODO(verify) flags.
+    /// assigns one, which `capture_session_id` then recovers).
     fn fresh_invocation(&self, ctx: &TurnContext, nonce: &str) -> Invocation {
         let program = self
             .resolve_binary()
@@ -205,11 +369,9 @@ impl AgentAdapter for CodexAdapter {
             "exec".into(),
             "-c".into(),
             "approval_policy=\"never\"".into(),
-            "-c".into(),
-            "sandbox_mode=\"workspace-write\"".into(),
-            "--json".into(),
         ];
-        args.extend(ctx.extra_args.iter().cloned());
+        args.extend(Self::unattended_config_args(ctx.extra_args));
+        args.push("--json".into());
         let prompt = format!(
             "{}\n\n<!-- agent-jdi run: {nonce} -->",
             self.prompt_for(ctx.mode, ctx.brief, ctx.session_id)
@@ -218,16 +380,17 @@ impl AgentAdapter for CodexAdapter {
         Invocation { program, args }
     }
 
-    /// Recover the id Codex assigned: first from the `--json` output stream
-    /// (TODO(verify) the event/field), then by finding the rollout whose first user
-    /// message carries our nonce.
+    /// Recover the id Codex assigned: first from the `thread.started` JSON event,
+    /// then by finding the rollout whose first user message carries our nonce.
     fn capture_session_id(&self, output: &str, _cwd: &Path, nonce: &str) -> Option<String> {
-        // 1) Parse the --json stream for a session id (field name unverified).
+        // 1) Parse the --json stream. Codex 0.145.0 emits
+        // `{"type":"thread.started","thread_id":"…"}`.
         for line in output.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
             for ptr in [
+                "/thread_id",
                 "/session_id",
                 "/id",
                 "/payload/id",
@@ -250,6 +413,36 @@ impl AgentAdapter for CodexAdapter {
 mod tests {
     use super::*;
 
+    struct PermissionFixture {
+        root: PathBuf,
+        rollout: PathBuf,
+    }
+
+    impl PermissionFixture {
+        fn with_contexts(contexts: &[serde_json::Value]) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "agent-jdi-codex-permissions-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::create_dir_all(&root).unwrap();
+            let rollout = root.join("rollout.jsonl");
+            let mut body = String::from("not-json\n");
+            for context in contexts {
+                body.push_str(&format!("{context}\n"));
+            }
+            std::fs::write(&rollout, body).unwrap();
+            Self { root, rollout }
+        }
+    }
+
+    impl Drop for PermissionFixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.root).ok();
+        }
+    }
+
     fn ctx<'a>(id: &'a str, brief: &'a Brief, extra: &'a [String]) -> TurnContext<'a> {
         TurnContext {
             mode: Mode::Execute,
@@ -262,21 +455,281 @@ mod tests {
     }
 
     #[test]
-    fn invocation_is_sandboxed_noninteractive_and_resumes_by_id() {
+    fn parses_latest_codex_turn_permissions() {
+        let fixture = PermissionFixture::with_contexts(&[
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {
+                    "sandbox_policy": {
+                        "type": "workspace-write",
+                        "network_access": false
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {
+                    "sandbox_policy": {
+                        "type": "danger-full-access"
+                    }
+                }
+            }),
+        ]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.sandbox(), CodexSandboxMode::DangerFullAccess);
+        assert_eq!(snapshot.workspace_network(), None);
+    }
+
+    #[test]
+    fn parses_workspace_network_enabled() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {
+                "sandbox_policy": {
+                    "type": "workspace-write",
+                    "network_access": true
+                }
+            }
+        })]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.sandbox(), CodexSandboxMode::WorkspaceWrite);
+        assert_eq!(snapshot.workspace_network(), Some(true));
+    }
+
+    #[test]
+    fn parses_workspace_network_disabled() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {
+                "sandbox_policy": {
+                    "type": "workspace-write",
+                    "network_access": false
+                }
+            }
+        })]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.workspace_network(), Some(false));
+    }
+
+    #[test]
+    fn parses_read_only_permissions() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "read-only"}}
+        })]);
+        assert_eq!(
+            CodexPermissionSnapshot::from_rollout(&fixture.rollout)
+                .unwrap()
+                .sandbox(),
+            CodexSandboxMode::ReadOnly
+        );
+    }
+
+    #[test]
+    fn invalid_latest_turn_does_not_reuse_older_full_access() {
+        let fixture = PermissionFixture::with_contexts(&[
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {"sandbox_policy": {"type": "danger-full-access"}}
+            }),
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {"sandbox_policy": {"type": "future-mode"}}
+            }),
+        ]);
+        assert!(CodexPermissionSnapshot::from_rollout(&fixture.rollout).is_err());
+    }
+
+    #[test]
+    fn missing_or_incomplete_permissions_fail_closed() {
+        let no_context = PermissionFixture::with_contexts(&[]);
+        assert!(CodexPermissionSnapshot::from_rollout(&no_context.rollout).is_err());
+
+        let missing_network = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "workspace-write"}}
+        })]);
+        assert!(CodexPermissionSnapshot::from_rollout(&missing_network.rollout).is_err());
+    }
+
+    #[test]
+    fn permission_snapshots_render_normalized_config_args_and_summaries() {
+        let cases = [
+            (
+                CodexSandboxMode::ReadOnly,
+                None,
+                vec!["-c", "sandbox_mode=\"read-only\""],
+                "read-only",
+            ),
+            (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(false),
+                vec![
+                    "-c",
+                    "sandbox_mode=\"workspace-write\"",
+                    "-c",
+                    "sandbox_workspace_write.network_access=false",
+                ],
+                "workspace-write, network disabled",
+            ),
+            (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(true),
+                vec![
+                    "-c",
+                    "sandbox_mode=\"workspace-write\"",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                ],
+                "workspace-write, network enabled",
+            ),
+            (
+                CodexSandboxMode::DangerFullAccess,
+                None,
+                vec!["-c", "sandbox_mode=\"danger-full-access\""],
+                "danger-full-access",
+            ),
+        ];
+
+        for (sandbox, network, args, summary) in cases {
+            let snapshot = CodexPermissionSnapshot::from_handoff_parts(sandbox, network).unwrap();
+            assert_eq!(snapshot.config_args(), args);
+            assert_eq!(snapshot.summary(), summary);
+        }
+    }
+
+    #[test]
+    fn handoff_parts_reject_incoherent_network_values() {
+        assert!(CodexPermissionSnapshot::from_handoff_parts(
+            CodexSandboxMode::WorkspaceWrite,
+            None,
+        )
+        .is_err());
+        assert!(CodexPermissionSnapshot::from_handoff_parts(
+            CodexSandboxMode::DangerFullAccess,
+            Some(true),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resumed_invocation_uses_safe_default_policy_once() {
         let a = CodexAdapter;
         let brief = Brief::default();
         let inv = a.build_invocation(&ctx("sess-1", &brief, &[]));
+        assert!(inv.args.iter().any(|arg| arg == "sess-1"));
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"workspace-write\""]
+        );
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_workspace_write.network_access="))
+                .collect::<Vec<_>>(),
+            ["sandbox_workspace_write.network_access=false"]
+        );
+    }
+
+    #[test]
+    fn resumed_invocation_uses_persisted_full_access_without_duplicate_sandbox() {
+        let a = CodexAdapter;
+        let brief = Brief::default();
+        let persisted =
+            CodexPermissionSnapshot::from_handoff_parts(CodexSandboxMode::DangerFullAccess, None)
+                .unwrap()
+                .config_args();
+        let inv = a.build_invocation(&ctx("sess-1", &brief, &persisted));
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"danger-full-access\""]
+        );
         assert!(inv
             .args
             .windows(2)
-            .any(|w| w == ["-c", "approval_policy=\"never\""]));
-        assert!(inv
-            .args
-            .windows(2)
-            .any(|w| w == ["-c", "sandbox_mode=\"workspace-write\""]));
-        assert!(inv.args.iter().any(|x| x == "resume"));
-        assert!(inv.args.iter().any(|x| x == "sess-1"));
-        assert!(!inv.args.iter().any(|x| x.contains("dangerously")));
+            .any(|pair| pair == ["-c", "approval_policy=\"never\""]));
+    }
+
+    #[test]
+    fn fresh_invocation_uses_safe_default_policy_once() {
+        let a = CodexAdapter;
+        let brief = Brief::default();
+        let inv = a.fresh_invocation(&ctx("", &brief, &[]), "nonce");
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"workspace-write\""]
+        );
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_workspace_write.network_access="))
+                .collect::<Vec<_>>(),
+            ["sandbox_workspace_write.network_access=false"]
+        );
+    }
+
+    #[test]
+    fn takeover_resume_command_matches_the_interactive_codex_cli() {
+        let a = CodexAdapter;
+        assert_eq!(
+            a.resume_commands("sess-1"),
+            vec![(
+                "# resume the interactive session:".to_string(),
+                "codex resume sess-1".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn captures_thread_id_from_real_codex_json_event() {
+        let a = CodexAdapter;
+        let output = r#"{"type":"thread.started","thread_id":"thread-123"}"#;
+        assert_eq!(
+            a.capture_session_id(output, Path::new("/tmp"), "missing-nonce"),
+            Some("thread-123".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_invokes_codex_login_status_and_reports_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("agent-jdi-codex-preflight-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let ok = root.join("codex-ok");
+        let failed = root.join("codex-failed");
+        for (path, exit) in [(&ok, 0), (&failed, 7)] {
+            std::fs::write(
+                path,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\necho login-state >&2\nexit {exit}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        CodexAdapter::preflight_program(&ok).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("codex-ok.args")).unwrap(),
+            "login\nstatus\n"
+        );
+        let error = CodexAdapter::preflight_program(&failed).unwrap_err();
+        assert!(error.to_string().contains("login status"), "{error:#}");
+        assert!(error.to_string().contains("login-state"), "{error:#}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

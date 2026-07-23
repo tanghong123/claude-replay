@@ -183,10 +183,11 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     }
 }
 
-fn is_host_context(text: &str) -> bool {
+pub(crate) fn is_host_context(text: &str) -> bool {
     let text = text.trim_start();
     text.starts_with("<environment_context>")
         || text.starts_with("<permissions instructions>")
+        || text.starts_with("<recommended_plugins>")
         || text.starts_with("# AGENTS.md instructions")
 }
 

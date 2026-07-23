@@ -28,6 +28,14 @@ The user wants to stop babysitting the session and let it finish on its own —
    exits, agent-jdi resumes it unattended and drives the work to completion,
    retrying on recoverable failures.
 
+   For Codex, handoff preserves the current Codex permission context: `read-only`,
+   `workspace-write` with its exact network setting, or `danger-full-access`.
+   Capture happens before the watcher starts or the current session exits. If the
+   current turn's permission policy cannot be read safely, handoff aborts and
+   leaves the interactive session running. Retries and backlog drains reuse the
+   captured policy. No extra Skill flag is required. Claude permission behavior
+   is unchanged.
+
 Do not ask for extra confirmation once the user has asked to hand off — just run
 the command.
 

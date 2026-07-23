@@ -111,6 +111,7 @@ sessions (Claude or Codex), so one tool covers both.
 ```bash
 agent-jdi start "refactor the parser and add tests"   # fresh unattended run (prints a summary; -f to watch live)
 agent-jdi resume            # resume this dir's newest session, unattended (prints a summary; -f to watch live)
+agent-jdi resume --id <slot>     # resume an exact tracked slot from `agent-jdi list`
 agent-jdi resume --session <id>  # resume an exact session (skips discovery + the stale-session prompt)
 agent-jdi resume --agent codex   # force an agent
 agent-jdi handoff "finish the refactor and commit"    # hand THIS interactive session to an unattended run
@@ -131,17 +132,18 @@ only when the directory has no history.
 
 By default `start`/`resume` launch the worker **detached in the background** and
 print a summary (session, retry policy, autonomy, follow-up commands), then return —
-add **`-f`/`--follow`** to open the live viewer instead (equivalent to `agent-jdi log
-<id> -f` afterward).
+add **`-f`/`--follow`** to open the live viewer instead (equivalent to running
+`agent-jdi log <id>` afterward).
 
 **Handing sessions across the human ↔ jdi boundary.** `takeover` and `handoff` are
 mirrors: `takeover` stops an unattended run and **launches the agent interactively
 resumed** on the session so you continue it yourself (`--no-launch` to just stop and
 print the resume commands); `handoff`, run from *inside* an interactive session,
 hands it the other way — it quits your session and resumes it unattended in the
-background (`--armed` to arm without auto-quitting). A ready-made `/jdi-handoff`
-slash command and a `jdi-handoff` skill (triggers on "hand this off to jdi" /
-"justdoit") wrap `handoff` — see [`integrations/claude/`](integrations/claude/).
+background (`--armed` to arm without auto-quitting). The shared `jdi-handoff`
+Skill wraps this flow for both clients: use `$jdi-handoff` in Codex or the native
+`/jdi-handoff` command in Claude Code. Install and usage details are in
+[`integrations/`](integrations/).
 
 `takeover` resumes with the run's **unattended posture** (Claude's
 `--dangerously-skip-permissions`) so it doesn't start prompting on every action;
@@ -168,9 +170,10 @@ Architecture: an **agent-agnostic supervisor spine** (detached worker, slot lock
 adapters may leave optional capabilities (e.g. a native task queue) unimplemented.
 See [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md).
 
-> ⚠️ Codex's CLI surface (`codex exec resume` flags, `--json`, whether resume
-> writes a new rollout file) is **unverified** — isolated in `codex.rs` as
-> `TODO(verify)` until validated against a real `codex`.
+Codex integration is validated against CLI 0.145.0: authentication uses
+`codex login status`, unattended turns use `codex exec` / `codex exec resume`,
+interactive takeover uses `codex resume`, and fresh-run identity is read from the
+JSON `thread.started.thread_id` event (with rollout-marker discovery as a fallback).
 
 ## Develop
 
