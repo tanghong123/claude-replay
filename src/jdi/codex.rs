@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodexSandboxMode {
     ReadOnly,
     WorkspaceWrite,

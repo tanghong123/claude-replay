@@ -171,6 +171,12 @@ enum Command {
         /// The pinned session id to resume (from `handoff`).
         #[arg(long)]
         session: Option<String>,
+        /// Normalized Codex sandbox captured by the parent handoff command.
+        #[arg(long, value_enum)]
+        codex_sandbox: Option<codex::CodexSandboxMode>,
+        /// Exact workspace-write network flag captured by the parent handoff.
+        #[arg(long, requires = "codex_sandbox")]
+        codex_workspace_network: Option<bool>,
         instruction: Vec<String>,
     },
 }
@@ -241,6 +247,7 @@ pub fn run() -> Result<()> {
             dry,
             follow,
             session.as_deref(),
+            None,
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
@@ -287,6 +294,8 @@ pub fn run() -> Result<()> {
             agent,
             escalate,
             session,
+            codex_sandbox,
+            codex_workspace_network,
             instruction,
         } => cmd_handoff_wait(
             &config,
@@ -298,6 +307,8 @@ pub fn run() -> Result<()> {
             max_attempts,
             escalate,
             session.as_deref(),
+            codex_sandbox,
+            codex_workspace_network,
         ),
     }
 }
@@ -504,6 +515,7 @@ fn cmd_resume(
     dry_run: bool,
     follow: bool,
     session: Option<&str>,
+    handoff_permissions: Option<&codex::CodexPermissionSnapshot>,
 ) -> Result<()> {
     let current_cwd = std::env::current_dir()?;
     let ResumeTarget {
@@ -584,6 +596,7 @@ fn cmd_resume(
     )?;
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), instruction).ok();
+    persist_codex_permissions(&session, agent, handoff_permissions)?;
 
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
@@ -624,6 +637,73 @@ fn cmd_resume(
         )
     );
     Ok(())
+}
+
+fn persist_codex_permissions(
+    session: &Session,
+    agent: Agent,
+    permissions: Option<&codex::CodexPermissionSnapshot>,
+) -> Result<()> {
+    if agent != Agent::Codex {
+        return Ok(());
+    }
+    session.ensure_dir()?;
+    match permissions {
+        Some(snapshot) => {
+            let args = snapshot.config_args();
+            std::fs::write(session.cargs_path(), format!("{}\n", args.join("\n")))
+                .with_context(|| format!("write {}", session.cargs_path().display()))?;
+            session.meta_set(
+                "permissions",
+                &format!("{} (preserved from current Codex turn)", snapshot.summary()),
+            )?;
+        }
+        None => {
+            match std::fs::remove_file(session.cargs_path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            session.meta_set("permissions", "workspace-write, network disabled (default)")?;
+        }
+    }
+    Ok(())
+}
+
+fn handoff_permission_args(permissions: Option<&codex::CodexPermissionSnapshot>) -> Vec<String> {
+    let Some(snapshot) = permissions else {
+        return Vec::new();
+    };
+    let mut args = vec![
+        "--codex-sandbox".to_owned(),
+        snapshot.sandbox().as_config_value().to_owned(),
+    ];
+    if let Some(enabled) = snapshot.workspace_network() {
+        args.push("--codex-workspace-network".to_owned());
+        args.push(enabled.to_string());
+    }
+    args
+}
+
+fn handoff_permission_snapshot(
+    agent: Agent,
+    session_id: Option<&str>,
+    transcript: Option<&Path>,
+) -> Result<Option<codex::CodexPermissionSnapshot>> {
+    if agent != Agent::Codex {
+        return Ok(None);
+    }
+    let session_id = session_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot preserve the current Codex permission context without a pinned session id"
+        )
+    })?;
+    let transcript = transcript.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot locate Codex rollout for {session_id}; current session remains active"
+        )
+    })?;
+    codex::CodexPermissionSnapshot::from_rollout(transcript).map(Some)
 }
 
 /// The `claude-jdi`-style run summary shown after a supervisor is launched: what it
@@ -1647,6 +1727,20 @@ fn cmd_handoff(
             })
     });
 
+    // Codex handoff is fail-closed: capture the current turn's exact permission
+    // policy before spawning the watcher or terminating the interactive process.
+    // This keeps a malformed/missing rollout from silently reducing capability or
+    // escalating permissions in the resumed run.
+    let codex_permissions = match found {
+        Some((_, agent)) => {
+            let transcript = session_id
+                .as_deref()
+                .and_then(|id| agent::adapter(agent).transcript_path(id, &cwd));
+            handoff_permission_snapshot(agent, session_id.as_deref(), transcript.as_deref())?
+        }
+        None => None,
+    };
+
     if dry_run {
         match found {
             Some((pid, agent)) => {
@@ -1662,6 +1756,12 @@ fn cmd_handoff(
                 println!(
                     "[dry-run] would watch pid {pid}; on its exit run: agent-jdi resume {target} {instruction}"
                 );
+                if let Some(permissions) = codex_permissions.as_ref() {
+                    println!(
+                        "[dry-run] permissions: {} (preserved from current Codex turn)",
+                        permissions.summary()
+                    );
+                }
             }
             None => println!("[dry-run] (not inside a claude/codex session — nothing to hand off)"),
         }
@@ -1693,6 +1793,7 @@ fn cmd_handoff(
         .arg(&cwd)
         .arg("--agent")
         .arg(agent.label());
+    cmd.args(handoff_permission_args(codex_permissions.as_ref()));
     if let Some(i) = interval {
         cmd.arg("--interval").arg(i.to_string());
     }
@@ -1728,6 +1829,12 @@ fn cmd_handoff(
         "  when it exits, agent-jdi resumes it unattended in {}.",
         cwd.display()
     );
+    if let Some(permissions) = codex_permissions.as_ref() {
+        println!(
+            "  permissions: {} (preserved from current Codex turn).",
+            permissions.summary()
+        );
+    }
     if armed {
         println!("  quit now (/exit or Ctrl-D) to hand off.");
     } else {
@@ -1776,6 +1883,8 @@ fn cmd_handoff_wait(
     max_attempts: Option<u32>,
     escalate: bool,
     session: Option<&str>,
+    codex_sandbox: Option<codex::CodexSandboxMode>,
+    codex_workspace_network: Option<bool>,
 ) -> Result<()> {
     // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
     // If we asked it to quit (SIGTERM) and it's still alive after a grace period,
@@ -1800,6 +1909,11 @@ fn cmd_handoff_wait(
     // Let the transcript flush before we discover + resume it.
     std::thread::sleep(Duration::from_secs(1));
     std::env::set_current_dir(cwd).with_context(|| format!("chdir into {}", cwd.display()))?;
+    let codex_permissions = codex_sandbox
+        .map(|sandbox| {
+            codex::CodexPermissionSnapshot::from_handoff_parts(sandbox, codex_workspace_network)
+        })
+        .transpose()?;
     // Resume unattended (no follow — this process has no terminal), pinned to the
     // exact session `handoff` captured, so no discovery/picker can pick a sibling.
     cmd_resume(
@@ -1812,6 +1926,7 @@ fn cmd_handoff_wait(
         false,
         false,
         session,
+        codex_permissions.as_ref(),
     )
 }
 
@@ -2021,6 +2136,121 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handoff_permissions_are_persisted_and_external_resume_clears_them() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-jdi-permission-state-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let session = Session::new(&root, "slot");
+        let full = codex::CodexPermissionSnapshot::from_handoff_parts(
+            codex::CodexSandboxMode::DangerFullAccess,
+            None,
+        )
+        .unwrap();
+
+        persist_codex_permissions(&session, Agent::Codex, Some(&full)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(session.cargs_path()).unwrap(),
+            "-c\nsandbox_mode=\"danger-full-access\"\n"
+        );
+        assert_eq!(
+            session.meta_get("permissions").as_deref(),
+            Some("danger-full-access (preserved from current Codex turn)")
+        );
+
+        persist_codex_permissions(&session, Agent::Codex, None).unwrap();
+        assert!(!session.cargs_path().exists());
+        assert_eq!(
+            session.meta_get("permissions").as_deref(),
+            Some("workspace-write, network disabled (default)")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn codex_permission_persistence_does_not_touch_claude_cargs() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-jdi-claude-permission-state-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let session = Session::new(&root, "slot");
+        session.ensure_dir().unwrap();
+        std::fs::write(session.cargs_path(), "--existing-claude-arg\n").unwrap();
+
+        persist_codex_permissions(&session, Agent::Claude, None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(session.cargs_path()).unwrap(),
+            "--existing-claude-arg\n"
+        );
+        assert_eq!(session.meta_get("permissions"), None);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn watcher_args_carry_normalized_workspace_network_policy() {
+        let snapshot = codex::CodexPermissionSnapshot::from_handoff_parts(
+            codex::CodexSandboxMode::WorkspaceWrite,
+            Some(true),
+        )
+        .unwrap();
+        assert_eq!(
+            handoff_permission_args(Some(&snapshot)),
+            [
+                "--codex-sandbox",
+                "workspace-write",
+                "--codex-workspace-network",
+                "true",
+            ]
+        );
+    }
+
+    #[test]
+    fn watcher_args_omit_network_for_full_access_and_claude() {
+        let full = codex::CodexPermissionSnapshot::from_handoff_parts(
+            codex::CodexSandboxMode::DangerFullAccess,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            handoff_permission_args(Some(&full)),
+            ["--codex-sandbox", "danger-full-access"]
+        );
+        assert!(handoff_permission_args(None).is_empty());
+    }
+
+    #[test]
+    fn codex_handoff_fails_closed_without_a_pinned_transcript() {
+        let error = handoff_permission_snapshot(Agent::Codex, None, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot preserve the current Codex permission context"),
+            "{error:#}"
+        );
+        let error =
+            handoff_permission_snapshot(Agent::Codex, Some("thread-123"), None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot locate Codex rollout for thread-123"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn claude_handoff_does_not_require_a_codex_permission_snapshot() {
+        assert_eq!(
+            handoff_permission_snapshot(Agent::Claude, None, None).unwrap(),
+            None
+        );
+    }
 
     /// Regression: a Claude Code tool shell runs
     /// `zsh -c source ~/.claude/shell-snapshots/…`, so its *argv* contains "claude".
@@ -2312,6 +2542,35 @@ mod tests {
             .is_err(),
             "tracked slot and raw session id must be mutually exclusive"
         );
+    }
+
+    #[test]
+    fn handoff_watcher_accepts_a_normalized_codex_permission_snapshot() {
+        let cli = Cli::try_parse_from([
+            "agent-jdi",
+            "__handoff",
+            "--watch-pid",
+            "42",
+            "--cwd",
+            "/tmp/repo",
+            "--agent",
+            "codex",
+            "--session",
+            "thread-123",
+            "--codex-sandbox",
+            "workspace-write",
+            "--codex-workspace-network",
+            "true",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::HandoffWait {
+                codex_sandbox: Some(codex::CodexSandboxMode::WorkspaceWrite),
+                codex_workspace_network: Some(true),
+                ..
+            }
+        ));
     }
 
     #[test]
