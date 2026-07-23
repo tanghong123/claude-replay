@@ -55,18 +55,97 @@ summary and return (`-f/--follow` opens the viewer instead). The worker stamps
 so `status` can show both.
 
 **Human ↔ jdi boundary (`takeover` / `handoff`).** Mirrors. `takeover` stops a run and
-launches `interactive_invocation()` so a human continues it (`--no-launch` prints the
-`resume_commands()` block instead). `handoff` runs *inside* an interactive session:
-it finds the session's process (nearest ancestor whose command line is the agent
-binary), spawns a detached `__handoff` watcher that waits for that pid to exit then
-runs `resume`, and — unless `--armed` — SIGTERMs the session so it's fully hands-off.
-The deferral is required: two agents can't drive the same transcript at once.
+launches `interactive_invocation(autonomous)` so a human continues it — autonomous by
+default, since the run was already unattended and dropping the flag would prompt on
+every action (`--supervised` flips it; `--no-launch` prints the `resume_commands()`
+block instead). With no tracked run for the cwd it falls back to taking over the
+newest **unmanaged** session: it refuses when another agent still holds that
+transcript (`live_agent_for_session`) unless `--force` kills it first.
+
+`handoff` runs *inside* an interactive session:
+it finds the session's process (nearest ancestor whose **executable name** — `ps -o
+comm=`, never the full argv — is the agent binary), spawns a detached `__handoff`
+watcher that waits for that pid to exit then runs `resume`, and — unless `--armed` —
+SIGTERMs the session (the watcher escalates to SIGKILL after a 10s grace) so it's
+fully hands-off. The deferral is required: two agents can't drive the same
+transcript at once.
+
+Because `handoff` executes during a live agent turn, it does the **bare minimum**
+there: the ancestor walk identifies the agent from the process itself (so nothing
+scans sessions on disk), then it spawns the watcher and signals. Discovery, the
+conflict guard and the resume all happen later in the headless watcher. Process
+lookups are targeted (`ps -p <pid>`, one per level) rather than a whole-table dump.
+
+> Matching on argv instead of `comm` was a real bug: a Claude Code tool shell runs
+> `zsh -c source ~/.claude/shell-snapshots/…`, whose argv contains "claude", so the
+> *shell* matched first — handoff signalled it (leaving the TUI alive but wedged) and
+> the watcher, seeing it die instantly, fired the resume while the session was still
+> running, draining the task queue underneath it.
 
 The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 `classify`: the spine just acts on the returned `TurnOutcome`
 (`Done`/`Retry`/`AdvanceMode`/`RecreateSession`/`Failed`/`Stopped`/`GaveUp`). For
 Claude, "planned ≠ done" comes from `task_queue().open_count()` — `Some(0)`/`None`
 (unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain.
+
+**Prompts are ported from the bash claude-jdi**, whose specificity is what actually
+gets a usable queue built: a self-contained subject + description per unit of work,
+`pending` status, blocks/blockedBy wiring, explicit rules (only fully-scoped work;
+re-derive fresh; reconcile rather than duplicate) and a `queued: <N> task(s)`
+receipt; the execute turn adds mark-`in_progress`-before-starting and commit-per-task
+so progress survives an interrupt. Queued `Brief::backlog` items are folded into dump
+turns ("go through them ONE BY ONE"), since that turn is what converts them to tasks.
+
+**Every phase states the same queue discipline** — including `Start`, which plans and
+executes in one turn:
+
+- *Behaviour first, mechanism second.* Each prompt describes the durable **queue**,
+  then names the task tools "if this session has them" and the queue file otherwise.
+  Tool-first phrasing ("use TaskCreate…") derails a session that lacks them into
+  arguing with the instruction and inventing an unreadable file of its own.
+- *FIFO*, decided at build time ("put the entries in the order they should be
+  done"), so execution never re-plans.
+- *Skip on blocked*: write the blocker onto the task and move to the next one. One
+  blocked item must never stall the queue, and the run must not "end the turn early
+  while actionable work remains".
+- *New work is placed by kind*: a prerequisite of the **current** task is done now;
+  ordinary follow-ups append to the END. Appending a prerequisite would leave the
+  task that needs it permanently unfinishable.
+
+**Task tools are not guaranteed.** A session may have no `TaskCreate`/`TaskUpdate`,
+in which case the queue is empty, `open_count` is `None`, and an unfinished run would
+read as "done" after one turn. So `Brief::checklist` names a `checklist.md` in the
+session's state dir: prompts ask for the native tools *if present* and that file
+otherwise, and `classify` falls back to counting its unchecked `- [ ]` items. The
+prompt must stay conditional — demanding `TaskCreate` outright made agents improvise
+their own file, which the supervisor then couldn't read. The fallback paragraph is
+**adaptive**: it is omitted for a session that has already written real task files
+(`has_native_tasks`), so a session that doesn't need it doesn't pay for it. Dir
+existence alone proves nothing — the harness pre-creates `.lock`/`.highwatermark`
+even where the tools never appear.
+
+Claude's on-disk schema is one `<n>.json` per task,
+`{id, subject, description, activeForm, status, blocks, blockedBy}` — read `subject`
+(not the prose `description`) and sort **numerically** (a string sort gives 18, 19, 2).
+
+**Backlog drain-as-a-run.** `agent-jdi backlog "…"` queues a follow-up into
+`backlog/pending/`. When a run's main work reaches `Done`, the spine claims the queue
+(`pending/ → draining/`) and runs a **full cycle of its own** over the claimed items —
+`initial_mode(Trigger::BacklogDrain)`, i.e. dump→execute for Claude — then, only once
+that cycle comes back clean, confirms them (`draining/ → drained/`). Items queued
+*during* a drain are picked up by the next cycle; `MAX_DRAIN_CYCLES` is a backstop
+against a failing `finalize()` re-claiming forever. A stopped session is drained on
+demand with `backlog --drain`, which relaunches the worker straight into the drain
+mode (it refuses if a supervisor is already live — that one drains on its own).
+
+Both adapters must render `Brief::backlog` in their prompts: the spine marks items
+`drained/` on a clean turn, so a prompt that omitted them would silently discard the
+human's queued work.
+
+**The operator instruction reaches every mode.** `Brief::text` (what `resume`/
+`handoff` pass) is appended as `Additional instruction:` on resume/execute turns, not
+only folded into a fresh `Start` preamble — it was previously written to `task.md` and
+then dropped, so a handoff message never reached the agent.
 
 ## Adding an agent
 
@@ -95,10 +174,24 @@ resume+log and fill in a task queue / fresh-run later.
 
 - **Codex CLI unverified** — every `codex` flag is `TODO(verify)` in `codex.rs`,
   including the interactive `codex resume` used by `takeover`/`handoff`.
-- Backlog **drain-as-a-run** and the interactive stale-session picker are simplified
-  vs. the bash original; the contract (trait + spine) is in place to wire them.
-  (`status` now renders the rich progress block — live tool histogram, task
-  checklist, recent commits, start/finish — from the transcript + task queue.)
+- **Codex prompts don't carry the queue discipline** (`TODO(deferred)` on
+  `PERSISTENCE` in `codex.rs`). The Claude adapter states a durable FIFO queue with
+  skip-on-blocked and the prerequisite/append split in every phase; Codex still has
+  only a short persistence nudge. Held back on purpose: Codex has no native task
+  queue, so the discipline would rest entirely on `Brief::checklist`, and its CLI
+  surface is unverified — untested prompts against unverified flags is guesswork on
+  guesswork. Do it in the same pass as the flag verification, against a real
+  `codex`. No correctness risk meanwhile: Codex's done-signal is the exit code, which
+  doesn't consult a queue.
+- (Wired) `resume` with no `--session` resolves the newest session for the cwd, but
+  when that newest is **stale** (idle > `AGENT_JDI_STALE`, default 1h) *and* there's
+  more than one session *and* a human is at the terminal, it shows a numbered picker
+  (Enter = newest, `q` = abort). Unattended (no TTY), single-session, or fresh → no
+  prompt. `--session <id>` pins an exact session and skips discovery + the picker.
+  `handoff` uses that pin to stay **air-tight**: it reads the session id from the
+  interactive agent's own command line (`--resume <id>` / `codex resume <id>`), and
+  only if that carries no id (a fresh session) falls back to the cwd's newest
+  captured at arm time — so the deferred resume can never land on a sibling session.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
 

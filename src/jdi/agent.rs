@@ -57,6 +57,14 @@ pub struct ResumableSession {
     pub idle_secs: u64,
 }
 
+/// One entry in a cwd's session list, for `resume`'s stale-confirmation picker.
+#[derive(Debug, Clone)]
+pub struct SessionBrief {
+    pub id: String,
+    pub idle_secs: u64,
+    pub snippet: String,
+}
+
 /// Brief/prompt inputs for a turn.
 #[derive(Debug, Default, Clone)]
 pub struct Brief {
@@ -64,6 +72,10 @@ pub struct Brief {
     pub text: String,
     /// Claimed backlog items to fold in.
     pub backlog: Vec<String>,
+    /// Where the agent should keep a durable `- [ ]` / `- [x]` checklist when it has
+    /// no native task-management tools. Doubles as the fallback done-signal: the
+    /// supervisor counts unchecked items, so "planned ≠ done" survives without them.
+    pub checklist: Option<PathBuf>,
 }
 
 /// What kicked off a supervised run — selects the adapter's initial mode.
@@ -153,6 +165,21 @@ pub trait AgentAdapter {
     /// The newest resumable session for a cwd.
     fn discover_resumable(&self, cwd: &Path) -> Result<ResumableSession>;
 
+    /// All resumable sessions for a cwd, newest-first — for `resume`'s stale-confirm
+    /// picker. Default: just the newest (so the picker is a no-op); adapters that can
+    /// list the directory's sessions override it.
+    fn sessions_for_cwd(&self, cwd: &Path) -> Vec<SessionBrief> {
+        self.discover_resumable(cwd)
+            .map(|r| {
+                vec![SessionBrief {
+                    id: r.id,
+                    idle_secs: r.idle_secs,
+                    snippet: String::new(),
+                }]
+            })
+            .unwrap_or_default()
+    }
+
     /// Locate a session's transcript (for `log` / progress).
     fn transcript_path(&self, session_id: &str, cwd: &Path) -> Option<PathBuf>;
 
@@ -164,7 +191,10 @@ pub trait AgentAdapter {
     }
 
     /// Prompt text for a mode (adapter-specific — task tools vs. a plain prompt).
-    fn prompt_for(&self, mode: Mode, brief: &Brief) -> String;
+    /// The prompt for a turn. `session_id` lets an adapter tailor it to what this
+    /// session actually has — e.g. Claude omits the checklist-fallback paragraph
+    /// when the session demonstrably uses the native task queue.
+    fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String;
 
     // --- fresh-run (`start`) hooks ---
 
@@ -208,10 +238,17 @@ pub trait AgentAdapter {
     }
 
     /// The **interactive** invocation that hands a stopped session back to a human
-    /// (`takeover` launches this) — a normal, human-in-the-loop resume, NOT the
-    /// unattended `-p`/`--dangerously-skip-permissions` turn. `None` = the agent
-    /// can't be resumed interactively (or no id yet), so `takeover` just reports.
-    fn interactive_invocation(&self, _session_id: &str, _cwd: &Path) -> Option<Invocation> {
+    /// (`takeover` launches this) — a real interactive session, never the unattended
+    /// `-p` batch turn. `autonomous` keeps the run's permission posture (Claude's
+    /// `--dangerously-skip-permissions`): a session supervised unattended was already
+    /// running that way, so dropping it would prompt on every tool call. `false`
+    /// resumes with approvals on. `None` = no interactive resume (or no id yet).
+    fn interactive_invocation(
+        &self,
+        _session_id: &str,
+        _cwd: &Path,
+        _autonomous: bool,
+    ) -> Option<Invocation> {
         None
     }
 

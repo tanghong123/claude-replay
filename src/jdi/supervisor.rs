@@ -3,7 +3,8 @@
 //! claude-jdi's `cmd_start` detach + `cmd_run` loop — the agent-specific decisions
 //! (invocation, done-signal, mode transitions) live in the adapter's `classify`.
 
-use super::agent::{self, Brief, Mode, TurnContext, TurnOutcome};
+use super::agent::{self, Brief, Mode, Trigger, TurnContext, TurnOutcome};
+use super::backlog::Backlog;
 use super::state::Session;
 use crate::Agent;
 use anyhow::{bail, Context, Result};
@@ -51,6 +52,17 @@ pub fn run_loop(home: &Path, id: &str) -> Result<()> {
     result
 }
 
+/// Append a timestamped line to the session's `supervisor.log` (what `status` tails).
+fn log(session: &Session, msg: &str) {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(session.supervisor_log())
+    {
+        writeln!(f, "{}  {msg}", super::state::now_stamp()).ok();
+    }
+}
+
 fn run_loop_body(session: &Session) -> Result<()> {
     let get = |k: &str| session.meta_get(k);
 
@@ -72,9 +84,13 @@ fn run_loop_body(session: &Session) -> Result<()> {
         .lines()
         .map(str::to_string)
         .collect();
-    let brief = Brief {
+    let mut brief = Brief {
         text: fs::read_to_string(session.dir.join("task.md")).unwrap_or_default(),
+        // Populated per drain cycle from the backlog queue (see the `Done` arm).
         backlog: Vec::new(),
+        // Lives in the session state dir (not the repo) so an unattended run never
+        // leaves stray files in the user's tree.
+        checklist: Some(session.dir.join("checklist.md")),
     };
 
     let adapter = agent::adapter(agent);
@@ -90,6 +106,18 @@ fn run_loop_body(session: &Session) -> Result<()> {
     // it we capture the assigned id (Codex) and drop into the continue mode.
     let mut fresh = mode == Mode::Start;
     let mut attempt: u32 = 0;
+    // Backlog drain state. `draining` means the claimed items are in flight, so a
+    // clean finish must `finalize()` them; the cycle cap is a backstop against a
+    // failing `finalize()` re-claiming the same items forever.
+    let backlog = Backlog::new(session.backlog_root());
+    let mut draining = mode == Mode::BacklogDump || mode == Mode::BacklogExecute;
+    let mut drain_cycles: u32 = 0;
+    const MAX_DRAIN_CYCLES: u32 = 25;
+    // Entered directly in a backlog mode (`agent-jdi backlog --drain`, or a relaunch
+    // that died mid-drain): claim the items up front so the first turn sees them.
+    if draining {
+        brief.backlog = backlog.claim().unwrap_or_default();
+    }
 
     loop {
         attempt += 1;
@@ -153,6 +181,41 @@ fn run_loop_body(session: &Session) -> Result<()> {
         };
         match adapter.classify(rc, &capture, &ctx) {
             TurnOutcome::Done => {
+                // The main work is finished — now drain any follow-ups the human
+                // queued with `agent-jdi backlog` while it ran. A drain is a full
+                // run cycle of its own (dump → execute) over the claimed items, and
+                // items queued *during* a drain are picked up by the next cycle.
+                if draining {
+                    // Confirm-on-success: only move draining/ → drained/ once the
+                    // execute turn came back clean. (No `draining = false` needed —
+                    // every path below either starts a new cycle or returns.)
+                    backlog.finalize().ok();
+                }
+                let claimed = backlog.claim().unwrap_or_default();
+                if !claimed.is_empty() && drain_cycles < MAX_DRAIN_CYCLES {
+                    drain_cycles += 1;
+                    log(
+                        session,
+                        &format!(
+                            "draining {} backlog item(s) — cycle {drain_cycles}",
+                            claimed.len()
+                        ),
+                    );
+                    brief.backlog = claimed;
+                    mode = adapter.initial_mode(Trigger::BacklogDrain);
+                    session.meta_set("state", "draining").ok();
+                    draining = true;
+                    fresh = false;
+                    attempt = 0; // a drain gets its own attempt budget
+                    continue;
+                }
+                if !claimed.is_empty() {
+                    // Only reachable if finalize() keeps failing — don't spin.
+                    log(
+                        session,
+                        "backlog still has claimed items after MAX_DRAIN_CYCLES — stopping",
+                    );
+                }
                 session.meta_set("state", "done").ok();
                 session.meta_set("exit_code", "0").ok();
                 return Ok(());
@@ -333,6 +396,64 @@ mod tests {
         run_loop(&home, slot).unwrap();
         std::env::remove_var("AGENT_JDI_CODEX_BIN");
         (s.state().unwrap(), root)
+    }
+
+    /// The gap this closes: queued backlog items used to sit in `pending/` forever
+    /// because nothing ever claimed them. A run that finishes its main work must now
+    /// drain the queue as a full cycle of its own, and only mark the items `drained/`
+    /// after that cycle comes back clean.
+    #[test]
+    fn finishing_the_main_work_drains_the_backlog() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = tmp();
+        let home = root.join("home");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        // Each turn appends its prompt, so we can prove the item reached the agent.
+        // Quote the path: the fixture dir name contains `ThreadId(2)`, and unquoted
+        // parentheses in a redirection are a shell syntax error — the script would
+        // then fail every turn, giving an endless Retry instead of the drain.
+        let codex = fake_codex(
+            &root,
+            &format!(
+                "printf '%s\\n' \"$@\" >> \"{}/prompts.txt\"; exit 0",
+                root.display()
+            ),
+        );
+
+        let slot = "sess";
+        let s = Session::new(&home, slot);
+        s.ensure_dir().unwrap();
+        s.meta_set("agent", "codex").unwrap();
+        s.meta_set("cwd", &repo.to_string_lossy()).unwrap();
+        s.meta_set("session_id", "sid-1").unwrap();
+        s.meta_set("interval", "0").unwrap();
+        s.meta_set("max_attempts", "0").unwrap();
+        s.meta_set("mode", "execute").unwrap();
+        s.meta_set("resumed", "true").unwrap();
+
+        // Queue a follow-up before the run finishes, as `agent-jdi backlog` would.
+        let bl = super::Backlog::new(s.backlog_root());
+        bl.add("also update the changelog").unwrap();
+        assert_eq!(bl.pending_count(), 1);
+
+        std::env::set_var("AGENT_JDI_CODEX_BIN", &codex);
+        run_loop(&home, slot).unwrap();
+        std::env::remove_var("AGENT_JDI_CODEX_BIN");
+
+        // Claimed and confirmed: nothing left pending or in flight.
+        assert_eq!(bl.pending_count(), 0, "item was never claimed");
+        assert_eq!(bl.draining_count(), 0, "drain was never confirmed");
+        assert_eq!(bl.drained_count(), 1, "item should end up drained");
+        assert_eq!(s.state().unwrap(), state::RunState::Done);
+
+        // The drain really ran an extra turn carrying the item's text.
+        let prompts = fs::read_to_string(root.join("prompts.txt")).unwrap_or_default();
+        assert!(
+            prompts.contains("also update the changelog"),
+            "the backlog item never reached the agent:\n{prompts}"
+        );
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

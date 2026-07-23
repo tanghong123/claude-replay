@@ -111,11 +111,13 @@ sessions (Claude or Codex), so one tool covers both.
 ```bash
 agent-jdi start "refactor the parser and add tests"   # fresh unattended run (prints a summary; -f to watch live)
 agent-jdi resume            # resume this dir's newest session, unattended (prints a summary; -f to watch live)
+agent-jdi resume --session <id>  # resume an exact session (skips discovery + the stale-session prompt)
 agent-jdi resume --agent codex   # force an agent
 agent-jdi handoff "finish the refactor and commit"    # hand THIS interactive session to an unattended run
 agent-jdi log               # reattach the viewer to the supervised session
 agent-jdi status            # rich status: live progress, task checklist, recent commits, start/finish
-agent-jdi backlog "also update the changelog"   # queue follow-up for the next drain
+agent-jdi backlog "also update the changelog"   # queue follow-up; a live run drains it when its work finishes
+agent-jdi backlog --drain   # drain the queue now (relaunches a stopped session)
 agent-jdi takeover          # stop the run and hand it back to you (launches the resumed agent)
 agent-jdi list
 ```
@@ -141,6 +143,13 @@ background (`--armed` to arm without auto-quitting). The shared `jdi-handoff`
 Skill wraps this flow for both clients: use `$jdi-handoff` in Codex or the native
 `/jdi-handoff` command in Claude Code. Install and usage details are in
 [`integrations/`](integrations/).
+
+`takeover` resumes with the run's **unattended posture** (Claude's
+`--dangerously-skip-permissions`) so it doesn't start prompting on every action;
+`--supervised` resumes with approvals on instead. With **no agent-jdi run tracked**
+for the directory it takes over the newest *unmanaged* claude/codex session there:
+if another agent is already live on that session it refuses and prints the resume
+command, unless `--force`, which kills that agent first.
 
 Any command that would affect a real agent (`start`/`resume`/`backlog`/`takeover`/
 `handoff`) accepts **`--dry-run`** — it prints exactly what it would do (agent,

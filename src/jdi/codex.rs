@@ -17,6 +17,18 @@ use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
 
+/// TODO(deferred): bring this in line with the Claude adapter's queue discipline —
+/// a durable FIFO queue, skip-on-blocked, prerequisites done now vs. follow-ups
+/// appended, and "don't end the turn while actionable work remains" (see
+/// `claude.rs`'s START/DUMP/EXECUTE prompts and `jdi/DESIGN.md`).
+///
+/// Deliberately NOT done yet. Codex has no native task queue, so the discipline
+/// would have to hang entirely off `Brief::checklist`, and its whole CLI surface is
+/// still `TODO(verify)` — writing untested prompt text against unverified flags
+/// would just be guesswork layered on guesswork. Do it together with the flag
+/// verification, so both can be checked against a real `codex` in one pass. Until
+/// then Codex keeps this short persistence nudge, and the done-signal stays the
+/// exit code (`classify`), which does not depend on any queue.
 const PERSISTENCE: &str = "You are running UNATTENDED and headless — the human has stepped away and cannot answer anything. Do NOT ask for input, and do NOT stop to confirm. Do as much as you can. If an action is blocked, try safe alternatives and clearly record any remaining blocker in your final response.";
 
 impl AgentAdapter for CodexAdapter {
@@ -63,7 +75,7 @@ impl AgentAdapter for CodexAdapter {
         ];
         args.extend(ctx.extra_args.iter().cloned());
         args.push(ctx.session_id.to_string());
-        args.push(self.prompt_for(ctx.mode, ctx.brief));
+        args.push(self.prompt_for(ctx.mode, ctx.brief, ctx.session_id));
         Invocation { program, args }
     }
 
@@ -93,12 +105,44 @@ impl AgentAdapter for CodexAdapter {
         codex_discover::resolve(Some(session_id), false).ok()
     }
 
-    fn prompt_for(&self, _mode: Mode, brief: &Brief) -> String {
-        if brief.text.trim().is_empty() {
+    fn sessions_for_cwd(&self, cwd: &Path) -> Vec<super::agent::SessionBrief> {
+        codex_discover::sessions_for_cwd(cwd)
+            .into_iter()
+            .map(|(id, mtime, snippet)| super::agent::SessionBrief {
+                id,
+                idle_secs: mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0),
+                snippet,
+            })
+            .collect()
+    }
+
+    fn prompt_for(&self, _mode: Mode, brief: &Brief, _session_id: &str) -> String {
+        let mut out = if brief.text.trim().is_empty() {
             PERSISTENCE.to_string()
         } else {
             format!("{PERSISTENCE}\n\nAdditional instruction: {}", brief.text)
+        };
+        // Claimed backlog items MUST reach the agent: the supervisor moves them to
+        // `drained/` when the turn comes back clean, so a prompt that omitted them
+        // would silently discard the human's queued follow-ups.
+        if !brief.backlog.is_empty() {
+            let items = brief
+                .backlog
+                .iter()
+                .enumerate()
+                .map(|(i, b)| format!("### Backlog item {}\n{}", i + 1, b.trim()))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            out.push_str(&format!(
+                "\n\nThe human queued the following {} follow-up message(s) for THIS \
+                 session while you were working. Go through them ONE BY ONE: understand \
+                 each request and carry out the concrete, fully-scoped work it implies. \
+                 Anything ambiguous: do not act on it — record it as a blocker instead.\
+                 \n\n{items}",
+                brief.backlog.len()
+            ));
         }
+        out
     }
 
     /// Codex assigns session ids itself — `start` captures the id afterward.
@@ -115,16 +159,29 @@ impl AgentAdapter for CodexAdapter {
     }
 
     /// Hand the session to a human: `codex resume <id>` — the interactive TUI, not
-    /// the sandboxed `exec` turn. TODO(verify): interactive resume subcommand/flags.
-    fn interactive_invocation(&self, session_id: &str, _cwd: &Path) -> Option<Invocation> {
+    /// the sandboxed `exec` turn. `autonomous` keeps the no-approval posture the
+    /// unattended run had. TODO(verify): interactive resume subcommand/flags.
+    fn interactive_invocation(
+        &self,
+        session_id: &str,
+        _cwd: &Path,
+        autonomous: bool,
+    ) -> Option<Invocation> {
         if session_id.is_empty() {
             return None;
         }
         let program = self.resolve_binary().ok()?;
-        Some(Invocation {
-            program,
-            args: vec!["resume".into(), session_id.to_string()],
-        })
+        let mut args = vec!["resume".into(), session_id.to_string()];
+        if autonomous {
+            // TODO(verify): the interactive equivalent of the exec sandbox flags.
+            args.extend([
+                "-c".into(),
+                "approval_policy=\"never\"".into(),
+                "-c".into(),
+                "sandbox_mode=\"workspace-write\"".into(),
+            ]);
+        }
+        Some(Invocation { program, args })
     }
 
     fn resume_commands(&self, session_id: &str) -> Vec<(String, String)> {
@@ -155,7 +212,7 @@ impl AgentAdapter for CodexAdapter {
         args.extend(ctx.extra_args.iter().cloned());
         let prompt = format!(
             "{}\n\n<!-- agent-jdi run: {nonce} -->",
-            self.prompt_for(ctx.mode, ctx.brief)
+            self.prompt_for(ctx.mode, ctx.brief, ctx.session_id)
         );
         args.push(prompt);
         Invocation { program, args }
@@ -238,7 +295,7 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief {
             text: "do the thing".into(),
-            backlog: vec![],
+            ..Default::default()
         };
         let inv = a.fresh_invocation(&ctx("", &brief, &[]), "NONCE-abc123");
         assert!(inv.args.iter().any(|x| x == "exec"));
@@ -255,9 +312,9 @@ mod tests {
         let a = CodexAdapter;
         let brief = Brief {
             text: "prioritize tests".into(),
-            backlog: vec![],
+            ..Default::default()
         };
-        let p = a.prompt_for(Mode::Execute, &brief);
+        let p = a.prompt_for(Mode::Execute, &brief, "");
         assert!(p.contains("UNATTENDED"));
         assert!(p.contains("prioritize tests"));
     }
