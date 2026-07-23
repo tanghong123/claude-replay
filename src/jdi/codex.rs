@@ -151,6 +151,15 @@ impl CodexPermissionSnapshot {
 }
 
 impl CodexAdapter {
+    fn unattended_config_args(extra_args: &[String]) -> Vec<String> {
+        if !extra_args.is_empty() {
+            return extra_args.to_vec();
+        }
+        CodexPermissionSnapshot::from_handoff_parts(CodexSandboxMode::WorkspaceWrite, Some(false))
+            .expect("the static unattended default must be coherent")
+            .config_args()
+    }
+
     fn preflight_program(program: &Path) -> Result<()> {
         let output = std::process::Command::new(program)
             .args(["login", "status"])
@@ -228,11 +237,9 @@ impl AgentAdapter for CodexAdapter {
             "resume".into(),
             "-c".into(),
             "approval_policy=\"never\"".into(),
-            "-c".into(),
-            "sandbox_mode=\"workspace-write\"".into(),
-            "--json".into(),
         ];
-        args.extend(ctx.extra_args.iter().cloned());
+        args.extend(Self::unattended_config_args(ctx.extra_args));
+        args.push("--json".into());
         args.push(ctx.session_id.to_string());
         args.push(self.prompt_for(ctx.mode, ctx.brief, ctx.session_id));
         Invocation { program, args }
@@ -362,11 +369,9 @@ impl AgentAdapter for CodexAdapter {
             "exec".into(),
             "-c".into(),
             "approval_policy=\"never\"".into(),
-            "-c".into(),
-            "sandbox_mode=\"workspace-write\"".into(),
-            "--json".into(),
         ];
-        args.extend(ctx.extra_args.iter().cloned());
+        args.extend(Self::unattended_config_args(ctx.extra_args));
+        args.push("--json".into());
         let prompt = format!(
             "{}\n\n<!-- agent-jdi run: {nonce} -->",
             self.prompt_for(ctx.mode, ctx.brief, ctx.session_id)
@@ -608,24 +613,68 @@ mod tests {
     }
 
     #[test]
-    fn invocation_is_sandboxed_noninteractive_and_resumes_by_id() {
+    fn resumed_invocation_uses_safe_default_policy_once() {
         let a = CodexAdapter;
         let brief = Brief::default();
         let inv = a.build_invocation(&ctx("sess-1", &brief, &[]));
+        assert!(inv.args.iter().any(|arg| arg == "sess-1"));
         assert_eq!(
-            &inv.args[..8],
-            [
-                "exec",
-                "resume",
-                "-c",
-                "approval_policy=\"never\"",
-                "-c",
-                "sandbox_mode=\"workspace-write\"",
-                "--json",
-                "sess-1",
-            ]
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"workspace-write\""]
         );
-        assert!(!inv.args.iter().any(|x| x.contains("dangerously")));
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_workspace_write.network_access="))
+                .collect::<Vec<_>>(),
+            ["sandbox_workspace_write.network_access=false"]
+        );
+    }
+
+    #[test]
+    fn resumed_invocation_uses_persisted_full_access_without_duplicate_sandbox() {
+        let a = CodexAdapter;
+        let brief = Brief::default();
+        let persisted =
+            CodexPermissionSnapshot::from_handoff_parts(CodexSandboxMode::DangerFullAccess, None)
+                .unwrap()
+                .config_args();
+        let inv = a.build_invocation(&ctx("sess-1", &brief, &persisted));
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"danger-full-access\""]
+        );
+        assert!(inv
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-c", "approval_policy=\"never\""]));
+    }
+
+    #[test]
+    fn fresh_invocation_uses_safe_default_policy_once() {
+        let a = CodexAdapter;
+        let brief = Brief::default();
+        let inv = a.fresh_invocation(&ctx("", &brief, &[]), "nonce");
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_mode="))
+                .collect::<Vec<_>>(),
+            ["sandbox_mode=\"workspace-write\""]
+        );
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|arg| arg.starts_with("sandbox_workspace_write.network_access="))
+                .collect::<Vec<_>>(),
+            ["sandbox_workspace_write.network_access=false"]
+        );
     }
 
     #[test]
