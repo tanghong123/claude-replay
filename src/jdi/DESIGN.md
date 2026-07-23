@@ -194,6 +194,27 @@ resume+log and fill in a task queue / fresh-run later.
   captured at arm time — so the deferred resume can never land on a sibling session.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
+- **Collapse the Claude resume dump→execute into one turn** (inherited from
+  `justdoit`, which is now deprecated in favor of this module). Today the Claude
+  adapter runs phase 1 (enqueue the agreed plan via `TaskCreate`, then STOP + write
+  a receipt) and phase 2 (drain the queue) as separate `claude -p` turns in the
+  *same* session — so by phase 2 the tasks are already queued and the agent re-reads
+  a list it just authored, a second billed turn. With the native task queue as the
+  durable, idempotent source of truth, the STOP-after-dump split is mostly
+  vestigial. Fix: one prompt — *"enqueue all agreed tasks, then work through them to
+  completion"* — keeping the drain-only prompt as the continuation/retry path fired
+  when a run exits with `open_count > 0`; happy path becomes a single turn.
+  - **Gated on the queue reader proving stable.** Collapsing removes the receipt
+    checkpoint, which is currently an INDEPENDENT "planning is done" signal that
+    doesn't read the JSON. After collapse, `task_queue_open_count` becomes the sole
+    arbiter of both "did it plan?" and "is it done?" — leaning fully on the same
+    schema-coupled reader. Hold until that reader has survived a Claude Code update
+    or two without silently going blind.
+  - **Also handle on collapse:** every crash-retry becomes "enqueue + execute", so
+    dup-avoidance shifts onto a "reconcile, don't duplicate" prompt instruction on
+    *every* retry (today phase-1 retries only fire while the queue is empty, so
+    nothing can double-enqueue). Make that instruction robust before relying on it
+    per-retry.
 
 ## Testing
 
