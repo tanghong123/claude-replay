@@ -183,8 +183,15 @@ resume+log and fill in a task queue / fresh-run later.
   guesswork. Do it in the same pass as the flag verification, against a real
   `codex`. No correctness risk meanwhile: Codex's done-signal is the exit code, which
   doesn't consult a queue.
-- The interactive stale-session picker is simplified vs. the bash original; the
-  contract (trait + spine) is in place to wire it.
+- (Wired) `resume` with no `--session` resolves the newest session for the cwd, but
+  when that newest is **stale** (idle > `AGENT_JDI_STALE`, default 1h) *and* there's
+  more than one session *and* a human is at the terminal, it shows a numbered picker
+  (Enter = newest, `q` = abort). Unattended (no TTY), single-session, or fresh → no
+  prompt. `--session <id>` pins an exact session and skips discovery + the picker.
+  `handoff` uses that pin to stay **air-tight**: it reads the session id from the
+  interactive agent's own command line (`--resume <id>` / `codex resume <id>`), and
+  only if that carries no id (a fresh session) falls back to the cwd's newest
+  captured at arm time — so the deferred resume can never land on a sibling session.
 - `resume`/`log` follow the viewer **in-process** (needs a TTY); the detached
   worker survives the viewer exiting.
 

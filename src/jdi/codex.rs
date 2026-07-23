@@ -105,6 +105,17 @@ impl AgentAdapter for CodexAdapter {
         codex_discover::resolve(Some(session_id), false).ok()
     }
 
+    fn sessions_for_cwd(&self, cwd: &Path) -> Vec<super::agent::SessionBrief> {
+        codex_discover::sessions_for_cwd(cwd)
+            .into_iter()
+            .map(|(id, mtime, snippet)| super::agent::SessionBrief {
+                id,
+                idle_secs: mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0),
+                snippet,
+            })
+            .collect()
+    }
+
     fn prompt_for(&self, _mode: Mode, brief: &Brief, _session_id: &str) -> String {
         let mut out = if brief.text.trim().is_empty() {
             PERSISTENCE.to_string()

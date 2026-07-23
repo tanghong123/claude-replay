@@ -131,6 +131,22 @@ impl AgentAdapter for ClaudeAdapter {
         discover::transcript_by_id(session_id)
     }
 
+    fn sessions_for_cwd(&self, cwd: &Path) -> Vec<super::agent::SessionBrief> {
+        discover::claude_candidates_scoped(cwd)
+            .into_iter()
+            .map(|c| super::agent::SessionBrief {
+                id: c
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                idle_secs: c.mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0),
+                snippet: c.snippet,
+            })
+            .collect()
+    }
+
     /// Claude pins the id, so the transcript path is deterministic even before the
     /// file exists.
     fn expected_transcript(&self, session_id: &str, cwd: &Path) -> Option<PathBuf> {

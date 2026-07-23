@@ -57,6 +57,14 @@ pub struct ResumableSession {
     pub idle_secs: u64,
 }
 
+/// One entry in a cwd's session list, for `resume`'s stale-confirmation picker.
+#[derive(Debug, Clone)]
+pub struct SessionBrief {
+    pub id: String,
+    pub idle_secs: u64,
+    pub snippet: String,
+}
+
 /// Brief/prompt inputs for a turn.
 #[derive(Debug, Default, Clone)]
 pub struct Brief {
@@ -156,6 +164,21 @@ pub trait AgentAdapter {
 
     /// The newest resumable session for a cwd.
     fn discover_resumable(&self, cwd: &Path) -> Result<ResumableSession>;
+
+    /// All resumable sessions for a cwd, newest-first — for `resume`'s stale-confirm
+    /// picker. Default: just the newest (so the picker is a no-op); adapters that can
+    /// list the directory's sessions override it.
+    fn sessions_for_cwd(&self, cwd: &Path) -> Vec<SessionBrief> {
+        self.discover_resumable(cwd)
+            .map(|r| {
+                vec![SessionBrief {
+                    id: r.id,
+                    idle_secs: r.idle_secs,
+                    snippet: String::new(),
+                }]
+            })
+            .unwrap_or_default()
+    }
 
     /// Locate a session's transcript (for `log` / progress).
     fn transcript_path(&self, session_id: &str, cwd: &Path) -> Option<PathBuf>;

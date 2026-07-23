@@ -170,6 +170,29 @@ pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     candidates_scoped_in(&sessions_dir(), cwd)
 }
 
+/// Same scoping as `candidates_scoped`, but keeping each session's **id** (the
+/// `Candidate` drops it) — `(id, mtime, snippet)`, newest-first. For `resume`'s
+/// stale-confirm picker, which needs the id to resume the chosen one.
+pub(crate) fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
+    let root = sessions_dir();
+    let sessions = sessions_in(&root); // newest-first
+    for anc in crate::discover::ancestors_of(cwd) {
+        let anc_n = normalized(&anc);
+        let matched: Vec<&CodexSession> = sessions
+            .iter()
+            .filter(|s| normalized(&s.cwd) == anc_n)
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        return matched
+            .into_iter()
+            .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
+            .collect();
+    }
+    Vec::new()
+}
+
 fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
     let sessions = sessions_in(root); // newest-first
     let cwd_n = normalized(cwd);

@@ -80,6 +80,10 @@ enum Command {
         /// summary and returning (like `log -f`).
         #[arg(long, short = 'f')]
         follow: bool,
+        /// Resume this exact session id (skips discovery + the stale-session
+        /// prompt). Default: the newest session for this directory.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Reattach the viewer to a supervised session's transcript.
     Log {
@@ -138,6 +142,9 @@ enum Command {
         /// Arm only — don't quit the session for you (you press /exit).
         #[arg(long)]
         armed: bool,
+        /// Pin this exact session id instead of auto-detecting it from the process.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Internal: the detached supervisor loop (do not call directly).
     #[command(name = "__run", hide = true)]
@@ -158,6 +165,9 @@ enum Command {
         /// The session was sent SIGTERM — escalate to SIGKILL if it ignores it.
         #[arg(long)]
         escalate: bool,
+        /// The pinned session id to resume (from `handoff`).
+        #[arg(long)]
+        session: Option<String>,
         instruction: Vec<String>,
     },
 }
@@ -216,6 +226,7 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             follow,
+            session,
         } => cmd_resume(
             &config,
             cli.agent,
@@ -224,6 +235,7 @@ pub fn run() -> Result<()> {
             max_attempts,
             dry,
             follow,
+            session.as_deref(),
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
@@ -250,6 +262,7 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             armed,
+            session,
         } => cmd_handoff(
             &config,
             cli.agent,
@@ -258,6 +271,7 @@ pub fn run() -> Result<()> {
             max_attempts,
             armed,
             dry,
+            session.as_deref(),
         ),
         Command::Run { id } => supervisor::run_loop(&config.home, &id),
         Command::HandoffWait {
@@ -267,6 +281,7 @@ pub fn run() -> Result<()> {
             max_attempts,
             agent,
             escalate,
+            session,
             instruction,
         } => cmd_handoff_wait(
             &config,
@@ -277,6 +292,7 @@ pub fn run() -> Result<()> {
             interval,
             max_attempts,
             escalate,
+            session.as_deref(),
         ),
     }
 }
@@ -294,6 +310,100 @@ fn resolve_session(config: &Config, id: Option<&str>) -> Result<Session> {
     Ok(s)
 }
 
+/// Build a `ResumableSession` for an explicit id (no discovery). Errors if no
+/// transcript is recorded for it under this cwd.
+fn explicit_resumable(
+    adapter: &dyn agent::AgentAdapter,
+    cwd: &Path,
+    id: &str,
+) -> Result<agent::ResumableSession> {
+    let transcript = adapter
+        .transcript_path(id, cwd)
+        .with_context(|| format!("no transcript found for session {id}"))?;
+    let idle_secs = std::fs::metadata(&transcript)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(agent::ResumableSession {
+        id: id.to_string(),
+        transcript,
+        idle_secs,
+    })
+}
+
+/// Seconds after which the newest session is "stale" enough to double-check (env
+/// `AGENT_JDI_STALE`, default 1h — mirrors the bash `CLAUDE_JDI_STALE`).
+fn stale_secs() -> u64 {
+    std::env::var("AGENT_JDI_STALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3600)
+}
+
+/// When the newest session is stale AND there's more than one to choose from AND a
+/// human is at the terminal, show a numbered list and let them pick which to resume
+/// (Enter = newest, `q` = abort). Otherwise return `newest` unchanged — so an
+/// unattended run (no TTY), a single-session dir, or a fresh session never prompts.
+fn confirm_if_stale(
+    adapter: &dyn agent::AgentAdapter,
+    cwd: &Path,
+    newest: agent::ResumableSession,
+) -> Result<agent::ResumableSession> {
+    use std::io::{IsTerminal, Write};
+    if newest.idle_secs <= stale_secs() {
+        return Ok(newest);
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "agent-jdi: newest session here is {} old and there's no TTY to confirm — \
+             using it (pass --session <id> to choose).",
+            human_ago(newest.idle_secs)
+        );
+        return Ok(newest);
+    }
+    let sessions = adapter.sessions_for_cwd(cwd);
+    if sessions.len() <= 1 {
+        return Ok(newest); // nothing to choose between
+    }
+    eprintln!(
+        "The newest session here was last active {} ago — pick which to resume:",
+        human_ago(newest.idle_secs)
+    );
+    for (i, s) in sessions.iter().enumerate() {
+        let id8: String = s.id.chars().take(8).collect();
+        eprintln!(
+            "  {:>2}) last active {:>6} ago  {id8}…  {}",
+            i + 1,
+            human_ago(s.idle_secs),
+            s.snippet
+        );
+    }
+    eprint!(
+        "Pick [1-{}], Enter for 1 (newest), q to abort: ",
+        sessions.len()
+    );
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let choice = line.trim();
+    if choice.eq_ignore_ascii_case("q") {
+        bail!("aborted — no session chosen.");
+    }
+    let idx = if choice.is_empty() {
+        0
+    } else {
+        choice
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=sessions.len()).contains(n))
+            .map(|n| n - 1)
+            .ok_or_else(|| anyhow::anyhow!("invalid choice — aborting."))?
+    };
+    explicit_resumable(adapter, cwd, &sessions[idx].id)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_resume(
     config: &Config,
@@ -303,12 +413,21 @@ fn cmd_resume(
     max_attempts: Option<u32>,
     dry_run: bool,
     follow: bool,
+    session: Option<&str>,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    // An explicit `--session <id>` pins the agent too (an id belongs to one agent),
+    // so detection can lean on it; otherwise detect from the directory.
     let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
-    let resumable = adapter.discover_resumable(&cwd)?;
+    // Pick the session to resume: an explicit id (air-tight — no discovery, no
+    // picker), else the newest for this cwd, with a stale-confirmation prompt when
+    // that newest is old *and* there's more than one session *and* a human is here.
+    let resumable = match session {
+        Some(id) => explicit_resumable(adapter.as_ref(), &cwd, id)?,
+        None => confirm_if_stale(adapter.as_ref(), &cwd, adapter.discover_resumable(&cwd)?)?,
+    };
 
     // `--dry-run`: show what would run, with no side effects (no slot, no spawn, no
     // viewer). Safe way to verify agent detection + the exact invocation.
@@ -1391,6 +1510,7 @@ fn cmd_handoff(
     max_attempts: Option<u32>,
     armed: bool,
     dry_run: bool,
+    session: Option<&str>,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     // This runs inside a live agent turn, so do the bare minimum here: ONE `ps` to
@@ -1398,6 +1518,23 @@ fn cmd_handoff(
     // to scan sessions on disk. Discovery, the conflict guard and the resume itself
     // are all deferred to the headless watcher.
     let found = ancestor_agent(forced);
+
+    // Pin the exact session id NOW, so the deferred resume targets the session this
+    // handoff came from — never "whatever's newest later", which could be a sibling
+    // session in the same dir. Air-tight order: an explicit id → the id in our own
+    // agent process's argv (`--resume <id>` / `codex resume <id>`) → the newest for
+    // this cwd captured at arm time (we are that session, so it's newest right now).
+    let session_id = found.and_then(|(pid, agent)| {
+        session
+            .map(str::to_string)
+            .or_else(|| session_id_from_argv(pid, agent))
+            .or_else(|| {
+                agent::adapter(agent)
+                    .discover_resumable(&cwd)
+                    .ok()
+                    .map(|r| r.id)
+            })
+    });
 
     if dry_run {
         match found {
@@ -1407,8 +1544,12 @@ fn cmd_handoff(
                     agent.label(),
                     cwd.display()
                 );
+                let target = session_id
+                    .as_deref()
+                    .map(|s| format!("--session {s}"))
+                    .unwrap_or_else(|| "(newest at drain time)".into());
                 println!(
-                    "[dry-run] would watch pid {pid}; on its exit run: agent-jdi resume {instruction}"
+                    "[dry-run] would watch pid {pid}; on its exit run: agent-jdi resume {target} {instruction}"
                 );
             }
             None => println!("[dry-run] (not inside a claude/codex session — nothing to hand off)"),
@@ -1446,6 +1587,9 @@ fn cmd_handoff(
     }
     if let Some(m) = max_attempts {
         cmd.arg("--max-attempts").arg(m.to_string());
+    }
+    if let Some(sid) = &session_id {
+        cmd.arg("--session").arg(sid);
     }
     if !armed {
         // We're about to SIGTERM the session; let the watcher escalate if needed.
@@ -1502,6 +1646,7 @@ fn cmd_handoff_wait(
     interval: Option<u64>,
     max_attempts: Option<u32>,
     escalate: bool,
+    session: Option<&str>,
 ) -> Result<()> {
     // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
     // If we asked it to quit (SIGTERM) and it's still alive after a grace period,
@@ -1526,7 +1671,8 @@ fn cmd_handoff_wait(
     // Let the transcript flush before we discover + resume it.
     std::thread::sleep(Duration::from_secs(1));
     std::env::set_current_dir(cwd).with_context(|| format!("chdir into {}", cwd.display()))?;
-    // Resume unattended (no follow — this process has no terminal).
+    // Resume unattended (no follow — this process has no terminal), pinned to the
+    // exact session `handoff` captured, so no discovery/picker can pick a sibling.
     cmd_resume(
         config,
         agent,
@@ -1535,6 +1681,7 @@ fn cmd_handoff_wait(
         max_attempts,
         false,
         false,
+        session,
     )
 }
 
@@ -1617,6 +1764,36 @@ fn ps_parent(pid: u32) -> Option<(u32, String)> {
 #[cfg(not(unix))]
 fn ancestor_agent(_forced: Option<Agent>) -> Option<(u32, Agent)> {
     None
+}
+
+/// The session id in the agent process's own command line — the most precise source
+/// there is, since it's literally the id that session is running under. Claude passes
+/// `--resume <id>` / `--session-id <id>`; Codex `resume <id>`. `None` for a fresh
+/// interactive session that carries no id in its argv (caller then falls back to
+/// discovery).
+#[cfg(unix)]
+fn session_id_from_argv(pid: u32, agent: Agent) -> Option<String> {
+    session_id_in_cmdline(&ps_field(pid, "command=")?, agent)
+}
+
+#[cfg(not(unix))]
+fn session_id_from_argv(_pid: u32, _agent: Agent) -> Option<String> {
+    None
+}
+
+/// The session id in an agent command line: the token after `--resume`/`--session-id`
+/// (Claude) or `resume` (Codex). Pure, so it's unit-testable independent of process
+/// state. `None` when no id flag is present (a fresh interactive session).
+fn session_id_in_cmdline(cmdline: &str, agent: Agent) -> Option<String> {
+    let toks: Vec<&str> = cmdline.split_whitespace().collect();
+    let flags: &[&str] = match agent {
+        Agent::Claude => &["--resume", "--session-id"],
+        Agent::Codex => &["resume"],
+    };
+    let looks_like_id =
+        |s: &str| s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    toks.windows(2)
+        .find_map(|w| (flags.contains(&w[0]) && looks_like_id(w[1])).then(|| w[1].to_string()))
 }
 
 /// Is `pid` the agent process itself? Compares the **executable name** (`ps -o comm=`)
@@ -1749,6 +1926,77 @@ mod tests {
         assert!(!is_agent_process(std::process::id(), "claude"));
         child.kill().ok();
         child.wait().ok();
+    }
+
+    /// Handoff is air-tight because it reads the session id from the agent's own
+    /// command line — not from "newest at drain time", which could be a sibling.
+    #[test]
+    fn session_id_parsed_from_the_agents_own_command_line() {
+        // Claude: --resume / --session-id.
+        assert_eq!(
+            session_id_in_cmdline(
+                "claude --resume 094539f2-40d7-4703-a510-8c3ee69657a4 --dangerously-skip-permissions",
+                Agent::Claude
+            )
+            .as_deref(),
+            Some("094539f2-40d7-4703-a510-8c3ee69657a4")
+        );
+        assert_eq!(
+            session_id_in_cmdline("claude --session-id abc12345 -p hi", Agent::Claude).as_deref(),
+            Some("abc12345")
+        );
+        // Codex: the `resume <id>` subcommand.
+        assert_eq!(
+            session_id_in_cmdline("codex resume 019f7ff6-2664-7263", Agent::Codex).as_deref(),
+            Some("019f7ff6-2664-7263")
+        );
+        // A fresh interactive session carries no id → None (caller falls back).
+        assert_eq!(session_id_in_cmdline("claude", Agent::Claude), None);
+        assert_eq!(session_id_in_cmdline("codex", Agent::Codex), None);
+        // Don't mistake a non-id token (a path, a prompt word) for the id.
+        assert_eq!(
+            session_id_in_cmdline("claude --resume ./notes -p go", Agent::Claude),
+            None,
+            "`./notes` is not id-shaped"
+        );
+    }
+
+    /// The stale-confirm picker must never block an unattended run: with no TTY (as
+    /// in `cargo test`, and in the detached handoff watcher) it returns the newest
+    /// session unchanged even when it's stale, rather than waiting for input.
+    #[test]
+    fn stale_confirm_never_blocks_without_a_tty() {
+        let adapter = agent::adapter(Agent::Claude);
+        let cwd = std::env::temp_dir().join("agent-jdi-nonexistent-cwd");
+        let stale = agent::ResumableSession {
+            id: "the-only-one".into(),
+            transcript: cwd.join("t.jsonl"),
+            idle_secs: 99_999, // well past the 1h threshold
+        };
+        // No TTY under `cargo test` → returns the input without prompting.
+        let out = confirm_if_stale(adapter.as_ref(), &cwd, stale.clone()).unwrap();
+        assert_eq!(out.id, stale.id);
+
+        // A fresh session skips the check entirely (early return).
+        let fresh = agent::ResumableSession {
+            idle_secs: 5,
+            ..stale.clone()
+        };
+        assert_eq!(
+            confirm_if_stale(adapter.as_ref(), &cwd, fresh.clone())
+                .unwrap()
+                .id,
+            fresh.id
+        );
+    }
+
+    #[test]
+    fn stale_threshold_defaults_to_one_hour_and_honors_env() {
+        std::env::remove_var("AGENT_JDI_STALE");
+        assert_eq!(stale_secs(), 3600);
+        std::env::set_var("AGENT_JDI_STALE", "60");
+        assert_eq!(stale_secs(), 60);
+        std::env::remove_var("AGENT_JDI_STALE");
     }
 
     #[test]
