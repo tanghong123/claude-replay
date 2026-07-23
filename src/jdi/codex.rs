@@ -12,9 +12,143 @@ use super::agent::{
 };
 use crate::{codex_discover, Agent};
 use anyhow::{anyhow, bail, Context, Result};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexSandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl CodexSandboxMode {
+    pub(crate) fn as_config_value(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexPermissionSnapshot {
+    sandbox: CodexSandboxMode,
+    workspace_network: Option<bool>,
+}
+
+impl CodexPermissionSnapshot {
+    pub(crate) fn from_handoff_parts(
+        sandbox: CodexSandboxMode,
+        workspace_network: Option<bool>,
+    ) -> Result<Self> {
+        let coherent = match sandbox {
+            CodexSandboxMode::WorkspaceWrite => workspace_network.is_some(),
+            CodexSandboxMode::ReadOnly | CodexSandboxMode::DangerFullAccess => {
+                workspace_network.is_none()
+            }
+        };
+        if !coherent {
+            bail!("cannot preserve the current Codex permission context: incoherent network value");
+        }
+        Ok(Self {
+            sandbox,
+            workspace_network,
+        })
+    }
+
+    pub(crate) fn from_rollout(path: &Path) -> Result<Self> {
+        let file =
+            File::open(path).with_context(|| format!("open Codex rollout {}", path.display()))?;
+        let mut latest = None;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(|value| value.as_str()) == Some("turn_context") {
+                latest = Some(value);
+            }
+        }
+
+        let policy = latest
+            .as_ref()
+            .and_then(|value| value.pointer("/payload/sandbox_policy"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "cannot preserve the current Codex permission context from {}",
+                    path.display()
+                )
+            })?;
+        let kind = policy.get("type").and_then(|value| value.as_str());
+        let (sandbox, workspace_network) = match kind {
+            Some("read-only") => (CodexSandboxMode::ReadOnly, None),
+            Some("workspace-write") => (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(
+                    policy
+                        .get("network_access")
+                        .and_then(|value| value.as_bool())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "cannot preserve the current Codex permission context: \
+                                 workspace-write network_access is missing or invalid"
+                            )
+                        })?,
+                ),
+            ),
+            Some("danger-full-access") => (CodexSandboxMode::DangerFullAccess, None),
+            _ => {
+                bail!(
+                    "cannot preserve the current Codex permission context: \
+                     unsupported sandbox mode"
+                )
+            }
+        };
+        Ok(Self {
+            sandbox,
+            workspace_network,
+        })
+    }
+
+    pub(crate) fn sandbox(&self) -> CodexSandboxMode {
+        self.sandbox
+    }
+
+    pub(crate) fn workspace_network(&self) -> Option<bool> {
+        self.workspace_network
+    }
+
+    pub(crate) fn config_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "-c".into(),
+            format!("sandbox_mode=\"{}\"", self.sandbox.as_config_value()),
+        ];
+        if let Some(enabled) = self.workspace_network {
+            args.extend([
+                "-c".into(),
+                format!("sandbox_workspace_write.network_access={enabled}"),
+            ]);
+        }
+        args
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        match (self.sandbox, self.workspace_network) {
+            (CodexSandboxMode::WorkspaceWrite, Some(true)) => {
+                "workspace-write, network enabled".into()
+            }
+            (CodexSandboxMode::WorkspaceWrite, Some(false)) => {
+                "workspace-write, network disabled".into()
+            }
+            (mode, None) => mode.as_config_value().into(),
+            _ => unreachable!("constructor enforces the workspace network invariant"),
+        }
+    }
+}
 
 impl CodexAdapter {
     fn preflight_program(program: &Path) -> Result<()> {
@@ -274,6 +408,36 @@ impl AgentAdapter for CodexAdapter {
 mod tests {
     use super::*;
 
+    struct PermissionFixture {
+        root: PathBuf,
+        rollout: PathBuf,
+    }
+
+    impl PermissionFixture {
+        fn with_contexts(contexts: &[serde_json::Value]) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "agent-jdi-codex-permissions-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::create_dir_all(&root).unwrap();
+            let rollout = root.join("rollout.jsonl");
+            let mut body = String::from("not-json\n");
+            for context in contexts {
+                body.push_str(&format!("{context}\n"));
+            }
+            std::fs::write(&rollout, body).unwrap();
+            Self { root, rollout }
+        }
+    }
+
+    impl Drop for PermissionFixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.root).ok();
+        }
+    }
+
     fn ctx<'a>(id: &'a str, brief: &'a Brief, extra: &'a [String]) -> TurnContext<'a> {
         TurnContext {
             mode: Mode::Execute,
@@ -283,6 +447,164 @@ mod tests {
             brief,
             extra_args: extra,
         }
+    }
+
+    #[test]
+    fn parses_latest_codex_turn_permissions() {
+        let fixture = PermissionFixture::with_contexts(&[
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {
+                    "sandbox_policy": {
+                        "type": "workspace-write",
+                        "network_access": false
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {
+                    "sandbox_policy": {
+                        "type": "danger-full-access"
+                    }
+                }
+            }),
+        ]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.sandbox(), CodexSandboxMode::DangerFullAccess);
+        assert_eq!(snapshot.workspace_network(), None);
+    }
+
+    #[test]
+    fn parses_workspace_network_enabled() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {
+                "sandbox_policy": {
+                    "type": "workspace-write",
+                    "network_access": true
+                }
+            }
+        })]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.sandbox(), CodexSandboxMode::WorkspaceWrite);
+        assert_eq!(snapshot.workspace_network(), Some(true));
+    }
+
+    #[test]
+    fn parses_workspace_network_disabled() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {
+                "sandbox_policy": {
+                    "type": "workspace-write",
+                    "network_access": false
+                }
+            }
+        })]);
+        let snapshot = CodexPermissionSnapshot::from_rollout(&fixture.rollout).unwrap();
+        assert_eq!(snapshot.workspace_network(), Some(false));
+    }
+
+    #[test]
+    fn parses_read_only_permissions() {
+        let fixture = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "read-only"}}
+        })]);
+        assert_eq!(
+            CodexPermissionSnapshot::from_rollout(&fixture.rollout)
+                .unwrap()
+                .sandbox(),
+            CodexSandboxMode::ReadOnly
+        );
+    }
+
+    #[test]
+    fn invalid_latest_turn_does_not_reuse_older_full_access() {
+        let fixture = PermissionFixture::with_contexts(&[
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {"sandbox_policy": {"type": "danger-full-access"}}
+            }),
+            serde_json::json!({
+                "type": "turn_context",
+                "payload": {"sandbox_policy": {"type": "future-mode"}}
+            }),
+        ]);
+        assert!(CodexPermissionSnapshot::from_rollout(&fixture.rollout).is_err());
+    }
+
+    #[test]
+    fn missing_or_incomplete_permissions_fail_closed() {
+        let no_context = PermissionFixture::with_contexts(&[]);
+        assert!(CodexPermissionSnapshot::from_rollout(&no_context.rollout).is_err());
+
+        let missing_network = PermissionFixture::with_contexts(&[serde_json::json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "workspace-write"}}
+        })]);
+        assert!(CodexPermissionSnapshot::from_rollout(&missing_network.rollout).is_err());
+    }
+
+    #[test]
+    fn permission_snapshots_render_normalized_config_args_and_summaries() {
+        let cases = [
+            (
+                CodexSandboxMode::ReadOnly,
+                None,
+                vec!["-c", "sandbox_mode=\"read-only\""],
+                "read-only",
+            ),
+            (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(false),
+                vec![
+                    "-c",
+                    "sandbox_mode=\"workspace-write\"",
+                    "-c",
+                    "sandbox_workspace_write.network_access=false",
+                ],
+                "workspace-write, network disabled",
+            ),
+            (
+                CodexSandboxMode::WorkspaceWrite,
+                Some(true),
+                vec![
+                    "-c",
+                    "sandbox_mode=\"workspace-write\"",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                ],
+                "workspace-write, network enabled",
+            ),
+            (
+                CodexSandboxMode::DangerFullAccess,
+                None,
+                vec!["-c", "sandbox_mode=\"danger-full-access\""],
+                "danger-full-access",
+            ),
+        ];
+
+        for (sandbox, network, args, summary) in cases {
+            let snapshot = CodexPermissionSnapshot::from_handoff_parts(sandbox, network).unwrap();
+            assert_eq!(snapshot.config_args(), args);
+            assert_eq!(snapshot.summary(), summary);
+        }
+    }
+
+    #[test]
+    fn handoff_parts_reject_incoherent_network_values() {
+        assert!(CodexPermissionSnapshot::from_handoff_parts(
+            CodexSandboxMode::WorkspaceWrite,
+            None,
+        )
+        .is_err());
+        assert!(CodexPermissionSnapshot::from_handoff_parts(
+            CodexSandboxMode::DangerFullAccess,
+            Some(true),
+        )
+        .is_err());
     }
 
     #[test]
