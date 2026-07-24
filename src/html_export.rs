@@ -626,7 +626,7 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
   <div class="brand">claude-replay <span>· session export</span></div>
   <div class="spacer"></div>
   <div class="toolfilter">
-    <button id="btn-tools" class="tbtn">Tools ▾</button>
+    <button id="btn-tools" class="tbtn"><span class="tf-label">Tools ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
       <div class="menu-head">Filter by tool use</div>
       <div id="toolitems"></div>
@@ -659,12 +659,6 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
       <div class="session-meta" id="meta"></div>
     </section>
     <div id="stickybar"><span class="caret">❯</span><span id="stickytext"></span></div>
-    <div id="filterbar">
-      <span class="flabel">Filter</span>
-      <span class="fname-wrap"><span class="tool-dot"></span><span id="filtername"></span></span>
-      <span id="filtercount"></span>
-      <button id="filterclear">✕ Clear <span class="fesc">esc</span></button>
-    </div>
     <div id="stream"></div>
   </main>
 </div>

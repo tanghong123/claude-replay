@@ -324,7 +324,7 @@
       counts[t] = (counts[t] || 0) + 1;
     });
     var names = Object.keys(counts).sort(function (a, b) {
-      return counts[b] - counts[a] || a.localeCompare(b);
+      return a.localeCompare(b); // alphabetical
     });
     var box = $("toolitems");
     box.textContent = "";
@@ -368,8 +368,6 @@
       var h = m.querySelector(":scope > .fold-h");
       if (h) h.classList.add("filter-hit");
     });
-    $("filtername").textContent = tool;
-    $("filtercount").textContent = matchesSel.length + (matchesSel.length === 1 ? " use" : " uses");
   }
 
   // Enter/leave/toggle the filter. Re-selecting the active tool clears it.
@@ -382,7 +380,6 @@
     }
     filter = tool;
     if (!tool) {
-      $("filterbar").classList.remove("on");
       all(".blk").forEach(function (b) {
         b.classList.remove("filter-dim", "filter-hidden");
       });
@@ -393,14 +390,14 @@
         });
       }
     } else {
-      $("filterbar").classList.add("on");
       applyFilter(tool);
     }
     all(".tool-item").forEach(function (ti) {
       ti.classList.toggle("active", ti.dataset.tool === filter);
     });
+    // The button becomes "<tool> ✕": the label opens the menu, the ✕ clears.
     $("btn-tools").classList.toggle("active", !!filter);
-    $("btn-tools").textContent = filter ? filter + " ✕" : "Tools ▾";
+    document.querySelector("#btn-tools .tf-label").textContent = filter || "Tools ▾";
     spy();
   }
 
@@ -515,8 +512,8 @@
     // ── tool-use filter controls ──
     var ti = e.target.closest(".tool-item");
     if (ti) { setFilter(ti.dataset.tool); toolMenu(false); return; }
-    if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; }
-    if (e.target.closest("#filterclear")) { setFilter(null); return; }
+    if (e.target.closest(".tf-x")) { setFilter(null); toolMenu(false); return; } // ✕ clears
+    if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; } // label opens menu
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
 
@@ -655,8 +652,7 @@
     }
     curTurn = cur;
     var bar = $("stickybar");
-    // The filter banner occupies the sticky slot — suppress the turn bar then.
-    bar.classList.toggle("on", !!cur && !filter);
+    bar.classList.toggle("on", !!cur);
     if (cur) $("stickytext").textContent = "Turn " + cur.dataset.turn + " — " + cur.dataset.label;
     var changed = cur && cur.id !== lastActiveId;
     lastActiveId = cur ? cur.id : null;
