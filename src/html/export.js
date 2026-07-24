@@ -23,6 +23,8 @@
   var raf = null;
   var moreSeq = 0;
   var consumed = 0; // JSONL lines already rendered
+  var filter = null; // active tool-use filter (tool display name), or null
+  var savedFolds = null; // fold open/closed snapshot to restore when filtering ends
 
   function $(id) { return document.getElementById(id); }
   function all(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
@@ -196,6 +198,7 @@
     var f = el("div", "fold blk" + (isCmd ? " uturn" : ""));
     f.id = b.id;
     f.dataset.kind = b.kind;
+    if (b.tool) f.dataset.tool = b.tool; // drives the tool-use filter
     f.dataset.open = b.open ? "1" : "0";
     if (b.turn != null) {
       f.dataset.turn = b.turn;
@@ -307,6 +310,98 @@
       if (obj.turn != null) addTurn(obj);
     }
     clampLongTurns();
+    buildToolMenu();
+    if (filter) applyFilter(filter); // fold/expand any newly-arrived matches
+  }
+
+  // ── tool-use filter ───────────────────────────────────────────────────
+  // Populate the dropdown from the distinct data-tool values present, newest
+  // counts first. Rebuilt whenever content changes (live sessions grow tools).
+  function buildToolMenu() {
+    var counts = {};
+    all(".fold[data-tool]").forEach(function (f) {
+      var t = f.dataset.tool;
+      counts[t] = (counts[t] || 0) + 1;
+    });
+    var names = Object.keys(counts).sort(function (a, b) {
+      return counts[b] - counts[a] || a.localeCompare(b);
+    });
+    var box = $("toolitems");
+    box.textContent = "";
+    names.forEach(function (t) {
+      var item = el("div", "tool-item" + (t === filter ? " active" : ""));
+      item.dataset.tool = t;
+      item.tabIndex = 0;
+      item.appendChild(el("span", "dot"));
+      item.appendChild(el("span", "tname", t));
+      item.appendChild(el("span", "tool-count", String(counts[t])));
+      box.appendChild(item);
+    });
+    // Nothing to filter → disable the button.
+    $("btn-tools").disabled = names.length === 0;
+  }
+
+  function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
+
+  // Apply the current `filter` value to the DOM: matching tool folds stay,
+  // expanded, with an accent; user turns stay dimmed as landmarks; the rest hide.
+  function applyFilter(tool) {
+    var sel = '.fold[data-tool="' + (window.CSS && CSS.escape ? CSS.escape(tool) : tool) + '"]';
+    var matchesSel = all(sel);
+    all(".fold-h").forEach(function (h) { h.classList.remove("filter-hit"); });
+    all(".blk").forEach(function (b) {
+      if (b.classList.contains("uturn")) {
+        b.classList.remove("filter-hidden");
+        b.classList.add("filter-dim");
+        if (b.classList.contains("fold")) setFold(b, false); // collapse command turns
+        return;
+      }
+      b.classList.remove("filter-dim");
+      var hit = b.matches(sel) || b.querySelector(sel);
+      b.classList.toggle("filter-hidden", !hit);
+    });
+    matchesSel.forEach(function (m) {
+      for (var p = m.parentElement; p && p.id !== "stream"; p = p.parentElement) {
+        if (p.classList && p.classList.contains("fold")) setFold(p, true); // expand ancestors
+      }
+      setFold(m, true);
+      var h = m.querySelector(":scope > .fold-h");
+      if (h) h.classList.add("filter-hit");
+    });
+    $("filtername").textContent = tool;
+    $("filtercount").textContent = matchesSel.length + (matchesSel.length === 1 ? " use" : " uses");
+  }
+
+  // Enter/leave/toggle the filter. Re-selecting the active tool clears it.
+  function setFilter(tool) {
+    if (tool === filter) tool = null;
+    if (tool && !filter) {
+      // Snapshot every fold's open state so Clear restores it exactly.
+      savedFolds = {};
+      all(".fold[id]").forEach(function (f) { savedFolds[f.id] = f.dataset.open; });
+    }
+    filter = tool;
+    if (!tool) {
+      $("filterbar").classList.remove("on");
+      all(".blk").forEach(function (b) {
+        b.classList.remove("filter-dim", "filter-hidden");
+      });
+      all(".fold-h").forEach(function (h) { h.classList.remove("filter-hit"); });
+      if (savedFolds) {
+        all(".fold[id]").forEach(function (f) {
+          if (savedFolds[f.id] !== undefined) setFold(f, savedFolds[f.id] === "1");
+        });
+      }
+    } else {
+      $("filterbar").classList.add("on");
+      applyFilter(tool);
+    }
+    all(".tool-item").forEach(function (ti) {
+      ti.classList.toggle("active", ti.dataset.tool === filter);
+    });
+    $("btn-tools").classList.toggle("active", !!filter);
+    $("btn-tools").textContent = filter ? filter + " ✕" : "Tools ▾";
+    spy();
   }
 
   // A long user message shows only its first CLAMP_LINES lines with a "⋯ N more
@@ -417,6 +512,14 @@
   }
 
   document.addEventListener("click", function (e) {
+    // ── tool-use filter controls ──
+    var ti = e.target.closest(".tool-item");
+    if (ti) { setFilter(ti.dataset.tool); toolMenu(false); return; }
+    if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; }
+    if (e.target.closest("#filterclear")) { setFilter(null); return; }
+    // Any other click closes an open dropdown.
+    if (!e.target.closest("#toolmenu")) toolMenu(false);
+
     var sid = e.target.closest("#sid");
     if (sid) { copy(sid.dataset.path, sid, "copied transcript path"); return; }
     var cpy = e.target.closest(".cpy");
@@ -501,7 +604,12 @@
   document.addEventListener("keydown", function (e) {
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
     if (e.key === "/") { e.preventDefault(); q.focus(); return; }
-    if (e.key === "Escape") { if (document.activeElement) document.activeElement.blur(); return; }
+    if (e.key === "Escape") {
+      toolMenu(false);
+      if (filter) { setFilter(null); return; }
+      if (document.activeElement) document.activeElement.blur();
+      return;
+    }
     if (e.key === "j" || e.key === "k") {
       e.preventDefault();
       var hs = all(".fold-h");
@@ -547,7 +655,8 @@
     }
     curTurn = cur;
     var bar = $("stickybar");
-    bar.classList.toggle("on", !!cur);
+    // The filter banner occupies the sticky slot — suppress the turn bar then.
+    bar.classList.toggle("on", !!cur && !filter);
     if (cur) $("stickytext").textContent = "Turn " + cur.dataset.turn + " — " + cur.dataset.label;
     var changed = cur && cur.id !== lastActiveId;
     lastActiveId = cur ? cur.id : null;

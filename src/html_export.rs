@@ -475,6 +475,10 @@ impl Emitter<'_> {
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
+                // The tool's display name (same as the fold header) drives the
+                // client-side "filter by tool use" dropdown — one `data-tool` per
+                // tool fold, counted and grouped in the browser.
+                o.insert("tool".into(), json!(render::display_name(name)));
                 head.insert("name".into(), json!(render::display_name(name)));
                 head.insert("target".into(), json!(target));
                 head.insert(
@@ -621,6 +625,13 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
 <div id="topbar">
   <div class="brand">claude-replay <span>· session export</span></div>
   <div class="spacer"></div>
+  <div class="toolfilter">
+    <button id="btn-tools" class="tbtn">Tools ▾</button>
+    <div id="toolmenu">
+      <div class="menu-head">Filter by tool use</div>
+      <div id="toolitems"></div>
+    </div>
+  </div>
   <div class="searchbox">
     <span class="mag">⌕</span>
     <input id="q" placeholder="Search transcript  ( / )" autocomplete="off">
@@ -648,6 +659,12 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
       <div class="session-meta" id="meta"></div>
     </section>
     <div id="stickybar"><span class="caret">❯</span><span id="stickytext"></span></div>
+    <div id="filterbar">
+      <span class="flabel">Filter</span>
+      <span class="fname-wrap"><span class="tool-dot"></span><span id="filtername"></span></span>
+      <span id="filtercount"></span>
+      <button id="filterclear">✕ Clear <span class="fesc">esc</span></button>
+    </div>
     <div id="stream"></div>
   </main>
 </div>
@@ -1038,6 +1055,44 @@ mod tests {
             patch: None,
             read_lines: None,
         }
+    }
+
+    fn tool(name: &str, target: &str) -> Block {
+        Block::ToolUse {
+            name: name.into(),
+            target: target.into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        }
+    }
+
+    #[test]
+    fn every_tool_fold_carries_its_display_name_as_data_tool() {
+        // The `tool` field drives the client-side tool-use filter; it must match the
+        // fold header's display name (Edit/MultiEdit → "Update", others verbatim).
+        let cases = [
+            ("Bash", "Bash"),
+            ("Read", "Read"),
+            ("Edit", "Update"),
+            ("MultiEdit", "Update"),
+            ("Write", "Write"),
+            ("Skill", "Skill"),
+            ("Task", "Task"),
+            ("Agent", "Agent"),
+            ("WebFetch", "WebFetch"), // a generic tool keeps its own name
+        ];
+        for (name, want) in cases {
+            let out = stream(&[tool(name, "x")], &FoldPolicy::none());
+            assert_eq!(out[0]["tool"], json!(want), "tool={name}");
+        }
+        // Non-tool blocks carry no `tool` attribute.
+        let out = stream(&[Block::AssistantText("hi".into())], &FoldPolicy::none());
+        assert!(
+            out[0].get("tool").is_none(),
+            "assistant text has no data-tool"
+        );
     }
 
     fn edit_with_patch() -> Block {
