@@ -117,6 +117,30 @@ fn is_skill_body(s: &str) -> bool {
     s.trim_start().starts_with("Base directory for this skill:")
 }
 
+/// Injected/system content that Claude Code flags at the event level — a skill or
+/// slash-command **instruction body** (`isMeta`), a caveat, or a `/compact`
+/// continuation summary (`isCompactSummary`). None of it is a human-initiated
+/// turn, so it must never become `UserText`/`Command` (which would give it a
+/// sidebar/sticky "turn" entry it doesn't deserve). It folds as a system block
+/// instead; caveat-only noise is dropped entirely.
+fn push_injected(s: &str, out: &mut Vec<Block>) {
+    let cleaned = strip_caveat(s);
+    let cleaned = cleaned.trim();
+    if !cleaned.is_empty() {
+        out.push(Block::ToolResult(cleaned.to_string()));
+    }
+}
+
+/// Is this `user` event injected/system content rather than a human turn?
+/// `isMeta` marks instruction/skill/caveat bodies; `isCompactSummary` marks the
+/// summary `/compact` writes back into the transcript.
+fn is_injected_event(v: &Value) -> bool {
+    v.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+        || v.get("isCompactSummary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
 /// Turn one plain-string `user` message into block(s). A slash-command
 /// invocation (`<command-name>`) and its `<local-command-stdout>` become a
 /// `Block::Command`; the `<local-command-caveat>` noise is dropped; everything
@@ -172,9 +196,14 @@ fn push_user_string(s: &str, out: &mut Vec<Block>) {
         return;
     }
     // Drop pure caveat noise; otherwise it's ordinary user prose (unless it's an
-    // injected skill body, which folds as a result block).
+    // injected skill body, which folds as a result block). A message with no
+    // visible character — only whitespace or control bytes like a stray `\x11`
+    // (Ctrl-Q) — is a phantom keystroke, not a turn: skip it.
     let cleaned = strip_caveat(s);
-    if !cleaned.trim().is_empty() {
+    let has_visible = cleaned
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control());
+    if has_visible {
         if is_skill_body(&cleaned) {
             out.push(Block::ToolResult(cleaned));
         } else {
@@ -664,18 +693,26 @@ fn parse_main<S: AsRef<str>>(
                 }
                 // The message-level toolUseResult metadata (shared by its result blocks).
                 let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
+                // `isMeta`/`isCompactSummary` events are injected system content, not
+                // human turns — route their prose to a folded system block so it never
+                // gets a turn/sidebar/sticky entry (see `push_injected`).
+                let injected = is_injected_event(&v);
                 let Some(content) = v.pointer("/message/content") else {
                     continue;
                 };
                 if let Some(s) = content.as_str() {
-                    push_user_string(s, &mut out);
+                    if injected {
+                        push_injected(s, &mut out);
+                    } else {
+                        push_user_string(s, &mut out);
+                    }
                 } else if let Some(arr) = content.as_array() {
                     for blk in arr {
                         match blk.get("type").and_then(|t| t.as_str()) {
                             Some("text") => {
                                 if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                     if !t.trim().is_empty() {
-                                        if is_skill_body(t) {
+                                        if injected || is_skill_body(t) {
                                             out.push(Block::ToolResult(t.to_string()));
                                         } else {
                                             out.push(Block::UserText(t.to_string()));
@@ -802,6 +839,49 @@ mod tests {
 
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {
         blocks.iter().map(fold_key).collect()
+    }
+
+    /// Injected system content — a skill/command instruction body (`isMeta`) or a
+    /// `/compact` continuation summary (`isCompactSummary`) — is NOT a human turn.
+    /// It must fold as a system block, never a `❯` UserText (which would give it a
+    /// phantom sidebar/sticky turn entry). A genuine user message between them still
+    /// reads as a turn, so the turn count stays correct.
+    #[test]
+    fn injected_meta_and_compact_summary_are_not_user_turns() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real question"}}
+{"type":"user","isMeta":true,"timestamp":"2026-06-30T03:00:01.000Z","message":{"content":"# /loop — schedule a recurring or self-paced prompt\nParse the input below…"}}
+{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued from a previous conversation…"}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}
+"##;
+        let blocks = parse(jsonl, &args());
+        // Two genuine turns; the injected pair folds as tool_result, not user.
+        assert_eq!(
+            kinds(&blocks),
+            vec!["user", "tool_result", "tool_result", "user"],
+            "{blocks:?}"
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| matches!(b, Block::UserText(_)))
+                .count(),
+            2,
+            "only the two human messages are turns"
+        );
+    }
+
+    /// A user message with no visible character — only whitespace or a control
+    /// byte like `\x11` (a stray Ctrl-Q keystroke) — is a phantom, not a turn.
+    #[test]
+    fn control_only_user_message_is_dropped() {
+        let jsonl = "\
+{\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:00.000Z\",\"message\":{\"content\":\"\u{11}\"}}
+{\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:01.000Z\",\"message\":{\"content\":\"real\"}}
+";
+        let blocks = parse(jsonl, &args());
+        assert_eq!(kinds(&blocks), vec!["user"], "{blocks:?}");
+        assert!(matches!(&blocks[0], Block::UserText(t) if t == "real"));
     }
 
     /// A thinking block absorbs the activity tools that ran just before it and

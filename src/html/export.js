@@ -442,16 +442,21 @@
   });
 
   // ── scroll spy ───────────────────────────────────────────────────────
+  // `cur` is the last turn whose header has scrolled above the sticky line —
+  // i.e. the turn you're currently reading. The bar shows it continuously and
+  // hands off to the next turn the moment that turn's header crosses the line.
+  // (The old `bottom < 90` test only revealed the bar once a card had scrolled
+  // fully past, so a turn closely followed by the next never got a sticky head.)
+  var STICKY_Y = 72; // just under the 48px topbar
   function spy() {
     var turns = all("[data-turn]");
     var cur = null;
     for (var i = 0; i < turns.length; i++) {
-      if (turns[i].getBoundingClientRect().top <= 130) cur = turns[i];
+      if (turns[i].getBoundingClientRect().top <= STICKY_Y) cur = turns[i];
     }
     curTurn = cur;
     var bar = $("stickybar");
-    var show = !!cur && cur.getBoundingClientRect().bottom < 90;
-    bar.classList.toggle("on", show);
+    bar.classList.toggle("on", !!cur);
     if (cur) $("stickytext").textContent = "Turn " + cur.dataset.turn + " — " + cur.dataset.label;
     all(".side-item").forEach(function (si) {
       si.classList.toggle("active", !!cur && si.dataset.t === cur.id);
