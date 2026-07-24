@@ -162,7 +162,8 @@
     var head = b.head || {};
     var body = b.body || [];
 
-    // Plain user turn — an always-open card.
+    // Plain user turn — an always-open card. Long messages are clamped to a few
+    // lines with a "more" expander (measured after layout in clampLongTurns).
     if (b.kind === "user") {
       var card = el("div", "uturn blk");
       card.id = b.id;
@@ -170,7 +171,9 @@
       card.dataset.label = b.label;
       card.appendChild(el("span", "caret", "❯"));
       var ub = el("div", "uturn-body");
-      body.forEach(function (p) { renderPart(p, ub); });
+      var md = el("div", "uturn-md");
+      body.forEach(function (p) { renderPart(p, md); });
+      ub.appendChild(md);
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
       card.appendChild(anchor(b.id));
@@ -303,6 +306,28 @@
       stream.appendChild(renderBlock(obj));
       if (obj.turn != null) addTurn(obj);
     }
+    clampLongTurns();
+  }
+
+  // A long user message shows only its first CLAMP_LINES lines with a "⋯ N more
+  // lines" expander — measured after layout so it works for wrapped single
+  // paragraphs too (not just newline-broken text). Run once per turn body.
+  var CLAMP_LINES = 12;
+  function clampLongTurns() {
+    all(".uturn-md").forEach(function (md) {
+      if (md.dataset.clampChecked) return;
+      md.dataset.clampChecked = "1";
+      var lh = parseFloat(getComputedStyle(md).lineHeight) || 25;
+      var cap = lh * CLAMP_LINES;
+      if (md.scrollHeight <= cap + lh) return; // fits within N (+1 slack) lines
+      var hidden = Math.round((md.scrollHeight - cap) / lh);
+      md.style.maxHeight = cap + "px";
+      md.classList.add("clamped");
+      var btn = el("button", "morebtn clampbtn", "⋯ " + hidden + " more lines");
+      btn.dataset.cap = cap;
+      btn.dataset.more = "⋯ " + hidden + " more lines";
+      md.after(btn);
+    });
   }
 
   // Initial render from the inlined snapshot.
@@ -368,6 +393,21 @@
     if (cpy) {
       var pre = cpy.closest(".fence").querySelector("pre");
       copy(pre.textContent, cpy, "copied", "copy");
+      return;
+    }
+    // Clamp toggle on a long user turn: expand to full height, or re-collapse.
+    var clamp = e.target.closest(".clampbtn");
+    if (clamp) {
+      var body = clamp.previousElementSibling;
+      if (body.classList.contains("clamped")) {
+        body.classList.remove("clamped");
+        body.style.maxHeight = "";
+        clamp.textContent = "▲ show less";
+      } else {
+        body.classList.add("clamped");
+        body.style.maxHeight = clamp.dataset.cap + "px";
+        clamp.textContent = clamp.dataset.more;
+      }
       return;
     }
     var more = e.target.closest(".morebtn");
@@ -479,10 +519,16 @@
     var bar = $("stickybar");
     bar.classList.toggle("on", !!cur);
     if (cur) $("stickytext").textContent = "Turn " + cur.dataset.turn + " — " + cur.dataset.label;
+    var changed = cur && cur.id !== lastActiveId;
+    lastActiveId = cur ? cur.id : null;
     all(".side-item").forEach(function (si) {
-      si.classList.toggle("active", !!cur && si.dataset.t === cur.id);
+      var active = !!cur && si.dataset.t === cur.id;
+      si.classList.toggle("active", active);
+      // Keep the active turn visible when the list scrolls independently.
+      if (active && changed) si.scrollIntoView({ block: "nearest" });
     });
   }
+  var lastActiveId = null;
   window.addEventListener("scroll", function () {
     if (raf) return;
     raf = requestAnimationFrame(function () { raf = null; spy(); });

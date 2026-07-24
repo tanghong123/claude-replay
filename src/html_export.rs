@@ -634,7 +634,6 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
   <nav id="sidebar">
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
-    <div class="spacer"></div>
     <div class="usage" id="usage"></div>
     <div class="legend">
       <span class="key">j k</span><span class="what">move</span>
