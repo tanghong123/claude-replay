@@ -902,12 +902,11 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 
 /// `--html`: render to HTML and open it in the browser instead of the TUI.
 ///
-/// One-shot (no `-f`): write a **self-contained** page to a temp file and open it
-/// via `file://` — no server, the process returns. Live (`-f`): also write the
-/// companion `.jsonl`, spin up a tiny **loopback HTTP server** (a `file://` page
-/// can't `fetch` its companion — browsers block cross-origin file reads), open the
-/// `http://127.0.0.1:PORT/…` page, print that URL, and tail the transcript until
-/// Ctrl-C so the page live-updates.
+/// Both modes serve over a tiny **loopback HTTP server** and run until Ctrl-C —
+/// serving (not `file://`) is what lets a path click reveal the file in Finder
+/// (`/__reveal`) and, with `-f`, lets the page `fetch` its companion (browsers
+/// block those over `file://`). `-f` adds the append-only companion + live tail;
+/// without it the page is a self-contained static snapshot.
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
@@ -922,31 +921,40 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let html_path = dir.join(format!("{sid}.html"));
 
-    if !args.follow {
-        std::fs::write(&html_path, build_html(&title, &jsonl, &turns, None))
-            .with_context(|| format!("write {}", html_path.display()))?;
-        let url = format!("file://{}", html_path.display());
-        eprintln!("opening {url}");
-        open_in_browser(&url);
-        println!("{url}");
-        return Ok(());
-    }
-
-    // Live: companion + loopback server + browser + tail.
-    let companion = dir.join(format!("{sid}.jsonl"));
-    std::fs::write(&companion, format!("{jsonl}\n"))
-        .with_context(|| format!("write {}", companion.display()))?;
-    let src = format!("{sid}.jsonl");
-    std::fs::write(&html_path, build_html(&title, &jsonl, &turns, Some(&src)))
-        .with_context(|| format!("write {}", html_path.display()))?;
+    // Live mode also writes the append-only companion the page polls.
+    let companion = if args.follow {
+        let c = dir.join(format!("{sid}.jsonl"));
+        std::fs::write(&c, format!("{jsonl}\n"))
+            .with_context(|| format!("write {}", c.display()))?;
+        Some(c)
+    } else {
+        None
+    };
+    let src = companion.as_ref().map(|_| format!("{sid}.jsonl"));
+    std::fs::write(
+        &html_path,
+        build_html(&title, &jsonl, &turns, src.as_deref()),
+    )
+    .with_context(|| format!("write {}", html_path.display()))?;
 
     let port = spawn_http_server(dir.clone())?;
     let url = format!("http://127.0.0.1:{port}/{sid}.html");
-    eprintln!("serving {} at {url} (live — Ctrl-C to stop)", dir.display());
+    let kind = if args.follow { "live" } else { "static" };
+    eprintln!(
+        "serving {} at {url} ({kind} — Ctrl-C to stop)",
+        dir.display()
+    );
     eprintln!("  open in a browser, or copy the URL above");
     open_in_browser(&url);
     println!("{url}");
-    follow_and_append(agent, path, args, &fold, &companion, jsonl.lines().count())
+
+    match &companion {
+        Some(c) => follow_and_append(agent, path, args, &fold, c, jsonl.lines().count()),
+        // Static: nothing to tail, but keep serving so path-reveal keeps working.
+        None => loop {
+            std::thread::park();
+        },
+    }
 }
 
 /// Open `url` in the default browser (best-effort; never fails the run).

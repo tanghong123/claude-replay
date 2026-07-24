@@ -130,9 +130,9 @@ pub struct Args {
     pub dump_html: Option<Option<String>>,
 
     /// Open the transcript as an HTML page in your browser instead of the TUI.
-    /// One-shot opens a self-contained `file://` page; with `-f`/`--follow` it
-    /// serves a live page over loopback HTTP and follows the session, printing the
-    /// URL. Honors --fold/--unfold/--full.
+    /// Serves over a loopback HTTP server (so a tool-path click can reveal the
+    /// file in Finder) and prints the URL; Ctrl-C stops it. With `-f`/`--follow`
+    /// the page also follows the session live. Honors --fold/--unfold/--full.
     #[arg(long, conflicts_with_all = ["dump", "dump_html"])]
     pub html: bool,
 }

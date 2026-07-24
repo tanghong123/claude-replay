@@ -67,8 +67,8 @@ claude-replay <id|--latest> --dump --full     dump with everything expanded (def
 claude-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
 claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
 claude-replay <id> -f --dump-html [stem]       live: also write an append-only <stem>.jsonl the page follows
-claude-replay <id|--latest> --html             open the transcript as an HTML page in your browser (no TUI)
-claude-replay <id> -f --html                   live HTML: serve over loopback + follow the session in the browser
+claude-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, Ctrl-C to stop
+claude-replay <id> -f --html                   live HTML: also follows the session (new turns stream in)
 ```
 
 **Multi-agent.** With no argument, the picker merges this directory's sessions from
@@ -97,12 +97,15 @@ Clicking a **file path** in a tool header (`Write`/`Update`/`Read`) opens that f
 clicking elsewhere on the header still folds.
 
 **`--html`** is the GUI counterpart to the TUI: it renders the page and **opens it
-in your browser** instead of drawing the terminal UI, printing the URL. One-shot
-opens a self-contained `file://` page. Live (`-f --html`) serves the page over a
-tiny **loopback HTTP server** (a `file://` page can't `fetch` its companion —
-browsers block cross-origin file reads) and follows the session, so the browser
-updates as new turns land; copy the printed `http://127.0.0.1:…` URL to open it
-anywhere. Ctrl-C stops the server.
+in your browser** instead of drawing the terminal UI. It serves the page over a
+tiny **loopback HTTP server** and prints the `http://127.0.0.1:…` URL (copy it to
+open elsewhere); Ctrl-C stops the server. Serving (rather than a bare `file://`
+page) is what lets a click on a tool-header path **reveal the file in Finder** —
+the browser can't shell out, so the click asks the local server, which does the
+same `open -R` the TUI does. With `-f` the page also follows the session live
+(new turns stream in, cost updates); without it it's a self-contained static
+snapshot. Either way the page is fully rendered even offline — only path-reveal
+and live-follow need the server.
 
 Default view: user turns (`❯`), assistant text (`⏺`), `✻` thinking summaries, and
 code-**modifying** actions (Edit/Write/MultiEdit + mutating Bash) with each edit as
