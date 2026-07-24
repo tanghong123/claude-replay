@@ -69,7 +69,8 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub agent: Option<Agent>,
 
-    /// Open the most-recently-active transcript anywhere.
+    /// Open the most-recently-active transcript for this directory (or its
+    /// nearest ancestor that has sessions) — not the global newest.
     #[arg(long)]
     pub latest: bool,
 
@@ -139,11 +140,19 @@ pub struct Args {
 /// Entry point for the `claude-replay` viewer binary.
 pub fn run_viewer() -> Result<()> {
     let args = Args::parse();
-    // `--html`: open a browser instead of the TUI. With no id/--latest, follow the
-    // most recent session for this dir (the natural target for `-f --html`).
+    // `--html`: open a browser instead of the TUI, but with the SAME session
+    // selection as the terminal viewer — an explicit id/path or `--latest` resolves
+    // directly (cwd-scoped for `--latest`); otherwise show the picker (like a bare
+    // `-f`), so `-f --html` prompts when this dir has several sessions.
     if args.html {
-        let latest = args.latest || args.target.is_none();
-        let path = discover::resolve_any(args.agent, args.target.as_deref(), latest)?;
+        let path = if args.target.is_some() || args.latest {
+            discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?
+        } else {
+            match app::pick_session(&args)? {
+                Some(p) => p,
+                None => return Ok(()), // user aborted the picker
+            }
+        };
         return html_export::serve(&args, &path);
     }
     // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The

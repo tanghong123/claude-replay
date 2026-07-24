@@ -57,7 +57,7 @@ cargo build --release           # → target/release/claude-replay
 ```
 claude-replay                                 pick from this dir's sessions (Claude + Codex)
 claude-replay <session-id | path/to.jsonl>   render that transcript (agent auto-detected)
-claude-replay --latest                        the most-recently-active transcript (any agent)
+claude-replay --latest                        newest session for THIS dir or an ancestor (not the global newest)
 claude-replay --agent codex                   only show Codex sessions (or --agent claude)
 claude-replay <id> -f                         follow a running session live
 claude-replay <id|--latest> --dump -          plain text to stdout (no TUI) — for pipes/tests

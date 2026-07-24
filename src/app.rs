@@ -85,6 +85,34 @@ pub fn run_interactive(args: &Args) -> Result<()> {
     std::process::exit(0);
 }
 
+/// Show the session picker and return the chosen transcript path — the same
+/// cwd-scoped selection the no-arg viewer flow uses, but for `--html` (which then
+/// opens the browser instead of the TUI). One candidate auto-selects; none errors;
+/// `Esc` returns `Ok(None)`. Needs a TTY (like `-f`).
+pub fn pick_session(args: &Args) -> Result<Option<PathBuf>> {
+    let mut cands = discover::candidates_all(args.agent);
+    if cands.is_empty() {
+        anyhow::bail!("no transcripts found for any agent in this directory");
+    }
+    if cands.len() == 1 {
+        return Ok(Some(cands.remove(0).path));
+    }
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut term = Terminal::new(CrosstermBackend::new(out))?;
+    let res = pick_loop(&mut term, &mut Picker::new(cands));
+    disable_raw_mode().ok();
+    execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
+    term.show_cursor().ok();
+    res
+}
+
 /// Alternate picker ↔ viewer in one terminal session. The picker's `Esc` quits;
 /// the viewer's `Esc` (Outcome::Back) returns here to re-pick, `q` quits. Reusing
 /// the same `Picker` preserves the query and selection across a round trip.

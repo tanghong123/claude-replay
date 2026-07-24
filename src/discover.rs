@@ -335,12 +335,6 @@ pub fn detect_agent(path: &Path) -> Agent {
     Agent::Claude
 }
 
-fn mtime_of(path: &Path) -> SystemTime {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-}
-
 /// Resolve a transcript across agents (honoring the `only` filter): an existing
 /// file path (agent auto-detected on open), a session id searched in each agent's
 /// store, or — with `latest` — the most-recent transcript across agents.
@@ -370,22 +364,15 @@ pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> R
         ));
     }
     if latest {
-        let mut best: Option<PathBuf> = None;
-        if only != Some(Agent::Codex) {
-            best = all_transcripts().into_iter().next();
-        }
-        if only != Some(Agent::Claude) {
-            if let Ok(codex) = crate::codex_discover::resolve(None, true) {
-                if best
-                    .as_deref()
-                    .map(|b| mtime_of(&codex) > mtime_of(b))
-                    .unwrap_or(true)
-                {
-                    best = Some(codex);
-                }
-            }
-        }
-        return best.ok_or_else(|| anyhow!("no transcripts found"));
+        // Scoped to the cwd or its nearest ancestor that has sessions — NOT the
+        // global newest. `candidates_all` sorts cwd-matches first, then most-recent,
+        // with no global fallback, so an unrelated directory's session never wins.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        return candidates_all(only)
+            .into_iter()
+            .next()
+            .map(|c| c.path)
+            .ok_or_else(|| anyhow!("no session found for {} or its ancestors", cwd.display()));
     }
     Err(anyhow!(
         "give a session id or a path, or use --latest (no session picker yet)"
