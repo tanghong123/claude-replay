@@ -371,6 +371,9 @@ struct Emitter<'a> {
     fold: &'a FoldPolicy,
     /// Session cwd — resolves relative tool targets to absolute `file://` links.
     cwd: &'a str,
+    /// Emit reveal-in-Finder path links on file tools? Only for served `--html`
+    /// (a `--dump-html` file is shared and its abs paths don't port).
+    reveal: bool,
     next_block: usize,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
@@ -485,10 +488,12 @@ impl Emitter<'_> {
                     "dot".into(),
                     json!(matches!(kind, "edit" | "write" | "skill" | "agent")),
                 );
-                // File-acting tools (read/write/edit) get a `file://` path link in
-                // the header — clicking it opens the file (the browser's stand-in
-                // for the TUI's reveal-in-Finder); clicking elsewhere still folds.
-                if matches!(kind, "read" | "write" | "edit") && !target.is_empty() {
+                // File-acting tools (read/write/edit) get a reveal-in-Finder path
+                // link — ONLY when served (`--html`), where a click can reach the
+                // local `/__reveal` endpoint. A `--dump-html` file is meant to be
+                // shared, and its absolute paths don't resolve on another machine,
+                // so its headers stay plain text.
+                if self.reveal && matches!(kind, "read" | "write" | "edit") && !target.is_empty() {
                     if let Some(abs) = resolve_abs(self.cwd, target) {
                         head.insert("path".into(), json!(abs));
                     }
@@ -568,11 +573,13 @@ fn build_jsonl(
     user_times: &[Option<f64>],
     fold: &FoldPolicy,
     cwd: &str,
+    reveal: bool,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
     let mut em = Emitter {
         fold,
         cwd,
+        reveal,
         next_block: 0,
         turn: 0,
         turns: Vec::new(),
@@ -696,6 +703,7 @@ fn snapshot(
     path: &Path,
     args: &Args,
     fold: &FoldPolicy,
+    reveal: bool,
 ) -> Result<(String, Vec<(String, String)>)> {
     let (blocks, user_times) = crate::model::parse_path_timed_for(agent, path, args)
         .with_context(|| format!("read transcript {}", path.display()))?;
@@ -743,7 +751,7 @@ fn snapshot(
             "model": m.model,
         },
     });
-    Ok(build_jsonl(&blocks, &user_times, fold, &cwd, meta))
+    Ok(build_jsonl(&blocks, &user_times, fold, &cwd, reveal, meta))
 }
 
 /// The session id — the transcript file stem (the UUID Claude/Codex names it).
@@ -793,11 +801,13 @@ fn append_new(companion: &Path, emitted: usize, lines: &[&str]) -> Result<usize>
     Ok(lines.len())
 }
 
-/// Entry point for `--dump-html`.
+/// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
+/// path links (their absolute `file://` paths don't resolve on another machine).
 pub fn export(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
-    let (jsonl, turns) = snapshot(agent, path, args, &fold)?;
+    let reveal = false;
+    let (jsonl, turns) = snapshot(agent, path, args, &fold, reveal)?;
     // The page title is the repo name; files are named by the session id.
     let title = display_title(path);
 
@@ -856,12 +866,14 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
         &fold,
         Path::new(&cpath),
         jsonl.lines().count(),
+        reveal,
     )
 }
 
 /// Poll the transcript forever, appending newly-produced block lines to
 /// `companion`. Shared by `--dump-html -f` and `--html -f`; returns only on error
-/// (the caller runs until Ctrl-C).
+/// (the caller runs until Ctrl-C). `reveal` must match the initial snapshot so the
+/// appended blocks keep the same shape.
 fn follow_and_append(
     agent: Agent,
     path: &Path,
@@ -869,10 +881,11 @@ fn follow_and_append(
     fold: &FoldPolicy,
     companion: &Path,
     mut emitted: usize,
+    reveal: bool,
 ) -> Result<()> {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (fresh, _) = match snapshot(agent, path, args, fold) {
+        let (fresh, _) = match snapshot(agent, path, args, fold, reveal) {
             Ok(s) => s,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
@@ -910,7 +923,10 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
-    let (jsonl, turns) = snapshot(agent, path, args, &fold)?;
+    // Served over loopback → a path click can reach `/__reveal`, so emit the
+    // reveal-in-Finder path links.
+    let reveal = true;
+    let (jsonl, turns) = snapshot(agent, path, args, &fold, reveal)?;
     // Files are named by the session id (unique); the page title is the repo name.
     let sid = session_id(path);
     let title = display_title(path);
@@ -949,7 +965,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     println!("{url}");
 
     match &companion {
-        Some(c) => follow_and_append(agent, path, args, &fold, c, jsonl.lines().count()),
+        Some(c) => follow_and_append(agent, path, args, &fold, c, jsonl.lines().count(), reveal),
         // Static: nothing to tail, but keep serving so path-reveal keeps working.
         None => loop {
             std::thread::park();
@@ -1076,10 +1092,12 @@ mod tests {
     use crate::model::Hunk;
 
     /// Emit `blocks` to the block-stream JSON (skipping the meta line) with the
-    /// given fold policy and no timestamps — the shape the tests assert on.
+    /// given fold policy and no timestamps — the shape the tests assert on. Uses
+    /// `reveal = true` (served-mode shape, where file tools carry a `path`).
     fn stream(blocks: &[Block], fold: &FoldPolicy) -> Vec<Value> {
         let times: Vec<Option<f64>> = Vec::new();
-        let (jsonl, _turns) = build_jsonl(blocks, &times, fold, "/repo", json!({ "t": "meta" }));
+        let (jsonl, _turns) =
+            build_jsonl(blocks, &times, fold, "/repo", true, json!({ "t": "meta" }));
         jsonl
             .lines()
             .skip(1) // meta line
@@ -1261,6 +1279,7 @@ mod tests {
             &times,
             &FoldPolicy::none(),
             "/repo",
+            true,
             json!({ "t": "meta" }),
         );
         let objs: Vec<Value> = jsonl
@@ -1379,11 +1398,40 @@ mod tests {
             },
             bash("ls -la", "out"),
         ];
-        let out = stream(&blocks, &FoldPolicy::none());
-        // The Edit header carries the resolved absolute path (cwd + target).
+        let out = stream(&blocks, &FoldPolicy::none()); // stream() uses reveal = true
+                                                        // The Edit header carries the resolved absolute path (cwd + target).
         assert_eq!(out[0]["head"]["path"], json!("/repo/src/x.rs"));
         // Bash is a command, not a file — no path link.
         assert!(out[1]["head"].get("path").is_none(), "bash has no path");
+    }
+
+    #[test]
+    fn dump_mode_omits_reveal_path_so_shared_files_dont_carry_local_paths() {
+        let edit = Block::ToolUse {
+            name: "Edit".into(),
+            target: "src/x.rs".into(),
+            diffs: vec![("a".into(), "b".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        // reveal = false (the `--dump-html` shape): the header still names the file
+        // but carries no absolute `path` for the browser to link/reveal.
+        let times: Vec<Option<f64>> = Vec::new();
+        let (jsonl, _) = build_jsonl(
+            std::slice::from_ref(&edit),
+            &times,
+            &FoldPolicy::none(),
+            "/repo",
+            false,
+            json!({ "t": "meta" }),
+        );
+        let obj: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(obj["head"]["target"], json!("src/x.rs"));
+        assert!(
+            obj["head"].get("path").is_none(),
+            "dump omits the reveal path"
+        );
     }
 
     #[test]

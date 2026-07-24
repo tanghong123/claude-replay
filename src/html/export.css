@@ -277,8 +277,9 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
 }
 .tool-path:hover { color: var(--link); border-bottom-color: var(--link); text-decoration: none; }
 /* Expanding a tool fold reveals its full header target — a long command wraps
-   (newlines preserved) and a long path breaks, instead of staying `…`-clipped. */
-.fold[data-open="1"] > .fold-h { align-items: flex-start; }
+   (newlines preserved) and a long path breaks, instead of staying `…`-clipped.
+   Header rows stay `align-items: center` in BOTH states (see `.fold-h`) so the
+   dot / name / chips don't shift vertically when toggling. */
 .fold[data-open="1"] > .fold-h .tool-target,
 .fold[data-open="1"] > .fold-h .tool-path {
   white-space: pre-wrap; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;

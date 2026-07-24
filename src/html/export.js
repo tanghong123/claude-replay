@@ -18,7 +18,6 @@
   var turnlist = document.getElementById("turnlist");
   var matches = [];
   var mIdx = -1;
-  var ki = -1;
   var curTurn = null;
   var raf = null;
   var moreSeq = 0;
@@ -446,10 +445,15 @@
   }
   badge.addEventListener("click", function () { toBottom(true); clearNew(); });
 
-  // Initial render from the inlined snapshot.
+  // Initial render from the inlined snapshot, then drop the inline copy: the
+  // rendered DOM is the source of truth now, so keeping ~1× the payload as script
+  // text is pure waste (live mode re-reads from the companion, not this element).
   var inline = $("session-data");
   turnlist.textContent = "";
-  if (inline) consume(inline.textContent);
+  if (inline) {
+    consume(inline.textContent);
+    inline.remove();
+  }
 
   // ── live tail ────────────────────────────────────────────────────────
   var src = document.body.dataset.src;
@@ -490,12 +494,15 @@
   }
   function allFolds(open) { all(".fold").forEach(function (f) { setFold(f, open); }); }
 
+  // Where goTo lands a target's top (px from the viewport top). `[`/`]` reference
+  // this so a just-navigated turn isn't re-selected.
+  var GOTO_Y = 120;
   function goTo(target) {
     if (!target) return;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
-    window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 120, behavior: "smooth" });
+    window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - GOTO_Y, behavior: "smooth" });
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
   }
@@ -622,10 +629,14 @@
     }
     if (e.key === "j" || e.key === "k") {
       e.preventDefault();
-      var hs = all(".fold-h");
+      // Only VISIBLE fold headers — a header inside a collapsed group (or hidden by
+      // the tool filter) has `offsetParent === null`, so it's skipped. Move relative
+      // to whatever's focused now, so every stroke lands on the next visible one.
+      var hs = all(".fold-h").filter(function (x) { return x.offsetParent !== null; });
       if (!hs.length) return;
-      ki = Math.max(0, Math.min(hs.length - 1, ki + (e.key === "j" ? 1 : -1)));
-      var h = hs[ki];
+      var cur = hs.indexOf(document.activeElement);
+      var next = cur < 0 ? (e.key === "j" ? 0 : hs.length - 1) : cur + (e.key === "j" ? 1 : -1);
+      var h = hs[Math.max(0, Math.min(hs.length - 1, next))];
       h.focus({ preventScroll: true });
       var r = h.getBoundingClientRect();
       if (r.top < 100 || r.bottom > window.innerHeight - 60) {
@@ -642,11 +653,20 @@
     }
     if (e.key === "[" || e.key === "]") {
       e.preventDefault();
+      // Position-based (not index-of-curTurn, which lags a scroll): `]` goes to the
+      // first turn below the goTo landing line, `[` to the last turn above it. The
+      // ±dead-zone around GOTO_Y stops a just-navigated turn from re-selecting itself.
       var turns = all("[data-turn]");
       if (!turns.length) return;
-      var ci = turns.indexOf(curTurn);
-      if (ci < 0) ci = 0;
-      goTo(turns[Math.max(0, Math.min(turns.length - 1, ci + (e.key === "]" ? 1 : -1)))]);
+      var dest = null;
+      if (e.key === "]") {
+        dest = turns.find(function (t) { return t.getBoundingClientRect().top > GOTO_Y + 8; })
+          || turns[turns.length - 1];
+      } else {
+        turns.forEach(function (t) { if (t.getBoundingClientRect().top < GOTO_Y - 8) dest = t; });
+        dest = dest || turns[0];
+      }
+      goTo(dest);
     }
   });
 
