@@ -651,6 +651,7 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
     <div id="stream"></div>
   </main>
 </div>
+<button id="newbadge">↓ new messages</button>
 <script id="session-data" type="application/jsonl">
 {jsonl_esc}
 </script>
@@ -694,14 +695,13 @@ fn snapshot(
                 .with_context(|| format!("open transcript {}", path.display()))?,
         ),
     );
-    let title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session")
-        .to_string();
+    let session_id = session_id(path);
     let cwd = discover::session_cwd(path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    // Prefer the repo/dir name as the display title; fall back to the session id
+    // when the transcript records no cwd.
+    let display = repo_name(&cwd).unwrap_or_else(|| session_id.clone());
     let turn_count = blocks
         .iter()
         .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
@@ -716,9 +716,9 @@ fn snapshot(
         .sum::<usize>();
     let meta = json!({
         "t": "meta",
-        "title": title,
+        "title": display,
         "agent": agent.label(),
-        "sid": title,
+        "sid": session_id,
         "path": path.display().to_string(),
         "cwd": &cwd,
         "turns": turn_count,
@@ -733,6 +733,33 @@ fn snapshot(
         },
     });
     Ok(build_jsonl(&blocks, &user_times, fold, &cwd, meta))
+}
+
+/// The session id — the transcript file stem (the UUID Claude/Codex names it).
+fn session_id(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session")
+        .to_string()
+}
+
+/// The repo/directory name for a session cwd (its last path segment), for the page
+/// title — `/Users/hong/personal/claude-replay` → `claude-replay`. `None` when the
+/// cwd is empty (no title to derive; callers fall back to the session id).
+fn repo_name(cwd: &str) -> Option<String> {
+    Path::new(cwd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// The page's display title: the session's repo/dir name, else its id.
+fn display_title(path: &Path) -> String {
+    let cwd = discover::session_cwd(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    repo_name(&cwd).unwrap_or_else(|| session_id(path))
 }
 
 /// Append to `companion` only the block lines beyond `emitted`, returning the new
@@ -760,11 +787,8 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let (jsonl, turns) = snapshot(agent, path, args, &fold)?;
-    let title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session")
-        .to_string();
+    // The page title is the repo name; files are named by the session id.
+    let title = display_title(path);
 
     // `--dump-html -` streams the page to stdout (pipes / tests); never live.
     let stem = match args.dump_html.as_ref().and_then(|o| o.as_deref()) {
@@ -842,8 +866,27 @@ fn follow_and_append(
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
         let lines: Vec<&str> = fresh.lines().collect();
-        emitted = append_new(companion, emitted, &lines)?;
+        if lines.len() > emitted {
+            emitted = append_new(companion, emitted, &lines)?;
+            // Re-append the refreshed meta (line 0) so the page updates its usage /
+            // cost / duration totals as the session grows. It renders no block, so
+            // the renderer treats it as a metadata refresh, not a "new message".
+            if let Some(meta) = lines.first() {
+                append_line(companion, meta)?;
+            }
+        }
     }
+}
+
+/// Append a single already-formatted JSONL line (used to refresh the meta record).
+fn append_line(companion: &Path, line: &str) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(companion)
+        .with_context(|| format!("append {}", companion.display()))?;
+    writeln!(f, "{line}")?;
+    Ok(())
 }
 
 /// `--html`: render to HTML and open it in the browser instead of the TUI.
@@ -858,17 +901,15 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let (jsonl, turns) = snapshot(agent, path, args, &fold)?;
-    let title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session")
-        .to_string();
+    // Files are named by the session id (unique); the page title is the repo name.
+    let sid = session_id(path);
+    let title = display_title(path);
 
     // A private temp dir keeps the two files together (the page fetches the
     // companion by basename) without cluttering the cwd.
-    let dir = std::env::temp_dir().join("claude-replay").join(&title);
+    let dir = std::env::temp_dir().join("claude-replay").join(&sid);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let html_path = dir.join(format!("{title}.html"));
+    let html_path = dir.join(format!("{sid}.html"));
 
     if !args.follow {
         std::fs::write(&html_path, build_html(&title, &jsonl, &turns, None))
@@ -881,15 +922,15 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     }
 
     // Live: companion + loopback server + browser + tail.
-    let companion = dir.join(format!("{title}.jsonl"));
+    let companion = dir.join(format!("{sid}.jsonl"));
     std::fs::write(&companion, format!("{jsonl}\n"))
         .with_context(|| format!("write {}", companion.display()))?;
-    let src = format!("{title}.jsonl");
+    let src = format!("{sid}.jsonl");
     std::fs::write(&html_path, build_html(&title, &jsonl, &turns, Some(&src)))
         .with_context(|| format!("write {}", html_path.display()))?;
 
     let port = spawn_http_server(dir.clone())?;
-    let url = format!("http://127.0.0.1:{port}/{title}.html");
+    let url = format!("http://127.0.0.1:{port}/{sid}.html");
     eprintln!("serving {} at {url} (live — Ctrl-C to stop)", dir.display());
     eprintln!("  open in a browser, or copy the URL above");
     open_in_browser(&url);

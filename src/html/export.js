@@ -330,6 +330,28 @@
     });
   }
 
+  // ── follow-the-bottom (live tail UX) ──────────────────────────────────
+  // Are we scrolled to (near) the end of the page?
+  var BOTTOM_SLACK = 80;
+  function atBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - BOTTOM_SLACK;
+  }
+  function toBottom(smooth) {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }
+  var newCount = 0;
+  var badge = $("newbadge");
+  function showNew(n) {
+    newCount += n;
+    badge.textContent = "↓ " + newCount + " new message" + (newCount === 1 ? "" : "s");
+    badge.classList.add("on");
+  }
+  function clearNew() {
+    newCount = 0;
+    badge.classList.remove("on");
+  }
+  badge.addEventListener("click", function () { toBottom(true); clearNew(); });
+
   // Initial render from the inlined snapshot.
   var inline = $("session-data");
   turnlist.textContent = "";
@@ -345,9 +367,17 @@
       fetch(src, { cache: "no-store" })
         .then(function (r) { return r.text(); })
         .then(function (text) {
+          var wasAtBottom = atBottom();
           var before = stream.childElementCount;
           consume(text);
-          if (stream.childElementCount !== before) spy();
+          var added = stream.childElementCount - before;
+          if (added > 0) {
+            // Already at the end → keep following it (and stay caught up);
+            // otherwise flag the new content with the badge.
+            if (wasAtBottom) { toBottom(false); clearNew(); }
+            else showNew(added);
+            spy();
+          }
         })
         .catch(function () {
           // file:// blocks same-directory fetch in most browsers; the inlined
@@ -531,12 +561,20 @@
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
     if (raf) return;
-    raf = requestAnimationFrame(function () { raf = null; spy(); });
+    raf = requestAnimationFrame(function () {
+      raf = null;
+      spy();
+      if (newCount && atBottom()) clearNew(); // caught up by scrolling down
+    });
   }, { passive: true });
   spy();
 
+  // On load, deep-link wins; otherwise jump to the end so the newest messages
+  // show first (and live updates then follow the bottom).
   if (location.hash) {
     var target = $(location.hash.slice(1));
     if (target) setTimeout(function () { goTo(target); }, 150);
+  } else {
+    toBottom(false);
   }
 })();
