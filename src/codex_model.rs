@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub(crate) fn parse_codex(jsonl: &str, args: &Args) -> Vec<Block> {
     let call_ids = scan_call_ids(jsonl.lines());
-    parse_lines(jsonl.lines(), &call_ids, args)
+    parse_lines(jsonl.lines(), &call_ids, args, &mut Vec::new())
 }
 
 pub(crate) fn parse_codex_path(path: &Path, args: &Args) -> io::Result<Vec<Block>> {
@@ -17,6 +17,23 @@ pub(crate) fn parse_codex_path(path: &Path, args: &Args) -> io::Result<Vec<Block
         open()?.lines().map_while(|line| line.ok()),
         &call_ids,
         args,
+        &mut Vec::new(),
+    ))
+}
+
+/// `parse_codex_path` + one timestamp per user turn (see `model::parse_main`).
+pub(crate) fn parse_codex_path_timed(
+    path: &Path,
+    args: &Args,
+    user_times: &mut Vec<Option<f64>>,
+) -> io::Result<Vec<Block>> {
+    let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
+    let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
+    Ok(parse_lines(
+        open()?.lines().map_while(|line| line.ok()),
+        &call_ids,
+        args,
+        user_times,
     ))
 }
 
@@ -43,8 +60,13 @@ fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     call_ids: &HashSet<String>,
     _args: &Args,
+    user_times: &mut Vec<Option<f64>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
+    // See `model::parse_main`: stamp the previous event's user turns on the next
+    // iteration so an early `continue` can't drop them.
+    let mut pending_ts: Option<f64> = None;
+    let mut stamped = 0usize;
     let mut slots: HashMap<String, usize> = HashMap::new();
     let mut pending: HashMap<String, String> = HashMap::new();
     let mut cwd = String::new();
@@ -58,6 +80,8 @@ fn parse_lines<S: AsRef<str>>(
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
+        crate::model::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        pending_ts = timestamp;
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 if cwd.is_empty() {
@@ -152,6 +176,7 @@ fn parse_lines<S: AsRef<str>>(
             _ => {}
         }
     }
+    crate::model::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     out
 }
 
@@ -413,6 +438,7 @@ mod tests {
             unfold: None,
             read_match: None,
             dump: None,
+            dump_html: None,
             width: None,
         }
     }

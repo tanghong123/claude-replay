@@ -11,6 +11,7 @@ pub mod codex_metrics;
 pub mod codex_model;
 pub mod discover;
 mod highlight;
+pub mod html_export;
 pub mod jdi;
 mod markdown;
 pub mod metrics;
@@ -118,6 +119,14 @@ pub struct Args {
     /// Width for `--dump` (columns). Defaults to the terminal width, else 100.
     #[arg(long, value_name = "N")]
     pub width: Option<usize>,
+
+    /// Export a single self-contained `.html` (no TUI). With no value, write
+    /// `<stem>.html` using a deduced stem; `--dump-html <stem>` writes to that
+    /// stem; `--dump-html -` prints the page to stdout. Honors --fold/--unfold/
+    /// --full. Add `-f`/`--follow` to also write an append-only `<stem>.jsonl`
+    /// companion the page polls, so the export keeps up with a live session.
+    #[arg(long, num_args(0..=1), value_name = "STEM", conflicts_with = "dump")]
+    pub dump_html: Option<Option<String>>,
 }
 
 /// Entry point for the `claude-replay` viewer binary.
@@ -125,13 +134,15 @@ pub fn run_viewer() -> Result<()> {
     let args = Args::parse();
     // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The
     // picker merges sessions from every agent (filtered by --agent) for this dir.
-    if args.target.is_none() && !args.latest && args.dump.is_none() {
+    if args.target.is_none() && !args.latest && args.dump.is_none() && args.dump_html.is_none() {
         return app::run_interactive(&args);
     }
     // Explicit path / session id / --latest: resolve across agents (honoring the
     // --agent filter). The agent for each opened file is auto-detected downstream.
     let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
-    if args.dump.is_some() {
+    if args.dump_html.is_some() {
+        html_export::export(&args, &path)
+    } else if args.dump.is_some() {
         app::dump(&args, &path)
     } else {
         app::run(&args, &path)

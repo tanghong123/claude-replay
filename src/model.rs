@@ -425,7 +425,7 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// live-tail path (small in-memory batches); makes two cheap passes over the str.
 pub fn parse(jsonl: &str, args: &Args) -> Vec<Block> {
     let tool_ids = scan_tool_ids(jsonl.lines());
-    parse_main(jsonl.lines(), &tool_ids, args)
+    parse_main(jsonl.lines(), &tool_ids, args, &mut Vec::new())
 }
 
 /// Parse JSONL text with the parser for `agent`.
@@ -450,7 +450,36 @@ pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Bl
         open()?.lines().map_while(|r| r.ok()),
         &tool_ids,
         args,
+        &mut Vec::new(),
     ))
+}
+
+/// Like `parse_path_for`, but also returns one wall-clock timestamp (epoch
+/// seconds) per **user turn**, in order — the HTML export shows them beside each
+/// turn. Codex transcripts yield the same shape.
+pub fn parse_path_timed_for(
+    agent: Agent,
+    path: &std::path::Path,
+    args: &Args,
+) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
+    let mut times = Vec::new();
+    let blocks = match agent {
+        Agent::Claude => {
+            use std::io::BufRead;
+            let open = || -> std::io::Result<_> {
+                Ok(std::io::BufReader::new(std::fs::File::open(path)?))
+            };
+            let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
+            parse_main(
+                open()?.lines().map_while(|r| r.ok()),
+                &tool_ids,
+                args,
+                &mut times,
+            )
+        }
+        Agent::Codex => crate::codex_model::parse_codex_path_timed(path, args, &mut times)?,
+    };
+    Ok((blocks, times))
 }
 
 /// Streaming file parse with the parser for `agent`.
@@ -521,12 +550,22 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
 /// in **no** tool_use is a genuine orphan, emitted inline. This reproduces the old
 /// two-pass semantics exactly while keeping at most one line's `Value` live.
 /// `_args` is unused (fold flags are resolved in `view`).
+/// `user_times` is filled with one entry per emitted **user turn** (`UserText` /
+/// `Command`), in order: the epoch-seconds of the event that produced it (`None`
+/// when unparsable). Turn grouping never absorbs or reorders user blocks, so the
+/// Nth user turn of the returned list is `user_times[N]`. Only the HTML export
+/// consumes it; the TUI passes a throwaway vec.
 fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     tool_ids: &HashSet<String>,
     _args: &Args,
+    user_times: &mut Vec<Option<f64>>,
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
+    // Timestamp for blocks emitted by the event being processed, plus how far we've
+    // stamped. Flushed at the next iteration so an early `continue` can't lose it.
+    let mut pending_ts: Option<f64> = None;
+    let mut stamped = 0usize;
     // tool_use id -> index of its ToolUse block in `out`, for result back-patching.
     let mut tool_slot: HashMap<String, usize> = HashMap::new();
     // Results seen before their tool_use (id is in `tool_ids`), awaiting it.
@@ -556,6 +595,9 @@ fn parse_main<S: AsRef<str>>(
             .get("timestamp")
             .and_then(|t| t.as_str())
             .and_then(epoch_secs);
+        // Stamp the user turns the previous event emitted, then claim this event's ts.
+        stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        pending_ts = ev_ts;
         match v.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
                 let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
@@ -666,7 +708,23 @@ fn parse_main<S: AsRef<str>>(
             _ => {}
         }
     }
+    stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     coalesce_activity_runs(group_turns(out))
+}
+
+/// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
+pub(crate) fn stamp_user_turns(
+    out: &[Block],
+    stamped: &mut usize,
+    ts: Option<f64>,
+    user_times: &mut Vec<Option<f64>>,
+) {
+    for b in &out[*stamped..] {
+        if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+            user_times.push(ts);
+        }
+    }
+    *stamped = out.len();
 }
 
 fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
@@ -738,6 +796,7 @@ mod tests {
             read_match: None,
             dump: Some(Some("-".into())),
             width: None,
+            dump_html: None,
         }
     }
 

@@ -64,6 +64,9 @@ claude-replay <id|--latest> --dump -          plain text to stdout (no TUI) — 
 claude-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
 claude-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
 claude-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
+claude-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
+claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
+claude-replay <id> -f --dump-html [stem]       live: also write an append-only <stem>.jsonl the page follows
 ```
 
 **Multi-agent.** With no argument, the picker merges this directory's sessions from
@@ -77,6 +80,16 @@ the Codex root.)
 `--dump` renders through the same pipeline as the live viewer and applies the same
 default fold policy, so its output matches what the TUI shows (add `--full` to expand
 every block).
+
+**`--dump-html`** exports a **single self-contained `.html`** — no network, no
+external assets — that reproduces the TUI's structure in the browser: folding,
+search (`/`), `j/k`/`[ ]` keys, a turn sidebar with scroll-spy, a usage/cost panel,
+light/dark themes (persisted), and click-to-copy on the session id and code fences.
+It honors the same `--fold`/`--unfold`/`--full` flags, but never caps a body — the
+full content is always in the file (grep-able), with long tails hidden behind a
+`⋯ N more lines` expander. The page is a fixed shell plus an append-only JSONL block
+stream inlined in the file; with `-f` the stream is also written to a companion
+`<stem>.jsonl` that the page polls, so the export follows a running session live.
 
 Default view: user turns (`❯`), assistant text (`⏺`), `✻` thinking summaries, and
 code-**modifying** actions (Edit/Write/MultiEdit + mutating Bash) with each edit as

@@ -165,7 +165,9 @@ impl FoldPolicy {
         p
     }
 
-    fn collapses(&self, b: &Block) -> bool {
+    /// Does this policy start `b` collapsed? Also drives the HTML export's
+    /// `data-open`, so a dump and an export fold identically.
+    pub fn collapses(&self, b: &Block) -> bool {
         self.folded.contains(crate::model::fold_key(b))
     }
 
@@ -1723,6 +1725,7 @@ mod tests {
             unfold: unfold.map(String::from),
             read_match: None,
             dump: None,
+            dump_html: None,
             width: None,
         }
     }

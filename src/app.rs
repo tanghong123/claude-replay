@@ -412,7 +412,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
             return Ok(());
         }
         Some(s) => s.to_string(),
-        None => deduce_stem(path, width),
+        None => deduce_stem(path, Some(width)),
     };
 
     let txt: String = lines.iter().map(plain_line).collect::<Vec<_>>().join("\n");
@@ -535,7 +535,7 @@ fn json_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
 /// Deduce the default dump stem: `<basename>-<pathhash>-<sessionid>-<width>` where
 /// basename/pathhash come from the session's project cwd, sessionid is its first 6
 /// chars, and width is the render width. cwd/sessionId are read from the transcript.
-fn deduce_stem(path: &Path, width: usize) -> String {
+pub(crate) fn deduce_stem(path: &Path, width: Option<usize>) -> String {
     use std::hash::{Hash, Hasher};
     use std::io::BufRead;
     // cwd/sessionId live in the transcript's first event; read a bounded prefix
@@ -574,7 +574,12 @@ fn deduce_stem(path: &Path, width: usize) -> String {
                 .to_string()
         });
     let sid6: String = sid.chars().take(6).collect();
-    format!("{basename}-{pathhash}-{sid6}-{width}")
+    // `--dump` suffixes the render width (its output is width-specific); the HTML
+    // export reflows in the browser, so it passes `None` and omits it.
+    match width {
+        Some(w) => format!("{basename}-{pathhash}-{sid6}-{w}"),
+        None => format!("{basename}-{pathhash}-{sid6}"),
+    }
 }
 
 #[cfg(test)]
@@ -633,7 +638,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let file = dir.join("claude-replay-deduce-stem-test-094539f2-40d7-4abc.jsonl");
         std::fs::write(&file, format!("{content}\n")).unwrap();
-        let stem = deduce_stem(&file, 140);
+        let stem = deduce_stem(&file, Some(140));
         std::fs::remove_file(&file).ok();
         assert!(stem.starts_with("claude-replay-"), "basename: {stem}");
         assert!(stem.ends_with("-094539-140"), "sessionid6 + width: {stem}");

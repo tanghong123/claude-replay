@@ -75,7 +75,7 @@ fn command_header_lines(name: &str, args: &str) -> Vec<Line<'static>> {
 }
 
 /// One step of a line-level diff.
-enum LineOp<'a> {
+pub(crate) enum LineOp<'a> {
     Eq(&'a str),
     Del(&'a str),
     Ins(&'a str),
@@ -84,7 +84,7 @@ enum LineOp<'a> {
 /// Line-level LCS → an ordered op sequence (unchanged lines stay as context,
 /// only genuinely changed runs become -/+). Avoids the old index-zip that
 /// mispaired every line after an insertion/deletion.
-fn line_diff<'a>(ol: &[&'a str], nl: &[&'a str]) -> Vec<LineOp<'a>> {
+pub(crate) fn line_diff<'a>(ol: &[&'a str], nl: &[&'a str]) -> Vec<LineOp<'a>> {
     let (n, m) = (ol.len(), nl.len());
     let mut dp = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
@@ -123,7 +123,7 @@ fn line_diff<'a>(ol: &[&'a str], nl: &[&'a str]) -> Vec<LineOp<'a>> {
 }
 
 /// Added/removed line counts from a line-level diff (for the `└ Updated` header).
-fn diff_counts(old: &str, new: &str) -> (usize, usize) {
+pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
     let ol: Vec<&str> = old.lines().collect();
     let nl: Vec<&str> = new.lines().collect();
     let (mut adds, mut dels) = (0usize, 0usize);
@@ -139,7 +139,7 @@ fn diff_counts(old: &str, new: &str) -> (usize, usize) {
 
 /// Claude Code shows only the first `WRITE_PREVIEW` lines of a file write, then a
 /// `… +N lines` marker (the full content isn't dumped into the transcript view).
-const WRITE_PREVIEW: usize = 10;
+pub(crate) const WRITE_PREVIEW: usize = 10;
 
 /// Render a whole-new-file write as syntax-highlighted, line-numbered code (no
 /// `+` gutter): `{6 spaces}{num right-aligned} {code}`. `limit` caps the shown
@@ -526,7 +526,7 @@ const OUTPUT_CAP: usize = 15;
 
 /// `Added N lines[, removed M lines]` (singular/plural; "removed" omitted at 0) —
 /// the Edit/MultiEdit result summary, matching Claude Code.
-fn edit_summary(adds: usize, dels: usize) -> String {
+pub(crate) fn edit_summary(adds: usize, dels: usize) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let a = format!("Added {adds} line{}", plural(adds));
     if dels == 0 {
@@ -630,7 +630,7 @@ fn push_capped_output(text: &str, bg: Color, fg: Color, out: &mut Vec<Line<'stat
 /// thinking closes — `Ran 1 shell command (ls), thought for 8s`. This matches the
 /// expanded body (tools then thinking). A bare turn is just `Thought for 8s`. The
 /// duration (`Xs` / `Xm Ys`) is omitted when unknown.
-fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
+pub(crate) fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
     let thought = match duration_secs {
         Some(d) if d >= 60 => format!("thought for {}m {}s", d / 60, d % 60),
         Some(d) => format!("thought for {d}s"),
@@ -645,7 +645,7 @@ fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
 }
 
 /// Uppercase the first character of `s` (ASCII-friendly; leaves the rest as-is).
-fn capitalize(s: &str) -> String {
+pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -722,7 +722,7 @@ fn command_name(cmd: &str) -> Option<String> {
 /// Summarize grouped tool calls as `listed N directories, searched for N patterns,
 /// read N files, ran N shell commands (name, …), used N tools` (each clause omitted
 /// at 0). Extends Claude Code's turn line with the shell program names.
-fn activities(tools: &[Block]) -> String {
+pub(crate) fn activities(tools: &[Block]) -> String {
     let s = |n: usize| if n == 1 { "" } else { "s" };
     let (mut dir, mut pat, mut file, mut other) = (0, 0, 0, 0);
     let mut shell_names: Vec<String> = Vec::new();
