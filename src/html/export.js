@@ -225,14 +225,16 @@
       if (head.name) h.appendChild(el("span", "tool-name", head.name));
       if (head.target) {
         if (head.path) {
-          // A file-acting tool: the path opens the file (file:// link, new tab) —
-          // the browser's stand-in for the TUI's reveal-in-Finder. Clicking
-          // elsewhere on the header still folds (see the click handler).
+          // A file-acting tool: clicking the path reveals the file. On a served
+          // (live) page the click hits the local /__reveal endpoint (browsers
+          // block http→file:// navigation); a standalone file:// page follows the
+          // native file:// link. Clicking elsewhere on the header still folds.
           var a = el("a", "tool-path", head.target);
           a.href = "file://" + head.path.split("/").map(encodeURIComponent).join("/");
           a.target = "_blank";
           a.rel = "noopener";
-          a.title = "Open " + head.path;
+          a.dataset.path = head.path;
+          a.title = "Reveal " + head.path;
           h.appendChild(a);
         } else {
           h.appendChild(el("span", "tool-target", head.target));
@@ -555,9 +557,20 @@
       goTo($(href.slice(1)));
       return;
     }
-    // A file path in a tool header opens the file (its own file:// anchor) — let
-    // the browser handle it and do NOT fold the block underneath.
-    if (e.target.closest(".tool-path")) return;
+    // A file path in a tool header reveals the file, and never folds the block.
+    var tp = e.target.closest(".tool-path");
+    if (tp) {
+      if (location.protocol === "file:") return; // native file:// link works standalone
+      e.preventDefault(); // served page: http→file:// is blocked, so ask the server
+      var orig = tp.textContent;
+      fetch("__reveal?path=" + encodeURIComponent(tp.dataset.path))
+        .then(function (r) {
+          tp.textContent = r.ok ? "revealed ✓" : "not found";
+          setTimeout(function () { tp.textContent = orig; }, 1000);
+        })
+        .catch(function () { /* server gone */ });
+      return;
+    }
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); setFold(f, f.dataset.open !== "1"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goTo(curTurn); return; }

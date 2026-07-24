@@ -983,6 +983,28 @@ fn spawn_http_server(root: std::path::PathBuf) -> Result<u16> {
     Ok(port)
 }
 
+/// Decode a `%XX`-percent-encoded string (the reveal path arrives via
+/// `encodeURIComponent`). Unknown/short escapes are passed through literally.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
     let mut line = String::new();
@@ -1004,6 +1026,23 @@ fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Re
             .write_all(head.as_bytes())
             .and_then(|_| stream.write_all(body))
     };
+    // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file
+    // manager (the served page can't follow a `file://` link: browsers block
+    // http→file navigation). Reveal-only (`open -R` / folder open), never execute;
+    // the path must exist. Loopback-bound, so only this machine can reach it.
+    if name == "__reveal" {
+        if let Some(p) = target
+            .split_once("path=")
+            .map(|(_, v)| percent_decode(v.split('&').next().unwrap_or("")))
+        {
+            let path = Path::new(&p);
+            if path.exists() {
+                crate::app::reveal_in_file_manager(path);
+                return respond(&mut stream, "200 OK", "text/plain", b"revealed");
+            }
+        }
+        return respond(&mut stream, "404 Not Found", "text/plain", b"no such path");
+    }
     // Basename-only: no traversal, no subdirs — the export writes two flat files.
     if name.is_empty() || name.contains('/') || name.contains("..") {
         return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
@@ -1358,6 +1397,18 @@ mod tests {
             None,
             "no cwd, relative → unresolvable"
         );
+    }
+
+    #[test]
+    fn percent_decode_round_trips_paths_with_spaces_and_unicode() {
+        assert_eq!(percent_decode("/a/b.rs"), "/a/b.rs");
+        assert_eq!(percent_decode("/a%20b/c.rs"), "/a b/c.rs"); // space
+        assert_eq!(
+            percent_decode("/Users/h/%E2%9C%93/x"),
+            "/Users/h/\u{2713}/x" // ✓ (multi-byte utf-8)
+        );
+        assert_eq!(percent_decode("/a%2Fb"), "/a/b"); // encoded slash
+        assert_eq!(percent_decode("bad%2"), "bad%2"); // truncated escape passes through
     }
 
     #[test]

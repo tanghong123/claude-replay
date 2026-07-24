@@ -352,7 +352,7 @@ fn event_loop<B: ratatui::backend::Backend>(
 /// explicit click). macOS: `open -R <file>` selects it in Finder / `open <dir>`
 /// for a directory. Linux: `xdg-open` the containing directory. Spawned detached
 /// so it never blocks or disturbs the TUI; failures are ignored (no file manager).
-fn reveal_in_file_manager(path: &Path) {
+pub(crate) fn reveal_in_file_manager(path: &Path) {
     let is_dir = path.is_dir();
     #[cfg(target_os = "macos")]
     {
