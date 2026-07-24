@@ -345,9 +345,32 @@ fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     ))
 }
 
+/// Resolve a tool target to an absolute path the way the TUI's
+/// `resolve_target_path` does (`~/` → `$HOME`, relative → joined onto the session
+/// `cwd`), for the header's `file://` "open" link. `None` when it can't be made
+/// absolute (no cwd and a relative target). Existence is **not** required — the
+/// export may be opened later or on another machine, and a stale `file://` link
+/// simply fails; the browser can't reveal-in-Finder regardless.
+fn resolve_abs(cwd: &str, target: &str) -> Option<String> {
+    if let Some(rest) = target.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
+            return Some(format!("{}/{rest}", home.trim_end_matches('/')));
+        }
+    }
+    if target.starts_with('/') {
+        return Some(target.to_string());
+    }
+    if cwd.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{target}", cwd.trim_end_matches('/')))
+}
+
 /// Emitter state: monotonic ids so every block deep-links (`#b7` / `#t3`).
 struct Emitter<'a> {
     fold: &'a FoldPolicy,
+    /// Session cwd — resolves relative tool targets to absolute `file://` links.
+    cwd: &'a str,
     next_block: usize,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
@@ -458,6 +481,14 @@ impl Emitter<'_> {
                     "dot".into(),
                     json!(matches!(kind, "edit" | "write" | "skill" | "agent")),
                 );
+                // File-acting tools (read/write/edit) get a `file://` path link in
+                // the header — clicking it opens the file (the browser's stand-in
+                // for the TUI's reveal-in-Finder); clicking elsewhere still folds.
+                if matches!(kind, "read" | "write" | "edit") && !target.is_empty() {
+                    if let Some(abs) = resolve_abs(self.cwd, target) {
+                        head.insert("path".into(), json!(abs));
+                    }
+                }
                 let token = highlight::token_for_target(target);
                 match kind {
                     "edit" => {
@@ -532,10 +563,12 @@ fn build_jsonl(
     blocks: &[Block],
     user_times: &[Option<f64>],
     fold: &FoldPolicy,
+    cwd: &str,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
     let mut em = Emitter {
         fold,
+        cwd,
         next_block: 0,
         turn: 0,
         turns: Vec::new(),
@@ -688,7 +721,7 @@ fn snapshot(
         "agent": agent.label(),
         "sid": title,
         "path": path.display().to_string(),
-        "cwd": cwd,
+        "cwd": &cwd,
         "turns": turn_count,
         "tools": tool_count,
         "duration_secs": m.duration_secs,
@@ -700,7 +733,7 @@ fn snapshot(
             "model": m.model,
         },
     });
-    Ok(build_jsonl(&blocks, &user_times, fold, meta))
+    Ok(build_jsonl(&blocks, &user_times, fold, &cwd, meta))
 }
 
 /// Append to `companion` only the block lines beyond `emitted`, returning the new
@@ -782,16 +815,160 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
     // since the last cycle. Runs until interrupted (like `claude-replay -f`).
     eprintln!("wrote {html_path} + {cpath} (live — open it and it follows; Ctrl-C to stop)");
     println!("{stem}");
-    let companion_path = std::path::PathBuf::from(&cpath);
-    let mut emitted = jsonl.lines().count();
+    follow_and_append(
+        agent,
+        path,
+        args,
+        &fold,
+        Path::new(&cpath),
+        jsonl.lines().count(),
+    )
+}
+
+/// Poll the transcript forever, appending newly-produced block lines to
+/// `companion`. Shared by `--dump-html -f` and `--html -f`; returns only on error
+/// (the caller runs until Ctrl-C).
+fn follow_and_append(
+    agent: Agent,
+    path: &Path,
+    args: &Args,
+    fold: &FoldPolicy,
+    companion: &Path,
+    mut emitted: usize,
+) -> Result<()> {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (fresh, _) = match snapshot(agent, path, args, &fold) {
+        let (fresh, _) = match snapshot(agent, path, args, fold) {
             Ok(s) => s,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
         let lines: Vec<&str> = fresh.lines().collect();
-        emitted = append_new(&companion_path, emitted, &lines)?;
+        emitted = append_new(companion, emitted, &lines)?;
+    }
+}
+
+/// `--html`: render to HTML and open it in the browser instead of the TUI.
+///
+/// One-shot (no `-f`): write a **self-contained** page to a temp file and open it
+/// via `file://` — no server, the process returns. Live (`-f`): also write the
+/// companion `.jsonl`, spin up a tiny **loopback HTTP server** (a `file://` page
+/// can't `fetch` its companion — browsers block cross-origin file reads), open the
+/// `http://127.0.0.1:PORT/…` page, print that URL, and tail the transcript until
+/// Ctrl-C so the page live-updates.
+pub fn serve(args: &Args, path: &Path) -> Result<()> {
+    let agent = discover::detect_agent(path);
+    let fold = FoldPolicy::from_args(args);
+    let (jsonl, turns) = snapshot(agent, path, args, &fold)?;
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session")
+        .to_string();
+
+    // A private temp dir keeps the two files together (the page fetches the
+    // companion by basename) without cluttering the cwd.
+    let dir = std::env::temp_dir().join("claude-replay").join(&title);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let html_path = dir.join(format!("{title}.html"));
+
+    if !args.follow {
+        std::fs::write(&html_path, build_html(&title, &jsonl, &turns, None))
+            .with_context(|| format!("write {}", html_path.display()))?;
+        let url = format!("file://{}", html_path.display());
+        eprintln!("opening {url}");
+        open_in_browser(&url);
+        println!("{url}");
+        return Ok(());
+    }
+
+    // Live: companion + loopback server + browser + tail.
+    let companion = dir.join(format!("{title}.jsonl"));
+    std::fs::write(&companion, format!("{jsonl}\n"))
+        .with_context(|| format!("write {}", companion.display()))?;
+    let src = format!("{title}.jsonl");
+    std::fs::write(&html_path, build_html(&title, &jsonl, &turns, Some(&src)))
+        .with_context(|| format!("write {}", html_path.display()))?;
+
+    let port = spawn_http_server(dir.clone())?;
+    let url = format!("http://127.0.0.1:{port}/{title}.html");
+    eprintln!("serving {} at {url} (live — Ctrl-C to stop)", dir.display());
+    eprintln!("  open in a browser, or copy the URL above");
+    open_in_browser(&url);
+    println!("{url}");
+    follow_and_append(agent, path, args, &fold, &companion, jsonl.lines().count())
+}
+
+/// Open `url` in the default browser (best-effort; never fails the run).
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(target_os = "windows")]
+    let prog = "explorer";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let prog = "xdg-open";
+    let _ = std::process::Command::new(prog)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// A minimal read-only HTTP server bound to loopback on an ephemeral port,
+/// serving files by basename out of `root`. Returns the chosen port; the accept
+/// loop runs on a detached thread (dies with the process on Ctrl-C). Loopback +
+/// basename-only paths keep it from exposing anything beyond the two export files.
+fn spawn_http_server(root: std::path::PathBuf) -> Result<u16> {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").context("bind loopback HTTP server")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let _ = serve_connection(stream, &root);
+            });
+        }
+    });
+    Ok(port)
+}
+
+fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut line = String::new();
+    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+    // `GET /name.html HTTP/1.1` → the requested basename.
+    let target = line.split_whitespace().nth(1).unwrap_or("/");
+    let name = target
+        .trim_start_matches('/')
+        .split('?')
+        .next()
+        .unwrap_or("");
+    let respond = |stream: &mut std::net::TcpStream, code: &str, ct: &str, body: &[u8]| {
+        let head = format!(
+            "HTTP/1.1 {code}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\
+             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(head.as_bytes())
+            .and_then(|_| stream.write_all(body))
+    };
+    // Basename-only: no traversal, no subdirs — the export writes two flat files.
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
+    }
+    match std::fs::read(root.join(name)) {
+        Ok(bytes) => {
+            let ct = if name.ends_with(".html") {
+                "text/html; charset=utf-8"
+            } else if name.ends_with(".jsonl") || name.ends_with(".json") {
+                "application/json; charset=utf-8"
+            } else {
+                "application/octet-stream"
+            };
+            respond(&mut stream, "200 OK", ct, &bytes)
+        }
+        Err(_) => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
     }
 }
 
@@ -804,7 +981,7 @@ mod tests {
     /// given fold policy and no timestamps — the shape the tests assert on.
     fn stream(blocks: &[Block], fold: &FoldPolicy) -> Vec<Value> {
         let times: Vec<Option<f64>> = Vec::new();
-        let (jsonl, _turns) = build_jsonl(blocks, &times, fold, json!({ "t": "meta" }));
+        let (jsonl, _turns) = build_jsonl(blocks, &times, fold, "/repo", json!({ "t": "meta" }));
         jsonl
             .lines()
             .skip(1) // meta line
@@ -943,8 +1120,13 @@ mod tests {
             Block::UserText("second".into()),
         ];
         let times = vec![Some(1000.0), Some(2000.0)]; // one per user turn
-        let (jsonl, turns) =
-            build_jsonl(&blocks, &times, &FoldPolicy::none(), json!({ "t": "meta" }));
+        let (jsonl, turns) = build_jsonl(
+            &blocks,
+            &times,
+            &FoldPolicy::none(),
+            "/repo",
+            json!({ "t": "meta" }),
+        );
         let objs: Vec<Value> = jsonl
             .lines()
             .skip(1)
@@ -1046,6 +1228,65 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "meta\nb1\nb2\n");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_tools_get_an_absolute_path_link_but_bash_does_not() {
+        let blocks = vec![
+            Block::ToolUse {
+                name: "Edit".into(),
+                target: "src/x.rs".into(), // relative → resolved against cwd
+                diffs: vec![("a".into(), "b".into())],
+                output: None,
+                patch: None,
+                read_lines: None,
+            },
+            bash("ls -la", "out"),
+        ];
+        let out = stream(&blocks, &FoldPolicy::none());
+        // The Edit header carries the resolved absolute path (cwd + target).
+        assert_eq!(out[0]["head"]["path"], json!("/repo/src/x.rs"));
+        // Bash is a command, not a file — no path link.
+        assert!(out[1]["head"].get("path").is_none(), "bash has no path");
+    }
+
+    #[test]
+    fn resolve_abs_handles_absolute_relative_and_missing_cwd() {
+        assert_eq!(
+            resolve_abs("/repo", "/etc/hosts").as_deref(),
+            Some("/etc/hosts")
+        );
+        assert_eq!(
+            resolve_abs("/repo", "src/a.rs").as_deref(),
+            Some("/repo/src/a.rs")
+        );
+        assert_eq!(
+            resolve_abs("/repo/", "src/a.rs").as_deref(),
+            Some("/repo/src/a.rs")
+        );
+        assert_eq!(
+            resolve_abs("", "src/a.rs"),
+            None,
+            "no cwd, relative → unresolvable"
+        );
+    }
+
+    #[test]
+    fn html_flag_parses_and_conflicts_with_the_dump_modes() {
+        use clap::Parser;
+        // `--html` alone, and with `-f`.
+        assert!(
+            Args::try_parse_from(["claude-replay", "sid", "--html"])
+                .unwrap()
+                .html
+        );
+        let live = Args::try_parse_from(["claude-replay", "sid", "-f", "--html"]).unwrap();
+        assert!(live.html && live.follow);
+        // Mutually exclusive with the file-writing dump modes.
+        assert!(
+            Args::try_parse_from(["claude-replay", "sid", "--html", "--dump-html", "-"]).is_err()
+        );
+        assert!(Args::try_parse_from(["claude-replay", "sid", "--html", "--dump", "-"]).is_err());
     }
 
     #[test]

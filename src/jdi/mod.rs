@@ -1132,6 +1132,7 @@ fn print_live_progress(agent: Agent, path: &Path) {
         read_match: None,
         dump: None,
         dump_html: None,
+        html: false,
         width: None,
     };
     let Ok(blocks) = crate::model::parse_path_for(agent, path, &args) else {
@@ -2138,6 +2139,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         read_match: None,
         dump: None,
         dump_html: None,
+        html: false,
         width: None,
     };
     crate::app::run(&args, path)

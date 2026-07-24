@@ -1726,6 +1726,7 @@ mod tests {
             read_match: None,
             dump: None,
             dump_html: None,
+            html: false,
             width: None,
         }
     }

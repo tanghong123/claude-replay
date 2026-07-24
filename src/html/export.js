@@ -217,7 +217,21 @@
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
       if (head.name) h.appendChild(el("span", "tool-name", head.name));
-      if (head.target) h.appendChild(el("span", "tool-target", head.target));
+      if (head.target) {
+        if (head.path) {
+          // A file-acting tool: the path opens the file (file:// link, new tab) —
+          // the browser's stand-in for the TUI's reveal-in-Finder. Clicking
+          // elsewhere on the header still folds (see the click handler).
+          var a = el("a", "tool-path", head.target);
+          a.href = "file://" + head.path.split("/").map(encodeURIComponent).join("/");
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.title = "Open " + head.path;
+          h.appendChild(a);
+        } else {
+          h.appendChild(el("span", "tool-target", head.target));
+        }
+      }
       chips(head, h);
     }
     h.appendChild(anchor(b.id));
@@ -273,13 +287,17 @@
     turnlist.appendChild(item);
   }
 
+  // Render every JSONL record we haven't yet. `consumed` counts *records*
+  // (non-empty lines), not array indices — the inline snapshot and the polled
+  // companion frame their newlines differently, so an index would misalign and
+  // new lines would be silently skipped. Stop at the first line that won't parse
+  // (a partial tail caught mid-append); the next poll retries it.
   function consume(text) {
-    var lines = text.split("\n");
-    for (; consumed < lines.length; consumed++) {
-      var line = lines[consumed].trim();
-      if (!line) continue;
+    var recs = text.split("\n").filter(function (l) { return l.trim(); });
+    while (consumed < recs.length) {
       var obj;
-      try { obj = JSON.parse(line); } catch (e) { continue; }
+      try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
+      consumed++;
       if (obj.t === "meta") { renderMeta(obj); continue; }
       if (obj.t !== "block") continue;
       stream.appendChild(renderBlock(obj));
@@ -367,6 +385,9 @@
       goTo($(href.slice(1)));
       return;
     }
+    // A file path in a tool header opens the file (its own file:// anchor) — let
+    // the browser handle it and do NOT fold the block underneath.
+    if (e.target.closest(".tool-path")) return;
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); setFold(f, f.dataset.open !== "1"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goTo(curTurn); return; }

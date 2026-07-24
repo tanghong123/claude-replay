@@ -127,11 +127,25 @@ pub struct Args {
     /// companion the page polls, so the export keeps up with a live session.
     #[arg(long, num_args(0..=1), value_name = "STEM", conflicts_with = "dump")]
     pub dump_html: Option<Option<String>>,
+
+    /// Open the transcript as an HTML page in your browser instead of the TUI.
+    /// One-shot opens a self-contained `file://` page; with `-f`/`--follow` it
+    /// serves a live page over loopback HTTP and follows the session, printing the
+    /// URL. Honors --fold/--unfold/--full.
+    #[arg(long, conflicts_with_all = ["dump", "dump_html"])]
+    pub html: bool,
 }
 
 /// Entry point for the `claude-replay` viewer binary.
 pub fn run_viewer() -> Result<()> {
     let args = Args::parse();
+    // `--html`: open a browser instead of the TUI. With no id/--latest, follow the
+    // most recent session for this dir (the natural target for `-f --html`).
+    if args.html {
+        let latest = args.latest || args.target.is_none();
+        let path = discover::resolve_any(args.agent, args.target.as_deref(), latest)?;
+        return html_export::serve(&args, &path);
+    }
     // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The
     // picker merges sessions from every agent (filtered by --agent) for this dir.
     if args.target.is_none() && !args.latest && args.dump.is_none() && args.dump_html.is_none() {

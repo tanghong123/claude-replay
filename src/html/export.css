@@ -211,6 +211,14 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
   font: 12px var(--mono); color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* A file-acting tool's path — clickable to open the file. Looks like the plain
+   target until hovered, then reads as a link (matching the session-id affordance). */
+.tool-path {
+  font: 12px var(--mono); color: var(--muted); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-bottom: 1px dashed transparent; text-decoration: none;
+}
+.tool-path:hover { color: var(--link); border-bottom-color: var(--link); text-decoration: none; }
 .summary { color: var(--muted); font-size: 13px; }
 .summary .progs { font-family: var(--mono); font-size: 11.5px; }
 .chip {

@@ -29,9 +29,10 @@ never skip, stub, or defer a feature "because it needs a terminal."
 - `view.rs` state machine + draw (TestBackend-testable) · `app.rs` terminal + input
 - `tail.rs` byte-offset live tail · `discover.rs` find transcript · `theme.rs` styles
 - `metrics.rs` footer tokens/cost · `highlight.rs` syntect · `codex_{model,discover,metrics}.rs` Codex
-- `html_export.rs` `--dump-html` → one self-contained `.html` (fixed shell + `html/export.{css,js}`
-  embedded; Rust emits an append-only JSON block stream, the JS renders it; `-f` writes a
-  companion `<stem>.jsonl` the page polls). Reuses `model`/`render`/`markdown`/`highlight`.
+- `html_export.rs` `--dump-html` (write files) / `--html` (open browser; `-f` serves live over a
+  loopback HTTP server since a `file://` page can't `fetch`) → one self-contained `.html` (fixed
+  shell + `html/export.{css,js}` embedded; Rust emits an append-only JSON block stream, the JS
+  renders it; `-f` writes a companion `<stem>.jsonl` the page polls). Reuses `model`/`render`/`markdown`/`highlight`.
 - `jdi/` the **`agent-jdi`** binary (unattended-run supervisor); see `src/jdi/DESIGN.md`
 
 The viewer's phased plan (P0–P8) is **built** — see `DESIGN.md` for the design

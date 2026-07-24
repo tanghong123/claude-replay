@@ -834,6 +834,7 @@ mod tests {
             dump: Some(Some("-".into())),
             width: None,
             dump_html: None,
+            html: false,
         }
     }
 

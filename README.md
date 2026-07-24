@@ -67,6 +67,8 @@ claude-replay <id|--latest> --dump --full     dump with everything expanded (def
 claude-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
 claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
 claude-replay <id> -f --dump-html [stem]       live: also write an append-only <stem>.jsonl the page follows
+claude-replay <id|--latest> --html             open the transcript as an HTML page in your browser (no TUI)
+claude-replay <id> -f --html                   live HTML: serve over loopback + follow the session in the browser
 ```
 
 **Multi-agent.** With no argument, the picker merges this directory's sessions from
@@ -90,6 +92,17 @@ full content is always in the file (grep-able), with long tails hidden behind a
 `⋯ N more lines` expander. The page is a fixed shell plus an append-only JSONL block
 stream inlined in the file; with `-f` the stream is also written to a companion
 `<stem>.jsonl` that the page polls, so the export follows a running session live.
+Clicking a **file path** in a tool header (`Write`/`Update`/`Read`) opens that file
+(`file://`, new tab) — the browser's stand-in for the TUI's reveal-in-Finder;
+clicking elsewhere on the header still folds.
+
+**`--html`** is the GUI counterpart to the TUI: it renders the page and **opens it
+in your browser** instead of drawing the terminal UI, printing the URL. One-shot
+opens a self-contained `file://` page. Live (`-f --html`) serves the page over a
+tiny **loopback HTTP server** (a `file://` page can't `fetch` its companion —
+browsers block cross-origin file reads) and follows the session, so the browser
+updates as new turns land; copy the printed `http://127.0.0.1:…` URL to open it
+anywhere. Ctrl-C stops the server.
 
 Default view: user turns (`❯`), assistant text (`⏺`), `✻` thinking summaries, and
 code-**modifying** actions (Edit/Write/MultiEdit + mutating Bash) with each edit as
