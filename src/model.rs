@@ -606,6 +606,12 @@ fn parse_main<S: AsRef<str>>(
     // Timestamp of the last user/tool-result event — the moment the model's next
     // generation was requested — so a thinking block's duration is `its ts − this`.
     let mut trigger_ts: Option<f64> = None;
+    // The pending prompt queue: messages the human submitted mid-turn that Claude
+    // Code records as `queue-operation` events (not `user` events) until the turn
+    // consumes them. Replaying enqueue/dequeue/remove leaves the still-waiting
+    // ones, which we surface as pending user turns so a live viewer shows the
+    // human's in-flight input (see `apply_queue_op`). `(content, timestamp)`.
+    let mut queue: Vec<(String, Option<f64>)> = Vec::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -742,11 +748,60 @@ fn parse_main<S: AsRef<str>>(
                     }
                 }
             }
+            // Human input submitted mid-turn: queued, not yet a `user` event.
+            Some("queue-operation") => apply_queue_op(&v, &mut queue),
             _ => {}
         }
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-    coalesce_activity_runs(group_turns(out))
+    let mut out = coalesce_activity_runs(group_turns(out));
+    // Append whatever's still waiting in the prompt queue as pending user turns,
+    // so a live view shows the human's in-flight input before the turn consumes it.
+    for (content, ts) in queue {
+        out.push(Block::UserText(content));
+        user_times.push(ts);
+    }
+    out
+}
+
+/// Apply one `queue-operation` event to the pending-prompt `queue`, which holds
+/// only genuine human prompts (`is_queue_prose`). `enqueue` adds one; a `remove`
+/// or `dequeue` that names its content drops that exact message (it was consumed
+/// or edited). Content-less pops are ignored on purpose: Claude Code's real queue
+/// also holds background `<task-notification>`s we don't track, so a bare front
+/// pop could target one of those — dropping the wrong prompt. What remains is the
+/// set of prompts submitted but not yet picked up: the true pending queue.
+fn apply_queue_op(v: &Value, queue: &mut Vec<(String, Option<f64>)>) {
+    let content = v.get("content").and_then(|c| c.as_str());
+    match v.get("operation").and_then(|o| o.as_str()) {
+        Some("enqueue") => {
+            if let Some(c) = content.filter(|c| is_queue_prose(c)) {
+                let ts = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(epoch_secs);
+                queue.push((c.trim().to_string(), ts));
+            }
+        }
+        Some("remove") | Some("dequeue") => {
+            if let Some(c) = content.map(str::trim) {
+                if let Some(i) = queue.iter().position(|(q, _)| q == c) {
+                    queue.remove(i);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A queued message worth showing as a pending human turn — genuine prose, not a
+/// background `<task-notification>`, an interrupt marker, or blank input.
+fn is_queue_prose(s: &str) -> bool {
+    let t = s.trim_start();
+    !t.is_empty()
+        && !t.starts_with("<task-notification>")
+        && !t.starts_with("[Request interrupted")
+        && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
 }
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
@@ -870,6 +925,31 @@ mod tests {
             2,
             "only the two human messages are turns"
         );
+    }
+
+    /// Mid-turn prompts live only as `queue-operation` events until consumed. Those
+    /// still waiting (enqueued, no matching remove) render as pending user turns at
+    /// the end; consumed ones (removed by content) and background task-notifications
+    /// do not.
+    #[test]
+    fn pending_queue_prompts_render_but_consumed_and_noise_do_not() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"consumed prompt"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:02.000Z","content":"still waiting"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"<task-notification>\nbg\n</task-notification>"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-06-30T03:00:04.000Z","content":"consumed prompt"}
+"##;
+        let blocks = parse(jsonl, &args());
+        // The real turn, then only the still-waiting prompt (consumed + noise gone).
+        let users: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users, vec!["real turn", "still waiting"], "{blocks:?}");
     }
 
     /// A user message with no visible character — only whitespace or a control

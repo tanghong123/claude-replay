@@ -306,6 +306,10 @@
       try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
       consumed++;
       if (obj.t === "meta") { renderMeta(obj); continue; }
+      // A rewritten tail: drop rendered blocks from index `from`, the following
+      // records re-render them (the live transcript rewrites its last blocks —
+      // a thinking block closing, a tool result landing, an activity coalescing).
+      if (obj.t === "reset") { resetFrom(obj.from); continue; }
       if (obj.t !== "block") continue;
       stream.appendChild(renderBlock(obj));
       if (obj.turn != null) addTurn(obj);
@@ -313,6 +317,17 @@
     clampLongTurns();
     buildToolMenu();
     if (filter) applyFilter(filter); // fold/expand any newly-arrived matches
+  }
+
+  // Drop rendered blocks from stream index `from` onward (a rewritten tail), plus
+  // their sidebar turn entries, so the re-emitted records rebuild them cleanly.
+  function resetFrom(from) {
+    while (stream.children.length > from) {
+      var last = stream.lastElementChild;
+      var si = turnlist.querySelector('.side-item[data-t="' + last.id + '"]');
+      if (si) si.remove();
+      last.remove();
+    }
   }
 
   // ── tool-use filter ───────────────────────────────────────────────────

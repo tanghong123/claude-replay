@@ -781,24 +781,9 @@ fn display_title(path: &Path) -> String {
     repo_name(&cwd).unwrap_or_else(|| session_id(path))
 }
 
-/// Append to `companion` only the block lines beyond `emitted`, returning the new
-/// emitted count. Regeneration is stable-prefix (positional ids), so once a block
-/// line is written it never changes — matching the page's append-only consume.
-/// A shrunk stream (a compaction rewrite) is skipped, not truncated, to preserve
-/// the append-only contract.
-fn append_new(companion: &Path, emitted: usize, lines: &[&str]) -> Result<usize> {
-    if lines.len() <= emitted {
-        return Ok(emitted);
-    }
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(companion)
-        .with_context(|| format!("append {}", companion.display()))?;
-    for line in &lines[emitted..] {
-        writeln!(f, "{line}")?;
-    }
-    Ok(lines.len())
+/// The block lines of a stream (everything after the leading `meta` line).
+fn block_lines(jsonl: &str) -> Vec<String> {
+    jsonl.lines().skip(1).map(String::from).collect()
 }
 
 /// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
@@ -865,22 +850,30 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
         args,
         &fold,
         Path::new(&cpath),
-        jsonl.lines().count(),
+        block_lines(&jsonl),
         reveal,
     )
 }
 
-/// Poll the transcript forever, appending newly-produced block lines to
-/// `companion`. Shared by `--dump-html -f` and `--html -f`; returns only on error
-/// (the caller runs until Ctrl-C). `reveal` must match the initial snapshot so the
-/// appended blocks keep the same shape.
+/// Poll the transcript forever, streaming changes to `companion`. Shared by
+/// `--dump-html -f` and `--html -f`; returns only on error (the caller runs until
+/// Ctrl-C). `prev` is the block lines already on the page (excluding the meta).
+///
+/// The tail of a live transcript is **rewritten**, not just appended to: a
+/// thinking block finalizes, a tool result lands, an activity group coalesces. So
+/// each cycle we diff the fresh block lines against `prev` and find the first that
+/// differs. Blocks before it are stable → left alone (the common case is a pure
+/// append: no divergence, just new lines). From the first divergence we emit a
+/// `{"t":"reset","from":N}` record (the page drops its rendered blocks ≥ N) then
+/// re-emit the fresh tail — so a rewritten/ coalesced tail re-renders correctly,
+/// matching the TUI's full re-parse. `reveal` must match the initial snapshot.
 fn follow_and_append(
     agent: Agent,
     path: &Path,
     args: &Args,
     fold: &FoldPolicy,
     companion: &Path,
-    mut emitted: usize,
+    mut prev: Vec<String>,
     reveal: bool,
 ) -> Result<()> {
     loop {
@@ -889,16 +882,30 @@ fn follow_and_append(
             Ok(s) => s,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
-        let lines: Vec<&str> = fresh.lines().collect();
-        if lines.len() > emitted {
-            emitted = append_new(companion, emitted, &lines)?;
-            // Re-append the refreshed meta (line 0) so the page updates its usage /
-            // cost / duration totals as the session grows. It renders no block, so
-            // the renderer treats it as a metadata refresh, not a "new message".
-            if let Some(meta) = lines.first() {
-                append_line(companion, meta)?;
-            }
+        let meta = fresh.lines().next().unwrap_or("{}").to_string();
+        let blocks = block_lines(&fresh);
+        // First index where the fresh stream diverges from what's on the page.
+        let diff = prev.iter().zip(&blocks).take_while(|(a, b)| a == b).count();
+        let changed = diff < prev.len() || diff < blocks.len();
+        if !changed {
+            continue;
         }
+        let mut out = String::new();
+        // Only when an already-rendered block changed/vanished — a pure append
+        // (diff == prev.len()) needs no reset, keeping the common path append-only.
+        if diff < prev.len() {
+            out.push_str(&json!({ "t": "reset", "from": diff }).to_string());
+            out.push('\n');
+        }
+        for line in &blocks[diff..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        // Refreshed meta so usage / cost / duration / tool counts keep up.
+        out.push_str(&meta);
+        out.push('\n');
+        append_line(companion, out.trim_end())?;
+        prev = blocks;
     }
 }
 
@@ -965,7 +972,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     println!("{url}");
 
     match &companion {
-        Some(c) => follow_and_append(agent, path, args, &fold, c, jsonl.lines().count(), reveal),
+        Some(c) => follow_and_append(agent, path, args, &fold, c, block_lines(&jsonl), reveal),
         // Static: nothing to tail, but keep serving so path-reveal keeps working.
         None => loop {
             std::thread::park();
@@ -1359,30 +1366,20 @@ mod tests {
     }
 
     #[test]
-    fn append_new_only_writes_the_fresh_suffix() {
-        let dir = std::env::temp_dir().join(format!("cr-html-append-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("c.jsonl");
-        std::fs::write(&f, "meta\nb1\n").unwrap();
-
-        // First two lines already emitted; a third appears.
-        let lines = vec!["meta", "b1", "b2"];
-        let n = append_new(&f, 2, &lines).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "meta\nb1\nb2\n");
-
-        // Nothing new → no write, count unchanged.
-        let n = append_new(&f, 3, &lines).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "meta\nb1\nb2\n");
-
-        // A shrunk stream (compaction) is skipped, not truncated.
-        let shorter = vec!["meta", "b1"];
-        let n = append_new(&f, 3, &shorter).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "meta\nb1\nb2\n");
-
-        std::fs::remove_dir_all(&dir).ok();
+    fn block_lines_drops_the_leading_meta() {
+        let (jsonl, _) = build_jsonl(
+            &[Block::UserText("hi".into()), bash("ls", "out")],
+            &[],
+            &FoldPolicy::none(),
+            "/repo",
+            true,
+            json!({ "t": "meta" }),
+        );
+        // The stream is meta + 2 blocks; block_lines keeps just the 2 block records.
+        assert_eq!(jsonl.lines().count(), 3);
+        let bl = block_lines(&jsonl);
+        assert_eq!(bl.len(), 2);
+        assert!(bl.iter().all(|l| l.contains("\"t\":\"block\"")), "{bl:?}");
     }
 
     #[test]
