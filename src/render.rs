@@ -110,13 +110,26 @@ pub(crate) fn agent_id_span(sa: &crate::model::SubAgent) -> Option<(usize, usize
     Some((start, end))
 }
 
-/// The completion event header: `⏺ Agent(<type>: <description>) <verb>` in the agent hue
-/// (a dimmed variant of the spawn), where `<verb>` is completed/failed/killed/stopped.
-/// This is the "different message later" that pairs with the "launched" spawn.
+/// The `(<type>: <description>)` (or `(<description>)`) parenthetical for a completion
+/// header — kept in one place so the header and its id-span hit-test agree.
+fn agent_done_arg(agent_type: &str, description: &str) -> String {
+    if agent_type.is_empty() {
+        format!("({description})")
+    } else {
+        format!("({agent_type}: {description})")
+    }
+}
+
+/// The completion event header: `⏺ Agent(<type>: <description>) <verb>  ↵ <agent-id>` in
+/// the agent hue, where `<verb>` is completed/failed/killed/stopped. The `↵ <agent-id>`
+/// is the DESCEND target (same as the spawn), so the reader can open the finished
+/// agent's transcript from its completion message. This is the "different message later"
+/// that pairs with the "launched" spawn.
 fn agent_done_header(
     agent_type: &str,
     description: &str,
     status: crate::model::AgentStatus,
+    agent_id: &str,
     focused: bool,
 ) -> Line<'static> {
     let mark = theme::agent();
@@ -125,20 +138,48 @@ fn agent_done_header(
     } else {
         Style::default()
     };
-    let head = if agent_type.is_empty() {
-        format!("({description})")
-    } else {
-        format!("({agent_type}: {description})")
-    };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled("⏺ ", mark),
         Span::styled("Agent", mark),
-        Span::styled(head, arg),
+        Span::styled(agent_done_arg(agent_type, description), arg),
         Span::styled(
             format!("  {}", status.done_verb()),
             Style::default().fg(theme::fold_header()),
         ),
-    ])
+    ];
+    if !agent_id.is_empty() {
+        spans.push(Span::styled(
+            "  ↵ ",
+            Style::default().fg(theme::fold_header()),
+        ));
+        spans.push(Span::styled(
+            agent_id.to_string(),
+            theme::agent().add_modifier(Modifier::UNDERLINED),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The column span of the descend-target agent id in a completion header (for mouse
+/// hit-testing). Must match the prefix `agent_done_header` renders before the id.
+pub(crate) fn agent_done_id_span(
+    agent_type: &str,
+    description: &str,
+    status: crate::model::AgentStatus,
+    agent_id: &str,
+) -> Option<(usize, usize)> {
+    use unicode_width::UnicodeWidthStr;
+    if agent_id.is_empty() {
+        return None;
+    }
+    let prefix = format!(
+        "⏺ Agent{}  {}  ↵ ",
+        agent_done_arg(agent_type, description),
+        status.done_verb()
+    );
+    let start = UnicodeWidthStr::width(prefix.as_str());
+    let end = start + UnicodeWidthStr::width(agent_id);
+    Some((start, end))
 }
 
 /// The `❯ /command [args]` header line for a slash-command block — styled like a
@@ -511,15 +552,15 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
         // The completion event: the agent-hue header, then the returned result on the
         // agent background tier (the paired "launched" spawn is elsewhere, up the log).
         Block::AgentDone {
+            agent_id,
             agent_type,
             description,
             status,
             result,
-            ..
         } => {
             let bg = theme::agent_expanded_bg();
             let res = theme::result().bg(bg);
-            let mut head = agent_done_header(agent_type, description, *status, false);
+            let mut head = agent_done_header(agent_type, description, *status, agent_id, false);
             for s in head.spans.iter_mut() {
                 s.style = s.style.bg(bg);
             }
@@ -1082,11 +1123,12 @@ fn render_header(b: &Block) -> Line<'static> {
         ),
         Block::SubAgent(sa) => agent_header(sa, false),
         Block::AgentDone {
+            agent_id,
             agent_type,
             description,
             status,
             ..
-        } => agent_done_header(agent_type, description, *status, false),
+        } => agent_done_header(agent_type, description, *status, agent_id, false),
         Block::Attachment(a) => attachment_line(a),
         Block::AssistantText(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
@@ -1295,10 +1337,35 @@ mod tests {
                 && dlines[0].contains("completed"),
             "completion header: {dlines:?}"
         );
+        // The completion also carries the descend id, so the reader can open the
+        // finished agent's transcript from its completion message.
+        assert!(
+            dlines[0].contains("↵ a7436efe"),
+            "completion shows descend id: {dlines:?}"
+        );
         assert!(
             dlines.iter().any(|l| l.contains("Proposal written.")),
             "completion carries the result: {dlines:?}"
         );
+        // A failed/killed/stopped completion is treated identically — id + verb.
+        for (st, verb) in [
+            (AgentStatus::Failed, "failed"),
+            (AgentStatus::Killed, "killed"),
+            (AgentStatus::Stopped, "stopped"),
+        ] {
+            let d = Block::AgentDone {
+                agent_id: "a7436efe".into(),
+                agent_type: "gp".into(),
+                description: "x".into(),
+                status: st,
+                result: None,
+            };
+            let h = texts(&[render_header(&d)]).remove(0);
+            assert!(
+                h.contains(verb) && h.contains("↵ a7436efe"),
+                "{verb} completion shows verb + id: {h:?}"
+            );
+        }
     }
 
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`

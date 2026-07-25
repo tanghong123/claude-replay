@@ -321,6 +321,15 @@ pub enum Action {
     Descend(usize),
 }
 
+/// A resolved descend target — the agent to open, plus any pre-loaded child transcript
+/// (a spawn carries it; a completion event loads it lazily). Built by [`View::descend_ref_at`].
+pub struct DescendRef {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub blocks: Vec<Block>,
+    pub subtree_cost: Option<f64>,
+}
+
 /// The outcome of a mouse click while the `a` active-sub-agents popup is open.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PopupClick {
@@ -776,25 +785,37 @@ impl View {
         if self.agent_id_hit(b, idx, col as usize) {
             return Some(Action::Descend(b));
         }
-        // A mouse click elsewhere on a spawn header just FOLDS it (only the agent id
-        // descends); other blocks do their normal activation.
-        if matches!(self.blocks.get(b), Some(Block::SubAgent(_))) {
+        // A mouse click elsewhere on a spawn / completion header just FOLDS it (only the
+        // agent id descends); other blocks do their normal activation.
+        if matches!(
+            self.blocks.get(b),
+            Some(Block::SubAgent(_) | Block::AgentDone { .. })
+        ) {
             self.toggle_block(b);
             return None;
         }
         self.activate_block(b)
     }
 
-    /// Is the click at `(idx, col)` on a spawn header's descend-target agent id?
+    /// Is the click at `(idx, col)` on a spawn / completion header's descend-target agent
+    /// id? Works for both the `SubAgent` spawn and the `AgentDone` completion (any status).
     fn agent_id_hit(&self, b: usize, idx: usize, col: usize) -> bool {
         // Only the header's own first row carries the id.
         if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
             return false;
         }
-        let Some(Block::SubAgent(sa)) = self.blocks.get(b) else {
-            return false;
+        let span = match self.blocks.get(b) {
+            Some(Block::SubAgent(sa)) => render::agent_id_span(sa),
+            Some(Block::AgentDone {
+                agent_id,
+                agent_type,
+                description,
+                status,
+                ..
+            }) => render::agent_done_id_span(agent_type, description, *status, agent_id),
+            _ => return false,
         };
-        matches!(render::agent_id_span(sa), Some((s, e)) if col >= s && col < e)
+        matches!(span, Some((s, e)) if col >= s && col < e)
     }
 
     /// The KEYBOARD (`Enter`) action for block `b`. A [`Block::SubAgent`] with a loaded
@@ -809,6 +830,16 @@ impl View {
                 } else {
                     // Descend even when `blocks` is empty — a running agent's child
                     // transcript loads lazily at descend time (from its own file).
+                    Some(Action::Descend(b))
+                }
+            }
+            // A completion event descends into the finished agent's transcript (any
+            // terminal status), loaded lazily from its file at descend time.
+            Some(Block::AgentDone { agent_id, .. }) => {
+                if agent_id.is_empty() {
+                    self.toggle_block(b);
+                    None
+                } else {
                     Some(Action::Descend(b))
                 }
             }
@@ -835,6 +866,31 @@ impl View {
     pub fn subagent_at(&self, b: usize) -> Option<&crate::model::SubAgent> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => Some(sa),
+            _ => None,
+        }
+    }
+
+    /// The descend target at block index `b` — a `SubAgent` spawn (with any pre-loaded
+    /// child `blocks`) OR an `AgentDone` completion (whose child always loads lazily from
+    /// its file). `None` for any other block or a missing agent id.
+    pub fn descend_ref_at(&self, b: usize) -> Option<DescendRef> {
+        match self.blocks.get(b)? {
+            Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(DescendRef {
+                agent_id: sa.agent_id.clone(),
+                agent_type: sa.agent_type.clone(),
+                blocks: sa.blocks.clone(),
+                subtree_cost: sa.subtree_cost,
+            }),
+            Block::AgentDone {
+                agent_id,
+                agent_type,
+                ..
+            } if !agent_id.is_empty() => Some(DescendRef {
+                agent_id: agent_id.clone(),
+                agent_type: agent_type.clone(),
+                blocks: Vec::new(), // no inline child on a completion event → lazy-load
+                subtree_cost: None,
+            }),
             _ => None,
         }
     }
@@ -2275,6 +2331,45 @@ mod tests {
         // Enter descends (the caller loads the child lazily); no fold mutation.
         v.focus_block(1);
         assert_eq!(v.activate_focused(), Some(Action::Descend(1)));
+    }
+
+    /// A completion (`AgentDone`) event is a descend target too: Enter descends, a click
+    /// on its `↵ id` descends, a click elsewhere on its header folds, and the descend ref
+    /// resolves (lazy child load) for any terminal status.
+    #[test]
+    fn completion_event_descends_via_id() {
+        use crate::model::AgentStatus;
+        let done = Block::AgentDone {
+            agent_id: "aDONE".into(),
+            agent_type: "gp".into(),
+            description: "d".into(),
+            status: AgentStatus::Failed, // any terminal status behaves the same
+            result: Some("r".into()),
+        };
+        let mut v = View::new(
+            vec![Block::UserText("root".into()), done],
+            "t",
+            false,
+            FoldPolicy::default(),
+        );
+        draw(&mut v, 120, 20);
+        // Enter on the focused completion descends.
+        v.focus_block(1);
+        assert_eq!(v.activate_focused(), Some(Action::Descend(1)));
+        // The descend ref resolves the agent id with an empty (lazy) child.
+        let dref = v.descend_ref_at(1).expect("completion is a descend target");
+        assert_eq!(dref.agent_id, "aDONE");
+        assert!(dref.blocks.is_empty(), "completion child loads lazily");
+        // Mouse: clicking the header id descends; clicking the caret (col 0) folds.
+        let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        let (s, e) = crate::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
+            .expect("done id span");
+        assert_eq!(
+            v.click_at(row, ((s + e) / 2) as u16),
+            Some(Action::Descend(1)),
+            "clicking the completion id descends"
+        );
+        assert_eq!(v.click_at(row, 0), None, "header click folds, not descends");
     }
 
     /// The footer sheds least-important segments first (cached → % → model → in → out →

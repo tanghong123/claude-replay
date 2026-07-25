@@ -230,22 +230,23 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
     })
 }
 
-/// Build a child frame from the `SubAgent` at block index `idx` of `parent`'s view. The
-/// child transcript is already parsed (in `sa.blocks`), so this reuses it directly — no
-/// re-parse, no disk read. `None` if `idx` isn't a descendable sub-agent.
+/// Build a child frame from the descend target (a `SubAgent` spawn OR an `AgentDone`
+/// completion) at block index `idx` of `parent`'s view. A spawn reuses its already-parsed
+/// child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads the
+/// child transcript from disk. `None` if `idx` isn't a descendable agent block.
 fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
-    let sa = parent.view.subagent_at(idx)?;
-    // Own the fields we need so `sa`'s borrow of `parent.view` ends before we touch
+    let dref = parent.view.descend_ref_at(idx)?;
+    // Own the fields we need so the borrow of `parent.view` ends before we touch
     // `parent.path` / build the view.
-    let mut blocks = sa.blocks.clone();
-    let agent_type = sa.agent_type.clone();
-    let subtree_cost = sa.subtree_cost;
-    let title = if sa.agent_id.is_empty() {
-        sa.agent_type.clone()
+    let mut blocks = dref.blocks;
+    let agent_type = dref.agent_type;
+    let subtree_cost = dref.subtree_cost;
+    let agent_id = dref.agent_id;
+    let title = if agent_id.is_empty() {
+        agent_type.clone()
     } else {
-        sa.agent_id.clone()
+        agent_id.clone()
     };
-    let agent_id = sa.agent_id.clone();
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
     let child_file = model::subagent_file(&parent.path, &agent_id);

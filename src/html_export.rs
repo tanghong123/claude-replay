@@ -446,11 +446,11 @@ impl Emitter<'_> {
             // paired with the "launched" spawn above. Header names the agent + the done
             // verb; body carries the returned result.
             Block::AgentDone {
+                agent_id,
                 agent_type,
                 description,
                 status,
                 result,
-                ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
                 head.insert("badge".into(), json!("Agent"));
@@ -461,6 +461,11 @@ impl Emitter<'_> {
                 };
                 head.insert("preview".into(), json!(preview));
                 head.insert("chips".into(), json!([chip(status.done_verb())]));
+                // The agent id — so the reader can find the finished agent's transcript
+                // (a navigable link lands in the sub-agent HTML stage; the id shows now).
+                if !agent_id.is_empty() {
+                    body.push(json!({ "p": "note", "x": format!("⏺ {agent_id}   {agent_type}") }));
+                }
                 if let Some(r) = result {
                     body.push(json!({ "p": "md", "h": md_html(r) }));
                 }
