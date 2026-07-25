@@ -519,6 +519,17 @@ The residual diff is **not** decision-free rendering:
   scrape), what auth it needs, the on-disk/wire format, and how it maps to our block
   model. Feasibility + a recommended acquisition path per source; build only after.
 
+- [ ] **HTML sidebar: clicking a turn highlights the previous turn.** Reported
+  2026-07-25 (live `-f --html`, likely all HTML). Clicking a turn in the left pane
+  scrolls the right pane to that turn's user message correctly, but the left-pane active
+  highlight stays on the *preceding* turn, and a second click is a no-op (scroll already
+  there, so no `scroll` event → `spy()` never re-runs). Cause is in `export.js`: `goTo`
+  scrolls with `- GOTO_Y (120)` offset while `spy()` marks active the last turn whose top
+  is `<= STICKY_Y (72)` — so the clicked turn lands just below the sticky line and its
+  predecessor is still the last one above it. Fix: after `goTo`, set the active turn to
+  the *clicked* target directly (don't wait for `spy()`), or reconcile `GOTO_Y`/`STICKY_Y`
+  so the landed turn is the one `spy()` selects.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
