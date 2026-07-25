@@ -21,24 +21,28 @@ pub fn foldable(b: &Block) -> bool {
             | Block::Thinking { .. }
             | Block::Command { .. }
             | Block::SubAgent(_)
+            | Block::AgentDone { .. }
     )
 }
 
 /// A one-line summary chip for a sub-agent spawn: `<N> tools · <status>` — the tool
 /// count comes from the child transcript (direct tool/agent calls), status from the
 /// lifecycle. Empty child (unresolved on disk) → just the status.
-pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
-    // Count every tool call, including activity tools absorbed into a `Thinking` turn
-    // (grouping folds Bash/Read/… into the following thinking block).
-    let tools: usize = sa
-        .blocks
+/// Direct tool calls in a sub-agent's child transcript (activity tools absorbed into a
+/// `Thinking` turn are counted too, since grouping folds Bash/Read/… into it).
+pub(crate) fn tool_count(sa: &crate::model::SubAgent) -> usize {
+    sa.blocks
         .iter()
         .map(|b| match b {
             Block::ToolUse { .. } | Block::SubAgent(_) => 1,
             Block::Thinking { tools, .. } => tools.len(),
             _ => 0,
         })
-        .sum();
+        .sum()
+}
+
+pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
+    let tools = tool_count(sa);
     if tools > 0 {
         format!(
             "{tools} tool{} · {}",
@@ -47,6 +51,21 @@ pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
         )
     } else {
         sa.status.label().to_string()
+    }
+}
+
+/// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). The spawn is
+/// the *launch* event and always reads "launched" — the terminal status shows on the
+/// separate `AgentDone` completion event, not here.
+pub(crate) fn spawn_chip(sa: &crate::model::SubAgent) -> String {
+    let tools = tool_count(sa);
+    if tools > 0 {
+        format!(
+            "{tools} tool{} · launched",
+            if tools == 1 { "" } else { "s" }
+        )
+    } else {
+        "launched".to_string()
     }
 }
 
@@ -65,7 +84,7 @@ fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
         Span::styled("Agent", mark),
         Span::styled(format!("({}: {})", sa.agent_type, sa.description), arg),
         Span::styled(
-            format!("  {}", agent_chip(sa)),
+            format!("  {}", spawn_chip(sa)),
             Style::default().fg(theme::fold_header()),
         ),
     ];
@@ -97,11 +116,42 @@ pub(crate) fn agent_id_span(sa: &crate::model::SubAgent) -> Option<(usize, usize
         "⏺ Agent({}: {})  {}  ↵ ",
         sa.agent_type,
         sa.description,
-        agent_chip(sa)
+        spawn_chip(sa)
     );
     let start = UnicodeWidthStr::width(prefix.as_str());
     let end = start + UnicodeWidthStr::width(sa.agent_id.as_str());
     Some((start, end))
+}
+
+/// The completion event header: `⏺ Agent(<type>: <description>) <verb>` in the agent hue
+/// (a dimmed variant of the spawn), where `<verb>` is completed/failed/killed/stopped.
+/// This is the "different message later" that pairs with the "launched" spawn.
+fn agent_done_header(
+    agent_type: &str,
+    description: &str,
+    status: crate::model::AgentStatus,
+    focused: bool,
+) -> Line<'static> {
+    let mark = theme::agent();
+    let arg = if focused {
+        Style::default().fg(theme::fold_header_focused())
+    } else {
+        Style::default()
+    };
+    let head = if agent_type.is_empty() {
+        format!("({description})")
+    } else {
+        format!("({agent_type}: {description})")
+    };
+    Line::from(vec![
+        Span::styled("⏺ ", mark),
+        Span::styled("Agent", mark),
+        Span::styled(head, arg),
+        Span::styled(
+            format!("  {}", status.done_verb()),
+            Style::default().fg(theme::fold_header()),
+        ),
+    ])
 }
 
 /// The `❯ /command [args]` header line for a slash-command block — styled like a
@@ -465,6 +515,29 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 }
             }
             if let Some(r) = &sa.result {
+                for (i, l) in r.lines().enumerate() {
+                    let p = if i == 0 { "  ⎿  " } else { "     " };
+                    out.push(Line::from(Span::styled(format!("{p}{l}"), res)));
+                }
+            }
+        }
+        // The completion event: the agent-hue header, then the returned result on the
+        // agent background tier (the paired "launched" spawn is elsewhere, up the log).
+        Block::AgentDone {
+            agent_type,
+            description,
+            status,
+            result,
+            ..
+        } => {
+            let bg = theme::agent_expanded_bg();
+            let res = theme::result().bg(bg);
+            let mut head = agent_done_header(agent_type, description, *status, false);
+            for s in head.spans.iter_mut() {
+                s.style = s.style.bg(bg);
+            }
+            out.push(head);
+            if let Some(r) = result {
                 for (i, l) in r.lines().enumerate() {
                     let p = if i == 0 { "  ⎿  " } else { "     " };
                     out.push(Line::from(Span::styled(format!("{p}{l}"), res)));
@@ -1021,6 +1094,12 @@ fn render_header(b: &Block) -> Line<'static> {
             Style::default().fg(theme::fold_header()),
         ),
         Block::SubAgent(sa) => agent_header(sa, false),
+        Block::AgentDone {
+            agent_type,
+            description,
+            status,
+            ..
+        } => agent_done_header(agent_type, description, *status, false),
         Block::Attachment(a) => attachment_line(a),
         Block::AssistantText(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
@@ -1061,6 +1140,8 @@ fn body_len(b: &Block) -> usize {
             let r = sa.result.as_deref().map_or(0, |r| r.lines().count());
             p + 1 + r // prompt lines + the agent row + result lines
         }
+        // Header + the result body (the completion event has no prompt/agent row).
+        Block::AgentDone { result, .. } => result.as_deref().map_or(0, |r| r.lines().count()),
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
@@ -1187,6 +1268,50 @@ mod tests {
     /// True if any span on the line carries this background color.
     fn has_bg(line: &Line, bg: Color) -> bool {
         line.spans.iter().any(|s| s.style.bg == Some(bg))
+    }
+
+    /// The spawn reads "launched" (never the terminal status) even after the agent is
+    /// done; the separate `AgentDone` event carries the terminal verb + result.
+    #[test]
+    fn spawn_reads_launched_completion_reads_done() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = Block::SubAgent(SubAgent {
+            agent_id: "a7436efe".into(),
+            tool_use_id: "toolu_A".into(),
+            agent_type: "general-purpose".into(),
+            description: "Design the engine".into(),
+            prompt: "go".into(),
+            status: AgentStatus::Completed, // back-patched, but must NOT show as "done"
+            result: None,
+            output_file: None,
+            blocks: vec![],
+            subtree_cost: None,
+        });
+        let head = texts(&[render_header(&spawn)]).remove(0);
+        assert!(head.contains("launched"), "spawn shows launched: {head:?}");
+        assert!(!head.contains("done"), "spawn never shows done: {head:?}");
+        assert!(
+            head.contains("↵ a7436efe"),
+            "spawn keeps descend id: {head:?}"
+        );
+
+        let done = Block::AgentDone {
+            agent_id: "a7436efe".into(),
+            agent_type: "general-purpose".into(),
+            description: "Design the engine".into(),
+            status: AgentStatus::Completed,
+            result: Some("Proposal written.".into()),
+        };
+        let dlines = texts(&render_one(&done, 200));
+        assert!(
+            dlines[0].contains("Agent(general-purpose: Design the engine)")
+                && dlines[0].contains("completed"),
+            "completion header: {dlines:?}"
+        );
+        assert!(
+            dlines.iter().any(|l| l.contains("Proposal written.")),
+            "completion carries the result: {dlines:?}"
+        );
     }
 
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`

@@ -214,6 +214,7 @@ fn html_kind(b: &Block) -> &'static str {
         Block::QueueEvent { .. } => "queue",
         Block::Attachment(_) => "attachment",
         Block::SubAgent(_) => "agent",
+        Block::AgentDone { .. } => "agent",
         Block::AssistantText(_) => "assistant",
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
@@ -438,6 +439,29 @@ impl Emitter<'_> {
                     body.push(json!({ "p": "note", "x": format!("⏺ {}   {}", sa.agent_id, sa.agent_type) }));
                 }
                 if let Some(r) = &sa.result {
+                    body.push(json!({ "p": "md", "h": md_html(r) }));
+                }
+            }
+            // A sub-agent completion event (kind "agent") — the "different message later"
+            // paired with the "launched" spawn above. Header names the agent + the done
+            // verb; body carries the returned result.
+            Block::AgentDone {
+                agent_type,
+                description,
+                status,
+                result,
+                ..
+            } => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("badge".into(), json!("Agent"));
+                let preview = if agent_type.is_empty() {
+                    description.clone()
+                } else {
+                    format!("{agent_type}: {description}")
+                };
+                head.insert("preview".into(), json!(preview));
+                head.insert("chips".into(), json!([chip(status.done_verb())]));
+                if let Some(r) = result {
                     body.push(json!({ "p": "md", "h": md_html(r) }));
                 }
             }

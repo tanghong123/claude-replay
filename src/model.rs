@@ -70,6 +70,23 @@ pub enum Block {
     /// prompt, the result, and one selectable row per spawned agent id — activating a
     /// row descends into that agent's transcript (`blocks`). See `SubAgent`.
     SubAgent(SubAgent),
+    /// A sub-agent **completion** event — the later `<task-notification>` for a spawned
+    /// agent, rendered as its OWN message at the point the notification arrived (the
+    /// spawn `SubAgent` block stays "launched" up where it was created). Reads
+    /// `⏺ Agent(type: description) done · <result>` in the agent hue. See the two-event
+    /// rendering in `render.rs`.
+    AgentDone {
+        /// The completing agent's id (matches its spawn `SubAgent.agent_id`).
+        agent_id: String,
+        /// The agent kind, copied from the matching spawn (may be empty if unmatched).
+        agent_type: String,
+        /// The agent's description, from the notification `<summary>` (`Agent "…" …`).
+        description: String,
+        /// The terminal state from the notification `<status>`.
+        status: AgentStatus,
+        /// The agent's returned text, from the notification `<result>` (if any).
+        result: Option<String>,
+    },
     /// A slash command (e.g. `/compact`) and its local stdout. Rendered like
     /// Claude Code's `❯ /command` header + dim `⎿ output` lines, folded by
     /// default. Parsed from the `<command-name>`/`<command-args>`/
@@ -185,6 +202,29 @@ impl AgentStatus {
             Self::Stopped => "stopped",
         }
     }
+    /// Past-tense verb for the completion event line (`Agent "…" completed`).
+    pub fn done_verb(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::Stopped => "stopped",
+            // Non-terminal states never reach a completion event; treat as "finished".
+            Self::Running | Self::AsyncLaunched => "finished",
+        }
+    }
+}
+
+/// Extract the quoted description from a completion `<summary>` like
+/// `Agent "Design the parser" finished` → `Design the parser`. Falls back to the whole
+/// trimmed summary when there's no quoted span.
+fn summary_description(summary: &str) -> String {
+    if let (Some(a), Some(b)) = (summary.find('"'), summary.rfind('"')) {
+        if b > a {
+            return summary[a + 1..b].to_string();
+        }
+    }
+    summary.trim().to_string()
 }
 
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`
@@ -198,6 +238,7 @@ pub fn fold_key(b: &Block) -> &'static str {
         Block::ToolResult(_) => "tool_result",
         Block::Attachment(_) => "attachment",
         Block::SubAgent(_) => "agent",
+        Block::AgentDone { .. } => "agent",
         Block::Command { .. } => "command",
         Block::ToolUse { name, .. } => tool_fold_key(name),
     }
@@ -1107,6 +1148,31 @@ fn parse_main<S: AsRef<str>>(
                         if let Some(c) = content {
                             if is_agent_notification(c) {
                                 completions.push(c.to_string());
+                                // Also render the completion as its OWN event at this
+                                // position (the spawn stays "launched" up where it was
+                                // created). Type is copied from the matching spawn in a
+                                // post-enrich pass (`stamp_agent_done_types`).
+                                let status = tag_inner(c, "status")
+                                    .and_then(AgentStatus::from_status)
+                                    .unwrap_or(AgentStatus::Completed);
+                                let description = tag_inner(c, "summary")
+                                    .map(summary_description)
+                                    .unwrap_or_default();
+                                let result = tag_inner(c, "result")
+                                    .map(str::trim)
+                                    .filter(|r| !r.is_empty())
+                                    .map(str::to_string);
+                                let agent_id = tag_inner(c, "task-id")
+                                    .or_else(|| tag_inner(c, "tool-use-id"))
+                                    .unwrap_or_default()
+                                    .to_string();
+                                out.push(Block::AgentDone {
+                                    agent_id,
+                                    agent_type: String::new(),
+                                    description,
+                                    status,
+                                    result,
+                                });
                             }
                             let is_prose = is_queue_prose(c);
                             let marker_idx = if is_prose {
@@ -1195,16 +1261,40 @@ fn parse_main<S: AsRef<str>>(
             let idx = tag_inner(note, "tool-use-id")
                 .and_then(|t| tool_slot.get(t).copied())
                 .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
+            // Back-patch only the spawn's status (drives active-tracking: a terminal
+            // status drops the agent from `a active N`). The result text renders on the
+            // separate `AgentDone` completion event, not folded back onto the spawn.
             if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
                 if let Some(st) = tag_inner(note, "status").and_then(AgentStatus::from_status) {
                     sa.status = st;
                 }
-                if sa.result.is_none() {
-                    if let Some(r) = tag_inner(note, "result").map(str::trim) {
-                        if !r.is_empty() {
-                            sa.result = Some(r.to_string());
-                        }
-                    }
+            }
+        }
+        // Give each `AgentDone` event its spawn's `agent_type` (the notification carries
+        // only status/summary/result), resolving its id from the spawn's `tool_use_id`
+        // when the notification keyed by `tool-use-id` rather than `task-id`.
+        let mut by_id: HashMap<String, (String, String)> = HashMap::new(); // id/toolid → (agent_id, type)
+        for b in out.iter() {
+            if let Block::SubAgent(sa) = b {
+                let v = (sa.agent_id.clone(), sa.agent_type.clone());
+                if !sa.agent_id.is_empty() {
+                    by_id.insert(sa.agent_id.clone(), v.clone());
+                }
+                if !sa.tool_use_id.is_empty() {
+                    by_id.insert(sa.tool_use_id.clone(), v);
+                }
+            }
+        }
+        for b in out.iter_mut() {
+            if let Block::AgentDone {
+                agent_id,
+                agent_type,
+                ..
+            } = b
+            {
+                if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
+                    *agent_type = ty.clone();
+                    *agent_id = real_id.clone();
                 }
             }
         }
@@ -1742,20 +1832,21 @@ mod tests {
         assert_eq!(kinds(&blocks), vec!["tool_result"], "{blocks:?}");
     }
 
-    /// An `Agent` spawn becomes exactly one `SubAgent` block (never a `ToolUse`),
-    /// carrying the input's type/description/prompt and the result's agent id; a later
-    /// agent completion `<task-notification>` (keyed by tool-use-id) flips the status to
-    /// terminal. Its fold key is "agent" and it is default-folded.
+    /// An `Agent` spawn becomes a `SubAgent` block (the "launched" event); its later
+    /// completion `<task-notification>` becomes a SEPARATE `AgentDone` event at the point
+    /// it arrived — the two-message model. The spawn's status is still back-patched to
+    /// terminal (so active-tracking drops it from `a active N`), but the returned result
+    /// renders on the `AgentDone`, not folded back onto the spawn.
     #[test]
-    fn agent_spawn_becomes_subagent_with_terminal_status() {
+    fn agent_spawn_and_completion_are_two_events() {
         let jsonl = r##"
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"Review the rewrite","prompt":"Review render.rs"}}]}}
 {"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
 {"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review the rewrite\" finished</summary>\n<result>Two gaps found.</result>\n</task-notification>"}
 "##;
         let blocks = parse(jsonl, &args());
-        // Exactly ONE spawn block, and it is a SubAgent (the one-spawn-per-node model).
-        assert_eq!(kinds(&blocks), vec!["agent"], "{blocks:?}");
+        // Two agent blocks: the spawn (launched) then the completion (done).
+        assert_eq!(kinds(&blocks), vec!["agent", "agent"], "{blocks:?}");
         let Block::SubAgent(sa) = &blocks[0] else {
             panic!("not a SubAgent: {blocks:?}")
         };
@@ -1767,13 +1858,35 @@ mod tests {
         assert_eq!(
             sa.status,
             AgentStatus::Completed,
-            "completion notification wins"
+            "spawn status back-patched for active-tracking"
         );
-        assert_eq!(sa.result.as_deref(), Some("Two gaps found."));
+        assert_eq!(
+            sa.result, None,
+            "result renders on AgentDone, not the spawn"
+        );
+        // The completion is a distinct AgentDone event carrying status + result, with the
+        // agent_type resolved back from the spawn.
+        let Block::AgentDone {
+            agent_id,
+            agent_type,
+            description,
+            status,
+            result,
+        } = &blocks[1]
+        else {
+            panic!("second block is not AgentDone: {blocks:?}")
+        };
+        assert_eq!(agent_id, "aXYZ1234");
+        assert_eq!(agent_type, "code-reviewer", "type resolved from the spawn");
+        assert_eq!(description, "Review the rewrite");
+        assert_eq!(*status, AgentStatus::Completed);
+        assert_eq!(result.as_deref(), Some("Two gaps found."));
+        // Both fold under the "agent" key and default-collapse.
         assert_eq!(fold_key(&blocks[0]), "agent");
-        // The default fold policy collapses the spawn block.
+        assert_eq!(fold_key(&blocks[1]), "agent");
         let pol = crate::view::FoldPolicy::from_args(&args());
-        assert!(pol.collapses(&blocks[0]), "agent block should default-fold");
+        assert!(pol.collapses(&blocks[0]), "spawn default-folds");
+        assert!(pol.collapses(&blocks[1]), "completion default-folds");
     }
 
     /// `parse_path` loads each `SubAgent`'s child transcript from the flat
