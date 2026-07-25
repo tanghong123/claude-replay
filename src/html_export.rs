@@ -13,7 +13,7 @@
 //! fragments. Everything that reaches the page is HTML-escaped here; the renderer
 //! uses `textContent` for all raw text so nothing can inject markup.
 
-use crate::model::Block;
+use crate::model::{AttachmentContent, Block};
 use crate::render::{self, LineOp};
 use crate::view::FoldPolicy;
 use crate::{discover, highlight, metrics, Agent, Args};
@@ -212,6 +212,7 @@ fn html_kind(b: &Block) -> &'static str {
     match b {
         Block::UserText(_) => "user",
         Block::QueueEvent { .. } => "queue",
+        Block::Attachment(_) => "attachment",
         Block::AssistantText(_) => "assistant",
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
@@ -239,7 +240,10 @@ fn html_kind(b: &Block) -> &'static str {
 fn is_fold(b: &Block) -> bool {
     !matches!(
         b,
-        Block::UserText(_) | Block::AssistantText(_) | Block::QueueEvent { .. }
+        Block::UserText(_)
+            | Block::AssistantText(_)
+            | Block::QueueEvent { .. }
+            | Block::Attachment(_)
     )
 }
 
@@ -424,6 +428,37 @@ impl Emitter<'_> {
             Block::QueueEvent { text } => {
                 o.insert("id".into(), json!(self.block_id()));
                 body.push(json!({ "p": "md", "h": md_html(text) }));
+            }
+            // A surfaced attachment (kind "attachment") — an always-open card naming the
+            // file, with a download (embedded content) or reveal (path-only) affordance.
+            // On a portable exported page (`--dump-html`, `reveal == false`) only the
+            // name shows; the served `--html` page also gets the path/content to act on.
+            Block::Attachment(a) => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("att_kind".into(), json!(a.kind));
+                head.insert("att_name".into(), json!(a.name.clone()));
+                head.insert("att_dl".into(), json!(a.content.is_some()));
+                // Only a served page (`--html`, `reveal == true`) gets the payload/path
+                // to act on; a portable `--dump-html` export shows the name alone. The
+                // JS downloads embedded content via a Blob (text) or a `data:` URI
+                // (image) — no server endpoint needed — and reveals a path via `/__reveal`.
+                if self.reveal {
+                    if let Some(p) = &a.path {
+                        head.insert("att_path".into(), json!(p));
+                    }
+                    match &a.content {
+                        Some(AttachmentContent::Text(t)) => {
+                            head.insert("att_text".into(), json!(t));
+                        }
+                        Some(AttachmentContent::Base64 { mime, b64 }) => {
+                            head.insert(
+                                "att_datauri".into(),
+                                json!(format!("data:{mime};base64,{b64}")),
+                            );
+                        }
+                        None => {}
+                    }
+                }
             }
             Block::Command { name, args, output } => {
                 self.turn += 1;
@@ -1232,6 +1267,49 @@ mod tests {
         assert!(out[0].get("turn").is_none(), "queue marker is not a turn");
         let html = out[0]["body"][0]["h"].as_str().unwrap();
         assert!(html.contains("fix the table"), "carries the text: {html}");
+    }
+
+    /// A surfaced attachment streams as kind "attachment". On a served page it carries
+    /// the payload (`att_text`) or reveal path to act on; on a portable export
+    /// (`reveal == false`) only the name is emitted.
+    #[test]
+    fn attachment_streams_payload_only_when_served() {
+        let file = Block::Attachment(crate::model::Attachment {
+            kind: "file",
+            name: "notes.md".into(),
+            path: Some("/w/notes.md".into()),
+            content: Some(AttachmentContent::Text("hello".into())),
+        });
+        // Served (reveal = true): name + downloadable flag + inline text + path.
+        let served = stream(std::slice::from_ref(&file), &FoldPolicy::none());
+        assert_eq!(served[0]["kind"], "attachment");
+        assert!(served[0].get("fold").is_none(), "attachment is not a fold");
+        let h = &served[0]["head"];
+        assert_eq!(h["att_name"], "notes.md");
+        assert_eq!(h["att_dl"], json!(true));
+        assert_eq!(h["att_text"], "hello");
+        assert_eq!(h["att_path"], "/w/notes.md");
+
+        // Exported (reveal = false): name/kind only — no bytes, no path (portable).
+        let times: Vec<Option<f64>> = Vec::new();
+        let (jsonl, _) = build_jsonl(
+            std::slice::from_ref(&file),
+            &times,
+            &FoldPolicy::none(),
+            "/w",
+            false,
+            json!({ "t": "meta" }),
+        );
+        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(rec["head"]["att_name"], "notes.md");
+        assert!(
+            rec["head"].get("att_text").is_none(),
+            "no bytes when exported"
+        );
+        assert!(
+            rec["head"].get("att_path").is_none(),
+            "no path when exported"
+        );
     }
 
     #[test]

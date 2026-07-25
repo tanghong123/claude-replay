@@ -276,6 +276,9 @@ fn event_loop<B: ratatui::backend::Backend>(
             }
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                // Any keystroke dismisses a lingering "Saved …" flash; the action below
+                // may set a fresh one (e.g. Enter downloading an attachment).
+                view.clear_flash();
                 match k.code {
                     KeyCode::Char('?') => view.toggle_help(),
                     // `q` always leaves; `Esc` steps back to the session list when
@@ -294,7 +297,13 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('T') => view.toggle_all(),
                     KeyCode::Char(']') => view.focus_next(),
                     KeyCode::Char('[') => view.focus_prev(),
-                    KeyCode::Enter => view.toggle_focused(),
+                    // Enter activates the focused block: fold toggle, or download
+                    // (embedded) / reveal (path-only) for an attachment.
+                    KeyCode::Enter => {
+                        if let Some(path) = view.activate_focused() {
+                            reveal_in_file_manager(&path);
+                        }
+                    }
                     KeyCode::Char('/') => view.search_start(),
                     KeyCode::Char('n') => view.search_next(),
                     KeyCode::Char('N') => view.search_prev(),
@@ -306,8 +315,14 @@ fn event_loop<B: ratatui::backend::Backend>(
                 }
             }
             Event::Mouse(m) => match m.kind {
-                MouseEventKind::ScrollDown => view.scroll_by(3),
-                MouseEventKind::ScrollUp => view.scroll_by(-3),
+                MouseEventKind::ScrollDown => {
+                    view.clear_flash();
+                    view.scroll_by(3);
+                }
+                MouseEventKind::ScrollUp => {
+                    view.clear_flash();
+                    view.scroll_by(-3);
+                }
                 // Press begins a potential text selection (also the anchor for a
                 // click-to-fold if the mouse doesn't move before release).
                 MouseEventKind::Down(MouseButton::Left)
@@ -330,6 +345,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                     } else {
                         view.clear_selection();
                         if (m.row as usize) < view.content_rows() {
+                            // A click activates whatever it lands on: download/reveal an
+                            // attachment (or reveal a tool-header path), else fold.
+                            view.clear_flash();
                             if let Some(path) = view.click_at(m.row, m.column) {
                                 reveal_in_file_manager(&path);
                             }

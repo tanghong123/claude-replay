@@ -181,6 +181,42 @@
       return card;
     }
 
+    // A surfaced attachment — an always-open card with a clickable name that either
+    // downloads the embedded content (Blob for text, data: URI for image) or reveals
+    // the path in the file manager (served pages only). Exported pages show name only.
+    if (b.kind === "attachment") {
+        var h = b.head || {};
+        var ac = el("div", "amark blk");
+        ac.id = b.id;
+        ac.appendChild(el("span", "acaret", "▤"));
+        ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
+        var an = el("span", "aname", h.att_name || "attachment");
+        var text = h.att_text, datauri = h.att_datauri, path = h.att_path;
+        if (text != null || datauri != null) {
+            an.classList.add("adl");
+            an.title = "download";
+            an.onclick = function () {
+                var url = datauri != null ? datauri
+                    : URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+                var link = el("a");
+                link.href = url; link.download = h.att_name || "attachment";
+                document.body.appendChild(link); link.click(); link.remove();
+                if (datauri == null) setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+            };
+        } else if (path != null) {
+            an.classList.add("adl");
+            an.title = "reveal in file manager";
+            an.onclick = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
+        }
+        ac.appendChild(an);
+        if (datauri != null) {
+            var img = el("img", "aimg");
+            img.src = datauri; img.alt = h.att_name || "image";
+            ac.appendChild(img);
+        }
+        return ac;
+    }
+
     // A queued (in-flight) mid-turn prompt not yet picked up by the agent — a dim,
     // always-open "⧗ queued:" marker. Not a turn (no sidebar entry, no clamp).
     if (b.kind === "queue") {

@@ -1,9 +1,9 @@
 //! Blocks -> styled ratatui lines. Each emitted line is tagged with its source
 //! block index so the viewer can fold/expand and hit-test mouse clicks.
 
-use crate::model::Block;
+use crate::model::{Attachment, Block};
 use crate::{highlight, markdown, theme};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Rendered lines plus a parallel "which block produced this line" vector.
@@ -346,11 +346,26 @@ fn render_patch(hunks: &[crate::model::Hunk], token: &str, out: &mut Vec<Line<'s
     }
 }
 
+/// A one-line marker for a surfaced attachment: `▤ <kind>  <name>`. The **name** is
+/// the actionable target — clicking it (or Enter on the focused block) downloads the
+/// embedded content or reveals the path in the file manager — so it's underlined like
+/// a link.
+fn attachment_line(a: &Attachment) -> Line<'static> {
+    let mark = theme::tool();
+    let name = mark.add_modifier(Modifier::UNDERLINED);
+    Line::from(vec![
+        Span::styled("▤ ", mark),
+        Span::styled(format!("{} ", a.kind), mark),
+        Span::styled(a.name.clone(), name),
+    ])
+}
+
 /// Render a single block's content lines (no trailing blank separator). `width`
 /// is the terminal width, used for width-aware table layout in assistant text.
 fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match b {
+        Block::Attachment(a) => out.push(attachment_line(a)),
         Block::UserText(t) => {
             // A full-width grey block like Claude Code: a dim `❯` caret on the
             // first line (continuation lines indent two spaces to align under it),
@@ -900,6 +915,7 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
             Style::default().fg(theme::fold_header()),
         ),
+        Block::Attachment(a) => attachment_line(a),
         Block::AssistantText(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
@@ -929,6 +945,7 @@ fn body_len(b: &Block) -> usize {
         Block::ToolResult(t) | Block::UserText(t) | Block::QueueEvent { text: t } => {
             t.lines().count().saturating_sub(1)
         }
+        Block::Attachment(_) => 0, // one-line marker; not foldable
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),

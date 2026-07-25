@@ -61,6 +61,10 @@ pub enum Block {
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
+    /// A file, plan, or image the transcript embedded or referenced. Surfaced (the
+    /// viewer used to drop these) so the reader can **download** embedded content or
+    /// **reveal** a path-only reference in the file manager. See `Attachment`.
+    Attachment(Attachment),
     /// A slash command (e.g. `/compact`) and its local stdout. Rendered like
     /// Claude Code's `❯ /command` header + dim `⎿ output` lines, folded by
     /// default. Parsed from the `<command-name>`/`<command-args>`/
@@ -75,6 +79,34 @@ pub enum Block {
     },
 }
 
+/// A file / plan / image the transcript carried. The viewer surfaces it so the reader
+/// can act on it: `content.is_some()` ⇒ the bytes are embedded and **downloadable**;
+/// `content.is_none()` ⇒ only a path is known, so the action is **reveal in the file
+/// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// Short kind label for the header: `file` · `plan` · `edited` · `ref` · `image`.
+    pub kind: &'static str,
+    /// Display name — a repo-relative path when available, else the file's basename.
+    pub name: String,
+    /// Absolute on-disk path, when known — the reveal-in-file-manager target and the
+    /// default filename for a download.
+    pub path: Option<String>,
+    /// Embedded content, when the transcript carried it (makes it downloadable).
+    pub content: Option<AttachmentContent>,
+}
+
+/// Embedded attachment payload. Decoded lazily — the base64 stays a string until a
+/// download actually happens (or HTML inlines it as a `data:` URI).
+#[derive(Debug, Clone)]
+pub enum AttachmentContent {
+    /// UTF-8 text (a `file` body or a plan) — written verbatim on download.
+    Text(String),
+    /// Base64 bytes + MIME type (an image) — decoded on download, or inlined as a
+    /// `data:<mime>;base64,<b64>` URI in the HTML export.
+    Base64 { mime: String, b64: String },
+}
+
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`
 /// and the default fold policy are keyed on these (see `view`).
 pub fn fold_key(b: &Block) -> &'static str {
@@ -84,6 +116,7 @@ pub fn fold_key(b: &Block) -> &'static str {
         Block::AssistantText(_) => "assistant",
         Block::Thinking { .. } => "thinking",
         Block::ToolResult(_) => "tool_result",
+        Block::Attachment(_) => "attachment",
         Block::Command { .. } => "command",
         Block::ToolUse { name, .. } => tool_fold_key(name),
     }
@@ -844,6 +877,12 @@ fn parse_main<S: AsRef<str>>(
                             out.push(Block::UserText(p.to_string()));
                         }
                     }
+                } else if let Some(att) = a.and_then(attachment_from_event) {
+                    // A file/plan/edited/compact attachment — surface it so the reader
+                    // can download the embedded content or reveal the path (see
+                    // `attachment_from_event`). Other attachment types (listings,
+                    // reminders, deltas) are harness bookkeeping and stay dropped.
+                    out.push(Block::Attachment(att));
                 }
             }
             _ => {}
@@ -889,6 +928,73 @@ fn is_queue_prose(s: &str) -> bool {
         && !t.starts_with("<task-notification>")
         && !t.starts_with("[Request interrupted")
         && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// Build an [`Attachment`] from a `type:"attachment"` event's inner `attachment`
+/// object, for the types that carry a file/plan worth surfacing. Returns `None` for
+/// harness bookkeeping (listings, reminders, deltas, plan-mode toggles) and for
+/// `queued_command` (rendered as a turn elsewhere). `content: Some` ⇒ downloadable
+/// (embedded bytes); `content: None` ⇒ path-only (reveal in file manager).
+fn attachment_from_event(a: &Value) -> Option<Attachment> {
+    fn basename(p: &str) -> String {
+        p.rsplit('/').next().unwrap_or(p).to_string()
+    }
+    let s = |k: &str| a.get(k).and_then(|x| x.as_str());
+    match a.get("type").and_then(|t| t.as_str())? {
+        // Full attached-file bytes, embedded → downloadable.
+        "file" => {
+            let f = a.get("content")?.get("file")?;
+            let content = f.get("content").and_then(|c| c.as_str())?;
+            let path = f
+                .get("filePath")
+                .and_then(|p| p.as_str())
+                .or_else(|| s("filename"));
+            let name = s("displayPath")
+                .map(str::to_string)
+                .or_else(|| path.map(basename))?;
+            Some(Attachment {
+                kind: "file",
+                name,
+                path: path.map(str::to_string),
+                content: Some(AttachmentContent::Text(content.to_string())),
+            })
+        }
+        // Full plan markdown, embedded and not shown inline anywhere → downloadable.
+        "plan_file_reference" => {
+            let content = s("planContent")?;
+            let path = s("planFilePath");
+            Some(Attachment {
+                kind: "plan",
+                name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
+                path: path.map(str::to_string),
+                content: Some(AttachmentContent::Text(content.to_string())),
+            })
+        }
+        // An in-editor file — its inline `snippet` is truncated, so reveal the real file.
+        "edited_text_file" => {
+            let path = s("filename")?;
+            Some(Attachment {
+                kind: "edited",
+                name: basename(path),
+                path: Some(path.to_string()),
+                content: None,
+            })
+        }
+        // A bare pointer to a file that was in context → reveal.
+        "compact_file_reference" => {
+            let path = s("filename")?;
+            let name = s("displayPath")
+                .map(str::to_string)
+                .unwrap_or_else(|| basename(path));
+            Some(Attachment {
+                kind: "ref",
+                name,
+                path: Some(path.to_string()),
+                content: None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
@@ -1091,6 +1197,53 @@ mod tests {
             vec!["first turn", "mid-turn interjection", "last turn"],
             "{blocks:?}"
         );
+    }
+
+    /// The four content-bearing attachment types surface as `Block::Attachment`:
+    /// `file`/`plan` carry embedded text (downloadable → `content: Some`), while
+    /// `edited_text_file`/`compact_file_reference` are path-only (reveal → `content:
+    /// None`). Bookkeeping attachments (e.g. `skill_listing`) stay dropped.
+    #[test]
+    fn attachment_events_surface_with_download_vs_reveal() {
+        let jsonl = r##"
+{"type":"attachment","timestamp":"2026-06-30T03:00:00.000Z","attachment":{"type":"file","filename":"/w/backlog.md","displayPath":"backlog.md","content":{"type":"text","file":{"filePath":"/w/backlog.md","content":"# Backlog\nitem"}}}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:01.000Z","attachment":{"type":"plan_file_reference","planFilePath":"/p/plan-x.md","planContent":"# Plan\nstep 1"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:02.000Z","attachment":{"type":"edited_text_file","filename":"/w/src/main.rs","snippet":"1\tfn main(){}"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"compact_file_reference","filename":"/w/src/lib.rs","displayPath":"src/lib.rs"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"skill_listing","content":"noise"}}
+"##;
+        let blocks = parse(jsonl, &args());
+        let atts: Vec<(&str, &str, bool, Option<&str>)> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Attachment(a) => Some((
+                    a.kind,
+                    a.name.as_str(),
+                    a.content.is_some(),
+                    a.path.as_deref(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            atts,
+            vec![
+                ("file", "backlog.md", true, Some("/w/backlog.md")),
+                ("plan", "plan-x.md", true, Some("/p/plan-x.md")),
+                ("edited", "main.rs", false, Some("/w/src/main.rs")),
+                ("ref", "src/lib.rs", false, Some("/w/src/lib.rs")),
+            ],
+            "{blocks:?}"
+        );
+        // The embedded `file` content is the real bytes, ready to download.
+        let file_text = blocks.iter().find_map(|b| match b {
+            Block::Attachment(a) if a.kind == "file" => a.content.as_ref(),
+            _ => None,
+        });
+        assert!(matches!(
+            file_text,
+            Some(AttachmentContent::Text(t)) if t == "# Backlog\nitem"
+        ));
     }
 
     /// A user message with no visible character — only whitespace or a control

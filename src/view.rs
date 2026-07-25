@@ -2,7 +2,7 @@
 //! be driven headless (ratatui `TestBackend`) without a real TTY.
 
 use crate::discover::Candidate;
-use crate::model::Block;
+use crate::model::{Attachment, AttachmentContent, Block};
 use crate::picker::Picker;
 use crate::{render, theme, wrap, Args};
 use ratatui::layout::Rect;
@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as WBlock, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Columns of uncolored left margin before a diff/code row's gutter — matches
@@ -289,6 +289,7 @@ pub struct View {
     body_cache: Vec<Option<(bool, Vec<Line<'static>>)>>,
     cache_width: Option<u16>, // width the cache was built at; a change invalidates it
     cwd: Option<PathBuf>,     // session working dir — reverses a header's relativized path
+    flash: Option<String>,    // transient status (e.g. "Saved to …"); cleared on next input
 }
 
 impl View {
@@ -328,6 +329,7 @@ impl View {
             body_cache: Vec::new(),
             cache_width: None,
             cwd: None,
+            flash: None,
         }
     }
 
@@ -609,8 +611,30 @@ impl View {
         if let Some(path) = self.header_path_hit(b, idx, col as usize) {
             return Some(path);
         }
-        self.toggle_block(b);
-        None
+        self.activate_block(b)
+    }
+
+    /// Perform block `b`'s primary action. An [`Attachment`] with embedded content is
+    /// **downloaded** (saved to ~/Downloads; the result is flashed on the status line);
+    /// a path-only attachment returns its path for the caller to **reveal** in the file
+    /// manager. Any other block toggles its fold (returns `None`).
+    fn activate_block(&mut self, b: usize) -> Option<PathBuf> {
+        let att = match self.blocks.get(b) {
+            Some(Block::Attachment(a)) => a.clone(),
+            _ => {
+                self.toggle_block(b);
+                return None;
+            }
+        };
+        if att.content.is_some() {
+            self.flash = Some(match save_attachment(&att) {
+                Ok(p) => format!("Saved {}", pretty_home(&p)),
+                Err(e) => format!("Download failed: {e}"),
+            });
+            None
+        } else {
+            att.path.map(PathBuf::from) // reveal target
+        }
     }
 
     /// The absolute file path a click at `(idx, col)` lands on, if `idx` is the
@@ -655,9 +679,13 @@ impl View {
     }
 
     // --- expandable-element focus ([ / ] / hover / Enter) ---
-    fn foldable_blocks(&self) -> Vec<usize> {
+    /// Block indices the `[`/`]` keys can focus: foldable blocks plus attachments
+    /// (which aren't foldable but are actionable via Enter — download/reveal).
+    fn focusable_blocks(&self) -> Vec<usize> {
         (0..self.blocks.len())
-            .filter(|&i| render::foldable(&self.blocks[i]))
+            .filter(|&i| {
+                render::foldable(&self.blocks[i]) || matches!(self.blocks[i], Block::Attachment(_))
+            })
             .collect()
     }
     /// Move focus to the next (`]`) / previous (`[`) foldable block, wrapping,
@@ -669,7 +697,7 @@ impl View {
         self.move_focus(-1);
     }
     fn move_focus(&mut self, dir: isize) {
-        let fold = self.foldable_blocks();
+        let fold = self.focusable_blocks();
         if fold.is_empty() {
             return;
         }
@@ -694,11 +722,19 @@ impl View {
             }
         }
     }
-    /// Toggle the focused foldable block (the `Enter` key).
-    pub fn toggle_focused(&mut self) {
-        if let Some(b) = self.focus {
-            self.toggle_block(b);
+    /// Activate the focused block (the `Enter` key): download/reveal an attachment, or
+    /// toggle a foldable block. Returns a path to reveal in the file manager, if any.
+    pub fn activate_focused(&mut self) -> Option<PathBuf> {
+        match self.focus {
+            Some(b) => self.activate_block(b),
+            None => None,
         }
+    }
+
+    /// Clear the transient status flash (called on the next input so a "Saved …"
+    /// message doesn't linger).
+    pub fn clear_flash(&mut self) {
+        self.flash = None;
     }
     /// Hover: focus the foldable block under a content row (mouse move).
     pub fn hover_row(&mut self, row: u16) {
@@ -861,6 +897,9 @@ impl View {
     }
 
     fn status_line(&self) -> Line<'static> {
+        if let Some(msg) = &self.flash {
+            return Line::styled(format!(" {msg} "), theme::badge());
+        }
         if self.searching {
             return Line::from(vec![
                 Span::styled(" /", theme::user()),
@@ -1035,9 +1074,12 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("Space", "toggle fold (focused, else first visible)"),
         ("T", "toggle all folds"),
         ("[ / ]", "focus previous / next foldable"),
-        ("Enter", "toggle the focused fold"),
+        ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
-        ("mouse", "wheel scrolls · click a header to fold"),
+        (
+            "mouse",
+            "wheel scrolls · click header=fold · attachment name=download/reveal",
+        ),
         ("?", "toggle this help"),
     ];
     // `s` opens the session switcher (only offered on a --latest launch).
@@ -1069,6 +1111,84 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         .title(" Hotkeys — ? or Esc to close ");
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// Save an embedded attachment to the user's Downloads folder, never overwriting (a
+/// numeric suffix is added on collision). Text is written verbatim; base64 (images) is
+/// decoded first. Returns the written path. Synchronous by design — payloads are small
+/// (see `DESIGN.md`).
+fn save_attachment(a: &Attachment) -> std::io::Result<PathBuf> {
+    write_attachment_to(&downloads_dir(), a)
+}
+
+/// The testable core of [`save_attachment`]: write `a`'s embedded bytes into `dir`.
+fn write_attachment_to(dir: &Path, a: &Attachment) -> std::io::Result<PathBuf> {
+    use std::io::{Error, ErrorKind, Write};
+    let bytes: Vec<u8> = match a.content.as_ref() {
+        Some(AttachmentContent::Text(t)) => t.clone().into_bytes(),
+        Some(AttachmentContent::Base64 { b64, .. }) => crate::clipboard::base64_decode(b64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
+        None => return Err(Error::new(ErrorKind::InvalidInput, "nothing to download")),
+    };
+    std::fs::create_dir_all(dir)?;
+    let path = unique_path(dir, &download_filename(a));
+    std::fs::File::create(&path)?.write_all(&bytes)?;
+    Ok(path)
+}
+
+/// `~/Downloads` (via `$HOME`), falling back to the current directory.
+fn downloads_dir() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h).join("Downloads"),
+        None => PathBuf::from("."),
+    }
+}
+
+/// The download filename for an attachment: the basename of its path/name, with an
+/// image extension appended from the MIME type when the name lacks one.
+fn download_filename(a: &Attachment) -> String {
+    let base = a.path.as_deref().unwrap_or(&a.name);
+    let mut name = base.rsplit('/').next().unwrap_or(base).to_string();
+    if name.is_empty() {
+        name = "attachment".into();
+    }
+    if let Some(AttachmentContent::Base64 { mime, .. }) = &a.content {
+        if !name.contains('.') {
+            if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
+                name.push('.');
+                name.push_str(ext);
+            }
+        }
+    }
+    name
+}
+
+/// A path in `dir` for `fname` that does not exist yet — appends ` (1)`, ` (2)`, … before
+/// the extension on collision, so an existing download is never overwritten.
+fn unique_path(dir: &Path, fname: &str) -> PathBuf {
+    let cand = dir.join(fname);
+    if !cand.exists() {
+        return cand;
+    }
+    let (stem, ext) = match fname.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (fname.to_string(), String::new()),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|c| !c.exists())
+        .unwrap_or(cand)
+}
+
+/// Replace a leading `$HOME` with `~` for a compact status message.
+fn pretty_home(p: &Path) -> String {
+    let s = p.display().to_string();
+    if let Some(h) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
+        if let Some(rest) = s.strip_prefix(&h) {
+            return format!("~{rest}");
+        }
+    }
+    s
 }
 
 #[cfg(test)]
@@ -1686,6 +1806,70 @@ mod tests {
         );
     }
 
+    /// `[`/`]` can focus an attachment (it isn't foldable but is actionable), and
+    /// activating a path-only attachment returns its path for the caller to reveal.
+    #[test]
+    fn attachment_is_focusable_and_reveal_returns_its_path() {
+        let blocks = vec![
+            Block::UserText("go".into()),
+            Block::Attachment(Attachment {
+                kind: "ref",
+                name: "src/lib.rs".into(),
+                path: Some("/w/src/lib.rs".into()),
+                content: None,
+            }),
+        ];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::none());
+        draw(&mut v, 80, 20);
+        v.focus_next();
+        assert_eq!(v.focused_block(), Some(1), "attachment should be focusable");
+        // A reveal-only attachment yields its path (app reveals it); nothing written.
+        assert_eq!(v.activate_focused(), Some(PathBuf::from("/w/src/lib.rs")));
+    }
+
+    /// The download core writes embedded content into a target dir, decoding base64 and
+    /// never overwriting an existing file.
+    #[test]
+    fn write_attachment_saves_text_image_and_avoids_overwrite() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cr-attach-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let text = Attachment {
+            kind: "file",
+            name: "notes.md".into(),
+            path: Some("/w/notes.md".into()),
+            content: Some(AttachmentContent::Text("hello".into())),
+        };
+        let p1 = write_attachment_to(&dir, &text).unwrap();
+        assert_eq!(p1.file_name().unwrap(), "notes.md");
+        assert_eq!(std::fs::read_to_string(&p1).unwrap(), "hello");
+        // A second save of the same name must not overwrite.
+        let p2 = write_attachment_to(&dir, &text).unwrap();
+        assert_eq!(p2.file_name().unwrap(), "notes (1).md");
+
+        // A base64 image decodes to bytes; the extension comes from the MIME type.
+        let img = Attachment {
+            kind: "image",
+            name: "shot".into(),
+            path: None,
+            content: Some(AttachmentContent::Base64 {
+                mime: "image/png".into(),
+                b64: "Zm9v".into(), // "foo"
+            }),
+        };
+        let pi = write_attachment_to(&dir, &img).unwrap();
+        assert_eq!(pi.file_name().unwrap(), "shot.png");
+        assert_eq!(std::fs::read(&pi).unwrap(), b"foo");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn following_view_keeps_new_content_visible() {
         let mut v = View::new(blocks(10), "t", true, FoldPolicy::none());
@@ -1906,9 +2090,10 @@ mod tests {
         v.focus_prev();
         assert_eq!(v.focused_block(), Some(1));
 
-        // Enter toggles the focused (Bash) collapsed → expanded.
+        // Enter toggles the focused (Bash) collapsed → expanded (a non-attachment
+        // block has no reveal path).
         assert!(v.is_collapsed(1));
-        v.toggle_focused();
+        assert_eq!(v.activate_focused(), None);
         assert!(!v.is_collapsed(1));
 
         // Focus the Read summary and confirm it draws in the brighter color.

@@ -232,6 +232,20 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
 .qcaret { flex: none; font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
 .qmd { min-width: 0; font-size: 13px; }
 .qmd > p:only-child { margin: 0; }
+/* A surfaced attachment — an understated card; the name is the actionable link. */
+.amark {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  margin: 10px 0 2px; padding: 4px 16px; font-size: 13px;
+}
+.acaret { flex: none; color: var(--tool); }
+.akind { flex: none; color: var(--tool); font: 12px var(--mono); }
+.aname { min-width: 0; color: var(--fg); }
+.aname.adl { color: var(--link); text-decoration: underline; cursor: pointer; }
+.aname.adl:hover { opacity: 0.85; }
+.aimg {
+  display: block; flex-basis: 100%; max-width: min(520px, 100%); height: auto;
+  margin-top: 6px; border: 1px solid var(--border); border-radius: 6px;
+}
 .ts { flex: none; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
 .alink { flex: none; color: var(--faint); opacity: 0.45; font: 12px var(--mono); }
 .uturn:not(.fold) > .alink { margin-top: 3px; }
