@@ -345,7 +345,13 @@ The residual diff is **not** decision-free rendering:
   summary reads `…, thought for Xs`, matching a full re-parse of the same lines.
   *(Deferred once as "minimal benefit"; captured here so the fix is scoped.)*
 
-- [ ] **Surface transcript attachments (file names + download).** Transcripts carry
+- [x] **Surface transcript attachments (file names + download).** ✅ shipped `af8ee72`
+  (file/plan/edited/compact) + `9433787` (base64 images). The scoping/decisions below are
+  kept as the design record. Delivered: the four file types + images surface as
+  `Block::Attachment`; TUI = clickable name, `[`/`]`+Enter or click → download (embedded,
+  sync save to ~/Downloads, never overwriting) / reveal (path-only); served `--html` =
+  Blob/`data:`-URI download + `/__reveal`, inline image render; `--dump`/`--dump-html` =
+  names only.
   Transcripts embed content (files, plans, pasted/read images) that the viewer drops
   today. Surface it — but decide **download vs. reveal-in-Finder vs. inline** by one rule.
 
