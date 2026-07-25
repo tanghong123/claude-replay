@@ -490,6 +490,18 @@ The residual diff is **not** decision-free rendering:
   — the HTML path (`html_export::diff_part`) is correct, so diff the two. Repro with any
   session containing an Edit with a `structuredPatch`.
 
+- [ ] **Unify the parse backend + make it a reusable engine.** *(Queued 2026-07-25.)*
+  Today the TUI/`--dump` path and the HTML `--dump-html`/live-feed path both go through
+  `model::parse_*` but diverge downstream (`render.rs`→ratatui lines vs. `html_export.rs`→
+  a JSON block stream), and each re-derives things (fold policy, metrics, sub-agent
+  enrich). Refactor so both surfaces share ONE backend: a clean `model` core that yields
+  the block tree + metrics + sub-agent tree, with thin per-surface renderers on top. Then
+  expose that core as an independent library (a `claude-replay-core` crate, or a stable
+  `pub` API on the existing lib) so other software can parse Claude/Codex transcripts
+  into the block model without the TUI/HTML layers. Deliverables: a documented public
+  parse API (`parse_session(path) -> Session { blocks, metrics, agents }`), the two
+  renderers reduced to formatters over it, and a doc/example of third-party use.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now

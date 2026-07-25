@@ -238,27 +238,40 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     if sa.blocks.is_empty() {
         return None;
     }
+    // Own the fields we need so `sa`'s borrow of `parent.view` ends before we touch
+    // `parent.path` / build the view.
+    let blocks = sa.blocks.clone();
+    let agent_type = sa.agent_type.clone();
+    let subtree_cost = sa.subtree_cost;
     let title = if sa.agent_id.is_empty() {
         sa.agent_type.clone()
     } else {
         sa.agent_id.clone()
     };
+    let agent_id = sa.agent_id.clone();
+    // Live-tail an open child from its own file (Stage 6): when following, tail
+    // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
+    let child_file = model::subagent_file(&parent.path, &agent_id);
+    let reader = args
+        .follow
+        .then(|| child_file.as_deref().map(TailReader::open_at_end))
+        .flatten();
     let fold = crate::view::FoldPolicy::from_args(args);
-    let mut view = View::new(sa.blocks.clone(), title, false, fold);
+    let mut view = View::new(blocks, title, reader.is_some(), fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
     // The child's footer carries its rolled-up subtree cost (full token metrics would
     // need a re-read of the child file; the cost is already computed at parse time).
-    let mut segs = vec![(sa.agent_type.clone(), 3u8)];
-    if let Some(cost) = sa.subtree_cost {
+    let mut segs = vec![(agent_type, 3u8)];
+    if let Some(cost) = subtree_cost {
         segs.push((format!("~${cost:.2}"), 7));
     }
     view.set_footer_segments(segs);
     Some(Frame {
         view,
-        reader: None, // live-tailing an open child is a later stage
+        reader,
         agent: parent.agent,
         path: parent.path.clone(),
         from: idx,

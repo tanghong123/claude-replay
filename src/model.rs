@@ -652,6 +652,19 @@ fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The on-disk transcript for `agent_id` under the root session at `session_path`
+/// (`<session>/subagents/agent-<id>.jsonl`), if it exists — the file a descended child is
+/// live-tailed from. All of a session's agents (any depth) share this one flat dir.
+pub fn subagent_file(session_path: &std::path::Path, agent_id: &str) -> Option<std::path::PathBuf> {
+    let stem = session_path.file_stem()?.to_str()?;
+    let f = session_path
+        .parent()?
+        .join(stem)
+        .join("subagents")
+        .join(format!("agent-{agent_id}.jsonl"));
+    f.is_file().then_some(f)
+}
+
 /// Fill each `SubAgent` block's `blocks` (child transcript) + `subtree_cost` by parsing
 /// `<sadir>/agent-<id>.jsonl`, recursing into grandchildren against the same `sadir`.
 /// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
@@ -1812,6 +1825,12 @@ mod tests {
             "child transcript loaded: {}",
             sa.blocks.len()
         );
+        // The live-tail child-file resolver finds the same file (Stage 6), and misses.
+        assert!(
+            subagent_file(&sess, "achild01").is_some(),
+            "child file resolved"
+        );
+        assert!(subagent_file(&sess, "nope").is_none());
         // Node-scoped tool count: the child's 2 Reads, not the parent's Bash.
         assert!(
             crate::render::agent_chip(sa).starts_with("2 tools"),
