@@ -13,6 +13,15 @@
   "use strict";
 
   var THEME_KEY = "claude-replay-export-theme";
+  // §8.3/§8.8 code-density + width prefs — global and persisted.
+  var MS_KEY = "claude-replay-export-ms";
+  var WRAP_KEY = "claude-replay-export-wrap";
+  var WIDE_KEY = "claude-replay-export-wide";
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+  var ms = parseFloat(lsGet(MS_KEY)) || 12.5;
+  var wrap = lsGet(WRAP_KEY) !== "0"; // wrap by default
+  var wide = lsGet(WIDE_KEY) === "1";
   var root = document.documentElement;
   var stream = document.getElementById("stream");
   var turnlist = document.getElementById("turnlist");
@@ -58,7 +67,7 @@
 
   // A capped list: first `cap` children stay visible, the rest go into a hidden
   // div revealed by a "⋯ N more lines" button. All content is always present.
-  function capped(container, rows, cap, after) {
+  function capped(container, rows, cap, after, toLine) {
     if (!cap || rows.length <= cap) {
       rows.forEach(function (r) { container.appendChild(r); });
       return;
@@ -69,7 +78,9 @@
     hidden.id = id;
     rows.slice(cap).forEach(function (r) { hidden.appendChild(r); });
     container.appendChild(hidden);
-    var btn = el("button", "morebtn", "⋯ " + (rows.length - cap) + " more lines");
+    // §8.8 name the range, not just a count: "⋯ 126 more lines · to line 132".
+    var label = "⋯ " + (rows.length - cap) + " more lines" + (toLine != null ? " · to line " + toLine : "");
+    var btn = el("button", "morebtn", label);
     btn.dataset.more = id;
     after.appendChild(btn);
   }
@@ -137,7 +148,13 @@
     if (p.p === "num" || p.p === "diff") {
       var box2 = el("div", p.p === "num" ? "numbered" : "diff");
       var holder = el("div");
-      capped(box2, p.p === "num" ? numberedRows(p.rows) : diffRows(p.rows), p.cap, holder);
+      // The final rendered row's line number, for the "· to line M" expander label.
+      var toLine = null;
+      for (var i = p.rows.length - 1; i >= 0; i--) {
+        var ln = p.p === "num" ? p.rows[i][0] : p.rows[i][1];
+        if (ln != null) { toLine = ln; break; }
+      }
+      capped(box2, p.p === "num" ? numberedRows(p.rows) : diffRows(p.rows), p.cap, holder, toLine);
       into.appendChild(box2);
       while (holder.firstChild) into.appendChild(holder.firstChild);
       return;
@@ -150,6 +167,7 @@
   function anchor(id) {
     var a = el("a", "alink", "#");
     a.href = "#" + id;
+    a.title = "Copy a link to this spot";
     return a;
   }
 
@@ -295,6 +313,17 @@
     var fb = el("div", "fold-b");
     body.forEach(function (p) { renderPart(p, fb); });
     f.appendChild(fb);
+    // §8.2 an authored-open fold emits its header target in the expanded (pre-wrap)
+    // form immediately; setFold keeps it in sync on every later toggle.
+    if (b.open) {
+      var tgt = h.querySelector(":scope > .tool-target, :scope > .tool-path");
+      if (tgt) {
+        tgt.style.whiteSpace = "pre-wrap";
+        tgt.style.overflow = "visible";
+        tgt.style.textOverflow = "clip";
+        tgt.style.overflowWrap = "anywhere";
+      }
+    }
     return f;
   }
 
@@ -364,6 +393,11 @@
     }
     clampLongTurns();
     buildToolMenu();
+    // §8.3 give any newly-arrived code/diff panes their control strip, then re-apply
+    // the (global, persisted) size + wrap so new panes match the rest.
+    buildStrips();
+    setMono(ms);
+    setWrap(wrap);
     if (filter) applyFilter(filter); // fold/expand any newly-arrived matches
   }
 
@@ -517,6 +551,9 @@
     consume(inline.textContent);
     inline.remove();
   }
+  // §8.8/§8.6 apply persisted width mode and size the fixed bar to the window.
+  setWide(wide);
+  fitBar();
 
   // ── live tail ────────────────────────────────────────────────────────
   var src = document.body.dataset.src;
@@ -553,9 +590,115 @@
     if (!f) return;
     f.dataset.open = open ? "1" : "0";
     var h = f.querySelector(":scope > .fold-h");
-    if (h) h.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!h) return;
+    h.setAttribute("aria-expanded", open ? "true" : "false");
+    // §8.2 collapsed header target = one ellipsized line; expanded = pre-wrap. Set
+    // inline so it's correct on every state change (init syncs all folds; renderBlock
+    // also emits the expanded form for authored-open blocks).
+    var t = h.querySelector(":scope > .tool-target, :scope > .tool-path");
+    if (t) {
+      t.style.whiteSpace = open ? "pre-wrap" : "nowrap";
+      t.style.overflow = open ? "visible" : "hidden";
+      t.style.textOverflow = open ? "clip" : "ellipsis";
+      t.style.overflowWrap = open ? "anywhere" : "normal";
+    }
+  }
+  // §8.8 Toggle with scroll anchoring + the foldin animation. Measures the header's
+  // viewport top before/after and scrollBy the delta so the clicked row doesn't move;
+  // if it would sit behind the sticky bars (<96px) ease it to 104. Bulk/programmatic
+  // paths call setFold directly and skip anchoring.
+  function toggleFold(f, open) {
+    if (!f) return;
+    var h = f.querySelector(":scope > .fold-h");
+    var y0 = h ? h.getBoundingClientRect().top : 0;
+    setFold(f, open);
+    var b = f.querySelector(":scope > .fold-b");
+    if (open && b) { b.classList.remove("anim"); void b.offsetWidth; b.classList.add("anim"); }
+    if (!h) return;
+    var y1 = h.getBoundingClientRect().top;
+    if (Math.abs(y1 - y0) > 1) window.scrollBy(0, y1 - y0);
+    var top = h.getBoundingClientRect().top;
+    if (top < 96) window.scrollBy({ top: top - 104, behavior: "smooth" });
   }
   function allFolds(open) { all(".fold").forEach(function (f) { setFold(f, open); }); }
+
+  // ── §8.3 per-pane code controls / §8.8 wide mode ─────────────────────────
+  // Wrap each code/diff pane in `.codewrap` + a `.codefoot` row shared with the
+  // "⋯ N more lines" expander: expander left, controls (A− size A+ wrap copy) right.
+  // Static button styling lives in the stylesheet; only state goes on classes.
+  function buildStrips() {
+    all(".numbered, .diff").forEach(function (c) {
+      if (c.parentElement.classList.contains("codewrap")) return;
+      var wrapEl = el("div", "codewrap");
+      c.parentElement.insertBefore(wrapEl, c);
+      wrapEl.appendChild(c);
+      function b(cls, label, title) { var x = el("button", cls, label); x.title = title; return x; }
+      var bar = el("div", "codebar");
+      bar.appendChild(b("ms-dn", "A−", "Smaller code (−) — applies to all code blocks"));
+      bar.appendChild(el("span", "ms-val", String(ms)));
+      bar.appendChild(b("ms-up", "A+", "Larger code (+) — applies to all code blocks"));
+      bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines: wrap / scroll (w)"));
+      bar.appendChild(b("cpy-code", "copy", "Copy this block"));
+      var foot = el("div", "codefoot");
+      var next = wrapEl.nextElementSibling; // the "⋯ N more lines" expander, if any
+      if (next && next.classList.contains("morebtn")) foot.appendChild(next);
+      foot.appendChild(bar);
+      wrapEl.appendChild(foot);
+    });
+  }
+  function setMono(v) {
+    ms = Math.max(8, Math.min(16, Math.round(v * 2) / 2));
+    root.style.setProperty("--ms", ms + "px");
+    all(".ms-val").forEach(function (n) { n.textContent = ms; });
+    lsSet(MS_KEY, ms);
+  }
+  function setWrap(on) {
+    wrap = on;
+    lsSet(WRAP_KEY, on ? "1" : "0");
+    all(".ms-wrap").forEach(function (b) {
+      b.textContent = on ? "⤶" : "↔";
+      b.title = on
+        ? "Long lines: wrapping — click to scroll instead"
+        : "Long lines: scrolling — click to wrap instead";
+      b.classList.toggle("on", !on);
+    });
+    all(".numbered, .diff").forEach(function (c) {
+      c.style.overflowX = on ? "hidden" : "auto";
+      c.classList.toggle("scrollx", !on);
+    });
+    all(".numbered .code, .diff .code").forEach(function (c) {
+      c.style.whiteSpace = on ? "pre-wrap" : "pre";
+      c.style.wordBreak = on ? "break-word" : "normal";
+    });
+  }
+  function setWide(on) {
+    wide = on;
+    lsSet(WIDE_KEY, on ? "1" : "0");
+    var lay = $("layout"), mn = $("main");
+    if (lay) lay.style.maxWidth = on ? "none" : "1160px";
+    if (mn) mn.style.maxWidth = on ? "none" : "820px";
+    var b = $("btn-wide");
+    if (b) {
+      b.textContent = on ? "⇔ Narrow" : "⇔ Wide";
+      b.style.color = on ? "var(--tool)" : "";
+      b.style.borderColor = on ? "var(--tool)" : "";
+      b.title = on ? "Back to reading width" : "Wide mode — drop the reading-width cap for diff-heavy sessions";
+    }
+  }
+  // §8.6 Progressive shedding so the fixed bar never clips its trailing control.
+  function fitBar() {
+    var w = window.innerWidth;
+    ["btn-exp", "btn-col"].forEach(function (id) {
+      var b = $(id);
+      if (!b) return;
+      var full = b.dataset.full;
+      b.textContent = w < 1000 ? (id === "btn-exp" ? "⌄" : "⌃") : full;
+      b.title = full;
+      b.style.minWidth = w < 1000 ? "30px" : "";
+    });
+    var bs = document.querySelector("#topbar .brand-sub");
+    if (bs) bs.style.display = w < 820 ? "none" : "";
+  }
 
   // Where goTo lands a target's top (px from the viewport top). `[`/`]` reference
   // this so a just-navigated turn isn't re-selected.
@@ -570,14 +713,43 @@
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
   }
 
-  function copy(text, node, done, revert) {
-    var orig = revert || node.textContent;
-    try {
-      navigator.clipboard.writeText(text).then(function () {
-        node.textContent = done;
-        setTimeout(function () { node.textContent = orig; }, 1200);
-      });
-    } catch (e) { /* clipboard unavailable */ }
+  // §8.5 One clipboard helper for all call sites. Exports normally open from
+  // file://, where navigator.clipboard is refused — so fall back to a hidden-textarea
+  // execCommand and resolve success only when one path actually works. Never a false ✓.
+  function copyText(text) {
+    function legacy() {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch (e) { return false; }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }).catch(legacy);
+    }
+    return Promise.resolve(legacy());
+  }
+  // Button feedback: "copied" / "blocked" (never a false success). A codebar button
+  // (stylesheet-styled) uses the `.bad` class so :hover still wins; others go inline.
+  function copyBtn(btn, text) {
+    var was = btn.dataset.label || (btn.dataset.label = btn.textContent);
+    var inBar = !!btn.closest(".codebar");
+    copyText(text).then(function (ok) {
+      clearTimeout(btn._t);
+      btn.textContent = ok ? "copied" : "blocked";
+      if (inBar) btn.classList.toggle("bad", !ok);
+      else btn.style.color = ok ? "" : "var(--delfg)";
+      btn._t = setTimeout(function () {
+        btn.textContent = was;
+        if (inBar) btn.classList.remove("bad");
+        else btn.style.color = "";
+      }, 1300);
+    });
   }
 
   document.addEventListener("click", function (e) {
@@ -590,11 +762,32 @@
     if (!e.target.closest("#toolmenu")) toolMenu(false);
 
     var sid = e.target.closest("#sid");
-    if (sid) { copy(sid.dataset.path, sid, "copied transcript path"); return; }
+    if (sid) {
+      var sorig = sid.dataset.label || (sid.dataset.label = sid.textContent);
+      copyText(sid.dataset.path).then(function (ok) {
+        clearTimeout(sid._t);
+        sid.textContent = ok ? "copied transcript path" : "copy blocked — ⌘C the path";
+        sid._t = setTimeout(function () { sid.textContent = sorig; }, 1400);
+      });
+      return;
+    }
     var cpy = e.target.closest(".cpy");
     if (cpy) {
       var pre = cpy.closest(".fence").querySelector("pre");
-      copy(pre.textContent, cpy, "copied", "copy");
+      copyBtn(cpy, pre.textContent);
+      return;
+    }
+    // §8.3 per-pane code controls (event-delegated).
+    if (e.target.closest(".ms-dn")) { setMono(ms - 0.5); return; }
+    if (e.target.closest(".ms-up")) { setMono(ms + 0.5); return; }
+    if (e.target.closest(".ms-wrap")) { setWrap(!wrap); return; }
+    var cc = e.target.closest(".cpy-code");
+    if (cc) {
+      var blk = cc.closest(".codewrap").querySelector(".numbered, .diff");
+      var codeText = Array.prototype.map
+        .call(blk.querySelectorAll(".code"), function (n) { return n.textContent; })
+        .join("\n");
+      copyBtn(cc, codeText);
       return;
     }
     // Clamp toggle on a long user turn: expand to full height, or re-collapse.
@@ -619,12 +812,26 @@
       more.remove();
       return;
     }
+    // §8.4 the `#` anchor COPIES a deep link — no scroll, no hash write, no fold
+    // toggle. (Loading a URL that already has a hash still scrolls + expands.)
     var al = e.target.closest(".alink");
     if (al) {
       e.preventDefault();
+      e.stopPropagation();
       var href = al.getAttribute("href");
-      history.replaceState(null, "", href);
-      goTo($(href.slice(1)));
+      copyText(location.href.split("#")[0] + href).then(function (ok) {
+        clearTimeout(al._t);
+        al.textContent = ok ? "✓" : "⚠";
+        al.style.opacity = "1";
+        al.style.color = ok ? "var(--tool)" : "var(--delfg)";
+        al.title = ok ? "Copy a link to this spot" : "Copy blocked — select the address bar and press ⌘C";
+        al._t = setTimeout(function () {
+          al.textContent = "#";
+          al.style.opacity = "";
+          al.style.color = "";
+          al.title = "Copy a link to this spot";
+        }, 1400);
+      });
       return;
     }
     // A file path in a tool header reveals the file, and never folds the block.
@@ -642,7 +849,7 @@
       return;
     }
     var h = e.target.closest(".fold-h");
-    if (h) { var f = h.closest(".fold"); setFold(f, f.dataset.open !== "1"); return; }
+    if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goTo(curTurn); return; }
     var si = e.target.closest(".side-item");
     if (si) goTo($(si.dataset.t));
@@ -656,6 +863,9 @@
   });
   $("btn-exp").addEventListener("click", function () { allFolds(true); });
   $("btn-col").addEventListener("click", function () { allFolds(false); });
+  var wideBtn = $("btn-wide");
+  if (wideBtn) wideBtn.addEventListener("click", function () { setWide(!wide); });
+  window.addEventListener("resize", function () { fitBar(); }, { passive: true });
 
   // ── search ───────────────────────────────────────────────────────────
   var q = $("q");
@@ -707,11 +917,15 @@
       }
       return;
     }
+    // §8.3 code-density keys (global): size −/+, wrap w.
+    if (e.key === "-" || e.key === "_") { setMono(ms - 0.5); return; }
+    if (e.key === "+" || e.key === "=") { setMono(ms + 0.5); return; }
+    if (e.key === "w") { setWrap(!wrap); return; }
     var active = document.activeElement;
     if ((e.key === " " || e.key === "Enter") && active && active.classList.contains("fold-h")) {
       e.preventDefault();
       var f = active.closest(".fold");
-      setFold(f, f.dataset.open !== "1");
+      toggleFold(f, f.dataset.open !== "1");
       return;
     }
     if (e.key === "[" || e.key === "]") {

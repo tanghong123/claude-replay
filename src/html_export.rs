@@ -676,8 +676,7 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
 </head>
 <body{live_attrs}>
 <div id="topbar">
-  <div class="brand">claude-replay <span>· session export</span></div>
-  <div class="spacer"></div>
+  <div class="brand">claude-replay <span class="brand-sub">· session export</span></div>
   <div class="toolfilter">
     <button id="btn-tools" class="tbtn"><span class="tf-label">Tools ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
@@ -690,11 +689,12 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
     <input id="q" placeholder="Search transcript  ( / )" autocomplete="off">
     <span id="qcount"></span>
   </div>
-  <button id="btn-exp" class="tbtn">Expand all</button>
-  <button id="btn-col" class="tbtn">Collapse all</button>
+  <button id="btn-exp" class="tbtn" data-full="Expand all">Expand all</button>
+  <button id="btn-col" class="tbtn" data-full="Collapse all">Collapse all</button>
+  <button id="btn-wide" class="tbtn" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔ Wide</button>
   <button id="btn-theme" class="tbtn">◐ Dark</button>
 </div>
-<div class="layout">
+<div class="layout" id="layout">
   <nav id="sidebar">
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
@@ -704,9 +704,11 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
       <span class="key">space</span><span class="what">fold</span>
       <span class="key">[ ]</span><span class="what">turn</span>
       <span class="key">/</span><span class="what">search</span>
+      <span class="key">− +</span><span class="what">code size</span>
+      <span class="key">w</span><span class="what">wrap</span>
     </div>
   </nav>
-  <main>
+  <main id="main">
     <section class="session-header">
       <div class="session-title" id="title">{title_esc}</div>
       <div class="session-meta" id="meta"></div>
@@ -1252,6 +1254,54 @@ mod tests {
         // --full unfolds everything.
         let full = stream(&blocks, &FoldPolicy::none());
         assert_eq!(full[1]["open"], json!(1), "--full opens bash too");
+    }
+
+    /// §8.8 per-kind keylines: the emitter tags each fold with `kind` (→ `data-kind`),
+    /// and the stylesheet paints a per-kind keyline in BOTH fold states, with the
+    /// filter hit applied as a CLASS override (`!important`), never an inline box-shadow
+    /// — so the two rules don't fight.
+    #[test]
+    fn per_kind_keyline_attr_and_class() {
+        let out = stream(
+            &[edit_with_patch(), bash("ls", "x"), tool("Read", "/f")],
+            &FoldPolicy::none(),
+        );
+        assert_eq!(out[0]["kind"], "edit");
+        assert_eq!(out[1]["kind"], "bash");
+        assert_eq!(out[2]["kind"], "read");
+        // The keyline hues are keyed off data-kind in the stylesheet, in both states.
+        assert!(CSS.contains(".fold[data-kind=\"edit\"]"), "edit keyline");
+        assert!(CSS.contains(".fold[data-kind=\"read\"]"), "read keyline");
+        assert!(
+            CSS.contains(".fold-h.filter-hit") && CSS.contains("!important"),
+            "filter hit must be a class override, not inline"
+        );
+        // No inline box-shadow keyline may be emitted (it would beat the class rule).
+        assert!(
+            !out.iter().any(|b| b.to_string().contains("box-shadow")),
+            "keylines come from the stylesheet, not inline"
+        );
+    }
+
+    /// §8.2 an authored-open fold emits `open:1` (the driver), and the renderer sets its
+    /// header target to the expanded pre-wrap form inline — collapsed is one ellipsized
+    /// line, expanded wraps — synced by `setFold` on every toggle.
+    #[test]
+    fn open_fold_wrap_contract() {
+        // Edit opens by default.
+        let out = stream(&[edit_with_patch()], &FoldPolicy::default());
+        assert_eq!(out[0]["open"], json!(1));
+        // The JS renders the expanded target inline and keeps it in sync.
+        assert!(
+            JS.contains("pre-wrap") && JS.contains("overflowWrap"),
+            "setFold/renderBlock sync the expanded header target inline"
+        );
+        // The stylesheet no longer hard-codes the expanded target via a data-open rule
+        // (that treatment moved to inline JS per §8.2).
+        assert!(
+            !CSS.contains(".fold[data-open=\"1\"] > .fold-h .tool-target"),
+            "expanded target is inline now, not a CSS descendant rule"
+        );
     }
 
     /// A queued in-flight prompt streams as kind "queue" — an always-open marker

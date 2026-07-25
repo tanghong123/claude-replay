@@ -154,3 +154,120 @@ Theme switch = swap the variable set on `:root` (+ persist in
   `--dump-html --split-turns`.
 - Suggested CLI: `claude-replay <id> --dump-html [stem]` → `<stem>.html`, honoring the
   same `--fold/--unfold/--full` flags as `--dump`.
+
+
+---
+
+## 8. Revision 2 — polish pass (supersedes conflicting details above)
+
+Reference: `design/html-dump/session-export-mockup.html` (open it; it implements all of this).
+
+### 8.1 Fold header alignment
+`.fold-h` is `align-items: flex-start` (was `center`) so a wrapping target keeps the
+chevron / dot / tool name / chips / `#` on line 1. The comment in the current exporter CSS
+asserting center-alignment is intentional must be removed.
+
+One shared line box is what actually makes them align: `.fold-h { line-height: 20px }`,
+and every child pinned to it — the `font:` shorthand resets `line-height` to `normal`, so
+targets must be `font: 12px/20px var(--mono)` and chips `font: 10.5px/16px var(--mono)`
+with `margin-top: 2px`; the tool-name span needs explicit `line-height: 20px`; the 8px dot
+`margin-top: 6px`.
+
+### 8.2 Collapsed vs expanded header target
+- collapsed: `white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0`
+- expanded: `white-space: pre-wrap; overflow: visible; text-overflow: clip; overflow-wrap: anywhere`
+
+Emit the expanded form **inline for blocks authored `data-open="1"`** so it is correct
+before JS runs, and have the toggle sync it on every state change. Any init pass must run
+over *all* folds, not only the ones the user touches.
+
+### 8.3 Per-pane code controls (replaces any global font control)
+Each `.numbered`/`.diff` pane is wrapped in `.codewrap` and followed by a `.codefoot` row:
+the `⋯ N more lines` expander on the left, controls right-aligned — `A−`, the current size,
+`A+`, the wrap/scroll toggle, `copy`. It shares the row the expander already occupies, so it
+costs no extra line, and it is never visible when no code is on screen.
+
+- `A−`/`A+` step `--ms` 8→16px in 0.5 increments; **global and persisted**
+  (`localStorage['claude-replay-export-ms']`) — adjusting one pane resizes all.
+- wrap toggle: `⤶` = `.code { white-space: pre-wrap }`; `↔` = `white-space: pre` +
+  `overflow-x: auto` on the pane, so long diff lines keep their shape and pan horizontally.
+  Persisted in `localStorage['claude-replay-export-wrap']`.
+- `copy` copies only the `.code` column (no gutters or markers).
+- Keys: `-` / `+` size, `w` wrap.
+- **All static button styling belongs in the stylesheet** (`.codebar button{…}`,
+  `:hover`, `:focus-visible`), never inline — an inline `color`/`background` beats author
+  rules and kills hover feedback. State uses classes (`.on`, `.bad`). Rest at
+  `opacity:.8`, `1` on `.codewrap:hover`/`:focus-within` — a declarative rule, zero JS.
+
+### 8.4 Deep-link anchors copy, they do not navigate
+Clicking `#` must **not** scroll, change the hash, or toggle the fold
+(`preventDefault` + `stopPropagation`). It copies the absolute link
+(`location.href.split('#')[0] + '#id'`), flips to a green `✓` for ~1.4s, and carries
+`title="Copy a link to this spot"`. Loading a URL that already has a hash still scrolls
+and expands as before.
+
+### 8.5 Clipboard must never lie
+Exports are normally opened from `file://`, where `navigator.clipboard` is refused. One
+helper used by all four call sites (anchors, fence copy, pane copy, session id): try the
+async API, fall back to a hidden-textarea `execCommand('copy')`, and only report success
+when one resolves. On failure show a distinct state (`⚠` / `blocked`, title
+"press ⌘C") — never a `✓`. No unhandled rejections.
+
+### 8.6 Top bar must not clip its trailing control
+The bar is `position: fixed` and cannot scroll, so nothing may overflow. Make the search
+box the flexible element (`flex: 1 1 auto; min-width: 0`, input `width: auto`), keep no
+extra spacer div, and shed chrome progressively as width tightens (replaces the stale
+900px breakpoint): hide the code-size readout < 1080px, swap "Expand all"/"Collapse all"
+to `⌄`/`⌃` icons with `title` < 1000px, hide the brand suffix < 820px.
+
+### 8.7 Focus rings follow their corner
+`.uturn.fold > .fold-h` needs `border-radius: 10px` — an outline follows its own
+element's radius, so without it the focus ring draws square inside the rounded turn card.
+
+### 8.8 Width & density (was the open backlog — all agreed and implemented)
+
+**Wide mode.** A `⇔ Wide` toggle beside the theme button drops both width caps
+(`.layout` 1160px → none, `main` 820px → none) so code panes get the whole window; the
+button turns accent-colored and reads `⇔ Narrow` while active. Persisted in
+`localStorage['claude-replay-export-wide']`. Not the default — prose pays for it.
+
+**Rail indent (replaces §2's 28px-per-level padding).** Fold bodies indent with
+`padding-left: 14px; margin-left: 11px; border-left: 1px solid var(--border)` instead of
+24–28px of padding. Same hierarchy, half the horizontal cost, and a visible rail tying a
+body to its header. (The slash-command card body keeps its own padding — no rail.)
+
+**Pane bleed.** `.fold-b > .codewrap { margin-left: -10px; margin-right: -6px }` — code
+panes reach past the prose column on both sides.
+
+**Per-kind keylines.** Every fold header carries `box-shadow: inset 2px 0 0 <hue>` in
+*both* states, so a collapsed session is scannable: edit/write `--tool`, bash/tool
+`--link`, read `--gut`, skill/agent `--kw`, think/act `--faint`, command none (the card
+carries its own identity). A filter hit overrides with `inset 3px 0 0 var(--tool)` — apply
+it as a **class** (`.fold-h.filter-hit`), never an inline box-shadow, or the two fight.
+
+**Diff tint scope.** Tint the **code column only** (`.diff .nrow.add .code { background:
+var(--addbg) }`), not the whole row — gutters stay neutral and the `+`/`−` markers carry
+the signal. This is a deliberate divergence from the TUI's full-row tint; expect it when
+diffing against the golden capture.
+
+**Diff density.** `line-height: 1.75` → `1.5` on `.numbered`/`.diff`.
+
+**Fold transition + scroll anchoring.** Expanding plays a 160ms
+`@keyframes foldin` (opacity + `translateY(-3px)`) on the body. The toggle measures the
+header's viewport top before and after the state change and `scrollBy`s the delta, so the
+clicked row does not move; if it would land behind the sticky bars (< 96px) it eases to
+104px. Bulk expand/collapse and programmatic navigation skip anchoring.
+
+**Scrollbar reservation.** In scroll mode the pane gets a `.scrollx` class →
+`padding-bottom: 10px`. Without it an overlay scrollbar (which consumes no layout space)
+paints inside the padding box and strikes through the last 18.75px row. Wrap mode keeps
+zero padding.
+
+**Expander labels.** `⋯ 126 more lines · to line 132` — name the range, not just a count.
+
+**Session header.** 19px title, `padding: 18px 0 12px` — it should not claim the first
+screen.
+
+### 8.9 Still open (nothing agreed)
+Nothing outstanding. Future ideas would start from: printing/PDF of an export, splitting
+very large sessions across files, and a compare-two-sessions view.
