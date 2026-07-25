@@ -346,47 +346,79 @@ The residual diff is **not** decision-free rendering:
   *(Deferred once as "minimal benefit"; captured here so the fix is scoped.)*
 
 - [ ] **Surface transcript attachments (file names + download).** Transcripts carry
-  `attachment` events with binary/file payloads (e.g. pasted images, `file`,
-  `edited_text_file`, and other `attachment.type`s beyond the `queued_command` prompts
-  we now render — see `design/queued-messages.md` for the attachment taxonomy). Expose
-  the files rather than dropping them:
-  - **`--html` (served over `localhost:<port>`):** render each attachment as a named,
-    **downloadable** item — a link/button that fetches the bytes from a new server
-    endpoint (extend the existing loopback HTTP server in `html_export.rs`, alongside
-    `/__reveal`; e.g. `/__attachment?id=…` streaming the payload with a
-    `Content-Disposition: attachment; filename=…`). Only for the *served* page — a
-    standalone `--dump-html` file has no server, so it shows the name only (see below).
-  - **TUI (`claude-replay`):** show the attachment **file name(s)** inline in the block;
-    optionally support a **mouse click to save** the attachment into the user's Downloads
-    folder (crossterm mouse capture + write bytes; confirm/announce the saved path).
-  - **`--dump` / `--dump-html`:** **file names only** (no bytes, no clickable download —
-    a dumped/exported file is meant to be shareable and portable, like the reveal-path
-    decision for `--dump-html`).
-  **Scoping done (attachment taxonomy for session `094539f2`, 733 attachment events).**
-  Only four `attachment.type`s carry retrievable content; the rest are harness
-  bookkeeping (tool/agent/skill listings, `task_reminder`, permission/date/hook deltas,
-  plan-mode toggles) with nothing to download. Feature targets and where the bytes/paths
-  live (paths relative to the `attachment` object):
-  - **`file`** (×11) — full attached-file bytes **inline** at `content.file.content`;
-    absolute path at `content.file.filePath` (also top-level `filename`), repo-relative
-    `displayPath`. Highest-value target — downloadable straight from the transcript.
-  - **`plan_file_reference`** (×3) — full plan markdown **inline** at `planContent`; path
-    at `planFilePath` (`~/.claude/plans/<name>.md`). Surface as a viewable plan doc.
-  - **`edited_text_file`** (×91) — line-numbered snippet **inline** at `snippet`
-    (⚠️ truncated ~8 KB); path at `filename`. Show inline; read `filename` for full text.
-  - **`compact_file_reference`** (×24) — **path-ref only** (`filename` + `displayPath`),
-    no bytes; treat as a link, resolve from disk if surfacing content.
-  - `queued_command` is the mid-turn-prompt case already handled (see above).
-  **Caveat:** this session has **no pasted images/screenshots**, so the image/paste case
-  (mime type, base64 blob, `~/Desktop/Screenshot…` path) and its `attachment.type` are
-  unconfirmed — validate against a session with a pasted screenshot before finalizing
-  that code path. So payloads are BOTH inline (`content`/`snippet`/`planContent`) and
-  path-referenced depending on type — the `--html` download endpoint can serve inline
-  bytes directly and fall back to reading the path from disk for `compact_file_reference`
-  (served-only; a portable `--dump-html` file shows the name, per the reveal-path rule).
-  Design a `Block::Attachment { kind, name, path, inline: Option<String> }` (or extend
-  `ToolResult`) from this. *(Queued 2026-07-25; do not start until the current
-  queued-messages changes are reviewed.)*
+  Transcripts embed content (files, plans, pasted/read images) that the viewer drops
+  today. Surface it — but decide **download vs. reveal-in-Finder vs. inline** by one rule.
+
+  **Guiding principle.** Offer a **download** ONLY for content that is (a) *embedded in
+  the transcript* AND (b) *not already shown inline* in the TUI/HTML. If the content is
+  merely **referenced by a path** (not embedded), don't download — **reveal it in Finder**
+  (via the existing `/__reveal` / `app::reveal_in_file_manager`). If we already decode and
+  render it inline, do nothing extra. `--dump` / `--dump-html` **only ever show names**
+  (a dumped/exported file must stay portable — no bytes, no server), so download is
+  irrelevant there; this whole feature is about the TUI and the *served* `--html`.
+
+  **Per-type decisions** (schema from sessions `094539f2` + the image sample below):
+  - **`file`** (×11) — **DOWNLOAD.** True user attachment; full bytes **inline** at
+    `content.file.content`, path at `content.file.filePath` / `filename`. Embedded and not
+    otherwise shown → highest-value download target.
+  - **base64 images** — **DOWNLOAD** (TUI can't draw them) / **inline** in HTML via a
+    `data:image/png;base64,…` URI. ⚠️ These are **NOT `attachment` events** — they arrive
+    as image *content blocks*: `content[].type=="image"` with
+    `source.{type:"base64",media_type:"image/png",data}`, and as tool results
+    `toolUseResult.type=="image"` / `toolUseResult.file.base64` (`file.type=="image/png"`).
+    So this spans a second code path (message/tool-result parsing), not just attachments.
+    Confirmed present in `…/kwire/0877607A…/subagents/agent-ae0fffd8cb51d3c05.jsonl`
+    (6 image blocks). Embedded → prefer download over reveal (more reliable than a path).
+  - **`plan_file_reference`** (×3) — gray area; plan markdown **inline** at `planContent`,
+    path at `planFilePath`. FIRST verify whether the plan is already surfaced inline
+    elsewhere in the transcript (e.g. an ExitPlanMode message). If **shown** → do nothing.
+    If **not shown** → **DOWNLOAD** the embedded `planContent` (embedded ⇒ more reliable
+    than reveal). (Currently the viewer renders no attachment content, so absent inline
+    surfacing → download.)
+  - **`edited_text_file`** (×91) — **REVEAL IN FINDER.** Its inline `snippet` is
+    truncated (~8 KB) so not a faithful download; the real file lives at `filename` →
+    reveal it.
+  - **`compact_file_reference`** (×24) — **REVEAL IN FINDER.** Path-ref only
+    (`filename` + `displayPath`), nothing embedded.
+  - **`queued_command`** — **nothing.** Already decoded and shown inline as a `❯` turn
+    (see the queued-messages work); would double-show if surfaced again.
+  - Everything else (tool/agent/skill listings, `task_reminder`, permission/date/hook
+    deltas, plan-mode toggles) is harness bookkeeping — ignore.
+
+  **Mechanics.**
+  - **Served `--html`:** downloads stream from a new loopback endpoint (extend the
+    `html_export.rs` server beside `/__reveal`; e.g. `/__attachment?id=…` with
+    `Content-Disposition: attachment; filename=…`); reveal-in-Finder reuses `/__reveal`.
+    Images can also render inline as `data:` URIs.
+  - **TUI:** show the name inline. Two actions, each available by **mouse click AND
+    keyboard** (it's a TUI — keyboard-first):
+    - **Download** (embedded types: `file`, base64 images, `plan_file_reference` if not
+      shown) → decode + write bytes to `~/Downloads`, announce the saved path on the
+      status line.
+    - **Reveal in Finder** (path-only types: `edited_text_file`, `compact_file_reference`)
+      → `app::reveal_in_file_manager` (`open -R`).
+    Mouse: the release handler already maps a click to a path via `view.click_at(row,col)`
+    → `reveal_in_file_manager`; extend `click_at` (or a sibling) to also return a
+    *downloadable* hit so a click on an embedded attachment saves it. (Mouse capture is
+    already on and coexists with the TUI's own text selection — drag=select/copy,
+    click=fold/reveal — so there is NO text-selection caveat.) Keyboard: act on the
+    **focused block** (`]`/`[` already move focus) — bind **`d` = download**, **`r` =
+    reveal** (both free today: only `Ctrl-d` and no `r` are taken). If the focused block
+    has no such attachment, no-op with a brief status hint.
+    - **Save SYNCHRONOUSLY, not on a background thread.** Payloads are bounded
+      (screenshots a few MB; `file`/plan text smaller), so base64-decode + write is
+      ~tens of ms — below a frame, imperceptible on a deliberate action. A thread would
+      add an `mpsc` channel + loop draining + in-flight/error state + double-trigger
+      guarding to an otherwise synchronous event loop, for no real benefit. Show
+      `Saving… → Saved to <path>` and keep the logic in a standalone
+      `fn save_attachment(&Attachment) -> io::Result<PathBuf>` so it's a one-line switch
+      to `thread::spawn` + channel IF we ever surface a genuinely large `file` payload.
+  - **`--dump` / `--dump-html`:** names only.
+
+  Model: a `Block::Attachment { kind, name, path: Option<String>, inline: Option<Vec<u8>>|String }`
+  where `inline.is_some()` ⇒ downloadable, else reveal-by-path — plus the separate
+  image-content-block path. *(Queued 2026-07-25; base64/image case confirmed 2026-07-25.
+  Do not start until the current queued-messages changes are reviewed.)*
 
 - [ ] **Track sub-agent activity (spawned from the main session).** *(Potentially
   complicated — investigation first.)* When the main session spawns a sub-agent (the
