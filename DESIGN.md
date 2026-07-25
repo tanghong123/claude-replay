@@ -427,32 +427,59 @@ The residual diff is **not** decision-free rendering:
   Do not start until the current queued-messages changes are reviewed.)*
 
 - [ ] **Track sub-agent activity (spawned from the main session).** *(Potentially
-  complicated — investigation first.)* When the main session spawns a sub-agent (the
-  `Task`/Agent tool, `general-purpose`/`Explore`/custom types), the sub-agent runs its
-  own turn loop, and today the viewer shows only the parent `Task` tool_use + its final
-  returned text — the sub-agent's *actual* work (its thinking, tool calls, files it
-  touched) is invisible. Surface it. Open questions to resolve before building:
-  - **Where does the sub-agent's activity live?** Claude Code appears to record it as
-    `isSidechain: true` events, linked to the parent by `parentUuid` and sharing the
-    `sessionId` (verify: is it inline in the same `.jsonl`, a separate sidechain file, or
-    both? does the parent `Task` tool_use carry the child's id/uuid to join on?). Codex
-    may differ (its adapter may not spawn sub-agents the same way) — scope Claude first.
-  - **Model:** correlate each `Task` tool_use with its sidechain event stream (parse the
-    sidechain into its own `Vec<Block>` via the existing `parse_main`), and attach it to
-    the parent block — a new nested/child field on `Block::ToolUse` (or a dedicated
-    `Block::SubAgent { name, blocks }`).
-  - **Render:** a **collapsible drill-down** under the `Task` call — collapsed shows the
-    one-line agent label + summary (as now); expanded reveals the sub-agent's turns
-    (thinking/tools) indented as a sub-transcript. Interleave correctly if multiple
-    sub-agents run in parallel (match on uuid, not position). Applies to TUI fold state,
-    `--dump`, and `--html` alike.
-  - **Live tail:** sub-agent events may stream in interleaved with the parent's — the
-    byte-offset tail (`tail.rs`) + streaming parse must route each event to the right
-    (parent vs. sidechain) block stream by its uuid lineage.
-  This is the "subagent drill-down (future)" idea credited to **claude-code-trace** in
-  the Attribution section above. Start by capturing a real session that spawns a
-  sub-agent and documenting the exact JSONL markers (like `design/queued-messages.md`
-  did for queued prompts) before touching the model. *(Queued 2026-07-25.)*
+  complicated.)* When the main session spawns a sub-agent, the viewer shows only the
+  parent tool_use + its final returned text — the sub-agent's *actual* work (thinking,
+  tool calls, files touched) is invisible. Surface it as a collapsible drill-down.
+
+  **Discovery — VERIFIED (2026-07-25, sub-agent study of session `094539f2` + kwire).**
+  Sub-agent turns are **NOT inlined** in the parent (`isSidechain` is `false` on *every*
+  parent record) — they live in separate child files:
+  ```
+  <projectDir>/<sessionId>.jsonl                              ← parent transcript
+  <projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl    ← child transcript
+  <projectDir>/<sessionId>/subagents/agent-<agentId>.meta.json ← {agentType,description,toolUseId,spawnDepth}
+  ```
+  - **Spawn record (parent):** a `tool_use` named **`Agent`** (NOT `Task` in current
+    versions — match both). `input`: `description`, `prompt`, `subagent_type`,
+    `run_in_background`. Its `id` is the `toolUseId`.
+  - **Join key (gold):** the matching `tool_result` record carries top-level
+    **`toolUseResult.agentId`** → child file is `subagents/agent-<agentId>.jsonl`.
+    `agentId` and `toolUseId` are **independent random ids** — never string-transform;
+    join via `toolUseResult.agentId`, or `meta.json.toolUseId == Agent tool_use id` for
+    in-flight agents with no result yet. The pairing is exact 1:1, so **parallel** Agent
+    calls disambiguate cleanly (do NOT rely on order/timestamp/sessionId).
+  - **Child shape:** same schema as a normal session (parses via existing `parse_main`);
+    every record has `isSidechain:true` + an `agentId` field (= file stem); it **shares
+    the parent's `sessionId`** (so sessionId alone can't tell parent from child); root
+    `parentUuid` is `null` (independent uuid chain). Sanity check: child's first `user`
+    message == parent Agent tool_use `input.prompt` (byte-equal).
+  - **Result:** async spawns (`status:"async_launched"`) put the final answer out-of-band
+    at `toolUseResult.outputFile`; sync spawns (`status:"completed"`) inline it in
+    `toolUseResult.content` (+ token/duration stats). Handle both.
+  - **Not spawn records:** `attachment.type=="agent_listing_delta"` is the available-agent
+    roster UI feed — exclude. `tool-results/` and the `.output` file are overflow/answer
+    artifacts, not transcripts.
+  - **Unconfirmed:** nested sub-agents (`spawnDepth ≥ 2`) weren't present — grandchild
+    placement (same `subagents/` dir vs. nested) is unknown. Codex sub-agents unstudied.
+
+  **Model:** for each `Agent` spawn, read the child file at `agent-<agentId>.jsonl`, parse
+  it via `parse_main` into its own `Vec<Block>`, and attach to the parent — a dedicated
+  `Block::SubAgent { agent_type, description, blocks, result }` (or a child field on
+  `Block::ToolUse`). Discovery needs the parent path → derive `subagentsDir`; needs
+  filesystem access (fine for the TUI/`--html`; a shared `--dump-html` won't have the
+  child files, so it degrades to the parent's summary only).
+
+  **Render:** a collapsible drill-down under the `Agent` call — collapsed = agent label +
+  summary (as today); expanded = the child's turns indented as a sub-transcript. TUI fold
+  state, `--dump`, `--html` alike.
+
+  **Live tail:** children are separate files that grow independently — the tailer must
+  also follow open child transcripts (by `agentId`), not just route by uuid within one
+  file.
+
+  Credited to **claude-code-trace**'s "subagent drill-down" idea (see Attribution). The
+  discovery mechanism is nailed down above; remaining work is the model + render + tail.
+  *(Queued 2026-07-25; discovery verified 2026-07-25.)*
 
 ### Cleanup tasks
 
