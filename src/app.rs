@@ -133,58 +133,126 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
     }
 }
 
-/// View a session, staying in the viewer across `s`-switches: an `Outcome::Switch`
-/// swaps the path and re-views. Returns only `Quit` or `Back`.
+/// One level of the sub-agent navigation stack: a live `View` plus its tail reader,
+/// agent, path, and the parent block index it was descended *from* (so ascending lands
+/// the cursor back on that spawn). The root's `from` is unused.
+struct Frame {
+    view: View,
+    reader: Option<TailReader>,
+    agent: Agent,
+    path: PathBuf,
+    from: usize,
+}
+
+/// View a session, staying in the viewer across `s`-switches AND sub-agent descents. A
+/// **stack** of `Frame`s keeps each ancestor `View` alive (not re-parsed), so its scroll
+/// offset and fold state are preserved on return; memory is bounded by depth, not the
+/// session's total agent count. Returns only `Quit` or `Back`.
 fn run_view_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     args: &Args,
-    mut path: PathBuf,
+    path: PathBuf,
     can_go_back: bool,
 ) -> Result<Outcome> {
+    let mut stack: Vec<Frame> = vec![build_frame(args, &path, can_go_back, 0)?];
     loop {
-        match view_session(term, args, &path, can_go_back)? {
-            Outcome::Switch(p) => path = p,
-            other => return Ok(other),
+        let descended = stack.len() > 1;
+        let frame = stack.last_mut().expect("stack never empty");
+        let outcome = event_loop(
+            term,
+            frame.agent,
+            args,
+            &frame.path,
+            &mut frame.view,
+            &mut frame.reader,
+            descended,
+        )?;
+        match outcome {
+            // Descend into a sub-agent: build a child `View` from its (already-parsed)
+            // transcript and push it, keeping the parent alive underneath.
+            Outcome::Descend(idx) => {
+                let top = stack.last().expect("stack never empty");
+                if let Some(child) = build_child_frame(args, top, idx) {
+                    stack.push(child);
+                }
+            }
+            // Ascend: drop the child `View`, and land the parent's cursor on the spawn
+            // block we came from — without touching its fold state (§2.2).
+            Outcome::Ascend if descended => {
+                let popped = stack.pop().expect("descended ⇒ non-root");
+                if let Some(parent) = stack.last_mut() {
+                    parent.view.focus_block(popped.from);
+                }
+            }
+            Outcome::Ascend => {} // at root: nothing above to ascend to
+            // `s`-switch resets the whole stack to the newly chosen session.
+            Outcome::Switch(p) => {
+                stack = vec![build_frame(args, &p, can_go_back, 0)?];
+            }
+            other => return Ok(other), // Quit / Back
         }
     }
 }
 
-/// Build a `View` for `path` and run its input loop. `can_go_back` marks that we
-/// arrived via the picker, so `Esc` returns to the list (Outcome::Back).
-fn view_session<B: ratatui::backend::Backend>(
-    term: &mut Terminal<B>,
-    args: &Args,
-    path: &Path,
-    can_go_back: bool,
-) -> Result<Outcome> {
-    // The agent is a property of the file — detect it from the contents so the
-    // right parser/metrics run, whether we got here from the picker or a path.
+/// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
+/// with cwd/metrics/picker wiring, and open a tail reader when following.
+fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Result<Frame> {
+    // The agent is a property of the file — detect it from the contents so the right
+    // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
-    // Stream the parse from the file (one line resident at a time) instead of
-    // reading the whole transcript into a `String` + `Vec<Value>` — a 298 MB
-    // session otherwise peaks at ~2 GB. See `STREAMING-PARSE-DESIGN.md`.
+    // Stream the parse from the file (one line resident at a time) rather than reading
+    // the whole transcript into memory — a 298 MB session peaks at ~2 GB otherwise.
     let blocks = model::parse_path_for(agent, path, args)?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let mut reader = args.follow.then(|| TailReader::open_at_end(path));
+    let reader = args.follow.then(|| TailReader::open_at_end(path));
     let fold = crate::view::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, reader.is_some(), fold);
     view.set_can_go_back(can_go_back);
-    // Session cwd → lets a click on a tool header's path reveal the real file.
     view.set_cwd(discover::session_cwd(path));
-    // `--latest` didn't show a list, so offer `s` to reach the session picker.
     view.set_can_open_picker(args.latest);
-    // Re-open for the metrics pass (also streaming) rather than hold the content.
     let metrics = crate::metrics::parse_reader_for(
         agent,
         std::io::BufReader::new(std::fs::File::open(path)?),
     );
     view.set_metrics(metrics.footer());
+    Ok(Frame {
+        view,
+        reader,
+        agent,
+        path: path.to_path_buf(),
+        from,
+    })
+}
 
-    event_loop(term, agent, args, path, &mut view, &mut reader)
+/// Build a child frame from the `SubAgent` at block index `idx` of `parent`'s view. The
+/// child transcript is already parsed (in `sa.blocks`), so this reuses it directly — no
+/// re-parse, no disk read. `None` if `idx` isn't a descendable sub-agent.
+fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
+    let sa = parent.view.subagent_at(idx)?;
+    if sa.blocks.is_empty() {
+        return None;
+    }
+    let title = if sa.agent_id.is_empty() {
+        sa.agent_type.clone()
+    } else {
+        sa.agent_id.clone()
+    };
+    let fold = crate::view::FoldPolicy::from_args(args);
+    let mut view = View::new(sa.blocks.clone(), title, false, fold);
+    // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
+    view.set_can_go_back(false);
+    view.set_cwd(parent.view.cwd_ref().cloned());
+    Some(Frame {
+        view,
+        reader: None, // live-tailing an open child is a later stage
+        agent: parent.agent,
+        path: parent.path.clone(),
+        from: idx,
+    })
 }
 
 /// How the viewer's input loop ended.
@@ -195,6 +263,10 @@ enum Outcome {
     Back,
     /// Switch to another session (chosen via the `s` switcher overlay).
     Switch(PathBuf),
+    /// Descend into the sub-agent at this block index of the current view.
+    Descend(usize),
+    /// Ascend to the parent view (the sub-agent `Esc`/`⌫`), landing on the spawn block.
+    Ascend,
 }
 
 fn event_loop<B: ratatui::backend::Backend>(
@@ -204,6 +276,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     path: &Path,
     view: &mut View,
     reader: &mut Option<TailReader>,
+    descended: bool,
 ) -> Result<Outcome> {
     loop {
         term.draw(|f| view.draw(f))?;
@@ -284,6 +357,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                     // `q` always leaves; `Esc` steps back to the session list when
                     // we came from the picker (the driver maps Back→quit otherwise).
                     KeyCode::Char('q') => return Ok(Outcome::Quit),
+                    // Inside a sub-agent, `Esc`/`⌫` ascend to the parent; only at the
+                    // root do they fall through to the picker (Back).
+                    KeyCode::Esc | KeyCode::Backspace if descended => return Ok(Outcome::Ascend),
                     KeyCode::Esc => return Ok(Outcome::Back),
                     KeyCode::Char('j') | KeyCode::Down => view.scroll_by(1),
                     KeyCode::Char('k') | KeyCode::Up => view.scroll_by(-1),
@@ -297,13 +373,15 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('T') => view.toggle_all(),
                     KeyCode::Char(']') => view.focus_next(),
                     KeyCode::Char('[') => view.focus_prev(),
-                    // Enter activates the focused block: fold toggle, or download
-                    // (embedded) / reveal (path-only) for an attachment.
-                    KeyCode::Enter => {
-                        if let Some(path) = view.activate_focused() {
-                            reveal_in_file_manager(&path);
+                    // Enter activates the focused block: fold toggle, descend a sub-agent,
+                    // or download (embedded) / reveal (path-only) an attachment.
+                    KeyCode::Enter => match view.activate_focused() {
+                        Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
+                        Some(crate::view::Action::Descend(idx)) => {
+                            return Ok(Outcome::Descend(idx))
                         }
-                    }
+                        None => {}
+                    },
                     KeyCode::Char('/') => view.search_start(),
                     KeyCode::Char('n') => view.search_next(),
                     KeyCode::Char('N') => view.search_prev(),
@@ -345,11 +423,15 @@ fn event_loop<B: ratatui::backend::Backend>(
                     } else {
                         view.clear_selection();
                         if (m.row as usize) < view.content_rows() {
-                            // A click activates whatever it lands on: download/reveal an
-                            // attachment (or reveal a tool-header path), else fold.
+                            // A click activates whatever it lands on: descend a sub-agent,
+                            // download/reveal an attachment (or a tool-header path), else fold.
                             view.clear_flash();
-                            if let Some(path) = view.click_at(m.row, m.column) {
-                                reveal_in_file_manager(&path);
+                            match view.click_at(m.row, m.column) {
+                                Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
+                                Some(crate::view::Action::Descend(idx)) => {
+                                    return Ok(Outcome::Descend(idx))
+                                }
+                                None => {}
                             }
                         }
                     }

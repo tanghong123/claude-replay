@@ -258,6 +258,17 @@ fn cols_of_line(line: &Line<'static>, c0: usize, c1: usize) -> String {
     s
 }
 
+/// What activating the focused block (Enter, or a click) asks the caller to do — the
+/// action can't complete inside `View` (revealing a path is an OS call; descending
+/// into a sub-agent pushes a new `View` on the app's stack).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Reveal this path in the OS file manager (a tool-header path / path-only attachment).
+    Reveal(PathBuf),
+    /// Descend into the `SubAgent` at this block index (open its child transcript).
+    Descend(usize),
+}
+
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>,        // per-block fold state
@@ -346,6 +357,11 @@ impl View {
     /// can reverse its relativized display (`~/…`, `src/…`) to an absolute path.
     pub fn set_cwd(&mut self, cwd: Option<PathBuf>) {
         self.cwd = cwd;
+    }
+    /// This view's session cwd — a descended child inherits its parent's, so a tool
+    /// path click still resolves against the real working dir.
+    pub fn cwd_ref(&self) -> Option<&PathBuf> {
+        self.cwd.as_ref()
     }
 
     /// Mark that this viewer was reached through the session picker, so `Esc`
@@ -608,36 +624,70 @@ impl View {
     /// returns that path (absolute) for the caller to reveal in the OS file
     /// manager; a click anywhere else in a foldable block toggles its fold and
     /// returns `None`.
-    pub fn click_at(&mut self, row: u16, col: u16) -> Option<PathBuf> {
+    pub fn click_at(&mut self, row: u16, col: u16) -> Option<Action> {
         let idx = self.scroll + row as usize;
         let &b = self.wrapped_tag.get(idx)?;
         self.focus = Some(b);
+        // A control inside a header owns its click: a tool-header path reveals its file
+        // and must NOT also toggle/descend the block — return before the fold branch runs
+        // (a branch already run can't be undone by `stopPropagation`).
         if let Some(path) = self.header_path_hit(b, idx, col as usize) {
-            return Some(path);
+            return Some(Action::Reveal(path));
         }
         self.activate_block(b)
     }
 
-    /// Perform block `b`'s primary action. An [`Attachment`] with embedded content is
-    /// **downloaded** (saved to ~/Downloads; the result is flashed on the status line);
-    /// a path-only attachment returns its path for the caller to **reveal** in the file
-    /// manager. Any other block toggles its fold (returns `None`).
-    fn activate_block(&mut self, b: usize) -> Option<PathBuf> {
-        let att = match self.blocks.get(b) {
-            Some(Block::Attachment(a)) => a.clone(),
+    /// Perform block `b`'s primary action, returning what the caller must do at a higher
+    /// layer. A [`Block::SubAgent`] with a loaded child: a collapsed spawn **expands**
+    /// (revealing its prompt/result/agent-id row), an expanded one **descends**
+    /// (`Action::Descend`). An [`Attachment`] downloads (flashed) or reveals its path
+    /// (`Action::Reveal`). Any other block toggles its fold (returns `None`).
+    fn activate_block(&mut self, b: usize) -> Option<Action> {
+        match self.blocks.get(b) {
+            Some(Block::SubAgent(sa)) => {
+                if sa.blocks.is_empty() {
+                    self.toggle_block(b); // no child transcript on disk → just fold
+                    None
+                } else if self.collapsed.get(b).copied().unwrap_or(false) {
+                    self.toggle_block(b); // first activation: expand to show the agent row
+                    None
+                } else {
+                    Some(Action::Descend(b)) // second: descend into the agent's transcript
+                }
+            }
+            Some(Block::Attachment(a)) => {
+                let a = a.clone();
+                if a.content.is_some() {
+                    self.flash = Some(match save_attachment(&a) {
+                        Ok(p) => format!("Saved {}", pretty_home(&p)),
+                        Err(e) => format!("Download failed: {e}"),
+                    });
+                    None
+                } else {
+                    a.path.map(|p| Action::Reveal(PathBuf::from(p)))
+                }
+            }
             _ => {
                 self.toggle_block(b);
-                return None;
+                None
             }
-        };
-        if att.content.is_some() {
-            self.flash = Some(match save_attachment(&att) {
-                Ok(p) => format!("Saved {}", pretty_home(&p)),
-                Err(e) => format!("Download failed: {e}"),
-            });
-            None
-        } else {
-            att.path.map(PathBuf::from) // reveal target
+        }
+    }
+
+    /// The `SubAgent` at block index `b` — the caller descends using its `blocks`.
+    pub fn subagent_at(&self, b: usize) -> Option<&crate::model::SubAgent> {
+        match self.blocks.get(b) {
+            Some(Block::SubAgent(sa)) => Some(sa),
+            _ => None,
+        }
+    }
+
+    /// Land the cursor on block `b` (the spawn we returned from) WITHOUT changing any
+    /// fold state — the return-from-descend focus restore (§2.2). Scrolls it into view.
+    pub fn focus_block(&mut self, b: usize) {
+        if b < self.blocks.len() {
+            self.focus = Some(b);
+            self.scroll_block_into_view(b);
         }
     }
 
@@ -726,9 +776,9 @@ impl View {
             }
         }
     }
-    /// Activate the focused block (the `Enter` key): download/reveal an attachment, or
-    /// toggle a foldable block. Returns a path to reveal in the file manager, if any.
-    pub fn activate_focused(&mut self) -> Option<PathBuf> {
+    /// Activate the focused block (the `Enter` key): descend a sub-agent, download/reveal
+    /// an attachment, or toggle a foldable block. Returns the action for the caller.
+    pub fn activate_focused(&mut self) -> Option<Action> {
         match self.focus {
             Some(b) => self.activate_block(b),
             None => None,
@@ -1331,8 +1381,8 @@ mod tests {
         for (idx, col, name) in [(0usize, 9u16, "Write"), (1, 10, "Update"), (2, 8, "Read")] {
             let row = v.wrapped_tag.iter().position(|&t| t == idx).unwrap() as u16;
             assert_eq!(
-                v.click_at(row, col).as_deref(),
-                Some(file.as_path()),
+                v.click_at(row, col),
+                Some(Action::Reveal(file.clone())),
                 "clicking {name}'s path should reveal the file"
             );
         }
@@ -1828,7 +1878,65 @@ mod tests {
         v.focus_next();
         assert_eq!(v.focused_block(), Some(1), "attachment should be focusable");
         // A reveal-only attachment yields its path (app reveals it); nothing written.
-        assert_eq!(v.activate_focused(), Some(PathBuf::from("/w/src/lib.rs")));
+        assert_eq!(
+            v.activate_focused(),
+            Some(Action::Reveal(PathBuf::from("/w/src/lib.rs")))
+        );
+    }
+
+    /// A sub-agent spawn is a two-step target: the first activation EXPANDS it (revealing
+    /// its agent-id row), the second DESCENDS (`Action::Descend`). Returning (`focus_block`)
+    /// lands on the spawn without mutating any fold state — the parent `View` is kept
+    /// alive across a descend, so its folds are exactly as left.
+    #[test]
+    fn subagent_activate_expands_then_descends_preserving_folds() {
+        use crate::model::{AgentStatus, SubAgent};
+        let sa = Block::SubAgent(SubAgent {
+            agent_id: "aXYZ".into(),
+            tool_use_id: "t".into(),
+            agent_type: "gp".into(),
+            description: "d".into(),
+            prompt: "p".into(),
+            status: AgentStatus::Completed,
+            result: Some("r".into()),
+            output_file: None,
+            blocks: vec![
+                Block::UserText("go".into()),
+                Block::AssistantText("done".into()),
+            ],
+            subtree_cost: None,
+        });
+        let bash = Block::ToolUse {
+            name: "Bash".into(),
+            target: "ls".into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![Block::UserText("root".into()), sa, bash];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::default());
+        draw(&mut v, 80, 20);
+        // The first focusable is the SubAgent (index 1); it default-folds ("agent" key).
+        v.focus_next();
+        assert_eq!(v.focused_block(), Some(1));
+        assert!(v.is_collapsed(1), "spawn starts collapsed");
+        // First activation expands (no descend yet); the Bash fold is untouched.
+        assert_eq!(v.activate_focused(), None);
+        assert!(!v.is_collapsed(1), "first Enter expands the spawn");
+        assert!(v.is_collapsed(2), "Bash fold unchanged");
+        // Second activation descends.
+        assert_eq!(v.activate_focused(), Some(Action::Descend(1)));
+        // Returning lands on the spawn and does NOT re-collapse it or touch other folds.
+        v.focus_block(1);
+        assert_eq!(v.focused_block(), Some(1));
+        assert!(
+            !v.is_collapsed(1),
+            "return must not mutate the spawn's fold state"
+        );
+        assert!(v.is_collapsed(2), "return must not touch other folds");
+        // The descend target's child transcript is available to the caller.
+        assert_eq!(v.subagent_at(1).map(|s| s.blocks.len()), Some(2));
     }
 
     /// The download core writes embedded content into a target dir, decoding base64 and

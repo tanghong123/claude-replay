@@ -483,6 +483,13 @@ The residual diff is **not** decision-free rendering:
   discovery mechanism is nailed down above; remaining work is the model + render + tail.
   *(Queued 2026-07-25; discovery verified 2026-07-25.)*
 
+- [ ] **TUI Edit/Update diff line numbers render wrong.** Reported 2026-07-25: the TUI
+  (`claude-replay`) now shows incorrect line numbers in `Update` (Edit) blocks; the
+  live-fed HTML renders them correctly. Not critical. Likely a regression in `render.rs`
+  diff-row numbering (the gutter `pad(line_no)` / hunk `old_start`/`new_start` accounting)
+  — the HTML path (`html_export::diff_part`) is correct, so diff the two. Repro with any
+  session containing an Edit with a `structuredPatch`.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
