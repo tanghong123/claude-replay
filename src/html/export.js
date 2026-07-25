@@ -953,7 +953,10 @@
   // hands off to the next turn the moment that turn's header crosses the line.
   // (The old `bottom < 90` test only revealed the bar once a card had scrolled
   // fully past, so a turn closely followed by the next never got a sticky head.)
-  var STICKY_Y = 72; // just under the 48px topbar
+  // Must sit just BELOW where goTo lands a target (GOTO_Y = 120): otherwise a turn you
+  // click/navigate to lands below this line and spy keeps the PREVIOUS turn selected
+  // (and a second click is a no-op because the scroll doesn't move → spy never re-runs).
+  var STICKY_Y = 130;
   function spy() {
     var turns = all("[data-turn]");
     var cur = null;
