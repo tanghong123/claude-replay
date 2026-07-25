@@ -779,6 +779,24 @@ pub fn parse_path_timed_for(
     Ok((blocks, times))
 }
 
+/// Like [`parse_path_timed_for`] but ALSO loads the sub-agent tree (each `SubAgent`'s
+/// child transcript, recursively) — the enriched form the multi-file HTML bundle needs
+/// so every agent's blocks and subtree cost are available. (The plain timed parse skips
+/// enrichment for the single-file snapshot, which never drills down.)
+pub fn parse_path_timed_enriched_for(
+    agent: Agent,
+    path: &std::path::Path,
+    args: &Args,
+) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
+    let (mut blocks, times) = parse_path_timed_for(agent, path, args)?;
+    if agent == Agent::Claude {
+        if let Some(dir) = subagents_dir(path) {
+            enrich_subagents(&mut blocks, &dir, args);
+        }
+    }
+    Ok((blocks, times))
+}
+
 /// Streaming file parse with the parser for `agent`.
 pub fn parse_path_for(
     agent: Agent,
@@ -1533,6 +1551,7 @@ mod tests {
             dump: Some(Some("-".into())),
             width: None,
             dump_html: None,
+            dump_all_html: None,
             html: false,
         }
     }

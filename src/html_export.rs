@@ -384,6 +384,10 @@ struct Emitter<'a> {
     /// Emit reveal-in-Finder path links on file tools? Only for served `--html`
     /// (a `--dump-html` file is shared and its abs paths don't port).
     reveal: bool,
+    /// Emit cross-agent navigation links (`child: "?session=<id>"`) on spawn/completion
+    /// blocks? True for the multi-file modes (`--dump-all-html`, served) where each agent
+    /// has its own stream to navigate to; false for the single-file `--dump-html`.
+    linked: bool,
     next_block: usize,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
@@ -432,6 +436,11 @@ impl Emitter<'_> {
                     json!(format!("{}: {}", sa.agent_type, sa.description)),
                 );
                 head.insert("chips".into(), json!([chip(crate::render::spawn_chip(sa))]));
+                // Cross-agent navigation: link the spawn to the child's own stream.
+                if self.linked && !sa.agent_id.is_empty() {
+                    head.insert("child".into(), json!(format!("?session={}", sa.agent_id)));
+                    head.insert("child_id".into(), json!(sa.agent_id));
+                }
                 if !sa.prompt.trim().is_empty() {
                     body.push(json!({ "p": "md", "h": md_html(&sa.prompt) }));
                 }
@@ -461,8 +470,13 @@ impl Emitter<'_> {
                 };
                 head.insert("preview".into(), json!(preview));
                 head.insert("chips".into(), json!([chip(status.done_verb())]));
+                // Cross-agent navigation: link the completion to the agent's own stream.
+                if self.linked && !agent_id.is_empty() {
+                    head.insert("child".into(), json!(format!("?session={agent_id}")));
+                    head.insert("child_id".into(), json!(agent_id));
+                }
                 // The agent id — so the reader can find the finished agent's transcript
-                // (a navigable link lands in the sub-agent HTML stage; the id shows now).
+                // (navigable via `child` above in multi-file mode; the id shows either way).
                 if !agent_id.is_empty() {
                     body.push(json!({ "p": "note", "x": format!("⏺ {agent_id}   {agent_type}") }));
                 }
@@ -672,12 +686,14 @@ fn build_jsonl(
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
+    linked: bool,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
     let mut em = Emitter {
         fold,
         cwd,
         reveal,
+        linked,
         next_block: 0,
         turn: 0,
         turns: Vec::new(),
@@ -701,6 +717,25 @@ fn build_jsonl(
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
 fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option<&str>) -> String {
+    build_page(title, jsonl, turns, live, None)
+}
+
+/// The shared shell for a multi-file bundle (`--dump-all-html`): no inline snapshot and
+/// an empty sidebar (the JS fetches `?session=<id>`.jsonl, defaulting to `root_id`, and
+/// fills the sidebar as turns arrive). One shell serves every agent in the bundle.
+fn build_shell(title: &str, root_id: &str) -> String {
+    build_page(title, "", &[], None, Some(root_id))
+}
+
+/// The page template. `multi` = Some(root_id) makes it a multi-file shell (fetch
+/// `?session=<id>`.jsonl); None inlines `jsonl` + the server-rendered `turns` sidebar.
+fn build_page(
+    title: &str,
+    jsonl: &str,
+    turns: &[(String, String)],
+    live: Option<&str>,
+    multi: Option<&str>,
+) -> String {
     let sidebar: String = turns
         .iter()
         .map(|(id, label)| {
@@ -711,9 +746,12 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
             )
         })
         .collect();
-    let live_attrs = match live {
-        Some(src) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
-        None => String::new(),
+    let live_attrs = match (live, multi) {
+        // A multi-file bundle is static per session (no companion poll); navigation
+        // between agents is a full page load carrying `?session=<id>`.
+        (_, Some(root)) => format!(" data-multi=\"1\" data-root=\"{}\"", esc(root)),
+        (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
+        (None, None) => String::new(),
     };
     format!(
         r#"<!DOCTYPE html>
@@ -795,6 +833,26 @@ fn human_tokens(n: u64) -> String {
     }
 }
 
+/// User turns in a block list (the sidebar count).
+fn count_turns(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+        .count()
+}
+
+/// Tool calls in a block list, including those absorbed into a thinking turn.
+fn count_tools(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::ToolUse { .. } => 1,
+            Block::Thinking { tools, .. } => tools.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
 /// The whole append-only stream for `path` right now: the `meta` line followed by
 /// one line per block. Re-run each poll cycle in live mode; the loop appends only
 /// the lines that are new since the previous cycle.
@@ -821,18 +879,8 @@ fn snapshot(
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
     let display = repo_name(&cwd).unwrap_or_else(|| session_id.clone());
-    let turn_count = blocks
-        .iter()
-        .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
-        .count();
-    let tool_count = blocks
-        .iter()
-        .map(|b| match b {
-            Block::ToolUse { .. } => 1,
-            Block::Thinking { tools, .. } => tools.len(),
-            _ => 0,
-        })
-        .sum::<usize>();
+    let turn_count = count_turns(&blocks);
+    let tool_count = count_tools(&blocks);
     let meta = json!({
         "t": "meta",
         "title": display,
@@ -851,7 +899,15 @@ fn snapshot(
             "model": m.model,
         },
     });
-    Ok(build_jsonl(&blocks, &user_times, fold, &cwd, reveal, meta))
+    Ok(build_jsonl(
+        &blocks,
+        &user_times,
+        fold,
+        &cwd,
+        reveal,
+        false, // single-file snapshot: no cross-agent links
+        meta,
+    ))
 }
 
 /// The session id — the transcript file stem (the UUID Claude/Codex names it).
@@ -953,6 +1009,131 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
         block_lines(&jsonl),
         reveal,
     )
+}
+
+/// One sub-agent node collected from the parsed tree — its own stream in the bundle.
+struct AgentNode {
+    id: String,
+    blocks: Vec<Block>,
+    agent_type: String,
+    description: String,
+    cost: Option<f64>,
+}
+
+/// Recursively collect every sub-agent under `blocks` (pre-order, grandchildren
+/// included). The root session is handled by the caller.
+fn collect_agent_nodes(blocks: &[Block], out: &mut Vec<AgentNode>) {
+    for b in blocks {
+        if let Block::SubAgent(sa) = b {
+            if !sa.agent_id.is_empty() {
+                out.push(AgentNode {
+                    id: sa.agent_id.clone(),
+                    blocks: sa.blocks.clone(),
+                    agent_type: sa.agent_type.clone(),
+                    description: sa.description.clone(),
+                    cost: sa.subtree_cost,
+                });
+            }
+            collect_agent_nodes(&sa.blocks, out);
+        }
+    }
+}
+
+/// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html`
+/// shell plus one `<id>.jsonl` per agent reachable from the root, cross-linked via
+/// `child:` so the whole sub-agent tree is navigable offline. Serve the directory with
+/// any static file server (`python3 -m http.server`) — unlike `--dump-html` (a single
+/// flat file), this preserves drill-down. Reuses the served block/meta emission with the
+/// tailer/reset switched off (every stream is a finished, settled session).
+pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
+    let agent = discover::detect_agent(path);
+    let fold = FoldPolicy::from_args(args);
+    // Enriched parse — loads the whole sub-agent tree (each child transcript) so every
+    // agent has its own blocks to emit as a separate stream.
+    let (blocks, user_times) = crate::model::parse_path_timed_enriched_for(agent, path, args)
+        .with_context(|| format!("read transcript {}", path.display()))?;
+    let cwd = discover::session_cwd(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let root_id = session_id(path);
+    let title = display_title(path);
+
+    let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
+        Some(s) => std::path::PathBuf::from(s),
+        None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
+    };
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+
+    // Root stream (linked → child navigation) with full metrics.
+    let m = metrics::parse_reader_for(
+        agent,
+        std::io::BufReader::new(
+            std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
+        ),
+    );
+    let root_meta = json!({
+        "t": "meta",
+        "title": &title,
+        "agent": agent.label(),
+        "sid": &root_id,
+        "cwd": &cwd,
+        "turns": count_turns(&blocks),
+        "tools": count_tools(&blocks),
+        "duration_secs": m.duration_secs,
+        "usage": {
+            "input": human_tokens(m.input_tokens),
+            "output": human_tokens(m.output_tokens),
+            "cache_read": human_tokens(m.cache_read_tokens),
+            "cost": m.cost_usd.map(|c| format!("${c:.2}")),
+            "model": m.model,
+        },
+    });
+    let (root_jsonl, _) = build_jsonl(&blocks, &user_times, &fold, &cwd, false, true, root_meta);
+    std::fs::write(
+        out_dir.join(format!("{root_id}.jsonl")),
+        format!("{root_jsonl}\n"),
+    )
+    .with_context(|| "write root stream")?;
+
+    // One stream per reachable sub-agent.
+    let mut nodes = Vec::new();
+    collect_agent_nodes(&blocks, &mut nodes);
+    for n in &nodes {
+        let child_title = if n.description.is_empty() {
+            n.agent_type.clone()
+        } else {
+            n.description.clone()
+        };
+        let child_meta = json!({
+            "t": "meta",
+            "title": child_title,
+            "agent": agent.label(),
+            "sid": &n.id,
+            "cwd": &cwd,
+            "turns": count_turns(&n.blocks),
+            "tools": count_tools(&n.blocks),
+            "agent_type": &n.agent_type,
+            "usage": { "cost": n.cost.map(|c| format!("${c:.2}")) },
+        });
+        let (cj, _) = build_jsonl(&n.blocks, &[], &fold, &cwd, false, true, child_meta);
+        std::fs::write(out_dir.join(format!("{}.jsonl", n.id)), format!("{cj}\n"))
+            .with_context(|| format!("write child stream {}", n.id))?;
+    }
+
+    std::fs::write(out_dir.join("index.html"), build_shell(&title, &root_id))
+        .with_context(|| "write index.html")?;
+
+    eprintln!(
+        "wrote {} — {} agent stream(s) + index.html",
+        out_dir.display(),
+        nodes.len() + 1
+    );
+    eprintln!(
+        "  serve it:  (cd {} && python3 -m http.server)  then open http://localhost:8000/",
+        out_dir.display()
+    );
+    println!("{}", out_dir.display());
+    Ok(())
 }
 
 /// Poll the transcript forever, streaming changes to `companion`. Shared by
@@ -1203,8 +1384,15 @@ mod tests {
     /// `reveal = true` (served-mode shape, where file tools carry a `path`).
     fn stream(blocks: &[Block], fold: &FoldPolicy) -> Vec<Value> {
         let times: Vec<Option<f64>> = Vec::new();
-        let (jsonl, _turns) =
-            build_jsonl(blocks, &times, fold, "/repo", true, json!({ "t": "meta" }));
+        let (jsonl, _turns) = build_jsonl(
+            blocks,
+            &times,
+            fold,
+            "/repo",
+            true,
+            false,
+            json!({ "t": "meta" }),
+        );
         jsonl
             .lines()
             .skip(1) // meta line
@@ -1221,6 +1409,179 @@ mod tests {
             patch: None,
             read_lines: None,
         }
+    }
+
+    fn subagent(id: &str, children: Vec<Block>) -> Block {
+        use crate::model::{AgentStatus, SubAgent};
+        Block::SubAgent(SubAgent {
+            agent_id: id.into(),
+            tool_use_id: format!("t_{id}"),
+            agent_type: "gp".into(),
+            description: format!("do {id}"),
+            prompt: "go".into(),
+            status: AgentStatus::Completed,
+            result: None,
+            output_file: None,
+            blocks: children,
+            subtree_cost: None,
+        })
+    }
+
+    /// The `linked` flag emits a `child: "?session=<id>"` nav link on spawn AND
+    /// completion blocks; without it (single-file `--dump-html`) no such link appears.
+    #[test]
+    fn linked_flag_emits_child_nav_link() {
+        use crate::model::AgentStatus;
+        let spawn = subagent("a1", vec![]);
+        let done = Block::AgentDone {
+            agent_id: "a1".into(),
+            agent_type: "gp".into(),
+            description: "do a1".into(),
+            status: AgentStatus::Completed,
+            result: None,
+        };
+        let times: Vec<Option<f64>> = Vec::new();
+        let blocks = [spawn, done];
+        // linked = true
+        let (j, _) = build_jsonl(
+            &blocks,
+            &times,
+            &FoldPolicy::none(),
+            "/r",
+            false,
+            true,
+            json!({ "t": "meta" }),
+        );
+        for line in j.lines().skip(1) {
+            let o: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(o["head"]["child"], json!("?session=a1"), "line: {line}");
+            assert_eq!(o["head"]["child_id"], json!("a1"));
+        }
+        // linked = false → no child link
+        let (j2, _) = build_jsonl(
+            &blocks,
+            &times,
+            &FoldPolicy::none(),
+            "/r",
+            false,
+            false,
+            json!({ "t": "meta" }),
+        );
+        for line in j2.lines().skip(1) {
+            let o: Value = serde_json::from_str(line).unwrap();
+            assert!(o["head"].get("child").is_none(), "no child when unlinked");
+        }
+    }
+
+    /// `collect_agent_nodes` walks the whole tree pre-order, including grandchildren.
+    #[test]
+    fn collect_agent_nodes_includes_grandchildren() {
+        // a1 spawns a2 (grandchild); a3 is a sibling of a1.
+        let tree = vec![
+            Block::UserText("root".into()),
+            subagent("a1", vec![subagent("a2", vec![])]),
+            subagent("a3", vec![]),
+        ];
+        let mut nodes = Vec::new();
+        collect_agent_nodes(&tree, &mut nodes);
+        let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a1", "a2", "a3"],
+            "pre-order, grandchildren included"
+        );
+    }
+
+    /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot.
+    #[test]
+    fn build_shell_is_multi_file_without_inline() {
+        let html = build_shell("My session", "root-9f3d");
+        assert!(html.contains("data-multi=\"1\""), "multi flag: {html:.0}");
+        assert!(html.contains("data-root=\"root-9f3d\""));
+        // The inline session-data script is present but EMPTY (no block stream baked in).
+        let inline = html
+            .split("id=\"session-data\"")
+            .nth(1)
+            .and_then(|s| s.split("</script>").next())
+            .unwrap_or("");
+        assert!(
+            !inline.contains("\"t\":\"block\""),
+            "shell inlines no blocks: {inline:?}"
+        );
+    }
+
+    /// End-to-end: `dump_all_html` writes `index.html` + one `<id>.jsonl` per agent, with
+    /// the root's agent blocks carrying `child:` nav links and each child stream holding
+    /// its own transcript.
+    #[test]
+    fn dump_all_html_writes_navigable_bundle() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-bundle-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sess.jsonl");
+        let sadir = base.join("sess").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let parent = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"gp","description":"Dig in","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"a1","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Dig in\" finished</summary>\n<result>ok</result>\n</task-notification>"}
+"##;
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        let child = r##"{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"Read","input":{"file_path":"/x"}}]}}
+"##;
+        std::fs::File::create(sadir.join("agent-a1.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
+
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            sess.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &sess).unwrap();
+
+        // Files: shell + root stream + child stream.
+        assert!(out.join("index.html").is_file(), "index.html written");
+        assert!(out.join("sess.jsonl").is_file(), "root stream written");
+        assert!(out.join("a1.jsonl").is_file(), "child stream written");
+
+        // Root stream: the agent blocks link to the child.
+        let root = std::fs::read_to_string(out.join("sess.jsonl")).unwrap();
+        let agent_lines: Vec<Value> = root
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|o| o["head"]["badge"] == json!("Agent"))
+            .collect();
+        assert_eq!(agent_lines.len(), 2, "spawn + completion");
+        for o in &agent_lines {
+            assert_eq!(o["head"]["child"], json!("?session=a1"));
+        }
+
+        // Child stream: its own meta + the Read tool block.
+        let cj = std::fs::read_to_string(out.join("a1.jsonl")).unwrap();
+        let recs: Vec<Value> = cj
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect();
+        assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
+        assert!(
+            recs.iter().any(|o| o["head"]["name"] == json!("Read")),
+            "child transcript rendered: {recs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn tool(name: &str, target: &str) -> Block {
@@ -1439,6 +1800,7 @@ mod tests {
             &FoldPolicy::none(),
             "/w",
             false,
+            false,
             json!({ "t": "meta" }),
         );
         let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
@@ -1532,6 +1894,7 @@ mod tests {
             &FoldPolicy::none(),
             "/repo",
             true,
+            false,
             json!({ "t": "meta" }),
         );
         let objs: Vec<Value> = jsonl
@@ -1618,6 +1981,7 @@ mod tests {
             &FoldPolicy::none(),
             "/repo",
             true,
+            false,
             json!({ "t": "meta" }),
         );
         // The stream is meta + 2 blocks; block_lines keeps just the 2 block records.
@@ -1665,6 +2029,7 @@ mod tests {
             &times,
             &FoldPolicy::none(),
             "/repo",
+            false,
             false,
             json!({ "t": "meta" }),
         );

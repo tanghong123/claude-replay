@@ -439,6 +439,7 @@ mod tests {
             read_match: None,
             dump: None,
             dump_html: None,
+            dump_all_html: None,
             html: false,
             width: None,
         }

@@ -129,6 +129,15 @@ pub struct Args {
     #[arg(long, num_args(0..=1), value_name = "STEM", conflicts_with = "dump")]
     pub dump_html: Option<Option<String>>,
 
+    /// Export an offline **directory bundle** (no TUI): a shared `index.html` plus one
+    /// `<id>.jsonl` per sub-agent reachable from the root, cross-linked so the whole
+    /// agent tree is navigable offline. With no value, write to a deduced `<stem>/`
+    /// directory; `--dump-all-html <dir>` writes there. Serve it with any static file
+    /// server (`python3 -m http.server`). Unlike `--dump-html` (a single flat file),
+    /// this preserves sub-agent drill-down. Honors --fold/--unfold/--full.
+    #[arg(long, num_args(0..=1), value_name = "DIR", conflicts_with_all = ["dump", "dump_html"])]
+    pub dump_all_html: Option<Option<String>>,
+
     /// Open the transcript as an HTML page in your browser instead of the TUI.
     /// Serves over a loopback HTTP server (so a tool-path click can reveal the
     /// file in Finder) and prints the URL; Ctrl-C stops it. With `-f`/`--follow`
@@ -157,13 +166,20 @@ pub fn run_viewer() -> Result<()> {
     }
     // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The
     // picker merges sessions from every agent (filtered by --agent) for this dir.
-    if args.target.is_none() && !args.latest && args.dump.is_none() && args.dump_html.is_none() {
+    if args.target.is_none()
+        && !args.latest
+        && args.dump.is_none()
+        && args.dump_html.is_none()
+        && args.dump_all_html.is_none()
+    {
         return app::run_interactive(&args);
     }
     // Explicit path / session id / --latest: resolve across agents (honoring the
     // --agent filter). The agent for each opened file is auto-detected downstream.
     let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
-    if args.dump_html.is_some() {
+    if args.dump_all_html.is_some() {
+        html_export::dump_all_html(&args, &path)
+    } else if args.dump_html.is_some() {
         html_export::export(&args, &path)
     } else if args.dump.is_some() {
         app::dump(&args, &path)

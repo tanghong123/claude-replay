@@ -1132,6 +1132,7 @@ fn print_live_progress(agent: Agent, path: &Path) {
         read_match: None,
         dump: None,
         dump_html: None,
+        dump_all_html: None,
         html: false,
         width: None,
     };
@@ -2139,6 +2140,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         read_match: None,
         dump: None,
         dump_html: None,
+        dump_all_html: None,
         html: false,
         width: None,
     };

@@ -292,6 +292,14 @@
       h.appendChild(el("span", "tool-name", head.badge));
       if (head.preview) h.appendChild(el("span", "tool-target", head.preview));
       chips(head, h);
+      // Cross-agent navigation (multi-file bundles): the id is a link to the agent's
+      // own stream. A full page load carries the new `?session=`.
+      if (head.child) {
+        var alink = el("a", "agent-open", "↵ " + (head.child_id || "open"));
+        alink.href = head.child;
+        alink.title = "Open this agent's transcript";
+        h.appendChild(alink);
+      }
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
       if (head.name) h.appendChild(el("span", "tool-name", head.name));
@@ -554,7 +562,21 @@
   // text is pure waste (live mode re-reads from the companion, not this element).
   var inline = $("session-data");
   turnlist.textContent = "";
-  if (inline) {
+  // Multi-file bundle (`--dump-all-html`): the shell carries no inline snapshot — it
+  // fetches `?session=<id>`.jsonl (default `data-root`), one agent per page. Navigation
+  // between agents is a full page load carrying a new `?session=`.
+  var multi = document.body.dataset.multi;
+  if (multi) {
+    if (inline) inline.remove();
+    var params = new URLSearchParams(location.search);
+    var sess = params.get("session") || document.body.dataset.root;
+    fetch(sess + ".jsonl", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw 0; return r.text(); })
+      .then(function (t) { consume(t); setWide(wide); fitBar(); spy(); })
+      .catch(function () {
+        stream.appendChild(el("div", "ablock blk", "No stream for “" + sess + "”."));
+      });
+  } else if (inline) {
     consume(inline.textContent);
     inline.remove();
   }
@@ -855,6 +877,9 @@
         .catch(function () { /* server gone */ });
       return;
     }
+    // The agent-transcript link navigates (full page load to `?session=<id>`); let the
+    // <a> do its thing instead of toggling the fold it sits in.
+    if (e.target.closest(".agent-open")) return;
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goTo(curTurn); return; }
