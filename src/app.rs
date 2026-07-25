@@ -340,6 +340,21 @@ fn event_loop<B: ratatui::backend::Backend>(
                     view.toggle_help();
                 }
             }
+            // While the active-sub-agents popup is open, route keys to it: ↑/↓ select,
+            // Enter descends into the chosen agent, Esc / `a` close.
+            Event::Key(k) if k.kind != KeyEventKind::Release && view.agents_popup_open() => {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Char('a') => view.agents_popup_close(),
+                    KeyCode::Up | KeyCode::Char('k') => view.agents_popup_move(-1),
+                    KeyCode::Down | KeyCode::Char('j') => view.agents_popup_move(1),
+                    KeyCode::Enter => {
+                        if let Some(idx) = view.agents_popup_confirm() {
+                            return Ok(Outcome::Descend(idx));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // While the session switcher is open, route keys to it. Enter switches
             // (reloads the chosen session); Esc closes it, keeping the current view.
             Event::Key(k) if k.kind != KeyEventKind::Release && view.is_switcher_open() => {
@@ -399,6 +414,8 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('s') if view.can_open_picker() => {
                         view.open_switcher(discover::candidates_all(args.agent))
                     }
+                    // Open the active-sub-agents popup (only when this node has one).
+                    KeyCode::Char('a') if view.can_open_agents() => view.open_agents_popup(),
                     _ => {}
                 }
             }

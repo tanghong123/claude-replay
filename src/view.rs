@@ -339,6 +339,7 @@ pub struct View {
     fold: FoldPolicy,               // per-type default fold policy (applied to new content)
     focus: Option<usize>,           // focused foldable block index ([ / ] / hover)
     show_help: bool,                // `?` help overlay visible
+    agents_popup: Option<usize>,    // `a` active-sub-agents popup: selected row, when open
     can_go_back: bool,              // launched via the picker → Esc returns to the session list
     can_open_picker: bool,          // `s` opens the session switcher overlay (--latest launch)
     switcher: Option<Picker>,       // session switcher overlay, when open
@@ -384,6 +385,7 @@ impl View {
             fold,
             focus: None,
             show_help: false,
+            agents_popup: None,
             can_go_back: false,
             can_open_picker: false,
             switcher: None,
@@ -412,10 +414,45 @@ impl View {
     /// Direct sub-agents of THIS node that are still running (spawned, no terminal
     /// status) — gates the `a active N` footer label and the `a` popup, node-scoped.
     pub fn active_children(&self) -> usize {
+        self.active_agent_indices().len()
+    }
+    /// Block indices of THIS node's direct sub-agents that are still running (spawned,
+    /// no terminal status) — the `a` popup's rows, node-scoped.
+    fn active_agent_indices(&self) -> Vec<usize> {
         self.blocks
             .iter()
-            .filter(|b| matches!(b, Block::SubAgent(sa) if !sa.status.is_terminal()))
-            .count()
+            .enumerate()
+            .filter(|(_, b)| matches!(b, Block::SubAgent(sa) if !sa.status.is_terminal()))
+            .map(|(i, _)| i)
+            .collect()
+    }
+    /// `a` is offered only when this node has a running child (gated exactly like `s` on
+    /// `can_open_picker`), so a finished replay never shows a dead affordance.
+    pub fn can_open_agents(&self) -> bool {
+        !self.active_agent_indices().is_empty()
+    }
+    pub fn open_agents_popup(&mut self) {
+        if self.can_open_agents() {
+            self.agents_popup = Some(0);
+        }
+    }
+    pub fn agents_popup_open(&self) -> bool {
+        self.agents_popup.is_some()
+    }
+    pub fn agents_popup_close(&mut self) {
+        self.agents_popup = None;
+    }
+    pub fn agents_popup_move(&mut self, dir: isize) {
+        let n = self.active_agent_indices().len();
+        if let (Some(sel), true) = (self.agents_popup, n > 0) {
+            self.agents_popup = Some((sel as isize + dir).rem_euclid(n as isize) as usize);
+        }
+    }
+    /// Confirm the popup selection: close it and return the selected active agent's block
+    /// index (for the caller to `Descend` into).
+    pub fn agents_popup_confirm(&mut self) -> Option<usize> {
+        let sel = self.agents_popup.take()?;
+        self.active_agent_indices().get(sel).copied()
     }
 
     /// Record the session's working directory, so a click on a tool header's path
@@ -1214,11 +1251,57 @@ impl View {
         if self.show_help {
             render_help(f, area, self.can_go_back, self.can_open_picker);
         }
+        // The `a` active-sub-agents popup.
+        if let Some(sel) = self.agents_popup {
+            let rows: Vec<String> = self
+                .active_agent_indices()
+                .iter()
+                .filter_map(|&i| self.subagent_at(i))
+                .map(|sa| {
+                    let id = if sa.agent_id.is_empty() {
+                        sa.agent_type.clone()
+                    } else {
+                        sa.agent_id.clone()
+                    };
+                    format!("{id}   {}   {}", sa.agent_type, sa.description)
+                })
+                .collect();
+            render_agents_popup(f, area, &rows, sel);
+        }
         // The switcher overlay (Picker clears the frame itself) sits on top.
         if let Some(p) = self.switcher.as_mut() {
             p.draw(f);
         }
     }
+}
+
+/// The `a` popup: a centered bordered panel listing this node's running sub-agents, one
+/// per row, the selected one highlighted. Enter descends into it; Esc closes.
+fn render_agents_popup(f: &mut Frame, area: Rect, rows: &[String], sel: usize) {
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mark = if i == sel { "⏺ " } else { "  " };
+            let style = if i == sel {
+                theme::agent().bg(theme::focus_bg())
+            } else {
+                theme::agent()
+            };
+            Line::from(Span::styled(format!("{mark}{r}"), style))
+        })
+        .collect();
+    let w = 72u16.min(area.width);
+    let h = (rows.len() as u16 + 2).min(area.height);
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    let rect = Rect::new(x, y, w, h);
+    let block = WBlock::default()
+        .borders(Borders::ALL)
+        .border_style(theme::table_border())
+        .title(" Active sub-agents — ↵ open · Esc close ");
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 /// The `?` help overlay: a centered bordered panel listing every hotkey.
@@ -2101,6 +2184,53 @@ mod tests {
             mid.iter().any(|t| t.starts_with("uuid") || t.contains('…')),
             "id kept (possibly truncated): {mid:?}"
         );
+    }
+
+    /// The `a` popup is gated on this node having a running child (like `s` on the
+    /// picker), lists only non-terminal children, and confirming descends into the
+    /// selected one. A finished replay (all terminal) can't open it.
+    #[test]
+    fn active_agents_popup_gates_and_descends() {
+        use crate::model::{AgentStatus, SubAgent};
+        let mk = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: "t".into(),
+                agent_type: "gp".into(),
+                description: "d".into(),
+                prompt: "p".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: vec![Block::UserText("x".into())],
+                subtree_cost: None,
+            })
+        };
+        let blocks = vec![
+            Block::UserText("root".into()),
+            mk("aRUN", AgentStatus::AsyncLaunched),
+            mk("aDONE", AgentStatus::Completed),
+        ];
+        let mut v = View::new(blocks, "t", true, FoldPolicy::default());
+        draw(&mut v, 80, 20);
+        assert_eq!(v.active_children(), 1, "only the running child counts");
+        assert!(v.can_open_agents());
+        v.open_agents_popup();
+        assert!(v.agents_popup_open());
+        // Confirm descends into the running child (block index 1), and closes the popup.
+        assert_eq!(v.agents_popup_confirm(), Some(1));
+        assert!(!v.agents_popup_open());
+
+        // A finished replay (no running children) can't open the popup.
+        let mut done = View::new(
+            vec![mk("aDONE", AgentStatus::Completed)],
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        assert!(!done.can_open_agents());
+        done.open_agents_popup();
+        assert!(!done.agents_popup_open(), "gated when no active children");
     }
 
     /// The rendered footer of a descended view carries `↑ esc back` AND the key-hint run
