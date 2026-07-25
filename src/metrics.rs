@@ -189,6 +189,30 @@ fn short_model(model: &str) -> String {
 
 impl Metrics {
     /// Compact one-line footer text.
+    /// Footer metric parts as `(text, shed_priority)` — the viewer's fit-and-shed drops
+    /// the highest priority first when the footer can't fit its width. Order matches the
+    /// spec: cached(1) → model(3) → in(4) → out(5) → duration(6) → cost(7). (`%`, at
+    /// priority 2, is scroll-derived and added by the view.)
+    pub fn footer_segments(&self) -> Vec<(String, u8)> {
+        let mut segs = Vec::new();
+        let cached = self.cache_creation_tokens + self.cache_read_tokens;
+        if cached > 0 {
+            segs.push((format!("{} cached", human_tokens(cached)), 1));
+        }
+        if !self.model.is_empty() {
+            segs.push((short_model(&self.model).to_string(), 3));
+        }
+        segs.push((format!("{} in", human_tokens(self.input_tokens)), 4));
+        segs.push((format!("{} out", human_tokens(self.output_tokens)), 5));
+        if self.duration_secs > 0 {
+            segs.push((human_dur(self.duration_secs), 6));
+        }
+        if let Some(c) = self.cost_usd {
+            segs.push((format!("~${c:.2}"), 7));
+        }
+        segs
+    }
+
     pub fn footer(&self) -> String {
         let model = if self.model.is_empty() {
             String::new()

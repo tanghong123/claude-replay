@@ -6,7 +6,7 @@ use crate::model::{Attachment, AttachmentContent, Block};
 use crate::picker::Picker;
 use crate::{render, theme, wrap, Args};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as WBlock, Borders, Clear, Paragraph};
 use ratatui::Frame;
@@ -27,6 +27,50 @@ pub(crate) const INSET: usize = 6;
 /// Diff add/del rows are **inset** `INSET` columns on each side (uncolored
 /// margin); every other background block (user / thinking / expanded shell) fills
 /// the full row width.
+/// The footer location segment's shed priority — never dropped, only truncated last.
+const LOC_PRIO: u8 = 100;
+
+/// Fit-and-shed the footer's LEFT run to `avail` columns: drop the highest-priority
+/// (largest number) droppable segment (`1..LOC_PRIO`) first, repeat until it fits;
+/// priority-0 segments (nav labels, live-state, position) never drop; the location
+/// (`LOC_PRIO`) is truncated with `…` only as a last resort. Returns the survivors, in
+/// order. Segment shed order matches the spec: cached(1) → %(2) → model(3) → in(4) →
+/// out(5) → duration(6) → cost(7).
+fn shed_footer(mut segs: Vec<(String, u8)>, avail: usize) -> Vec<(String, u8)> {
+    let joined = |segs: &[(String, u8)]| -> usize {
+        segs.iter().map(|(t, _)| t.chars().count()).sum::<usize>()
+            + segs.len().saturating_sub(1) * 3
+    };
+    while joined(&segs) > avail {
+        // Drop the LEAST-important droppable first — spec order cached(1) → %(2) →
+        // model(3) → in(4) → out(5) → duration(6) → cost(7).
+        let victim = segs
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, p))| (1..LOC_PRIO).contains(p))
+            .min_by_key(|(_, (_, p))| *p)
+            .map(|(i, _)| i);
+        match victim {
+            Some(i) => {
+                segs.remove(i);
+            }
+            None => break, // only priority-0 + location remain
+        }
+    }
+    if joined(&segs) > avail {
+        let over = joined(&segs) - avail;
+        if let Some((loc, _)) = segs.iter_mut().find(|(_, p)| *p == LOC_PRIO) {
+            let keep = loc.chars().count().saturating_sub(over + 1);
+            *loc = if keep == 0 {
+                String::new()
+            } else {
+                loc.chars().take(keep).chain(['…']).collect()
+            };
+        }
+    }
+    segs
+}
+
 fn fill_bg(mut line: Line<'static>, width: usize, inset: bool) -> Line<'static> {
     let Some(bg) = line.spans.last().and_then(|s| s.style.bg) else {
         return line;
@@ -285,17 +329,19 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,            // current needle (empty = no search)
-    searching: bool,          // in `/` input mode
-    matches: Vec<usize>,      // wrapped-line indices containing the needle
-    match_pos: usize,         // index into `matches`
-    metrics: String,          // footer text (tokens/cost/duration/model)
-    fold: FoldPolicy,         // per-type default fold policy (applied to new content)
-    focus: Option<usize>,     // focused foldable block index ([ / ] / hover)
-    show_help: bool,          // `?` help overlay visible
-    can_go_back: bool,        // launched via the picker → Esc returns to the session list
-    can_open_picker: bool,    // `s` opens the session switcher overlay (--latest launch)
-    switcher: Option<Picker>, // session switcher overlay, when open
+    query: String,                  // current needle (empty = no search)
+    searching: bool,                // in `/` input mode
+    matches: Vec<usize>,            // wrapped-line indices containing the needle
+    match_pos: usize,               // index into `matches`
+    metrics: String,                // footer text (tokens/cost/duration/model) — legacy string
+    footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
+    descended: bool,                // this view is a descended sub-agent (footer shows `esc back`)
+    fold: FoldPolicy,               // per-type default fold policy (applied to new content)
+    focus: Option<usize>,           // focused foldable block index ([ / ] / hover)
+    show_help: bool,                // `?` help overlay visible
+    can_go_back: bool,              // launched via the picker → Esc returns to the session list
+    can_open_picker: bool,          // `s` opens the session switcher overlay (--latest launch)
+    switcher: Option<Picker>,       // session switcher overlay, when open
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
@@ -333,6 +379,8 @@ impl View {
             matches: Vec::new(),
             match_pos: 0,
             metrics: String::new(),
+            footer_segs: Vec::new(),
+            descended: false,
             fold,
             focus: None,
             show_help: false,
@@ -351,6 +399,23 @@ impl View {
     /// Set the footer metrics text (tokens/cost/duration/model).
     pub fn set_metrics(&mut self, m: String) {
         self.metrics = m;
+    }
+    /// The droppable footer metric parts (from `Metrics::footer_segments`), for the
+    /// fit-and-shed footer.
+    pub fn set_footer_segments(&mut self, segs: Vec<(String, u8)>) {
+        self.footer_segs = segs;
+    }
+    /// Mark this view as a descended sub-agent, so the footer offers `↑ esc back`.
+    pub fn set_descended(&mut self, d: bool) {
+        self.descended = d;
+    }
+    /// Direct sub-agents of THIS node that are still running (spawned, no terminal
+    /// status) — gates the `a active N` footer label and the `a` popup, node-scoped.
+    pub fn active_children(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter(|b| matches!(b, Block::SubAgent(sa) if !sa.status.is_terminal()))
+            .count()
     }
 
     /// Record the session's working directory, so a click on a tool header's path
@@ -985,22 +1050,60 @@ impl View {
         }
         let max = self.max_scroll();
         let pct = (self.scroll * 100).checked_div(max).unwrap_or(100);
-        let live = if self.live { " · live" } else { "" };
         let mark = if self.follow { "[bottom]" } else { "[scroll]" };
-        let m = if self.metrics.is_empty() {
-            String::new()
-        } else {
-            format!("  ·  {}", self.metrics)
-        };
-        Line::styled(
-            format!(
-                " {}  ·  {mark}{live}  ·  {}/{}  ·  {pct}%{m}   ?·[ ]·␣↵·/·n·g·q ",
-                self.title,
-                (self.scroll + 1).min(self.wrapped.len().max(1)),
-                self.wrapped.len().max(1),
-            ),
+        let pos = (self.scroll + 1).min(self.wrapped.len().max(1));
+        let total = self.wrapped.len().max(1);
+        // Build the LEFT run in order, each segment with a shed priority (0 = never
+        // drop: the nav labels, live-state, position; LOC_PRIO = the id, truncate last).
+        let mut segs: Vec<(String, u8)> = Vec::new();
+        if self.descended {
+            segs.push(("↑ esc back".into(), 0)); // ascend hint + (future) click target
+        }
+        let active = self.active_children();
+        if active > 0 {
+            segs.push((format!("a active {active}"), 0));
+        }
+        segs.push((self.title.clone(), LOC_PRIO)); // session uuid / agent id
+        segs.push((
+            if self.live {
+                format!("{mark} · live")
+            } else {
+                mark.to_string()
+            },
+            0,
+        ));
+        segs.push((format!("{pos}/{total}"), 0));
+        segs.push((format!("{pct}%"), 2));
+        segs.extend(self.footer_segs.iter().cloned());
+        // The key-hint run is never what loses — it's fixed at the right, outside the
+        // shed set; the left run sheds to fit the remaining columns.
+        const HINT: &str = "?·[ ]·␣↵·/·n·g·q";
+        let width = self.width.max(1) as usize;
+        let avail = width.saturating_sub(HINT.chars().count() + 3);
+        let kept = shed_footer(segs, avail);
+        let left_w: usize = kept.iter().map(|(t, _)| t.chars().count()).sum::<usize>()
+            + kept.len().saturating_sub(1) * 3;
+        let mut spans = vec![Span::raw(" ")];
+        for (i, (t, p)) in kept.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" · ", theme::status()));
+            }
+            // The nav labels (priority 0, known text) read as targets: dim + underlined.
+            let is_nav = *p == 0 && (t.starts_with("↑ esc back") || t.starts_with("a active"));
+            let style = if is_nav {
+                theme::status().add_modifier(Modifier::UNDERLINED)
+            } else {
+                theme::status()
+            };
+            spans.push(Span::styled(t.clone(), style));
+        }
+        // Pad so the hint run sits at the right edge.
+        let pad = avail.saturating_sub(left_w).saturating_add(1);
+        spans.push(Span::styled(
+            format!("{}{HINT} ", " ".repeat(pad)),
             theme::status(),
-        )
+        ));
+        Line::from(spans)
     }
 
     /// Fully render every line as `draw` would — wrap to `width`, then apply the
@@ -1937,6 +2040,85 @@ mod tests {
         assert!(v.is_collapsed(2), "return must not touch other folds");
         // The descend target's child transcript is available to the caller.
         assert_eq!(v.subagent_at(1).map(|s| s.blocks.len()), Some(2));
+    }
+
+    /// The footer sheds least-important segments first (cached → % → model → in → out →
+    /// duration → cost); the nav labels, live-state, and the id never drop (the id
+    /// truncates last). The key-hint run lives outside the shed set entirely.
+    #[test]
+    fn footer_shed_order_keeps_nav_live_and_id() {
+        let segs = || {
+            vec![
+                ("↑ esc back".to_string(), 0u8),
+                ("uuid-abc".to_string(), LOC_PRIO),
+                ("[bottom]".to_string(), 0),
+                ("50%".to_string(), 2),
+                ("14M cached".to_string(), 1),
+                ("opus4.8".to_string(), 3),
+                ("1.8M in".to_string(), 4),
+                ("212K out".to_string(), 5),
+                ("1h12m".to_string(), 6),
+                ("~$11".to_string(), 7),
+            ]
+        };
+        let texts =
+            |v: Vec<(String, u8)>| -> Vec<String> { v.into_iter().map(|(t, _)| t).collect() };
+        let full_w =
+            segs().iter().map(|(t, _)| t.chars().count()).sum::<usize>() + (segs().len() - 1) * 3;
+        // Nothing shed when it fits.
+        assert!(texts(shed_footer(segs(), full_w)).contains(&"14M cached".to_string()));
+        // First drop is cached; cost survives it (least → most important).
+        let after1 = texts(shed_footer(segs(), full_w - 1));
+        assert!(
+            !after1.contains(&"14M cached".to_string()),
+            "cached drops first"
+        );
+        assert!(after1.contains(&"~$11".to_string()), "cost outlives cached");
+        // Very tight: all metric segments gone, but the nav label + live-state never do.
+        let tight = texts(shed_footer(segs(), 24));
+        assert!(tight.iter().any(|t| t == "↑ esc back"), "nav never drops");
+        assert!(
+            tight.iter().any(|t| t == "[bottom]"),
+            "live-state never drops"
+        );
+        for m in [
+            "14M cached",
+            "50%",
+            "opus4.8",
+            "1.8M in",
+            "212K out",
+            "1h12m",
+            "~$11",
+        ] {
+            assert!(
+                !tight.contains(&m.to_string()),
+                "{m} shed under tight width"
+            );
+        }
+        // At a moderate width the id survives all metric drops, truncated if needed.
+        let mid = texts(shed_footer(segs(), 40));
+        assert!(
+            mid.iter().any(|t| t.starts_with("uuid") || t.contains('…')),
+            "id kept (possibly truncated): {mid:?}"
+        );
+    }
+
+    /// The rendered footer of a descended view carries `↑ esc back` AND the key-hint run
+    /// (the hint is never shed), even at a narrow width.
+    #[test]
+    fn descended_footer_shows_esc_back_and_hint() {
+        let mut v = View::new(
+            vec![Block::UserText("x".into())],
+            "377e-uuid-long-session-id",
+            false,
+            FoldPolicy::none(),
+        );
+        v.set_descended(true);
+        v.set_footer_segments(vec![("opus4.8".into(), 3), ("~$11".into(), 7)]);
+        let buf = draw(&mut v, 60, 10);
+        let footer: String = row(&buf, 9);
+        assert!(footer.contains("esc back"), "footer: {footer:?}");
+        assert!(footer.contains('q'), "hint run survives: {footer:?}");
     }
 
     /// The download core writes embedded content into a target dir, decoding base64 and

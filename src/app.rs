@@ -219,6 +219,8 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
         std::io::BufReader::new(std::fs::File::open(path)?),
     );
     view.set_metrics(metrics.footer());
+    view.set_footer_segments(metrics.footer_segments());
+    view.set_descended(false);
     Ok(Frame {
         view,
         reader,
@@ -245,7 +247,15 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     let mut view = View::new(sa.blocks.clone(), title, false, fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
+    view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
+    // The child's footer carries its rolled-up subtree cost (full token metrics would
+    // need a re-read of the child file; the cost is already computed at parse time).
+    let mut segs = vec![(sa.agent_type.clone(), 3u8)];
+    if let Some(cost) = sa.subtree_cost {
+        segs.push((format!("~${cost:.2}"), 7));
+    }
+    view.set_footer_segments(segs);
     Some(Frame {
         view,
         reader: None, // live-tailing an open child is a later stage
