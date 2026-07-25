@@ -428,10 +428,18 @@ The residual diff is **not** decision-free rendering:
   image-content-block path. *(Queued 2026-07-25; base64/image case confirmed 2026-07-25.
   Do not start until the current queued-messages changes are reviewed.)*
 
-- [ ] **Track sub-agent activity (spawned from the main session).** *(Potentially
-  complicated.)* When the main session spawns a sub-agent, the viewer shows only the
-  parent tool_use + its final returned text — the sub-agent's *actual* work (thinking,
-  tool calls, files touched) is invisible. Surface it as a collapsible drill-down.
+- [~] **Track sub-agent activity (spawned from the main session).** *(TUI shipped;
+  HTML drill-down remaining.)* Design in `design/subagents/`. **TUI complete** (stages
+  1–6, verified end-to-end in tmux): the spawn renders as an agent-hue `⏺ Agent(type:
+  description)` block (`bd1de8e`); descend/ascend via a View stack keeping ancestors
+  alive (`8d5b088`); the footer's `esc back` / `active N` labels with fit-and-shed
+  (`fddc…`); the `a` active-agents popup (`ec90c8e`); live-tail of an open child
+  (`…`). Lifecycle discovered from real data: launched = spawn (`toolUseResult`),
+  terminal = a completion `<task-notification>` keyed by tool-use-id/agentId (status ∈
+  completed/failed/killed/stopped), work = the child `subagents/agent-<id>.jsonl`; no
+  mid-run inter-agent events exist. **Remaining: the HTML export drill-down (§4)** — node
+  sections, `↓ Children`, node-scoped filter/usage, `⧉` new-tab, hash routing. `--dump`/
+  `--dump-html` stay unchanged by design. Below is the original scope for that stage.
 
   **Discovery — VERIFIED (2026-07-25, sub-agent study of session `094539f2` + kwire).**
   Sub-agent turns are **NOT inlined** in the parent (`isSidechain` is `false` on *every*
