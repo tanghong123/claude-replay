@@ -71,9 +71,14 @@ This is the disk-backed instance of `parser-engine.md` §8: `<id>` = `SessionId`
 `.pos` offset = §8's "virtual position / `consumed`", resume-from-offset = §8's
 fast-forward, one-Tailer-per-id = the store's single-producer residency, and the
 parent's spawn-block liveness comes from the §7 agent index of the *parent* transcript.
-The HTML backend is a `SessionStore` whose Sessions are persisted as `<id>.jsonl` +
-offset rather than held in RAM. If the engine refactor lands first, this backend is a
-thin serving layer over it; if not, it stands alone with the same contract.
+Concretely, **`<id>.jsonl` IS the store's tier-(b) "materialized" artifact** (§8's
+three tiers: (a) resident in RAM, (b) parsed on disk, (c) path-only): the HTML server
+lives in tier (b), serving the stream file to clients, while an active tailer's in-memory
+parse state is tier (a). Every agent a parent mentions is `see`n at tier (c) for free
+the moment its spawn is parsed — so `?session=<child-id>` always resolves to a known
+source path. If the engine refactor lands first, this backend is a thin serving layer
+over the store; if not, it stands alone with the same contract and the same on-disk
+files, and merges later with no format change.
 
 ---
 

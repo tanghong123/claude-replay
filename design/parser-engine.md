@@ -660,6 +660,18 @@ wide/deep trees (or a long-lived server) actually bites.
     live follower, not just the currently-viewed one — who owns that follower registry,
     the store or the caller?
 
+11. **Tier-(b) representation (§8.2) — the load-bearing one.** Tier (b) is "parsed and
+    on disk." Three forms: (i) the **HTML render stream** `<id>.jsonl` — free, since the
+    server writes it anyway, but display-oriented and likely lossy for reconstructing a
+    full `Session`, so (b)→(a) for the TUI would still re-parse the source; (ii) a
+    **serialized `Session`** (bincode/JSON of the block model + index) — a faithful,
+    cheap rehydrate for *both* surfaces, but a second on-disk artifact to write and
+    version; (iii) **both** (stream for HTML, serialized Session for the engine). Since
+    the whole appeal of (b) is "keep it forever, cheap," (iii) may be worth the disk;
+    but if the TUI rarely reopens an evicted session, (i) alone (accept a source
+    re-parse on cold TUI reload) is simplest. **Decide before building §8** — it sets
+    what `evict` writes and what `load` reads.
+
 ---
 
 ## 7. Per-session indices (fast filter/jump + the liveness truth)
@@ -797,41 +809,70 @@ live tails) stay bounded in memory.
 
 pub type SessionId = String;   // Claude: the UUID stem; resolves to a path via discover
 
+/// Three residency tiers, cheapest to keep on the right, fastest to serve on the left.
+/// A session moves up on access and down under memory pressure; only tier (a) costs RAM.
 enum Slot {
-    /// Parsed and in memory, with the byte offset consumed so far (the "virtual
-    /// position") so a live file that has grown can be fast-forwarded, not re-parsed.
+    /// (a) RESIDENT — parsed and in memory. The full `Session` (blocks + index +
+    /// metrics), with the source byte offset consumed so far (the "virtual position")
+    /// so a grown live file is fast-forwarded, not re-parsed. The only tier bounded by
+    /// the memory budget.
     Resident { session: Session, consumed: u64, last_used: u64 /* LRU tick */ },
-    /// Evicted (or never loaded): only the path is kept. A reload re-parses in full.
-    Unloaded { path: PathBuf },
+    /// (b) MATERIALIZED — parsed, evicted from RAM, but the parsed output persists on
+    /// disk (`stream` = the append-only `<id>.jsonl` the HTML backend already writes,
+    /// §8 of html-live-proposal) with its `consumed` offset. Disk is cheap → this tier
+    /// is kept ~indefinitely (lazy GC only). Rehydrating to (a) resumes from `consumed`
+    /// instead of re-reading the whole source. This is the SAME artifact the HTML server
+    /// serves to clients — the two designs share one tier.
+    Materialized { source: PathBuf, stream: PathBuf, consumed: u64 },
+    /// (c) PATH-ONLY — not parsed; just the source transcript path. Costs one string, so
+    /// the store registers EVERY agent it merely *sees* (a spawn in some parent's §7
+    /// index) here, eagerly, long before anyone opens it. A load re-parses from source.
+    PathOnly { source: PathBuf },
 }
 
 pub struct SessionStore {
     slots: HashMap<SessionId, Slot>,
-    budget: ResidencyBudget,   // max resident sessions and/or max resident bytes
+    cache_dir: PathBuf,        // where (b) stream files live
+    budget: ResidencyBudget,   // bounds tier (a) only — max resident sessions and/or bytes
     tick: u64,
 }
 
 impl SessionStore {
-    /// Register a session id ↔ path without parsing (discovery populates this).
-    pub fn insert_path(&mut self, id: SessionId, path: PathBuf);
+    /// Register a session id ↔ source path at tier (c) without parsing. Discovery and
+    /// every §7 agent-index entry the store observes call this — cheap, so the store
+    /// knows about all agents in a tree the moment their parents mention them.
+    pub fn see(&mut self, id: SessionId, source: PathBuf);
 
-    /// Get the parsed session, loading or catching up as needed:
-    ///  · Unloaded            → full `parse_session` from the path, become Resident.
-    ///  · Resident, file grew → fast-forward: ingest only bytes `[consumed .. len)`
-    ///                          (append blocks, update index §7.1, fold metrics §4.2).
-    ///  · Resident, unchanged → return as-is.
-    /// Then enforce the budget (may evict *other* LRU residents). Returns a borrow that
-    /// pins this id for the call.
+    /// Get the parsed session, promoting up the tiers as needed:
+    ///  · PathOnly      → full `parse_session` from source            → Resident (+ write (b)).
+    ///  · Materialized  → rehydrate: resume from `consumed`, catching  → Resident.
+    ///                    up only the source tail since it was written.
+    ///  · Resident, grew→ fast-forward: ingest bytes `[consumed..len)` (§8.3).
+    ///  · Resident, same→ as-is.
+    /// Then enforce the budget (may demote *other* LRU residents to (b)). Pins this id.
     pub fn load(&mut self, id: &SessionId) -> std::io::Result<&Session>;
 
-    /// Demote id to `Unloaded` (drop the parsed `Session`, keep the path). Called by the
-    /// budget sweep and available to a caller reacting to external memory pressure.
+    /// Demote (a)→(b): drop the in-memory `Session`, keep the on-disk stream + offset.
+    /// Called by the budget sweep and by a caller reacting to external memory pressure.
+    /// (b)→(c) is a separate, rare lazy-GC step (disk reclaim), never automatic.
     pub fn evict(&mut self, id: &SessionId);
 
-    /// Current resident set (for a status line / debugging).
+    /// Current resident (tier a) set — for a status line / debugging.
     pub fn resident(&self) -> impl Iterator<Item = (&SessionId, &Session)>;
 }
 ```
+
+The tiers and their transition costs:
+
+| Tier | Holds | Cost to keep | Promote to (a) |
+|---|---|---|---|
+| (a) Resident | `Session` in RAM | memory (budgeted) | — |
+| (b) Materialized | `<id>.jsonl` + offset on disk | disk (cheap; ~kept forever) | resume from `consumed` |
+| (c) Path-only | one `PathBuf` string | ~nothing | full re-parse from source |
+
+`see` (c) is the eager, free registration; `load` promotes; `evict` demotes (a)→(b).
+The memory budget bounds **only tier (a)**, so pressure never loses parsed work — it
+just spills to the cheap disk tier that the HTML server is already maintaining anyway.
 
 ### 8.1 Load-by-id is the whole point
 
@@ -844,18 +885,34 @@ a third-party tool) never manages files — it asks the store for a `SessionId`:
 The `Frame` stack collapses to a `Vec<SessionId>` (the descent breadcrumb); the store
 owns the `Session`s. Because descend goes through `load`, the running-agent lazy-load
 we just hand-rolled in `build_child_frame` (parse the child file fresh when `.blocks`
-is empty) becomes the store's default behavior for free.
+is empty) becomes the store's default behavior for free. And because every §7
+`AgentEntry` the store observes is `see`n at tier (c), descending into an agent nobody
+opened yet is always a valid `load` — the path is already registered.
 
-### 8.2 Fast-forward vs re-parse (the residency tradeoff)
+### 8.2 Fast-forward, rehydrate, re-parse (the three promotion costs)
 
-The "virtual position" is `consumed: u64` — the byte offset already parsed (exactly
-what `tail.rs` tracks). While a session stays resident, a grown live file is caught up
-by ingesting only the new tail bytes through the engine's incremental path (§8.3),
-preserving fold/scroll/index state — cheap and what the live TUI/HTML need. Once
-evicted, that offset is dropped and the next `load` re-parses the whole file: correct,
-and the cost of reclaiming memory. (Optionally an `Unloaded` slot could retain
-`consumed` to resume tailing after re-parse, but a clean re-parse is simpler and the
-default.)
+The "virtual position" is `consumed: u64` — the source byte offset already parsed
+(exactly what `tail.rs` tracks). The three ways a `load` reaches tier (a) differ only in
+how much source they must read:
+
+- **(a) resident, file grew → fast-forward.** Ingest only the new tail bytes
+  `[consumed..len)` through the incremental path (§8.3), preserving fold/scroll/index.
+  Cheapest; what the live TUI/HTML poll does every cycle.
+- **(b) materialized → rehydrate.** The parsed output already sits on disk as
+  `<id>.jsonl`; promotion resumes from the stored `consumed` and catches up only the
+  source tail written since — never re-reading the consumed prefix. This is why tier (b)
+  earns keeping forever: an evicted-then-reopened session (a sub-agent you descended,
+  ascended from, and came back to) costs a tail catch-up, not a full re-parse.
+- **(c) path-only → re-parse.** No parsed state exists; `parse_session` reads the whole
+  source. The floor cost, paid once per session the first time it's ever opened.
+
+Whether (b)→(a) rehydration reconstructs the `Session` by **replaying the `<id>.jsonl`
+stream** or by **re-parsing the source up to `consumed`** is the load-bearing open
+question (§6 Q11): the stream is the HTML *render* form (display-oriented, possibly
+lossy for the full `Block` model), so a faithful `Session` may still need the source —
+in which case (b)'s win is the resume-offset for *live* catch-up + serving HTML, not a
+cheaper cold TUI reload. Resolving this decides whether (b) stores the render stream
+only, a serialized `Session`, or both.
 
 ### 8.3 Incremental ingest = the engine's batch path applied as a delta
 
@@ -872,17 +929,25 @@ the mechanism the `a active N` footer needs to update live without a re-parse.
 
 ### 8.4 Memory pressure / eviction policy
 
+Eviction demotes **(a)→(b)** — drop the RAM `Session`, keep the on-disk stream + offset
+— so it never loses parsed work, only reclaims memory into the cheap disk tier the HTML
+backend already maintains. It never touches (b) or (c) automatically; reclaiming *disk*
+((b)→(c), deleting a stream file) is a rare, explicit lazy-GC step, justified only by
+disk pressure, which "disk is cheap" says is essentially never.
+
 Portable "system memory pressure" has no clean cross-platform Rust signal, so the
-store drives eviction off a **configurable `ResidencyBudget`** (max resident sessions
-and/or max resident bytes, estimated from `blocks.len()` × a per-block guess or a
-cheap `Session::approx_bytes()`), evicting least-recently-used residents on each
-`load` that exceeds it. The *currently-viewed* id and its ancestor breadcrumb are
-pinned (never evicted). A caller that *does* have a platform pressure signal (e.g. a
-macOS `DISPATCH_SOURCE_MEMORYPRESSURE` bridge, or just an RSS high-water check) can
-call `evict`/lower the budget directly — the store doesn't mandate the source, only
-the mechanism. Default budget stays generous enough that today's single-root +
-shallow-descent usage never evicts; the policy earns its keep only for wide/deep
-sub-agent trees and long-lived server processes.
+store drives (a)-eviction off a **configurable `ResidencyBudget`** (max resident
+sessions and/or max resident bytes, estimated from `blocks.len()` × a per-block guess
+or a cheap `Session::approx_bytes()`), demoting least-recently-used residents on each
+`load` that exceeds it. The *currently-viewed* id, its ancestor breadcrumb, and any id
+with a live follower (an HTML client polling it, §10-adjacent) are pinned. A caller that
+*does* have a platform pressure signal (a macOS `DISPATCH_SOURCE_MEMORYPRESSURE` bridge,
+or an RSS high-water check) can call `evict`/lower the budget directly — the store
+mandates the mechanism, not the source. Default budget stays generous enough that
+today's single-root + shallow-descent usage never demotes; the policy earns its keep
+only for wide/deep sub-agent trees and long-lived server processes — exactly where the
+three tiers pay off (thousands of `see`n agents at (c) for free, a bounded resident set
+at (a), everything ever opened durable at (b)).
 
 ## Recommendation (summary)
 
