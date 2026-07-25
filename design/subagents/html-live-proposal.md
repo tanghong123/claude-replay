@@ -233,14 +233,50 @@ ever shows one agent.
 
 ---
 
-## 6. Static `--dump-html` is out of scope here
+## 6. Offline exports: `--dump-html` unchanged, new `--dump-all-html`
 
-This model is the **served/live** path (`--html`, `-f`) — it needs the backend to tail
-and serve, and `file://` pages can't `fetch` (the reason the loopback server exists).
-The self-contained offline `--dump-html` single file is a *separate* question and keeps
-today's behavior for now (flat spawn fold, no drill-down) unless we later decide to emit
-a directory of `<id>.jsonl` + the shared shell for offline serving. Flagged as open
-question 1; not blocking the live work.
+The served model above is `--html`/`-f`. Offline export splits in two:
+
+- **`--dump-html` (unchanged).** Keeps today's semantics — mirrors the TUI `--dump`: a
+  single self-contained file, flat, **no cross-agent linking** (a sub-agent spawn renders
+  as its collapsed fold, no drill-down). This is the "one portable file" promise; it does
+  not change.
+
+- **`--dump-all-html` (new).** Emits a **directory** — the portable, offline analogue of
+  the served tree, servable by any static file server (`python -m http.server`) or,
+  where the browser allows it, opened directly:
+
+  ```
+  <out>/
+    index.html          the shared shell (same asset as served; ?session=<id> routes)
+    <root-id>.jsonl      the root session's stream (blocks + meta, terminal — no live tail)
+    <child-id>.jsonl     one per sub-agent reachable from the root (recursively)
+    assets/
+      <renamed-file>     every embedded attachment, written out and de-conflicted (§6.1)
+  ```
+
+  Every `<id>.jsonl` is a *finished* stream (no tailer, no `reset` needed — the session
+  is settled). Spawn blocks carry `child:"?session=<child-id>"` exactly as served, so the
+  same shell navigates the whole tree offline. This is `SubAgentLoad::Eager` over the
+  §7-agent-index tree, each node written to its own file rather than tailed.
+
+### 6.1 Attachments in `--dump-all-html`
+
+In the served/live page an embedded attachment is a **download** action (Blob/data-URI,
+§html_export today). In the offline bundle we instead **materialize** each embedded
+attachment into `assets/` and link the block to it (`<a href="assets/<name>" download>`),
+so the bundle is self-contained and every attachment is a real file on disk.
+
+- **Only embedded content** is written (`Attachment.content.is_some()`); path-only
+  references (reveal-in-Finder) can't travel offline, so they render as an inert name
+  (as `--dump` already shows them).
+- **De-conflict names.** Attachments across a tree collide (`plan.md` from two agents,
+  or the same basename twice). Write as `<stem>[-<n>].<ext>` with a monotonic counter per
+  basename (or a short content-hash prefix), and link the block to the *written* name. A
+  small `HashMap<String, usize>` in the exporter tracks used names.
+- Images/text both land as real files (decode base64 for images; write text verbatim) —
+  the same `AttachmentContent` split the download path already handles, redirected to
+  disk instead of a Blob.
 
 ---
 
@@ -263,23 +299,39 @@ question 1; not blocking the live work.
 
 - **Phase C — polish.** Subtree cost rollup (§2.3), the "awaiting async result" slot for
   a not-yet-spawned `?session=<id>`, the transient `+N` badge on a growing unopened child
-  (from the parent `meta`), and optional offline `--dump-html` directory export (Q1).
+  (from the parent `meta`).
+
+- **Phase D — `--dump-all-html` (§6).** The offline directory bundle: walk the eager
+  agent tree, write each node's finished `<id>.jsonl`, materialize + de-conflict embedded
+  attachments into `assets/`, emit the shared `index.html`. Reuses the served block/meta
+  emission with the tailer/reset machinery switched off. Gate: a two-agent + attachment
+  fixture asserting the directory shape, cross-agent `child:` links, and a de-conflicted
+  asset name.
 
 ---
 
-## 8. Open questions
+## 8. Resolved decisions (were open questions)
 
-1. **Offline `--dump-html` (§6).** Keep it flat, or emit a directory (`<id>.jsonl` ×N +
-   shared shell) that a `python -m http.server` can serve offline? The single-self-
-   contained-file promise and the served model pull in different directions.
-2. **Disconnect detection.** Poll-TTL (server marks a client gone after `k·POLL_MS` of
-   silence) vs. an explicit `POST /close` beacon on `pagehide`. TTL is robust to crashes
-   but lags; a beacon is prompt but unreliable. Probably both (beacon best-effort, TTL as
-   backstop) — confirm.
-3. **Cache location & cleanup.** A per-run temp dir wiped on exit (simplest; loses resume
-   across restarts) vs. a stable per-session cache under `~/.cache` (survives restarts,
-   needs a GC policy). Which matters more — clean exit or cross-restart resume?
-4. **Cursor vs offset trust.** The client's `from` byte cursor assumes `<id>.jsonl` is
-   strictly append-only between the client's reads. A `reset` record already covers
-   block-level rewrites; confirm the *file* is never truncated under a live reader (it
-   isn't — `reset` is an appended record, not a file rewrite).
+1. **Offline export (§6) — RESOLVED.** `--dump-html` stays unchanged (single flat file,
+   no linking, mirrors TUI `--dump`). A new **`--dump-all-html`** emits a self-contained
+   directory (shared shell + one `<id>.jsonl` per reachable agent + materialized,
+   de-conflicted attachments in `assets/`, linked from the blocks). See §6/§6.1, Phase D.
+2. **Disconnect detection (§2.1) — RESOLVED: do both.** A best-effort `POST /close`
+   beacon on `pagehide` for prompt teardown, **plus** a poll-TTL backstop (the server
+   drops a client's refcount after `k·POLL_MS` of silence) for crashes/closed laptops.
+3. **Cache location (§8.2 of parser-engine) — RESOLVED: per-run temp dir.** Same as the
+   TUI, which re-renders per invocation. The `<cache>/` is a fresh temp dir created at
+   startup and wiped on exit; no cross-restart resume, no GC policy. (Resume-from-offset
+   still applies *within* a run — a tab reopened during the same process resumes.)
+4. **Cursor trust (§2.4) — RESOLVED: client-owned, tolerant.** The `from` byte cursor
+   lives **only client-side** (the server is stateless about it — it just serves
+   `<id>.jsonl[from..]`). Minor cursor drift is acceptable. Two rules:
+   - **Past-the-end → clamp to end.** If `from` exceeds the file length (e.g. a stale
+     cursor after the client's own state reset), the server returns an empty tail and the
+     client treats it as "at the end" — no error.
+   - **A `from=end` sentinel** (e.g. `from=-1` or `from=$`) means "give me only new bytes
+     from the current end" — used when a tab is already pinned to the live bottom and
+     doesn't want the historical replay. The server resolves it to the current file length
+     at request time.
+   Because the file is strictly append-only (a `reset` is an *appended* record, never a
+   truncation), a byte cursor never points into rewritten history.
