@@ -358,13 +358,15 @@ syntect, or clap layers. Nothing in `engine/` depends on ratatui/syntect/clap
 // engine/mod.rs — the documented public surface
 
 /// A fully-parsed session: the block tree, folded metrics, per-turn timestamps,
-/// the session cwd, and which agent produced it — from ONE streaming parse.
+/// the session cwd, which agent produced it, and the derived within-session indices
+/// (agents/tools/attachments) — all from ONE streaming parse.
 pub struct Session {
     pub blocks: Vec<Block>,
     pub metrics: Metrics,
     pub user_times: Vec<Option<f64>>, // one per UserText/Command turn, in order
     pub cwd: Option<PathBuf>,
     pub agent: Agent,
+    pub index: SessionIndex,          // §7 — fast filter/jump + the agent-liveness truth
 }
 
 /// Knobs a caller may set; today parse ignores `Args` (parse_main's `_args`), so
@@ -489,6 +491,12 @@ build blocks (else it's not cheaper). Either a `fold_metrics`-only loop (one rea
 no `steps`) or accept that counting tools needs `steps` anyway — measure whether a
 tool-count needs the block build or can come from `tool_use_id` pass-1 counting.
 
+`SubAgentLoad` is the *per-parse* materialization knob; the `SessionStore` (§8) is the
+*cross-session* residency layer above it. A `Summary`-loaded child's `AgentEntry.child`
+is `NotLoaded{path}` until the store's `load` promotes it to a full `Session` on
+descend — the two compose: `SubAgentLoad` decides how much a single parse materializes,
+the store decides which sessions stay resident.
+
 ---
 
 ## 5. Migration plan (incremental; each step compiles + `cargo test` green)
@@ -560,6 +568,24 @@ either way.
 Implement `SubAgentLoad::Summary` (§4.3) and switch the TUI to it if the load-latency
 win measures out. Purely additive; `Eager` stays the default.
 
+**Step 8 — the derived `SessionIndex` (§7).**
+Build `agents`/`tools`/`attachments` during pass 2, returned on `Session.index`. Start
+with the **derived-view fallback** (§7.2): `SubAgent` stays inline; the index mirrors
+its status, rebuilt on every parse/ingest. Repoint `view::active_agent_indices` +
+the `a` popup at `index.active_agents()` (removing the block-scan). Gate: the popup /
+`a active N` tests. Green, and additive (no block-model change). Lifting agent metadata
+fully into the index (`Block::AgentSpawn{id}`, §7.2) is a later, separately-gated step
+taken only when a second consumer needs it.
+
+**Step 9 (optional) — the `SessionStore` (§8).**
+Introduce `engine::store` with `load`/`evict` + `engine::ingest(&mut Session, delta)`
+(promoting `view::ingest`). Collapse the `app.rs` `Frame` stack to a `Vec<SessionId>`
+over the store; route descend/ascend/switch/live-tail through `load`. `build_child_frame`'s
+hand-rolled lazy child load falls out as the store default. Gate: the tmux descend/
+ascend e2e + a new store test (load → grow file → fast-forward vs evict → reload). This
+is the largest behavioral change and stays optional until the memory ceiling on
+wide/deep trees (or a long-lived server) actually bites.
+
 ---
 
 ## 6. Open questions / tradeoffs
@@ -608,7 +634,255 @@ win measures out. Purely additive; `Eager` stays the default.
    investigation before claiming Codex drill-down works. Not a blocker for the
    refactor; the hook just stops precluding it.
 
+7. **Index as derived-view vs canonical (§7.2).** The low-churn fallback keeps
+   `SubAgent` inline and treats `SessionIndex` as a rebuilt-on-ingest mirror; the
+   canonical form (`Block::AgentSpawn{id}`, metadata in the entry) is cleaner but
+   changes the block model and every renderer signature (`&[Block]` → `&Session`).
+   **Recommend derived-view first.** Open sub-question: does any consumer need to
+   *mutate* an agent's state through the index (vs read-only jump/filter)? If not, the
+   derived view may be permanent.
+
+8. **Incremental index/metrics update on ingest (§8.3).** Appending blocks is easy;
+   keeping `slots`/`pending` (results whose tool_use was in an earlier batch) and the
+   metrics accumulator alive on the `Session` across ingest calls is the real work —
+   `view::ingest` today rebuilds from scratch per batch for small tails. Measure whether
+   persisting parser state is worth it, or whether re-deriving the index from the full
+   (already-resident) `blocks` after each append is simpler and fast enough.
+
+9. **Residency budget units (§8.4).** Max-sessions is trivial but a poor proxy for
+   memory (a 300 MB root vs a 2 KB leaf). Max-bytes needs a `Session` size estimate;
+   is `blocks.len() × const` good enough, or does a real `approx_bytes()` (summing
+   string lengths) earn its cost? And should the budget be global or per-root-tree?
+
+10. **Eviction vs live tail.** Evicting a session that is being actively tailed by
+    another surface (a served HTML page polling while the TUI views a sibling) drops its
+    `consumed` offset and forces a re-parse mid-stream. The store must pin any id with a
+    live follower, not just the currently-viewed one — who owns that follower registry,
+    the store or the caller?
+
 ---
+
+## 7. Per-session indices (fast filter/jump + the liveness truth)
+
+Alongside `blocks`, the engine builds a small set of **derived indices** during the
+same pass 2 (`§4.2` style — no extra read): every sub-agent, tool use, and attachment
+mentioned in the session, each entry carrying its metadata + a back-pointer to the
+block it lives at. Two jobs:
+
+1. **Fast within-session navigation** — filter ("show only Edits", "jump to the next
+   attachment") and jump-to without re-walking `blocks`.
+2. **The agent index is the single source of truth for liveness** — which sub-agents
+   are *active*. Today "active" is recomputed by scanning `blocks` for non-terminal
+   `SubAgent`s (`view::active_agent_indices`), and status lives inline on the spawn
+   block — the exact shape that produced the "running agent invisible to `a active N`"
+   bug (a spawn and its later completion notification are two blocks that must agree).
+   Folding agent identity+status into one indexed entry, which *both* the spawn step
+   and the completion notification update **by id**, makes that class of bug
+   structural-impossible.
+
+```rust
+// engine/index.rs
+
+/// A block's location within a session's tree: the path of child indices from the
+/// root block list (len 1 = a top-level block; deeper = inside a SubAgent's blocks).
+/// A plain `usize` suffices for a single node; the path composes across the tree (§7.3).
+pub type BlockPath = smallvec::SmallVec<[u32; 4]>;
+
+/// Every sub-agent spawned FROM this session node, in spawn order. Canonical for the
+/// agent's identity, liveness, and (lazily) its child transcript — blocks only carry
+/// the id and resolve through here.
+pub struct AgentEntry {
+    pub id: String,                 // "aXXXX" join id (the key blocks point with)
+    pub agent_type: String,
+    pub description: String,
+    pub prompt: String,
+    pub status: AgentStatus,        // Running/AsyncLaunched/Completed/… — the liveness truth
+    pub spawn_at: BlockPath,        // the spawn block (jump target)
+    pub mentions: Vec<BlockPath>,   // every block referencing this id (spawn + completion note)
+    pub output_file: Option<String>,
+    pub child: ChildSlot,           // Loaded | Summary{tools,cost} | NotLoaded{path} (§4.3, §8)
+    pub subtree_cost: Option<f64>,
+}
+
+pub struct ToolEntry {
+    pub kind: BlockKind,            // the ONE classification (§5 / step 5) — read/edit/write/bash/…
+    pub name: String,               // "Edit", "Bash", …
+    pub target: String,             // file path / command (already relativized)
+    pub at: BlockPath,
+    pub ok: Option<bool>,           // result success, once back-patched (None while pending)
+}
+
+pub struct AttachmentEntry {
+    pub kind: AttachmentKind,       // file / image / plan-ref / … (engine::block)
+    pub name: String,
+    pub at: BlockPath,
+    pub downloadable: bool,         // has inline content vs path-only (reveal)
+}
+
+/// Derived, extensible — a new axis (commands, errors, thinking turns) is one more Vec.
+pub struct SessionIndex {
+    pub agents: Vec<AgentEntry>,
+    pub tools: Vec<ToolEntry>,
+    pub attachments: Vec<AttachmentEntry>,
+    // agent_by_id: HashMap<String, usize>  — O(1) id → agents[] slot (built at finish)
+}
+
+impl SessionIndex {
+    pub fn agent(&self, id: &str) -> Option<&AgentEntry>;
+    pub fn active_agents(&self) -> impl Iterator<Item = &AgentEntry>;  // status not terminal
+    pub fn tools_of_kind(&self, k: BlockKind) -> impl Iterator<Item = &ToolEntry>;
+    /// The next indexed entry at/after `from` matching a predicate — the "jump" primitive
+    /// the TUI's `[`/`]` and a future `f`ilter mode share.
+    pub fn next_from(&self, from: BlockPath, pred: impl Fn(&Entry) -> bool) -> Option<BlockPath>;
+}
+```
+
+### 7.1 Built in the one pass, updated by id
+
+The core already routes every `Step` (§2.3). Index-building rides that routing, so
+it costs no extra read and stays in lockstep with `blocks`:
+
+- `ToolUse{id, block}` → push a `ToolEntry` (kind from `tool_kind(name)`), record its
+  `slots` index; a later `ToolResult` sets `ok` when it back-patches.
+- a sub-agent spawn `Step` → upsert `AgentEntry` by id (first mention sets it, records
+  `spawn_at`); every block that names the id appends to `mentions`.
+- `Completion(id, status)` (applied after the loop, §2.3) → look the entry up **by id**
+  and set its terminal `status` — the same entry the spawn created. No block re-scan.
+- `Emit(Attachment)` → push an `AttachmentEntry`.
+
+`finish` builds `agent_by_id` and rolls up `subtree_cost` from each child's
+`Session.metrics` (§4.3). The index is regenerated wholesale by a batch parse and
+updated incrementally by the live-tail ingest (§8.3).
+
+### 7.2 Blocks point INTO the index (the block model shrinks)
+
+The recommended end state: `Block::SubAgent`'s heavy fields (type/description/prompt/
+status/blocks/cost) move to `AgentEntry`; the block becomes a thin
+`Block::AgentSpawn { id: String }` (plus the completion note as
+`Block::AgentNote { id, .. }`). Renderers resolve through `session.index.agent(id)`.
+This is a **signature change** — `render.rs`/`html_export.rs` currently take `&[Block]`
+and read `SubAgent` inline; they'd take `&Session` (or `&SessionIndex`) too. Payoff:
+one liveness truth, spawn+completion naturally unified, and the `a` popup / `a active N`
+footer read straight off `index.active_agents()`.
+
+Lower-churn fallback if that change is too broad for one pass: keep `SubAgent` inline
+and make `SessionIndex` a **derived view** whose `AgentEntry.status` is a *copy* kept
+authoritative by construction (rebuilt on every ingest). Gets the fast-filter/jump and
+the single active-set query, without touching the block model or the renderer
+signatures — at the cost of the spawn block still storing its own status (so the two
+must be rebuilt together, never mutated in isolation). **Recommend the derived-view
+fallback first** (ships with the engine refactor), and lift agent metadata fully into
+the index only once a second consumer needs it.
+
+### 7.3 Composition across the sub-agent tree
+
+Each `Session` (root or a descended child) owns the index of *its own* direct blocks;
+`AgentEntry.child` holds the child `Session` (when loaded), whose `.index` covers the
+grandchildren. So "active children of the current node" = this node's
+`index.active_agents()` (node-scoped, matching today's semantics), while a "whole-tree"
+query (e.g. every attachment anywhere below) is a recursive walk composing child
+indices — the `BlockPath` prefixes with the descent path. No global flat index is
+maintained eagerly; it's computed on demand from the resident subtree.
+
+## 8. Session cache & resident manager (lazy load, fast-forward, evict)
+
+Generalize the ad-hoc `app.rs` `Frame` stack (which keeps ancestor `View`s alive to
+avoid re-parse) and the per-frame `TailReader` into one **`SessionStore`**: a cache
+keyed by session id that owns residency, incremental catch-up, and eviction. This is
+what lets the multi-session sub-agent world (a parent + N descended children + their
+live tails) stay bounded in memory.
+
+```rust
+// engine/store.rs
+
+pub type SessionId = String;   // Claude: the UUID stem; resolves to a path via discover
+
+enum Slot {
+    /// Parsed and in memory, with the byte offset consumed so far (the "virtual
+    /// position") so a live file that has grown can be fast-forwarded, not re-parsed.
+    Resident { session: Session, consumed: u64, last_used: u64 /* LRU tick */ },
+    /// Evicted (or never loaded): only the path is kept. A reload re-parses in full.
+    Unloaded { path: PathBuf },
+}
+
+pub struct SessionStore {
+    slots: HashMap<SessionId, Slot>,
+    budget: ResidencyBudget,   // max resident sessions and/or max resident bytes
+    tick: u64,
+}
+
+impl SessionStore {
+    /// Register a session id ↔ path without parsing (discovery populates this).
+    pub fn insert_path(&mut self, id: SessionId, path: PathBuf);
+
+    /// Get the parsed session, loading or catching up as needed:
+    ///  · Unloaded            → full `parse_session` from the path, become Resident.
+    ///  · Resident, file grew → fast-forward: ingest only bytes `[consumed .. len)`
+    ///                          (append blocks, update index §7.1, fold metrics §4.2).
+    ///  · Resident, unchanged → return as-is.
+    /// Then enforce the budget (may evict *other* LRU residents). Returns a borrow that
+    /// pins this id for the call.
+    pub fn load(&mut self, id: &SessionId) -> std::io::Result<&Session>;
+
+    /// Demote id to `Unloaded` (drop the parsed `Session`, keep the path). Called by the
+    /// budget sweep and available to a caller reacting to external memory pressure.
+    pub fn evict(&mut self, id: &SessionId);
+
+    /// Current resident set (for a status line / debugging).
+    pub fn resident(&self) -> impl Iterator<Item = (&SessionId, &Session)>;
+}
+```
+
+### 8.1 Load-by-id is the whole point
+
+A caller (the TUI descending into a sub-agent, an HTTP handler serving a live page,
+a third-party tool) never manages files — it asks the store for a `SessionId`:
+- **descend** → `store.load(child_id)` (the child id comes from the `AgentEntry`, §7);
+- **ascend** → the parent id is still resident (or reloads transparently);
+- **switch** → `store.load(other_session_id)`.
+
+The `Frame` stack collapses to a `Vec<SessionId>` (the descent breadcrumb); the store
+owns the `Session`s. Because descend goes through `load`, the running-agent lazy-load
+we just hand-rolled in `build_child_frame` (parse the child file fresh when `.blocks`
+is empty) becomes the store's default behavior for free.
+
+### 8.2 Fast-forward vs re-parse (the residency tradeoff)
+
+The "virtual position" is `consumed: u64` — the byte offset already parsed (exactly
+what `tail.rs` tracks). While a session stays resident, a grown live file is caught up
+by ingesting only the new tail bytes through the engine's incremental path (§8.3),
+preserving fold/scroll/index state — cheap and what the live TUI/HTML need. Once
+evicted, that offset is dropped and the next `load` re-parses the whole file: correct,
+and the cost of reclaiming memory. (Optionally an `Unloaded` slot could retain
+`consumed` to resume tailing after re-parse, but a clean re-parse is simpler and the
+default.)
+
+### 8.3 Incremental ingest = the engine's batch path applied as a delta
+
+Fast-forward needs `Engine` to append to an existing `Session`, not just produce a
+fresh one. This already half-exists: the TUI live tail calls `view::ingest` with a
+batch of new lines (`Engine::run_str`, §2.3). Promote it to
+`engine::ingest(&mut Session, new_lines)` that: parses the delta lines into `Step`s,
+appends/back-patches `blocks` (its `slots`/`pending` must persist on the `Session` for
+a result whose tool_use arrived in an earlier batch), folds metrics into
+`Session.metrics`, and **updates the indices incrementally** (push new tool/attachment
+entries; upsert agent status by id — a completion note in the delta flips a running
+agent to terminal, and `active_agents()` reflects it on the very next frame). This is
+the mechanism the `a active N` footer needs to update live without a re-parse.
+
+### 8.4 Memory pressure / eviction policy
+
+Portable "system memory pressure" has no clean cross-platform Rust signal, so the
+store drives eviction off a **configurable `ResidencyBudget`** (max resident sessions
+and/or max resident bytes, estimated from `blocks.len()` × a per-block guess or a
+cheap `Session::approx_bytes()`), evicting least-recently-used residents on each
+`load` that exceeds it. The *currently-viewed* id and its ancestor breadcrumb are
+pinned (never evicted). A caller that *does* have a platform pressure signal (e.g. a
+macOS `DISPATCH_SOURCE_MEMORYPRESSURE` bridge, or just an RSS high-water check) can
+call `evict`/lower the budget directly — the store doesn't mandate the source, only
+the mechanism. Default budget stays generous enough that today's single-root +
+shallow-descent usage never evicts; the policy earns its keep only for wide/deep
+sub-agent trees and long-lived server processes.
 
 ## Recommendation (summary)
 
@@ -623,6 +897,21 @@ copies of the same loop today — collapse onto that one skeleton. Expose
 public library surface; the TUI's `render.rs` and the HTML `html_export.rs` become
 thin formatters over `Session`, each losing its **second file open** for metrics and
 sharing **one** classification + diff-numbering (closing the current TUI diff bug).
-Migrate in seven green steps, highest risk being the bit-for-bit back-patch semantics
+Migrate in green steps, highest risk being the bit-for-bit back-patch semantics
 in Step 1 — guarded by the existing golden tests and the `--dump` equivalence sweep.
 Keep the two-read streaming invariant intact and re-measure RSS at Step 3.
+
+On top of that skeleton, build two capabilities the multi-session sub-agent world
+needs (§7–§8): a **`SessionIndex`** derived in the same pass — agents, tools,
+attachments, each with a block back-pointer — that makes the *agent index the single
+source of truth for liveness* (`active_agents()`), turning the "running agent invisible
+to `a active N`" class of bug structural-impossible, and giving fast within-session
+filter/jump; and a **`SessionStore`** that keys sessions by id, lazy-loads on
+`load(id)`, **fast-forwards a resident session** by ingesting only new tail bytes
+(preserving fold/scroll/index) while re-parsing an evicted one from scratch, and evicts
+LRU residents under a configurable budget (pinning the viewed id + any live follower).
+The store subsumes the `app.rs` `Frame` stack and per-frame `TailReader`, and makes the
+lazy child-load we hand-rolled in `build_child_frame` the default. Both ship as
+additive, separately-gated steps (8–9) after the core refactor; the index starts as a
+rebuilt-on-ingest *derived view* (no block-model change), the store stays optional until
+wide/deep trees or a long-lived server process make the memory ceiling bite.
