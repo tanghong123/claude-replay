@@ -606,12 +606,14 @@ fn parse_main<S: AsRef<str>>(
     // Timestamp of the last user/tool-result event — the moment the model's next
     // generation was requested — so a thinking block's duration is `its ts − this`.
     let mut trigger_ts: Option<f64> = None;
-    // The pending prompt queue: messages the human submitted mid-turn that Claude
-    // Code records as `queue-operation` events (not `user` events) until the turn
-    // consumes them. Replaying enqueue/dequeue/remove leaves the still-waiting
-    // ones, which we surface as pending user turns so a live viewer shows the
-    // human's in-flight input (see `apply_queue_op`). `(content, timestamp)`.
-    let mut queue: Vec<(String, Option<f64>)> = Vec::new();
+    // The prompt queue: messages the human submits mid-turn are recorded as
+    // `queue-operation` events (not `user` events) until consumed. We model the
+    // WHOLE queue — prose prompts AND the background `<task-notification>`s Claude
+    // Code interleaves — so a content-less `dequeue`/`remove` (a FIFO front pop)
+    // lands on the right entry; tracking only prose would leave consumed prompts
+    // behind as phantom turns. `(content, is_prose, timestamp)`. Whatever prose is
+    // still waiting at the end renders as pending user turns.
+    let mut queue: Vec<QueueItem> = Vec::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -755,41 +757,56 @@ fn parse_main<S: AsRef<str>>(
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     let mut out = coalesce_activity_runs(group_turns(out));
-    // Append whatever's still waiting in the prompt queue as pending user turns,
-    // so a live view shows the human's in-flight input before the turn consumes it.
-    for (content, ts) in queue {
-        out.push(Block::UserText(content));
-        user_times.push(ts);
+    // Prompts still waiting in the queue (not yet consumed) render as pending user
+    // turns, so a live view shows the human's in-flight input.
+    for item in queue {
+        if item.is_prose {
+            out.push(Block::UserText(item.content));
+            user_times.push(item.ts);
+        }
     }
     out
 }
 
-/// Apply one `queue-operation` event to the pending-prompt `queue`, which holds
-/// only genuine human prompts (`is_queue_prose`). `enqueue` adds one; a `remove`
-/// or `dequeue` that names its content drops that exact message (it was consumed
-/// or edited). Content-less pops are ignored on purpose: Claude Code's real queue
-/// also holds background `<task-notification>`s we don't track, so a bare front
-/// pop could target one of those — dropping the wrong prompt. What remains is the
-/// set of prompts submitted but not yet picked up: the true pending queue.
-fn apply_queue_op(v: &Value, queue: &mut Vec<(String, Option<f64>)>) {
+/// One entry in the reconstructed prompt queue.
+struct QueueItem {
+    content: String,
+    is_prose: bool,
+    ts: Option<f64>,
+}
+
+/// Apply one `queue-operation` event. `enqueue` appends the message (prose or a
+/// background notification — both tracked so positions stay right). A `remove`/
+/// `dequeue` naming its content drops that exact entry; a content-less one is a
+/// FIFO front pop (the oldest queued item was consumed). Only prose entries left
+/// at the end become pending turns.
+fn apply_queue_op(v: &Value, queue: &mut Vec<QueueItem>) {
     let content = v.get("content").and_then(|c| c.as_str());
     match v.get("operation").and_then(|o| o.as_str()) {
         Some("enqueue") => {
-            if let Some(c) = content.filter(|c| is_queue_prose(c)) {
+            if let Some(c) = content {
                 let ts = v
                     .get("timestamp")
                     .and_then(|t| t.as_str())
                     .and_then(epoch_secs);
-                queue.push((c.trim().to_string(), ts));
+                queue.push(QueueItem {
+                    content: c.trim().to_string(),
+                    is_prose: is_queue_prose(c),
+                    ts,
+                });
             }
         }
-        Some("remove") | Some("dequeue") => {
-            if let Some(c) = content.map(str::trim) {
-                if let Some(i) = queue.iter().position(|(q, _)| q == c) {
+        Some("remove") | Some("dequeue") => match content.map(str::trim) {
+            Some(c) => {
+                if let Some(i) = queue.iter().position(|q| q.content == c) {
                     queue.remove(i);
                 }
             }
-        }
+            None if !queue.is_empty() => {
+                queue.remove(0); // FIFO front pop
+            }
+            None => {}
+        },
         _ => {}
     }
 }
@@ -927,21 +944,24 @@ mod tests {
         );
     }
 
-    /// Mid-turn prompts live only as `queue-operation` events until consumed. Those
-    /// still waiting (enqueued, no matching remove) render as pending user turns at
-    /// the end; consumed ones (removed by content) and background task-notifications
-    /// do not.
+    /// The prompt queue: a message still waiting renders as a pending turn; a
+    /// consumed one does not. Consumption can be a content-named remove OR a
+    /// content-less FIFO front pop — and the model must track the interleaved
+    /// background task-notification so that front pop lands on it, not on a real
+    /// prompt (the bug that once flooded the tail with old consumed prompts).
     #[test]
-    fn pending_queue_prompts_render_but_consumed_and_noise_do_not() {
+    fn pending_queue_shows_waiting_prompts_and_front_pops_correctly() {
         let jsonl = r##"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"consumed prompt"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:02.000Z","content":"still waiting"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"<task-notification>\nbg\n</task-notification>"}
-{"type":"queue-operation","operation":"remove","timestamp":"2026-06-30T03:00:04.000Z","content":"consumed prompt"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"consumed by front pop"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:02.000Z","content":"<task-notification>\nbg\n</task-notification>"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"still waiting"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:04.000Z"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:05.000Z"}
 "##;
+        // Two content-less pops consume the front two entries (the prose prompt and
+        // the notification), leaving only "still waiting".
         let blocks = parse(jsonl, &args());
-        // The real turn, then only the still-waiting prompt (consumed + noise gone).
         let users: Vec<&str> = blocks
             .iter()
             .filter_map(|b| match b {
