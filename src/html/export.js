@@ -562,15 +562,18 @@
   // text is pure waste (live mode re-reads from the companion, not this element).
   var inline = $("session-data");
   turnlist.textContent = "";
-  // Multi-file bundle (`--dump-all-html`): the shell carries no inline snapshot — it
-  // fetches `?session=<id>`.jsonl (default `data-root`), one agent per page. Navigation
-  // between agents is a full page load carrying a new `?session=`.
+  var pollMs = parseInt(document.body.dataset.poll || "0", 10);
+  // The stream this page polls: a single-file live companion (`data-src`), or — in a
+  // multi-file bundle (`--dump-all-html` / served `--html`) — `<?session=id>`.jsonl,
+  // defaulting to `data-root`. Navigation between agents is a full page load carrying a
+  // new `?session=`; each page shows exactly one agent.
+  var src = document.body.dataset.src;
   var multi = document.body.dataset.multi;
   if (multi) {
     if (inline) inline.remove();
-    var params = new URLSearchParams(location.search);
-    var sess = params.get("session") || document.body.dataset.root;
-    fetch(sess + ".jsonl", { cache: "no-store" })
+    var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
+    src = sess + ".jsonl";
+    fetch(src, { cache: "no-store" })
       .then(function (r) { if (!r.ok) throw 0; return r.text(); })
       .then(function (t) { consume(t); setWide(wide); fitBar(); spy(); })
       .catch(function () {
@@ -585,8 +588,9 @@
   fitBar();
 
   // ── live tail ────────────────────────────────────────────────────────
-  var src = document.body.dataset.src;
-  var pollMs = parseInt(document.body.dataset.poll || "0", 10);
+  // Re-fetch the whole stream each cycle; `consume` skips already-rendered records (and
+  // applies any `{t:"reset"}` for a rewritten tail). Works for a single-file companion
+  // and a multi-file agent stream alike.
   if (src && pollMs > 0) {
     var failed = false;
     setInterval(function () {

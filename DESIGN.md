@@ -210,6 +210,15 @@ The residual diff is **not** decision-free rendering:
 
 ## Backlog (queued post-v1 improvements)
 
+- [ ] **Generalize the HTML "Tools ▾" filter to a message-type filter.** The HTML export's
+  top filter dropdown (`buildToolMenu`/`setFilter` in `html/export.js`, fed by the
+  `data-tool` attribute the emitter sets on tool folds) filters only by *tool use* today.
+  Generalize it to filter by **message/block type** so non-tool kinds — notably **Agent**
+  (spawn + completion), and plausibly thinking/attachment/command — also appear as
+  selectable filters. Likely: emit a `data-kind` (already present) or a broader
+  `data-type` the menu enumerates, and rename the menu "Filter by type". Keep tool-name
+  granularity as a sub-case. Applies to the served/live page and the bundle shell.
+
 > **Reproducing transcript** for the table, multi-line-args, and skill-folding items
 > below: any session that contains a wide markdown table, a multi-line `/loop`
 > slash-command invocation, and an injected skill-instruction body. Use one to

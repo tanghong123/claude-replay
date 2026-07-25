@@ -720,21 +720,23 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
     build_page(title, jsonl, turns, live, None)
 }
 
-/// The shared shell for a multi-file bundle (`--dump-all-html`): no inline snapshot and
-/// an empty sidebar (the JS fetches `?session=<id>`.jsonl, defaulting to `root_id`, and
-/// fills the sidebar as turns arrive). One shell serves every agent in the bundle.
-fn build_shell(title: &str, root_id: &str) -> String {
-    build_page(title, "", &[], None, Some(root_id))
+/// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
+/// inline snapshot and an empty sidebar (the JS fetches `?session=<id>`.jsonl, defaulting
+/// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
+/// stream (served `--html -f`); a static offline bundle sets it false.
+fn build_shell(title: &str, root_id: &str, live: bool) -> String {
+    build_page(title, "", &[], None, Some((root_id, live)))
 }
 
-/// The page template. `multi` = Some(root_id) makes it a multi-file shell (fetch
-/// `?session=<id>`.jsonl); None inlines `jsonl` + the server-rendered `turns` sidebar.
+/// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
+/// `?session=<id>`.jsonl, polling when `live`); None inlines `jsonl` + the server-rendered
+/// `turns` sidebar.
 fn build_page(
     title: &str,
     jsonl: &str,
     turns: &[(String, String)],
     live: Option<&str>,
-    multi: Option<&str>,
+    multi: Option<(&str, bool)>,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -747,9 +749,16 @@ fn build_page(
         })
         .collect();
     let live_attrs = match (live, multi) {
-        // A multi-file bundle is static per session (no companion poll); navigation
-        // between agents is a full page load carrying `?session=<id>`.
-        (_, Some(root)) => format!(" data-multi=\"1\" data-root=\"{}\"", esc(root)),
+        // A multi-file shell: `data-multi`/`data-root`, plus `data-poll` when served live
+        // (navigation between agents is a full page load carrying `?session=<id>`).
+        (_, Some((root, live_multi))) => {
+            let poll = if live_multi {
+                format!(" data-poll=\"{POLL_MS}\"")
+            } else {
+                String::new()
+            };
+            format!(" data-multi=\"1\" data-root=\"{}\"{poll}", esc(root))
+        }
         (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
         (None, None) => String::new(),
     };
@@ -1048,8 +1057,37 @@ fn collect_agent_nodes(blocks: &[Block], out: &mut Vec<AgentNode>) {
 pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
-    // Enriched parse — loads the whole sub-agent tree (each child transcript) so every
-    // agent has its own blocks to emit as a separate stream.
+    let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
+        Some(s) => std::path::PathBuf::from(s),
+        None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
+    };
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+    // Offline bundle: no reveal-in-Finder links (abs paths don't port), not live.
+    let (_root, prev) = write_bundle(&out_dir, agent, path, args, &fold, false, false)?;
+    eprintln!(
+        "wrote {} — {} agent stream(s) + index.html",
+        out_dir.display(),
+        prev.len()
+    );
+    eprintln!(
+        "  serve it:  (cd {} && python3 -m http.server)  then open http://localhost:8000/",
+        out_dir.display()
+    );
+    println!("{}", out_dir.display());
+    Ok(())
+}
+
+/// Every per-agent stream for the enriched tree at `path` right now: `(root_id, [(id,
+/// jsonl)])` with the root first, then one entry per reachable sub-agent (pre-order).
+/// Each stream is `meta` + one line per block, cross-linked via `child:`. Shared by the
+/// static bundle write and the live tailer's re-parse. `reveal` = served-mode path links.
+fn node_streams(
+    agent: Agent,
+    path: &Path,
+    args: &Args,
+    fold: &FoldPolicy,
+    reveal: bool,
+) -> Result<(String, Vec<(String, String)>)> {
     let (blocks, user_times) = crate::model::parse_path_timed_enriched_for(agent, path, args)
         .with_context(|| format!("read transcript {}", path.display()))?;
     let cwd = discover::session_cwd(path)
@@ -1058,13 +1096,6 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let root_id = session_id(path);
     let title = display_title(path);
 
-    let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
-        Some(s) => std::path::PathBuf::from(s),
-        None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
-    };
-    std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-
-    // Root stream (linked → child navigation) with full metrics.
     let m = metrics::parse_reader_for(
         agent,
         std::io::BufReader::new(
@@ -1072,30 +1103,18 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         ),
     );
     let root_meta = json!({
-        "t": "meta",
-        "title": &title,
-        "agent": agent.label(),
-        "sid": &root_id,
-        "cwd": &cwd,
-        "turns": count_turns(&blocks),
-        "tools": count_tools(&blocks),
+        "t": "meta", "title": &title, "agent": agent.label(), "sid": &root_id,
+        "cwd": &cwd, "turns": count_turns(&blocks), "tools": count_tools(&blocks),
         "duration_secs": m.duration_secs,
         "usage": {
-            "input": human_tokens(m.input_tokens),
-            "output": human_tokens(m.output_tokens),
+            "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
             "cache_read": human_tokens(m.cache_read_tokens),
-            "cost": m.cost_usd.map(|c| format!("${c:.2}")),
-            "model": m.model,
+            "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
         },
     });
-    let (root_jsonl, _) = build_jsonl(&blocks, &user_times, &fold, &cwd, false, true, root_meta);
-    std::fs::write(
-        out_dir.join(format!("{root_id}.jsonl")),
-        format!("{root_jsonl}\n"),
-    )
-    .with_context(|| "write root stream")?;
+    let (root_jsonl, _) = build_jsonl(&blocks, &user_times, fold, &cwd, reveal, true, root_meta);
+    let mut streams = vec![(root_id.clone(), root_jsonl)];
 
-    // One stream per reachable sub-agent.
     let mut nodes = Vec::new();
     collect_agent_nodes(&blocks, &mut nodes);
     for n in &nodes {
@@ -1105,35 +1124,103 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
             n.description.clone()
         };
         let child_meta = json!({
-            "t": "meta",
-            "title": child_title,
-            "agent": agent.label(),
-            "sid": &n.id,
-            "cwd": &cwd,
-            "turns": count_turns(&n.blocks),
-            "tools": count_tools(&n.blocks),
-            "agent_type": &n.agent_type,
-            "usage": { "cost": n.cost.map(|c| format!("${c:.2}")) },
+            "t": "meta", "title": child_title, "agent": agent.label(), "sid": &n.id,
+            "cwd": &cwd, "turns": count_turns(&n.blocks), "tools": count_tools(&n.blocks),
+            "agent_type": &n.agent_type, "usage": { "cost": n.cost.map(|c| format!("${c:.2}")) },
         });
-        let (cj, _) = build_jsonl(&n.blocks, &[], &fold, &cwd, false, true, child_meta);
-        std::fs::write(out_dir.join(format!("{}.jsonl", n.id)), format!("{cj}\n"))
-            .with_context(|| format!("write child stream {}", n.id))?;
+        let (cj, _) = build_jsonl(&n.blocks, &[], fold, &cwd, reveal, true, child_meta);
+        streams.push((n.id.clone(), cj));
     }
+    Ok((root_id, streams))
+}
 
-    std::fs::write(out_dir.join("index.html"), build_shell(&title, &root_id))
+/// Write a multi-file bundle into `dir`: the shared `index.html` shell + one `<id>.jsonl`
+/// per agent (root + reachable sub-agents). Returns `(root_id, prev)` where `prev` maps
+/// each id to its current block lines (the live tailer's baseline for diffing). `reveal`
+/// = served path links; `live` = the shell polls its stream.
+fn write_bundle(
+    dir: &Path,
+    agent: Agent,
+    path: &Path,
+    args: &Args,
+    fold: &FoldPolicy,
+    reveal: bool,
+    live: bool,
+) -> Result<(String, std::collections::HashMap<String, Vec<String>>)> {
+    let (root_id, streams) = node_streams(agent, path, args, fold, reveal)?;
+    let title = display_title(path);
+    let mut prev = std::collections::HashMap::new();
+    for (id, jsonl) in &streams {
+        std::fs::write(dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"))
+            .with_context(|| format!("write stream {id}"))?;
+        prev.insert(id.clone(), block_lines(jsonl));
+    }
+    std::fs::write(dir.join("index.html"), build_shell(&title, &root_id, live))
         .with_context(|| "write index.html")?;
+    Ok((root_id, prev))
+}
 
-    eprintln!(
-        "wrote {} — {} agent stream(s) + index.html",
-        out_dir.display(),
-        nodes.len() + 1
-    );
-    eprintln!(
-        "  serve it:  (cd {} && python3 -m http.server)  then open http://localhost:8000/",
-        out_dir.display()
-    );
-    println!("{}", out_dir.display());
-    Ok(())
+/// The live tailer for a served bundle: re-parse the enriched tree each cycle and bring
+/// every agent's `<id>.jsonl` up to date — a per-agent positional diff (`{t:"reset"}` +
+/// the new tail + refreshed `meta`), exactly like the single-file [`follow_and_append`]
+/// but scoped to each agent's own file. A newly-spawned agent gets its file created
+/// fresh. Runs until interrupted; the caller keeps serving `dir`.
+fn follow_tree(
+    dir: &Path,
+    agent: Agent,
+    path: &Path,
+    args: &Args,
+    fold: &FoldPolicy,
+    reveal: bool,
+    mut prev: std::collections::HashMap<String, Vec<String>>,
+) -> Result<()> {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+        let (_root, streams) = match node_streams(agent, path, args, fold, reveal) {
+            Ok(s) => s,
+            Err(_) => continue, // transient read error mid-write; retry next cycle
+        };
+        for (id, jsonl) in streams {
+            let fresh = block_lines(&jsonl);
+            let file = dir.join(format!("{id}.jsonl"));
+            match prev.get(&id) {
+                // A newly-spawned agent — create its stream file fresh.
+                None => {
+                    let _ = std::fs::write(&file, format!("{jsonl}\n"));
+                }
+                Some(pb) => {
+                    let meta = jsonl.lines().next().unwrap_or("{}");
+                    if let Some(delta) = stream_delta(pb, &fresh, meta) {
+                        let _ = append_line(&file, delta.trim_end());
+                    }
+                }
+            }
+            prev.insert(id, fresh);
+        }
+    }
+}
+
+/// The append chunk to bring a stream from `prev` block lines to `fresh`: a
+/// `{t:"reset",from:N}` when an already-rendered block changed/vanished, the new tail,
+/// and the refreshed `meta`. `None` when nothing changed (a pure no-op cycle). Mirrors
+/// the single-file [`follow_and_append`] diff, per agent.
+fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Option<String> {
+    let diff = prev.iter().zip(fresh).take_while(|(a, b)| a == b).count();
+    if diff >= prev.len() && diff >= fresh.len() {
+        return None; // unchanged
+    }
+    let mut out = String::new();
+    if diff < prev.len() {
+        out.push_str(&json!({ "t": "reset", "from": diff }).to_string());
+        out.push('\n');
+    }
+    for l in &fresh[diff..] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(meta);
+    out.push('\n');
+    Some(out)
 }
 
 /// Poll the transcript forever, streaming changes to `companion`. Shared by
@@ -1201,48 +1288,27 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
     Ok(())
 }
 
-/// `--html`: render to HTML and open it in the browser instead of the TUI.
-///
-/// Both modes serve over a tiny **loopback HTTP server** and run until Ctrl-C —
-/// serving (not `file://`) is what lets a path click reveal the file in Finder
-/// (`/__reveal`) and, with `-f`, lets the page `fetch` its companion (browsers
-/// block those over `file://`). `-f` adds the append-only companion + live tail;
-/// without it the page is a self-contained static snapshot.
+/// `--html`: render to HTML and open it in the browser instead of the TUI, as a
+/// **multi-file bundle** — one shared shell + one `<id>.jsonl` per agent — so sub-agent
+/// drill-down works (clicking an agent navigates to its own stream). Serves over a tiny
+/// **loopback HTTP server** (not `file://`) so a path click can reveal the file in Finder
+/// (`/__reveal`) and the page can `fetch` its streams. `-f` live-tails the whole tree,
+/// keeping every agent's stream current (new spawns appear, children grow); without it
+/// the bundle is a static snapshot.
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
-    // Served over loopback → a path click can reach `/__reveal`, so emit the
-    // reveal-in-Finder path links.
-    let reveal = true;
-    let (jsonl, turns) = snapshot(agent, path, args, &fold, reveal)?;
-    // Files are named by the session id (unique); the page title is the repo name.
+    let reveal = true; // served → path clicks reach `/__reveal`
     let sid = session_id(path);
-    let title = display_title(path);
 
-    // A private temp dir keeps the two files together (the page fetches the
-    // companion by basename) without cluttering the cwd.
+    // A private temp dir holds the bundle (shell + per-agent streams), served by
+    // basename, without cluttering the cwd. Fresh per run (matches the TUI).
     let dir = std::env::temp_dir().join("claude-replay").join(&sid);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let html_path = dir.join(format!("{sid}.html"));
-
-    // Live mode also writes the append-only companion the page polls.
-    let companion = if args.follow {
-        let c = dir.join(format!("{sid}.jsonl"));
-        std::fs::write(&c, format!("{jsonl}\n"))
-            .with_context(|| format!("write {}", c.display()))?;
-        Some(c)
-    } else {
-        None
-    };
-    let src = companion.as_ref().map(|_| format!("{sid}.jsonl"));
-    std::fs::write(
-        &html_path,
-        build_html(&title, &jsonl, &turns, src.as_deref()),
-    )
-    .with_context(|| format!("write {}", html_path.display()))?;
+    let (root_id, prev) = write_bundle(&dir, agent, path, args, &fold, reveal, args.follow)?;
 
     let port = spawn_http_server(dir.clone())?;
-    let url = format!("http://127.0.0.1:{port}/{sid}.html");
+    let url = format!("http://127.0.0.1:{port}/index.html?session={root_id}");
     let kind = if args.follow { "live" } else { "static" };
     eprintln!(
         "serving {} at {url} ({kind} — Ctrl-C to stop)",
@@ -1252,12 +1318,13 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     open_in_browser(&url);
     println!("{url}");
 
-    match &companion {
-        Some(c) => follow_and_append(agent, path, args, &fold, c, block_lines(&jsonl), reveal),
-        // Static: nothing to tail, but keep serving so path-reveal keeps working.
-        None => loop {
+    if args.follow {
+        follow_tree(&dir, agent, path, args, &fold, reveal, prev)
+    } else {
+        // Static: nothing to tail, but keep serving so path-reveal + navigation work.
+        loop {
             std::thread::park();
-        },
+        }
     }
 }
 
@@ -1492,12 +1559,48 @@ mod tests {
         );
     }
 
-    /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot.
+    /// The live tailer's per-agent delta: a pure append emits no reset; a rewritten tail
+    /// emits `{t:"reset",from:N}` at the first divergence; an unchanged stream is a no-op.
+    #[test]
+    fn stream_delta_appends_and_resets() {
+        let meta = r#"{"t":"meta","tools":2}"#;
+        // Pure append: two new blocks, no reset.
+        let d = stream_delta(
+            &["a".into(), "b".into()],
+            &["a".into(), "b".into(), "c".into()],
+            meta,
+        )
+        .expect("changed");
+        assert!(!d.contains("reset"), "pure append has no reset: {d}");
+        assert!(d.contains('c') && d.trim_end().ends_with(meta));
+        // Rewritten tail: block 1 changed → reset from 1, re-emit the tail.
+        let d = stream_delta(&["a".into(), "b".into()], &["a".into(), "B2".into()], meta)
+            .expect("changed");
+        let reset: Value = serde_json::from_str(d.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            reset,
+            json!({ "t": "reset", "from": 1 }),
+            "reset at divergence"
+        );
+        assert!(d.contains("B2"));
+        // Unchanged → no delta.
+        assert_eq!(
+            stream_delta(&["a".into(), "b".into()], &["a".into(), "b".into()], meta),
+            None
+        );
+    }
+
+    /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot;
+    /// `live` adds `data-poll` (served `--html -f`), static omits it.
     #[test]
     fn build_shell_is_multi_file_without_inline() {
-        let html = build_shell("My session", "root-9f3d");
-        assert!(html.contains("data-multi=\"1\""), "multi flag: {html:.0}");
+        let html = build_shell("My session", "root-9f3d", false);
+        assert!(html.contains("data-multi=\"1\""), "multi flag");
         assert!(html.contains("data-root=\"root-9f3d\""));
+        assert!(!html.contains("data-poll"), "static bundle does not poll");
+        // Live served shell polls its stream.
+        let live = build_shell("My session", "root-9f3d", true);
+        assert!(live.contains("data-poll"), "live shell polls: {live:.0}");
         // The inline session-data script is present but EMPTY (no block stream baked in).
         let inline = html
             .split("id=\"session-data\"")
