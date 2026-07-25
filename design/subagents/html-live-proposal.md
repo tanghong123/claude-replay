@@ -301,12 +301,15 @@ so the bundle is self-contained and every attachment is a real file on disk.
   a not-yet-spawned `?session=<id>`, the transient `+N` badge on a growing unopened child
   (from the parent `meta`).
 
-- **Phase D — `--dump-all-html` (§6).** The offline directory bundle: walk the eager
-  agent tree, write each node's finished `<id>.jsonl`, materialize + de-conflict embedded
-  attachments into `assets/`, emit the shared `index.html`. Reuses the served block/meta
-  emission with the tailer/reset machinery switched off. Gate: a two-agent + attachment
-  fixture asserting the directory shape, cross-agent `child:` links, and a de-conflicted
-  asset name.
+- **Phase D — `--dump-all-html` (§6). SHIPPED** (attachment materialization deferred).
+  The offline directory bundle: walk the eager agent tree, write each node's finished
+  `<id>.jsonl`, emit the shared `index.html`, cross-link via `child:`. Reuses the served
+  block/meta emission with the tailer/reset switched off. Built: `collect_agent_nodes`,
+  `dump_all_html`, `build_shell` (multi-file `data-multi`/`data-root`), the Emitter
+  `linked` flag, the JS multi-file boot + `.agent-open` nav link, the `--dump-all-html`
+  CLI flag. Verified in-browser (root → `↵ id` → child → Back) + fixture tests. **Still
+  TODO (§6.1):** materialize + de-conflict embedded attachments into `assets/` and link
+  the blocks to them — today attachments still render as names in the bundle.
 
 ---
 
