@@ -159,6 +159,28 @@ fn is_skill_body(s: &str) -> bool {
     s.trim_start().starts_with("Base directory for this skill:")
 }
 
+/// Append a loaded skill's instruction body to its `Skill` tool_use block at `idx`,
+/// so the whole skill load reads as one collapsible unit (named by the skill) instead
+/// of a loose result block beside the call. Returns `false` when there's no recent
+/// `Skill` block to attach to — the caller then falls back to a standalone result.
+fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &str) -> bool {
+    let Some(i) = idx else { return false };
+    if let Some(Block::ToolUse { name, output, .. }) = out.get_mut(i) {
+        if name == "Skill" {
+            let b = body.trim();
+            match output {
+                Some(o) => {
+                    o.push_str("\n\n");
+                    o.push_str(b);
+                }
+                None => *output = Some(b.to_string()),
+            }
+            return true;
+        }
+    }
+    false
+}
+
 /// Injected/system content that Claude Code flags at the event level — a skill or
 /// slash-command **instruction body** (`isMeta`), a caveat, or a `/compact`
 /// continuation summary (`isCompactSummary`). None of it is a human-initiated
@@ -262,6 +284,7 @@ fn tool_fold_key(name: &str) -> &'static str {
         "Write" | "NotebookEdit" => "write",
         "Bash" => "bash",
         "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" => "read",
+        "Skill" => "skill",
         _ => "tool",
     }
 }
@@ -668,6 +691,11 @@ fn parse_main<S: AsRef<str>>(
     // used during the loop).
     let mut content_seq = 0usize;
     let mut suppress: Vec<usize> = Vec::new();
+    // Index of the most recent `Skill` tool_use block. The harness delivers a loaded
+    // skill's instruction body as a following injected user message ("Base directory
+    // for this skill: …"); we nest that body into this block so a skill load reads as
+    // ONE collapsible unit named by the skill, instead of a loose result block beside it.
+    let mut last_skill: Option<usize> = None;
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -739,6 +767,9 @@ fn parse_main<S: AsRef<str>>(
                             });
                             content_seq += 1;
                             let idx = out.len() - 1;
+                            if name == "Skill" {
+                                last_skill = Some(idx);
+                            }
                             if !id.is_empty() {
                                 tool_slot.insert(id.to_string(), idx);
                                 // A result that arrived before this tool_use? Apply it now.
@@ -766,7 +797,9 @@ fn parse_main<S: AsRef<str>>(
                     continue;
                 };
                 if let Some(s) = content.as_str() {
-                    if injected {
+                    if is_skill_body(s) && attach_skill_body(&mut out, last_skill, s) {
+                        // Nested into its `Skill` block above — no loose result block.
+                    } else if injected {
                         push_injected(s, &mut out);
                     } else {
                         push_user_string(s, &mut out);
@@ -777,7 +810,11 @@ fn parse_main<S: AsRef<str>>(
                             Some("text") => {
                                 if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                     if !t.trim().is_empty() {
-                                        if injected || is_skill_body(t) {
+                                        if is_skill_body(t)
+                                            && attach_skill_body(&mut out, last_skill, t)
+                                        {
+                                            // Nested into its `Skill` block above.
+                                        } else if injected || is_skill_body(t) {
                                             out.push(Block::ToolResult(t.to_string()));
                                         } else {
                                             out.push(Block::UserText(t.to_string()));
@@ -1379,28 +1416,52 @@ mod tests {
         );
     }
 
+    /// A skill load is ONE collapsible unit: the `Skill` tool_use names the skill, and
+    /// the injected "Base directory for this skill: …" body is NESTED into that block's
+    /// output — not a loose result block beside it, and never a `❯` user turn.
     #[test]
-    fn skill_call_names_its_target_and_body_folds_as_result() {
+    fn skill_body_nests_into_the_skill_call() {
         let jsonl = r#"
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"dump-tasks"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"Launching skill: dump-tasks"}]}}
 {"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /Users/dev/.claude/skills/dump-tasks\n\n# dump-tasks\n\nTurn the work into a brief."}]}}
 "#;
         let blocks = parse(jsonl, &args());
-        // The Skill tool_use carries its skill name as the target (CC: Skill(dump-tasks)).
+        // Exactly one block — the Skill call — with the skill name as its target and
+        // the fold key "skill" (default-folded, like reads/thinking).
+        assert_eq!(kinds(&blocks), vec!["skill"], "{blocks:?}");
         match &blocks[0] {
-            Block::ToolUse { name, target, .. } => {
+            Block::ToolUse {
+                name,
+                target,
+                output,
+                ..
+            } => {
                 assert_eq!(name, "Skill");
                 assert_eq!(target, "dump-tasks", "skill name not used as target");
+                let out = output.as_deref().unwrap_or("");
+                assert!(
+                    out.contains("Launching skill: dump-tasks"),
+                    "keeps the result"
+                );
+                assert!(
+                    out.contains("Base directory for this skill:"),
+                    "skill body nested into the Skill block: {out:?}"
+                );
             }
             other => panic!("expected Skill ToolUse, got {other:?}"),
         }
-        // The Skill call is its own block; the injected body folds as a result
-        // block (not a `❯` user turn).
-        assert_eq!(
-            kinds(&blocks),
-            vec!["tool", "tool_result"],
-            "skill body should fold as a tool_result, not user text"
-        );
+    }
+
+    /// With no preceding `Skill` block, a "Base directory…" body still folds on its own
+    /// as a result block (the nesting is a best-effort attach, not a hard requirement).
+    #[test]
+    fn orphan_skill_body_still_folds_as_result() {
+        let jsonl = r#"
+{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /x\n\n# s"}]}}
+"#;
+        let blocks = parse(jsonl, &args());
+        assert_eq!(kinds(&blocks), vec!["tool_result"], "{blocks:?}");
     }
 
     #[test]

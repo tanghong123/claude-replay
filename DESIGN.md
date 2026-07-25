@@ -246,17 +246,19 @@ The residual diff is **not** decision-free rendering:
   fill. Add a `TestBackend` test asserting an expanded foldable's interior rows carry
   the block bg and a non-foldable block's rows don't.
 
-- [ ] **Group skill loading into one foldable block, collapsed by default.** When a
-  skill is invoked, Claude Code reads the skill's files (`SKILL.md` + bundled files)
-  as a burst of `Read`/tool calls. Detect that skill-load sequence and nest the actual
-  skill-file reads *inside* a single "skill" foldable block (the whole load becomes one
-  collapsible region) instead of surfacing each file read as its own top-level block.
-  Add a `"skill"` fold key (`model::fold_key` / `tool_fold_key`) and include it in the
-  `FoldPolicy` default-folded set so the skill-loading block starts **collapsed**
-  (like thinking/reads). Collapsed summary should name the skill; expanding reveals the
-  nested file reads. *To resolve first:* how a skill invocation and its file reads are
-  represented in the JSONL (Skill tool_use marker? a system message? a recognizable
-  Read burst?) — confirm against a real transcript before implementing the grouping.
+- [x] **Group skill loading into one foldable block, collapsed by default.** ✅ shipped.
+  *Premise correction (investigated across 28 transcripts / 28 `Skill` invocations,
+  2026-07-25):* skill loading does NOT produce a burst of skill-file `Read` calls —
+  **zero** invocations were followed by one. Current Claude Code delivers the skill's
+  instruction body inline: a `Skill` tool_use, then its `tool_result`, then an injected
+  user text block starting `"Base directory for this skill: …"`. So there were never
+  loose file reads to group — but the injected body WAS rendering as a separate loose
+  result block beside the `Skill` call. The fix nests it: `attach_skill_body` appends
+  that body into the preceding `Skill` tool_use's output (`model.rs`), so a skill load is
+  ONE collapsible unit named by the skill. Added a `"skill"` fold key (`tool_fold_key`,
+  `FOLD_KEYS`, `--fold`/`--unfold`) in the default-folded set so it starts collapsed;
+  the HTML `skill` keyline (`--kw`) already existed. Orphan bodies (no preceding Skill)
+  still fold as their own result.
 
 - [x] **Preserve line breaks in multi-line slash-command args.** ✅ shipped `3740c77`. `command_header`
   (`render.rs`) builds `format!("{name} {args}")` as a single ratatui `Line`, so a

@@ -99,7 +99,7 @@ pub struct Args {
     pub full: bool,
 
     /// Start these block types collapsed (comma-separated): user, assistant,
-    /// thinking, read, bash, edit, write, tool, tool_result, command.
+    /// thinking, read, bash, edit, write, tool, skill, tool_result, command.
     #[arg(long, value_name = "TYPES")]
     pub fold: Option<String>,
 
