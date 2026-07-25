@@ -1943,10 +1943,10 @@ mod tests {
         );
         assert!(subagent_file(&sess, "nope").is_none());
         // Node-scoped tool count: the child's 2 Reads, not the parent's Bash.
-        assert!(
-            crate::render::agent_chip(sa).starts_with("2 tools"),
-            "chip: {}",
-            crate::render::agent_chip(sa)
+        assert_eq!(
+            crate::render::tool_count(sa),
+            2,
+            "node-scoped tool count (child's 2 Reads, not the parent's Bash)"
         );
         assert!(
             sa.subtree_cost.unwrap_or(0.0) > 0.0,

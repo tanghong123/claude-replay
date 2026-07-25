@@ -285,6 +285,13 @@
     } else if (head.summary) {
       h.appendChild(el("span", "summary", head.summary));
       chips(head, h);
+    } else if (head.badge) {
+      // A sub-agent spawn/completion: an agent-hued dot + the "Agent" badge + a
+      // "type: description" preview + the status chip (launched / completed / …).
+      h.appendChild(el("span", "tool-dot"));
+      h.appendChild(el("span", "tool-name", head.badge));
+      if (head.preview) h.appendChild(el("span", "tool-target", head.preview));
+      chips(head, h);
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
       if (head.name) h.appendChild(el("span", "tool-name", head.name));

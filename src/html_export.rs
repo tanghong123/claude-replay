@@ -431,7 +431,7 @@ impl Emitter<'_> {
                     "preview".into(),
                     json!(format!("{}: {}", sa.agent_type, sa.description)),
                 );
-                head.insert("chips".into(), json!([chip(crate::render::agent_chip(sa))]));
+                head.insert("chips".into(), json!([chip(crate::render::spawn_chip(sa))]));
                 if !sa.prompt.trim().is_empty() {
                     body.push(json!({ "p": "md", "h": md_html(&sa.prompt) }));
                 }
@@ -1227,6 +1227,45 @@ mod tests {
             patch: None,
             read_lines: None,
         }
+    }
+
+    /// A sub-agent spawn emits the "Agent" badge + `type: description` preview + a
+    /// "launched" chip (never the terminal status); its completion emits a separate
+    /// AgentDone block with the "completed" chip. The JS renders badge+preview via its
+    /// `head.badge` branch.
+    #[test]
+    fn agent_spawn_and_done_emit_badge_preview_and_status_chip() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = Block::SubAgent(SubAgent {
+            agent_id: "a1".into(),
+            tool_use_id: "t".into(),
+            agent_type: "general-purpose".into(),
+            description: "Design the engine".into(),
+            prompt: "go".into(),
+            status: AgentStatus::Completed, // back-patched; must NOT surface as "done"
+            result: None,
+            output_file: None,
+            blocks: vec![],
+            subtree_cost: None,
+        });
+        let s = stream(&[spawn], &FoldPolicy::none());
+        assert_eq!(s[0]["head"]["badge"], json!("Agent"));
+        assert_eq!(
+            s[0]["head"]["preview"],
+            json!("general-purpose: Design the engine")
+        );
+        assert_eq!(s[0]["head"]["chips"], json!([{ "x": "launched" }]));
+
+        let done = Block::AgentDone {
+            agent_id: "a1".into(),
+            agent_type: "general-purpose".into(),
+            description: "Design the engine".into(),
+            status: AgentStatus::Completed,
+            result: Some("done.".into()),
+        };
+        let d = stream(&[done], &FoldPolicy::none());
+        assert_eq!(d[0]["head"]["badge"], json!("Agent"));
+        assert_eq!(d[0]["head"]["chips"], json!([{ "x": "completed" }]));
     }
 
     #[test]

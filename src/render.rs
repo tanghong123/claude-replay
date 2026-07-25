@@ -41,19 +41,6 @@ pub(crate) fn tool_count(sa: &crate::model::SubAgent) -> usize {
         .sum()
 }
 
-pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
-    let tools = tool_count(sa);
-    if tools > 0 {
-        format!(
-            "{tools} tool{} · {}",
-            if tools == 1 { "" } else { "s" },
-            sa.status.label()
-        )
-    } else {
-        sa.status.label().to_string()
-    }
-}
-
 /// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). The spawn is
 /// the *launch* event and always reads "launched" — the terminal status shows on the
 /// separate `AgentDone` completion event, not here.
