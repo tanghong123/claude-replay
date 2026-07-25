@@ -368,6 +368,19 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 }
             }
         }
+        Block::QueueEvent { text } => {
+            // A dim `⧗ queued: …` marker for a mid-turn prompt still in flight (the
+            // agent hadn't picked it up yet). Continuation lines align under the text.
+            let style = Style::default().fg(theme::fold_header());
+            for (i, line) in text.lines().enumerate() {
+                let s = if i == 0 {
+                    format!("⧗ queued: {line}")
+                } else {
+                    format!("           {line}")
+                };
+                out.push(Line::from(Span::styled(s, style)));
+            }
+        }
         Block::AssistantText(t) => {
             let mut md = markdown::render(t, width);
             if md.is_empty() {
@@ -883,6 +896,10 @@ fn render_header(b: &Block) -> Line<'static> {
                 Span::styled(t.lines().next().unwrap_or("").to_string(), base),
             ])
         }
+        Block::QueueEvent { text } => Line::styled(
+            format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
+            Style::default().fg(theme::fold_header()),
+        ),
         Block::AssistantText(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
@@ -909,7 +926,9 @@ fn render_header(b: &Block) -> Line<'static> {
 /// building the body. Must agree with `render_one`'s output length.
 fn body_len(b: &Block) -> usize {
     match b {
-        Block::ToolResult(t) | Block::UserText(t) => t.lines().count().saturating_sub(1),
+        Block::ToolResult(t) | Block::UserText(t) | Block::QueueEvent { text: t } => {
+            t.lines().count().saturating_sub(1)
+        }
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
@@ -1495,6 +1514,28 @@ mod tests {
                 .iter()
                 .any(|s| s.style.fg == Some(theme::thinking_fg())),
             "thinking has no thinking fg"
+        );
+    }
+
+    /// A queued (in-flight) prompt marker: dim `⧗ queued:` prefix on the first line,
+    /// continuation lines aligned under the text, and it is NOT foldable (an
+    /// always-shown annotation, never collapsed to a summary).
+    #[test]
+    fn queue_marker_renders_dim_prefix_and_is_not_foldable() {
+        let b = Block::QueueEvent {
+            text: "fix the table\nsecond line".into(),
+        };
+        assert!(!foldable(&b), "queue marker must not be foldable");
+        let lines = render_one(&b, 80);
+        let t = texts(&lines);
+        assert!(t[0].starts_with("⧗ queued: fix the table"), "{t:?}");
+        assert!(t[1].contains("second line"), "{t:?}");
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(theme::fold_header())),
+            "queue marker should use the dim fold-header color"
         );
     }
 

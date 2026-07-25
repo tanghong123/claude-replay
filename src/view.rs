@@ -815,8 +815,37 @@ impl View {
             }
         }
         let n = new_blocks.len();
-        self.collapsed.extend(self.fold.collapsed_for(&new_blocks));
-        self.blocks.extend(new_blocks);
+        // Live equivalent of the batch parser's immediate-pickup suppression: a queued
+        // prompt whose `⧗ queued:` marker is the current tail (nothing emitted since)
+        // was picked up immediately, so the arriving `❯` turn REPLACES the marker
+        // rather than following it. A full re-parse (or the HTML live path) already does
+        // this; the append-based tail must do it by hand. If agent work arrived between
+        // the marker and the turn, the marker is no longer the tail and stays (delayed).
+        let fresh = self.fold.collapsed_for(&new_blocks);
+        for (b, c) in new_blocks.into_iter().zip(fresh) {
+            if let Block::UserText(t) = &b {
+                // Look only at the TRAILING run of `⧗ queued:` markers (those with no
+                // agent block emitted after them). A match there is an immediate pickup
+                // → drop that marker so this turn replaces it. Once agent work lands, the
+                // run is empty and the marker survives (a delayed pickup keeps both).
+                let run_start = self
+                    .blocks
+                    .iter()
+                    .rposition(|x| !matches!(x, Block::QueueEvent { .. }))
+                    .map_or(0, |i| i + 1);
+                if let Some(off) = self.blocks[run_start..]
+                    .iter()
+                    .position(|x| matches!(x, Block::QueueEvent { text } if text == t))
+                {
+                    let idx = run_start + off;
+                    self.blocks.remove(idx);
+                    self.collapsed.remove(idx);
+                    self.body_cache.truncate(idx); // positional cache invalid from here
+                }
+            }
+            self.collapsed.push(c);
+            self.blocks.push(b);
+        }
         self.rebuild_raw();
         if !self.follow {
             self.new_count += n;
@@ -1602,6 +1631,58 @@ mod tests {
         assert!(
             body.contains("(ls)") && body.contains("thought"),
             "collapsed summary missing absorbed activities:\n{body}"
+        );
+    }
+
+    /// Live-tail two-tier queue collapse: a `⧗ queued:` marker shown in one poll is
+    /// REPLACED by its `❯` turn when the pickup (a `queued_command` attachment → a
+    /// matching `UserText`) arrives immediately after (nothing in between). If agent
+    /// work arrives between them, the marker survives (a delayed pickup).
+    #[test]
+    fn live_immediate_pickup_replaces_queued_marker_with_the_turn() {
+        let tool = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: "x".into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let mut v = View::new(
+            vec![Block::UserText("go".into())],
+            "t",
+            true,
+            FoldPolicy::default(),
+        );
+        draw(&mut v, 60, 20);
+
+        // Poll 1: two prompts queued while the agent is busy → two markers at the tail.
+        v.ingest(vec![
+            Block::QueueEvent {
+                text: "immediate one".into(),
+            },
+            Block::QueueEvent {
+                text: "delayed one".into(),
+            },
+        ]);
+        assert_eq!(v.block_kinds(), vec!["user", "queue", "queue"]);
+
+        // Poll 2: "immediate one" is picked up right away (its marker is the tail) →
+        // the arriving turn replaces the marker, not appends after it.
+        v.ingest(vec![Block::UserText("immediate one".into())]);
+        assert_eq!(
+            v.block_kinds(),
+            vec!["user", "queue", "user"],
+            "immediate marker should be replaced by its turn"
+        );
+
+        // Poll 3: agent work arrives, THEN "delayed one" is picked up → its marker
+        // (no longer the tail) survives alongside the turn.
+        v.ingest(vec![tool("Bash"), Block::UserText("delayed one".into())]);
+        assert_eq!(
+            v.block_kinds(),
+            vec!["user", "queue", "user", "bash", "user"],
+            "delayed marker should survive its turn"
         );
     }
 

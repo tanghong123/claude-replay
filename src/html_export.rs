@@ -211,6 +211,7 @@ fn fence_html(lang: &str, body: &str) -> String {
 fn html_kind(b: &Block) -> &'static str {
     match b {
         Block::UserText(_) => "user",
+        Block::QueueEvent { .. } => "queue",
         Block::AssistantText(_) => "assistant",
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
@@ -236,7 +237,10 @@ fn html_kind(b: &Block) -> &'static str {
 /// Is this block rendered as a collapsible fold? User prose and assistant prose
 /// are always-open cards; everything else folds.
 fn is_fold(b: &Block) -> bool {
-    !matches!(b, Block::UserText(_) | Block::AssistantText(_))
+    !matches!(
+        b,
+        Block::UserText(_) | Block::AssistantText(_) | Block::QueueEvent { .. }
+    )
 }
 
 /// A short single-line label for the sidebar / sticky bar.
@@ -411,6 +415,13 @@ impl Emitter<'_> {
                 body.push(json!({ "p": "md", "h": md_html(text) }));
             }
             Block::AssistantText(text) => {
+                o.insert("id".into(), json!(self.block_id()));
+                body.push(json!({ "p": "md", "h": md_html(text) }));
+            }
+            // A dim, always-open `⧗ queued: …` marker (kind "queue") — an in-flight
+            // mid-turn prompt not yet picked up. Not a turn (no sidebar entry). The
+            // `⧗ queued:` affordance + dim styling come from `.kind-queue` in the CSS.
+            Block::QueueEvent { text } => {
                 o.insert("id".into(), json!(self.block_id()));
                 body.push(json!({ "p": "md", "h": md_html(text) }));
             }
@@ -1206,6 +1217,21 @@ mod tests {
         // --full unfolds everything.
         let full = stream(&blocks, &FoldPolicy::none());
         assert_eq!(full[1]["open"], json!(1), "--full opens bash too");
+    }
+
+    /// A queued in-flight prompt streams as kind "queue" — an always-open marker
+    /// (not a fold, no turn id), carrying the prompt text as its body.
+    #[test]
+    fn queue_marker_streams_as_always_open_kind() {
+        let blocks = vec![Block::QueueEvent {
+            text: "fix the table".into(),
+        }];
+        let out = stream(&blocks, &FoldPolicy::default());
+        assert_eq!(out[0]["kind"], "queue");
+        assert!(out[0].get("fold").is_none(), "queue marker is not a fold");
+        assert!(out[0].get("turn").is_none(), "queue marker is not a turn");
+        let html = out[0]["body"][0]["h"].as_str().unwrap();
+        assert!(html.contains("fix the table"), "carries the text: {html}");
     }
 
     #[test]

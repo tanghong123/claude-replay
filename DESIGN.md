@@ -345,6 +345,77 @@ The residual diff is **not** decision-free rendering:
   summary reads `…, thought for Xs`, matching a full re-parse of the same lines.
   *(Deferred once as "minimal benefit"; captured here so the fix is scoped.)*
 
+- [ ] **Surface transcript attachments (file names + download).** Transcripts carry
+  `attachment` events with binary/file payloads (e.g. pasted images, `file`,
+  `edited_text_file`, and other `attachment.type`s beyond the `queued_command` prompts
+  we now render — see `design/queued-messages.md` for the attachment taxonomy). Expose
+  the files rather than dropping them:
+  - **`--html` (served over `localhost:<port>`):** render each attachment as a named,
+    **downloadable** item — a link/button that fetches the bytes from a new server
+    endpoint (extend the existing loopback HTTP server in `html_export.rs`, alongside
+    `/__reveal`; e.g. `/__attachment?id=…` streaming the payload with a
+    `Content-Disposition: attachment; filename=…`). Only for the *served* page — a
+    standalone `--dump-html` file has no server, so it shows the name only (see below).
+  - **TUI (`claude-replay`):** show the attachment **file name(s)** inline in the block;
+    optionally support a **mouse click to save** the attachment into the user's Downloads
+    folder (crossterm mouse capture + write bytes; confirm/announce the saved path).
+  - **`--dump` / `--dump-html`:** **file names only** (no bytes, no clickable download —
+    a dumped/exported file is meant to be shareable and portable, like the reveal-path
+    decision for `--dump-html`).
+  **Scoping done (attachment taxonomy for session `094539f2`, 733 attachment events).**
+  Only four `attachment.type`s carry retrievable content; the rest are harness
+  bookkeeping (tool/agent/skill listings, `task_reminder`, permission/date/hook deltas,
+  plan-mode toggles) with nothing to download. Feature targets and where the bytes/paths
+  live (paths relative to the `attachment` object):
+  - **`file`** (×11) — full attached-file bytes **inline** at `content.file.content`;
+    absolute path at `content.file.filePath` (also top-level `filename`), repo-relative
+    `displayPath`. Highest-value target — downloadable straight from the transcript.
+  - **`plan_file_reference`** (×3) — full plan markdown **inline** at `planContent`; path
+    at `planFilePath` (`~/.claude/plans/<name>.md`). Surface as a viewable plan doc.
+  - **`edited_text_file`** (×91) — line-numbered snippet **inline** at `snippet`
+    (⚠️ truncated ~8 KB); path at `filename`. Show inline; read `filename` for full text.
+  - **`compact_file_reference`** (×24) — **path-ref only** (`filename` + `displayPath`),
+    no bytes; treat as a link, resolve from disk if surfacing content.
+  - `queued_command` is the mid-turn-prompt case already handled (see above).
+  **Caveat:** this session has **no pasted images/screenshots**, so the image/paste case
+  (mime type, base64 blob, `~/Desktop/Screenshot…` path) and its `attachment.type` are
+  unconfirmed — validate against a session with a pasted screenshot before finalizing
+  that code path. So payloads are BOTH inline (`content`/`snippet`/`planContent`) and
+  path-referenced depending on type — the `--html` download endpoint can serve inline
+  bytes directly and fall back to reading the path from disk for `compact_file_reference`
+  (served-only; a portable `--dump-html` file shows the name, per the reveal-path rule).
+  Design a `Block::Attachment { kind, name, path, inline: Option<String> }` (or extend
+  `ToolResult`) from this. *(Queued 2026-07-25; do not start until the current
+  queued-messages changes are reviewed.)*
+
+- [ ] **Track sub-agent activity (spawned from the main session).** *(Potentially
+  complicated — investigation first.)* When the main session spawns a sub-agent (the
+  `Task`/Agent tool, `general-purpose`/`Explore`/custom types), the sub-agent runs its
+  own turn loop, and today the viewer shows only the parent `Task` tool_use + its final
+  returned text — the sub-agent's *actual* work (its thinking, tool calls, files it
+  touched) is invisible. Surface it. Open questions to resolve before building:
+  - **Where does the sub-agent's activity live?** Claude Code appears to record it as
+    `isSidechain: true` events, linked to the parent by `parentUuid` and sharing the
+    `sessionId` (verify: is it inline in the same `.jsonl`, a separate sidechain file, or
+    both? does the parent `Task` tool_use carry the child's id/uuid to join on?). Codex
+    may differ (its adapter may not spawn sub-agents the same way) — scope Claude first.
+  - **Model:** correlate each `Task` tool_use with its sidechain event stream (parse the
+    sidechain into its own `Vec<Block>` via the existing `parse_main`), and attach it to
+    the parent block — a new nested/child field on `Block::ToolUse` (or a dedicated
+    `Block::SubAgent { name, blocks }`).
+  - **Render:** a **collapsible drill-down** under the `Task` call — collapsed shows the
+    one-line agent label + summary (as now); expanded reveals the sub-agent's turns
+    (thinking/tools) indented as a sub-transcript. Interleave correctly if multiple
+    sub-agents run in parallel (match on uuid, not position). Applies to TUI fold state,
+    `--dump`, and `--html` alike.
+  - **Live tail:** sub-agent events may stream in interleaved with the parent's — the
+    byte-offset tail (`tail.rs`) + streaming parse must route each event to the right
+    (parent vs. sidechain) block stream by its uuid lineage.
+  This is the "subagent drill-down (future)" idea credited to **claude-code-trace** in
+  the Attribution section above. Start by capturing a real session that spawns a
+  sub-agent and documenting the exact JSONL markers (like `design/queued-messages.md`
+  did for queued prompts) before touching the model. *(Queued 2026-07-25.)*
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now

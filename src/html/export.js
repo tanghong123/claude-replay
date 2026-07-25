@@ -181,6 +181,18 @@
       return card;
     }
 
+    // A queued (in-flight) mid-turn prompt not yet picked up by the agent — a dim,
+    // always-open "⧗ queued:" marker. Not a turn (no sidebar entry, no clamp).
+    if (b.kind === "queue") {
+      var qc = el("div", "qmarker blk");
+      qc.id = b.id;
+      qc.appendChild(el("span", "qcaret", "⧗ queued:"));
+      var qmd = el("div", "qmd");
+      body.forEach(function (p) { renderPart(p, qmd); });
+      qc.appendChild(qmd);
+      return qc;
+    }
+
     // Assistant prose — always open, no fold chrome.
     if (b.kind === "assistant") {
       var ab = el("div", "ablock blk");

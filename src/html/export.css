@@ -223,6 +223,15 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
   background: linear-gradient(transparent, var(--card)); pointer-events: none;
 }
 .clampbtn { margin-top: 4px; }
+/* A queued (in-flight) mid-turn prompt not yet picked up — dim, no card chrome, so
+   it reads as a faint annotation rather than a full turn. */
+.qmarker {
+  display: flex; gap: 8px; align-items: baseline;
+  margin: 10px 0 2px; padding: 2px 16px; color: var(--faint);
+}
+.qcaret { flex: none; font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
+.qmd { min-width: 0; font-size: 13px; }
+.qmd > p:only-child { margin: 0; }
 .ts { flex: none; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
 .alink { flex: none; color: var(--faint); opacity: 0.45; font: 12px var(--mono); }
 .uturn:not(.fold) > .alink { margin-top: 3px; }

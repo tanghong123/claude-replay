@@ -23,6 +23,14 @@ pub struct Hunk {
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
+    /// A mid-turn prompt the human submitted while the agent was busy — recorded as
+    /// a `queue-operation` `enqueue`, shown as a dim `⧗ queued: …` marker at submit
+    /// time. It marks the human's in-flight input and the submit-vs-pickup lag. If the
+    /// agent picks it up immediately (no work in between) the marker is suppressed and
+    /// only the `❯` turn (from the `queued_command` attachment) renders; if there was
+    /// a gap, the marker stays and the turn appears later at pickup. Not a turn itself
+    /// (no sidebar/sticky/`user_times` entry).
+    QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
     /// A ✻ thinking block, grouped as a "turn" like Claude Code: the thinking text,
@@ -72,6 +80,7 @@ pub enum Block {
 pub fn fold_key(b: &Block) -> &'static str {
     match b {
         Block::UserText(_) => "user",
+        Block::QueueEvent { .. } => "queue",
         Block::AssistantText(_) => "assistant",
         Block::Thinking { .. } => "thinking",
         Block::ToolResult(_) => "tool_result",
@@ -606,14 +615,26 @@ fn parse_main<S: AsRef<str>>(
     // Timestamp of the last user/tool-result event — the moment the model's next
     // generation was requested — so a thinking block's duration is `its ts − this`.
     let mut trigger_ts: Option<f64> = None;
-    // The prompt queue: messages the human submits mid-turn are recorded as
-    // `queue-operation` events (not `user` events) until consumed. We model the
-    // WHOLE queue — prose prompts AND the background `<task-notification>`s Claude
-    // Code interleaves — so a content-less `dequeue`/`remove` (a FIFO front pop)
-    // lands on the right entry; tracking only prose would leave consumed prompts
-    // behind as phantom turns. `(content, is_prose, timestamp)`. Whatever prose is
-    // still waiting at the end renders as pending user turns.
+    // Messages the human submits mid-turn are recorded as `queue-operation` events
+    // (not `user` events). Their lifecycle: `enqueue` → `remove`/`dequeue` (a FIFO
+    // front pop) when the agent picks the prompt up → a `queued_command` **attachment**
+    // at the consumption point that carries the prompt text. For the vast majority of
+    // typed prompts that attachment is the ONLY record — CC never writes a standalone
+    // `user` event — so we render `queued_command`/"prompt" attachments inline as user
+    // turns (see the `attachment` arm below); that recovers messages that would
+    // otherwise vanish. The `queue` here tracks only what is enqueued-but-not-yet-
+    // consumed: a content-less pop drops the front, so on a settled transcript it nets
+    // to empty. Whatever prose is still queued at the end (a live `-f` session mid-
+    // flight) renders as pending user turns.
     let mut queue: Vec<QueueItem> = Vec::new();
+    // Monotonic count of *agent* content blocks emitted (assistant text/thinking/
+    // tool_use). A queued prompt whose enqueue and pickup straddle no agent work
+    // (`content_seq` unchanged) was picked up immediately: its `⧗ queued:` marker is
+    // redundant with the `❯` turn, so we suppress it. Marker indices to drop collect
+    // in `suppress` and are filtered out after the loop (safe — `tool_slot` is only
+    // used during the loop).
+    let mut content_seq = 0usize;
+    let mut suppress: Vec<usize> = Vec::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -646,6 +667,7 @@ fn parse_main<S: AsRef<str>>(
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
                                     out.push(Block::AssistantText(t.to_string()));
+                                    content_seq += 1;
                                 }
                             }
                         }
@@ -667,6 +689,7 @@ fn parse_main<S: AsRef<str>>(
                                     duration_secs,
                                     tools: Vec::new(),
                                 });
+                                content_seq += 1;
                             }
                         }
                         Some("tool_use") => {
@@ -681,6 +704,7 @@ fn parse_main<S: AsRef<str>>(
                                 patch: None,
                                 read_lines: None,
                             });
+                            content_seq += 1;
                             let idx = out.len() - 1;
                             if !id.is_empty() {
                                 tool_slot.insert(id.to_string(), idx);
@@ -750,66 +774,112 @@ fn parse_main<S: AsRef<str>>(
                     }
                 }
             }
-            // Human input submitted mid-turn: queued, not yet a `user` event.
-            Some("queue-operation") => apply_queue_op(&v, &mut queue),
+            // Human input submitted mid-turn: queued, not yet a `user` event. We model
+            // the WHOLE queue — prose prompts AND background `<task-notification>`s — so
+            // a content-less `dequeue`/`remove` (a FIFO front pop) lands on the right
+            // entry. A prose `enqueue` also emits a `⧗ queued:` marker in place; a pop
+            // that finds the prompt was picked up with no agent work in between marks
+            // that marker for suppression (immediate → the `❯` turn alone suffices).
+            Some("queue-operation") => {
+                let content = v.get("content").and_then(|c| c.as_str());
+                match v.get("operation").and_then(|o| o.as_str()) {
+                    Some("enqueue") => {
+                        if let Some(c) = content {
+                            let is_prose = is_queue_prose(c);
+                            let marker_idx = if is_prose {
+                                out.push(Block::QueueEvent {
+                                    text: c.trim().to_string(),
+                                });
+                                Some(out.len() - 1)
+                            } else {
+                                None
+                            };
+                            queue.push(QueueItem {
+                                content: c.trim().to_string(),
+                                marker_idx,
+                                content_at_enqueue: content_seq,
+                            });
+                        }
+                    }
+                    Some("remove") | Some("dequeue") => {
+                        let popped = match content.map(str::trim) {
+                            Some(c) => queue
+                                .iter()
+                                .position(|q| q.content == c)
+                                .map(|i| queue.remove(i)),
+                            None if !queue.is_empty() => Some(queue.remove(0)), // FIFO front pop
+                            None => None,
+                        };
+                        // Picked up with no agent work since enqueue → the marker is
+                        // redundant with the turn; drop it.
+                        if let Some(item) = popped {
+                            if let Some(mi) = item.marker_idx {
+                                if content_seq == item.content_at_enqueue {
+                                    suppress.push(mi);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // The authoritative record of a consumed mid-turn prompt. CC emits a
+            // `queued_command` attachment at the moment the agent picks the prompt up,
+            // grouped with the tool-result-carrying `user` event of the running turn —
+            // and for typed prompts this is usually the ONLY place the text survives
+            // (no standalone `user` event is ever written). Render the human ones
+            // (`commandMode == "prompt"`; `"task-notification"` is background noise) as
+            // a user turn right here, so they land in chronological order at the point
+            // they took effect.
+            Some("attachment") => {
+                let a = v.get("attachment");
+                let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
+                    == Some("queued_command")
+                    && a.and_then(|a| a.get("commandMode"))
+                        .and_then(|m| m.as_str())
+                        == Some("prompt");
+                if is_prompt {
+                    if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                        if !p.trim().is_empty() {
+                            out.push(Block::UserText(p.to_string()));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-    let mut out = coalesce_activity_runs(group_turns(out));
-    // Prompts still waiting in the queue (not yet consumed) render as pending user
-    // turns, so a live view shows the human's in-flight input.
-    for item in queue {
-        if item.is_prose {
-            out.push(Block::UserText(item.content));
-            user_times.push(item.ts);
-        }
+    // Drop the `⧗ queued:` markers of prompts picked up immediately (no agent work
+    // between submit and pickup) — their `❯` turn alone conveys them. Prompts still
+    // queued at the end keep their marker (a live `-f` session's in-flight input).
+    // Safe here: `tool_slot`/`pending` are finished, and this runs before turn grouping
+    // so surviving markers keep their positions.
+    let _ = queue; // consumed via `suppress` during the loop; nothing to flush
+    if !suppress.is_empty() {
+        let drop: HashSet<usize> = suppress.into_iter().collect();
+        let mut i = 0usize;
+        out.retain(|_| {
+            let keep = !drop.contains(&i);
+            i += 1;
+            keep
+        });
     }
-    out
+    coalesce_activity_runs(group_turns(out))
 }
 
-/// One entry in the reconstructed prompt queue.
+/// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
+/// prompt's `⧗ queued:` marker in the block list (prose only); `content_at_enqueue`
+/// snapshots `content_seq` at submit so a later pop can tell whether any agent work
+/// happened in between (immediate → suppress the marker).
 struct QueueItem {
     content: String,
-    is_prose: bool,
-    ts: Option<f64>,
+    marker_idx: Option<usize>,
+    content_at_enqueue: usize,
 }
 
-/// Apply one `queue-operation` event. `enqueue` appends the message (prose or a
-/// background notification — both tracked so positions stay right). A `remove`/
-/// `dequeue` naming its content drops that exact entry; a content-less one is a
-/// FIFO front pop (the oldest queued item was consumed). Only prose entries left
-/// at the end become pending turns.
-fn apply_queue_op(v: &Value, queue: &mut Vec<QueueItem>) {
-    let content = v.get("content").and_then(|c| c.as_str());
-    match v.get("operation").and_then(|o| o.as_str()) {
-        Some("enqueue") => {
-            if let Some(c) = content {
-                let ts = v
-                    .get("timestamp")
-                    .and_then(|t| t.as_str())
-                    .and_then(epoch_secs);
-                queue.push(QueueItem {
-                    content: c.trim().to_string(),
-                    is_prose: is_queue_prose(c),
-                    ts,
-                });
-            }
-        }
-        Some("remove") | Some("dequeue") => match content.map(str::trim) {
-            Some(c) => {
-                if let Some(i) = queue.iter().position(|q| q.content == c) {
-                    queue.remove(i);
-                }
-            }
-            None if !queue.is_empty() => {
-                queue.remove(0); // FIFO front pop
-            }
-            None => {}
-        },
-        _ => {}
-    }
-}
+// (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
+// arm — it needs the block list, `content_seq`, and `suppress`.)
 
 /// A queued message worth showing as a pending human turn — genuine prose, not a
 /// background `<task-notification>`, an interrupt marker, or blank input.
@@ -944,23 +1014,68 @@ mod tests {
         );
     }
 
-    /// The prompt queue: a message still waiting renders as a pending turn; a
-    /// consumed one does not. Consumption can be a content-named remove OR a
-    /// content-less FIFO front pop — and the model must track the interleaved
-    /// background task-notification so that front pop lands on it, not on a real
-    /// prompt (the bug that once flooded the tail with old consumed prompts).
+    /// The two-tier queue model: a prose `enqueue` emits a `⧗ queued:` marker
+    /// (`QueueEvent`); when it's later picked up (a content-less FIFO front pop or a
+    /// content-named remove) the marker is dropped **only if no agent work happened in
+    /// between** (immediate pickup — the `❯` turn alone conveys it). A prompt still
+    /// queued at the end keeps its marker (live in-flight input). The interleaved
+    /// background `<task-notification>` is tracked (no marker) so a front pop lands on
+    /// it, not on a real prompt.
     #[test]
-    fn pending_queue_shows_waiting_prompts_and_front_pops_correctly() {
+    fn queue_markers_suppress_on_immediate_pickup_but_survive_a_gap() {
         let jsonl = r##"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"consumed by front pop"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:02.000Z","content":"<task-notification>\nbg\n</task-notification>"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"still waiting"}
-{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:04.000Z"}
-{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:05.000Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up immediately"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:02.000Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"picked up after a gap"}
+{"type":"assistant","timestamp":"2026-06-30T03:00:04.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:05.000Z","content":"<task-notification>\nbg\n</task-notification>"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:06.000Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"still waiting"}
 "##;
-        // Two content-less pops consume the front two entries (the prose prompt and
-        // the notification), leaving only "still waiting".
+        let blocks = parse(jsonl, &args());
+        // "picked up immediately": enqueue→dequeue with no agent work → marker dropped.
+        // "picked up after a gap": a Bash ran between enqueue and its front pop → marker kept.
+        // "still waiting": never popped → marker kept. The task-notification: no marker.
+        let markers: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::QueueEvent { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            markers,
+            vec!["picked up after a gap", "still waiting"],
+            "{blocks:?}"
+        );
+        // The one real user turn is unaffected; markers are not turns.
+        let users: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users, vec!["real turn"], "{blocks:?}");
+    }
+
+    /// A mid-turn prompt is usually recorded ONLY as a `queued_command` attachment at
+    /// the point the agent consumes it (no standalone `user` event is ever written), so
+    /// we render the human ones (`commandMode == "prompt"`) as a user turn in place —
+    /// keeping the true chronological order — and skip `task-notification`s. Losing
+    /// these would drop real messages the human typed.
+    #[test]
+    fn queued_command_attachment_renders_as_a_turn_in_order() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>bg</task-notification>"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"mid-turn interjection"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"text","text":"ok"}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:06.000Z","message":{"content":"last turn"}}
+"##;
         let blocks = parse(jsonl, &args());
         let users: Vec<&str> = blocks
             .iter()
@@ -969,7 +1084,13 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(users, vec!["real turn", "still waiting"], "{blocks:?}");
+        // The human interjection appears as a turn between "first turn" and "last turn";
+        // the task-notification attachment is not a turn.
+        assert_eq!(
+            users,
+            vec!["first turn", "mid-turn interjection", "last turn"],
+            "{blocks:?}"
+        );
     }
 
     /// A user message with no visible character — only whitespace or a control
