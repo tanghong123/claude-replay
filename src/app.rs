@@ -235,12 +235,9 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
 /// re-parse, no disk read. `None` if `idx` isn't a descendable sub-agent.
 fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     let sa = parent.view.subagent_at(idx)?;
-    if sa.blocks.is_empty() {
-        return None;
-    }
     // Own the fields we need so `sa`'s borrow of `parent.view` ends before we touch
     // `parent.path` / build the view.
-    let blocks = sa.blocks.clone();
+    let mut blocks = sa.blocks.clone();
     let agent_type = sa.agent_type.clone();
     let subtree_cost = sa.subtree_cost;
     let title = if sa.agent_id.is_empty() {
@@ -252,6 +249,19 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
     let child_file = model::subagent_file(&parent.path, &agent_id);
+    // A running agent's child file often appears (or fills in) AFTER the parent was
+    // parsed, so `sa.blocks` is empty even though the transcript now exists on disk.
+    // Load it fresh at descend time so a just-spawned agent is reachable. Still `None`
+    // only when there's genuinely nothing to open (no id, no file yet).
+    if blocks.is_empty() {
+        blocks = child_file
+            .as_deref()
+            .and_then(|f| model::parse_path_for(parent.agent, f, args).ok())
+            .unwrap_or_default();
+    }
+    if blocks.is_empty() {
+        return None;
+    }
     let reader = args
         .follow
         .then(|| child_file.as_deref().map(TailReader::open_at_end))
@@ -451,6 +461,16 @@ fn event_loop<B: ratatui::backend::Backend>(
                 }
                 // Press begins a potential text selection (also the anchor for a
                 // click-to-fold if the mouse doesn't move before release).
+                // While the active-sub-agents popup is open it owns every click: a row
+                // descends, anything else is swallowed (never leaks to the content
+                // underneath). Selection drags are suppressed too.
+                MouseEventKind::Down(MouseButton::Left) if view.agents_popup_open() => {}
+                MouseEventKind::Drag(MouseButton::Left) if view.agents_popup_open() => {}
+                MouseEventKind::Up(MouseButton::Left) if view.agents_popup_open() => {
+                    if let crate::view::PopupClick::Descend(idx) = view.agents_popup_click(m.row) {
+                        return Ok(Outcome::Descend(idx));
+                    }
+                }
                 MouseEventKind::Down(MouseButton::Left)
                     if (m.row as usize) < view.content_rows() =>
                 {

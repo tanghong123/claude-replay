@@ -69,9 +69,10 @@ fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
             Style::default().fg(theme::fold_header()),
         ),
     ];
-    // The agent id is the sole descend affordance (link-styled), present only when the
-    // child transcript is on disk to descend into.
-    if !sa.agent_id.is_empty() && !sa.blocks.is_empty() {
+    // The agent id is the sole descend affordance (link-styled). Shown whenever the spawn
+    // carries an id — including a still-running agent whose child transcript loads lazily
+    // at descend time — so the block always visibly signals "↵ opens this agent".
+    if !sa.agent_id.is_empty() {
         spans.push(Span::styled(
             "  ↵ ",
             Style::default().fg(theme::fold_header()),
@@ -89,7 +90,7 @@ fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
 /// `agent_header` renders before the id.
 pub(crate) fn agent_id_span(sa: &crate::model::SubAgent) -> Option<(usize, usize)> {
     use unicode_width::UnicodeWidthStr;
-    if sa.agent_id.is_empty() || sa.blocks.is_empty() {
+    if sa.agent_id.is_empty() {
         return None;
     }
     let prefix = format!(

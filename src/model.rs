@@ -680,12 +680,10 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path, args: &Args) 
                 continue;
             };
             enrich_subagents(&mut cb, sadir, args); // grandchildren (same flat dir)
-                                                    // A child that ran to completion whose spawn only recorded `async_launched`
-                                                    // is done — the completion notification is the authority when present, but a
-                                                    // fully-parsed child is a safe fallback for a settled transcript.
-            if sa.status == AgentStatus::AsyncLaunched && !cb.is_empty() {
-                sa.status = AgentStatus::Completed;
-            }
+                                                    // The completion `<task-notification>` is the sole authority for terminal
+                                                    // status — a child file existing does NOT mean the agent finished (it keeps
+                                                    // growing while it runs). Upgrading to Completed here would hide a live agent
+                                                    // from `active`, so leave the status alone and only attach the transcript.
             sa.subtree_cost = subtree_cost(&child, &cb);
             sa.blocks = cb;
         }

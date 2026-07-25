@@ -321,6 +321,17 @@ pub enum Action {
     Descend(usize),
 }
 
+/// The outcome of a mouse click while the `a` active-sub-agents popup is open.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PopupClick {
+    /// Clicked an agent row — descend into the sub-agent at this block index.
+    Descend(usize),
+    /// Clicked elsewhere on the overlay — swallowed, popup stays open (`Esc`/`a` closes).
+    Border,
+    /// No popup was open.
+    None,
+}
+
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>,        // per-block fold state
@@ -461,6 +472,24 @@ impl View {
     pub fn agents_popup_confirm(&mut self) -> Option<usize> {
         let sel = self.agents_popup.take()?;
         self.active_agent_indices().get(sel).copied()
+    }
+    /// Hit-test a mouse click against the open `a` popup (a full-content-area overlay:
+    /// header at row 0, one agent per row from row 1, footer at the bottom — mirrors
+    /// [`render_agents_popup`]). A click on an agent row selects + descends into it; any
+    /// other click is swallowed so it never leaks to the content underneath (`Esc`/`a`
+    /// closes the popup).
+    pub fn agents_popup_click(&mut self, row: u16) -> PopupClick {
+        if self.agents_popup.is_none() {
+            return PopupClick::None;
+        }
+        let idxs = self.active_agent_indices();
+        let r = row as usize;
+        if r >= 1 && r - 1 < idxs.len() {
+            let i = r - 1;
+            self.agents_popup = Some(i); // reflect the click in the highlight
+            return PopupClick::Descend(idxs[i]);
+        }
+        PopupClick::Border
     }
 
     /// Record the session's working directory, so a click on a tool header's path
@@ -774,10 +803,12 @@ impl View {
     fn activate_block(&mut self, b: usize) -> Option<Action> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => {
-                if sa.blocks.is_empty() {
-                    self.toggle_block(b); // no child transcript on disk → just fold
+                if sa.agent_id.is_empty() {
+                    self.toggle_block(b); // no id ⇒ nothing to descend into → just fold
                     None
                 } else {
+                    // Descend even when `blocks` is empty — a running agent's child
+                    // transcript loads lazily at descend time (from its own file).
                     Some(Action::Descend(b))
                 }
             }
@@ -1321,33 +1352,52 @@ impl View {
     }
 }
 
-/// The `a` popup: a centered bordered panel listing this node's running sub-agents, one
-/// per row, the selected one highlighted. Enter descends into it; Esc closes.
+/// The `a` popup: a full-content-area overlay (mirroring the session picker) — a header
+/// line naming the running count, one selectable row per running sub-agent (caret + a
+/// `⟳` spinner + id · type · description, the selected one highlighted full-width), and a
+/// key-hint footer. `↵`/click opens the selected agent; `Esc`/`a` closes.
 fn render_agents_popup(f: &mut Frame, area: Rect, rows: &[String], sel: usize) {
-    let lines: Vec<Line<'static>> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let mark = if i == sel { "⏺ " } else { "  " };
-            let style = if i == sel {
-                theme::agent().bg(theme::focus_bg())
-            } else {
-                theme::agent()
-            };
-            Line::from(Span::styled(format!("{mark}{r}"), style))
-        })
-        .collect();
-    let w = 72u16.min(area.width);
-    let h = (rows.len() as u16 + 2).min(area.height);
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    let y = area.y + area.height.saturating_sub(h) / 2;
-    let rect = Rect::new(x, y, w, h);
-    let block = WBlock::default()
-        .borders(Borders::ALL)
-        .border_style(theme::table_border())
-        .title(" Active sub-agents — ↵ open · Esc close ");
-    f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(lines).block(block), rect);
+    use unicode_width::UnicodeWidthStr;
+    let width = area.width as usize;
+    let pad = |s: String| -> String {
+        let w = UnicodeWidthStr::width(s.as_str());
+        if w < width {
+            format!("{s}{}", " ".repeat(width - w))
+        } else {
+            s
+        }
+    };
+    let header = Style::default()
+        .fg(theme::fold_header())
+        .bg(theme::user_bg());
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(area.height as usize);
+    lines.push(Line::from(Span::styled(
+        pad(format!(
+            " active sub-agents of this session — {} running",
+            rows.len()
+        )),
+        header,
+    )));
+    for (i, r) in rows.iter().enumerate() {
+        let mark = if i == sel { "❯ ⟳ " } else { "  ⟳ " };
+        let style = if i == sel {
+            theme::agent().bg(theme::focus_bg())
+        } else {
+            theme::agent()
+        };
+        lines.push(Line::from(Span::styled(pad(format!("{mark}{r}")), style)));
+    }
+    // Pad to the footer row, then the key-hint bar pinned at the bottom.
+    let footer_row = area.height.saturating_sub(1) as usize;
+    while lines.len() < footer_row {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        pad(" j/k move · ↵ open · a/esc close".to_string()),
+        header,
+    )));
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The `?` help overlay: a centered bordered panel listing every hotkey.
@@ -2186,6 +2236,47 @@ mod tests {
         assert_eq!(v.subagent_at(1).map(|s| s.blocks.len()), Some(2));
     }
 
+    /// A still-RUNNING agent (no completion yet, so its child transcript isn't loaded into
+    /// `blocks`) still shows the `↵ id` descend affordance and descends on Enter/click —
+    /// the child loads lazily at descend time. Regression: a live agent used to be
+    /// unreachable because the affordance was gated on `!blocks.is_empty()`.
+    #[test]
+    fn running_agent_with_no_loaded_child_still_descends() {
+        use crate::model::{AgentStatus, SubAgent};
+        let sa = Block::SubAgent(SubAgent {
+            agent_id: "aLIVE".into(),
+            tool_use_id: "t".into(),
+            agent_type: "gp".into(),
+            description: "d".into(),
+            prompt: "p".into(),
+            status: AgentStatus::AsyncLaunched, // running, not terminal
+            result: None,
+            output_file: None,
+            blocks: vec![], // child transcript not loaded yet
+            subtree_cost: None,
+        });
+        let mut v = View::new(
+            vec![Block::UserText("root".into()), sa],
+            "t",
+            true,
+            FoldPolicy::default(),
+        );
+        draw(&mut v, 120, 20);
+        // The affordance is present even with an empty child.
+        let Block::SubAgent(spawn) = &v.blocks[1] else {
+            unreachable!()
+        };
+        assert!(
+            crate::render::agent_id_span(spawn).is_some(),
+            "running agent shows the ↵ id descend target"
+        );
+        // It counts as active (footer `a active N` + `a` popup).
+        assert_eq!(v.active_children(), 1);
+        // Enter descends (the caller loads the child lazily); no fold mutation.
+        v.focus_block(1);
+        assert_eq!(v.activate_focused(), Some(Action::Descend(1)));
+    }
+
     /// The footer sheds least-important segments first (cached → % → model → in → out →
     /// duration → cost); the nav labels, live-state, and the id never drop (the id
     /// truncates last). The key-hint run lives outside the shed set entirely.
@@ -2278,6 +2369,34 @@ mod tests {
         assert!(v.can_open_agents());
         v.open_agents_popup();
         assert!(v.agents_popup_open());
+        // The overlay renders full-frame: header at the top, the running agent as a row,
+        // and the key-hint bar pinned to the bottom.
+        let buf = draw(&mut v, 80, 20);
+        assert!(
+            row(&buf, 0).contains("active sub-agents") && row(&buf, 0).contains("1 running"),
+            "header: {:?}",
+            row(&buf, 0)
+        );
+        assert!(
+            row(&buf, 1).contains("aRUN"),
+            "agent row: {:?}",
+            row(&buf, 1)
+        );
+        assert!(
+            row(&buf, 19).contains("open") && row(&buf, 19).contains("close"),
+            "footer: {:?}",
+            row(&buf, 19)
+        );
+        // A mouse click on the agent's row (row 1 — header is row 0) descends into it.
+        assert_eq!(
+            v.agents_popup_click(1),
+            PopupClick::Descend(1),
+            "clicking the row descends into the running child"
+        );
+        // A click on the header row (0) is swallowed — never leaks to the content.
+        v.open_agents_popup();
+        assert_eq!(v.agents_popup_click(0), PopupClick::Border);
+        assert!(v.agents_popup_open(), "stray click keeps the popup open");
         // Confirm descends into the running child (block index 1), and closes the popup.
         assert_eq!(v.agents_popup_confirm(), Some(1));
         assert!(!v.agents_popup_open());
