@@ -510,6 +510,15 @@ The residual diff is **not** decision-free rendering:
   parse API (`parse_session(path) -> Session { blocks, metrics, agents }`), the two
   renderers reduced to formatters over it, and a doc/example of third-party use.
 
+- [ ] **Download transcripts from web / desktop sources.** *(Queued 2026-07-25;
+  research in `design/transcript-sources.md`.)* Today the viewer reads local `.jsonl`
+  (Claude Code CLI `~/.claude/projects`, Codex CLI). Investigate pulling transcripts from:
+  Claude **web** (claude.ai — ref: simonw's `claude-code-transcripts`), Claude **Design**,
+  Claude Code / **cowork** in the **desktop app**, and **Codex web**. For each: is there
+  an export/download path (official API, share-link JSON, local desktop store, or DOM
+  scrape), what auth it needs, the on-disk/wire format, and how it maps to our block
+  model. Feasibility + a recommended acquisition path per source; build only after.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
