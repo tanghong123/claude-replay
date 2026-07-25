@@ -65,6 +65,11 @@ pub enum Block {
     /// viewer used to drop these) so the reader can **download** embedded content or
     /// **reveal** a path-only reference in the file manager. See `Attachment`.
     Attachment(Attachment),
+    /// An `Agent`/`Task` spawn of a sub-agent. Collapsed it reads like an ordinary
+    /// `⏺ Agent(type: description)` tool line (in the agent hue); expanded it adds the
+    /// prompt, the result, and one selectable row per spawned agent id — activating a
+    /// row descends into that agent's transcript (`blocks`). See `SubAgent`.
+    SubAgent(SubAgent),
     /// A slash command (e.g. `/compact`) and its local stdout. Rendered like
     /// Claude Code's `❯ /command` header + dim `⎿ output` lines, folded by
     /// default. Parsed from the `<command-name>`/`<command-args>`/
@@ -107,6 +112,81 @@ pub enum AttachmentContent {
     Base64 { mime: String, b64: String },
 }
 
+/// A spawned sub-agent (`Agent`/`Task` tool). The spawn's `input` gives
+/// `agent_type`/`description`/`prompt`; its `tool_result`'s `toolUseResult` gives
+/// `agent_id`/`status`/`result`/`output_file`; a later `<task-notification>` keyed by
+/// `tool_use_id` (or `agent_id`) supplies the terminal status. `blocks` is the child
+/// transcript (`subagents/agent-<id>.jsonl`), parsed by the same `parse_main` and
+/// filled in by the path-aware wrapper; nested `SubAgent`s inside it are grandchildren.
+#[derive(Debug, Clone)]
+pub struct SubAgent {
+    /// The child's agent id (== the completion notification's `task-id`; file stem).
+    pub agent_id: String,
+    /// The spawn `Agent` tool_use id — the primary join key to the completion event.
+    pub tool_use_id: String,
+    pub agent_type: String,
+    pub description: String,
+    /// The spawn prompt (the child's first user message, byte-equal).
+    pub prompt: String,
+    pub status: AgentStatus,
+    /// The agent's returned text — inline for a sync spawn, from the completion
+    /// notification's `<result>` / `output_file` / the child's final message otherwise.
+    pub result: Option<String>,
+    /// For an async spawn, the `tasks/agent-<id>.output` path (result lands here).
+    pub output_file: Option<String>,
+    /// The child transcript, parsed via `parse_main`. Empty until the path-aware
+    /// wrapper resolves `subagents/agent-<id>.jsonl` (absent for a copied `.jsonl`).
+    pub blocks: Vec<Block>,
+    /// This agent's own cost plus all descendants', rolled up. `None` if unknown.
+    pub subtree_cost: Option<f64>,
+}
+
+/// A sub-agent's lifecycle state. Launched states come from the spawn's
+/// `toolUseResult.status`; terminal states from its completion `<task-notification>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Spawned synchronously and still shown running (no result yet seen).
+    Running,
+    /// Spawned in the background (`toolUseResult.status == "async_launched"`).
+    AsyncLaunched,
+    Completed,
+    Failed,
+    Killed,
+    Stopped,
+}
+
+impl AgentStatus {
+    /// Parse a `toolUseResult.status` / notification `<status>` string.
+    pub fn from_status(s: &str) -> Option<Self> {
+        Some(match s {
+            "async_launched" => Self::AsyncLaunched,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "killed" => Self::Killed,
+            "stopped" => Self::Stopped,
+            _ => return None,
+        })
+    }
+    /// A terminal state — no more activity expected (drives "running" animation off).
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Killed | Self::Stopped
+        )
+    }
+    /// Short label for the collapsed spawn line / footer.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::AsyncLaunched => "running",
+            Self::Completed => "done",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`
 /// and the default fold policy are keyed on these (see `view`).
 pub fn fold_key(b: &Block) -> &'static str {
@@ -117,6 +197,7 @@ pub fn fold_key(b: &Block) -> &'static str {
         Block::Thinking { .. } => "thinking",
         Block::ToolResult(_) => "tool_result",
         Block::Attachment(_) => "attachment",
+        Block::SubAgent(_) => "agent",
         Block::Command { .. } => "command",
         Block::ToolUse { name, .. } => tool_fold_key(name),
     }
@@ -535,6 +616,21 @@ pub fn parse_for(agent: Agent, jsonl: &str, args: &Args) -> Vec<Block> {
 /// whole-file `Vec<Value>` (~5–8× the file in RAM) or a whole-file `String`. See
 /// `STREAMING-PARSE-DESIGN.md`.
 pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Block>> {
+    let mut blocks = parse_file(path, args)?;
+    // Load each spawned sub-agent's child transcript (recursively) so a `SubAgent`
+    // block can be descended into and its subtree cost rolled up. All of a session's
+    // agents — any depth — share one flat `<session>/subagents/` dir (they share the
+    // session id), so one dir resolves the whole tree.
+    if let Some(dir) = subagents_dir(path) {
+        enrich_subagents(&mut blocks, &dir, args);
+    }
+    Ok(blocks)
+}
+
+/// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw
+/// pass. `parse_path` wraps this with `enrich_subagents`; the recursion reuses this so
+/// grandchildren resolve against the same session `subagents/` dir.
+fn parse_file(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Block>> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
@@ -546,6 +642,61 @@ pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Bl
         args,
         &mut Vec::new(),
     ))
+}
+
+/// The `<project>/<sessionId>/subagents/` dir for a transcript at
+/// `<project>/<sessionId>.jsonl`, if it exists on disk.
+fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let stem = path.file_stem()?.to_str()?;
+    let dir = path.parent()?.join(stem).join("subagents");
+    dir.is_dir().then_some(dir)
+}
+
+/// Fill each `SubAgent` block's `blocks` (child transcript) + `subtree_cost` by parsing
+/// `<sadir>/agent-<id>.jsonl`, recursing into grandchildren against the same `sadir`.
+/// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
+/// never a dead affordance.
+fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path, args: &Args) {
+    for b in blocks.iter_mut() {
+        if let Block::SubAgent(sa) = b {
+            if sa.agent_id.is_empty() {
+                continue;
+            }
+            let child = sadir.join(format!("agent-{}.jsonl", sa.agent_id));
+            let Ok(mut cb) = parse_file(&child, args) else {
+                continue;
+            };
+            enrich_subagents(&mut cb, sadir, args); // grandchildren (same flat dir)
+                                                    // A child that ran to completion whose spawn only recorded `async_launched`
+                                                    // is done — the completion notification is the authority when present, but a
+                                                    // fully-parsed child is a safe fallback for a settled transcript.
+            if sa.status == AgentStatus::AsyncLaunched && !cb.is_empty() {
+                sa.status = AgentStatus::Completed;
+            }
+            sa.subtree_cost = subtree_cost(&child, &cb);
+            sa.blocks = cb;
+        }
+    }
+}
+
+/// A sub-agent's own cost (from its transcript's metrics) plus all descendants'
+/// rolled-up costs. `None` when neither is known.
+fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<f64> {
+    let own = std::fs::File::open(child_path).ok().and_then(|f| {
+        crate::metrics::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
+    });
+    let desc: f64 = child_blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) => sa.subtree_cost,
+            _ => None,
+        })
+        .sum();
+    match own {
+        Some(o) => Some(o + desc),
+        None if desc > 0.0 => Some(desc),
+        None => None,
+    }
 }
 
 /// Like `parse_path_for`, but also returns one wall-clock timestamp (epoch
@@ -617,20 +768,57 @@ fn scan_tool_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<Strin
 /// Fill a `tool_use` block's result fields (output / diff line numbers / read
 /// count) from its matching `tool_result`'s `toolUseResult` metadata + text.
 fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
-    if let Block::ToolUse {
-        name,
-        output,
-        patch,
-        read_lines,
-        ..
-    } = block
-    {
-        *output = tool_output(name, Some(tur), txt);
-        *patch = parse_patch(tur);
-        *read_lines = tur
-            .pointer("/file/numLines")
-            .and_then(|n| n.as_u64())
-            .map(|n| n as usize);
+    match block {
+        Block::ToolUse {
+            name,
+            output,
+            patch,
+            read_lines,
+            ..
+        } => {
+            *output = tool_output(name, Some(tur), txt);
+            *patch = parse_patch(tur);
+            *read_lines = tur
+                .pointer("/file/numLines")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as usize);
+        }
+        // An `Agent`/`Task` spawn's result: `toolUseResult` carries the agent id, the
+        // launch status, and (sync) the inline result or (async) the output-file path.
+        Block::SubAgent(sa) => {
+            if let Some(aid) = tur.get("agentId").and_then(|v| v.as_str()) {
+                sa.agent_id = aid.to_string();
+            }
+            if let Some(st) = tur
+                .get("status")
+                .and_then(|v| v.as_str())
+                .and_then(AgentStatus::from_status)
+            {
+                sa.status = st;
+            }
+            if let Some(of) = tur.get("outputFile").and_then(|v| v.as_str()) {
+                if !of.is_empty() {
+                    sa.output_file = Some(of.to_string());
+                }
+            }
+            // A synchronous spawn returns its answer inline; an async one returns only
+            // the "async_launched" marker here (the real result arrives in the completion
+            // notification / output-file), so it must NOT be captured as the result.
+            let inline = tur
+                .get("content")
+                .and_then(|v| v.as_str())
+                .filter(|c| !c.trim().is_empty())
+                .or_else(|| {
+                    Some(txt).filter(|t| {
+                        let t = t.trim();
+                        !t.is_empty() && t != "async_launched" && !t.starts_with("Launching")
+                    })
+                });
+            if let Some(c) = inline {
+                sa.result = Some(c.to_string());
+            }
+        }
+        _ => {}
     }
 }
 
@@ -696,6 +884,10 @@ fn parse_main<S: AsRef<str>>(
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
     let mut last_skill: Option<usize> = None;
+    // Agent-completion `<task-notification>` strings, collected as seen and applied to
+    // their `SubAgent` block after the loop (by `tool-use-id`, else `task-id`==agentId),
+    // before any block removal shifts `tool_slot`'s indices.
+    let mut completions: Vec<String> = Vec::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -757,14 +949,46 @@ fn parse_main<S: AsRef<str>>(
                             let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                             let input = blk.get("input").cloned().unwrap_or(Value::Null);
                             let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
-                            out.push(Block::ToolUse {
-                                name: name.to_string(),
-                                target: tool_target(&input, &cwd),
-                                diffs: extract_diffs(name, &input),
-                                output: None,
-                                patch: None,
-                                read_lines: None,
-                            });
+                            // An `Agent`/`Task` spawn becomes a `SubAgent` block (agent hue,
+                            // descendable). Its result back-patches the id/status/result.
+                            if name == "Agent" || name == "Task" {
+                                let s = |k: &str| {
+                                    input
+                                        .get(k)
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                };
+                                let agent_type = {
+                                    let t = s("subagent_type");
+                                    if t.is_empty() {
+                                        "agent".to_string()
+                                    } else {
+                                        t
+                                    }
+                                };
+                                out.push(Block::SubAgent(SubAgent {
+                                    agent_id: String::new(),
+                                    tool_use_id: id.to_string(),
+                                    agent_type,
+                                    description: s("description"),
+                                    prompt: s("prompt"),
+                                    status: AgentStatus::Running,
+                                    result: None,
+                                    output_file: None,
+                                    blocks: Vec::new(),
+                                    subtree_cost: None,
+                                }));
+                            } else {
+                                out.push(Block::ToolUse {
+                                    name: name.to_string(),
+                                    target: tool_target(&input, &cwd),
+                                    diffs: extract_diffs(name, &input),
+                                    output: None,
+                                    patch: None,
+                                    read_lines: None,
+                                });
+                            }
                             content_seq += 1;
                             let idx = out.len() - 1;
                             if name == "Skill" {
@@ -870,6 +1094,9 @@ fn parse_main<S: AsRef<str>>(
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
                         if let Some(c) = content {
+                            if is_agent_notification(c) {
+                                completions.push(c.to_string());
+                            }
                             let is_prose = is_queue_prose(c);
                             let marker_idx = if is_prose {
                                 out.push(Block::QueueEvent {
@@ -941,6 +1168,36 @@ fn parse_main<S: AsRef<str>>(
         }
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    // Apply agent-completion notifications to their `SubAgent` block — terminal status
+    // + inline result. MUST run before the `suppress` filter below removes blocks (which
+    // would invalidate `tool_slot`'s indices). Join by `tool-use-id`, else `task-id`.
+    if !completions.is_empty() {
+        let mut agent_slot: HashMap<String, usize> = HashMap::new();
+        for (i, b) in out.iter().enumerate() {
+            if let Block::SubAgent(sa) = b {
+                if !sa.agent_id.is_empty() {
+                    agent_slot.insert(sa.agent_id.clone(), i);
+                }
+            }
+        }
+        for note in &completions {
+            let idx = tag_inner(note, "tool-use-id")
+                .and_then(|t| tool_slot.get(t).copied())
+                .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
+            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
+                if let Some(st) = tag_inner(note, "status").and_then(AgentStatus::from_status) {
+                    sa.status = st;
+                }
+                if sa.result.is_none() {
+                    if let Some(r) = tag_inner(note, "result").map(str::trim) {
+                        if !r.is_empty() {
+                            sa.result = Some(r.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Drop the `⧗ queued:` markers of prompts picked up immediately (no agent work
     // between submit and pickup) — their `❯` turn alone conveys them. Prompts still
     // queued at the end keep their marker (a live `-f` session's in-flight input).
@@ -971,6 +1228,16 @@ struct QueueItem {
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
 // arm — it needs the block list, `content_seq`, and `suppress`.)
+
+/// Is this string an agent-completion `<task-notification>` — `summary` "Agent \"…\"
+/// finished" with a `status` — as opposed to a background-`Bash` or `Monitor` one?
+/// (Their task-id namespaces differ too: agents `a…`, background `b…`.)
+fn is_agent_notification(s: &str) -> bool {
+    tag_inner(s, "status").is_some()
+        && tag_inner(s, "summary")
+            .map(|sm| sm.trim_start().starts_with("Agent \""))
+            .unwrap_or(false)
+}
 
 /// A queued message worth showing as a pending human turn — genuine prose, not a
 /// background `<task-notification>`, an interrupt marker, or blank input.
@@ -1462,6 +1729,100 @@ mod tests {
 "#;
         let blocks = parse(jsonl, &args());
         assert_eq!(kinds(&blocks), vec!["tool_result"], "{blocks:?}");
+    }
+
+    /// An `Agent` spawn becomes exactly one `SubAgent` block (never a `ToolUse`),
+    /// carrying the input's type/description/prompt and the result's agent id; a later
+    /// agent completion `<task-notification>` (keyed by tool-use-id) flips the status to
+    /// terminal. Its fold key is "agent" and it is default-folded.
+    #[test]
+    fn agent_spawn_becomes_subagent_with_terminal_status() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"Review the rewrite","prompt":"Review render.rs"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review the rewrite\" finished</summary>\n<result>Two gaps found.</result>\n</task-notification>"}
+"##;
+        let blocks = parse(jsonl, &args());
+        // Exactly ONE spawn block, and it is a SubAgent (the one-spawn-per-node model).
+        assert_eq!(kinds(&blocks), vec!["agent"], "{blocks:?}");
+        let Block::SubAgent(sa) = &blocks[0] else {
+            panic!("not a SubAgent: {blocks:?}")
+        };
+        assert_eq!(sa.tool_use_id, "toolu_A");
+        assert_eq!(sa.agent_id, "aXYZ1234");
+        assert_eq!(sa.agent_type, "code-reviewer");
+        assert_eq!(sa.description, "Review the rewrite");
+        assert_eq!(sa.prompt, "Review render.rs");
+        assert_eq!(
+            sa.status,
+            AgentStatus::Completed,
+            "completion notification wins"
+        );
+        assert_eq!(sa.result.as_deref(), Some("Two gaps found."));
+        assert_eq!(fold_key(&blocks[0]), "agent");
+        // The default fold policy collapses the spawn block.
+        let pol = crate::view::FoldPolicy::from_args(&args());
+        assert!(pol.collapses(&blocks[0]), "agent block should default-fold");
+    }
+
+    /// `parse_path` loads each `SubAgent`'s child transcript from the flat
+    /// `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is **node-
+    /// scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
+    #[test]
+    fn enrich_loads_child_scoped_and_rolls_up_cost() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-subagent-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        // Parent: one Agent spawn; its own transcript has a Bash tool the child must NOT
+        // be credited with.
+        let parent = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_P","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}
+"##;
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        // Child transcript: two Read tools + model tokens (for a nonzero cost).
+        let child = r##"{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500},"content":[{"type":"tool_use","id":"c1","name":"Read","input":{"file_path":"/a"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"Read","input":{"file_path":"/b"}}]}}
+"##;
+        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
+
+        let blocks = parse_path(&sess, &args()).unwrap();
+        let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        assert!(
+            sa.blocks.len() >= 2,
+            "child transcript loaded: {}",
+            sa.blocks.len()
+        );
+        // Node-scoped tool count: the child's 2 Reads, not the parent's Bash.
+        assert!(
+            crate::render::agent_chip(sa).starts_with("2 tools"),
+            "chip: {}",
+            crate::render::agent_chip(sa)
+        );
+        assert!(
+            sa.subtree_cost.unwrap_or(0.0) > 0.0,
+            "subtree cost rolled up"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

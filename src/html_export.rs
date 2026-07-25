@@ -213,6 +213,7 @@ fn html_kind(b: &Block) -> &'static str {
         Block::UserText(_) => "user",
         Block::QueueEvent { .. } => "queue",
         Block::Attachment(_) => "attachment",
+        Block::SubAgent(_) => "agent",
         Block::AssistantText(_) => "assistant",
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
@@ -417,6 +418,28 @@ impl Emitter<'_> {
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
                 body.push(json!({ "p": "md", "h": md_html(text) }));
+            }
+            // A sub-agent spawn (kind "agent") — a fold whose header names the agent
+            // and whose body carries the prompt, agent id, and result. Full drill-down
+            // (child sections, `↓ Children`, hash routing) is a later stage; this makes
+            // the spawn render as an ordinary agent-hued fold for now.
+            Block::SubAgent(sa) => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("badge".into(), json!("Agent"));
+                head.insert(
+                    "preview".into(),
+                    json!(format!("{}: {}", sa.agent_type, sa.description)),
+                );
+                head.insert("chips".into(), json!([chip(crate::render::agent_chip(sa))]));
+                if !sa.prompt.trim().is_empty() {
+                    body.push(json!({ "p": "md", "h": md_html(&sa.prompt) }));
+                }
+                if !sa.agent_id.is_empty() {
+                    body.push(json!({ "p": "note", "x": format!("⏺ {}   {}", sa.agent_id, sa.agent_type) }));
+                }
+                if let Some(r) = &sa.result {
+                    body.push(json!({ "p": "md", "h": md_html(r) }));
+                }
             }
             Block::AssistantText(text) => {
                 o.insert("id".into(), json!(self.block_id()));

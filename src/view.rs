@@ -90,6 +90,7 @@ const FOLD_KEYS: &[&str] = &[
     "write",
     "tool",
     "skill",
+    "agent",
     "tool_result",
     "command",
 ];
@@ -135,6 +136,7 @@ impl Default for FoldPolicy {
                 "bash",
                 "tool",
                 "skill",
+                "agent",
                 "command",
                 "write",
             ]

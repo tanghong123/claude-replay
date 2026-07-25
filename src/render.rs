@@ -20,7 +20,54 @@ pub fn foldable(b: &Block) -> bool {
             | Block::ToolResult(_)
             | Block::Thinking { .. }
             | Block::Command { .. }
+            | Block::SubAgent(_)
     )
+}
+
+/// A one-line summary chip for a sub-agent spawn: `<N> tools · <status>` — the tool
+/// count comes from the child transcript (direct tool/agent calls), status from the
+/// lifecycle. Empty child (unresolved on disk) → just the status.
+pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
+    // Count every tool call, including activity tools absorbed into a `Thinking` turn
+    // (grouping folds Bash/Read/… into the following thinking block).
+    let tools: usize = sa
+        .blocks
+        .iter()
+        .map(|b| match b {
+            Block::ToolUse { .. } | Block::SubAgent(_) => 1,
+            Block::Thinking { tools, .. } => tools.len(),
+            _ => 0,
+        })
+        .sum();
+    if tools > 0 {
+        format!(
+            "{tools} tool{} · {}",
+            if tools == 1 { "" } else { "s" },
+            sa.status.label()
+        )
+    } else {
+        sa.status.label().to_string()
+    }
+}
+
+/// The collapsed spawn header: `⏺ Agent(<type>: <description>)  <chip>` in the agent
+/// hue. `focused` brightens the arg like any other foldable header.
+fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
+    let mark = theme::agent();
+    let arg = if focused {
+        Style::default().fg(theme::fold_header_focused())
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("⏺ ", mark),
+        Span::styled("Agent", mark),
+        Span::styled(format!("({}: {})", sa.agent_type, sa.description), arg),
+        Span::styled(
+            format!("  {}", agent_chip(sa)),
+            Style::default().fg(theme::fold_header()),
+        ),
+    ])
 }
 
 /// The `❯ /command [args]` header line for a slash-command block — styled like a
@@ -366,6 +413,40 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match b {
         Block::Attachment(a) => out.push(attachment_line(a)),
+        // Expanded sub-agent spawn: the agent-hue header, then the prompt, one
+        // selectable agent-id row (the descend target), and the result — all on the
+        // agent background tier.
+        Block::SubAgent(sa) => {
+            let bg = theme::agent_expanded_bg();
+            let res = theme::result().bg(bg);
+            let mut head = agent_header(sa, false);
+            for s in head.spans.iter_mut() {
+                s.style = s.style.bg(bg);
+            }
+            out.push(head);
+            if !sa.prompt.trim().is_empty() {
+                for (i, l) in sa.prompt.lines().enumerate() {
+                    let p = if i == 0 { "  ⎿  " } else { "     " };
+                    out.push(Line::from(Span::styled(format!("{p}{l}"), res)));
+                }
+            }
+            let id = if sa.agent_id.is_empty() {
+                "agent (pending)".to_string()
+            } else {
+                sa.agent_id.clone()
+            };
+            out.push(Line::from(vec![
+                Span::styled("  ⎿  ⏺ ", res),
+                Span::styled(id, theme::agent().bg(bg)),
+                Span::styled(format!("   {}   {}", sa.agent_type, agent_chip(sa)), res),
+            ]));
+            if let Some(r) = &sa.result {
+                for (i, l) in r.lines().enumerate() {
+                    let p = if i == 0 { "  ⎿  " } else { "     " };
+                    out.push(Line::from(Span::styled(format!("{p}{l}"), res)));
+                }
+            }
+        }
         Block::UserText(t) => {
             // A full-width grey block like Claude Code: a dim `❯` caret on the
             // first line (continuation lines indent two spaces to align under it),
@@ -915,6 +996,7 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
             Style::default().fg(theme::fold_header()),
         ),
+        Block::SubAgent(sa) => agent_header(sa, false),
         Block::Attachment(a) => attachment_line(a),
         Block::AssistantText(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
@@ -946,6 +1028,15 @@ fn body_len(b: &Block) -> usize {
             t.lines().count().saturating_sub(1)
         }
         Block::Attachment(_) => 0, // one-line marker; not foldable
+        Block::SubAgent(sa) => {
+            let p = if sa.prompt.trim().is_empty() {
+                0
+            } else {
+                sa.prompt.lines().count()
+            };
+            let r = sa.result.as_deref().map_or(0, |r| r.lines().count());
+            p + 1 + r // prompt lines + the agent row + result lines
+        }
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),

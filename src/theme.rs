@@ -15,6 +15,17 @@ pub fn thinking() -> Style {
     // CC's `✻` thinking summary is mid-grey (256-color 246).
     Style::default().fg(Color::Indexed(246))
 }
+/// A spawned sub-agent (`Agent`/`Task`) — a purple hue (256-colour 141), deliberately
+/// not the tool green, so a spawn reads as a different class of event while scrolling.
+pub fn agent() -> Style {
+    Style::default().fg(Color::Indexed(141))
+}
+/// Background block behind an *expanded* sub-agent spawn foldable — a faint purple,
+/// sitting between `focus_bg` and `shell_expanded_bg` on the prominence ladder so the
+/// agent hue stays legible over it.
+pub fn agent_expanded_bg() -> Color {
+    Color::Rgb(58, 50, 74)
+}
 pub fn tool() -> Style {
     // CC's `⏺` tool-call marker + tool name are green (256-color 114).
     Style::default().fg(Color::Indexed(114))
