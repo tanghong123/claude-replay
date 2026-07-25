@@ -785,6 +785,12 @@ fn parse_main<S: AsRef<str>>(
                                     }
                                 }
                             }
+                            // A pasted image (a top-level image block in the prompt).
+                            Some("image") => {
+                                if let Some(att) = image_attachment(blk) {
+                                    out.push(Block::Attachment(att));
+                                }
+                            }
                             Some("tool_result") => {
                                 let tid = blk
                                     .get("tool_use_id")
@@ -800,6 +806,15 @@ fn parse_main<S: AsRef<str>>(
                                 } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
                                     // No tool_use anywhere — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
+                                }
+                                // A tool result may also carry image(s) (e.g. reading a
+                                // screenshot) — surface each as a downloadable attachment.
+                                if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
+                                    for item in items {
+                                        if let Some(att) = image_attachment(item) {
+                                            out.push(Block::Attachment(att));
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -995,6 +1010,37 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
         }
         _ => None,
     }
+}
+
+/// Build an image [`Attachment`] from an `{type:"image", source:{type:"base64",…}}`
+/// content block (a pasted image, or a tool result that returned one). Images are not
+/// `attachment` events — they ride inside message/tool-result content — so this is a
+/// separate path from [`attachment_from_event`]. `None` for non-image / non-base64.
+fn image_attachment(blk: &Value) -> Option<Attachment> {
+    if blk.get("type").and_then(|t| t.as_str()) != Some("image") {
+        return None;
+    }
+    let src = blk.get("source")?;
+    if src.get("type").and_then(|t| t.as_str()) != Some("base64") {
+        return None;
+    }
+    let b64 = src.get("data").and_then(|d| d.as_str())?.to_string();
+    let mime = src
+        .get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("image/png")
+        .to_string();
+    let ext = mime
+        .rsplit('/')
+        .next()
+        .filter(|e| !e.is_empty())
+        .unwrap_or("png");
+    Some(Attachment {
+        kind: "image",
+        name: format!("image.{ext}"),
+        path: None,
+        content: Some(AttachmentContent::Base64 { mime, b64 }),
+    })
 }
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
@@ -1244,6 +1290,37 @@ mod tests {
             file_text,
             Some(AttachmentContent::Text(t)) if t == "# Backlog\nitem"
         ));
+    }
+
+    /// Base64 images surface as downloadable `Block::Attachment`s from both paths: a
+    /// top-level image block in a prompt, and an image inside a tool result (e.g.
+    /// reading a screenshot). Images ride in message/tool-result content, NOT in
+    /// `attachment` events.
+    #[test]
+    fn base64_images_surface_from_prompt_and_tool_result() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"text","text":"look at this"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/shot.png"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}}]}]}}
+"##;
+        let blocks = parse(jsonl, &args());
+        let imgs: Vec<(&str, &str)> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Attachment(a) if a.kind == "image" => match &a.content {
+                    Some(AttachmentContent::Base64 { mime, .. }) => {
+                        Some((a.name.as_str(), mime.as_str()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            imgs,
+            vec![("image.png", "image/png"), ("image.jpeg", "image/jpeg")],
+            "{blocks:?}"
+        );
     }
 
     /// A user message with no visible character — only whitespace or a control
