@@ -50,8 +50,9 @@ pub(crate) fn agent_chip(sa: &crate::model::SubAgent) -> String {
     }
 }
 
-/// The collapsed spawn header: `⏺ Agent(<type>: <description>)  <chip>` in the agent
-/// hue. `focused` brightens the arg like any other foldable header.
+/// The collapsed spawn header: `⏺ Agent(<type>: <description>)  <chip>  ↵ <agent-id>` in
+/// the agent hue. The `↵ <agent-id>` is the DESCEND target — clicking it opens the child;
+/// clicking anywhere else on the header just folds. `focused` brightens the arg.
 fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
     let mark = theme::agent();
     let arg = if focused {
@@ -59,7 +60,7 @@ fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
     } else {
         Style::default()
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled("⏺ ", mark),
         Span::styled("Agent", mark),
         Span::styled(format!("({}: {})", sa.agent_type, sa.description), arg),
@@ -67,7 +68,39 @@ fn agent_header(sa: &crate::model::SubAgent, focused: bool) -> Line<'static> {
             format!("  {}", agent_chip(sa)),
             Style::default().fg(theme::fold_header()),
         ),
-    ])
+    ];
+    // The agent id is the sole descend affordance (link-styled), present only when the
+    // child transcript is on disk to descend into.
+    if !sa.agent_id.is_empty() && !sa.blocks.is_empty() {
+        spans.push(Span::styled(
+            "  ↵ ",
+            Style::default().fg(theme::fold_header()),
+        ));
+        spans.push(Span::styled(
+            sa.agent_id.clone(),
+            theme::agent().add_modifier(Modifier::UNDERLINED),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The column span of the descend-target agent id in the collapsed spawn header (for
+/// mouse hit-testing), or `None` if there's no descendable child. Must match the prefix
+/// `agent_header` renders before the id.
+pub(crate) fn agent_id_span(sa: &crate::model::SubAgent) -> Option<(usize, usize)> {
+    use unicode_width::UnicodeWidthStr;
+    if sa.agent_id.is_empty() || sa.blocks.is_empty() {
+        return None;
+    }
+    let prefix = format!(
+        "⏺ Agent({}: {})  {}  ↵ ",
+        sa.agent_type,
+        sa.description,
+        agent_chip(sa)
+    );
+    let start = UnicodeWidthStr::width(prefix.as_str());
+    let end = start + UnicodeWidthStr::width(sa.agent_id.as_str());
+    Some((start, end))
 }
 
 /// The `❯ /command [args]` header line for a slash-command block — styled like a
@@ -430,16 +463,6 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                     out.push(Line::from(Span::styled(format!("{p}{l}"), res)));
                 }
             }
-            let id = if sa.agent_id.is_empty() {
-                "agent (pending)".to_string()
-            } else {
-                sa.agent_id.clone()
-            };
-            out.push(Line::from(vec![
-                Span::styled("  ⎿  ⏺ ", res),
-                Span::styled(id, theme::agent().bg(bg)),
-                Span::styled(format!("   {}   {}", sa.agent_type, agent_chip(sa)), res),
-            ]));
             if let Some(r) = &sa.result {
                 for (i, l) in r.lines().enumerate() {
                     let p = if i == 0 { "  ⎿  " } else { "     " };

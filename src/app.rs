@@ -262,10 +262,18 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
-    // The child's footer carries its rolled-up subtree cost (full token metrics would
-    // need a re-read of the child file; the cost is already computed at parse time).
+    // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
+    // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped.
     let mut segs = vec![(agent_type, 3u8)];
+    if let Some(cf) = &child_file {
+        if let Ok(f) = std::fs::File::open(cf) {
+            let m = crate::metrics::parse_reader_for(parent.agent, std::io::BufReader::new(f));
+            segs = m.footer_segments();
+        }
+    }
+    // Prefer the subtree cost (child + descendants) over the child's own cost segment.
     if let Some(cost) = subtree_cost {
+        segs.retain(|(t, _)| !t.starts_with("~$"));
         segs.push((format!("~${cost:.2}"), 7));
     }
     view.set_footer_segments(segs);
@@ -462,16 +470,26 @@ fn event_loop<B: ratatui::backend::Backend>(
                         }
                     } else {
                         view.clear_selection();
-                        if (m.row as usize) < view.content_rows() {
+                        view.clear_flash();
+                        let row = m.row as usize;
+                        if row < view.content_rows() {
                             // A click activates whatever it lands on: descend a sub-agent,
                             // download/reveal an attachment (or a tool-header path), else fold.
-                            view.clear_flash();
                             match view.click_at(m.row, m.column) {
                                 Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
                                 Some(crate::view::Action::Descend(idx)) => {
                                     return Ok(Outcome::Descend(idx))
                                 }
                                 None => {}
+                            }
+                        } else if row == view.content_rows() {
+                            // Footer row: the nav labels are click targets.
+                            match view.footer_click(m.column as usize) {
+                                crate::view::FooterHit::EscBack if descended => {
+                                    return Ok(Outcome::Ascend)
+                                }
+                                crate::view::FooterHit::ActiveAgents => view.open_agents_popup(),
+                                _ => {}
                             }
                         }
                     }

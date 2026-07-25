@@ -305,6 +305,14 @@ fn cols_of_line(line: &Line<'static>, c0: usize, c1: usize) -> String {
 /// What activating the focused block (Enter, or a click) asks the caller to do — the
 /// action can't complete inside `View` (revealing a path is an OS call; descending
 /// into a sub-agent pushes a new `View` on the app's stack).
+/// Which clickable footer label a footer-row click landed on.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FooterHit {
+    EscBack,
+    ActiveAgents,
+    None,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     /// Reveal this path in the OS file manager (a tool-header path / path-only attachment).
@@ -730,31 +738,47 @@ impl View {
         let idx = self.scroll + row as usize;
         let &b = self.wrapped_tag.get(idx)?;
         self.focus = Some(b);
-        // A control inside a header owns its click: a tool-header path reveals its file
-        // and must NOT also toggle/descend the block — return before the fold branch runs
-        // (a branch already run can't be undone by `stopPropagation`).
+        // A control inside a header owns its click and must NOT also fold the block (a
+        // branch already run can't be undone by `stopPropagation`): a tool-header path
+        // reveals its file; a spawn's agent-id descends into the child.
         if let Some(path) = self.header_path_hit(b, idx, col as usize) {
             return Some(Action::Reveal(path));
+        }
+        if self.agent_id_hit(b, idx, col as usize) {
+            return Some(Action::Descend(b));
+        }
+        // A mouse click elsewhere on a spawn header just FOLDS it (only the agent id
+        // descends); other blocks do their normal activation.
+        if matches!(self.blocks.get(b), Some(Block::SubAgent(_))) {
+            self.toggle_block(b);
+            return None;
         }
         self.activate_block(b)
     }
 
-    /// Perform block `b`'s primary action, returning what the caller must do at a higher
-    /// layer. A [`Block::SubAgent`] with a loaded child: a collapsed spawn **expands**
-    /// (revealing its prompt/result/agent-id row), an expanded one **descends**
-    /// (`Action::Descend`). An [`Attachment`] downloads (flashed) or reveals its path
-    /// (`Action::Reveal`). Any other block toggles its fold (returns `None`).
+    /// Is the click at `(idx, col)` on a spawn header's descend-target agent id?
+    fn agent_id_hit(&self, b: usize, idx: usize, col: usize) -> bool {
+        // Only the header's own first row carries the id.
+        if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
+            return false;
+        }
+        let Some(Block::SubAgent(sa)) = self.blocks.get(b) else {
+            return false;
+        };
+        matches!(render::agent_id_span(sa), Some((s, e)) if col >= s && col < e)
+    }
+
+    /// The KEYBOARD (`Enter`) action for block `b`. A [`Block::SubAgent`] with a loaded
+    /// child **descends** directly (Space still folds it); an [`Attachment`] downloads
+    /// (flashed) or reveals its path; any other block toggles its fold.
     fn activate_block(&mut self, b: usize) -> Option<Action> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => {
                 if sa.blocks.is_empty() {
                     self.toggle_block(b); // no child transcript on disk → just fold
                     None
-                } else if self.collapsed.get(b).copied().unwrap_or(false) {
-                    self.toggle_block(b); // first activation: expand to show the agent row
-                    None
                 } else {
-                    Some(Action::Descend(b)) // second: descend into the agent's transcript
+                    Some(Action::Descend(b))
                 }
             }
             Some(Block::Attachment(a)) => {
@@ -891,6 +915,28 @@ impl View {
     /// message doesn't linger).
     pub fn clear_flash(&mut self) {
         self.flash = None;
+    }
+
+    /// Which footer nav label a click at column `col` on the footer row lands on — so a
+    /// click on `↑ esc back` ascends and one on `a active N` opens the popup, matching
+    /// the label order `status_line` builds.
+    pub fn footer_click(&self, col: usize) -> FooterHit {
+        let mut c = 1usize; // leading space
+        if self.descended {
+            let w = "↑ esc back".chars().count();
+            if col >= c && col < c + w {
+                return FooterHit::EscBack;
+            }
+            c += w + 3; // " · "
+        }
+        let active = self.active_children();
+        if active > 0 {
+            let w = format!("a active {active}").chars().count();
+            if col >= c && col < c + w {
+                return FooterHit::ActiveAgents;
+            }
+        }
+        FooterHit::None
     }
     /// Hover: focus the foldable block under a content row (mouse move).
     pub fn hover_row(&mut self, row: u16) {
@@ -2070,12 +2116,11 @@ mod tests {
         );
     }
 
-    /// A sub-agent spawn is a two-step target: the first activation EXPANDS it (revealing
-    /// its agent-id row), the second DESCENDS (`Action::Descend`). Returning (`focus_block`)
-    /// lands on the spawn without mutating any fold state — the parent `View` is kept
-    /// alive across a descend, so its folds are exactly as left.
+    /// Keyboard `Enter` on a focused spawn DESCENDS directly (Space still folds); a
+    /// mouse click on the header FOLDS, while a click on the agent-id descends. Returning
+    /// (`focus_block`) lands on the spawn without mutating any fold state.
     #[test]
-    fn subagent_activate_expands_then_descends_preserving_folds() {
+    fn subagent_enter_descends_click_header_folds_agentid_descends() {
         use crate::model::{AgentStatus, SubAgent};
         let sa = Block::SubAgent(SubAgent {
             agent_id: "aXYZ".into(),
@@ -2102,26 +2147,42 @@ mod tests {
         };
         let blocks = vec![Block::UserText("root".into()), sa, bash];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
-        draw(&mut v, 80, 20);
-        // The first focusable is the SubAgent (index 1); it default-folds ("agent" key).
+        draw(&mut v, 120, 20);
         v.focus_next();
         assert_eq!(v.focused_block(), Some(1));
         assert!(v.is_collapsed(1), "spawn starts collapsed");
-        // First activation expands (no descend yet); the Bash fold is untouched.
-        assert_eq!(v.activate_focused(), None);
-        assert!(!v.is_collapsed(1), "first Enter expands the spawn");
-        assert!(v.is_collapsed(2), "Bash fold unchanged");
-        // Second activation descends.
+        // Enter descends directly — no expand step — and doesn't mutate any fold state.
         assert_eq!(v.activate_focused(), Some(Action::Descend(1)));
-        // Returning lands on the spawn and does NOT re-collapse it or touch other folds.
+        assert!(
+            v.is_collapsed(1),
+            "descend must not mutate the spawn's fold"
+        );
+        assert!(v.is_collapsed(2), "other folds untouched");
+
+        // Mouse: a click on the header (not the id) FOLDS/expands; a click on the agent
+        // id descends. Locate the spawn's header row + the id column span.
+        let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        let Block::SubAgent(spawn) = &v.blocks[1] else {
+            unreachable!()
+        };
+        let (ids, ide) = crate::render::agent_id_span(spawn).expect("id span");
+        // Click on the header caret (col 0) toggles the fold, does not descend.
+        assert_eq!(v.click_at(row, 0), None, "header click folds, not descends");
+        assert!(!v.is_collapsed(1), "header click expanded it");
+        // Re-collapse so the id is on the header row again, then click the id → descend.
+        v.click_at(row, 0);
+        assert!(v.is_collapsed(1));
+        let mid = ((ids + ide) / 2) as u16;
+        assert_eq!(
+            v.click_at(row, mid),
+            Some(Action::Descend(1)),
+            "clicking the agent id descends"
+        );
+
+        // Returning lands on the spawn without touching folds.
         v.focus_block(1);
         assert_eq!(v.focused_block(), Some(1));
-        assert!(
-            !v.is_collapsed(1),
-            "return must not mutate the spawn's fold state"
-        );
-        assert!(v.is_collapsed(2), "return must not touch other folds");
-        // The descend target's child transcript is available to the caller.
+        assert!(v.is_collapsed(1), "return must not mutate the spawn's fold");
         assert_eq!(v.subagent_at(1).map(|s| s.blocks.len()), Some(2));
     }
 
