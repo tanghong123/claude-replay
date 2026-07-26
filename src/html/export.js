@@ -209,8 +209,14 @@
         ac.appendChild(el("span", "acaret", "▤"));
         ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
         var an = el("span", "aname", h.att_name || "attachment");
-        var text = h.att_text, datauri = h.att_datauri, path = h.att_path;
-        if (text != null || datauri != null) {
+        var text = h.att_text, datauri = h.att_datauri, path = h.att_path, href = h.att_href;
+        if (href != null) {
+            // Offline bundle: the bytes live at assets/<file>; link straight to them.
+            an = el("a", "aname adl", h.att_name || "attachment");
+            an.href = href;
+            an.download = h.att_name || "attachment";
+            an.title = "download";
+        } else if (text != null || datauri != null) {
             an.classList.add("adl");
             an.title = "download";
             an.onclick = function () {

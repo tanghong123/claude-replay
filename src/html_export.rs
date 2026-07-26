@@ -388,10 +388,77 @@ struct Emitter<'a> {
     /// blocks? True for the multi-file modes (`--dump-all-html`, served) where each agent
     /// has its own stream to navigate to; false for the single-file `--dump-html`.
     linked: bool,
+    /// Materialize embedded attachments into `<bundle>/assets/` and link the block to the
+    /// written file? Set only for the offline `--dump-all-html` bundle (portable + offline
+    /// downloadable); `None` for served (`reveal` Blob/data-URI) and single-file exports.
+    assets: Option<&'a mut AssetSink>,
     next_block: usize,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
     turns: Vec<(String, String)>,
+}
+
+/// De-conflicting writer for embedded attachments in an offline bundle: materializes each
+/// attachment into `<bundle>/assets/` under a unique filename and returns its relative
+/// `assets/<name>` href. Names that collide across the tree get a `-N` suffix.
+struct AssetSink {
+    dir: std::path::PathBuf,
+    used: std::collections::HashMap<String, usize>,
+}
+
+impl AssetSink {
+    fn new(bundle_dir: &Path) -> std::io::Result<Self> {
+        let dir = bundle_dir.join("assets");
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self {
+            dir,
+            used: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Write `content` under a unique name derived from `name`/`path`; return the
+    /// `assets/<file>` href, or `None` if the bytes couldn't be written.
+    fn materialize(
+        &mut self,
+        name: &str,
+        path: Option<&str>,
+        content: &AttachmentContent,
+    ) -> Option<String> {
+        let bytes: Vec<u8> = match content {
+            AttachmentContent::Text(t) => t.clone().into_bytes(),
+            AttachmentContent::Base64 { b64, .. } => crate::clipboard::base64_decode(b64)?,
+        };
+        // Basename only (no traversal); ensure an extension for images.
+        let raw = path.unwrap_or(name);
+        let mut base = Path::new(raw)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        if base.is_empty() {
+            base = "attachment".into();
+        }
+        if let AttachmentContent::Base64 { mime, .. } = content {
+            if !base.contains('.') {
+                if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
+                    base = format!("{base}.{ext}");
+                }
+            }
+        }
+        // De-conflict: first use keeps the name, later ones get `-N` before the extension.
+        let n = self.used.entry(base.clone()).or_insert(0);
+        let fname = if *n == 0 {
+            base.clone()
+        } else {
+            match base.rsplit_once('.') {
+                Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
+                None => format!("{base}-{n}"),
+            }
+        };
+        *n += 1;
+        std::fs::write(self.dir.join(&fname), &bytes).ok()?;
+        Some(format!("assets/{fname}"))
+    }
 }
 
 impl Emitter<'_> {
@@ -523,6 +590,14 @@ impl Emitter<'_> {
                             );
                         }
                         None => {}
+                    }
+                } else if let (Some(sink), Some(content)) =
+                    (self.assets.as_deref_mut(), a.content.as_ref())
+                {
+                    // Offline bundle: write the embedded bytes into `assets/` and link the
+                    // block to the file (a real offline download), de-conflicting names.
+                    if let Some(href) = sink.materialize(&a.name, a.path.as_deref(), content) {
+                        head.insert("att_href".into(), json!(href));
                     }
                 }
             }
@@ -689,11 +764,28 @@ fn build_jsonl(
     linked: bool,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
+    build_jsonl_inner(blocks, user_times, fold, cwd, reveal, linked, None, meta)
+}
+
+/// [`build_jsonl`] with an optional [`AssetSink`] — the offline bundle threads one through
+/// so each stream materializes its attachments into a shared, de-conflicted `assets/` dir.
+#[allow(clippy::too_many_arguments)]
+fn build_jsonl_inner(
+    blocks: &[Block],
+    user_times: &[Option<f64>],
+    fold: &FoldPolicy,
+    cwd: &str,
+    reveal: bool,
+    linked: bool,
+    assets: Option<&mut AssetSink>,
+    meta: Value,
+) -> (String, Vec<(String, String)>) {
     let mut em = Emitter {
         fold,
         cwd,
         reveal,
         linked,
+        assets,
         next_block: 0,
         turn: 0,
         turns: Vec::new(),
@@ -1087,6 +1179,7 @@ fn node_streams(
     args: &Args,
     fold: &FoldPolicy,
     reveal: bool,
+    mut assets: Option<&mut AssetSink>,
 ) -> Result<(String, Vec<(String, String)>)> {
     let (blocks, user_times) = crate::model::parse_path_timed_enriched_for(agent, path, args)
         .with_context(|| format!("read transcript {}", path.display()))?;
@@ -1112,7 +1205,16 @@ fn node_streams(
             "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
         },
     });
-    let (root_jsonl, _) = build_jsonl(&blocks, &user_times, fold, &cwd, reveal, true, root_meta);
+    let (root_jsonl, _) = build_jsonl_inner(
+        &blocks,
+        &user_times,
+        fold,
+        &cwd,
+        reveal,
+        true,
+        assets.as_deref_mut(),
+        root_meta,
+    );
     let mut streams = vec![(root_id.clone(), root_jsonl)];
 
     let mut nodes = Vec::new();
@@ -1128,7 +1230,16 @@ fn node_streams(
             "cwd": &cwd, "turns": count_turns(&n.blocks), "tools": count_tools(&n.blocks),
             "agent_type": &n.agent_type, "usage": { "cost": n.cost.map(|c| format!("${c:.2}")) },
         });
-        let (cj, _) = build_jsonl(&n.blocks, &[], fold, &cwd, reveal, true, child_meta);
+        let (cj, _) = build_jsonl_inner(
+            &n.blocks,
+            &[],
+            fold,
+            &cwd,
+            reveal,
+            true,
+            assets.as_deref_mut(),
+            child_meta,
+        );
         streams.push((n.id.clone(), cj));
     }
     Ok((root_id, streams))
@@ -1147,7 +1258,14 @@ fn write_bundle(
     reveal: bool,
     live: bool,
 ) -> Result<(String, std::collections::HashMap<String, Vec<String>>)> {
-    let (root_id, streams) = node_streams(agent, path, args, fold, reveal)?;
+    // Offline bundle (served has `reveal` Blob/reveal instead): materialize embedded
+    // attachments into `<dir>/assets/` and link the blocks to them.
+    let mut sink = if reveal {
+        None
+    } else {
+        Some(AssetSink::new(dir).with_context(|| "create assets dir")?)
+    };
+    let (root_id, streams) = node_streams(agent, path, args, fold, reveal, sink.as_mut())?;
     let title = display_title(path);
     let mut prev = std::collections::HashMap::new();
     for (id, jsonl) in &streams {
@@ -1176,7 +1294,7 @@ fn follow_tree(
 ) -> Result<()> {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (_root, streams) = match node_streams(agent, path, args, fold, reveal) {
+        let (_root, streams) = match node_streams(agent, path, args, fold, reveal, None) {
             Ok(s) => s,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
@@ -1557,6 +1675,51 @@ mod tests {
             vec!["a1", "a2", "a3"],
             "pre-order, grandchildren included"
         );
+    }
+
+    /// The offline bundle materializes embedded attachments into `assets/`, decoding
+    /// base64, and de-conflicts colliding names with a `-N` suffix.
+    #[test]
+    fn asset_sink_writes_and_deconflicts() {
+        use crate::model::AttachmentContent;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-assets-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut sink = AssetSink::new(&base).unwrap();
+        // Text attachment → written verbatim.
+        let h1 = sink
+            .materialize("notes.md", None, &AttachmentContent::Text("hi".into()))
+            .unwrap();
+        assert_eq!(h1, "assets/notes.md");
+        assert_eq!(
+            std::fs::read_to_string(base.join("assets/notes.md")).unwrap(),
+            "hi"
+        );
+        // Same name again → de-conflicted.
+        let h2 = sink
+            .materialize("notes.md", None, &AttachmentContent::Text("bye".into()))
+            .unwrap();
+        assert_eq!(h2, "assets/notes-1.md");
+        // Base64 image → decoded; extension derived from the mime when missing.
+        let h3 = sink
+            .materialize(
+                "shot",
+                None,
+                &AttachmentContent::Base64 {
+                    mime: "image/png".into(),
+                    b64: "aGk=".into(), // "hi"
+                },
+            )
+            .unwrap();
+        assert_eq!(h3, "assets/shot.png");
+        assert_eq!(std::fs::read(base.join("assets/shot.png")).unwrap(), b"hi");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The live tailer's per-agent delta: a pure append emits no reset; a rewritten tail
