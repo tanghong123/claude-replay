@@ -548,28 +548,47 @@ pub trait Adapter: Send {
     fn session_cwd(&self, line: &RawLine) -> Option<PathBuf> { None }
 }
 
-/// Drives an `Adapter` over bytes → the append-only `Message` log. Streaming (one line
-/// resident at a time); supports incremental resume with tail-rewrite detection.
-pub struct Parser { /* adapter + running seq/offset + a small kept-tail digest */ }
+/// Drives an `Adapter` over bytes → the append-only `Message` log. **Single pass**,
+/// streaming: only one raw line is resident at a time (the file is never buffered whole),
+/// and each `advance` consumes *as many lines as the reader currently yields*, returning
+/// them as a **batch** of messages. "One line at a time" is the memory bound, not the call
+/// granularity — a call typically emits many messages.
+///
+/// The `Parser` is **stateful** — it holds the adapter, a byte `cursor`, and a small
+/// kept-tail digest — so a cold read and a live resume are the *same* operation at a
+/// different starting offset. (There is no second "pre-scan" pass: the `tool_use`-id set
+/// that tells an orphan result from a not-yet-seen one is derived by the **`Replayer`** from
+/// the message log, §3.3 / §6.1 — an L2 concern, not a second L1 read. That is what keeps
+/// L1 a clean single pass and lets cold + live share one shape.)
+pub struct Parser { /* adapter + cursor + a small kept-tail digest */ }
 
 impl Parser {
-    /// Auto-detect the agent from the source head (tries each registered `Adapter::detect`).
-    pub fn detect(source: &Path) -> io::Result<Agent>;
+    /// Sniff which adapter owns a transcript (tries each registered `Adapter::detect`).
+    pub fn detect(head: &str) -> Option<Agent>;
 
-    /// A batch parse: every message from a full read. `open` yields a fresh reader (the
-    /// two-pass streaming invariant, §4.1, lives inside — no whole-file buffering).
-    pub fn parse(agent: Agent, open: impl Fn() -> io::Result<Box<dyn BufRead>>)
-        -> io::Result<Vec<Message>>;
+    /// Cold start — cursor at byte 0.
+    pub fn new(agent: Agent) -> Self;
+    /// Live start — cursor at a previously-saved offset.
+    pub fn resume_at(agent: Agent, cursor: Cursor) -> Self;
 
-    /// Resume: read only the bytes after `cursor`. If the kept tail no longer matches the
-    /// source (an edited / compacted transcript), the returned `Delta` begins with an
-    /// `Event::Reset`. Returns the new cursor to persist for the next poll.
-    pub fn resume(agent: Agent, source: impl Read + Seek, cursor: Cursor) -> io::Result<Delta>;
+    /// Consume whatever `reader` yields from the current cursor onward; return the messages
+    /// those bytes complete, and advance the cursor. A partial trailing line is left
+    /// unconsumed for the next call. On a live poll, if the kept tail no longer matches the
+    /// source (an edited / compacted transcript), the returned batch begins with an
+    /// `Event::Reset`. The caller positions `reader` at `self.cursor().offset` (sans-I/O:
+    /// the `Parser` owns no file handle — §3.6).
+    pub fn advance(&mut self, reader: impl BufRead) -> io::Result<Vec<Message>>;
+
+    /// The current byte cursor — persist it between live polls.
+    pub fn cursor(&self) -> Cursor;
 }
 
 pub struct Cursor { pub offset: u64, pub seq: Seq /* + kept-tail digest */ }
-pub struct Delta  { pub messages: Vec<Message>, pub cursor: Cursor }
 ```
+
+So both paths are one method: a **cold read** is `Parser::new(agent).advance(whole_file)`; a
+**live poll** is `Parser::resume_at(agent, saved).advance(tail)` then persist `cursor()`.
+Same shape, same single pass — the offset is the only difference.
 
 A third party adding a new agent (say a local LLM's logs) writes **one** `Adapter` and
 registers it; every presenter and the whole store/live machinery work unchanged.
@@ -606,11 +625,20 @@ pub enum Block {
 }
 
 /// Folds a message log into a `Session`. Forward-only except on `Event::Reset`.
-pub struct Replayer { /* session + call_id→block index + fold cursor */ }
+pub struct Replayer { /* raw fold state: block buffer + call_id→index map + pending + cursor */ }
 impl Replayer {
     pub fn new(agent: Agent) -> Self;
-    pub fn apply(&mut self, delta: &[Message]); // append; back-patch via index; rewind on Reset
-    pub fn session(&self) -> &Session;
+    /// Fold a batch of messages into the running state: append, back-patch tool results via
+    /// the id index, rewind only on `Event::Reset`. Call repeatedly to stream a live tail.
+    pub fn apply(&mut self, delta: &[Message]);
+    /// The current presentable session — runs `finish` (turn grouping) + builds the index
+    /// over the accumulated blocks, returned **owned**. Non-consuming: keep applying after.
+    /// (It cannot be a `&Session` borrow: `finish` isn't incremental — it recomputes the
+    /// grouped view each call — so the presentable session is freshly built, not stored.)
+    pub fn snapshot(&self) -> Session;
+    /// Finalize: like `snapshot` but **consumes** the `Replayer`, reclaiming the intermediate
+    /// fold state instead of cloning out of it. The terminal call of a batch parse —
+    /// `parse_session` is `Replayer::new(a); apply(msgs); into_session()`.
     pub fn into_session(self) -> Session;
 }
 
@@ -737,15 +765,18 @@ loop {
 **(4) A live tail — incremental resume + ingest** (this is `-f`):
 
 ```rust
-let agent = Parser::detect(path)?;
-let mut cursor = Cursor::start();
+let agent = Parser::detect(&head(path)?).expect("known agent");
+let mut parser = Parser::new(agent);
 let mut viewer = Viewer::new(Session::empty(agent));
 loop {
-    let delta = Parser::resume(agent, File::open(path)?, cursor)?;
-    cursor = delta.cursor;
-    viewer.ingest(&delta.messages); // back-patch + Reset handled inside; O(delta), not O(file)
-    redraw(&viewer);
-    fs_notify.wait();               // block until the file grows
+    let mut f = File::open(path)?;
+    f.seek(SeekFrom::Start(parser.cursor().offset))?; // read only the new tail
+    let msgs = parser.advance(BufReader::new(f))?;    // many lines → a batch; cursor advances
+    if !msgs.is_empty() {
+        viewer.ingest(&msgs); // back-patch + Reset handled inside; O(delta), not O(file)
+        redraw(&viewer);
+    }
+    fs_notify.wait();         // block until the file grows
 }
 ```
 
@@ -770,7 +801,7 @@ owns a thread / fs-watch and invokes your callback when a block arrives) or do y
 it** (pull — you hand it bytes and ask for the delta when you want)? The decision here, and
 why it matters for a *library*:
 
-**`replay-core` is strictly pull — a sans-I/O state machine.** `Parser::resume(cursor)` and
+**`replay-core` is strictly pull — a sans-I/O state machine.** `Parser::advance(reader)` and
 `Replayer::apply(delta)` are pure and synchronous: the client supplies the bytes *and* the
 timing; the engine never opens a file, spawns a thread, blocks, or holds a runtime. It is a
 [sans-I/O](https://sans-io.readthedocs.io/) value you feed — like `rustls`'s connection
@@ -804,8 +835,9 @@ impl Follower {
     pub fn spawn(path: &Path,
                  on_delta: impl FnMut(&[Message], &Session) + Send + 'static)
         -> io::Result<Follower>;
-    /// …or stay pull-friendly: hand deltas over a channel the client selects on.
-    pub fn deltas(path: &Path) -> io::Result<Receiver<Delta>>;
+    /// …or stay pull-friendly: hand each batch of messages over a channel the client
+    /// selects on (it drives its own `Replayer`).
+    pub fn deltas(path: &Path) -> io::Result<Receiver<Vec<Message>>>;
 }
 ```
 
