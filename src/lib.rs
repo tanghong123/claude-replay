@@ -56,7 +56,7 @@ impl Agent {
 
 /// View flags. Defaults mirror the bash `claude-peek`: thinking + user turns +
 /// code-modifying actions shown; non-modifying ops, tool output hidden.
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug, Clone, Default)]
 #[command(
     name = "claude-replay",
     version,

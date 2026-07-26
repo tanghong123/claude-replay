@@ -7,4 +7,7 @@
 
 pub mod message;
 pub mod path;
+pub mod session;
 pub mod time;
+
+pub use session::{parse_session, parse_session_as, Session};

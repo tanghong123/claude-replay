@@ -4,7 +4,7 @@
 use crate::Agent;
 use serde_json::Value;
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct Metrics {
     /// Genuinely-new input tokens (excludes cached content — see the two cache
     /// fields below). Small on cache-heavy sessions.
