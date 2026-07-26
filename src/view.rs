@@ -1628,7 +1628,7 @@ mod tests {
             "\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"code-reviewer\",",
             "\"description\":\"d\",\"prompt\":\"p\"}}]}}\n"
         );
-        let blocks = crate::model::parse(jsonl);
+        let blocks = crate::claude_model::parse(jsonl);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
         let pol = FoldPolicy::from_args(&crate::Args::default());
         assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");

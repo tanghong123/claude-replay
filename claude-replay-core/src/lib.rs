@@ -13,6 +13,9 @@
 //! convention.
 
 mod agent;
+pub mod claude_discover;
+pub mod claude_metrics;
+pub mod claude_model;
 pub mod codex_discover;
 pub mod codex_metrics;
 pub mod codex_model;

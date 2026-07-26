@@ -30,11 +30,18 @@ mostly transparent when reading viewer code.
 
 **`claude-replay-core/`** — the agent-agnostic parser/replay engine. **No** TUI/HTML/CLI deps
 (only `serde_json` + `anyhow`); the crate boundary enforces "core is presentation-agnostic".
-- `model.rs` JSONL → blocks + the L2 `Replayer` fold · `codex_{model,metrics,discover}.rs` Codex
-- `engine/` `message` (L1↔L2 log) · `session`/`index` (`Session`/`SessionIndex`) · `store`
-  (`SessionStore` residency tiers) · `path`/`time` helpers
-- `metrics.rs` tokens/cost · `discover.rs` find transcript · `follow.rs` incremental `FollowParser`
-  · `tail.rs` byte-offset live tail · `agent.rs` the `Agent` enum
+- **Shared engine** (agent-neutral): `model.rs` the `Block` data model + L2 `Replayer`/`replay`
+  fold + `Shaping` seam + `parse_stream` + block classification + the `parse_*_for` dispatchers ·
+  `engine/` `message` (L1↔L2 log) · `session`/`index` (`Session`/`SessionIndex`) · `store`
+  (`SessionStore` tiers) · `path`/`time` · `metrics.rs` the `Metrics` value + pricing ·
+  `discover.rs` the `Candidate` type + `detect_agent`/`session_cwd`/`resolve_any` ·
+  `follow.rs` incremental `FollowParser` · `tail.rs` byte-offset tail · `agent.rs` the `Agent` enum
+- **Per-agent L1 adapters** (symmetric, each feeds the shared engine): `claude_model.rs` /
+  `codex_model.rs` (tokenizer + `Shaping`) · `claude_metrics.rs` / `codex_metrics.rs` (token/cost
+  folding) · `claude_discover.rs` / `codex_discover.rs` (that agent's transcript store). A new
+  agent = a `*_model`/`*_metrics`/`*_discover` trio + one dispatcher arm; the shared engine is
+  never touched. (Claude-parsing tests currently live in `model.rs`'s test module, driving the
+  shared engine through `claude_model`.)
 
 **`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI + `agent-jdi`.
 - `markdown.rs` md → ratatui lines · `render.rs` blocks → styled lines · `wrap.rs` wrapping

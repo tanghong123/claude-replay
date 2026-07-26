@@ -3,7 +3,7 @@
 
 use crate::picker::Picker;
 use crate::view::View;
-use crate::{discover, model, Agent, Args};
+use crate::{claude_model, discover, model, Agent, Args};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -253,7 +253,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_file = model::subagent_file(&parent.path, &agent_id);
+    let child_file = claude_model::subagent_file(&parent.path, &agent_id);
     // A running agent's child file often appears (or fills in) AFTER the parent was
     // parsed, so `sa.blocks` is empty even though the transcript now exists on disk.
     // Load it fresh at descend time so a just-spawned agent is reachable. Still `None`

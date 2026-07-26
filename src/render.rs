@@ -1327,7 +1327,7 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let blocks = crate::model::parse_path(&sess).unwrap();
+        let blocks = crate::claude_model::parse_path(&sess).unwrap();
         let Some(crate::model::Block::SubAgent(sa)) = blocks
             .iter()
             .find(|b| matches!(b, crate::model::Block::SubAgent(_)))
