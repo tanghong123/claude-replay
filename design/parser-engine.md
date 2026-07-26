@@ -11,7 +11,8 @@ and exposable as a standalone library.
 
 It absorbs and supersedes several things already shipped or half-built: the sub-agent
 model, the HTML multi-file bundle + live server + `/stream` byte cursor + lazy generation,
-the level-3 registry, and the live-tail CPU work (§8.3). Those become *instances* of this
+the id→path registry (the "level-3 cache" — tier (c) here, §8), and the live-tail CPU work
+(§8.3). Those become *instances* of this
 architecture rather than parallel implementations.
 
 **The prime directive: zero user-facing change.** This is an internal re-architecture. At
@@ -76,6 +77,32 @@ current turn.
 
 §1–§7 below detail Layers 1–3 (adapters, engine core, block model, indices); §8 details the
 incremental + residency machinery that makes Layers 1–2 cheap and live.
+
+### 0.1 Terminology (one name per concept — used verbatim below)
+
+- **Layer 1 (L1) / the parser** — raw transcript bytes → the *message log*. Agent-specific.
+- **Layer 2 (L2) / the replayer** — message log → a `Session`, by a strictly-forward
+  **fold** (also called *replay*). Agent-agnostic.
+- **Layer 3 (L3) / a presenter** — a `Session` → what a surface shows. One per surface.
+- **the engine** — the L1 + L2 machinery (the `engine/` module) that produces a `Session`;
+  everything below the presenters.
+- **message · message log** — L1's output vocabulary: canonical events (user text, tool
+  call, tool result, thinking, sub-agent spawn, completion, …) — **not** built blocks. The
+  log is **append-only**: appends plus `reset` markers only.
+- **`reset(N)`** — a message-log marker meaning "discard everything the replayer built from
+  message N onward" (a rewritten tail). The only thing that rewinds L2.
+- **block** — a presentation unit L2 builds (the `Block` enum: `UserText`, `ToolUse`,
+  `SubAgent`, …). **block record** — a block serialized into a stream (the HTML
+  `<id>.jsonl`); the HTML presenter's output.
+- **`Session`** — L2's output and the single source of truth: `blocks` + `metrics` +
+  `SessionIndex` + cwd/agent (§3).
+- **`SessionIndex`** — the derived within-session indices (agents / tools / attachments)
+  L2 builds; also the sub-agent liveness truth (§7).
+- **`Transcript` adapter** — the agent-specific half of L1 (one impl per agent, §2.2).
+- **residency tiers** — how resident a session is, managed by the **`SessionStore`** ("the
+  store", §8): **(a) resident** (`Session` in RAM), **(b) materialized** (parsed, on disk
+  as `<id>.jsonl` + a consumed byte offset), **(c) path-only** (just the source path — the
+  cheap registry the live server calls its "level-3 cache").
 
 ---
 
@@ -360,6 +387,10 @@ pub fn transcript(agent: Agent) -> Box<dyn Transcript> {
 ```
 
 ### 2.3 The core engine (the shared skeleton, agent-neutral)
+
+> `EngineOut` below is the L2 output in this older sketch — the same thing §3 promotes to
+> the public **`Session`** (it gains `cwd`/`agent` + the `SessionIndex`). Read the two as one
+> type; `Session` is the canonical name.
 
 ```rust
 // engine/mod.rs
