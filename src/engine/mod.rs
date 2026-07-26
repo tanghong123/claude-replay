@@ -9,6 +9,7 @@ pub mod index;
 pub mod message;
 pub mod path;
 pub mod session;
+pub mod store;
 pub mod time;
 
 pub use index::SessionIndex;

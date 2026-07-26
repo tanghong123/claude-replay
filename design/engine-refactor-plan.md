@@ -28,11 +28,17 @@ What's done vs. deferred:
   (persistent `Replayer<'static>` + byte cursor + reset-on-shrink): the `--dump-html -f`
   follower, the TUI live tail (`view::update`), and the served `--html -f` `Live` tailer all
   fold only the delta. Byte-identical (follow==full-reparse both agents), tmux- + curl-verified.
-- ⏸ **M12** (SessionStore/tiers) — **partially subsumed**: M16's `FollowParser` delivered the
-  live-CPU win (the served tailer now folds deltas, not whole-file re-parses). What remains is
-  the `engine::store::SessionStore` type/tier abstraction — optional structural cleanup over a
-  working, incremental serving layer, no user-visible change. Deferred (attended). Not a
-  correctness gap; a cleanup over a complete core.
+- ✅ **M12** (SessionStore/tiers) — **done, scoped**. M16's `FollowParser` already delivered the
+  live-CPU win; this milestone extracted the server's residency bookkeeping into a generic,
+  transport-agnostic `engine::store::SessionStore<Info, Res>` (tier (c) path-only registry +
+  tier (a) resident-follower set + lazy `see`/`admit`, TTL `reap`, `resident_ids`,
+  `with_resident`). `html_export::Live` now layers HTML rendering, the materialized `<id>.jsonl`
+  (tier (b)), and the `/stream` byte cursor over it. Unit-tested in isolation (the tier
+  lifecycle — path-only → resident → grow → idle-reaped → re-resident) and curl-verified served
+  (append → reset + back-patch + new turn). **Deliberately NOT unified with the TUI `Frame`
+  descend stack**: that's a LIFO navigation stack of live `View`s with no byte cursor, keyed
+  residency, or TTL — already optimal (each ancestor kept alive, never re-parsed); folding one
+  real consumer into a shared abstraction would be over-engineering. No user-visible change.
 
 ## Original definition of done (for reference)
 
@@ -203,23 +209,30 @@ pending decision under streaming). Needs the live e2e, not just unit tests.
 
 ---
 
-## M12 — `SessionStore` + residency tiers (Phase 8)
+## M12 — `SessionStore` + residency tiers (Phase 8) — ✅ DONE (scoped)
 
-**Goal.** One store behind the multi-agent live server and the TUI descend stack.
+**Goal.** A named, transport-agnostic store behind the multi-agent live server's residency.
 
-**Changes.** Fold `html_export::Live` (id→source registry, lazy stream generation, the single
-background tailer, the `/stream` byte cursor) and the TUI `Frame` stack into
-`engine::store::SessionStore` (`see`/`load`/`evict`; tiers a/b/c). The served HTML becomes a
-thin layer over the store; `<id>.jsonl` is tier (b) explicitly.
+**Landed.** Extracted `engine::store::SessionStore<Info, Res>` — generic, HTTP/HTML-agnostic:
+tier (c) `registry` (id → `Info` descriptor) + tier (a) `residents` (id → open follower +
+diff baseline, with a store-owned `last_seen`). Surface: `register`/`register_new`/`resolve`/
+`is_registered` (tier c), `see`→`admit` lazy promotion, `reap(ttl)` eviction, `resident_ids`,
+`with_resident`. `html_export::Live` holds one and layers HTML rendering + the materialized
+`<id>.jsonl` (tier (b)) + the `/stream` byte cursor over it — same URLs, same records, same
+lazy behavior. The two maps use independent mutexes, never co-locked (no self-deadlock).
 
-**Consumed by.** `--html`/`-f --html` serving; TUI descend/ascend.
+**Scope decision.** The plan's original goal also folded the **TUI `Frame` descend stack** into
+the same store. Deliberately **not** done: the `Frame` stack is a LIFO navigation stack of live
+`View`s with no byte cursor, keyed residency, or TTL, and it's already optimal (each ancestor
+`View` stays alive, never re-parsed). Unifying it with the server's keyed/TTL'd residency store
+— the only *other* consumer — would be a worse abstraction over two genuinely different access
+patterns. The server store stands alone.
 
-**Test / gate.** served smoke + descend/ascend e2e + a store test (load → grow → fast-forward
-vs. evict → reload). Same URLs, same records, same lazy behavior.
+**Test / gate.** Store unit test (the tier lifecycle: path-only → resident → grow/fast-forward
+→ idle-reap → re-resident) + served curl smoke (append → `reset` + back-patch + new turn) +
+the full suite. All green (244 tests).
 
-**Risk.** MEDIUM-HIGH — concurrency + lifecycle; the live-feed freeze class of bug lives here.
-
-**Done when.** Merged; served + descend e2e + store test green.
+**Done.** Merged; store test + served smoke green; TUI descend/ascend unchanged (its own path).
 
 ---
 
@@ -299,7 +312,7 @@ external consumer wants it; defer the split otherwise.
 | M9 | streaming driver + freeze old parsers | migration, byte-identical | HIGH | ✅ **done** |
 | M10 | metrics fold-in | byte-identical | MED | ✅ **done** |
 | M11 | incremental primitives (snapshot/extend_ids) | additive, proven | MED | ✅ **done** (routing→M16) |
-| M12 | `SessionStore` + tiers | internal | MED-HIGH | ⏸ deferred (CPU win subsumed by M16) |
+| M12 | `SessionStore` + tiers | internal | MED-HIGH | ✅ **done** (scoped; TUI stack left separate) |
 | M13 | classification unify (BlockKind) | byte-identical | LOW-MED | ✅ **done** |
 | M14 | message block-model lift | byte-identical | MED | ✅ **done** |
 | M15 | docs finalization (crate split deferred) | docs | LOW | ✅ **done** |
