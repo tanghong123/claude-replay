@@ -31,40 +31,46 @@ use std::time::Instant;
 /// A keyed store of sessions in two residency tiers (see the module docs). `Info` is the
 /// path-only descriptor (cheap, `Clone`); `Res` is the caller-owned resident payload (an
 /// open follower + its diff baseline) the store holds for the lifetime of residency.
-pub(crate) struct SessionStore<Info, Res> {
+pub struct SessionStore<Info, Res> {
     /// Tier (c): every known session → where to find it / how to title it.
     registry: Mutex<HashMap<String, Info>>,
     /// Tier (a): the currently-resident subset → (last requested, resident payload).
     residents: Mutex<HashMap<String, (Instant, Res)>>,
 }
 
-impl<Info: Clone, Res> SessionStore<Info, Res> {
-    pub(crate) fn new() -> Self {
+impl<Info, Res> Default for SessionStore<Info, Res> {
+    fn default() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
             residents: Mutex::new(HashMap::new()),
         }
     }
+}
+
+impl<Info: Clone, Res> SessionStore<Info, Res> {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Register (or overwrite) a session's tier-(c) descriptor.
-    pub(crate) fn register(&self, id: &str, info: Info) {
+    pub fn register(&self, id: &str, info: Info) {
         self.registry.lock().unwrap().insert(id.to_string(), info);
     }
 
     /// Register a child only if not already known — preserves the first (richest,
     /// ancestry-bearing) descriptor against a later bare fallback.
-    pub(crate) fn register_new(&self, id: &str, info: Info) {
+    pub fn register_new(&self, id: &str, info: Info) {
         let mut reg = self.registry.lock().unwrap();
         reg.entry(id.to_string()).or_insert(info);
     }
 
     /// Whether `id` has a tier-(c) descriptor.
-    pub(crate) fn is_registered(&self, id: &str) -> bool {
+    pub fn is_registered(&self, id: &str) -> bool {
         self.registry.lock().unwrap().contains_key(id)
     }
 
     /// The tier-(c) descriptor for `id`, if known.
-    pub(crate) fn resolve(&self, id: &str) -> Option<Info> {
+    pub fn resolve(&self, id: &str) -> Option<Info> {
         self.registry.lock().unwrap().get(id).cloned()
     }
 
@@ -72,7 +78,7 @@ impl<Info: Clone, Res> SessionStore<Info, Res> {
     /// (a tier-(a) hit — the caller need do nothing more). If not, report `false` — the
     /// caller then does the expensive open/render and calls [`admit`](Self::admit) to
     /// promote it to residency.
-    pub(crate) fn see(&self, id: &str) -> bool {
+    pub fn see(&self, id: &str) -> bool {
         let mut res = self.residents.lock().unwrap();
         if let Some((last_seen, _)) = res.get_mut(id) {
             *last_seen = Instant::now();
@@ -84,7 +90,7 @@ impl<Info: Clone, Res> SessionStore<Info, Res> {
 
     /// Promote a session to tier (a) with a freshly-built resident payload, stamping it
     /// seen now. (Pairs with a `false` from [`see`](Self::see).)
-    pub(crate) fn admit(&self, id: &str, resident: Res) {
+    pub fn admit(&self, id: &str, resident: Res) {
         self.residents
             .lock()
             .unwrap()
@@ -93,7 +99,7 @@ impl<Info: Clone, Res> SessionStore<Info, Res> {
 
     /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their
     /// registry descriptors remain, so a later `see` re-admits them.
-    pub(crate) fn reap(&self, ttl_ms: u128) {
+    pub fn reap(&self, ttl_ms: u128) {
         self.residents
             .lock()
             .unwrap()
@@ -101,14 +107,14 @@ impl<Info: Clone, Res> SessionStore<Info, Res> {
     }
 
     /// The ids currently resident (tier (a)) — the set the caller polls each cycle.
-    pub(crate) fn resident_ids(&self) -> Vec<String> {
+    pub fn resident_ids(&self) -> Vec<String> {
         self.residents.lock().unwrap().keys().cloned().collect()
     }
 
     /// Run `f` against the resident payload for `id` under the residents lock, returning
     /// its result (or `None` if `id` isn't resident — e.g. reaped since enumeration). Keep
     /// `f` cheap: it holds the lock. Used both to poll a follower and to update a baseline.
-    pub(crate) fn with_resident<R>(&self, id: &str, f: impl FnOnce(&mut Res) -> R) -> Option<R> {
+    pub fn with_resident<R>(&self, id: &str, f: impl FnOnce(&mut Res) -> R) -> Option<R> {
         self.residents
             .lock()
             .unwrap()

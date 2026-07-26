@@ -104,7 +104,7 @@ fn ancestor_dirs() -> Vec<PathBuf> {
 /// Claude sessions scoped strictly to `cwd` or its **nearest ancestor that has
 /// sessions** — no global fallback (a directory with no session history up its
 /// chain yields nothing, so unrelated projects never leak in).
-pub(crate) fn claude_candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+pub fn claude_candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     let cwd_slug = slug_for(cwd);
     let mut scoped: Vec<(SystemTime, PathBuf)> = Vec::new();
     for dir in ancestors_of(cwd) {

@@ -4,32 +4,29 @@
 //! The viewer is **read-only** (scroll, fold, search, live-tail); `agent-jdi` reuses
 //! this crate's transcript discovery/parsing to supervise unattended agent runs.
 
-mod agent;
 pub mod app;
 mod clipboard;
-pub mod codex_discover;
-pub mod codex_metrics;
-pub mod codex_model;
-pub mod discover;
-pub mod engine;
-mod follow;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
 mod markdown;
-pub mod metrics;
-pub mod model;
 mod picker;
 mod render;
-mod tail;
 mod theme;
 pub mod view;
 mod wrap;
 
+// The agent-agnostic parser/replay engine lives in the sibling `claude-replay-core` crate
+// (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
+// the viewer keeps referring to `crate::model`, `crate::engine`, `crate::discover`, … and
+// `crate::Agent` unchanged.
+pub use claude_replay_core::{
+    codex_discover, codex_metrics, codex_model, discover, engine, follow, metrics, model, tail,
+    Agent,
+};
+
 use anyhow::Result;
 use clap::Parser;
-
-pub use agent::Agent;
 
 /// clap `value_parser` for `--agent`: parse a `claude`/`codex` label into [`Agent`]. Keeps
 /// the `ValueEnum` derive (and thus clap) out of the core `Agent` type.

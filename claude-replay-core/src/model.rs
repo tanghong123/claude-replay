@@ -516,7 +516,7 @@ fn tool_target(input: &Value, cwd: &str) -> String {
 /// Write/other tools produce durable output (diffs, etc.) and stay expanded.
 /// `pub(crate)` so the live-tail path (`view::ingest`) can re-group a thinking
 /// block with activity tools that arrived in an earlier poll.
-pub(crate) fn is_activity_tool(name: &str) -> bool {
+pub fn is_activity_tool(name: &str) -> bool {
     matches!(
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
