@@ -927,6 +927,57 @@ entries; upsert agent status by id — a completion note in the delta flips a ru
 agent to terminal, and `active_agents()` reflects it on the very next frame). This is
 the mechanism the `a active N` footer needs to update live without a re-parse.
 
+### 8.3.1 Bounded-tail re-parse — the cheap, correct incremental tail (deferred, to refine here)
+
+Status: **deferred to this refactor.** A rough but promising idea captured now; refine it
+when the engine work starts. It's the fix for the live server's remaining CPU cost.
+
+**The problem it solves.** The served HTML tailer (`html_export::agent_stream`) and any
+full-file live tail re-parse the WHOLE source on every change. For a large live session
+(a measured 47 MB transcript) that pins a core. The shipped stop-gap only *skips* the
+parse when the source byte length is unchanged (Claude's JSONL is **append-only** —
+empirically verified: appending 30 KB left the first 47.8 MB byte-identical), so an idle
+session costs ~nothing — but each *real* append still triggers a full re-parse.
+
+**The key measurement (why a full resumable parser is overkill).** On that 47 MB session
+(19,546 lines, 3,693 tool pairs):
+- **0** tool results appear before their `tool_use` — the `pending` (out-of-order) path
+  is never exercised in practice.
+- `tool_use → result` line distance: **median 1, p95 7, max 9** — the join is strictly
+  *local*. The `tool_slot` map spans the file only in theory.
+
+So the only genuinely cross-block work is the **tail grouping** — `group_turns` /
+`coalesce_activity_runs` (thinking absorbing its preceding activity run), the queue
+enqueue/dequeue markers, and attachments — and all of it lives **within the current,
+in-progress turn**; nothing reaches back past a *completed* turn.
+
+**The design.** Re-parse only the **unstable tail**, not the file:
+- Track the byte offset of the **last turn boundary** — the last top-level `user` message
+  (not a `tool_result`), i.e. the start of the current turn. Everything before it is
+  stable: all tools joined, all grouping settled, append-only guarantees it never changes.
+- On a change, re-parse **`[last_turn_boundary .. EOF]`** — the current turn plus new
+  lines. Cost is bounded by *turn size* (KB), not file size.
+- Diff those tail blocks against what was already emitted from that boundary; emit
+  `{t:"reset", from:<boundary block index>}` + the new tail. The stable prefix is untouched.
+
+**Edge cases to handle:**
+- A **sub-agent spawned in an earlier turn** whose completion `<task-notification>` lands
+  in the current one: the `AgentDone` needs the spawn's `agent_type`/description, which is
+  now outside the re-parse window. Keep a tiny `id → (type, description)` map of spawns
+  seen — cheap, and it *is* the §7 agent index / the live server's level-3 registry.
+- **Compaction** rewrites the whole file (length shrinks) → fall back to a full re-parse
+  (the byte-length guard already detects this).
+- Choosing the boundary conservatively: a *turn* boundary is provably safe for grouping;
+  if a turn is pathologically huge, cap the window and accept a larger (still bounded)
+  re-parse. Validate the whole thing by asserting the incremental stream output is
+  **byte-identical** to a full re-parse on real transcripts before trusting it.
+
+**Where it plugs in.** This is the concrete, low-risk form of `engine::ingest` (§8.3): the
+parser itself doesn't change — the tailer feeds it a tail *slice* and splices the result.
+It supersedes the "must persist `slots`/`pending` across batches" worry above: with a
+per-turn re-parse, the join state is rebuilt within the window, so no cross-batch parser
+state needs to survive. Refine the exact boundary rule + the spawn-map here when built.
+
 ### 8.4 Memory pressure / eviction policy
 
 Eviction demotes **(a)→(b)** — drop the RAM `Session`, keep the on-disk stream + offset

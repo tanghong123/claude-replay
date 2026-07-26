@@ -80,6 +80,14 @@ source path. If the engine refactor lands first, this backend is a thin serving 
 over the store; if not, it stands alone with the same contract and the same on-disk
 files, and merges later with no format change.
 
+> **Live-tail CPU (shipped stop-gap + the real fix, deferred).** The served tailer
+> re-parses each active agent's whole source on every change. Shipped: skip the re-parse
+> when the source byte length is unchanged (Claude's JSONL is append-only), which removes
+> the *constant* burn on an idle session. The real fix — a **bounded re-parse of the
+> unstable tail** (only the current turn, since tool-joins are local and grouping is
+> within-turn) — is designed and **deferred to the engine refactor**: see
+> `parser-engine.md` §8.3.1.
+
 ---
 
 ## 2. The backend (producer)
