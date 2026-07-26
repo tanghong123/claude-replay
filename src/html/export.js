@@ -303,8 +303,12 @@
       if (head.child) {
         var alink = el("a", "agent-open", "↵ " + (head.child_id || "open"));
         alink.href = head.child;
-        alink.title = "Open this agent's transcript";
+        alink.title = "Open this agent's transcript (this tab)";
         h.appendChild(alink);
+        var ant = el("span", "agent-newtab", "⧉");
+        ant.title = "Open in a new tab";
+        ant.dataset.href = head.child;
+        h.appendChild(ant);
       }
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
@@ -382,6 +386,72 @@
     row("output", (u.output || "0") + " tok");
     row("cache read", (u.cache_read || "0") + " tok");
     if (u.cost) row("est. cost", u.cost, "total");
+
+    renderCrumbs(m.ancestors);
+    // In a multi-agent tree (this session has children, or is itself a sub-agent) the box
+    // is always shown — grayed on a childless leaf. A standalone session hides it entirely.
+    var inTree = (m.children && m.children.length) || (m.ancestors && m.ancestors.length);
+    renderAgentMenu(m.children, inTree);
+  }
+
+  // The breadcrumb bar: root › … › parent › (current) — each ancestor a link to its
+  // stream, so a sub-agent view can climb back to the main agent (not just browser Back).
+  function renderCrumbs(ancestors) {
+    var nav = $("crumbs");
+    if (!nav) return;
+    nav.textContent = "";
+    if (!ancestors || !ancestors.length) { nav.style.display = "none"; return; }
+    ancestors.forEach(function (a, i) {
+      // The first ancestor is the root — the main session; mark it with a home glyph so
+      // "get back to the main session" is one obvious click, not a guess up the chain.
+      var isRoot = i === 0;
+      var link = el("a", "crumb" + (isRoot ? " crumb-root" : ""), (isRoot ? "⌂ " : "") + (a.title || a.id));
+      link.href = "?session=" + encodeURIComponent(a.id);
+      link.title = (isRoot ? "Back to the main session — " : "Open ") + (a.title || a.id);
+      nav.appendChild(link);
+      nav.appendChild(el("span", "crumb-sep", "›"));
+    });
+    nav.appendChild(el("span", "crumb crumb-cur", document.title || "current"));
+    nav.style.display = "";
+  }
+
+  // The "Agents ▾" menu: this session's sub-agents, **active first then done**, each in
+  // launch order (the server ships `children` in spawn order with a `running` flag). The
+  // box is **always present** — a leaf sub-agent (no children of its own) shows it grayed
+  // and non-interactive, so the control never appears/disappears between views. Each item
+  // navigates to that agent's stream (click = this tab; the ⧉ icon = a new tab).
+  function renderAgentMenu(children, inTree) {
+    var wrap = $("agentnav"), items = $("agentitems"), btn = $("btn-agents");
+    if (!wrap || !items || !btn) return;
+    wrap.style.display = inTree ? "" : "none";
+    if (!inTree) return;
+    var n = (children && children.length) || 0;
+    btn.classList.toggle("disabled", n === 0);
+    var label = btn.querySelector(".tf-label");
+    if (label) label.textContent = n ? "Agents (" + n + ") ▾" : "Agents ▾";
+    if (!n) { agentMenu(false); items.textContent = ""; return; }
+    items.textContent = "";
+    var active = children.filter(function (c) { return c.running; });
+    var done = children.filter(function (c) { return !c.running; });
+    function section(label, list) {
+      if (!list.length) return;
+      items.appendChild(el("div", "agent-sec", label + " (" + list.length + ")"));
+      list.forEach(function (c) {
+        var href = "?session=" + encodeURIComponent(c.id);
+        var a = el("a", "agent-item" + (c.running ? " running" : ""));
+        a.href = href;
+        a.appendChild(el("span", "agent-dot"));
+        a.appendChild(el("span", "agent-name", c.title || c.id));
+        if (c.type) a.appendChild(el("span", "agent-type", c.type));
+        var nt = el("span", "agent-newtab", "⧉");
+        nt.title = "Open in a new tab";
+        nt.dataset.href = href;
+        a.appendChild(nt);
+        items.appendChild(a);
+      });
+    }
+    section("Active", active);
+    section("Completed", done);
   }
 
   // Append one turn to the sidebar (live sessions grow it).
@@ -397,29 +467,63 @@
   // companion frame their newlines differently, so an index would misalign and
   // new lines would be silently skipped. Stop at the first line that won't parse
   // (a partial tail caught mid-append); the next poll retries it.
+  // One record → DOM. Shared by the whole-text and delta consumers.
+  //   meta  → repaint metadata;
+  //   reset → drop rendered blocks from index `from` (a rewritten tail: a thinking block
+  //           closing, a tool result landing, an activity coalescing — the following
+  //           records re-render them);
+  //   block → render + append.
+  function applyRecord(obj) {
+    if (obj.t === "meta") { renderMeta(obj); return; }
+    if (obj.t === "reset") { resetFrom(obj.from); return; }
+    if (obj.t !== "block") return;
+    stream.appendChild(renderBlock(obj));
+    if (obj.turn != null) addTurn(obj);
+  }
+
+  // The O(DOM) passes to run after a batch of new records: clamp long turns, rebuild the
+  // filter menu, give new code/diff panes their control strip, re-apply size + wrap.
+  function postRender() {
+    clampLongTurns();
+    buildToolMenu();
+    buildStrips();
+    setMono(ms);
+    setWrap(wrap);
+    if (filter) applyFilter(filter);
+  }
+
+  // Whole-text, record-counter based: the inline snapshot and the single-file `-f`
+  // companion (which re-fetches the whole file each poll) both replay the full text and
+  // dedup by the `consumed` counter.
   function consume(text) {
     var recs = text.split("\n").filter(function (l) { return l.trim(); });
     while (consumed < recs.length) {
       var obj;
       try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
       consumed++;
-      if (obj.t === "meta") { renderMeta(obj); continue; }
-      // A rewritten tail: drop rendered blocks from index `from`, the following
-      // records re-render them (the live transcript rewrites its last blocks —
-      // a thinking block closing, a tool result landing, an activity coalescing).
-      if (obj.t === "reset") { resetFrom(obj.from); continue; }
-      if (obj.t !== "block") continue;
-      stream.appendChild(renderBlock(obj));
-      if (obj.turn != null) addTurn(obj);
+      applyRecord(obj);
     }
-    clampLongTurns();
-    buildToolMenu();
-    // §8.3 give any newly-arrived code/diff panes their control strip, then re-apply
-    // the (global, persisted) size + wrap so new panes match the rest.
-    buildStrips();
-    setMono(ms);
-    setWrap(wrap);
-    if (filter) applyFilter(filter); // fold/expand any newly-arrived matches
+    postRender();
+  }
+
+  // Delta-only: the multi-file live feed hands us just the NEW bytes each poll, so we parse
+  // only the new complete lines — never re-splitting the whole accumulated stream — and keep
+  // any trailing partial line in `pending`. A bad line is skipped, not fatal.
+  var pending = "";
+  function consumeDelta(chunk) {
+    pending += chunk;
+    var nl = pending.lastIndexOf("\n");
+    if (nl < 0) return; // no complete line yet
+    var lines = pending.slice(0, nl).split("\n");
+    pending = pending.slice(nl + 1);
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i];
+      if (!l.trim()) continue;
+      var obj;
+      try { obj = JSON.parse(l); } catch (e) { continue; }
+      applyRecord(obj);
+    }
+    postRender();
   }
 
   // Drop rendered blocks from stream index `from` onward (a rewritten tail), plus
@@ -433,39 +537,48 @@
     }
   }
 
-  // ── tool-use filter ───────────────────────────────────────────────────
-  // Populate the dropdown from the distinct data-tool values present, newest
-  // counts first. Rebuilt whenever content changes (live sessions grow tools).
+  // ── type / tool filter ────────────────────────────────────────────────
+  // Populate the dropdown with the distinct message types present: each tool by its
+  // NAME (Read, Bash, Update, …) AND each non-tool fold kind (Agent, Thinking, Activity,
+  // Command). `filter` is the CSS selector the chosen entry maps to. Rebuilt whenever
+  // content changes (live sessions grow types).
+  var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command" };
   function buildToolMenu() {
-    var counts = {};
+    var entries = {}; // selector -> {label, count}
     all(".fold[data-tool]").forEach(function (f) {
-      var t = f.dataset.tool;
-      counts[t] = (counts[t] || 0) + 1;
+      var sel = '.fold[data-tool="' + f.dataset.tool + '"]';
+      (entries[sel] = entries[sel] || { label: f.dataset.tool, count: 0 }).count++;
     });
-    var names = Object.keys(counts).sort(function (a, b) {
-      return a.localeCompare(b); // alphabetical
+    all(".fold[data-kind]:not([data-tool])").forEach(function (f) {
+      var k = f.dataset.kind;
+      var sel = '.fold[data-kind="' + k + '"]';
+      (entries[sel] = entries[sel] || { label: KIND_LABEL[k] || k, count: 0 }).count++;
+    });
+    var sels = Object.keys(entries).sort(function (a, b) {
+      return entries[a].label.localeCompare(entries[b].label);
     });
     var box = $("toolitems");
     box.textContent = "";
-    names.forEach(function (t) {
-      var item = el("div", "tool-item" + (t === filter ? " active" : ""));
-      item.dataset.tool = t;
+    sels.forEach(function (sel) {
+      var e = entries[sel];
+      var item = el("div", "tool-item" + (sel === filter ? " active" : ""));
+      item.dataset.sel = sel;
+      item.dataset.label = e.label;
       item.tabIndex = 0;
       item.appendChild(el("span", "dot"));
-      item.appendChild(el("span", "tname", t));
-      item.appendChild(el("span", "tool-count", String(counts[t])));
+      item.appendChild(el("span", "tname", e.label));
+      item.appendChild(el("span", "tool-count", String(e.count)));
       box.appendChild(item);
     });
-    // Nothing to filter → disable the button.
-    $("btn-tools").disabled = names.length === 0;
+    $("btn-tools").disabled = sels.length === 0;
   }
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
+  function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }
 
-  // Apply the current `filter` value to the DOM: matching tool folds stay,
-  // expanded, with an accent; user turns stay dimmed as landmarks; the rest hide.
-  function applyFilter(tool) {
-    var sel = '.fold[data-tool="' + (window.CSS && CSS.escape ? CSS.escape(tool) : tool) + '"]';
+  // Apply the current `filter` selector to the DOM: matching folds stay, expanded, with
+  // an accent; user turns stay dimmed as landmarks; the rest hide.
+  function applyFilter(sel) {
     var matchesSel = all(sel);
     all(".fold-h").forEach(function (h) { h.classList.remove("filter-hit"); });
     all(".blk").forEach(function (b) {
@@ -489,16 +602,16 @@
     });
   }
 
-  // Enter/leave/toggle the filter. Re-selecting the active tool clears it.
-  function setFilter(tool) {
-    if (tool === filter) tool = null;
-    if (tool && !filter) {
+  // Enter/leave/toggle the filter. `sel` is a selector; re-selecting the active one clears.
+  function setFilter(sel, label) {
+    if (sel === filter) sel = null;
+    if (sel && !filter) {
       // Snapshot every fold's open state so Clear restores it exactly.
       savedFolds = {};
       all(".fold[id]").forEach(function (f) { savedFolds[f.id] = f.dataset.open; });
     }
-    filter = tool;
-    if (!tool) {
+    filter = sel;
+    if (!sel) {
       all(".blk").forEach(function (b) {
         b.classList.remove("filter-dim", "filter-hidden");
       });
@@ -509,14 +622,14 @@
         });
       }
     } else {
-      applyFilter(tool);
+      applyFilter(sel);
     }
     all(".tool-item").forEach(function (ti) {
-      ti.classList.toggle("active", ti.dataset.tool === filter);
+      ti.classList.toggle("active", ti.dataset.sel === filter);
     });
-    // The button becomes "<tool> ✕": the label opens the menu, the ✕ clears.
+    // The button becomes "<label> ✕": the label opens the menu, the ✕ clears.
     $("btn-tools").classList.toggle("active", !!filter);
-    document.querySelector("#btn-tools .tf-label").textContent = filter || "Tools ▾";
+    document.querySelector("#btn-tools .tf-label").textContent = filter ? label : "Filter ▾";
     spy();
   }
 
@@ -593,18 +706,39 @@
       // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
       // the bytes past the cursor (the new delta), never the whole transcript. We keep the
       // accumulated text and hand it to `consume`, which dedups records + applies resets.
-      var cursor = 0, full = "", failed = false;
+      // The cursor is the ABSOLUTE byte offset we've processed up to. Each `/stream`
+      // response carries `X-Offset` (where its bytes begin); we discard any prefix we
+      // already have and snap the cursor to `start + len`, so the client is idempotent
+      // even under overlap / a past-EOF request. The in-flight guard prevents overlap in
+      // the first place — the initial `from=0` fetch can transfer many MB and outlast the
+      // poll interval; without the guard the next tick would fire a second `from=0` fetch,
+      // double-rendering every block and overshooting the cursor past EOF (the freeze).
+      var cursor = 0, inflight = false;
       var pull = function () {
-        if (failed) return;
+        if (inflight) return;
+        inflight = true;
         fetch("stream?session=" + encodeURIComponent(sess) + "&from=" + cursor, { cache: "no-store" })
-          .then(function (r) { if (!r.ok) throw 0; return r.arrayBuffer(); })
-          .then(function (buf) {
-            if (!buf.byteLength) return;
-            cursor += buf.byteLength;
-            full += new TextDecoder().decode(buf);
-            ingest(full);
+          .then(function (r) {
+            var off = parseInt(r.headers.get("X-Offset") || "0", 10);
+            return r.arrayBuffer().then(function (b) { return { off: off, bytes: new Uint8Array(b) }; });
           })
-          .catch(function () { /* server gone / mid-write — retry next tick */ });
+          .then(function (d) {
+            var end = d.off + d.bytes.length;
+            if (d.off > cursor || end <= cursor) return; // a gap (retry) or already-seen
+            var skip = cursor - d.off; // bytes we already have (server may overlap)
+            var wasAtBottom = atBottom();
+            var before = stream.childElementCount;
+            consumeDelta(new TextDecoder().decode(d.bytes.subarray(skip)));
+            cursor = end;
+            var added = stream.childElementCount - before;
+            if (added > 0) {
+              if (wasAtBottom) { toBottom(false); clearNew(); }
+              else showNew(added);
+              spy();
+            }
+          })
+          .catch(function () { /* server gone / mid-write — retry next tick */ })
+          .finally(function () { inflight = false; });
       };
       pull();
       setInterval(pull, pollMs);
@@ -808,13 +942,23 @@
   }
 
   document.addEventListener("click", function (e) {
-    // ── tool-use filter controls ──
+    // ── type/tool filter controls ──
     var ti = e.target.closest(".tool-item");
-    if (ti) { setFilter(ti.dataset.tool); toolMenu(false); return; }
+    if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
     if (e.target.closest(".tf-x")) { setFilter(null); toolMenu(false); return; } // ✕ clears
     if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; } // label opens menu
+    // ── agents menu ── an item is an <a href> → let it navigate (this tab); the ⧉ icon
+    // opens the same target in a new tab; the button toggles (unless disabled = no children).
+    var ant = e.target.closest(".agent-newtab");
+    if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank", "noopener"); return; }
+    if (e.target.closest(".agent-item")) return;
+    if (e.target.closest("#btn-agents")) {
+      if (!$("btn-agents").classList.contains("disabled")) agentMenu(!$("agentmenu").classList.contains("on"));
+      return;
+    }
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
+    if (!e.target.closest("#agentmenu")) agentMenu(false);
 
     var sid = e.target.closest("#sid");
     if (sid) {
