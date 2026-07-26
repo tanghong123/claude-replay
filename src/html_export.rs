@@ -1291,6 +1291,15 @@ struct Live {
 struct Tailer {
     last_seen: std::time::Instant,
     prev: Vec<String>,
+    /// The source transcript's byte length at the last parse. Claude's JSONL is
+    /// append-only, so an unchanged length means no new events → skip the re-parse
+    /// entirely (the tailer's whole CPU cost is this parse). `0` forces a first parse.
+    src_len: u64,
+}
+
+/// The current byte length of a file (0 if it can't be stat'd).
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 impl Live {
@@ -1332,11 +1341,13 @@ impl Live {
         };
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(children);
+        let src_len = file_len(&info.source);
         self.tailers.lock().unwrap().insert(
             id.to_string(),
             Tailer {
                 last_seen: std::time::Instant::now(),
                 prev: block_lines(&jsonl),
+                src_len,
             },
         );
         true
@@ -1380,6 +1391,17 @@ impl Live {
                 let Some(info) = self.registry.lock().unwrap().get(&id).cloned() else {
                     continue;
                 };
+                // Skip the parse entirely unless the source grew/shrank since last time.
+                // Claude's JSONL is append-only, so an unchanged length means no new
+                // events — this is what turns a constant re-parse of a huge transcript
+                // into work only when there's actually something new to render.
+                let len = file_len(&info.source);
+                {
+                    let t = self.tailers.lock().unwrap();
+                    if t.get(&id).is_some_and(|tl| tl.src_len == len) {
+                        continue;
+                    }
+                }
                 let (jsonl, children) = match agent_stream(
                     self.agent, &self.args, &self.fold, &self.cwd, true, &info, None,
                 ) {
@@ -1391,6 +1413,7 @@ impl Live {
                 let meta = jsonl.lines().next().unwrap_or("{}");
                 let mut t = self.tailers.lock().unwrap();
                 if let Some(tl) = t.get_mut(&id) {
+                    tl.src_len = len;
                     if let Some(delta) = stream_delta(&tl.prev, &fresh, meta) {
                         let _ =
                             append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
