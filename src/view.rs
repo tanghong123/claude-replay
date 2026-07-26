@@ -1185,6 +1185,27 @@ impl View {
         self.rebuild_raw();
     }
 
+    /// Incremental live update (M16): replace the blocks with a fresh `FollowParser` snapshot
+    /// while PRESERVING per-block fold toggles and the render cache for the unchanged prefix
+    /// — so a live tail doesn't reset the user's expands/collapses or re-render settled
+    /// blocks each poll. Only the changed/appended tail (a back-patched tool block, new
+    /// turns) recomputes. Replaces the old ingest/full-reparse split with one correct path.
+    pub fn update(&mut self, new_blocks: Vec<Block>) {
+        // Longest unchanged prefix — keep its fold state and render cache.
+        let d = self
+            .blocks
+            .iter()
+            .zip(&new_blocks)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let tail = self.fold.collapsed_for(&new_blocks[d..]);
+        self.collapsed.truncate(d);
+        self.collapsed.extend(tail);
+        self.body_cache.truncate(d);
+        self.blocks = new_blocks;
+        self.rebuild_raw();
+    }
+
     fn status_line(&self) -> Line<'static> {
         if let Some(msg) = &self.flash {
             return Line::styled(format!(" {msg} "), theme::badge());
