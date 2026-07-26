@@ -172,7 +172,7 @@ input::placeholder { color: var(--faint); }
 /* Breadcrumb: root › … › parent › current — ascend without the URL bar / browser Back. */
 #crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 12px; }
 .crumb { color: var(--link); text-decoration: none; }
-.crumb-root { font-weight: 600; }
+.crumb-up { font-weight: 600; }
 a.crumb:hover { text-decoration: underline; }
 .crumb-cur { color: var(--muted); }
 .crumb-sep { color: var(--faint); }

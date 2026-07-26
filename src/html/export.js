@@ -394,23 +394,25 @@
     renderAgentMenu(m.children, inTree);
   }
 
-  // The breadcrumb bar: root › … › parent › (current) — each ancestor a link to its
-  // stream, so a sub-agent view can climb back to the main agent (not just browser Back).
+  // The breadcrumb bar: `↑ <parent> › <current>`. Navigation steps up ONE level — to the
+  // session that spawned this one — so the affordance is an up-arrow to the immediate
+  // parent, not a home icon (which would imply a jump straight to the main session that the
+  // server can't always make: a directly-opened deep link only knows its immediate parent).
+  // To climb several levels, step up one at a time. If this view was opened in a *new tab*
+  // (via ⧉), clicking ↑ closes this tab and returns to the parent's already-open tab
+  // (handled in the click router); otherwise the link just navigates this tab.
   function renderCrumbs(ancestors) {
     var nav = $("crumbs");
     if (!nav) return;
     nav.textContent = "";
     if (!ancestors || !ancestors.length) { nav.style.display = "none"; return; }
-    ancestors.forEach(function (a, i) {
-      // The first ancestor is the root — the main session; mark it with a home glyph so
-      // "get back to the main session" is one obvious click, not a guess up the chain.
-      var isRoot = i === 0;
-      var link = el("a", "crumb" + (isRoot ? " crumb-root" : ""), (isRoot ? "⌂ " : "") + (a.title || a.id));
-      link.href = "?session=" + encodeURIComponent(a.id);
-      link.title = (isRoot ? "Back to the main session — " : "Open ") + (a.title || a.id);
-      nav.appendChild(link);
-      nav.appendChild(el("span", "crumb-sep", "›"));
-    });
+    var parent = ancestors[ancestors.length - 1]; // the immediate (spawning) parent
+    var up = el("a", "crumb crumb-up", "↑ " + (parent.title || parent.id));
+    up.href = "?session=" + encodeURIComponent(parent.id);
+    up.dataset.parent = parent.id;
+    up.title = "Back to the parent session — " + (parent.title || parent.id);
+    nav.appendChild(up);
+    nav.appendChild(el("span", "crumb-sep", "›"));
     nav.appendChild(el("span", "crumb crumb-cur", document.title || "current"));
     nav.style.display = "";
   }
@@ -947,10 +949,24 @@
     if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
     if (e.target.closest(".tf-x")) { setFilter(null); toolMenu(false); return; } // ✕ clears
     if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; } // label opens menu
+    // ── breadcrumb "↑ parent" ── if this view was opened in a new tab (so it has an
+    // opener still showing the parent), return to parent = close this tab and refocus the
+    // opener, rather than navigating a duplicate. Same-tab views (no opener) just follow the
+    // link to the parent session.
+    if (e.target.closest(".crumb-up")) {
+      if (window.opener && !window.opener.closed) {
+        e.preventDefault();
+        try { window.opener.focus(); } catch (_) {}
+        window.close();
+      }
+      return;
+    }
     // ── agents menu ── an item is an <a href> → let it navigate (this tab); the ⧉ icon
     // opens the same target in a new tab; the button toggles (unless disabled = no children).
+    // Open WITHOUT `noopener` so the child keeps `window.opener` — that is what lets its
+    // "↑ parent" close-and-return to this tab instead of opening yet another.
     var ant = e.target.closest(".agent-newtab");
-    if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank", "noopener"); return; }
+    if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank"); return; }
     if (e.target.closest(".agent-item")) return;
     if (e.target.closest("#btn-agents")) {
       if (!$("btn-agents").classList.contains("disabled")) agentMenu(!$("agentmenu").classList.contains("on"));
