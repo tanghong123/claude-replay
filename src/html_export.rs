@@ -968,23 +968,17 @@ fn count_tools(blocks: &[Block]) -> usize {
 fn snapshot(
     agent: Agent,
     path: &Path,
-    args: &Args,
     fold: &FoldPolicy,
     reveal: bool,
 ) -> Result<(String, Vec<(String, String)>)> {
-    let (blocks, user_times) = crate::model::parse_path_timed_for(agent, path, args)
+    // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
+    let s = crate::engine::parse_session_as(agent, path)
         .with_context(|| format!("read transcript {}", path.display()))?;
-    let m = metrics::parse_reader_for(
-        agent,
-        std::io::BufReader::new(
-            std::fs::File::open(path)
-                .with_context(|| format!("open transcript {}", path.display()))?,
-        ),
-    );
+    let blocks = s.blocks;
+    let user_times = s.user_times;
+    let m = s.metrics;
     let session_id = session_id(path);
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
     let display = repo_name(&cwd).unwrap_or_else(|| session_id.clone());
@@ -1057,7 +1051,7 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let reveal = false;
-    let (jsonl, turns) = snapshot(agent, path, args, &fold, reveal)?;
+    let (jsonl, turns) = snapshot(agent, path, &fold, reveal)?;
     // The page title is the repo name; files are named by the session id.
     let title = display_title(path);
 
@@ -1112,7 +1106,6 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
     follow_and_append(
         agent,
         path,
-        args,
         &fold,
         Path::new(&cpath),
         block_lines(&jsonl),
@@ -1527,7 +1520,6 @@ fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Option<String>
 fn follow_and_append(
     agent: Agent,
     path: &Path,
-    args: &Args,
     fold: &FoldPolicy,
     companion: &Path,
     mut prev: Vec<String>,
@@ -1535,7 +1527,7 @@ fn follow_and_append(
 ) -> Result<()> {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (fresh, _) = match snapshot(agent, path, args, fold, reveal) {
+        let (fresh, _) = match snapshot(agent, path, fold, reveal) {
             Ok(s) => s,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
