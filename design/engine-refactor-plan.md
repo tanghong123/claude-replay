@@ -20,12 +20,19 @@ What's done vs. deferred:
   line-by-line == full replay. Wiring the live consumers through them (the CPU win) is the
   deferred **M16**.
 - ✅ **M13** — one `BlockKind` classification, coarse (`fold_key`) + fine (`html`) projections.
-- ⏸ **M12** (SessionStore/tiers), **M14** (message block-model lift), **M16** (live-follower
-  routing) — **deferred**. M12 and M16 are large structural reorgs of the *working*
-  live-serving layer (risky to land unattended without interactive served-HTML/live-tail
-  verification); M14 is a sizable byte-identical refactor to converge the documented `Message`
-  waypoint to the clean `Event` set — purely architectural, no functional benefit, best done
-  attended. None is a correctness gap; all are optimizations/cleanups over a complete core.
+- ✅ **M14** — message block-model lift: `Message::ToolUse` carries raw `{id,name,input,cwd}`
+  and L2 shapes the block via `Shaping::build_tool`; `tokenize` no longer builds blocks and
+  `engine::message` no longer references `Block`. Byte-identical (equivalence oracles + a
+  real-transcript pre/post render diff over 11 SubAgent spawns).
+- ✅ **M16** — live consumers routed through the incremental `Replayer` via `FollowParser`
+  (persistent `Replayer<'static>` + byte cursor + reset-on-shrink): the `--dump-html -f`
+  follower, the TUI live tail (`view::update`), and the served `--html -f` `Live` tailer all
+  fold only the delta. Byte-identical (follow==full-reparse both agents), tmux- + curl-verified.
+- ⏸ **M12** (SessionStore/tiers) — **partially subsumed**: M16's `FollowParser` delivered the
+  live-CPU win (the served tailer now folds deltas, not whole-file re-parses). What remains is
+  the `engine::store::SessionStore` type/tier abstraction — optional structural cleanup over a
+  working, incremental serving layer, no user-visible change. Deferred (attended). Not a
+  correctness gap; a cleanup over a complete core.
 
 ## Original definition of done (for reference)
 
@@ -234,10 +241,16 @@ no-op today, verified in M7).
 
 ---
 
-## M14 — message block-model lift (converge the waypoint)
+## M14 — message block-model lift (converge the waypoint) — ✅ DONE
 
 **Goal.** The `Message` log stops carrying built `Block`s — the clean agent-neutral `Event`
 set (§3.1). L1 emits raw-ish tool fields; L2 builds the `Block` in the fold.
+
+**Landed.** `Message::ToolUse { id, name, input, cwd }` (raw); the block is shaped in L2 via
+`Shaping::build_tool` — `claude_build_tool` (`Agent`/`Task`→`SubAgent`, else `ToolUse` with
+`tool_target`/`extract_diffs`) and `codex_build_tool` (`call_details`). `engine::message` no
+longer imports `Block`. The `Attachment` leaf value stays (not a shaped block). Proven
+byte-identical by the equivalence oracles and a real-transcript pre/post render diff.
 
 **Changes.** Move block-shaping (`tool_target`, `extract_diffs`, `call_details`, the two-event
 spawn/completion) from the tokenizers into `Replayer`. Both tokenizers shrink to line-shape →
@@ -286,10 +299,11 @@ external consumer wants it; defer the split otherwise.
 | M9 | streaming driver + freeze old parsers | migration, byte-identical | HIGH | ✅ **done** |
 | M10 | metrics fold-in | byte-identical | MED | ✅ **done** |
 | M11 | incremental primitives (snapshot/extend_ids) | additive, proven | MED | ✅ **done** (routing→M16) |
-| M12 | `SessionStore` + tiers | internal | MED-HIGH | ⏸ deferred (attended) |
+| M12 | `SessionStore` + tiers | internal | MED-HIGH | ⏸ deferred (CPU win subsumed by M16) |
 | M13 | classification unify (BlockKind) | byte-identical | LOW-MED | ✅ **done** |
-| M14 | message block-model lift | byte-identical | MED | ⏸ deferred (architectural) |
+| M14 | message block-model lift | byte-identical | MED | ✅ **done** |
 | M15 | docs finalization (crate split deferred) | docs | LOW | ✅ **done** |
+| M16 | incremental live followers (`FollowParser`) | migration, byte-identical | HIGH | ✅ **done** |
 
 **Recommended order:** M8 → M9 → M10 → M11 → M12, then M13/M14/M15 as cleanups (M13 and M14
 can land any time after M8; M15 last). M8 is the safe keystone; M9 is the load-bearing swap
