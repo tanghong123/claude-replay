@@ -10,15 +10,15 @@
 //!
 //! Phase 1 note: this is a deliberate **waypoint** toward the clean, agent-neutral `Event`
 //! vocabulary specified in `design/parser-engine.md` §3.1 — see the "Message waypoint" note
-//! there. The variants carry `crate::model` types (`Block`, `Attachment`) so the split
-//! reuses the exact block-shaping already proven correct, guaranteeing the
-//! `replay(tokenize(x)) == parse_main(x)` equivalence. Two later, separately-gated steps
-//! converge it: the block-model lift drops this `Block` back-reference and folds the
-//! Claude-shaped variants into the `Event` set; the incremental phase (§5.2 Phase 6) adds
-//! the `seq` / `offset` / `Reset` envelope. `tokenize` / `replay` are already pure and
-//! I/O-free, so they satisfy §3.6's sans-I/O pull core now — only the vocabulary converges.
+//! there. The **block-model lift is done** (M14): no variant carries a built `Block` — the
+//! `ToolUse` variant now holds the raw `name`/`input`/`cwd`, and Layer 2 builds the block
+//! via `Shaping::build_tool`, so Layer 1 (`tokenize`) is pure line-shape → raw fields. The
+//! variants still carry the `Attachment` value type (a leaf, not a shaped block). One later,
+//! separately-gated step remains: the incremental phase's `seq` / `offset` / `Reset`
+//! envelope (§5.2 Phase 6). `tokenize` / `replay` are already pure and I/O-free, so they
+//! satisfy §3.6's sans-I/O pull core now — only the vocabulary converges.
 
-use crate::model::{Attachment, Block};
+use crate::model::Attachment;
 use serde_json::Value;
 
 /// Which queue-operation a `queue-operation` line performed.
@@ -46,10 +46,18 @@ pub enum Message {
     /// Assistant thinking content item + this line's ts (the fold computes the duration
     /// as `ts − trigger_ts`).
     Thinking { text: String, ts: Option<f64> },
-    /// A `tool_use` (an ordinary tool or an `Agent`/`Task` spawn) — its initial block
-    /// shape plus the join `id`. The fold appends it, records `id → index` for the
-    /// back-patch, and tracks the most recent `Skill`.
-    ToolUse { id: String, block: Block },
+    /// A `tool_use` (an ordinary tool or an `Agent`/`Task` spawn) — its **raw** fields
+    /// (the join `id`, the tool `name`, the call `input`, and the session `cwd` used to
+    /// relativize path targets), NOT a built block. The fold builds the block via the
+    /// agent's `Shaping::build_tool` hook, then appends it, records `id → index` for the
+    /// back-patch, and tracks the most recent `Skill`. Keeping the raw fields here (rather
+    /// than a `Block`) is the block-model lift: Layer 1 no longer shapes blocks.
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        cwd: String,
+    },
     /// A `tool_result` to join by id: its text plus the message-level `toolUseResult`
     /// metadata (`Value::Null` when absent).
     ToolResult {

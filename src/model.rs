@@ -1040,47 +1040,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                         let input = blk.get("input").cloned().unwrap_or(Value::Null);
                         let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
-                        let block = if name == "Agent" || name == "Task" {
-                            let s = |k: &str| {
-                                input
-                                    .get(k)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string()
-                            };
-                            let agent_type = {
-                                let t = s("subagent_type");
-                                if t.is_empty() {
-                                    "agent".to_string()
-                                } else {
-                                    t
-                                }
-                            };
-                            Block::SubAgent(SubAgent {
-                                agent_id: String::new(),
-                                tool_use_id: id.to_string(),
-                                agent_type,
-                                description: s("description"),
-                                prompt: s("prompt"),
-                                status: AgentStatus::Running,
-                                result: None,
-                                output_file: None,
-                                blocks: Vec::new(),
-                                subtree_cost: None,
-                            })
-                        } else {
-                            Block::ToolUse {
-                                name: name.to_string(),
-                                target: tool_target(&input, cwd.as_str()),
-                                diffs: extract_diffs(name, &input),
-                                output: None,
-                                patch: None,
-                                read_lines: None,
-                            }
-                        };
+                        // Raw fields only — the block is shaped in L2 via `claude_build_tool`.
                         msgs.push(Message::ToolUse {
                             id: id.to_string(),
-                            block,
+                            name: name.to_string(),
+                            input,
+                            cwd: cwd.to_string(),
                         });
                     }
                     _ => {}
@@ -1188,6 +1153,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 ///   drops boilerplate; Codex keeps every non-empty output.
 /// - `finish`: final turn shaping — Claude groups + coalesces activity; Codex is identity.
 pub(crate) struct Shaping {
+    /// Build the block for a `tool_use` from its raw fields (`id`, `name`, `input`, `cwd`).
+    /// This is the block-model lift's L2 hook (M14): the tokenizer emits raw
+    /// `Message::ToolUse` fields and the fold shapes the block here, so agent-specific
+    /// block construction (Claude's `Agent`/`Task`→`SubAgent`, Codex's name normalization)
+    /// lives in Layer 2, not the tokenizer.
+    pub build_tool: fn(&str, &str, &Value, &str) -> Block,
     pub apply: fn(&mut Block, &str, &Value),
     pub keep_orphan: fn(&str) -> bool,
     pub finish: fn(Vec<Block>) -> Vec<Block>,
@@ -1200,8 +1171,53 @@ fn claude_finish(blocks: Vec<Block>) -> Vec<Block> {
     coalesce_activity_runs(group_turns(blocks))
 }
 
+/// Claude's `build_tool`: an `Agent`/`Task` spawn becomes a launched `SubAgent` block;
+/// any other tool becomes a `ToolUse` with its path target relativized against `cwd` and
+/// its diffs extracted. (Formerly inline in `decode_line`; lifted to L2 in M14.)
+pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) -> Block {
+    if name == "Agent" || name == "Task" {
+        let s = |k: &str| {
+            input
+                .get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let agent_type = {
+            let t = s("subagent_type");
+            if t.is_empty() {
+                "agent".to_string()
+            } else {
+                t
+            }
+        };
+        Block::SubAgent(SubAgent {
+            agent_id: String::new(),
+            tool_use_id: id.to_string(),
+            agent_type,
+            description: s("description"),
+            prompt: s("prompt"),
+            status: AgentStatus::Running,
+            result: None,
+            output_file: None,
+            blocks: Vec::new(),
+            subtree_cost: None,
+        })
+    } else {
+        Block::ToolUse {
+            name: name.to_string(),
+            target: tool_target(input, cwd),
+            diffs: extract_diffs(name, input),
+            output: None,
+            patch: None,
+            read_lines: None,
+        }
+    }
+}
+
 /// Claude's shaping — the historical `parse_main` behavior.
 pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
+    build_tool: claude_build_tool,
     apply: apply_result,
     keep_orphan: claude_keep_orphan,
     finish: claude_finish,
@@ -1291,8 +1307,14 @@ impl<'a> Replayer<'a> {
                     });
                     self.content_seq += 1;
                 }
-                Message::ToolUse { id, block } => {
-                    self.out.push(block.clone());
+                Message::ToolUse {
+                    id,
+                    name,
+                    input,
+                    cwd,
+                } => {
+                    self.out
+                        .push((self.shaping.build_tool)(id, name, input, cwd));
                     self.content_seq += 1;
                     let idx = self.out.len() - 1;
                     if let Block::ToolUse { name, .. } = &self.out[idx] {
