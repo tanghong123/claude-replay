@@ -1,15 +1,75 @@
-# Design: unify the parse backend + expose a reusable engine
+# Design: the three-layer session engine (parse · replay · present)
 
-Status: **proposal** (no code yet). Source: the DESIGN.md backlog item "Unify the
-parse backend + make it a reusable engine" (`DESIGN.md:501`). Goal: an
-agent-agnostic **core** (block model + streaming pipeline + fold policy +
-sub-agent tree + metrics) with a thin **adapter** per agent, consumed by BOTH
-in-repo surfaces (TUI/`--dump` and HTML) and exposable as a standalone library.
+Status: **proposal** (no code yet). Grew out of the DESIGN.md backlog item "Unify the
+parse backend + make it a reusable engine" (`DESIGN.md:501`), but the **scope is now the
+whole engine, not just the parser**: the three-layer architecture (§0) — an agent-specific
+**raw parser** (Layer 1), an agent-agnostic **replay / state builder** (Layer 2), and thin
+per-surface **presenters** (Layer 3) — made **incremental and live** (byte-offset resume,
+mutation-safe append-only log, forward-fold replay, a tiered session store), consumed by
+**every** surface (TUI, `--dump`, `--dump-html`, `--dump-all-html`, served/live `--html`)
+and exposable as a standalone library.
+
+It absorbs and supersedes several things already shipped or half-built: the sub-agent
+model, the HTML multi-file bundle + live server + `/stream` byte cursor + lazy generation,
+the level-3 registry, and the live-tail CPU work (§8.3). Those become *instances* of this
+architecture rather than parallel implementations.
+
+**The prime directive: zero user-facing change.** This is an internal re-architecture. At
+every step the CLI, the on-disk stream format (`<id>.jsonl`), the TUI rendering, and the
+`--dump*`/HTML outputs stay **byte-identical** (the sole intentional exception is the TUI
+Edit diff-numbering bug, fixed as a side effect of unifying the one diff numberer). See §5
+for the step-by-step migration and its preservation guarantees.
 
 Guiding constraint: **preserve the streaming parse** (one JSONL line resident at a
 time; the 298 MB session must stay ~811 MB, not balloon to ~2 GB — see
-`STREAMING-PARSE-DESIGN.md`). This refactor must be byte-identical on output and
-must not regress peak RSS.
+`STREAMING-PARSE-DESIGN.md`). This refactor must not regress peak RSS, and the
+incremental paths (§8) must strictly *reduce* live CPU, never increase it.
+
+---
+
+## 0. The three layers (the north star)
+
+Everything below reduces to a strict three-layer pipeline. Each layer has one clean
+contract, is independently testable, and is incremental. **The layer boundaries are the
+reuse boundaries: a new *agent* touches only Layer 1; a new *surface* touches only Layer
+3; all the hard, shared machinery lives once in Layers 1–2.**
+
+1. **Raw parser — transcript bytes → a canonical *message log*.** The *agent-specific*
+   layer: Claude vs Codex line shapes live here (the `Transcript` adapter, §2.2). Cheap,
+   near-stateless tokenization — **no back-patch, no grouping, no joins**. Incremental by
+   byte offset and mutation-safe (kept-tail compare → `reset`, §8.3.2). Output: a
+   **strictly append-only** message log (appends + `reset` markers).
+
+2. **Replay / state builder — message log → in-memory `Session`.** *Agent-agnostic*,
+   operating only on canonical messages. A **strictly-forward fold**: appends blocks,
+   back-patches via an `id → block ref` index (O(1), never rewinds/re-scans), groups +
+   coalesces the current turn, and builds the §7 indices + metrics. Incremental; the only
+   rewind is a Layer-1 `reset`. Output: the `Session` — the single source of truth.
+
+3. **Presentation — `Session` state → what the user sees.** *Agent-agnostic,
+   surface-specific*: one thin formatter per surface over the same `Session` — `render.rs`
+   (ratatui lines, TUI), `--dump` (text/ansi), `html_export` (the block-record stream).
+   Incremental too (append blocks + `reset`; the client DOM patches).
+
+### How each surface maps onto the layers
+
+| Surface | L1 parse | L2 replay | L3 present |
+|---|---|---|---|
+| `--dump` / `--dump-html` / `--dump-all-html` | backend, one-shot | backend | backend → text·ansi, or block-record file(s) |
+| TUI (`-f`) | backend, incremental | backend, incremental | backend → ratatui redraw |
+| live HTML (`-f --html`) | backend, incremental | backend, incremental | **backend** → append-only `<id>.jsonl` block stream · **client** → DOM |
+
+For live HTML the client/server split lands **inside Layer 3**: the backend does
+L1 + L2 + L3a (`Session` → the block-record stream), the client does L3b (block records →
+DOM). Replay (L2) stays **server-side** — one Rust fold shared with the TUI *and* the dump
+family; going client-side would fork L2 into JS and diverge from the TUI (§8.3.2 "replay
+location"). The server holds only the **unstable-tail** replay state in RAM; stable
+history lives on disk (`<id>.jsonl`, tier b) + the client DOM, so it is not a full
+duplicate — the §8.3.2 incremental fold is what keeps L2's footprint bounded to the
+current turn.
+
+§1–§7 below detail Layers 1–3 (adapters, engine core, block model, indices); §8 details the
+incremental + residency machinery that makes Layers 1–2 cheap and live.
 
 ---
 
@@ -125,6 +185,13 @@ model the whole refactor should imitate: **one core policy, two consumers.**
 ---
 
 ## 2. Proposed layering
+
+> **Note (reconciled with §0):** this section was written before the three-layer framing
+> and shows L1+L2 *fused* — `Transcript::steps` emitting `Step::Emit(Block)` with the
+> `Engine::run` back-patch loop. The current design splits them at the **canonical message
+> log** (§0, §6.1-resolved): L1 (`Transcript`) emits *messages*, not built blocks; L2 folds
+> messages → `Session`. Read `Step` below as "the message an adapter emits" and `Engine::run`
+> as "L2's fold"; the `EngineOut`/`Session` shape and the registry idea are unchanged.
 
 ```
                          ┌──────────────────────────────────────────┐
@@ -499,108 +566,153 @@ the store decides which sessions stay resident.
 
 ---
 
-## 5. Migration plan (incremental; each step compiles + `cargo test` green)
+## 5. Migration plan — refactor to the three layers with **zero user impact**
 
-The whole point is **no big-bang rewrite**. Each step is independently shippable and
-guarded by the existing golden tests: `parse_path_matches_parse_str` (`model.rs:2038`),
-`result_before_tool_use_still_joins` (`model.rs:2001`),
-`orphan_result_with_no_tool_use_shown_inline` (`model.rs:2022`),
-`joins_tooluseresult_metadata` (`model.rs:1932`), the coalesce/group tests, and the
-Codex `parse_path_matches_string…` (`codex_model.rs:485`). Plus the manual
-`--dump` equivalence sweep from STREAMING-PARSE-DESIGN.md §Testing.
+The re-architecture is large, so it lands as a sequence of independently-shippable phases,
+each compiling + `cargo test`-green, each preserving user-visible behavior byte-for-byte.
+No big-bang rewrite; the old code path stays live until the new one is proven equal.
 
-**Step 0 — dedupe pure helpers (no behavior change).**
-Create `engine/time.rs` (`epoch_secs`) and `engine/path.rs` (`relativize*`); delete
-the copies at `codex_model.rs:396,381` and fold `metrics::parse_ts` (`metrics.rs:34`)
-onto `engine::time`. Risk: `parse_ts` returns `i64`, `epoch_secs` returns `f64` — add
-one `as` cast, keep both call sites. Green by construction (algorithms are identical;
-`relativize_uses_cwd_then_home_tilde` at `model.rs:1867` still passes).
+### 5.0 The preservation contract (what "no user impact" means, and how it's enforced)
 
-**Step 1 — introduce the core skeleton, Claude on it, behind the same API.**
-Add `engine/{mod,event,block,metrics}.rs`. Move `Block`/`SubAgent`/`Attachment`/
-`fold_key` into `engine/block.rs` (re-export from `model` so nothing else moves yet).
-Write `Engine::run`/`run_str` reproducing `parse_main` exactly. Write
-`ClaudeTranscript` = today's `parse_main` `match` body split into
-`steps`+`apply_result`+`tool_use_id`+`finish`(=group+coalesce). Repoint
-`model::parse`/`parse_path` at `Engine`. **Risk: the back-patch + duplicate-id +
-result-before-use semantics** (`model.rs:838-846` doc, the `pending`/`tool_slot`
-dance) must be reproduced bit-for-bit — this is the highest-risk step; the four
-golden tests above are the gate. Green.
+Every phase must hold these invariant outputs — they are the acceptance gate:
 
-**Step 2 — Codex onto the same skeleton.**
-Write `CodexTranscript` from `parse_lines` (`codex_model.rs:59`); `finish` = identity
-(Codex doesn't group/coalesce). Delete `parse_lines`'s duplicated slot/pending loop.
-Gate: `codex_model.rs:447,485` tests. Green.
+- **`--dump` / `--dump-html` / `--dump-all-html`** produce **byte-identical** files (the
+  one intentional exception, called out where it lands: the TUI/HTML Edit diff-numbering
+  bug is *fixed* when the two numberers unify — that changes TUI output on purpose).
+- **The live HTML on-disk stream format** (`<id>.jsonl` records: `meta`/`block`/`reset`,
+  their `head`/`body`/`kind` shapes) is **unchanged**, so a page served by an older binary
+  and one served by the new engine render identically, and the client JS needs no change.
+- **The TUI** renders identically (same `TestBackend` cell output; same tmux e2e).
+- **Same CLI** — every flag, `--latest`, the picker, `-f`, `agent-jdi` — unchanged.
+- **RSS not regressed** (the streaming invariant) and **live CPU only improves** (the
+  incremental phases are strict wins over today's whole-file re-parse).
 
-**Step 3 — fold metrics into the pass; return `Session`.**
-Add `fold_metrics` to both adapters (bodies from `metrics::parse_from_lines` and
-`codex_metrics::parse_codex_reader`). `Engine::run` returns `EngineOut { blocks,
-metrics, user_times }`. Add `parse_session*`. Repoint `app.rs:199-222` and
-`html_export::snapshot` (`html_export.rs:772`) to `Session`, deleting their second
-`File::open`. Repoint `subtree_cost` to the child `Session.metrics` (drop
-`model.rs:698`'s open). **Risk: `_timed` semantics** — `user_times` must stay one
-entry per `UserText`/`Command`, in order (`stamp_user_turns`, `model.rs:1364`); the
-Engine now always fills it (TUI ignores it). Gate: HTML export tests +
-`parse_path_timed_for` callers. **Re-measure RSS** here. Green.
+Verification harness (build once, run every phase):
 
-**Step 4 — collapse the `match agent` dispatch into the registry.**
-Replace `model.rs:607,718,744` + `metrics.rs:88` with `engine::transcript(agent)`.
-Move `detect_agent`/`session_cwd` arms (`discover.rs:288,311`) behind
-`Transcript::detect`/`session_cwd` (or a sibling `Discover` trait). Green.
+1. **Golden parse tests** (already exist): `parse_path_matches_parse_str` (`model.rs`),
+   `result_before_tool_use_still_joins`, `orphan_result_with_no_tool_use_shown_inline`,
+   `joins_tooluseresult_metadata`, the coalesce/group tests, the Codex
+   `parse_path_matches_string…`, plus the sub-agent + two-event + attachment tests.
+2. **A dump-equivalence corpus sweep**: a script that runs `--dump`, `--dump-html`,
+   `--dump-all-html` over a fixed corpus of real transcripts and diffs against a
+   checked-in set of output hashes. Run before/after each phase — the primary "no user
+   impact" proof. (Corpus lives in the sibling `claude-replay-eval` repo; no real `.jsonl`
+   in this tree.)
+3. **HTML stream tests** (`html_export` `stream(...)`) + the served/live browser smoke.
+4. **The `tmux` e2e** for TUI + descend/ascend + live tail.
+5. **An RSS probe** re-run at the metrics-fold and incremental phases (298 MB session).
 
-**Step 5 — one classification; kill the drifted maps + the diff-numbering bug.**
-Add `engine::block::BlockKind` / `tool_kind(name)`; derive `fold_key`
-(`model.rs:192`), `html_kind` (`html_export.rs:211`), and render's inline arms from
-it. Extract ONE hunk-numbering function used by both `render::render_patch`
-(`render.rs:349`) and `html_export::diff_part` (`html_export.rs:288`) — closing the
-TUI-diff-numbering bug (`DESIGN.md:494`) as a side effect. Gate: the render + html
-diff tests. Green.
+### 5.1 Existing functionality → where it lands (the compatibility map)
 
-**Step 6 — the library surface + example (+ optional crate split).**
-Document `parse_session`/`Session`/`ParseOptions` in `lib.rs`; add `examples/parse.rs`
-(§3). Optionally lift `engine/` into a `claude-replay-core` workspace crate: it has
-no ratatui/syntect/clap deps, so the split is mechanical — `render`/`view`/
-`html_export` depend on `core`, the CLI depends on both. Defer unless a real external
-consumer wants it; the `pub mod engine` surface satisfies the backlog deliverable
-either way.
+Nothing is dropped; everything re-homes onto a layer. The middle column is what *moves*;
+the right column is what *proves it still works*.
 
-**Step 7 (optional) — lazy sub-agents.**
-Implement `SubAgentLoad::Summary` (§4.3) and switch the TUI to it if the load-latency
-win measures out. Purely additive; `Eager` stays the default.
+| Existing functionality (today) | Re-homes to | Preserved by |
+|---|---|---|
+| `parse_main` / `parse_lines` (parse **+** back-patch **+** group, fused) | **L1** tokenize (per agent) **+ L2** fold (shared) | golden parse tests + dump sweep |
+| `metrics::parse_reader_for` (separate 3rd pass) | **L2** metrics fold (same pass) | metrics footer tests + RSS probe |
+| `enrich_subagents` / `subtree_cost` (eager tree) | **L1/L2** per-source + `SubAgentLoad` + the store | sub-agent + descend tests |
+| `render.rs` (blocks → ratatui) | **L3** presenter over `Session` | TestBackend + tmux e2e |
+| `--dump` text/ansi | **L3** presenter | dump sweep |
+| `html_export` Emitter (blocks → records) | **L3** presenter (the record stream) | HTML stream tests |
+| the live HTML client JS (records → DOM) | **L3b** (client half; unchanged) | browser smoke |
+| `html_export::{serve, follow_tree, agent_stream, Live}` | the **SessionStore** + **L2 incremental ingest** | served smoke + a store test |
+| `tail.rs` `TailReader` + `view::ingest` (TUI live) | **L1 incremental** + **L2 ingest** (shared with HTML) | tmux live-tail e2e |
+| `discover` / `codex_discover` (`detect_agent`, cwd, candidates) | **L1** adapter discovery hooks | discovery tests |
+| `agent-jdi` (uses `discover`/`model`) | consumes the **library `Session`** (§3); no behavior change | jdi fixture tests |
+| the `--dump-html` / `--dump-all-html` / attachments / two-event model | **L3** over the same `Session`; unchanged records | existing tests + dump sweep |
 
-**Step 8 — the derived `SessionIndex` (§7).**
-Build `agents`/`tools`/`attachments` during pass 2, returned on `Session.index`. Start
-with the **derived-view fallback** (§7.2): `SubAgent` stays inline; the index mirrors
-its status, rebuilt on every parse/ingest. Repoint `view::active_agent_indices` +
-the `a` popup at `index.active_agents()` (removing the block-scan). Gate: the popup /
-`a active N` tests. Green, and additive (no block-model change). Lifting agent metadata
-fully into the index (`Block::AgentSpawn{id}`, §7.2) is a later, separately-gated step
-taken only when a second consumer needs it.
+### 5.2 The phases
 
-**Step 9 (optional) — the `SessionStore` (§8).**
-Introduce `engine::store` with `load`/`evict` + `engine::ingest(&mut Session, delta)`
-(promoting `view::ingest`). Collapse the `app.rs` `Frame` stack to a `Vec<SessionId>`
-over the store; route descend/ascend/switch/live-tail through `load`. `build_child_frame`'s
-hand-rolled lazy child load falls out as the store default. Gate: the tmux descend/
-ascend e2e + a new store test (load → grow file → fast-forward vs evict → reload). This
-is the largest behavioral change and stays optional until the memory ceiling on
-wide/deep trees (or a long-lived server) actually bites.
+**Phase 0 — dedupe pure helpers (no behavior change).** `engine/time.rs` (`epoch_secs`),
+`engine/path.rs` (`relativize*`); fold `metrics::parse_ts` onto `engine::time` (one `i64`
+→ `f64` cast). Green by construction.
+
+**Phase 1 — carve out Layer 1 and Layer 2, Claude first (the highest-risk step).** Define
+the canonical **`Message`** log (the L1↔L2 contract) and split `parse_main` into: L1
+`tokenize(lines) -> Vec<Message>` (the Claude adapter — line shapes only, **no**
+back-patch/grouping) and L2 `replay(messages) -> Session` (agent-agnostic forward fold: the
+`id → block ref` back-patch, `group_turns`/`coalesce_activity_runs`, `stamp_user_turns`).
+Keep the old `parse_main` alongside; assert `replay(tokenize(x))` is **bit-identical** to it
+on the whole golden corpus before deleting it. This is where the `pending`/`tool_slot`
+semantics (`model.rs:838-846`) move into L2's index — the four join/order golden tests are
+the gate. *Resolves §6.1 toward the message log (fine-grained), because L1 emitting messages
+(not blocks) is what makes incremental replay + the append-only-log contract possible.*
+
+**Phase 2 — Codex onto the same L1/L2.** Codex adapter = an L1 tokenizer for Codex's
+`response_item` shapes; L2 is shared (Codex's `finish` is identity — no grouping). Delete
+`parse_lines`'s duplicated slot/pending loop. Gate: the Codex golden tests + dump sweep.
+
+**Phase 3 — Layer 3 becomes thin presenters over `Session`; unify classification.** Repoint
+`render.rs`, `--dump`, and `html_export`'s Emitter to consume `Session` (they nearly do —
+all read `blocks`). Introduce one `BlockKind`/`tool_kind` that `fold_key`, `html_kind`, and
+render's inline arms derive from, and **one** hunk-numberer shared by `render::render_patch`
+and `html_export::diff_part` — this is the single **intentional** output change (fixes the
+TUI Edit diff-numbering bug). Gate: render + html diff tests, dump sweep (with the diff-fix
+delta acknowledged).
+
+**Phase 4 — `Session` as the public shape + fold metrics in.** L2 folds metrics as it
+builds (kills the separate `metrics::parse_reader_for` pass and the 2nd/3rd `File::open` in
+`app.rs`/`html_export`). Add `parse_session(path) -> Session` (§3). Repoint the TUI
+`build_frame` and `html_export::snapshot`/`agent_stream` at it. **Re-measure RSS.** Gate:
+metrics + HTML + `parse_path_timed_for` callers; dump sweep.
+
+**Phase 5 — the `SessionIndex` (§7), derived-view first.** Build `agents`/`tools`/
+`attachments` in L2, on `Session.index`. Repoint `active_agent_indices` + the `a` popup at
+`index.active_agents()` (drop the block-scan). Additive, no block-model change. Gate: the
+popup / `a active N` tests.
+
+**Phase 6 — Layer 1 incremental (byte-offset resume + mutation-safe append-only log).**
+Promote L1 to resume from a byte offset and emit a `reset` on a kept-tail mismatch (§8.3.2).
+The batch path still works; incremental is additive and only exercised by the live paths.
+Gate: a new L1 test (append → resume identical; mutate tail → realign + `reset`).
+
+**Phase 7 — Layer 2 incremental (`engine::ingest`) — the live-CPU fix.** Add
+`ingest(&mut Session, delta_messages)`: forward-fold the delta, back-patch via the index,
+rewind only on `reset`. Route **both** the TUI live tail and the HTML `follow_tree`/
+`agent_stream` through it, replacing today's whole-file re-parse and the TUI's ad-hoc
+`view::ingest`. This retires the §8.3 stop-gap (skip-if-unchanged) — now the tailer folds
+only the tail. Gate: tmux live-tail e2e (unchanged behavior) + a CPU probe on the 47 MB
+session (must drop vs today) + byte-identical stream output vs a full re-parse.
+
+**Phase 8 — the `SessionStore` + tiers re-home the store-shaped code (§8).** Fold
+`html_export::Live` (registry, lazy generation, tailer, `/stream` cursor) and the TUI
+`Frame` stack into `engine::store` (`see`/`load`/`evict`, the three tiers). The served HTML
+becomes a thin serving layer over the store; `<id>.jsonl` becomes tier (b) explicitly. No
+user-visible change — same URLs, same records, same lazy behavior. Gate: served smoke +
+descend/ascend e2e + the store test (load → grow → fast-forward vs evict → reload).
+
+**Phase 9 — library surface + optional crate split.** Document `parse_session`/`Session`/
+`ParseOptions`; add `examples/parse.rs`. `agent-jdi` switches to the library `Session`
+(no behavior change). Optionally lift `engine/` into a `claude-replay-core` crate (no
+ratatui/syntect/clap deps → mechanical). Defer the split until an external consumer wants
+it.
+
+**Optional, any time after Phase 5:** `SubAgentLoad::Summary` lazy sub-agents (§4.3);
+lifting agent metadata fully into the index (`Block::AgentSpawn{id}`, §7.2) once a second
+consumer needs it.
+
+Ordering rationale: Phases 0–4 are the *pure re-architecture* (behavior frozen, dump sweep
+is the proof); Phases 6–8 are the *incremental/live* wins (they change internals + CPU, not
+output); Phase 9 is *exposure*. A reader can stop after Phase 4 and already have the unified
+engine with byte-identical output; 6–8 are what make the live surfaces cheap.
 
 ---
 
 ## 6. Open questions / tradeoffs
 
-1. **`Step` granularity: coarse (Blocks) vs fine (semantic events).** The proposal
-   is *coarse* — the adapter builds `Block`s and the core only does mechanism. This
-   keeps agent-specific block-shaping (e.g. Claude's skill-body nesting
-   `attach_skill_body` at `model.rs:247`, queue-marker suppression `model.rs:1214`)
-   inside the adapter, at the cost of those Claude-only quirks not being "core". A
-   *fine* event vocabulary would centralize block-shaping but bloat the enum and
-   force Codex to model concepts it lacks. **Recommend coarse**; revisit only if a
-   third agent shares Claude's quirks. Validate: can Claude's `suppress`/`queue`
-   post-pass (`model.rs:1214-1228`) live cleanly in `finish`, or does it need loop
-   state? (It uses `content_seq`/`marker_idx` tracked during the loop — may need to
-   ride along in `EngineOut` or a per-adapter scratch, a wrinkle in the coarse model.)
+1. **~~`Step` granularity: coarse (Blocks) vs fine (semantic events).~~ RESOLVED — the
+   L1↔L2 boundary is the fine-grained canonical *message log*, not blocks** (§0, §5.2
+   Phase 1). The three-layer model forces this: L1 must emit messages (not built blocks)
+   for incremental replay + the append-only-log-with-reset contract to work, and to keep
+   L2 (the fold: back-patch/grouping) agent-agnostic. So the adapter (L1) does line-shape
+   tokenization only; the Claude-only shaping quirks — skill-body nesting
+   (`attach_skill_body`, `model.rs:247`), queue enqueue/dequeue suppression
+   (`model.rs:1214-1228`), the two-event spawn/completion split — move to **L2's fold**,
+   which is where the `content_seq`/`marker_idx` loop state naturally lives (it folds
+   forward with exactly that state). Open sub-question deferred to build time: the precise
+   `Message` vocabulary — how much stays a raw-ish "one message per interesting line" vs a
+   few synthetic helper messages (turn-boundary, metrics-delta) that make L2 cheaper.
 
 2. **Metrics fold: pass 1 or pass 2?** Pass 2 (proposed) reuses the already-decoded
    `Value`. Pass 1 is id-only today and cheaper to keep that way. No strong reason
@@ -1072,20 +1184,34 @@ at (a), everything ever opened durable at (b)).
 
 ## Recommendation (summary)
 
-Introduce an **agent-agnostic `engine`** that owns the streaming skeleton (id
-pre-scan, back-patch slots/pending, timestamps, user-turn stamping, thinking
-duration, sub-agent enrich, and **metrics folded into the same pass**), and a
-**`Transcript` trait** (one file per agent, mirroring the existing
-`jdi::AgentAdapter` precedent) whose whole job is `tool_use_id` + `steps` +
-`apply_result` + `fold_metrics` + `finish`. `parse_main` and `parse_lines` — two
-copies of the same loop today — collapse onto that one skeleton. Expose
-`parse_session(path) -> Session { blocks, metrics, user_times, cwd, agent }` as the
-public library surface; the TUI's `render.rs` and the HTML `html_export.rs` become
-thin formatters over `Session`, each losing its **second file open** for metrics and
-sharing **one** classification + diff-numbering (closing the current TUI diff bug).
-Migrate in green steps, highest risk being the bit-for-bit back-patch semantics
-in Step 1 — guarded by the existing golden tests and the `--dump` equivalence sweep.
-Keep the two-read streaming invariant intact and re-measure RSS at Step 3.
+Adopt the **three-layer session engine** (§0): an agent-specific **Layer 1** raw parser
+(transcript bytes → a canonical, append-only **message log**; incremental by byte offset,
+mutation-safe via a kept-tail compare + `reset`), an agent-agnostic **Layer 2** replay /
+state builder (message log → `Session` by a strictly-forward fold: `id → block ref`
+back-patch, grouping, **metrics folded in**, the §7 indices), and thin per-surface **Layer
+3** presenters over the one `Session` (`render.rs`, `--dump`, the `html_export` record
+stream; the live-HTML client is the only piece outside the binary, a dumb DOM renderer).
+The boundaries are the reuse boundaries: a new **agent** = one Layer-1 tokenizer; a new
+**surface** = one Layer-3 presenter.
+
+`parse_main`/`parse_lines` (parse+back-patch+group fused today) split into L1+L2;
+`metrics::parse_reader_for`'s separate pass folds into L2; `render`/`dump`/`html_export`
+become L3 formatters over `Session`, sharing **one** classification + diff-numberer
+(closing the TUI diff bug). The multi-session machinery becomes *instances* of L1/L2: the
+**`SessionIndex`** (§7 — the liveness truth + fast filter/jump), the **incremental
+ingest** (§8.3.2 — L1 resume + L2 forward-fold, the live-CPU fix that retires the
+skip-if-unchanged stop-gap), and the tiered **`SessionStore`** (§8) that the HTML `Live`
+server + `/stream` cursor + lazy generation + the TUI `Frame` stack all collapse onto.
+
+**Ship it as a behavior-preserving migration (§5), not a rewrite.** The prime directive is
+**zero user impact**: byte-identical `--dump*`/HTML/TUI output and an unchanged `<id>.jsonl`
+stream format at every phase (sole intentional exception: the diff-numbering fix), enforced
+by the golden tests + a dump-equivalence corpus sweep + the tmux/browser smokes + an RSS
+probe. Phases 0–4 are the frozen-behavior re-architecture (stop here and you already have
+the unified engine); 6–8 are the incremental/live CPU wins; 9 exposes the library. Highest
+risk is Phase 1's bit-for-bit L1+L2 = `parse_main` equivalence — proven against the corpus
+before the old path is deleted. Keep the two-read streaming invariant; live CPU only
+improves.
 
 On top of that skeleton, build two capabilities the multi-session sub-agent world
 needs (§7–§8): a **`SessionIndex`** derived in the same pass — agents, tools,
