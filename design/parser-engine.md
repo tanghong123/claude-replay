@@ -747,6 +747,64 @@ Example 2; `--html -f` is Example 5. Nothing in the binary reaches under the lib
 is the working proof a third party could build their own transcript app (a web dashboard, a
 CI log viewer, a cost report over a directory of sessions) on the same `replay-core`.
 
+### 3.6 Push vs. pull — a sans-I/O core, with push as an opt-in shell
+
+A streaming engine forces a control-flow choice: does the engine **call you** (push — it
+owns a thread / fs-watch and invokes your callback when a block arrives) or do you **call
+it** (pull — you hand it bytes and ask for the delta when you want)? The decision here, and
+why it matters for a *library*:
+
+**`replay-core` is strictly pull — a sans-I/O state machine.** `Parser::resume(cursor)` and
+`Replayer::apply(delta)` are pure and synchronous: the client supplies the bytes *and* the
+timing; the engine never opens a file, spawns a thread, blocks, or holds a runtime. It is a
+[sans-I/O](https://sans-io.readthedocs.io/) value you feed — like `rustls`'s connection
+state machine or `h11` — not a service you subscribe to.
+
+Why pull for the core:
+- **Zero forced dependencies / portability.** No `tokio`, `notify`, or threads in
+  `replay-core`, so it embeds anywhere: a native TUI, a server with its *own* runtime, WASM
+  in a browser tab. A push core would conscript every consumer into its concurrency model.
+- **Determinism & headless testing.** Feed a `&str`, assert the `Session` — no clock, no
+  threads, no flake. The same property that lets the TUI test under `TestBackend` with no
+  TTY; the core inherits it by never owning I/O.
+- **Backpressure is free.** The client reads at its own pace and coalesces polls. The
+  live-feed freeze bug (§8.3, the `/stream` byte cursor) was exactly a *pull-cursor
+  discipline* bug, and its fix was a client-side cursor rule — no engine change. Pull put the
+  control point where the bug, and the fix, actually lived.
+- **Scheduling lives in ONE place — the store, not the core.** Many HTML clients tail the
+  same session; the `SessionStore` (§8.3) owns a *single* background tailer and fans the
+  delta out. A pushing core would duplicate that scheduling and fight it.
+
+**Push is a thin, optional driver built ON the pull core** — for consumers who genuinely
+want "tell me when it changed." It owns the I/O (an fs-watch + the pull loop) and delivers
+deltas by callback or channel; it sits behind a feature flag (or inside `-tui` / `-html`),
+and the core never depends on it:
+
+```rust
+// replay-core::follow  (feature = "follow"; this is the only thing that pulls in `notify`)
+pub struct Follower { /* Parser + Replayer + cursor + fs-watch */ }
+impl Follower {
+    /// Reactive: call back on each batch (drop the handle to stop).
+    pub fn spawn(path: &Path,
+                 on_delta: impl FnMut(&[Message], &Session) + Send + 'static)
+        -> io::Result<Follower>;
+    /// …or stay pull-friendly: hand deltas over a channel the client selects on.
+    pub fn deltas(path: &Path) -> io::Result<Receiver<Delta>>;
+}
+```
+
+Two inversions that look like push but are **not** this axis — internal, and deliberate:
+- **`Adapter::decode(line, &mut out)`** is the engine calling the adapter — but only while
+  the *client* is pulling bytes through it; the adapter is a mapping function, not an I/O
+  owner. The `&mut dyn Extend<Event>` sink (vs. a returned `Vec`) is a zero-alloc streaming
+  choice, nothing more.
+- **`Viewer::handle(input) -> Dirty`** returns a redraw hint as a *value*; the client
+  decides when to repaint. A return signal, not a callback — still pull.
+
+So: **passive core, reactive edges.** The engine is something you drive; if you'd rather be
+driven, you opt into a `Follower` — which is itself just a loop that drives the engine for
+you. The push option never leaks its threads or deps into anyone who didn't ask for it.
+
 ---
 
 ## 4. Resource strategy
