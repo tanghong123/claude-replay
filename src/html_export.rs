@@ -869,10 +869,17 @@ fn build_page(
 <div id="topbar">
   <div class="brand">claude-replay <span class="brand-sub">· session export</span></div>
   <div class="toolfilter">
-    <button id="btn-tools" class="tbtn"><span class="tf-label">Tools ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
+    <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
-      <div class="menu-head">Filter by tool use</div>
+      <div class="menu-head">Filter by type / tool</div>
       <div id="toolitems"></div>
+    </div>
+  </div>
+  <div class="toolfilter" id="agentnav" style="display:none">
+    <button id="btn-agents" class="tbtn"><span class="tf-label">Agents ▾</span></button>
+    <div id="agentmenu">
+      <div class="menu-head">Sub-agents of this session</div>
+      <div id="agentitems"></div>
     </div>
   </div>
   <div class="searchbox">
@@ -901,6 +908,7 @@ fn build_page(
   </nav>
   <main id="main">
     <section class="session-header">
+      <nav id="crumbs" style="display:none"></nav>
       <div class="session-title" id="title">{title_esc}</div>
       <div class="session-meta" id="meta"></div>
     </section>
@@ -1120,6 +1128,9 @@ struct AgentInfo {
     source: std::path::PathBuf,
     title: String,
     agent_type: String,
+    /// The ancestry from the root down to this agent's parent — `(id, title)` each — for
+    /// the breadcrumb. Empty for the root.
+    ancestors: Vec<(String, String)>,
 }
 
 /// A direct child spawned in a source's blocks — enough to register + resolve its own
@@ -1176,28 +1187,59 @@ fn agent_stream(
         }
         Err(_) => json!({}),
     };
+    // This agent's spawned children, in launch order, each flagged running (a spawn with
+    // no matching completion yet) vs done — drives the "Agents ▾" menu (active first).
+    let done: std::collections::HashSet<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::AgentDone { agent_id, .. } if !agent_id.is_empty() => Some(agent_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let child_refs = collect_child_refs(&blocks);
+    let children: Vec<Value> = child_refs
+        .iter()
+        .map(|c| {
+            let title = if c.description.is_empty() {
+                &c.agent_type
+            } else {
+                &c.description
+            };
+            json!({ "id": c.id, "title": title, "type": c.agent_type, "running": !done.contains(c.id.as_str()) })
+        })
+        .collect();
+    let ancestors: Vec<Value> = info
+        .ancestors
+        .iter()
+        .map(|(id, title)| json!({ "id": id, "title": title }))
+        .collect();
     let meta = json!({
         "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
         "cwd": cwd, "turns": count_turns(&blocks), "tools": count_tools(&blocks),
         "agent_type": &info.agent_type, "usage": usage,
+        "ancestors": ancestors, "children": children,
     });
     let (jsonl, _) = build_jsonl_inner(&blocks, &user_times, fold, cwd, reveal, true, assets, meta);
-    Ok((jsonl, collect_child_refs(&blocks)))
+    Ok((jsonl, child_refs))
 }
 
-/// The `AgentInfo` for a discovered child: title = its description (else its type).
-fn child_info(root_path: &Path, c: ChildRef) -> Option<AgentInfo> {
+/// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
+/// description (else its type), and its ancestry is the parent's ancestry + the parent.
+fn child_info(root_path: &Path, parent: &AgentInfo, c: ChildRef) -> Option<AgentInfo> {
     let source = crate::model::subagent_file(root_path, &c.id)?;
     let title = if c.description.is_empty() {
         c.agent_type.clone()
     } else {
         c.description
     };
+    let mut ancestors = parent.ancestors.clone();
+    ancestors.push((parent.id.clone(), parent.title.clone()));
     Some(AgentInfo {
         id: c.id,
         source,
         title,
         agent_type: c.agent_type,
+        ancestors,
     })
 }
 
@@ -1228,6 +1270,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         source: path.to_path_buf(),
         title: title.clone(),
         agent_type: String::new(),
+        ancestors: Vec::new(),
     }]);
     let mut seen = std::collections::HashSet::new();
     let mut count = 0usize;
@@ -1244,7 +1287,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .with_context(|| format!("write stream {}", info.id))?;
         count += 1;
         for c in children {
-            if let Some(ci) = child_info(path, c) {
+            if let Some(ci) = child_info(path, &info, c) {
                 queue.push_back(ci);
             }
         }
@@ -1325,6 +1368,7 @@ impl Live {
                 source,
                 title: id.to_string(),
                 agent_type: String::new(),
+                ancestors: Vec::new(), // unknown ancestry for an un-navigated deep link
             })
         });
         let Some(info) = info else {
@@ -1340,7 +1384,7 @@ impl Live {
             Err(_) => return false,
         };
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
-        self.register_children(children);
+        self.register_children(&info, children);
         let src_len = file_len(&info.source);
         self.tailers.lock().unwrap().insert(
             id.to_string(),
@@ -1353,14 +1397,15 @@ impl Live {
         true
     }
 
-    /// Register discovered children so their `?session=` links resolve to a source later.
-    fn register_children(&self, children: Vec<ChildRef>) {
+    /// Register `parent`'s discovered children so their `?session=` links resolve to a
+    /// source later — carrying the ancestry (parent's + parent) for their breadcrumb.
+    fn register_children(&self, parent: &AgentInfo, children: Vec<ChildRef>) {
         let mut reg = self.registry.lock().unwrap();
         for c in children {
             if reg.contains_key(&c.id) {
                 continue;
             }
-            if let Some(ci) = child_info(&self.root_path, c) {
+            if let Some(ci) = child_info(&self.root_path, parent, c) {
                 reg.insert(ci.id.clone(), ci);
             }
         }
@@ -1408,7 +1453,7 @@ impl Live {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                self.register_children(children);
+                self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
                 let mut t = self.tailers.lock().unwrap();
@@ -1558,6 +1603,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
             source: path.to_path_buf(),
             title: title.clone(),
             agent_type: String::new(),
+            ancestors: Vec::new(),
         },
     );
     // The shell + the root stream up-front so the first page load is instant.
@@ -2049,13 +2095,29 @@ mod tests {
             assert_eq!(o["head"]["child"], json!("?session=a1"));
         }
 
-        // Child stream: its own meta + the Read tool block.
+        // Root meta lists its children (for the "Agents ▾" menu) with a running flag, and
+        // has no ancestors (it is the root breadcrumb origin).
+        let root_meta: Value = serde_json::from_str(root.lines().next().unwrap()).unwrap();
+        assert_eq!(root_meta["ancestors"], json!([]), "root has no ancestors");
+        assert_eq!(root_meta["children"][0]["id"], json!("a1"));
+        assert_eq!(
+            root_meta["children"][0]["running"],
+            json!(false),
+            "a1 completed → not running"
+        );
+
+        // Child stream: its own meta + the Read tool block; its ancestry points at the root.
         let cj = std::fs::read_to_string(out.join("a1.jsonl")).unwrap();
         let recs: Vec<Value> = cj
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .collect();
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
+        assert_eq!(
+            recs[0]["ancestors"],
+            json!([{ "id": "sess", "title": "sess" }]),
+            "child breadcrumb points at the root"
+        );
         assert!(
             recs.iter().any(|o| o["head"]["name"] == json!("Read")),
             "child transcript rendered: {recs:?}"
