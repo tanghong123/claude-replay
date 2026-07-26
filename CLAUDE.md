@@ -40,8 +40,9 @@ mostly transparent when reading viewer code.
   `codex_model.rs` (tokenizer + `Shaping`) · `claude_metrics.rs` / `codex_metrics.rs` (token/cost
   folding) · `claude_discover.rs` / `codex_discover.rs` (that agent's transcript store). A new
   agent = a `*_model`/`*_metrics`/`*_discover` trio + one dispatcher arm; the shared engine is
-  never touched. (Claude-parsing tests currently live in `model.rs`'s test module, driving the
-  shared engine through `claude_model`.)
+  never touched. Each adapter owns its test suite (the byte-identical equivalence gates live
+  in `claude_model`/`codex_model`); `model`'s tests are the agent-neutral ones only
+  (`block_kind`/`fold_key`, `relativize`).
 
 **`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI + `agent-jdi`.
 - `markdown.rs` md → ratatui lines · `render.rs` blocks → styled lines · `wrap.rs` wrapping
