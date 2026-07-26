@@ -991,7 +991,7 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 /// once from the first line that carries it) so tool targets relativize. `tokenize` is this
 /// over every line; the streaming driver (M9) calls it one line at a time so no whole-file
 /// `Vec<Message>` is ever built.
-fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
     let line = line.trim();
     if line.is_empty() {
         return;
@@ -1437,9 +1437,7 @@ impl<'a> Replayer<'a> {
     /// Non-consuming finalize (M11): the current presentable blocks + per-turn times, WITHOUT
     /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
     /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
-    /// (Proven byte-identical vs a full re-parse by `incremental_line_by_line_matches_full_replay`;
-    /// wired to the live TUI/HTML followers by the M11-routing task — allow until then.)
-    #[allow(dead_code)]
+    /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
     pub fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
         let mut out = self.out.clone();
         let mut user_times = self.user_times.clone();
@@ -1461,7 +1459,6 @@ impl<'a> Replayer<'a> {
     /// batch pre-scan would. Across polls, earlier deltas' ids are already accumulated; the
     /// only remaining reorder (a result physically before its tool_use) is a rewritten tail,
     /// which the follower handles by rebuilding from scratch (a `reset`).
-    #[allow(dead_code)]
     pub fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
         self.tool_ids.extend(ids);
     }

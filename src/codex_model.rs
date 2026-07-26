@@ -91,7 +91,7 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 /// 0+ canonical messages appended to `msgs`; `cwd` is threaded across lines (set from
 /// `session_meta`). `tokenize` is this over every line; the streaming driver (M9) calls it
 /// one line at a time so no whole-file `Vec<Message>` is built.
-fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return;
     };

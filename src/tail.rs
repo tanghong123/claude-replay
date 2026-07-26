@@ -34,6 +34,17 @@ impl TailReader {
         }
     }
 
+    /// Start reading from the BEGINNING — the first `poll` returns the whole current file,
+    /// then subsequent polls return only appends. Used by the incremental follower (M16),
+    /// which folds the file once through a persistent `Replayer` and then only the delta.
+    pub fn open_at_start(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            offset: 0,
+            pending: String::new(),
+        }
+    }
+
     /// Read any bytes appended since the last poll, returning complete lines.
     pub fn poll(&mut self) -> std::io::Result<Poll> {
         let mut out = Poll::default();
