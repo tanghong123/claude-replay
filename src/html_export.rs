@@ -1414,10 +1414,20 @@ impl Live {
     /// Serve `<id>.jsonl` bytes from byte offset `from` (clamped past-EOF → empty),
     /// truncated to the last newline so the client's cursor always lands on a line
     /// boundary — never mid-record, even if a tailer append is in flight.
-    fn stream_bytes(&self, id: &str, from: u64) -> Vec<u8> {
+    /// `(start, bytes)` — the served chunk AND the **absolute byte offset it begins at**
+    /// (the requested `from` clamped to EOF). The client uses `start` to place the chunk
+    /// idempotently: it discards any prefix it already has and sets its cursor to
+    /// `start + bytes.len()`, so a re-fetch or a past-EOF request can't desync it.
+    fn stream_bytes(&self, id: &str, from: u64) -> (u64, Vec<u8>) {
         match std::fs::read(self.dir.join(format!("{id}.jsonl"))) {
-            Ok(bytes) => line_aligned_tail(&bytes, from as usize).to_vec(),
-            Err(_) => Vec::new(),
+            Ok(bytes) => {
+                let start = (from as usize).min(bytes.len());
+                (
+                    start as u64,
+                    line_aligned_tail(&bytes, from as usize).to_vec(),
+                )
+            }
+            Err(_) => (from, Vec::new()),
         }
     }
 
@@ -1754,13 +1764,18 @@ fn serve_connection(
         if id.is_empty() || id.contains('/') || id.contains("..") || !live.ensure_stream(id) {
             return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
         }
-        let bytes = live.stream_bytes(id, from);
-        return respond(
-            &mut stream,
-            "200 OK",
-            "application/json; charset=utf-8",
-            &bytes,
+        // Include the delta's ABSOLUTE start offset so the client can place it
+        // idempotently (discard overlap, snap its cursor to `start + len`).
+        let (start, bytes) = live.stream_bytes(id, from);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\
+             X-Offset: {start}\r\nContent-Length: {}\r\nAccess-Control-Expose-Headers: X-Offset\r\n\
+             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+            bytes.len()
         );
+        return stream
+            .write_all(head.as_bytes())
+            .and_then(|_| stream.write_all(&bytes));
     }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
     // served page can't follow a `file://` link: browsers block http→file navigation).

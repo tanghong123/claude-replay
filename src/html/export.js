@@ -445,29 +445,63 @@
   // companion frame their newlines differently, so an index would misalign and
   // new lines would be silently skipped. Stop at the first line that won't parse
   // (a partial tail caught mid-append); the next poll retries it.
+  // One record → DOM. Shared by the whole-text and delta consumers.
+  //   meta  → repaint metadata;
+  //   reset → drop rendered blocks from index `from` (a rewritten tail: a thinking block
+  //           closing, a tool result landing, an activity coalescing — the following
+  //           records re-render them);
+  //   block → render + append.
+  function applyRecord(obj) {
+    if (obj.t === "meta") { renderMeta(obj); return; }
+    if (obj.t === "reset") { resetFrom(obj.from); return; }
+    if (obj.t !== "block") return;
+    stream.appendChild(renderBlock(obj));
+    if (obj.turn != null) addTurn(obj);
+  }
+
+  // The O(DOM) passes to run after a batch of new records: clamp long turns, rebuild the
+  // filter menu, give new code/diff panes their control strip, re-apply size + wrap.
+  function postRender() {
+    clampLongTurns();
+    buildToolMenu();
+    buildStrips();
+    setMono(ms);
+    setWrap(wrap);
+    if (filter) applyFilter(filter);
+  }
+
+  // Whole-text, record-counter based: the inline snapshot and the single-file `-f`
+  // companion (which re-fetches the whole file each poll) both replay the full text and
+  // dedup by the `consumed` counter.
   function consume(text) {
     var recs = text.split("\n").filter(function (l) { return l.trim(); });
     while (consumed < recs.length) {
       var obj;
       try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
       consumed++;
-      if (obj.t === "meta") { renderMeta(obj); continue; }
-      // A rewritten tail: drop rendered blocks from index `from`, the following
-      // records re-render them (the live transcript rewrites its last blocks —
-      // a thinking block closing, a tool result landing, an activity coalescing).
-      if (obj.t === "reset") { resetFrom(obj.from); continue; }
-      if (obj.t !== "block") continue;
-      stream.appendChild(renderBlock(obj));
-      if (obj.turn != null) addTurn(obj);
+      applyRecord(obj);
     }
-    clampLongTurns();
-    buildToolMenu();
-    // §8.3 give any newly-arrived code/diff panes their control strip, then re-apply
-    // the (global, persisted) size + wrap so new panes match the rest.
-    buildStrips();
-    setMono(ms);
-    setWrap(wrap);
-    if (filter) applyFilter(filter); // fold/expand any newly-arrived matches
+    postRender();
+  }
+
+  // Delta-only: the multi-file live feed hands us just the NEW bytes each poll, so we parse
+  // only the new complete lines — never re-splitting the whole accumulated stream — and keep
+  // any trailing partial line in `pending`. A bad line is skipped, not fatal.
+  var pending = "";
+  function consumeDelta(chunk) {
+    pending += chunk;
+    var nl = pending.lastIndexOf("\n");
+    if (nl < 0) return; // no complete line yet
+    var lines = pending.slice(0, nl).split("\n");
+    pending = pending.slice(nl + 1);
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i];
+      if (!l.trim()) continue;
+      var obj;
+      try { obj = JSON.parse(l); } catch (e) { continue; }
+      applyRecord(obj);
+    }
+    postRender();
   }
 
   // Drop rendered blocks from stream index `from` onward (a rewritten tail), plus
@@ -650,18 +684,39 @@
       // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
       // the bytes past the cursor (the new delta), never the whole transcript. We keep the
       // accumulated text and hand it to `consume`, which dedups records + applies resets.
-      var cursor = 0, full = "", failed = false;
+      // The cursor is the ABSOLUTE byte offset we've processed up to. Each `/stream`
+      // response carries `X-Offset` (where its bytes begin); we discard any prefix we
+      // already have and snap the cursor to `start + len`, so the client is idempotent
+      // even under overlap / a past-EOF request. The in-flight guard prevents overlap in
+      // the first place — the initial `from=0` fetch can transfer many MB and outlast the
+      // poll interval; without the guard the next tick would fire a second `from=0` fetch,
+      // double-rendering every block and overshooting the cursor past EOF (the freeze).
+      var cursor = 0, inflight = false;
       var pull = function () {
-        if (failed) return;
+        if (inflight) return;
+        inflight = true;
         fetch("stream?session=" + encodeURIComponent(sess) + "&from=" + cursor, { cache: "no-store" })
-          .then(function (r) { if (!r.ok) throw 0; return r.arrayBuffer(); })
-          .then(function (buf) {
-            if (!buf.byteLength) return;
-            cursor += buf.byteLength;
-            full += new TextDecoder().decode(buf);
-            ingest(full);
+          .then(function (r) {
+            var off = parseInt(r.headers.get("X-Offset") || "0", 10);
+            return r.arrayBuffer().then(function (b) { return { off: off, bytes: new Uint8Array(b) }; });
           })
-          .catch(function () { /* server gone / mid-write — retry next tick */ });
+          .then(function (d) {
+            var end = d.off + d.bytes.length;
+            if (d.off > cursor || end <= cursor) return; // a gap (retry) or already-seen
+            var skip = cursor - d.off; // bytes we already have (server may overlap)
+            var wasAtBottom = atBottom();
+            var before = stream.childElementCount;
+            consumeDelta(new TextDecoder().decode(d.bytes.subarray(skip)));
+            cursor = end;
+            var added = stream.childElementCount - before;
+            if (added > 0) {
+              if (wasAtBottom) { toBottom(false); clearNew(); }
+              else showNew(added);
+              spy();
+            }
+          })
+          .catch(function () { /* server gone / mid-write — retry next tick */ })
+          .finally(function () { inflight = false; });
       };
       pull();
       setInterval(pull, pollMs);
