@@ -1093,5 +1093,4 @@ mod tests {
             assert_eq!(block_kind(&tool(n)).fold_key(), k, "fold {n}");
         }
     }
-
 }
