@@ -1357,6 +1357,38 @@ impl<'a> Replayer<'a> {
         let blocks = (self.shaping.finish)(self.out);
         (blocks, self.user_times)
     }
+
+    /// Non-consuming finalize (M11): the current presentable blocks + per-turn times, WITHOUT
+    /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
+    /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
+    /// (Proven byte-identical vs a full re-parse by `incremental_line_by_line_matches_full_replay`;
+    /// wired to the live TUI/HTML followers by the M11-routing task — allow until then.)
+    #[allow(dead_code)]
+    pub fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
+        let mut out = self.out.clone();
+        let mut user_times = self.user_times.clone();
+        let mut stamped = self.stamped;
+        stamp_user_turns(&out, &mut stamped, self.pending_ts, &mut user_times);
+        apply_completions_and_suppress(
+            &mut out,
+            &self.tool_slot,
+            &self.completions,
+            self.suppress.clone(),
+        );
+        let blocks = (self.shaping.finish)(out);
+        (blocks, user_times)
+    }
+
+    /// Merge more tool_use join ids into the pre-scan set (M11): a live follower pre-scans
+    /// each *delta* for its ids and extends before applying, so a result whose tool_use is
+    /// later in the SAME delta is held pending (not mis-emitted as an orphan) — exactly as a
+    /// batch pre-scan would. Across polls, earlier deltas' ids are already accumulated; the
+    /// only remaining reorder (a result physically before its tool_use) is a rewritten tail,
+    /// which the follower handles by rebuilding from scratch (a `reset`).
+    #[allow(dead_code)]
+    pub fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.tool_ids.extend(ids);
+    }
 }
 
 /// Batch L2 fold — `Replayer::new(); apply(all); into_blocks()`. For Claude,
@@ -2957,6 +2989,63 @@ mod tests {
             r#"{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}"#,
             "\n",
         ));
+    }
+
+    /// M11 keystone: driving the `Replayer` **one line at a time** (a live tail: `decode` the
+    /// line, pre-scan its ids via `extend_tool_ids`, `apply`, `snapshot`) yields byte-identical
+    /// blocks + user_times to a full batch `replay(tokenize(whole))` — at EVERY prefix, not
+    /// just the end. This is the incremental-fold guarantee the live follower (M11 routing)
+    /// stands on; a rewritten tail is handled by the follower rebuilding from scratch (which
+    /// is trivially the full replay of the new content).
+    #[test]
+    fn incremental_line_by_line_matches_full_replay() {
+        fn assert_follow(lines: &[&str]) {
+            let mut cwd = String::new();
+            let mut r = Replayer::new(&CLAUDE_SHAPING, std::collections::HashSet::new());
+            for (i, line) in lines.iter().enumerate() {
+                let mut delta = Vec::new();
+                decode_line(line, &mut cwd, &mut delta);
+                r.extend_tool_ids(delta.iter().filter_map(|m| match m {
+                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
+                    _ => None,
+                }));
+                r.apply(&delta);
+                // Snapshot after each line must match a full replay of the lines so far.
+                let (inc_blocks, inc_ut) = r.snapshot();
+                let mut ref_ut = Vec::new();
+                let ref_blocks = replay(
+                    &tokenize(lines[..=i].iter().copied()),
+                    &mut ref_ut,
+                    &CLAUDE_SHAPING,
+                );
+                assert_eq!(
+                    format!("{ref_blocks:?}"),
+                    format!("{inc_blocks:?}"),
+                    "blocks differ after line {i}"
+                );
+                assert_eq!(ref_ut, inc_ut, "user_times differ after line {i}");
+            }
+        }
+        // tool_use then its result (back-patch across poll boundaries) + a trailing thinking.
+        assert_follow(&[
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}"#,
+        ]);
+        // queue enqueue then (later poll) dequeue — the lifecycle spans polls.
+        assert_follow(&[
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"turn"}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up after a gap"}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:03.000Z"}"#,
+        ]);
+        // injected meta between real turns (user-turn stamping across polls).
+        assert_follow(&[
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real question"}}"#,
+            r#"{"type":"user","isMeta":true,"timestamp":"2026-06-30T03:00:01.000Z","message":{"content":"meta note"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}"#,
+        ]);
     }
 
     #[test]
