@@ -11,6 +11,7 @@ pub mod codex_metrics;
 pub mod codex_model;
 pub mod discover;
 pub mod engine;
+mod follow;
 mod highlight;
 pub mod html_export;
 pub mod jdi;

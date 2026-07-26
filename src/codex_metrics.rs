@@ -6,7 +6,7 @@ use std::io::BufRead;
 /// split out so the streaming engine (`model::parse_stream`, M10) folds metrics in the same
 /// pass. Unlike Claude, Codex reports a *cumulative* `total_token_usage`, so each
 /// `token_count` event overwrites (keeping the newest total), not sums.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct CodexMetricsAcc {
     input: u64,
     cached: u64,

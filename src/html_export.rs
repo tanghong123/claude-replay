@@ -949,25 +949,46 @@ fn snapshot(
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
     let s = crate::engine::parse_session_as(agent, path)
         .with_context(|| format!("read transcript {}", path.display()))?;
-    let blocks = s.blocks;
-    let user_times = s.user_times;
-    let m = s.metrics;
-    let session_id = session_id(path);
     let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
+    Ok(render_snapshot(
+        agent,
+        path,
+        &s.blocks,
+        &s.user_times,
+        &s.metrics,
+        &cwd,
+        fold,
+        reveal,
+    ))
+}
+
+/// The render half of `snapshot`: an already-parsed session → the meta line + block-record
+/// JSONL. Shared by the one-shot `snapshot` (parses first) and the incremental live follower
+/// (M16, which folds only the delta via a `FollowParser` and passes the result straight here).
+#[allow(clippy::too_many_arguments)]
+fn render_snapshot(
+    agent: Agent,
+    path: &Path,
+    blocks: &[Block],
+    user_times: &[Option<f64>],
+    m: &crate::metrics::Metrics,
+    cwd: &str,
+    fold: &FoldPolicy,
+    reveal: bool,
+) -> (String, Vec<(String, String)>) {
+    let session_id = session_id(path);
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
-    let display = repo_name(&cwd).unwrap_or_else(|| session_id.clone());
-    let turn_count = count_turns(&blocks);
-    let tool_count = count_tools(&blocks);
+    let display = repo_name(cwd).unwrap_or_else(|| session_id.clone());
     let meta = json!({
         "t": "meta",
         "title": display,
         "agent": agent.label(),
         "sid": session_id,
         "path": path.display().to_string(),
-        "cwd": &cwd,
-        "turns": turn_count,
-        "tools": tool_count,
+        "cwd": cwd,
+        "turns": count_turns(blocks),
+        "tools": count_tools(blocks),
         "duration_secs": m.duration_secs,
         "usage": {
             "input": human_tokens(m.input_tokens),
@@ -977,15 +998,11 @@ fn snapshot(
             "model": m.model,
         },
     });
-    Ok(build_jsonl(
-        &blocks,
-        &user_times,
-        fold,
-        &cwd,
-        reveal,
+    build_jsonl(
+        blocks, user_times, fold, cwd, reveal,
         false, // single-file snapshot: no cross-agent links
         meta,
-    ))
+    )
 }
 
 /// The session id — the transcript file stem (the UUID Claude/Codex names it).
@@ -1503,12 +1520,32 @@ fn follow_and_append(
     mut prev: Vec<String>,
     reveal: bool,
 ) -> Result<()> {
+    // Incremental follower (M16): fold only the newly-appended lines each poll instead of
+    // re-parsing the whole file. `open` starts at byte 0, so the first poll folds the file
+    // to the current state (== the initial export → no diff), then only deltas thereafter.
+    let mut follower = crate::follow::FollowParser::open(agent, path);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (fresh, _) = match snapshot(agent, path, fold, reveal) {
-            Ok(s) => s,
+        let polled = match follower.poll() {
+            Ok(p) => p,
             Err(_) => continue, // transient read error mid-write; retry next cycle
         };
+        let Some((snap_blocks, times, metrics)) = polled else {
+            continue; // nothing new this cycle
+        };
+        let cwd = crate::discover::session_cwd(path)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let (fresh, _) = render_snapshot(
+            agent,
+            path,
+            &snap_blocks,
+            &times,
+            &metrics,
+            &cwd,
+            fold,
+            reveal,
+        );
         let meta = fresh.lines().next().unwrap_or("{}").to_string();
         let blocks = block_lines(&fresh);
         // First index where the fresh stream diverges from what's on the page.

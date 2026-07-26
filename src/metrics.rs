@@ -80,7 +80,7 @@ pub fn parse_reader_for<R: std::io::BufRead>(agent: Agent, reader: R) -> Metrics
 /// out so the streaming engine (`model::parse_stream`, M10) can fold metrics in the same
 /// pass that builds blocks instead of a second file read. `push` sums each line's
 /// `/message/usage`; `finish` prices it.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct MetricsAcc {
     input: u64,
     cache_creation: u64,
