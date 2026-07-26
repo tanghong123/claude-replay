@@ -232,19 +232,108 @@ fn summary_description(summary: &str) -> String {
 
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`
 /// and the default fold policy are keyed on these (see `view`).
-pub fn fold_key(b: &Block) -> &'static str {
+/// The one presentation classification (M13) both the TUI fold policy and the HTML
+/// `data-kind` derive from. The **fine** set: it splits a `Thinking` block into bare
+/// `think` vs. a grouped-activity `act`, and keeps `ToolResult` distinct from a generic
+/// tool. Two projections tame it: [`BlockKind::fold_key`] (the coarser TUI / type-filter
+/// view) and [`BlockKind::html`] (the finer CSS `data-kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    User,
+    Queue,
+    Assistant,
+    Think,
+    Act,
+    ToolResult,
+    Attachment,
+    Agent,
+    Command,
+    Bash,
+    Edit,
+    Write,
+    Read,
+    Skill,
+    Tool,
+}
+
+/// Classify a block. (An `Agent`/`Task` `ToolUse` never reaches here — the tokenizer turns
+/// it into a `SubAgent` — so it maps to the generic `Tool`, harmlessly.)
+pub fn block_kind(b: &Block) -> BlockKind {
+    use BlockKind::*;
     match b {
-        Block::UserText(_) => "user",
-        Block::QueueEvent { .. } => "queue",
-        Block::AssistantText(_) => "assistant",
-        Block::Thinking { .. } => "thinking",
-        Block::ToolResult(_) => "tool_result",
-        Block::Attachment(_) => "attachment",
-        Block::SubAgent(_) => "agent",
-        Block::AgentDone { .. } => "agent",
-        Block::Command { .. } => "command",
-        Block::ToolUse { name, .. } => tool_fold_key(name),
+        Block::UserText(_) => User,
+        Block::QueueEvent { .. } => Queue,
+        Block::AssistantText(_) => Assistant,
+        Block::Thinking { tools, .. } => {
+            if tools.is_empty() {
+                Think
+            } else {
+                Act
+            }
+        }
+        Block::ToolResult(_) => ToolResult,
+        Block::Attachment(_) => Attachment,
+        Block::SubAgent(_) | Block::AgentDone { .. } => Agent,
+        Block::Command { .. } => Command,
+        Block::ToolUse { name, .. } => match name.as_str() {
+            "Bash" => Bash,
+            "Edit" | "MultiEdit" => Edit,
+            "Write" | "NotebookEdit" => Write,
+            "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" => Read,
+            "Skill" => Skill,
+            _ => Tool,
+        },
     }
+}
+
+impl BlockKind {
+    /// The TUI fold-policy / HTML type-filter key — coarser: `thinking` for both think/act,
+    /// `tool_result` kept distinct.
+    pub fn fold_key(self) -> &'static str {
+        use BlockKind::*;
+        match self {
+            User => "user",
+            Queue => "queue",
+            Assistant => "assistant",
+            Think | Act => "thinking",
+            ToolResult => "tool_result",
+            Attachment => "attachment",
+            Agent => "agent",
+            Command => "command",
+            Bash => "bash",
+            Edit => "edit",
+            Write => "write",
+            Read => "read",
+            Skill => "skill",
+            Tool => "tool",
+        }
+    }
+
+    /// The HTML `data-kind` — finer: `think`/`act` split, `tool` for a bare result.
+    pub fn html(self) -> &'static str {
+        use BlockKind::*;
+        match self {
+            User => "user",
+            Queue => "queue",
+            Assistant => "assistant",
+            Think => "think",
+            Act => "act",
+            ToolResult => "tool",
+            Attachment => "attachment",
+            Agent => "agent",
+            Command => "command",
+            Bash => "bash",
+            Edit => "edit",
+            Write => "write",
+            Read => "read",
+            Skill => "skill",
+            Tool => "tool",
+        }
+    }
+}
+
+pub fn fold_key(b: &Block) -> &'static str {
+    block_kind(b).fold_key()
 }
 
 /// Inner text of the first `<tag>…</tag>` in `s`, if present.
@@ -398,19 +487,6 @@ fn push_user_string(s: &str, out: &mut Vec<Block>) {
         } else {
             out.push(Block::UserText(cleaned));
         }
-    }
-}
-
-/// Categorize a `tool_use` by name. Edit/Write/Bash get their own keys;
-/// read-ish tools collapse under `read`; anything else under `tool`.
-fn tool_fold_key(name: &str) -> &'static str {
-    match name {
-        "Edit" | "MultiEdit" => "edit",
-        "Write" | "NotebookEdit" => "write",
-        "Bash" => "bash",
-        "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" => "read",
-        "Skill" => "skill",
-        _ => "tool",
     }
 }
 
@@ -3074,6 +3150,54 @@ mod tests {
             "thinking"
         );
         assert_eq!(fold_key(&Block::ToolResult("x".into())), "tool_result");
+    }
+
+    /// M13: the one `BlockKind` projects to a coarse `fold_key` (TUI / filter) and a fine
+    /// `html` (`data-kind`). Pin the distinctions that used to be two separate functions:
+    /// Thinking splits think/act in html but coarsens to `thinking`; ToolResult is `tool` in
+    /// html but `tool_result` in fold_key; tool names project identically.
+    #[test]
+    fn block_kind_fine_html_vs_coarse_fold_key() {
+        let tool = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: String::new(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        let bare = Block::Thinking {
+            text: "x".into(),
+            duration_secs: None,
+            tools: vec![],
+        };
+        let act = Block::Thinking {
+            text: "x".into(),
+            duration_secs: None,
+            tools: vec![tool("Bash")],
+        };
+        assert_eq!(block_kind(&bare).html(), "think");
+        assert_eq!(block_kind(&bare).fold_key(), "thinking");
+        assert_eq!(block_kind(&act).html(), "act");
+        assert_eq!(block_kind(&act).fold_key(), "thinking");
+        assert_eq!(block_kind(&Block::ToolResult("x".into())).html(), "tool");
+        assert_eq!(
+            block_kind(&Block::ToolResult("x".into())).fold_key(),
+            "tool_result"
+        );
+        for (n, k) in [
+            ("Bash", "bash"),
+            ("Edit", "edit"),
+            ("MultiEdit", "edit"),
+            ("Read", "read"),
+            ("Grep", "read"),
+            ("Write", "write"),
+            ("Skill", "skill"),
+            ("SomeMcpTool", "tool"),
+        ] {
+            assert_eq!(block_kind(&tool(n)).html(), k, "html {n}");
+            assert_eq!(block_kind(&tool(n)).fold_key(), k, "fold {n}");
+        }
     }
 
     #[test]
