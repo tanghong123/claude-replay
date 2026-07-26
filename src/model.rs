@@ -595,10 +595,10 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 ///
 /// This in-memory batch entry runs the new two-layer engine — Layer 1 [`tokenize`]
 /// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
-/// bit-identical to the fused streaming `parse_main` (see `replay_tokenize_matches_parse_main`).
-/// The large-file streaming path (`parse_path` → `parse_file` → `parse_main`) still uses
-/// `parse_main` directly to keep one line resident at a time; migrating it onto a pull
-/// iterator is a later phase.
+/// bit-identical to the (now frozen, test-only) `parse_main` — see
+/// `replay_tokenize_matches_parse_main`. The large-file streaming path
+/// (`parse_path` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
+/// production no longer touches `parse_main`.
 pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
@@ -630,18 +630,21 @@ pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Bl
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw
 /// pass. `parse_path` wraps this with `enrich_subagents`; the recursion reuses this so
 /// grandchildren resolve against the same session `subagents/` dir.
-fn parse_file(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Block>> {
+fn parse_file(path: &std::path::Path, _args: &Args) -> std::io::Result<Vec<Block>> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
     // tell a genuine orphan tool_result from one whose tool_use appears later.
     let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
-    Ok(parse_main(
-        open()?.lines().map_while(|r| r.ok()),
-        &tool_ids,
-        args,
+    // Pass 2: stream through the engine, one line resident.
+    let mut cwd = String::new();
+    parse_stream(
+        open()?,
+        tool_ids,
+        &CLAUDE_SHAPING,
+        |line, out| decode_line(line, &mut cwd, out),
         &mut Vec::new(),
-    ))
+    )
 }
 
 /// The `<project>/<sessionId>/subagents/` dir for a transcript at
@@ -713,6 +716,32 @@ fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<
 /// Like `parse_path_for`, but also returns one wall-clock timestamp (epoch
 /// seconds) per **user turn**, in order — the HTML export shows them beside each
 /// turn. Codex transcripts yield the same shape.
+/// **The streaming L2 driver** (M9). Feed a [`Replayer`] one line's messages at a time —
+/// `decode` (the agent's per-line L1, capturing its `cwd`) turns each line into a few
+/// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak
+/// memory is one line + the block buffer, matching the retired `parse_main`. `tool_ids` is
+/// the pass-1 id pre-scan; `reader` is a fresh pass-2 read. This equals `replay(tokenize(x))`
+/// over the same input (proven by `parse_path_matches_parse_str` + the golden corpus).
+pub(crate) fn parse_stream<R: std::io::BufRead>(
+    reader: R,
+    tool_ids: HashSet<String>,
+    shaping: &Shaping,
+    mut decode: impl FnMut(&str, &mut Vec<Message>),
+    user_times: &mut Vec<Option<f64>>,
+) -> std::io::Result<Vec<Block>> {
+    let mut r = Replayer::new(shaping, tool_ids);
+    let mut buf: Vec<Message> = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        buf.clear();
+        decode(&line, &mut buf);
+        r.apply(&buf);
+    }
+    let (blocks, ut) = r.into_blocks();
+    user_times.extend(ut);
+    Ok(blocks)
+}
+
 pub fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
@@ -726,12 +755,14 @@ pub fn parse_path_timed_for(
                 Ok(std::io::BufReader::new(std::fs::File::open(path)?))
             };
             let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
-            parse_main(
-                open()?.lines().map_while(|r| r.ok()),
-                &tool_ids,
-                args,
+            let mut cwd = String::new();
+            parse_stream(
+                open()?,
+                tool_ids,
+                &CLAUDE_SHAPING,
+                |line, out| decode_line(line, &mut cwd, out),
                 &mut times,
-            )
+            )?
         }
         Agent::Codex => crate::codex_model::parse_codex_path_timed(path, args, &mut times)?,
     };
@@ -863,193 +894,202 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
     let mut msgs: Vec<Message> = Vec::new();
     let mut cwd = String::new();
     for line in lines {
-        let line = line.as_ref().trim();
-        if line.is_empty() {
-            continue;
+        decode_line(line.as_ref(), &mut cwd, &mut msgs);
+    }
+    msgs
+}
+
+/// **Layer 1 — Claude decode, per line** (the streaming unit). Decode ONE raw transcript
+/// line into 0+ canonical messages appended to `msgs`. `cwd` is threaded across lines (set
+/// once from the first line that carries it) so tool targets relativize. `tokenize` is this
+/// over every line; the streaming driver (M9) calls it one line at a time so no whole-file
+/// `Vec<Message>` is ever built.
+fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    if cwd.is_empty() {
+        if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+            *cwd = c.to_string();
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if cwd.is_empty() {
-            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
-                cwd = c.to_string();
+    }
+    let ev_ts = v
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(epoch_secs);
+    msgs.push(Message::LineStart(ev_ts));
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("assistant") => {
+            let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+                return;
+            };
+            for blk in content {
+                match blk.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
+                            if !t.trim().is_empty() {
+                                msgs.push(Message::AssistantText(t.to_string()));
+                            }
+                        }
+                    }
+                    Some("thinking") => {
+                        let t = blk
+                            .get("thinking")
+                            .or_else(|| blk.get("text"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
+                        if !t.trim().is_empty() {
+                            msgs.push(Message::Thinking {
+                                text: t.to_string(),
+                                ts: ev_ts,
+                            });
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                        let input = blk.get("input").cloned().unwrap_or(Value::Null);
+                        let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
+                        let block = if name == "Agent" || name == "Task" {
+                            let s = |k: &str| {
+                                input
+                                    .get(k)
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string()
+                            };
+                            let agent_type = {
+                                let t = s("subagent_type");
+                                if t.is_empty() {
+                                    "agent".to_string()
+                                } else {
+                                    t
+                                }
+                            };
+                            Block::SubAgent(SubAgent {
+                                agent_id: String::new(),
+                                tool_use_id: id.to_string(),
+                                agent_type,
+                                description: s("description"),
+                                prompt: s("prompt"),
+                                status: AgentStatus::Running,
+                                result: None,
+                                output_file: None,
+                                blocks: Vec::new(),
+                                subtree_cost: None,
+                            })
+                        } else {
+                            Block::ToolUse {
+                                name: name.to_string(),
+                                target: tool_target(&input, cwd.as_str()),
+                                diffs: extract_diffs(name, &input),
+                                output: None,
+                                patch: None,
+                                read_lines: None,
+                            }
+                        };
+                        msgs.push(Message::ToolUse {
+                            id: id.to_string(),
+                            block,
+                        });
+                    }
+                    _ => {}
+                }
             }
         }
-        let ev_ts = v
-            .get("timestamp")
-            .and_then(|t| t.as_str())
-            .and_then(epoch_secs);
-        msgs.push(Message::LineStart(ev_ts));
-        match v.get("type").and_then(|t| t.as_str()) {
-            Some("assistant") => {
-                let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
-                    continue;
-                };
-                for blk in content {
+        Some("user") => {
+            msgs.push(Message::Trigger(ev_ts));
+            let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
+            let injected = is_injected_event(&v);
+            let Some(content) = v.pointer("/message/content") else {
+                return;
+            };
+            if let Some(s) = content.as_str() {
+                msgs.push(Message::UserString {
+                    text: s.to_string(),
+                    injected,
+                });
+            } else if let Some(arr) = content.as_array() {
+                for blk in arr {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
-                                    msgs.push(Message::AssistantText(t.to_string()));
+                                    msgs.push(Message::UserArrayText {
+                                        text: t.to_string(),
+                                        injected,
+                                    });
                                 }
                             }
                         }
-                        Some("thinking") => {
-                            let t = blk
-                                .get("thinking")
-                                .or_else(|| blk.get("text"))
-                                .and_then(|t| t.as_str())
+                        Some("image") => {
+                            if let Some(att) = image_attachment(blk) {
+                                msgs.push(Message::Attachment(att));
+                            }
+                        }
+                        Some("tool_result") => {
+                            let tid = blk
+                                .get("tool_use_id")
+                                .and_then(|s| s.as_str())
                                 .unwrap_or("");
-                            if !t.trim().is_empty() {
-                                msgs.push(Message::Thinking {
-                                    text: t.to_string(),
-                                    ts: ev_ts,
-                                });
-                            }
-                        }
-                        Some("tool_use") => {
-                            let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                            let input = blk.get("input").cloned().unwrap_or(Value::Null);
-                            let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
-                            let block = if name == "Agent" || name == "Task" {
-                                let s = |k: &str| {
-                                    input
-                                        .get(k)
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string()
-                                };
-                                let agent_type = {
-                                    let t = s("subagent_type");
-                                    if t.is_empty() {
-                                        "agent".to_string()
-                                    } else {
-                                        t
-                                    }
-                                };
-                                Block::SubAgent(SubAgent {
-                                    agent_id: String::new(),
-                                    tool_use_id: id.to_string(),
-                                    agent_type,
-                                    description: s("description"),
-                                    prompt: s("prompt"),
-                                    status: AgentStatus::Running,
-                                    result: None,
-                                    output_file: None,
-                                    blocks: Vec::new(),
-                                    subtree_cost: None,
-                                })
-                            } else {
-                                Block::ToolUse {
-                                    name: name.to_string(),
-                                    target: tool_target(&input, &cwd),
-                                    diffs: extract_diffs(name, &input),
-                                    output: None,
-                                    patch: None,
-                                    read_lines: None,
-                                }
-                            };
-                            msgs.push(Message::ToolUse {
-                                id: id.to_string(),
-                                block,
+                            let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
+                            msgs.push(Message::ToolResult {
+                                tool_use_id: tid.to_string(),
+                                text: txt,
+                                tur: tur.clone(),
                             });
+                            if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
+                                for item in items {
+                                    if let Some(att) = image_attachment(item) {
+                                        msgs.push(Message::Attachment(att));
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
                 }
             }
-            Some("user") => {
-                msgs.push(Message::Trigger(ev_ts));
-                let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
-                let injected = is_injected_event(&v);
-                let Some(content) = v.pointer("/message/content") else {
-                    continue;
-                };
-                if let Some(s) = content.as_str() {
-                    msgs.push(Message::UserString {
-                        text: s.to_string(),
-                        injected,
-                    });
-                } else if let Some(arr) = content.as_array() {
-                    for blk in arr {
-                        match blk.get("type").and_then(|t| t.as_str()) {
-                            Some("text") => {
-                                if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
-                                    if !t.trim().is_empty() {
-                                        msgs.push(Message::UserArrayText {
-                                            text: t.to_string(),
-                                            injected,
-                                        });
-                                    }
-                                }
-                            }
-                            Some("image") => {
-                                if let Some(att) = image_attachment(blk) {
-                                    msgs.push(Message::Attachment(att));
-                                }
-                            }
-                            Some("tool_result") => {
-                                let tid = blk
-                                    .get("tool_use_id")
-                                    .and_then(|s| s.as_str())
-                                    .unwrap_or("");
-                                let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
-                                msgs.push(Message::ToolResult {
-                                    tool_use_id: tid.to_string(),
-                                    text: txt,
-                                    tur: tur.clone(),
-                                });
-                                if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
-                                    for item in items {
-                                        if let Some(att) = image_attachment(item) {
-                                            msgs.push(Message::Attachment(att));
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            Some("queue-operation") => {
-                let content = v
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .map(|c| c.to_string());
-                let op = match v.get("operation").and_then(|o| o.as_str()) {
-                    Some("enqueue") => Some(QueueOpKind::Enqueue),
-                    Some("remove") => Some(QueueOpKind::Remove),
-                    Some("dequeue") => Some(QueueOpKind::Dequeue),
-                    _ => None,
-                };
-                if let Some(op) = op {
-                    msgs.push(Message::QueueOp { op, content });
-                }
-            }
-            Some("attachment") => {
-                let a = v.get("attachment");
-                let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
-                    == Some("queued_command")
-                    && a.and_then(|a| a.get("commandMode"))
-                        .and_then(|m| m.as_str())
-                        == Some("prompt");
-                if is_prompt {
-                    if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
-                        if !p.trim().is_empty() {
-                            msgs.push(Message::AttachmentPrompt {
-                                text: p.to_string(),
-                            });
-                        }
-                    }
-                } else if let Some(att) = a.and_then(attachment_from_event) {
-                    msgs.push(Message::Attachment(att));
-                }
-            }
-            _ => {}
         }
+        Some("queue-operation") => {
+            let content = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|c| c.to_string());
+            let op = match v.get("operation").and_then(|o| o.as_str()) {
+                Some("enqueue") => Some(QueueOpKind::Enqueue),
+                Some("remove") => Some(QueueOpKind::Remove),
+                Some("dequeue") => Some(QueueOpKind::Dequeue),
+                _ => None,
+            };
+            if let Some(op) = op {
+                msgs.push(Message::QueueOp { op, content });
+            }
+        }
+        Some("attachment") => {
+            let a = v.get("attachment");
+            let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
+                == Some("queued_command")
+                && a.and_then(|a| a.get("commandMode"))
+                    .and_then(|m| m.as_str())
+                    == Some("prompt");
+            if is_prompt {
+                if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                    if !p.trim().is_empty() {
+                        msgs.push(Message::AttachmentPrompt {
+                            text: p.to_string(),
+                        });
+                    }
+                }
+            } else if let Some(att) = a.and_then(attachment_from_event) {
+                msgs.push(Message::Attachment(att));
+            }
+        }
+        _ => {}
     }
-    msgs
 }
 
 /// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the
@@ -1411,6 +1451,11 @@ fn apply_completions_and_suppress(
 /// when unparsable). Turn grouping never absorbs or reorders user blocks, so the
 /// Nth user turn of the returned list is `user_times[N]`. Only the HTML export
 /// consumes it; the TUI passes a throwaway vec.
+///
+/// **Frozen golden reference** (M9): production parses through the streaming engine
+/// (`parse_stream` → `decode_line` + `Replayer`); this pre-engine parser is retained only
+/// to pin `replay(tokenize(x))` bit-identical in `replay_tokenize_matches_parse_main`.
+#[cfg(test)]
 fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     tool_ids: &HashSet<String>,

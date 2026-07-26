@@ -4,42 +4,50 @@ use crate::engine::time::epoch_secs;
 use crate::model::Block;
 use crate::Args;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::Path;
 
 pub(crate) fn parse_codex(jsonl: &str, _args: &Args) -> Vec<Block> {
-    // The in-memory entry runs on the shared engine (L1 `tokenize` → L2 `replay`), proving
-    // L2 is agent-agnostic. The streaming path (`parse_codex_path*`) stays on `parse_lines`
-    // one line resident at a time until L1 grows a pull iterator (a later phase).
+    // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
+    // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
+    // `parse_stream` + `decode_codex_line` (M9).
     crate::model::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
-pub(crate) fn parse_codex_path(path: &Path, args: &Args) -> io::Result<Vec<Block>> {
+pub(crate) fn parse_codex_path(path: &Path, _args: &Args) -> io::Result<Vec<Block>> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
-    Ok(parse_lines(
-        open()?.lines().map_while(|line| line.ok()),
-        &call_ids,
-        args,
+    let mut cwd = String::new();
+    crate::model::parse_stream(
+        open()?,
+        call_ids,
+        &CODEX_SHAPING,
+        |line, out| decode_codex_line(line, &mut cwd, out),
         &mut Vec::new(),
-    ))
+    )
 }
 
-/// `parse_codex_path` + one timestamp per user turn (see `model::parse_main`).
+/// `parse_codex_path` + one timestamp per user turn, on the streaming engine (M9): pass-1
+/// id scan, pass-2 per-line `decode_codex_line` folded through the shared `Replayer` — one
+/// line resident, no whole-file `Vec<Message>`.
 pub(crate) fn parse_codex_path_timed(
     path: &Path,
-    args: &Args,
+    _args: &Args,
     user_times: &mut Vec<Option<f64>>,
 ) -> io::Result<Vec<Block>> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
-    Ok(parse_lines(
-        open()?.lines().map_while(|line| line.ok()),
-        &call_ids,
-        args,
+    let mut cwd = String::new();
+    crate::model::parse_stream(
+        open()?,
+        call_ids,
+        &CODEX_SHAPING,
+        |line, out| decode_codex_line(line, &mut cwd, out),
         user_times,
-    ))
+    )
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
@@ -70,117 +78,123 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
     let mut msgs: Vec<Message> = Vec::new();
     let mut cwd = String::new();
     for line in lines {
-        let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
-            continue;
-        };
-        let ts = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(epoch_secs);
-        msgs.push(Message::LineStart(ts));
-        match value.get("type").and_then(Value::as_str) {
-            Some("session_meta") => {
-                if cwd.is_empty() {
-                    cwd = value
-                        .pointer("/payload/cwd")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                }
+        decode_codex_line(line.as_ref(), &mut cwd, &mut msgs);
+    }
+    msgs
+}
+
+/// **Layer 1 — Codex decode, per line** (the streaming unit). One raw `response_item` line →
+/// 0+ canonical messages appended to `msgs`; `cwd` is threaded across lines (set from
+/// `session_meta`). `tokenize` is this over every line; the streaming driver (M9) calls it
+/// one line at a time so no whole-file `Vec<Message>` is built.
+fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let ts = value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(epoch_secs);
+    msgs.push(Message::LineStart(ts));
+    match value.get("type").and_then(Value::as_str) {
+        Some("session_meta") => {
+            if cwd.is_empty() {
+                *cwd = value
+                    .pointer("/payload/cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
             }
-            Some("response_item") => {
-                let Some(payload) = value.get("payload") else {
-                    continue;
-                };
-                match payload.get("type").and_then(Value::as_str) {
-                    Some("message") => {
-                        let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
-                        if role == "user" {
-                            msgs.push(Message::Trigger(ts));
-                        }
-                        if matches!(role, "user" | "assistant") {
-                            let wanted = if role == "user" {
-                                "input_text"
-                            } else {
-                                "output_text"
-                            };
-                            for text in payload
-                                .get("content")
-                                .and_then(Value::as_array)
-                                .into_iter()
-                                .flatten()
-                                .filter(|item| {
-                                    item.get("type").and_then(Value::as_str) == Some(wanted)
-                                })
-                                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                                .filter(|text| !text.trim().is_empty())
-                                .filter(|text| role != "user" || !is_host_context(text))
-                            {
-                                if role == "user" {
-                                    msgs.push(Message::UserArrayText {
-                                        text: text.to_string(),
-                                        injected: false,
-                                    });
-                                } else {
-                                    msgs.push(Message::AssistantText(text.to_string()));
-                                }
-                            }
-                        }
+        }
+        Some("response_item") => {
+            let Some(payload) = value.get("payload") else {
+                return;
+            };
+            match payload.get("type").and_then(Value::as_str) {
+                Some("message") => {
+                    let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
+                    if role == "user" {
+                        msgs.push(Message::Trigger(ts));
                     }
-                    Some("reasoning") => {
-                        let text = payload
-                            .get("summary")
+                    if matches!(role, "user" | "assistant") {
+                        let wanted = if role == "user" {
+                            "input_text"
+                        } else {
+                            "output_text"
+                        };
+                        for text in payload
+                            .get("content")
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
-                            .filter(|item| {
-                                item.get("type").and_then(Value::as_str) == Some("summary_text")
-                            })
+                            .filter(|item| item.get("type").and_then(Value::as_str) == Some(wanted))
                             .filter_map(|item| item.get("text").and_then(Value::as_str))
                             .filter(|text| !text.trim().is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if !text.is_empty() {
-                            msgs.push(Message::Thinking { text, ts });
+                            .filter(|text| role != "user" || !is_host_context(text))
+                        {
+                            if role == "user" {
+                                msgs.push(Message::UserArrayText {
+                                    text: text.to_string(),
+                                    injected: false,
+                                });
+                            } else {
+                                msgs.push(Message::AssistantText(text.to_string()));
+                            }
                         }
                     }
-                    Some("function_call" | "custom_tool_call") => {
-                        let raw_name = payload
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("tool");
-                        let input = call_input(payload);
-                        let (name, target, diffs) = call_details(raw_name, &input, &cwd);
-                        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
-                        msgs.push(Message::ToolUse {
-                            id: call_id.to_string(),
-                            block: Block::ToolUse {
-                                name,
-                                target,
-                                diffs,
-                                output: None,
-                                patch: None,
-                                read_lines: None,
-                            },
-                        });
-                    }
-                    Some("function_call_output" | "custom_tool_call_output") => {
-                        msgs.push(Message::Trigger(ts));
-                        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
-                        let output = output_text(payload.get("output").unwrap_or(&Value::Null));
-                        msgs.push(Message::ToolResult {
-                            tool_use_id: call_id.to_string(),
-                            text: output,
-                            tur: Value::Null,
-                        });
-                    }
-                    _ => {}
                 }
+                Some("reasoning") => {
+                    let text = payload
+                        .get("summary")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("summary_text")
+                        })
+                        .filter_map(|item| item.get("text").and_then(Value::as_str))
+                        .filter(|text| !text.trim().is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        msgs.push(Message::Thinking { text, ts });
+                    }
+                }
+                Some("function_call" | "custom_tool_call") => {
+                    let raw_name = payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    let input = call_input(payload);
+                    let (name, target, diffs) = call_details(raw_name, &input, cwd.as_str());
+                    let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                    msgs.push(Message::ToolUse {
+                        id: call_id.to_string(),
+                        block: Block::ToolUse {
+                            name,
+                            target,
+                            diffs,
+                            output: None,
+                            patch: None,
+                            read_lines: None,
+                        },
+                    });
+                }
+                Some("function_call_output" | "custom_tool_call_output") => {
+                    msgs.push(Message::Trigger(ts));
+                    let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                    let output = output_text(payload.get("output").unwrap_or(&Value::Null));
+                    msgs.push(Message::ToolResult {
+                        tool_use_id: call_id.to_string(),
+                        text: output,
+                        tur: Value::Null,
+                    });
+                }
+                _ => {}
             }
-            _ => {}
         }
+        _ => {}
     }
-    msgs
 }
 
 fn scan_call_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
@@ -202,6 +216,10 @@ fn scan_call_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<Strin
     out
 }
 
+/// **Frozen golden reference** (M9): production parses Codex through the streaming engine;
+/// this pre-engine parser is retained only to pin the shared `replay` bit-identical in
+/// `codex_replay_matches_parse_lines`.
+#[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     call_ids: &HashSet<String>,
@@ -326,6 +344,7 @@ fn parse_lines<S: AsRef<str>>(
     out
 }
 
+#[cfg(test)]
 fn push_message(payload: &Value, out: &mut Vec<Block>) {
     let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
     if !matches!(role, "user" | "assistant") {
