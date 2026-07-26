@@ -303,8 +303,12 @@
       if (head.child) {
         var alink = el("a", "agent-open", "↵ " + (head.child_id || "open"));
         alink.href = head.child;
-        alink.title = "Open this agent's transcript";
+        alink.title = "Open this agent's transcript (this tab)";
         h.appendChild(alink);
+        var ant = el("span", "agent-newtab", "⧉");
+        ant.title = "Open in a new tab";
+        ant.dataset.href = head.child;
+        h.appendChild(ant);
       }
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
@@ -384,7 +388,10 @@
     if (u.cost) row("est. cost", u.cost, "total");
 
     renderCrumbs(m.ancestors);
-    renderAgentMenu(m.children);
+    // In a multi-agent tree (this session has children, or is itself a sub-agent) the box
+    // is always shown — grayed on a childless leaf. A standalone session hides it entirely.
+    var inTree = (m.children && m.children.length) || (m.ancestors && m.ancestors.length);
+    renderAgentMenu(m.children, inTree);
   }
 
   // The breadcrumb bar: root › … › parent › (current) — each ancestor a link to its
@@ -394,10 +401,13 @@
     if (!nav) return;
     nav.textContent = "";
     if (!ancestors || !ancestors.length) { nav.style.display = "none"; return; }
-    ancestors.forEach(function (a) {
-      var link = el("a", "crumb", a.title || a.id);
+    ancestors.forEach(function (a, i) {
+      // The first ancestor is the root — the main session; mark it with a home glyph so
+      // "get back to the main session" is one obvious click, not a guess up the chain.
+      var isRoot = i === 0;
+      var link = el("a", "crumb" + (isRoot ? " crumb-root" : ""), (isRoot ? "⌂ " : "") + (a.title || a.id));
       link.href = "?session=" + encodeURIComponent(a.id);
-      link.title = "Open " + (a.title || a.id);
+      link.title = (isRoot ? "Back to the main session — " : "Open ") + (a.title || a.id);
       nav.appendChild(link);
       nav.appendChild(el("span", "crumb-sep", "›"));
     });
@@ -406,12 +416,20 @@
   }
 
   // The "Agents ▾" menu: this session's sub-agents, **active first then done**, each in
-  // launch order (the server ships `children` in spawn order with a `running` flag). Each
-  // item navigates to that agent's stream.
-  function renderAgentMenu(children) {
-    var wrap = $("agentnav"), items = $("agentitems");
-    if (!wrap || !items) return;
-    if (!children || !children.length) { wrap.style.display = "none"; return; }
+  // launch order (the server ships `children` in spawn order with a `running` flag). The
+  // box is **always present** — a leaf sub-agent (no children of its own) shows it grayed
+  // and non-interactive, so the control never appears/disappears between views. Each item
+  // navigates to that agent's stream (click = this tab; the ⧉ icon = a new tab).
+  function renderAgentMenu(children, inTree) {
+    var wrap = $("agentnav"), items = $("agentitems"), btn = $("btn-agents");
+    if (!wrap || !items || !btn) return;
+    wrap.style.display = inTree ? "" : "none";
+    if (!inTree) return;
+    var n = (children && children.length) || 0;
+    btn.classList.toggle("disabled", n === 0);
+    var label = btn.querySelector(".tf-label");
+    if (label) label.textContent = n ? "Agents (" + n + ") ▾" : "Agents ▾";
+    if (!n) { agentMenu(false); items.textContent = ""; return; }
     items.textContent = "";
     var active = children.filter(function (c) { return c.running; });
     var done = children.filter(function (c) { return !c.running; });
@@ -419,17 +437,21 @@
       if (!list.length) return;
       items.appendChild(el("div", "agent-sec", label + " (" + list.length + ")"));
       list.forEach(function (c) {
+        var href = "?session=" + encodeURIComponent(c.id);
         var a = el("a", "agent-item" + (c.running ? " running" : ""));
-        a.href = "?session=" + encodeURIComponent(c.id);
+        a.href = href;
         a.appendChild(el("span", "agent-dot"));
         a.appendChild(el("span", "agent-name", c.title || c.id));
         if (c.type) a.appendChild(el("span", "agent-type", c.type));
+        var nt = el("span", "agent-newtab", "⧉");
+        nt.title = "Open in a new tab";
+        nt.dataset.href = href;
+        a.appendChild(nt);
         items.appendChild(a);
       });
     }
     section("Active", active);
     section("Completed", done);
-    wrap.style.display = "";
   }
 
   // Append one turn to the sidebar (live sessions grow it).
@@ -925,9 +947,15 @@
     if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
     if (e.target.closest(".tf-x")) { setFilter(null); toolMenu(false); return; } // ✕ clears
     if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; } // label opens menu
-    // ── agents menu ── an item is an <a href> → let it navigate; the button toggles.
+    // ── agents menu ── an item is an <a href> → let it navigate (this tab); the ⧉ icon
+    // opens the same target in a new tab; the button toggles (unless disabled = no children).
+    var ant = e.target.closest(".agent-newtab");
+    if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank", "noopener"); return; }
     if (e.target.closest(".agent-item")) return;
-    if (e.target.closest("#btn-agents")) { agentMenu(!$("agentmenu").classList.contains("on")); return; }
+    if (e.target.closest("#btn-agents")) {
+      if (!$("btn-agents").classList.contains("disabled")) agentMenu(!$("agentmenu").classList.contains("on"));
+      return;
+    }
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);

@@ -105,6 +105,8 @@ input::placeholder { color: var(--faint); }
   border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
 }
 .tbtn:hover { background: var(--hover); }
+.tbtn.disabled { opacity: 0.4; cursor: default; }
+.tbtn.disabled:hover { background: transparent; }
 #btn-theme { min-width: 88px; }
 
 /* ── tool-use filter (dropdown + banner) ─────────────────────────────── */
@@ -158,9 +160,19 @@ input::placeholder { color: var(--faint); }
 .agent-item.running .agent-dot { background: var(--kw); box-shadow: 0 0 0 2px color-mix(in srgb, var(--kw) 25%, transparent); }
 .agent-item .agent-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-item .agent-type { font: 10.5px var(--mono); color: var(--faint); }
+/* ⧉ open-in-new-tab affordance — trailing on an agent menu row and on the inline ↵ link. */
+.agent-newtab {
+  flex: none; cursor: pointer; color: var(--faint); font-size: 12px; padding: 0 2px;
+  border-radius: 4px; opacity: 0; transition: opacity 0.1s;
+}
+.agent-item:hover .agent-newtab { opacity: 1; }
+.agent-newtab:hover { color: var(--link); background: var(--hover); }
+.fold-h .agent-newtab { opacity: 0.55; margin-left: 4px; }
+.fold-h .agent-newtab:hover { opacity: 1; }
 /* Breadcrumb: root › … › parent › current — ascend without the URL bar / browser Back. */
 #crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 12px; }
 .crumb { color: var(--link); text-decoration: none; }
+.crumb-root { font-weight: 600; }
 a.crumb:hover { text-decoration: underline; }
 .crumb-cur { color: var(--muted); }
 .crumb-sep { color: var(--faint); }

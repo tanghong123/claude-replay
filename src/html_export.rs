@@ -876,7 +876,7 @@ fn build_page(
     </div>
   </div>
   <div class="toolfilter" id="agentnav" style="display:none">
-    <button id="btn-agents" class="tbtn"><span class="tf-label">Agents ▾</span></button>
+    <button id="btn-agents" class="tbtn disabled"><span class="tf-label">Agents ▾</span></button>
     <div id="agentmenu">
       <div class="menu-head">Sub-agents of this session</div>
       <div id="agentitems"></div>
@@ -1140,6 +1140,11 @@ struct ChildRef {
     id: String,
     description: String,
     agent_type: String,
+    /// The spawn's own terminal status — set for a **synchronous** `Agent` spawn, whose
+    /// result (and `status: "completed"`) lands inline on its `tool_use` rather than as a
+    /// later `<task-notification>`. Async `Task` completion instead shows up as a separate
+    /// `AgentDone` block (see `done` in `agent_stream`); the running flag ORs both signals.
+    terminal: bool,
 }
 
 /// The direct sub-agents spawned in this source (its own `SubAgent` blocks). Drives lazy
@@ -1152,6 +1157,7 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
                 id: sa.agent_id.clone(),
                 description: sa.description.clone(),
                 agent_type: sa.agent_type.clone(),
+                terminal: sa.status.is_terminal(),
             }),
             _ => None,
         })
@@ -1205,7 +1211,10 @@ fn agent_stream(
             } else {
                 &c.description
             };
-            json!({ "id": c.id, "title": title, "type": c.agent_type, "running": !done.contains(c.id.as_str()) })
+            // Running iff neither completion signal fired: no inline-terminal status
+            // (sync `Agent`) AND no `AgentDone` block (async `Task`).
+            let running = !c.terminal && !done.contains(c.id.as_str());
+            json!({ "id": c.id, "title": title, "type": c.agent_type, "running": running })
         })
         .collect();
     let ancestors: Vec<Value> = info
@@ -2136,6 +2145,69 @@ mod tests {
         assert!(
             recs.iter().any(|o| o["head"]["name"] == json!("Read")),
             "child transcript rendered: {recs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Regression: a **synchronous** `Agent` spawn signals completion *inline* on its
+    /// `tool_result` (`toolUseResult.status == "completed"` + `agentId`), with **no** later
+    /// `<task-notification>` and therefore no `AgentDone` block. The "Agents ▾" running flag
+    /// must still read `false` — it reads the spawn's own terminal status, not only the
+    /// (absent) `AgentDone`. Before the fix, such an agent showed "running" forever.
+    #[test]
+    fn sync_agent_spawn_is_not_running() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-syncagent-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sess.jsonl");
+        let sadir = base.join("sess").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        // Spawn + inline completed result (mirrors the real `Agent` tool: no task-notification).
+        let parent = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"subagent_type":"gp","description":"Map APIs","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"s1","status":"completed","content":"the report"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_S","content":"the report"}]}}
+"##;
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        std::fs::File::create(sadir.join("agent-s1.jsonl"))
+            .unwrap()
+            .write_all(b"{\"type\":\"user\",\"message\":{\"content\":\"go\"}}\n")
+            .unwrap();
+
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            sess.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &sess).unwrap();
+
+        let root = std::fs::read_to_string(out.join("sess.jsonl")).unwrap();
+        // Exactly ONE agent line (the spawn) — no separate completion event exists.
+        let agent_lines = root
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|o| o["head"]["badge"] == json!("Agent"))
+            .count();
+        assert_eq!(
+            agent_lines, 1,
+            "sync spawn has no separate completion block"
+        );
+        let root_meta: Value = serde_json::from_str(root.lines().next().unwrap()).unwrap();
+        assert_eq!(root_meta["children"][0]["id"], json!("s1"));
+        assert_eq!(
+            root_meta["children"][0]["running"],
+            json!(false),
+            "sync Agent completed inline → not running"
         );
         let _ = std::fs::remove_dir_all(&base);
     }
