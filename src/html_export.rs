@@ -1112,40 +1112,100 @@ pub fn export(args: &Args, path: &Path) -> Result<()> {
     )
 }
 
-/// One sub-agent node collected from the parsed tree — its own stream in the bundle.
-struct AgentNode {
+/// Enough to generate + locate one agent's stream. The root and every discovered
+/// sub-agent get one; `source` is the transcript the stream is parsed from.
+#[derive(Clone)]
+struct AgentInfo {
     id: String,
-    blocks: Vec<Block>,
+    source: std::path::PathBuf,
+    title: String,
     agent_type: String,
+}
+
+/// A direct child spawned in a source's blocks — enough to register + resolve its own
+/// source. NOT recursive: grandchildren live in each child's own source, discovered when
+/// that child's stream is generated.
+struct ChildRef {
+    id: String,
     description: String,
-    cost: Option<f64>,
+    agent_type: String,
 }
 
-/// Recursively collect every sub-agent under `blocks` (pre-order, grandchildren
-/// included). The root session is handled by the caller.
-fn collect_agent_nodes(blocks: &[Block], out: &mut Vec<AgentNode>) {
-    for b in blocks {
-        if let Block::SubAgent(sa) = b {
-            if !sa.agent_id.is_empty() {
-                out.push(AgentNode {
-                    id: sa.agent_id.clone(),
-                    blocks: sa.blocks.clone(),
-                    agent_type: sa.agent_type.clone(),
-                    description: sa.description.clone(),
-                    cost: sa.subtree_cost,
-                });
-            }
-            collect_agent_nodes(&sa.blocks, out);
+/// The direct sub-agents spawned in this source (its own `SubAgent` blocks). Drives lazy
+/// stream generation — parsing ONE source reveals only its direct children.
+fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(ChildRef {
+                id: sa.agent_id.clone(),
+                description: sa.description.clone(),
+                agent_type: sa.agent_type.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Parse ONE agent's source transcript (NOT the whole tree) into its stream jsonl: the
+/// `meta` line + one line per block, cross-linked to its direct children via `child:`.
+/// The single generator both paths share — the offline dump (eager over every source) and
+/// the live server (lazy, one source per *requested* agent) — so a live tailer re-parses
+/// only the ONE agent being viewed, not the tree. Returns the jsonl + the direct child
+/// refs (to register/queue). `cwd` is the session cwd (shared by every agent).
+fn agent_stream(
+    agent: Agent,
+    args: &Args,
+    fold: &FoldPolicy,
+    cwd: &str,
+    reveal: bool,
+    info: &AgentInfo,
+    assets: Option<&mut AssetSink>,
+) -> Result<(String, Vec<ChildRef>)> {
+    let (blocks, user_times) = crate::model::parse_path_timed_for(agent, &info.source, args)
+        .with_context(|| format!("read transcript {}", info.source.display()))?;
+    let usage = match std::fs::File::open(&info.source) {
+        Ok(f) => {
+            let m = metrics::parse_reader_for(agent, std::io::BufReader::new(f));
+            json!({
+                "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+                "cache_read": human_tokens(m.cache_read_tokens),
+                "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+                "duration_secs": m.duration_secs,
+            })
         }
-    }
+        Err(_) => json!({}),
+    };
+    let meta = json!({
+        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
+        "cwd": cwd, "turns": count_turns(&blocks), "tools": count_tools(&blocks),
+        "agent_type": &info.agent_type, "usage": usage,
+    });
+    let (jsonl, _) = build_jsonl_inner(&blocks, &user_times, fold, cwd, reveal, true, assets, meta);
+    Ok((jsonl, collect_child_refs(&blocks)))
 }
 
-/// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html`
-/// shell plus one `<id>.jsonl` per agent reachable from the root, cross-linked via
-/// `child:` so the whole sub-agent tree is navigable offline. Serve the directory with
-/// any static file server (`python3 -m http.server`) — unlike `--dump-html` (a single
-/// flat file), this preserves drill-down. Reuses the served block/meta emission with the
-/// tailer/reset switched off (every stream is a finished, settled session).
+/// The `AgentInfo` for a discovered child: title = its description (else its type).
+fn child_info(root_path: &Path, c: ChildRef) -> Option<AgentInfo> {
+    let source = crate::model::subagent_file(root_path, &c.id)?;
+    let title = if c.description.is_empty() {
+        c.agent_type.clone()
+    } else {
+        c.description
+    };
+    Some(AgentInfo {
+        id: c.id,
+        source,
+        title,
+        agent_type: c.agent_type,
+    })
+}
+
+/// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html` shell
+/// plus one `<id>.jsonl` per agent reachable from the root, cross-linked via `child:` so
+/// the whole tree is navigable offline. Serve the dir with any static file server. Unlike
+/// the lazy served path, this walks EVERY reachable agent eagerly (blocking is fine for a
+/// one-shot export) and materializes embedded attachments into `assets/`.
 pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
@@ -1154,12 +1214,50 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
     };
     std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-    // Offline bundle: no reveal-in-Finder links (abs paths don't port), not live.
-    let (_root, prev) = write_bundle(&out_dir, agent, path, args, &fold, false, false)?;
+    let cwd = discover::session_cwd(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let title = display_title(path);
+    let root_id = session_id(path);
+    let mut sink = AssetSink::new(&out_dir).with_context(|| "create assets dir")?;
+
+    // BFS over sources from the root; each agent's stream is parsed from its OWN source,
+    // its direct children discovered and queued (grandchildren surface when a child runs).
+    let mut queue = std::collections::VecDeque::from([AgentInfo {
+        id: root_id.clone(),
+        source: path.to_path_buf(),
+        title: title.clone(),
+        agent_type: String::new(),
+    }]);
+    let mut seen = std::collections::HashSet::new();
+    let mut count = 0usize;
+    while let Some(info) = queue.pop_front() {
+        if !seen.insert(info.id.clone()) || !info.source.exists() {
+            continue;
+        }
+        let (jsonl, children) =
+            agent_stream(agent, args, &fold, &cwd, false, &info, Some(&mut sink))?;
+        std::fs::write(
+            out_dir.join(format!("{}.jsonl", info.id)),
+            format!("{jsonl}\n"),
+        )
+        .with_context(|| format!("write stream {}", info.id))?;
+        count += 1;
+        for c in children {
+            if let Some(ci) = child_info(path, c) {
+                queue.push_back(ci);
+            }
+        }
+    }
+    std::fs::write(
+        out_dir.join("index.html"),
+        build_shell(&title, &root_id, false),
+    )
+    .with_context(|| "write index.html")?;
+
     eprintln!(
-        "wrote {} — {} agent stream(s) + index.html",
-        out_dir.display(),
-        prev.len()
+        "wrote {} — {count} agent stream(s) + index.html",
+        out_dir.display()
     );
     eprintln!(
         "  serve it:  (cd {} && python3 -m http.server)  then open http://localhost:8000/",
@@ -1169,151 +1267,137 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Every per-agent stream for the enriched tree at `path` right now: `(root_id, [(id,
-/// jsonl)])` with the root first, then one entry per reachable sub-agent (pre-order).
-/// Each stream is `meta` + one line per block, cross-linked via `child:`. Shared by the
-/// static bundle write and the live tailer's re-parse. `reveal` = served-mode path links.
-fn node_streams(
+/// How long an agent keeps being tailed after its last request before it goes idle and is
+/// dropped (its stream file stays on disk; a later request revives it).
+const TAIL_TTL_MS: u128 = 30_000;
+
+/// The live server's shared state. Only *requested* agents get a stream file and get
+/// re-parsed each cycle — the rest cost nothing, which is the CPU fix vs re-parsing the
+/// whole tree. Behind locks: the agent registry (id → where to find + how to title it)
+/// and per-agent tailer state (last-seen for idle reaping + the diff baseline).
+struct Live {
+    dir: std::path::PathBuf,
     agent: Agent,
-    path: &Path,
-    args: &Args,
-    fold: &FoldPolicy,
-    reveal: bool,
-    mut assets: Option<&mut AssetSink>,
-) -> Result<(String, Vec<(String, String)>)> {
-    let (blocks, user_times) = crate::model::parse_path_timed_enriched_for(agent, path, args)
-        .with_context(|| format!("read transcript {}", path.display()))?;
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let root_id = session_id(path);
-    let title = display_title(path);
+    args: Args,
+    fold: FoldPolicy,
+    root_path: std::path::PathBuf,
+    cwd: String,
+    registry: std::sync::Mutex<std::collections::HashMap<String, AgentInfo>>,
+    tailers: std::sync::Mutex<std::collections::HashMap<String, Tailer>>,
+}
 
-    let m = metrics::parse_reader_for(
-        agent,
-        std::io::BufReader::new(
-            std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
-        ),
-    );
-    let root_meta = json!({
-        "t": "meta", "title": &title, "agent": agent.label(), "sid": &root_id,
-        "cwd": &cwd, "turns": count_turns(&blocks), "tools": count_tools(&blocks),
-        "duration_secs": m.duration_secs,
-        "usage": {
-            "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-            "cache_read": human_tokens(m.cache_read_tokens),
-            "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-        },
-    });
-    let (root_jsonl, _) = build_jsonl_inner(
-        &blocks,
-        &user_times,
-        fold,
-        &cwd,
-        reveal,
-        true,
-        assets.as_deref_mut(),
-        root_meta,
-    );
-    let mut streams = vec![(root_id.clone(), root_jsonl)];
+/// Per-agent live state: when last requested (idle reaping) + the block lines last written
+/// (the diff baseline for the next delta).
+struct Tailer {
+    last_seen: std::time::Instant,
+    prev: Vec<String>,
+}
 
-    let mut nodes = Vec::new();
-    collect_agent_nodes(&blocks, &mut nodes);
-    for n in &nodes {
-        let child_title = if n.description.is_empty() {
-            n.agent_type.clone()
-        } else {
-            n.description.clone()
-        };
-        let child_meta = json!({
-            "t": "meta", "title": child_title, "agent": agent.label(), "sid": &n.id,
-            "cwd": &cwd, "turns": count_turns(&n.blocks), "tools": count_tools(&n.blocks),
-            "agent_type": &n.agent_type, "usage": { "cost": n.cost.map(|c| format!("${c:.2}")) },
+impl Live {
+    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first
+    /// request), register its children, and mark it recently-seen so the background tailer
+    /// keeps it current. Cheap on the hot path (an already-tailing id just bumps its clock).
+    /// Returns false for an unknown id (not in the registry).
+    fn ensure_stream(&self, id: &str) -> bool {
+        {
+            let mut t = self.tailers.lock().unwrap();
+            if let Some(tl) = t.get_mut(id) {
+                tl.last_seen = std::time::Instant::now();
+                return true;
+            }
+        }
+        // Level-3 lookup: the registry (populated from spawn events). Fall back to
+        // resolving the source directly — every agent shares the flat `subagents/` dir, so
+        // a valid id resolves even if its parent was never navigated (deep links) — with a
+        // plain title until its parent's spawn supplies the description.
+        let info = self.registry.lock().unwrap().get(id).cloned().or_else(|| {
+            crate::model::subagent_file(&self.root_path, id).map(|source| AgentInfo {
+                id: id.to_string(),
+                source,
+                title: id.to_string(),
+                agent_type: String::new(),
+            })
         });
-        let (cj, _) = build_jsonl_inner(
-            &n.blocks,
-            &[],
-            fold,
-            &cwd,
-            reveal,
-            true,
-            assets.as_deref_mut(),
-            child_meta,
-        );
-        streams.push((n.id.clone(), cj));
-    }
-    Ok((root_id, streams))
-}
-
-/// Write a multi-file bundle into `dir`: the shared `index.html` shell + one `<id>.jsonl`
-/// per agent (root + reachable sub-agents). Returns `(root_id, prev)` where `prev` maps
-/// each id to its current block lines (the live tailer's baseline for diffing). `reveal`
-/// = served path links; `live` = the shell polls its stream.
-fn write_bundle(
-    dir: &Path,
-    agent: Agent,
-    path: &Path,
-    args: &Args,
-    fold: &FoldPolicy,
-    reveal: bool,
-    live: bool,
-) -> Result<(String, std::collections::HashMap<String, Vec<String>>)> {
-    // Offline bundle (served has `reveal` Blob/reveal instead): materialize embedded
-    // attachments into `<dir>/assets/` and link the blocks to them.
-    let mut sink = if reveal {
-        None
-    } else {
-        Some(AssetSink::new(dir).with_context(|| "create assets dir")?)
-    };
-    let (root_id, streams) = node_streams(agent, path, args, fold, reveal, sink.as_mut())?;
-    let title = display_title(path);
-    let mut prev = std::collections::HashMap::new();
-    for (id, jsonl) in &streams {
-        std::fs::write(dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"))
-            .with_context(|| format!("write stream {id}"))?;
-        prev.insert(id.clone(), block_lines(jsonl));
-    }
-    std::fs::write(dir.join("index.html"), build_shell(&title, &root_id, live))
-        .with_context(|| "write index.html")?;
-    Ok((root_id, prev))
-}
-
-/// The live tailer for a served bundle: re-parse the enriched tree each cycle and bring
-/// every agent's `<id>.jsonl` up to date — a per-agent positional diff (`{t:"reset"}` +
-/// the new tail + refreshed `meta`), exactly like the single-file [`follow_and_append`]
-/// but scoped to each agent's own file. A newly-spawned agent gets its file created
-/// fresh. Runs until interrupted; the caller keeps serving `dir`.
-fn follow_tree(
-    dir: &Path,
-    agent: Agent,
-    path: &Path,
-    args: &Args,
-    fold: &FoldPolicy,
-    reveal: bool,
-    mut prev: std::collections::HashMap<String, Vec<String>>,
-) -> Result<()> {
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let (_root, streams) = match node_streams(agent, path, args, fold, reveal, None) {
-            Ok(s) => s,
-            Err(_) => continue, // transient read error mid-write; retry next cycle
+        let Some(info) = info else {
+            return false;
         };
-        for (id, jsonl) in streams {
-            let fresh = block_lines(&jsonl);
-            let file = dir.join(format!("{id}.jsonl"));
-            match prev.get(&id) {
-                // A newly-spawned agent — create its stream file fresh.
-                None => {
-                    let _ = std::fs::write(&file, format!("{jsonl}\n"));
-                }
-                Some(pb) => {
-                    let meta = jsonl.lines().next().unwrap_or("{}");
-                    if let Some(delta) = stream_delta(pb, &fresh, meta) {
-                        let _ = append_line(&file, delta.trim_end());
+        if !info.source.exists() {
+            return false;
+        }
+        let (jsonl, children) = match agent_stream(
+            self.agent, &self.args, &self.fold, &self.cwd, true, &info, None,
+        ) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
+        self.register_children(children);
+        self.tailers.lock().unwrap().insert(
+            id.to_string(),
+            Tailer {
+                last_seen: std::time::Instant::now(),
+                prev: block_lines(&jsonl),
+            },
+        );
+        true
+    }
+
+    /// Register discovered children so their `?session=` links resolve to a source later.
+    fn register_children(&self, children: Vec<ChildRef>) {
+        let mut reg = self.registry.lock().unwrap();
+        for c in children {
+            if reg.contains_key(&c.id) {
+                continue;
+            }
+            if let Some(ci) = child_info(&self.root_path, c) {
+                reg.insert(ci.id.clone(), ci);
+            }
+        }
+    }
+
+    /// Serve `<id>.jsonl` bytes from byte offset `from` (clamped past-EOF → empty),
+    /// truncated to the last newline so the client's cursor always lands on a line
+    /// boundary — never mid-record, even if a tailer append is in flight.
+    fn stream_bytes(&self, id: &str, from: u64) -> Vec<u8> {
+        match std::fs::read(self.dir.join(format!("{id}.jsonl"))) {
+            Ok(bytes) => line_aligned_tail(&bytes, from as usize).to_vec(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The single background tailer thread: each cycle, re-parse ONLY the agents requested
+    /// within the TTL (usually just the one on screen), diff, and append their deltas. Idle
+    /// agents are dropped. No whole-tree re-parse — this is the CPU fix.
+    fn run_tailer(self: std::sync::Arc<Self>) {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+            let active: Vec<String> = {
+                let mut t = self.tailers.lock().unwrap();
+                t.retain(|_, tl| tl.last_seen.elapsed().as_millis() < TAIL_TTL_MS);
+                t.keys().cloned().collect()
+            };
+            for id in active {
+                let Some(info) = self.registry.lock().unwrap().get(&id).cloned() else {
+                    continue;
+                };
+                let (jsonl, children) = match agent_stream(
+                    self.agent, &self.args, &self.fold, &self.cwd, true, &info, None,
+                ) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                self.register_children(children);
+                let fresh = block_lines(&jsonl);
+                let meta = jsonl.lines().next().unwrap_or("{}");
+                let mut t = self.tailers.lock().unwrap();
+                if let Some(tl) = t.get_mut(&id) {
+                    if let Some(delta) = stream_delta(&tl.prev, &fresh, meta) {
+                        let _ =
+                            append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
+                        tl.prev = fresh;
                     }
                 }
             }
-            prev.insert(id, fresh);
         }
     }
 }
@@ -1414,19 +1498,55 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 /// keeping every agent's stream current (new spawns appear, children grow); without it
 /// the bundle is a static snapshot.
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
+    use std::sync::Arc;
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
-    let reveal = true; // served → path clicks reach `/__reveal`
     let sid = session_id(path);
+    let cwd = discover::session_cwd(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let title = display_title(path);
 
-    // A private temp dir holds the bundle (shell + per-agent streams), served by
-    // basename, without cluttering the cwd. Fresh per run (matches the TUI).
+    // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
+    // wipe any streams left by a previous run of this session so lazy materialization
+    // starts clean (only the root exists until a child is requested).
     let dir = std::env::temp_dir().join("claude-replay").join(&sid);
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let (root_id, prev) = write_bundle(&dir, agent, path, args, &fold, reveal, args.follow)?;
 
-    let port = spawn_http_server(dir.clone())?;
-    let url = format!("http://127.0.0.1:{port}/index.html?session={root_id}");
+    // The shared live state. The registry starts with just the root; children are
+    // discovered + registered lazily as their parents' streams are generated. Streams are
+    // generated ONLY on first request (`/stream?session=<id>`), and only *requested* agents
+    // are re-parsed by the background tailer — so opening a huge tree costs one parse.
+    let live = Arc::new(Live {
+        dir: dir.clone(),
+        agent,
+        args: args.clone(),
+        fold,
+        root_path: path.to_path_buf(),
+        cwd,
+        registry: std::sync::Mutex::new(std::collections::HashMap::new()),
+        tailers: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
+    live.registry.lock().unwrap().insert(
+        sid.clone(),
+        AgentInfo {
+            id: sid.clone(),
+            source: path.to_path_buf(),
+            title: title.clone(),
+            agent_type: String::new(),
+        },
+    );
+    // The shell + the root stream up-front so the first page load is instant.
+    std::fs::write(
+        dir.join("index.html"),
+        build_shell(&title, &sid, args.follow),
+    )
+    .with_context(|| "write index.html")?;
+    live.ensure_stream(&sid);
+
+    let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
+    let url = format!("http://127.0.0.1:{port}/index.html?session={sid}");
     let kind = if args.follow { "live" } else { "static" };
     eprintln!(
         "serving {} at {url} ({kind} — Ctrl-C to stop)",
@@ -1437,9 +1557,11 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     println!("{url}");
 
     if args.follow {
-        follow_tree(&dir, agent, path, args, &fold, reveal, prev)
+        live.run_tailer(); // background-tail the requested agents; runs until Ctrl-C
+        Ok(())
     } else {
-        // Static: nothing to tail, but keep serving so path-reveal + navigation work.
+        // Static: no tailing, but keep serving so navigation + reveal keep working. Streams
+        // are still generated lazily on first request (children on demand).
         loop {
             std::thread::park();
         }
@@ -1465,19 +1587,39 @@ fn open_in_browser(url: &str) {
 /// serving files by basename out of `root`. Returns the chosen port; the accept
 /// loop runs on a detached thread (dies with the process on Ctrl-C). Loopback +
 /// basename-only paths keep it from exposing anything beyond the two export files.
-fn spawn_http_server(root: std::path::PathBuf) -> Result<u16> {
+fn spawn_http_server(root: std::path::PathBuf, live: Option<std::sync::Arc<Live>>) -> Result<u16> {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let root = root.clone();
+            let live = live.clone();
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &root);
+                let _ = serve_connection(stream, &root, live.as_deref());
             });
         }
     });
     Ok(port)
+}
+
+/// The bytes of `data` from byte offset `from` (clamped past-EOF → empty), truncated to
+/// the last newline so a served chunk never ends mid-record — the client's byte cursor
+/// stays line-aligned even if a tailer append is in flight.
+fn line_aligned_tail(data: &[u8], from: usize) -> &[u8] {
+    let slice = &data[from.min(data.len())..];
+    match slice.iter().rposition(|&b| b == b'\n') {
+        Some(nl) => &slice[..=nl],
+        None => &[], // no complete line past the cursor yet
+    }
+}
+
+/// Parse a `k=v&…` query string value for `key` (already past the `?`).
+fn query_get<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then_some(v)
+    })
 }
 
 /// Decode a `%XX`-percent-encoded string (the reveal path arrives via
@@ -1502,17 +1644,18 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Result<()> {
+fn serve_connection(
+    mut stream: std::net::TcpStream,
+    root: &Path,
+    live: Option<&Live>,
+) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-    // `GET /name.html HTTP/1.1` → the requested basename.
+    // `GET /name?query HTTP/1.1`
     let target = line.split_whitespace().nth(1).unwrap_or("/");
-    let name = target
-        .trim_start_matches('/')
-        .split('?')
-        .next()
-        .unwrap_or("");
+    let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
+    let name = path_part.trim_start_matches('/');
     let respond = |stream: &mut std::net::TcpStream, code: &str, ct: &str, body: &[u8]| {
         let head = format!(
             "HTTP/1.1 {code}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\
@@ -1523,15 +1666,38 @@ fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Re
             .write_all(head.as_bytes())
             .and_then(|_| stream.write_all(body))
     };
-    // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file
-    // manager (the served page can't follow a `file://` link: browsers block
-    // http→file navigation). Reveal-only (`open -R` / folder open), never execute;
-    // the path must exist. Loopback-bound, so only this machine can reach it.
+    // `/stream?session=<id>&from=<byte>` — the live feed. Generate the agent's stream on
+    // first request (lazy), keep it tailed, and serve ONLY the bytes past the client's
+    // cursor (so a poll transfers just the new delta, not the whole transcript).
+    if name == "stream" {
+        let Some(live) = live else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"no live server",
+            );
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let from: u64 = query_get(query, "from")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if id.is_empty() || id.contains('/') || id.contains("..") || !live.ensure_stream(id) {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+        let bytes = live.stream_bytes(id, from);
+        return respond(
+            &mut stream,
+            "200 OK",
+            "application/json; charset=utf-8",
+            &bytes,
+        );
+    }
+    // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
+    // served page can't follow a `file://` link: browsers block http→file navigation).
     if name == "__reveal" {
-        if let Some(p) = target
-            .split_once("path=")
-            .map(|(_, v)| percent_decode(v.split('&').next().unwrap_or("")))
-        {
+        if let Some(v) = query_get(query, "path") {
+            let p = percent_decode(v);
             let path = Path::new(&p);
             if path.exists() {
                 crate::app::reveal_in_file_manager(path);
@@ -1540,8 +1706,15 @@ fn serve_connection(mut stream: std::net::TcpStream, root: &Path) -> std::io::Re
         }
         return respond(&mut stream, "404 Not Found", "text/plain", b"no such path");
     }
-    // Basename-only: no traversal, no subdirs — the export writes two flat files.
-    if name.is_empty() || name.contains('/') || name.contains("..") {
+    // Static files: the shell, per-agent `<id>.jsonl` (static bundle), and `assets/<file>`.
+    // Allow a single `assets/` subdir; block any other traversal.
+    let allowed = !name.is_empty()
+        && !name.contains("..")
+        && (!name.contains('/')
+            || name
+                .strip_prefix("assets/")
+                .is_some_and(|r| !r.contains('/')));
+    if !allowed {
         return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
     }
     match std::fs::read(root.join(name)) {
@@ -1658,23 +1831,20 @@ mod tests {
         }
     }
 
-    /// `collect_agent_nodes` walks the whole tree pre-order, including grandchildren.
+    /// `collect_child_refs` finds only the source's DIRECT children (grandchildren live in
+    /// each child's own source and surface when that child's stream is generated).
     #[test]
-    fn collect_agent_nodes_includes_grandchildren() {
-        // a1 spawns a2 (grandchild); a3 is a sibling of a1.
-        let tree = vec![
+    fn collect_child_refs_direct_only() {
+        let blocks = vec![
             Block::UserText("root".into()),
-            subagent("a1", vec![subagent("a2", vec![])]),
+            subagent("a1", vec![subagent("a2", vec![])]), // a2 is nested (grandchild)
             subagent("a3", vec![]),
         ];
-        let mut nodes = Vec::new();
-        collect_agent_nodes(&tree, &mut nodes);
-        let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["a1", "a2", "a3"],
-            "pre-order, grandchildren included"
-        );
+        let ids: Vec<String> = collect_child_refs(&blocks)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec!["a1", "a3"], "direct children only — not a2");
     }
 
     /// The offline bundle materializes embedded attachments into `assets/`, decoding
@@ -1720,6 +1890,26 @@ mod tests {
         assert_eq!(h3, "assets/shot.png");
         assert_eq!(std::fs::read(base.join("assets/shot.png")).unwrap(), b"hi");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The `/stream` byte cursor: serve from an offset, clamp past-EOF to empty, and never
+    /// end a chunk mid-record (truncate to the last newline).
+    #[test]
+    fn line_aligned_tail_clamps_and_aligns() {
+        let data = b"a\nbb\nccc\n";
+        assert_eq!(line_aligned_tail(data, 0), b"a\nbb\nccc\n");
+        assert_eq!(line_aligned_tail(data, 2), b"bb\nccc\n"); // from mid-file, line-aligned
+        assert_eq!(line_aligned_tail(data, 9), b""); // at EOF → empty
+        assert_eq!(line_aligned_tail(data, 999), b""); // past EOF → clamped empty
+                                                       // A trailing partial line (mid-append) is withheld until its newline arrives.
+        assert_eq!(line_aligned_tail(b"a\nbb\npart", 2), b"bb\n");
+    }
+
+    #[test]
+    fn query_get_parses_pairs() {
+        assert_eq!(query_get("session=a1&from=42", "session"), Some("a1"));
+        assert_eq!(query_get("session=a1&from=42", "from"), Some("42"));
+        assert_eq!(query_get("session=a1", "from"), None);
     }
 
     /// The live tailer's per-agent delta: a pure append emits no reset; a rewritten tail

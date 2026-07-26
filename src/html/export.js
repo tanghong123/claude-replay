@@ -569,22 +569,54 @@
   var inline = $("session-data");
   turnlist.textContent = "";
   var pollMs = parseInt(document.body.dataset.poll || "0", 10);
-  // The stream this page polls: a single-file live companion (`data-src`), or — in a
-  // multi-file bundle (`--dump-all-html` / served `--html`) — `<?session=id>`.jsonl,
-  // defaulting to `data-root`. Navigation between agents is a full page load carrying a
-  // new `?session=`; each page shows exactly one agent.
-  var src = document.body.dataset.src;
   var multi = document.body.dataset.multi;
+
+  // Render freshly consumed content, flagging/following new tail. Shared by every feed.
+  function ingest(text) {
+    var wasAtBottom = atBottom();
+    var before = stream.childElementCount;
+    consume(text);
+    var added = stream.childElementCount - before;
+    if (added > 0) {
+      if (wasAtBottom) { toBottom(false); clearNew(); }
+      else showNew(added);
+      spy();
+    }
+  }
+
   if (multi) {
+    // Multi-file bundle: this page shows ONE agent, `?session=<id>` (default `data-root`).
+    // Navigation between agents is a full page load carrying a new `?session=`.
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
-    src = sess + ".jsonl";
-    fetch(src, { cache: "no-store" })
-      .then(function (r) { if (!r.ok) throw 0; return r.text(); })
-      .then(function (t) { consume(t); setWide(wide); fitBar(); spy(); })
-      .catch(function () {
-        stream.appendChild(el("div", "ablock blk", "No stream for “" + sess + "”."));
-      });
+    if (pollMs > 0) {
+      // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
+      // the bytes past the cursor (the new delta), never the whole transcript. We keep the
+      // accumulated text and hand it to `consume`, which dedups records + applies resets.
+      var cursor = 0, full = "", failed = false;
+      var pull = function () {
+        if (failed) return;
+        fetch("stream?session=" + encodeURIComponent(sess) + "&from=" + cursor, { cache: "no-store" })
+          .then(function (r) { if (!r.ok) throw 0; return r.arrayBuffer(); })
+          .then(function (buf) {
+            if (!buf.byteLength) return;
+            cursor += buf.byteLength;
+            full += new TextDecoder().decode(buf);
+            ingest(full);
+          })
+          .catch(function () { /* server gone / mid-write — retry next tick */ });
+      };
+      pull();
+      setInterval(pull, pollMs);
+    } else {
+      // Static bundle (served by any file server): fetch the whole stream file once.
+      fetch(sess + ".jsonl", { cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw 0; return r.text(); })
+        .then(function (t) { consume(t); spy(); })
+        .catch(function () {
+          stream.appendChild(el("div", "ablock blk", "No stream for “" + sess + "”."));
+        });
+    }
   } else if (inline) {
     consume(inline.textContent);
     inline.remove();
@@ -593,34 +625,18 @@
   setWide(wide);
   fitBar();
 
-  // ── live tail ────────────────────────────────────────────────────────
-  // Re-fetch the whole stream each cycle; `consume` skips already-rendered records (and
-  // applies any `{t:"reset"}` for a rewritten tail). Works for a single-file companion
-  // and a multi-file agent stream alike.
-  if (src && pollMs > 0) {
-    var failed = false;
+  // ── single-file live companion (`--dump-html -f`) ─────────────────────
+  // No `/stream` endpoint here (the page is served flat, or `file://`), so re-fetch the
+  // whole companion each cycle; `consume` skips already-rendered records.
+  var src = document.body.dataset.src;
+  if (!multi && src && pollMs > 0) {
+    var failedC = false;
     setInterval(function () {
-      if (failed) return;
+      if (failedC) return;
       fetch(src, { cache: "no-store" })
         .then(function (r) { return r.text(); })
-        .then(function (text) {
-          var wasAtBottom = atBottom();
-          var before = stream.childElementCount;
-          consume(text);
-          var added = stream.childElementCount - before;
-          if (added > 0) {
-            // Already at the end → keep following it (and stay caught up);
-            // otherwise flag the new content with the badge.
-            if (wasAtBottom) { toBottom(false); clearNew(); }
-            else showNew(added);
-            spy();
-          }
-        })
-        .catch(function () {
-          // file:// blocks same-directory fetch in most browsers; the inlined
-          // snapshot still rendered, so degrade quietly instead of looping.
-          failed = true;
-        });
+        .then(ingest)
+        .catch(function () { failedC = true; });
     }, pollMs);
   }
 
