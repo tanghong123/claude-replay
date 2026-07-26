@@ -260,7 +260,7 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
 
 .uturn {
   position: relative; background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; margin: 28px 0 12px;
+  border-radius: 10px; margin: 16px 0 10px;
 }
 .uturn:not(.fold) { padding: 12px 16px; display: flex; gap: 10px; align-items: flex-start; }
 .uturn.fold { overflow: hidden; }
