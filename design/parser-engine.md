@@ -1013,9 +1013,14 @@ semantics (`model.rs:838-846`) move into L2's index — the four join/order gold
 the gate. *Resolves §6.1 toward the message log (fine-grained), because L1 emitting messages
 (not blocks) is what makes incremental replay + the append-only-log contract possible.*
 
-**Phase 2 — Codex onto the same L1/L2.** Codex adapter = an L1 tokenizer for Codex's
-`response_item` shapes; L2 is shared (Codex's `finish` is identity — no grouping). Delete
-`parse_lines`'s duplicated slot/pending loop. Gate: the Codex golden tests + dump sweep.
+**Phase 2 — Codex onto the same L1/L2.** *(Landed.)* Codex adapter = an L1 tokenizer
+(`codex_model::tokenize`) for Codex's `response_item` shapes; L2 (`replay`) is shared. The
+three agent-specific differences are captured by a `Shaping` seam — the embryo of the
+`Adapter` (§3.2): `apply` (result back-patch), `keep_orphan` (Claude drops boilerplate,
+Codex keeps all), and `finish` (Claude groups + coalesces, Codex is identity). Gate:
+`codex_replay_matches_parse_lines` (bit-identical) + the Codex golden tests. The in-memory
+entry now runs on the shared engine; the streaming `parse_lines` stays until L1 grows a pull
+iterator (so its duplicated slot/pending loop is retired then, not yet).
 
 **Phase 3 — Layer 3 becomes thin presenters over `Session`; unify classification.** Repoint
 `render.rs`, `--dump`, and `html_export`'s Emitter to consume `Session` (they nearly do —

@@ -600,7 +600,7 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// `parse_main` directly to keep one line resident at a time; migrating it onto a pull
 /// iterator is a later phase.
 pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
-    replay(&tokenize(jsonl.lines()), &mut Vec::new())
+    replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
 
 /// Parse JSONL text with the parser for `agent`.
@@ -1052,16 +1052,50 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
     msgs
 }
 
+/// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the
+/// `Adapter` (design §3.2). Everything else in [`replay`] is agent-agnostic; these three
+/// hooks are the only points Claude and Codex differ:
+/// - `apply`: back-patch a tool result onto its `ToolUse` block (Claude reads the
+///   `toolUseResult` metadata for diffs/read-count; Codex just sets the output text).
+/// - `keep_orphan`: keep a resultless orphan result (already checked non-empty)? Claude
+///   drops boilerplate; Codex keeps every non-empty output.
+/// - `finish`: final turn shaping — Claude groups + coalesces activity; Codex is identity.
+pub(crate) struct Shaping {
+    pub apply: fn(&mut Block, &str, &Value),
+    pub keep_orphan: fn(&str) -> bool,
+    pub finish: fn(Vec<Block>) -> Vec<Block>,
+}
+
+fn claude_keep_orphan(t: &str) -> bool {
+    !is_boilerplate(t)
+}
+fn claude_finish(blocks: Vec<Block>) -> Vec<Block> {
+    coalesce_activity_runs(group_turns(blocks))
+}
+
+/// Claude's shaping — the historical `parse_main` behavior.
+pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
+    apply: apply_result,
+    keep_orphan: claude_keep_orphan,
+    finish: claude_finish,
+};
+
 /// **Layer 2 — replay.** Fold the canonical [`Message`] log into the block list: the
 /// `id → block index` back-patch (`tool_slot` / `pending`), the thinking clock, the
 /// queue lifecycle (marker suppression + completions), user-turn stamping, and finally
-/// `group_turns` + `coalesce_activity_runs`. Agent-agnostic in spirit; for Phase 1 it
-/// still carries Claude's shaping quirks (skill-body nesting, the two-event spawn /
-/// completion split), which move here from L1 per the design (§6.1-resolved).
+/// the agent-specific `finish` (Claude: `group_turns` + `coalesce_activity_runs`; Codex:
+/// identity). Agent-agnostic except for `shaping` (the three hooks above): the Claude-only
+/// quirks (skill-body nesting, the two-event spawn/completion split, queue lifecycle) fire
+/// only on Claude-shaped messages, which a Codex tokenizer never emits.
 ///
-/// `replay(tokenize(x))` is asserted bit-identical to `parse_main(x)`. `user_times` is
-/// filled with one entry per emitted user turn, exactly as `parse_main`.
-pub(crate) fn replay(messages: &[Message], user_times: &mut Vec<Option<f64>>) -> Vec<Block> {
+/// For Claude, `replay(tokenize(x), &CLAUDE_SHAPING)` is asserted bit-identical to
+/// `parse_main(x)`; for Codex, to `parse_lines(x)`. `user_times` is filled with one entry
+/// per emitted user turn.
+pub(crate) fn replay(
+    messages: &[Message],
+    user_times: &mut Vec<Option<f64>>,
+    shaping: &Shaping,
+) -> Vec<Block> {
     // The set of every tool_use join id (the L1 pre-scan, derived from the message log)
     // so an orphan result is told apart from a not-yet-seen one.
     let tool_ids: HashSet<String> = messages
@@ -1123,7 +1157,7 @@ pub(crate) fn replay(messages: &[Message], user_times: &mut Vec<Option<f64>>) ->
                 if !id.is_empty() {
                     tool_slot.insert(id.clone(), idx);
                     if let Some((txt, tur)) = pending.remove(id) {
-                        apply_result(&mut out[idx], &txt, &tur);
+                        (shaping.apply)(&mut out[idx], &txt, &tur);
                     }
                 }
             }
@@ -1133,10 +1167,10 @@ pub(crate) fn replay(messages: &[Message], user_times: &mut Vec<Option<f64>>) ->
                 tur,
             } => {
                 if let Some(&idx) = tool_slot.get(tool_use_id) {
-                    apply_result(&mut out[idx], text, tur);
+                    (shaping.apply)(&mut out[idx], text, tur);
                 } else if tool_ids.contains(tool_use_id) {
                     pending.insert(tool_use_id.clone(), (text.clone(), tur.clone()));
-                } else if !text.trim().is_empty() && !is_boilerplate(text) {
+                } else if !text.trim().is_empty() && (shaping.keep_orphan)(text) {
                     out.push(Block::ToolResult(text.clone()));
                 }
             }
@@ -1229,7 +1263,7 @@ pub(crate) fn replay(messages: &[Message], user_times: &mut Vec<Option<f64>>) ->
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     apply_completions_and_suppress(&mut out, &tool_slot, &completions, suppress);
-    coalesce_activity_runs(group_turns(out))
+    (shaping.finish)(out)
 }
 
 /// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
@@ -2603,7 +2637,7 @@ mod tests {
             let mut ut_main = Vec::new();
             let via_main = parse_main(jsonl.lines(), &tool_ids, &args(), &mut ut_main);
             let mut ut_engine = Vec::new();
-            let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine);
+            let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine, &CLAUDE_SHAPING);
             assert_eq!(
                 format!("{via_main:?}"),
                 format!("{via_engine:?}"),

@@ -1,3 +1,4 @@
+use crate::engine::message::Message;
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
 use crate::model::Block;
@@ -7,9 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
 use std::path::Path;
 
-pub(crate) fn parse_codex(jsonl: &str, args: &Args) -> Vec<Block> {
-    let call_ids = scan_call_ids(jsonl.lines());
-    parse_lines(jsonl.lines(), &call_ids, args, &mut Vec::new())
+pub(crate) fn parse_codex(jsonl: &str, _args: &Args) -> Vec<Block> {
+    // The in-memory entry runs on the shared engine (L1 `tokenize` → L2 `replay`), proving
+    // L2 is agent-agnostic. The streaming path (`parse_codex_path*`) stays on `parse_lines`
+    // one line resident at a time until L1 grows a pull iterator (a later phase).
+    crate::model::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
 pub(crate) fn parse_codex_path(path: &Path, args: &Args) -> io::Result<Vec<Block>> {
@@ -37,6 +40,147 @@ pub(crate) fn parse_codex_path_timed(
         args,
         user_times,
     ))
+}
+
+/// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
+/// output is skipped for Edit/Write. Shim it into `Shaping::apply`'s `(&mut Block, &str,
+/// &Value)` signature (the `Value` is always Null for Codex).
+fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
+    apply_output(block, text.to_string());
+}
+fn codex_keep_orphan(_t: &str) -> bool {
+    true // Codex keeps every non-empty orphan output (no boilerplate filter)
+}
+fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
+    blocks // identity — Codex does no turn grouping
+}
+
+/// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
+pub(crate) const CODEX_SHAPING: crate::model::Shaping = crate::model::Shaping {
+    apply: apply_output_shaping,
+    keep_orphan: codex_keep_orphan,
+    finish: codex_finish,
+};
+
+/// **Layer 1 — Codex tokenize.** Map Codex's `response_item` line shapes to the canonical
+/// message log (design §3.2). Pure line-shaping — no back-patch / grouping (that is the
+/// shared `replay`). `replay(tokenize(x), &CODEX_SHAPING)` is asserted bit-identical to
+/// `parse_lines(x)`.
+pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
+    let mut msgs: Vec<Message> = Vec::new();
+    let mut cwd = String::new();
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
+            continue;
+        };
+        let ts = value
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(epoch_secs);
+        msgs.push(Message::LineStart(ts));
+        match value.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                if cwd.is_empty() {
+                    cwd = value
+                        .pointer("/payload/cwd")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            Some("response_item") => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                match payload.get("type").and_then(Value::as_str) {
+                    Some("message") => {
+                        let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
+                        if role == "user" {
+                            msgs.push(Message::Trigger(ts));
+                        }
+                        if matches!(role, "user" | "assistant") {
+                            let wanted = if role == "user" {
+                                "input_text"
+                            } else {
+                                "output_text"
+                            };
+                            for text in payload
+                                .get("content")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter(|item| {
+                                    item.get("type").and_then(Value::as_str) == Some(wanted)
+                                })
+                                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                                .filter(|text| !text.trim().is_empty())
+                                .filter(|text| role != "user" || !is_host_context(text))
+                            {
+                                if role == "user" {
+                                    msgs.push(Message::UserArrayText {
+                                        text: text.to_string(),
+                                        injected: false,
+                                    });
+                                } else {
+                                    msgs.push(Message::AssistantText(text.to_string()));
+                                }
+                            }
+                        }
+                    }
+                    Some("reasoning") => {
+                        let text = payload
+                            .get("summary")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter(|item| {
+                                item.get("type").and_then(Value::as_str) == Some("summary_text")
+                            })
+                            .filter_map(|item| item.get("text").and_then(Value::as_str))
+                            .filter(|text| !text.trim().is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() {
+                            msgs.push(Message::Thinking { text, ts });
+                        }
+                    }
+                    Some("function_call" | "custom_tool_call") => {
+                        let raw_name = payload
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool");
+                        let input = call_input(payload);
+                        let (name, target, diffs) = call_details(raw_name, &input, &cwd);
+                        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                        msgs.push(Message::ToolUse {
+                            id: call_id.to_string(),
+                            block: Block::ToolUse {
+                                name,
+                                target,
+                                diffs,
+                                output: None,
+                                patch: None,
+                                read_lines: None,
+                            },
+                        });
+                    }
+                    Some("function_call_output" | "custom_tool_call_output") => {
+                        msgs.push(Message::Trigger(ts));
+                        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                        let output = output_text(payload.get("output").unwrap_or(&Value::Null));
+                        msgs.push(Message::ToolResult {
+                            tool_use_id: call_id.to_string(),
+                            text: output,
+                            tur: Value::Null,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    msgs
 }
 
 fn scan_call_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
@@ -463,6 +607,65 @@ not json
             Block::ToolUse { name, target, diffs, .. }
                 if name == "Edit" && target == "src/lib.rs"
                     && diffs == &[("old".into(), "new".into())]
+        ));
+    }
+
+    /// The explicit bit-identical gate for the shared L2: `replay(tokenize(x), &CODEX_SHAPING)`
+    /// must equal `parse_lines(x)` — same blocks AND same `user_times` — across the Codex
+    /// cases (out-of-order result, host-context / developer suppression, reasoning,
+    /// apply_patch, orphan output, assistant text, junk lines).
+    #[test]
+    fn codex_replay_matches_parse_lines() {
+        fn equiv(jsonl: &str) {
+            let mut ut_lines = Vec::new();
+            let call_ids = scan_call_ids(jsonl.lines());
+            let via_lines = parse_lines(jsonl.lines(), &call_ids, &Args::default(), &mut ut_lines);
+            let mut ut_replay = Vec::new();
+            let via_replay =
+                crate::model::replay(&tokenize(jsonl.lines()), &mut ut_replay, &CODEX_SHAPING);
+            assert_eq!(
+                format!("{via_lines:?}"),
+                format!("{via_replay:?}"),
+                "blocks differ for:\n{jsonl}"
+            );
+            assert_eq!(ut_lines, ut_replay, "user_times differ for:\n{jsonl}");
+        }
+        // Canonical: session_meta cwd, user (host-context + developer filtered), reasoning,
+        // an output that arrives BEFORE its call, assistant final text, and junk lines.
+        equiv(concat!(
+            r#"{"timestamp":"2026-07-18T01:00:00Z","type":"session_meta","payload":{"id":"s1","cwd":"/tmp/repo"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix it"},{"type":"input_text","text":"<environment_context>hidden</environment_context>"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"secret"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:02Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"ok"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"cargo test\"}"}}"#,
+            "\n",
+            "not json\n",
+            r#"{"timestamp":"2026-07-18T01:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}"#,
+            "\n",
+        ));
+        // apply_patch custom_tool_call + its output.
+        equiv(concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/tmp/repo"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"p1","input":"*** Begin Patch\n*** Update File: /tmp/repo/src/lib.rs\n@@\n-old\n+new\n*** End Patch"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"p1","output":"Done!"}}"#,
+            "\n",
+        ));
+        // Orphan output (no matching call → kept) sandwiched between plain turns.
+        equiv(concat!(
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"nope","output":"orphaned"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"bye"}]}}"#,
+            "\n",
         ));
     }
 }
