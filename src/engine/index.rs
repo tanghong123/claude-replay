@@ -7,7 +7,7 @@
 //! own blocks, §7.3) is a later refinement; nothing here needs it yet. Building it as a
 //! derived view keeps it additive and byte-identical — no change to the block model.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::model::{AgentStatus, Block};
 
@@ -62,6 +62,10 @@ pub struct SessionIndex {
     pub agents: Vec<AgentEntry>,
     pub tools: Vec<ToolEntry>,
     pub attachments: Vec<AttachmentEntry>,
+    /// How many blocks of each kind, keyed by the canonical `fold_key` classification (the
+    /// same one the TUI fold policy and the HTML type/tool filter group by) — e.g.
+    /// `{user, assistant, thinking, edit, bash, agent, …}`. `BTreeMap` for a stable order.
+    pub counts: BTreeMap<&'static str, usize>,
 }
 
 impl SessionIndex {
@@ -71,6 +75,7 @@ impl SessionIndex {
         let mut idx = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {
+            *idx.counts.entry(crate::model::fold_key(b)).or_default() += 1;
             match b {
                 Block::UserText(_) | Block::Command { .. } => {
                     let time = user_times.get(turn_i).copied().flatten();
@@ -110,6 +115,11 @@ impl SessionIndex {
     /// Look up a sub-agent by id.
     pub fn agent(&self, id: &str) -> Option<&AgentEntry> {
         self.agents.iter().find(|a| a.id == id)
+    }
+
+    /// How many blocks of a given `fold_key` kind (0 if none).
+    pub fn count(&self, kind: &str) -> usize {
+        self.counts.get(kind).copied().unwrap_or(0)
     }
 
     /// Tool names by descending call frequency (ties broken by name).
@@ -203,5 +213,15 @@ mod tests {
         assert_eq!(idx.attachments.len(), 1);
         assert_eq!(idx.attachments[0].kind, "image");
         assert_eq!(idx.attachments[0].at, 6);
+
+        // Block-kind histogram (fold_key-keyed): 2 users, 2 reads + 1 bash, 2 agents, 1 image.
+        assert_eq!(idx.count("user"), 2);
+        assert_eq!(idx.count("read"), 2);
+        assert_eq!(idx.count("bash"), 1);
+        assert_eq!(idx.count("agent"), 2);
+        assert_eq!(idx.count("attachment"), 1);
+        assert_eq!(idx.count("thinking"), 0, "none present");
+        // Every block is counted exactly once.
+        assert_eq!(idx.counts.values().sum::<usize>(), blocks.len());
     }
 }
