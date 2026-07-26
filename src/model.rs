@@ -1080,24 +1080,242 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
     finish: claude_finish,
 };
 
-/// **Layer 2 — replay.** Fold the canonical [`Message`] log into the block list: the
-/// `id → block index` back-patch (`tool_slot` / `pending`), the thinking clock, the
-/// queue lifecycle (marker suppression + completions), user-turn stamping, and finally
-/// the agent-specific `finish` (Claude: `group_turns` + `coalesce_activity_runs`; Codex:
-/// identity). Agent-agnostic except for `shaping` (the three hooks above): the Claude-only
-/// quirks (skill-body nesting, the two-event spawn/completion split, queue lifecycle) fire
-/// only on Claude-shaped messages, which a Codex tokenizer never emits.
+/// **Layer 2 — the stateful replayer** (design §3.3). `apply` folds a batch of messages
+/// into the running block buffer (the `id → block index` back-patch, the thinking clock,
+/// the queue lifecycle, user-turn stamping); `into_blocks` finalizes (the final user-turn
+/// flush, completions, then the agent-specific `finish`). Fed all messages at once it
+/// reproduces the old one-shot `replay` exactly; fed in pieces it folds **incrementally** —
+/// the keystone for the streaming production path (M9) and the live `ingest` (M11).
+/// Agent-agnostic except for `shaping`: the Claude-only quirks (skill-body nesting, the
+/// two-event spawn/completion split, queue lifecycle) fire only on Claude-shaped messages
+/// that a Codex tokenizer never emits.
 ///
-/// For Claude, `replay(tokenize(x), &CLAUDE_SHAPING)` is asserted bit-identical to
-/// `parse_main(x)`; for Codex, to `parse_lines(x)`. `user_times` is filled with one entry
-/// per emitted user turn.
+/// `tool_ids` is the L1 id pre-scan (so an orphan result is told from a not-yet-seen one);
+/// the caller supplies it — from the whole message log for a batch, or a streaming pre-scan.
+pub(crate) struct Replayer<'a> {
+    shaping: &'a Shaping,
+    tool_ids: HashSet<String>,
+    out: Vec<Block>,
+    user_times: Vec<Option<f64>>,
+    pending_ts: Option<f64>,
+    stamped: usize,
+    tool_slot: HashMap<String, usize>,
+    pending: HashMap<String, (String, Value)>,
+    trigger_ts: Option<f64>,
+    queue: Vec<QueueItem>,
+    content_seq: usize,
+    suppress: Vec<usize>,
+    last_skill: Option<usize>,
+    completions: Vec<String>,
+}
+
+impl<'a> Replayer<'a> {
+    pub fn new(shaping: &'a Shaping, tool_ids: HashSet<String>) -> Self {
+        Replayer {
+            shaping,
+            tool_ids,
+            out: Vec::new(),
+            user_times: Vec::new(),
+            pending_ts: None,
+            stamped: 0,
+            tool_slot: HashMap::new(),
+            pending: HashMap::new(),
+            trigger_ts: None,
+            queue: Vec::new(),
+            content_seq: 0,
+            suppress: Vec::new(),
+            last_skill: None,
+            completions: Vec::new(),
+        }
+    }
+
+    /// Fold a batch of messages into the running state (append, back-patch, stamp).
+    pub fn apply(&mut self, messages: &[Message]) {
+        let (apply, keep_orphan) = (self.shaping.apply, self.shaping.keep_orphan);
+        for m in messages {
+            match m {
+                Message::LineStart(ts) => {
+                    stamp_user_turns(
+                        &self.out,
+                        &mut self.stamped,
+                        self.pending_ts,
+                        &mut self.user_times,
+                    );
+                    self.pending_ts = *ts;
+                }
+                Message::Trigger(ts) => {
+                    if let Some(t) = ts {
+                        self.trigger_ts = Some(*t);
+                    }
+                }
+                Message::AssistantText(t) => {
+                    self.out.push(Block::AssistantText(t.clone()));
+                    self.content_seq += 1;
+                }
+                Message::Thinking { text, ts } => {
+                    let duration_secs = match (ts, self.trigger_ts) {
+                        (Some(end), Some(start)) if *end >= start => Some((end - start) as u64),
+                        _ => None,
+                    };
+                    self.out.push(Block::Thinking {
+                        text: text.clone(),
+                        duration_secs,
+                        tools: Vec::new(),
+                    });
+                    self.content_seq += 1;
+                }
+                Message::ToolUse { id, block } => {
+                    self.out.push(block.clone());
+                    self.content_seq += 1;
+                    let idx = self.out.len() - 1;
+                    if let Block::ToolUse { name, .. } = &self.out[idx] {
+                        if name == "Skill" {
+                            self.last_skill = Some(idx);
+                        }
+                    }
+                    if !id.is_empty() {
+                        self.tool_slot.insert(id.clone(), idx);
+                        if let Some((txt, tur)) = self.pending.remove(id) {
+                            apply(&mut self.out[idx], &txt, &tur);
+                        }
+                    }
+                }
+                Message::ToolResult {
+                    tool_use_id,
+                    text,
+                    tur,
+                } => {
+                    if let Some(&idx) = self.tool_slot.get(tool_use_id) {
+                        apply(&mut self.out[idx], text, tur);
+                    } else if self.tool_ids.contains(tool_use_id) {
+                        self.pending
+                            .insert(tool_use_id.clone(), (text.clone(), tur.clone()));
+                    } else if !text.trim().is_empty() && keep_orphan(text) {
+                        self.out.push(Block::ToolResult(text.clone()));
+                    }
+                }
+                Message::UserString { text, injected } => {
+                    if is_skill_body(text)
+                        && attach_skill_body(&mut self.out, self.last_skill, text)
+                    {
+                        // Nested into its `Skill` block above — no loose result block.
+                    } else if *injected {
+                        push_injected(text, &mut self.out);
+                    } else {
+                        push_user_string(text, &mut self.out);
+                    }
+                }
+                Message::UserArrayText { text, injected } => {
+                    if is_skill_body(text)
+                        && attach_skill_body(&mut self.out, self.last_skill, text)
+                    {
+                        // Nested into its `Skill` block above.
+                    } else if *injected || is_skill_body(text) {
+                        self.out.push(Block::ToolResult(text.clone()));
+                    } else {
+                        self.out.push(Block::UserText(text.clone()));
+                    }
+                }
+                Message::AttachmentPrompt { text } => {
+                    self.out.push(Block::UserText(text.clone()));
+                }
+                Message::Attachment(att) => {
+                    self.out.push(Block::Attachment(att.clone()));
+                }
+                Message::QueueOp { op, content } => match op {
+                    QueueOpKind::Enqueue => {
+                        if let Some(c) = content {
+                            if is_agent_notification(c) {
+                                self.completions.push(c.to_string());
+                                let status = tag_inner(c, "status")
+                                    .and_then(AgentStatus::from_status)
+                                    .unwrap_or(AgentStatus::Completed);
+                                let description = tag_inner(c, "summary")
+                                    .map(summary_description)
+                                    .unwrap_or_default();
+                                let result = tag_inner(c, "result")
+                                    .map(str::trim)
+                                    .filter(|r| !r.is_empty())
+                                    .map(str::to_string);
+                                let agent_id = tag_inner(c, "task-id")
+                                    .or_else(|| tag_inner(c, "tool-use-id"))
+                                    .unwrap_or_default()
+                                    .to_string();
+                                self.out.push(Block::AgentDone {
+                                    agent_id,
+                                    agent_type: String::new(),
+                                    description,
+                                    status,
+                                    result,
+                                });
+                            }
+                            let is_prose = is_queue_prose(c);
+                            let marker_idx = if is_prose {
+                                self.out.push(Block::QueueEvent {
+                                    text: c.trim().to_string(),
+                                });
+                                Some(self.out.len() - 1)
+                            } else {
+                                None
+                            };
+                            self.queue.push(QueueItem {
+                                content: c.trim().to_string(),
+                                marker_idx,
+                                content_at_enqueue: self.content_seq,
+                            });
+                        }
+                    }
+                    QueueOpKind::Remove | QueueOpKind::Dequeue => {
+                        let popped = match content.as_deref().map(str::trim) {
+                            Some(c) => self
+                                .queue
+                                .iter()
+                                .position(|q| q.content == c)
+                                .map(|i| self.queue.remove(i)),
+                            None if !self.queue.is_empty() => Some(self.queue.remove(0)),
+                            None => None,
+                        };
+                        if let Some(item) = popped {
+                            if let Some(mi) = item.marker_idx {
+                                if self.content_seq == item.content_at_enqueue {
+                                    self.suppress.push(mi);
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
+    /// Returns the grouped blocks and the per-turn timestamps.
+    pub fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<f64>>) {
+        stamp_user_turns(
+            &self.out,
+            &mut self.stamped,
+            self.pending_ts,
+            &mut self.user_times,
+        );
+        apply_completions_and_suppress(
+            &mut self.out,
+            &self.tool_slot,
+            &self.completions,
+            self.suppress,
+        );
+        let blocks = (self.shaping.finish)(self.out);
+        (blocks, self.user_times)
+    }
+}
+
+/// Batch L2 fold — `Replayer::new(); apply(all); into_blocks()`. For Claude,
+/// `replay(tokenize(x), &CLAUDE_SHAPING)` is asserted bit-identical to `parse_main(x)`; for
+/// Codex, to `parse_lines(x)`. `user_times` is filled with one entry per emitted user turn.
 pub(crate) fn replay(
     messages: &[Message],
     user_times: &mut Vec<Option<f64>>,
     shaping: &Shaping,
 ) -> Vec<Block> {
-    // The set of every tool_use join id (the L1 pre-scan, derived from the message log)
-    // so an orphan result is told apart from a not-yet-seen one.
     let tool_ids: HashSet<String> = messages
         .iter()
         .filter_map(|m| match m {
@@ -1105,165 +1323,11 @@ pub(crate) fn replay(
             _ => None,
         })
         .collect();
-
-    let mut out: Vec<Block> = Vec::new();
-    let mut pending_ts: Option<f64> = None;
-    let mut stamped = 0usize;
-    let mut tool_slot: HashMap<String, usize> = HashMap::new();
-    let mut pending: HashMap<String, (String, Value)> = HashMap::new();
-    let mut trigger_ts: Option<f64> = None;
-    let mut queue: Vec<QueueItem> = Vec::new();
-    let mut content_seq = 0usize;
-    let mut suppress: Vec<usize> = Vec::new();
-    let mut last_skill: Option<usize> = None;
-    let mut completions: Vec<String> = Vec::new();
-
-    for m in messages {
-        match m {
-            Message::LineStart(ts) => {
-                stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-                pending_ts = *ts;
-            }
-            Message::Trigger(ts) => {
-                if let Some(t) = ts {
-                    trigger_ts = Some(*t);
-                }
-            }
-            Message::AssistantText(t) => {
-                out.push(Block::AssistantText(t.clone()));
-                content_seq += 1;
-            }
-            Message::Thinking { text, ts } => {
-                let duration_secs = match (ts, trigger_ts) {
-                    (Some(end), Some(start)) if *end >= start => Some((end - start) as u64),
-                    _ => None,
-                };
-                out.push(Block::Thinking {
-                    text: text.clone(),
-                    duration_secs,
-                    tools: Vec::new(),
-                });
-                content_seq += 1;
-            }
-            Message::ToolUse { id, block } => {
-                out.push(block.clone());
-                content_seq += 1;
-                let idx = out.len() - 1;
-                if let Block::ToolUse { name, .. } = &out[idx] {
-                    if name == "Skill" {
-                        last_skill = Some(idx);
-                    }
-                }
-                if !id.is_empty() {
-                    tool_slot.insert(id.clone(), idx);
-                    if let Some((txt, tur)) = pending.remove(id) {
-                        (shaping.apply)(&mut out[idx], &txt, &tur);
-                    }
-                }
-            }
-            Message::ToolResult {
-                tool_use_id,
-                text,
-                tur,
-            } => {
-                if let Some(&idx) = tool_slot.get(tool_use_id) {
-                    (shaping.apply)(&mut out[idx], text, tur);
-                } else if tool_ids.contains(tool_use_id) {
-                    pending.insert(tool_use_id.clone(), (text.clone(), tur.clone()));
-                } else if !text.trim().is_empty() && (shaping.keep_orphan)(text) {
-                    out.push(Block::ToolResult(text.clone()));
-                }
-            }
-            Message::UserString { text, injected } => {
-                if is_skill_body(text) && attach_skill_body(&mut out, last_skill, text) {
-                    // Nested into its `Skill` block above — no loose result block.
-                } else if *injected {
-                    push_injected(text, &mut out);
-                } else {
-                    push_user_string(text, &mut out);
-                }
-            }
-            Message::UserArrayText { text, injected } => {
-                if is_skill_body(text) && attach_skill_body(&mut out, last_skill, text) {
-                    // Nested into its `Skill` block above.
-                } else if *injected || is_skill_body(text) {
-                    out.push(Block::ToolResult(text.clone()));
-                } else {
-                    out.push(Block::UserText(text.clone()));
-                }
-            }
-            Message::AttachmentPrompt { text } => {
-                out.push(Block::UserText(text.clone()));
-            }
-            Message::Attachment(att) => {
-                out.push(Block::Attachment(att.clone()));
-            }
-            Message::QueueOp { op, content } => match op {
-                QueueOpKind::Enqueue => {
-                    if let Some(c) = content {
-                        if is_agent_notification(c) {
-                            completions.push(c.to_string());
-                            let status = tag_inner(c, "status")
-                                .and_then(AgentStatus::from_status)
-                                .unwrap_or(AgentStatus::Completed);
-                            let description = tag_inner(c, "summary")
-                                .map(summary_description)
-                                .unwrap_or_default();
-                            let result = tag_inner(c, "result")
-                                .map(str::trim)
-                                .filter(|r| !r.is_empty())
-                                .map(str::to_string);
-                            let agent_id = tag_inner(c, "task-id")
-                                .or_else(|| tag_inner(c, "tool-use-id"))
-                                .unwrap_or_default()
-                                .to_string();
-                            out.push(Block::AgentDone {
-                                agent_id,
-                                agent_type: String::new(),
-                                description,
-                                status,
-                                result,
-                            });
-                        }
-                        let is_prose = is_queue_prose(c);
-                        let marker_idx = if is_prose {
-                            out.push(Block::QueueEvent {
-                                text: c.trim().to_string(),
-                            });
-                            Some(out.len() - 1)
-                        } else {
-                            None
-                        };
-                        queue.push(QueueItem {
-                            content: c.trim().to_string(),
-                            marker_idx,
-                            content_at_enqueue: content_seq,
-                        });
-                    }
-                }
-                QueueOpKind::Remove | QueueOpKind::Dequeue => {
-                    let popped = match content.as_deref().map(str::trim) {
-                        Some(c) => queue
-                            .iter()
-                            .position(|q| q.content == c)
-                            .map(|i| queue.remove(i)),
-                        None if !queue.is_empty() => Some(queue.remove(0)),
-                        None => None,
-                    };
-                    if let Some(item) = popped {
-                        if let Some(mi) = item.marker_idx {
-                            if content_seq == item.content_at_enqueue {
-                                suppress.push(mi);
-                            }
-                        }
-                    }
-                }
-            },
-        }
-    }
-    stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-    apply_completions_and_suppress(&mut out, &tool_slot, &completions, suppress);
-    (shaping.finish)(out)
+    let mut r = Replayer::new(shaping, tool_ids);
+    r.apply(messages);
+    let (blocks, ut) = r.into_blocks();
+    user_times.extend(ut);
+    blocks
 }
 
 /// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
@@ -2766,6 +2830,77 @@ mod tests {
         for j in corpus {
             assert_equiv(j);
         }
+    }
+
+    /// M8 keystone: folding messages in two pieces (`apply(a); apply(b)`) equals one
+    /// `apply(all)` for every split point — same blocks, same `user_times`. This is the
+    /// property that makes the streaming (M9) and incremental (M11) paths safe. Covers the
+    /// state that must survive a split: the tool back-patch (`tool_slot`/`pending`), the
+    /// queue lifecycle, the thinking clock (`trigger_ts`), and stamping (`pending_ts`).
+    #[test]
+    fn replayer_split_apply_is_identical() {
+        fn ids(msgs: &[Message]) -> std::collections::HashSet<String> {
+            msgs.iter()
+                .filter_map(|m| match m {
+                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn assert_split(jsonl: &str) {
+            let msgs = tokenize(jsonl.lines());
+            let ti = ids(&msgs);
+            let mut whole = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+            whole.apply(&msgs);
+            let whole = whole.into_blocks();
+            for k in 0..=msgs.len() {
+                let mut r = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+                r.apply(&msgs[..k]);
+                r.apply(&msgs[k..]);
+                let split = r.into_blocks();
+                assert_eq!(
+                    format!("{:?}", whole.0),
+                    format!("{:?}", split.0),
+                    "blocks differ, split at {k} of {}:\n{jsonl}",
+                    msgs.len()
+                );
+                assert_eq!(
+                    whole.1, split.1,
+                    "user_times differ, split at {k}:\n{jsonl}"
+                );
+            }
+        }
+        // tool_use then its result (back-patch across the split) + a later thinking block.
+        assert_split(concat!(
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}"#,
+            "\n",
+        ));
+        // queue enqueue/dequeue lifecycle across the split.
+        assert_split(concat!(
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}"#,
+            "\n",
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up after a gap"}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+            r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:03.000Z"}"#,
+            "\n",
+        ));
+        // injected meta + real turns (user-turn stamping across the split).
+        assert_split(concat!(
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real question"}}"#,
+            "\n",
+            r#"{"type":"user","isMeta":true,"timestamp":"2026-06-30T03:00:01.000Z","message":{"content":"meta note"}}"#,
+            "\n",
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}"#,
+            "\n",
+        ));
     }
 
     #[test]
