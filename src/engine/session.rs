@@ -13,6 +13,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::Block;
 use crate::{Agent, Args};
@@ -27,10 +28,13 @@ pub struct Session {
     pub cwd: Option<PathBuf>,
     /// The ordered block stream (tool results already joined onto their calls).
     pub blocks: Vec<Block>,
-    /// One timestamp per user turn, in order. (Re-homes to `index.turns` in Phase 5.)
+    /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
+    /// a field until consumers migrate off it.
     pub user_times: Vec<Option<f64>>,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
+    /// Derived within-session indices — turns / agents / tools / attachments (§7).
+    pub index: SessionIndex,
 }
 
 /// Auto-detect the agent from the transcript head, then parse into a [`Session`].
@@ -48,12 +52,14 @@ pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     let metrics =
         crate::metrics::parse_reader_for(agent, io::BufReader::new(std::fs::File::open(path)?));
     let cwd = crate::discover::session_cwd(path);
+    let index = SessionIndex::build(&blocks, &user_times);
     Ok(Session {
         agent,
         cwd,
         blocks,
         user_times,
         metrics,
+        index,
     })
 }
 
