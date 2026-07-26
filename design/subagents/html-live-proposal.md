@@ -301,7 +301,15 @@ so the bundle is self-contained and every attachment is a real file on disk.
   a not-yet-spawned `?session=<id>`, the transient `+N` badge on a growing unopened child
   (from the parent `meta`).
 
-- **Phase D — `--dump-all-html` (§6). SHIPPED** (attachment materialization deferred).
+**Status: Phases A/B/C/D all SHIPPED.** `--html` serves a live multi-file bundle
+(per-agent streams + child links + whole-tree live tail via `follow_tree`/`stream_delta`);
+`--dump-all-html` writes the offline bundle with materialized, de-conflicted attachments
+in `assets/`. Deviation from the design: the served tailer re-parses the whole tree each
+cycle (matches the prior single-file behavior) rather than per-agent refcounted tailers +
+a `/stream` byte cursor — that remains a scale optimization for later. Below is the
+original phase plan for reference.
+
+- **Phase D — `--dump-all-html` (§6). SHIPPED** including attachment materialization.
   The offline directory bundle: walk the eager agent tree, write each node's finished
   `<id>.jsonl`, emit the shared `index.html`, cross-link via `child:`. Reuses the served
   block/meta emission with the tailer/reset switched off. Built: `collect_agent_nodes`,
