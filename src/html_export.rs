@@ -1157,7 +1157,6 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
 /// refs (to register/queue). `cwd` is the session cwd (shared by every agent).
 fn agent_stream(
     agent: Agent,
-    args: &Args,
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -1165,9 +1164,8 @@ fn agent_stream(
     assets: Option<&mut AssetSink>,
 ) -> Result<(String, Vec<ChildRef>)> {
     // One parse yields blocks + per-turn times + folded metrics (M10 — no separate read).
-    let (blocks, user_times, metrics) =
-        crate::model::parse_path_timed_for(agent, &info.source, args)
-            .with_context(|| format!("read transcript {}", info.source.display()))?;
+    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, &info.source)
+        .with_context(|| format!("read transcript {}", info.source.display()))?;
     Ok(render_agent_stream(
         agent,
         fold,
@@ -1298,8 +1296,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         if !seen.insert(info.id.clone()) || !info.source.exists() {
             continue;
         }
-        let (jsonl, children) =
-            agent_stream(agent, args, &fold, &cwd, false, &info, Some(&mut sink))?;
+        let (jsonl, children) = agent_stream(agent, &fold, &cwd, false, &info, Some(&mut sink))?;
         std::fs::write(
             out_dir.join(format!("{}.jsonl", info.id)),
             format!("{jsonl}\n"),

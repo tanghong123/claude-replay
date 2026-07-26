@@ -6,7 +6,7 @@
 use crate::engine::message::{Message, QueueOpKind};
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
-use crate::{Agent, Args};
+use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -675,15 +675,15 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// `replay_tokenize_matches_parse_main`. The large-file streaming path
 /// (`parse_path` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
 /// production no longer touches `parse_main`.
-pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
+pub fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
 
 /// Parse JSONL text with the parser for `agent`.
-pub fn parse_for(agent: Agent, jsonl: &str, args: &Args) -> Vec<Block> {
+pub fn parse_for(agent: Agent, jsonl: &str) -> Vec<Block> {
     match agent {
-        Agent::Claude => parse(jsonl, args),
-        Agent::Codex => crate::codex_model::parse_codex(jsonl, args),
+        Agent::Claude => parse(jsonl),
+        Agent::Codex => crate::codex_model::parse_codex(jsonl),
     }
 }
 
@@ -691,14 +691,14 @@ pub fn parse_for(agent: Agent, jsonl: &str, args: &Args) -> Vec<Block> {
 /// two passes (each a fresh read) — so a large transcript never balloons into a
 /// whole-file `Vec<Value>` (~5–8× the file in RAM) or a whole-file `String`. See
 /// `STREAMING-PARSE-DESIGN.md`.
-pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Block>> {
-    let mut blocks = parse_file(path, args)?;
+pub fn parse_path(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
+    let mut blocks = parse_file(path)?;
     // Load each spawned sub-agent's child transcript (recursively) so a `SubAgent`
     // block can be descended into and its subtree cost rolled up. All of a session's
     // agents — any depth — share one flat `<session>/subagents/` dir (they share the
     // session id), so one dir resolves the whole tree.
     if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(&mut blocks, &dir, args);
+        enrich_subagents(&mut blocks, &dir);
     }
     Ok(blocks)
 }
@@ -706,7 +706,7 @@ pub fn parse_path(path: &std::path::Path, args: &Args) -> std::io::Result<Vec<Bl
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw
 /// pass. `parse_path` wraps this with `enrich_subagents`; the recursion reuses this so
 /// grandchildren resolve against the same session `subagents/` dir.
-fn parse_file(path: &std::path::Path, _args: &Args) -> std::io::Result<Vec<Block>> {
+fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
@@ -749,21 +749,21 @@ pub fn subagent_file(session_path: &std::path::Path, agent_id: &str) -> Option<s
 /// `<sadir>/agent-<id>.jsonl`, recursing into grandchildren against the same `sadir`.
 /// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
 /// never a dead affordance.
-fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path, args: &Args) {
+fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
     for b in blocks.iter_mut() {
         if let Block::SubAgent(sa) = b {
             if sa.agent_id.is_empty() {
                 continue;
             }
             let child = sadir.join(format!("agent-{}.jsonl", sa.agent_id));
-            let Ok(mut cb) = parse_file(&child, args) else {
+            let Ok(mut cb) = parse_file(&child) else {
                 continue;
             };
-            enrich_subagents(&mut cb, sadir, args); // grandchildren (same flat dir)
-                                                    // The completion `<task-notification>` is the sole authority for terminal
-                                                    // status — a child file existing does NOT mean the agent finished (it keeps
-                                                    // growing while it runs). Upgrading to Completed here would hide a live agent
-                                                    // from `active`, so leave the status alone and only attach the transcript.
+            enrich_subagents(&mut cb, sadir); // grandchildren (same flat dir)
+                                              // The completion `<task-notification>` is the sole authority for terminal
+                                              // status — a child file existing does NOT mean the agent finished (it keeps
+                                              // growing while it runs). Upgrading to Completed here would hide a live agent
+                                              // from `active`, so leave the status alone and only attach the transcript.
             sa.subtree_cost = subtree_cost(&child, &cb);
             sa.blocks = cb;
         }
@@ -829,7 +829,6 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
 pub fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
-    args: &Args,
 ) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
     let mut times = Vec::new();
     let (blocks, metrics) = match agent {
@@ -851,7 +850,7 @@ pub fn parse_path_timed_for(
             )?;
             (blocks, macc.finish())
         }
-        Agent::Codex => crate::codex_model::parse_codex_path_timed(path, args, &mut times)?,
+        Agent::Codex => crate::codex_model::parse_codex_path_timed(path, &mut times)?,
     };
     Ok((blocks, times, metrics))
 }
@@ -863,26 +862,21 @@ pub fn parse_path_timed_for(
 pub fn parse_path_timed_enriched_for(
     agent: Agent,
     path: &std::path::Path,
-    args: &Args,
 ) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
-    let (mut blocks, times, _metrics) = parse_path_timed_for(agent, path, args)?;
+    let (mut blocks, times, _metrics) = parse_path_timed_for(agent, path)?;
     if agent == Agent::Claude {
         if let Some(dir) = subagents_dir(path) {
-            enrich_subagents(&mut blocks, &dir, args);
+            enrich_subagents(&mut blocks, &dir);
         }
     }
     Ok((blocks, times))
 }
 
 /// Streaming file parse with the parser for `agent`.
-pub fn parse_path_for(
-    agent: Agent,
-    path: &std::path::Path,
-    args: &Args,
-) -> std::io::Result<Vec<Block>> {
+pub fn parse_path_for(agent: Agent, path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     match agent {
-        Agent::Claude => parse_path(path, args),
-        Agent::Codex => crate::codex_model::parse_codex_path(path, args),
+        Agent::Claude => parse_path(path),
+        Agent::Codex => crate::codex_model::parse_codex_path(path),
     }
 }
 
@@ -1597,7 +1591,6 @@ fn apply_completions_and_suppress(
 fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     tool_ids: &HashSet<String>,
-    _args: &Args,
     user_times: &mut Vec<Option<f64>>,
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
@@ -2221,28 +2214,6 @@ fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    fn args() -> Args {
-        Args {
-            target: None,
-            agent: None,
-            latest: false,
-            follow: false,
-            no_thinking: false,
-            reads: false,
-            results: false,
-            no_user: false,
-            full: false,
-            fold: None,
-            unfold: None,
-            read_match: None,
-            dump: Some(Some("-".into())),
-            width: None,
-            dump_html: None,
-            dump_all_html: None,
-            html: false,
-        }
-    }
-
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {
         blocks.iter().map(fold_key).collect()
     }
@@ -2260,7 +2231,7 @@ mod tests {
 {"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued from a previous conversation…"}}
 {"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // Two genuine turns; the injected pair folds as tool_result, not user.
         assert_eq!(
             kinds(&blocks),
@@ -2296,7 +2267,7 @@ mod tests {
 {"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:06.000Z"}
 {"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"still waiting"}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // "picked up immediately": enqueue→dequeue with no agent work → marker dropped.
         // "picked up after a gap": a Bash ran between enqueue and its front pop → marker kept.
         // "still waiting": never popped → marker kept. The task-notification: no marker.
@@ -2339,7 +2310,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"text","text":"ok"}]}}
 {"type":"user","timestamp":"2026-06-30T03:00:06.000Z","message":{"content":"last turn"}}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         let users: Vec<&str> = blocks
             .iter()
             .filter_map(|b| match b {
@@ -2369,7 +2340,7 @@ mod tests {
 {"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"compact_file_reference","filename":"/w/src/lib.rs","displayPath":"src/lib.rs"}}
 {"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"skill_listing","content":"noise"}}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         let atts: Vec<(&str, &str, bool, Option<&str>)> = blocks
             .iter()
             .filter_map(|b| match b {
@@ -2414,7 +2385,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/shot.png"}}]}}
 {"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}}]}]}}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         let imgs: Vec<(&str, &str)> = blocks
             .iter()
             .filter_map(|b| match b {
@@ -2442,7 +2413,7 @@ mod tests {
 {\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:00.000Z\",\"message\":{\"content\":\"\u{11}\"}}
 {\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:01.000Z\",\"message\":{\"content\":\"real\"}}
 ";
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(kinds(&blocks), vec!["user"], "{blocks:?}");
         assert!(matches!(&blocks[0], Block::UserText(t) if t == "real"));
     }
@@ -2457,7 +2428,7 @@ mod tests {
 {"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
 {"type":"assistant","timestamp":"2026-06-30T03:00:12.000Z","message":{"content":[{"type":"thinking","thinking":"hmm let me consider"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // The Bash is absorbed into the thinking (not a top-level block).
         assert_eq!(kinds(&blocks), vec!["user", "thinking"], "{blocks:?}");
         let Block::Thinking {
@@ -2482,7 +2453,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 {"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"thinking","thinking":"ok"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(
             kinds(&blocks),
             vec!["user", "edit", "thinking"],
@@ -2500,7 +2471,7 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"Launching skill: dump-tasks"}]}}
 {"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /Users/dev/.claude/skills/dump-tasks\n\n# dump-tasks\n\nTurn the work into a brief."}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // Exactly one block — the Skill call — with the skill name as its target and
         // the fold key "skill" (default-folded, like reads/thinking).
         assert_eq!(kinds(&blocks), vec!["skill"], "{blocks:?}");
@@ -2534,7 +2505,7 @@ mod tests {
         let jsonl = r#"
 {"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /x\n\n# s"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(kinds(&blocks), vec!["tool_result"], "{blocks:?}");
     }
 
@@ -2550,7 +2521,7 @@ mod tests {
 {"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
 {"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review the rewrite\" finished</summary>\n<result>Two gaps found.</result>\n</task-notification>"}
 "##;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // Two agent blocks: the spawn (launched) then the completion (done).
         assert_eq!(kinds(&blocks), vec!["agent", "agent"], "{blocks:?}");
         let Block::SubAgent(sa) = &blocks[0] else {
@@ -2587,12 +2558,10 @@ mod tests {
         assert_eq!(description, "Review the rewrite");
         assert_eq!(*status, AgentStatus::Completed);
         assert_eq!(result.as_deref(), Some("Two gaps found."));
-        // Both fold under the "agent" key and default-collapse.
+        // Both fold under the "agent" key; the default-collapse *policy* is a view concern
+        // (asserted in `view`'s `default_fold_policy_collapses_agent_blocks`).
         assert_eq!(fold_key(&blocks[0]), "agent");
         assert_eq!(fold_key(&blocks[1]), "agent");
-        let pol = crate::view::FoldPolicy::from_args(&args());
-        assert!(pol.collapses(&blocks[0]), "spawn default-folds");
-        assert!(pol.collapses(&blocks[1]), "completion default-folds");
     }
 
     /// `parse_path` loads each `SubAgent`'s child transcript from the flat
@@ -2632,7 +2601,7 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let blocks = parse_path(&sess, &args()).unwrap();
+        let blocks = parse_path(&sess).unwrap();
         let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
         else {
             panic!("no SubAgent: {blocks:?}")
@@ -2648,12 +2617,10 @@ mod tests {
             "child file resolved"
         );
         assert!(subagent_file(&sess, "nope").is_none());
-        // Node-scoped tool count: the child's 2 Reads, not the parent's Bash.
-        assert_eq!(
-            crate::render::tool_count(sa),
-            2,
-            "node-scoped tool count (child's 2 Reads, not the parent's Bash)"
-        );
+        // Node-scoped: the child's blocks are its own 2 Reads, not the parent's Bash. The
+        // *count* (which folds coalesced activity into a thinking block's tool list) is a
+        // render concern, asserted in `render`'s `child_scoped_tool_count`. Here we assert
+        // the pure-model contract: the child transcript loaded and the cost rolled up.
         assert!(
             sa.subtree_cost.unwrap_or(0.0) > 0.0,
             "subtree cost rolled up"
@@ -2666,7 +2633,7 @@ mod tests {
         let jsonl = r#"
 {"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"Build release\" completed (exit code 0)</summary>\n</task-notification>"}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::ToolResult(t) => {
@@ -2711,7 +2678,7 @@ mod tests {
 {"type":"assistant","message":{"content":[{"type":"text","text":"ok"},{"type":"tool_use","name":"Read","input":{"file_path":"/x.rs"}},{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","content":"FILE CONTENTS"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // Nothing is dropped — but the consecutive Read + Bash coalesce into one
         // activity run (their blocks live inside it), and Edit stays expanded.
         assert_eq!(
@@ -2738,7 +2705,7 @@ mod tests {
         let jsonl = format!(
             r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","content":"{big}"}}]}}}}"#
         );
-        let blocks = parse(&jsonl, &args());
+        let blocks = parse(&jsonl);
         assert_eq!(blocks.len(), 1);
         let Block::ToolResult(t) = &blocks[0] else {
             panic!("expected a tool_result block");
@@ -2757,7 +2724,7 @@ mod tests {
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"user","toolUseResult":{"stdout":"file1\nfile2","stderr":"","interrupted":false},"message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"file1\nfile2"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // Edit stays expanded; the boilerplate Edit result is NOT a separate block.
         // Read + Bash are consecutive activity tools → coalesced into one activity run.
         assert_eq!(kinds(&blocks), vec!["edit", "thinking"]);
@@ -2794,7 +2761,7 @@ mod tests {
         for i in 0..9 {
             jsonl.push_str(&format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"b{i}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {i}\"}}}}]}}}}\n"));
         }
-        let blocks = parse(&jsonl, &args());
+        let blocks = parse(&jsonl);
         assert_eq!(kinds(&blocks), vec!["assistant", "thinking"]);
         let Block::Thinking {
             tools,
@@ -2822,7 +2789,7 @@ mod tests {
 {"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /x.rs has been updated successfully."}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         // The out-of-order result joined its Edit — no stray orphan block.
         assert_eq!(kinds(&blocks), vec!["edit"], "{blocks:?}");
         let Block::ToolUse { patch, .. } = &blocks[0] else {
@@ -2843,7 +2810,7 @@ mod tests {
 {"type":"user","message":{"content":"go"}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"ghost","content":"orphan output"}]}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(kinds(&blocks), vec!["user", "tool_result"], "{blocks:?}");
         let Block::ToolResult(t) = &blocks[1] else {
             panic!("expected orphan ToolResult");
@@ -2865,10 +2832,10 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}"#,
             "\n",
         );
-        let via_str = parse(jsonl, &args());
+        let via_str = parse(jsonl);
         let file = std::env::temp_dir().join("claude-replay-parse-path-test.jsonl");
         std::fs::write(&file, jsonl).unwrap();
-        let via_path = parse_path(&file, &args()).unwrap();
+        let via_path = parse_path(&file).unwrap();
         std::fs::remove_file(&file).ok();
         assert_eq!(format!("{via_str:?}"), format!("{via_path:?}"));
     }
@@ -2882,7 +2849,7 @@ mod tests {
         fn assert_equiv(jsonl: &str) {
             let tool_ids = scan_tool_ids(jsonl.lines());
             let mut ut_main = Vec::new();
-            let via_main = parse_main(jsonl.lines(), &tool_ids, &args(), &mut ut_main);
+            let via_main = parse_main(jsonl.lines(), &tool_ids, &mut ut_main);
             let mut ut_engine = Vec::new();
             let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine, &CLAUDE_SHAPING);
             assert_eq!(
@@ -3227,7 +3194,7 @@ mod tests {
 {"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: noise</local-command-caveat><command-name>/compact</command-name><command-message>compact</command-message><command-args></command-args>"}}
 {"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>"}}
 "#;
-        let blocks = parse(jsonl, &args());
+        let blocks = parse(jsonl);
         assert_eq!(
             blocks.len(),
             1,
@@ -3251,10 +3218,7 @@ mod tests {
     #[test]
     fn caveat_only_message_is_dropped() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>just noise</local-command-caveat>"}}"#;
-        assert!(
-            parse(jsonl, &args()).is_empty(),
-            "caveat-only should yield nothing"
-        );
+        assert!(parse(jsonl).is_empty(), "caveat-only should yield nothing");
     }
 
     #[test]

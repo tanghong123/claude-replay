@@ -2,7 +2,6 @@ use crate::engine::message::Message;
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
 use crate::model::Block;
-use crate::Args;
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -10,14 +9,14 @@ use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-pub(crate) fn parse_codex(jsonl: &str, _args: &Args) -> Vec<Block> {
+pub(crate) fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
     // `parse_stream` + `decode_codex_line` (M9).
     crate::model::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
-pub(crate) fn parse_codex_path(path: &Path, _args: &Args) -> io::Result<Vec<Block>> {
+pub(crate) fn parse_codex_path(path: &Path) -> io::Result<Vec<Block>> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
     let mut cwd = String::new();
@@ -36,7 +35,6 @@ pub(crate) fn parse_codex_path(path: &Path, _args: &Args) -> io::Result<Vec<Bloc
 /// line resident, no whole-file `Vec<Message>`.
 pub(crate) fn parse_codex_path_timed(
     path: &Path,
-    _args: &Args,
     user_times: &mut Vec<Option<f64>>,
 ) -> io::Result<(Vec<Block>, crate::metrics::Metrics)> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
@@ -237,7 +235,6 @@ fn scan_call_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<Strin
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     call_ids: &HashSet<String>,
-    _args: &Args,
     user_times: &mut Vec<Option<f64>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
@@ -561,29 +558,6 @@ fn apply_output(block: &mut Block, output: String) {
 mod tests {
     use super::*;
     use crate::model::Block;
-    use crate::Args;
-
-    fn args() -> Args {
-        Args {
-            target: None,
-            agent: None,
-            latest: false,
-            follow: false,
-            no_thinking: false,
-            reads: false,
-            results: false,
-            no_user: false,
-            full: false,
-            fold: None,
-            unfold: None,
-            read_match: None,
-            dump: None,
-            dump_html: None,
-            dump_all_html: None,
-            html: false,
-            width: None,
-        }
-    }
 
     #[test]
     fn parses_canonical_response_items_without_event_duplicates() {
@@ -598,7 +572,7 @@ not json
 {"timestamp":"2026-07-18T01:00:05Z","type":"event_msg","payload":{"type":"agent_message","message":"Done"}}
 {"timestamp":"2026-07-18T01:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final","content":[{"type":"output_text","text":"Done"}]}}
 "#;
-        let blocks = parse_codex(jsonl, &args());
+        let blocks = parse_codex(jsonl);
         assert!(matches!(&blocks[0], Block::UserText(text) if text == "Fix it"));
         assert!(!blocks
             .iter()
@@ -629,10 +603,10 @@ not json
 {"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-1","input":"*** Begin Patch\n*** Update File: /tmp/repo/src/lib.rs\n@@\n-old\n+new\n*** End Patch"}}
 {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-1","output":"Done!"}}
 "#;
-        let expected = parse_codex(jsonl, &args());
+        let expected = parse_codex(jsonl);
         let path = std::env::temp_dir().join(format!("codex-model-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let actual = parse_codex_path(&path, &args()).unwrap();
+        let actual = parse_codex_path(&path).unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert!(matches!(
@@ -652,7 +626,7 @@ not json
         fn equiv(jsonl: &str) {
             let mut ut_lines = Vec::new();
             let call_ids = scan_call_ids(jsonl.lines());
-            let via_lines = parse_lines(jsonl.lines(), &call_ids, &Args::default(), &mut ut_lines);
+            let via_lines = parse_lines(jsonl.lines(), &call_ids, &mut ut_lines);
             let mut ut_replay = Vec::new();
             let via_replay =
                 crate::model::replay(&tokenize(jsonl.lines()), &mut ut_replay, &CODEX_SHAPING);
