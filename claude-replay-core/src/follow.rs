@@ -15,7 +15,7 @@ use crate::Agent;
 /// The agent-specific metrics accumulator, held across polls (Codex reports a cumulative
 /// total; Claude sums). Snapshotted (cloned) each poll without consuming it.
 enum MetricsFold {
-    Claude(crate::metrics::MetricsAcc),
+    Claude(crate::claude_metrics::MetricsAcc),
     Codex(crate::codex_metrics::CodexMetricsAcc),
 }
 
@@ -58,7 +58,10 @@ impl FollowParser {
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
         let (shaping, decode): (&'static Shaping, DecodeFn) = match agent {
-            Agent::Claude => (&crate::model::CLAUDE_SHAPING, crate::model::decode_line),
+            Agent::Claude => (
+                &crate::claude_model::CLAUDE_SHAPING,
+                crate::claude_model::decode_line,
+            ),
             Agent::Codex => (
                 &crate::codex_model::CODEX_SHAPING,
                 crate::codex_model::decode_codex_line,

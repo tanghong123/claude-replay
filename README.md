@@ -215,6 +215,27 @@ cargo test                                  # deterministic; no terminal needed
 cargo test --test tmux_smoke -- --ignored   # opt-in end-to-end via private tmux
 ```
 
+### Source layout
+
+A Cargo **workspace** with two crates, split so the parsing engine is reusable and its
+agent-neutrality is compiler-enforced:
+
+- **`claude-replay-core/`** — the agent-agnostic engine. Its only dependencies are
+  `serde_json` + `anyhow` (no TUI/HTML/CLI), so nothing here can reach into presentation.
+  - **Shared engine:** `model.rs` (the `Block` data model, the L2 `Replayer`/`replay` fold +
+    its `Shaping` seam, `parse_stream`, block classification, and the cross-agent parse
+    dispatchers) · `engine/` (`message`/`session`/`index`/`store`/`path`/`time`) ·
+    `metrics.rs` (the `Metrics` value + pricing) · `discover.rs` (the `Candidate` type,
+    `detect_agent`, `session_cwd`, `resolve_any`) · `follow.rs` · `tail.rs` · `agent.rs`.
+  - **Per-agent adapters** (symmetric — each is Layer 1 only, feeding the shared engine):
+    `claude_model.rs` / `codex_model.rs` (tokenizer + `Shaping`), `claude_metrics.rs` /
+    `codex_metrics.rs` (token/cost folding), `claude_discover.rs` / `codex_discover.rs`
+    (that agent's transcript store). Adding an agent is a new `*_model`/`*_metrics`/
+    `*_discover` trio plus a dispatcher arm — the shared engine stays untouched.
+- **`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI, plus the
+  `agent-jdi` binary. `markdown`/`render`/`wrap`/`view`/`app`/`theme`/`highlight`/`picker` ·
+  `html_export.rs` · `jdi/` (see [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md)).
+
 The golden visual-parity fixtures **and** the comparison harness live in a separate
 private repo, `claude-replay-eval` (they contain real Claude session content and are
 kept out of this tree). It holds `golden/cc.scroll.{txt,ansi}` (Claude Code's own

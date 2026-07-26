@@ -1244,7 +1244,7 @@ fn render_agent_stream(
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
 /// description (else its type), and its ancestry is the parent's ancestry + the parent.
 fn child_info(root_path: &Path, parent: &AgentInfo, c: ChildRef) -> Option<AgentInfo> {
-    let source = crate::model::subagent_file(root_path, &c.id)?;
+    let source = crate::claude_model::subagent_file(root_path, &c.id)?;
     let title = if c.description.is_empty() {
         c.agent_type.clone()
     } else {
@@ -1370,7 +1370,7 @@ impl Live {
         // a valid id resolves even if its parent was never navigated (deep links) — with a
         // plain title until its parent's spawn supplies the description.
         let info = self.store.resolve(id).or_else(|| {
-            crate::model::subagent_file(&self.root_path, id).map(|source| AgentInfo {
+            crate::claude_model::subagent_file(&self.root_path, id).map(|source| AgentInfo {
                 id: id.to_string(),
                 source,
                 title: id.to_string(),

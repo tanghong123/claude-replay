@@ -7,7 +7,7 @@ use super::agent::{
     self, AgentAdapter, Brief, Invocation, Mode, ResumableSession, TaskQueue, Trigger, TurnContext,
     TurnOutcome,
 };
-use crate::{discover, Agent};
+use crate::{claude_discover, Agent};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn discover_resumable(&self, cwd: &Path) -> Result<ResumableSession> {
-        let (id, path, mtime) = discover::latest_for_cwd(cwd)
+        let (id, path, mtime) = claude_discover::latest_for_cwd(cwd)
             .ok_or_else(|| anyhow!("no Claude session found for {}", cwd.display()))?;
         let idle_secs = mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0);
         Ok(ResumableSession {
@@ -145,11 +145,11 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn transcript_path(&self, session_id: &str, _cwd: &Path) -> Option<PathBuf> {
-        discover::transcript_by_id(session_id)
+        claude_discover::transcript_by_id(session_id)
     }
 
     fn sessions_for_cwd(&self, cwd: &Path) -> Vec<super::agent::SessionBrief> {
-        discover::claude_candidates_scoped(cwd)
+        claude_discover::claude_candidates_scoped(cwd)
             .into_iter()
             .map(|c| super::agent::SessionBrief {
                 id: c
@@ -167,7 +167,7 @@ impl AgentAdapter for ClaudeAdapter {
     /// Claude pins the id, so the transcript path is deterministic even before the
     /// file exists.
     fn expected_transcript(&self, session_id: &str, cwd: &Path) -> Option<PathBuf> {
-        Some(discover::claude_transcript_path(cwd, session_id))
+        Some(claude_discover::claude_transcript_path(cwd, session_id))
     }
 
     fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String {
