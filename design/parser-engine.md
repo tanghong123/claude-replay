@@ -931,6 +931,8 @@ the mechanism the `a active N` footer needs to update live without a re-parse.
 
 Status: **deferred to this refactor.** A rough but promising idea captured now; refine it
 when the engine work starts. It's the fix for the live server's remaining CPU cost.
+**Superseded by §8.3.2** (the two-stage parse-to-log + replay-to-state architecture) —
+§8.3.1 is kept as the motivating measurements + the minimal tactic it generalizes.
 
 **The problem it solves.** The served HTML tailer (`html_export::agent_stream`) and any
 full-file live tail re-parse the WHOLE source on every change. For a large live session
@@ -977,6 +979,74 @@ parser itself doesn't change — the tailer feeds it a tail *slice* and splices 
 It supersedes the "must persist `slots`/`pending` across batches" worry above: with a
 per-turn re-parse, the join state is rebuilt within the window, so no cross-batch parser
 state needs to survive. Refine the exact boundary rule + the spawn-map here when built.
+
+### 8.3.2 The two-stage refinement: parse-to-log + replay-to-state (the direction to build)
+
+§8.3.1 is a tactic ("re-parse the current turn"); this is the architecture it wants to be.
+Split the pipeline into two independent stages with an **append-only log** as the contract
+between them — event sourcing for the transcript.
+
+**Stage 1 — Parser: raw JSONL → a canonical *message log*.** Maps each raw line to zero or
+more **canonical messages** — the events we actually care about (user text, assistant
+text, thinking, tool-call, tool-result, attachment, spawn, completion-notification, …).
+This is cheap, near-stateless tokenization: **no back-patching, no grouping, no joins** —
+it only reduces the raw JSONL to the message stream, and may inject **helper messages**
+that make Stage 2 cheaper (e.g. a `turn-boundary` marker so replay knows where the stable
+prefix ends, or a pre-summed metrics delta).
+- **Incremental by byte offset.** The parser remembers the raw byte offset up to which it
+  has emitted messages; on resume it reads only from there. The one expensive thing
+  (serde_json over the 47 MB file) happens once, then only over new bytes.
+- **Mutation-safe *without assuming append-only*.** It also retains the **last few raw
+  messages** it consumed. On resume it re-reads from the remembered offset and compares:
+  identical → pure append, keep going; **differ** (a rewrite / compaction / any silent
+  mutation) → walk **back** a few messages to find the alignment point, **emit
+  `reset(to = <message index>)`** into the log, then re-parse forward from the aligned
+  offset. This replaces §8.3.1's append-only assumption + compaction special-case with one
+  general mechanism.
+- **The log is strictly append-only** (appends + `reset` markers). That is the load-bearing
+  contract: every consumer — the replayer, the HTML `<id>.jsonl` stream, the §7 indices —
+  only ever sees "append these messages" / "discard back to N". The HTML stream's existing
+  `{t:"reset",from:N}` **is** this `reset`, surfaced verbatim; the `<id>.jsonl` file may
+  simply *be* the on-disk log (tier (b)).
+
+**Stage 2 — Replayer: message log → in-memory `Session`, a *strictly forward* fold.** A
+deterministic reducer that builds the presentation state, maintaining `blocks` + a live
+`id → block ref` index + the current turn's grouping context. Each message is applied
+**forward, once**:
+- append → push a block (and index it if it is a tool-call / spawn);
+- tool-result / completion-notification → **patch the referenced block in place via the id
+  index** — O(1), and crucially **never re-winds or re-examines already-ingested
+  messages**. Back-patching is a forward-only point update, not a re-scan (this is why the
+  measured-local join distance doesn't even matter to correctness here — the index holds
+  the ref regardless of distance);
+- grouping / activity-coalescing → operate on the *current tail* context only.
+
+The **only** rewind in the whole system is an explicit `reset(to=N)` from Stage 1 (a
+detected mutation): discard state after message N and resume folding. Normal operation —
+including all back-patching — is append-and-patch, no rewind, no re-scan.
+
+**Why this is the right shape.**
+- The costly raw-JSONL parse runs **once, incrementally** (Stage 1, byte-offset resume).
+- **Append-only-with-reset is one clean contract** for every consumer; the HTML server,
+  the TUI live tail, and the index-builders all collapse into the same "replay a log" fold.
+- **Mutation safety is explicit and general** (the kept-raw-messages compare), not an
+  assumption — truncation, compaction, or an out-of-band edit all resolve to a `reset`.
+- **Separately testable**: Stage 1 (bytes → log) and Stage 2 (log → state) are pure and
+  golden-testable in isolation; the whole is validated by asserting incremental-parse +
+  replay is identical to a from-scratch full parse on real transcripts.
+
+**Mapping onto §2's engine.** Stage 1 ≈ `Transcript::steps` promoted to a resumable,
+offset-aware, mutation-checking *message* emitter (the adapter still owns per-agent line
+shapes; the canonical message is a leaner `Step`). Stage 2 ≈ today's `parse_main`
+back-patch loop + `finish` grouping, but driven by the log (not raw lines) and folded
+forward with an id index. `engine::ingest` (§8.3) becomes "hand Stage 2 the new tail of
+the log."
+
+**Open refinements (when we build it):** the exact set of canonical message kinds + which
+helper messages earn their keep; how many raw messages to retain for the realign window;
+whether Stage 2 keeps fully-rewindable state or only the current-turn tail (a `reset` never
+reaches past the last stable turn in practice); and confirming the on-disk log form (likely
+the HTML `<id>.jsonl` itself).
 
 ### 8.4 Memory pressure / eviction policy
 
