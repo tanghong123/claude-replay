@@ -454,79 +454,298 @@ Claude and Codex each collapse to **one file** whose only content is
 
 ## 3. The public engine API (third-party surface)
 
-The library goal: a caller gets the block/session model without the TUI, HTML,
-syntect, or clap layers. Nothing in `engine/` depends on ratatui/syntect/clap
-(the block model already doesn't — that's all in `render`/`view`).
+The second goal of the refactor (beyond dedupe) is a **library other apps can build
+on** — a web dashboard, a cost auditor, a CI transcript viewer, a "resume picker" —
+with claude-replay itself as merely the reference consumer. That raises the bar: the
+public types must be **clean-slate and agent-neutral**, *not* a re-export of today's
+Claude-shaped `Block`/`model.rs`. Where today's model carries dialect warts — a
+`QueueEvent`, the two-event completion verbs, `user_times` as a side `Vec` — the library
+normalizes them into general shapes (below), and §5's compatibility map is how today's
+code re-homes onto them without changing a pixel of user-visible output.
+
+Three crates, one per layer, each usable alone:
+
+| Crate | Layer | Depends on | Gives you |
+|---|---|---|---|
+| **`replay-core`** | L1 + L2 | `serde` only | `Message`, `Adapter`, `Parser`, `Session`, `Replayer`, `SessionStore` |
+| **`replay-tui`** | L3 | core + ratatui + syntect | `Viewer`, `ViewState`, ratatui `Line`s |
+| **`replay-html`** | L3 | core (+ syntect) | `HtmlPresenter`, `HtmlServer`, the record stream |
+
+`replay-core` is the load-bearing one — no ratatui / syntect / clap, so it drops into any
+Rust context (native, server, WASM). The two presenters are optional and independent; a
+caller can take the data model and render it their own way.
+
+### 3.1 The message log — the L1↔L2 contract
+
+The single vocabulary L2 folds over. Agent-agnostic and append-only, so teaching the
+engine a new agent is a new `Adapter` (§3.2) and *never* a change here. Every event
+carries a common envelope (position, byte offset, time) so L2 can index and resume
+without re-deriving it.
 
 ```rust
-// engine/mod.rs — the documented public surface
+// replay-core::msg
 
-/// A fully-parsed session: the block tree, folded metrics, per-turn timestamps,
-/// the session cwd, which agent produced it, and the derived within-session indices
-/// (agents/tools/attachments) — all from ONE streaming parse.
+pub struct Message {
+    pub seq: Seq,            // monotonic position in the log
+    pub offset: u64,         // byte offset in the source → the resume cursor (§3.2)
+    pub time: Option<Time>,  // wall-clock, if the raw line carried one
+    pub event: Event,
+}
+
+/// One canonical event decoded from a single raw line. The dialect never leaks past here.
+#[non_exhaustive]
+pub enum Event {
+    User { text: Text, attachments: Vec<Attachment> }, // a human turn
+    Say { text: Text },                                // model-authored prose
+    Think { text: Text },                              // model private reasoning
+    ToolCall { call: CallId, tool: String, input: Value },   // joins to a later result
+    ToolResult { call: CallId, output: Value, ok: bool },    // joined by `call`
+    Spawn { agent: AgentId, kind: String, prompt: Text },    // a sub-agent launched
+    AgentEnd { agent: AgentId, status: RunStatus, summary: Text }, // …reached terminal
+    Meta(Meta),   // a session-scoped fact on this line: cwd, model, usage delta, title
+    Reset { from: Seq },  // the source tail from `from` was rewritten — see below
+}
+```
+
+`Reset` is the **only** rewind: on a live edit or compaction the parser detects that the
+bytes it already consumed changed and emits `Reset { from }`, telling the replayer to drop
+everything it built at/after `from` and re-fold what follows. Everything else is a pure
+append. This is what makes an incremental live tail cheap and a crash-safe on-disk log
+possible (§8.3.2).
+
+### 3.2 Layer 1 — the `Adapter` trait and the `Parser`
+
+Two pieces: the **`Adapter`** is the *entire* agent-specific surface (one impl per
+transcript dialect); the **`Parser`** is the agent-neutral driver that turns bytes into the
+message log, batch or incrementally.
+
+```rust
+// replay-core::l1
+
+/// Teach the engine one agent's raw line format. Stateless w.r.t. other lines — grouping,
+/// tool-result joining and turn-shaping are L2's job, not the adapter's. This is all a new
+/// agent needs to implement.
+pub trait Adapter: Send {
+    fn agent(&self) -> Agent;                       // the provenance tag it stamps
+    fn detect(head: &str) -> bool where Self: Sized; // sniff a transcript's first bytes
+    fn decode(&mut self, line: &RawLine, out: &mut dyn Extend<Event>); // 1 line → 0..n events
+    fn session_cwd(&self, line: &RawLine) -> Option<PathBuf> { None }
+}
+
+/// Drives an `Adapter` over bytes → the append-only `Message` log. Streaming (one line
+/// resident at a time); supports incremental resume with tail-rewrite detection.
+pub struct Parser { /* adapter + running seq/offset + a small kept-tail digest */ }
+
+impl Parser {
+    /// Auto-detect the agent from the source head (tries each registered `Adapter::detect`).
+    pub fn detect(source: &Path) -> io::Result<Agent>;
+
+    /// A batch parse: every message from a full read. `open` yields a fresh reader (the
+    /// two-pass streaming invariant, §4.1, lives inside — no whole-file buffering).
+    pub fn parse(agent: Agent, open: impl Fn() -> io::Result<Box<dyn BufRead>>)
+        -> io::Result<Vec<Message>>;
+
+    /// Resume: read only the bytes after `cursor`. If the kept tail no longer matches the
+    /// source (an edited / compacted transcript), the returned `Delta` begins with an
+    /// `Event::Reset`. Returns the new cursor to persist for the next poll.
+    pub fn resume(agent: Agent, source: impl Read + Seek, cursor: Cursor) -> io::Result<Delta>;
+}
+
+pub struct Cursor { pub offset: u64, pub seq: Seq /* + kept-tail digest */ }
+pub struct Delta  { pub messages: Vec<Message>, pub cursor: Cursor }
+```
+
+A third party adding a new agent (say a local LLM's logs) writes **one** `Adapter` and
+registers it; every presenter and the whole store/live machinery work unchanged.
+
+### 3.3 Layer 2 — the `Session` object and the `Replayer`
+
+`Session` is the single source of truth: immutable **data** — everything a presenter needs,
+and nothing about *how* it's being viewed (that is `ViewState`, §3.4). The `Replayer` is the
+only place back-patch/grouping happens; it folds forward and rewinds only on `Reset`.
+
+```rust
+// replay-core::session
+
 pub struct Session {
-    pub blocks: Vec<Block>,
-    pub metrics: Metrics,
-    pub user_times: Vec<Option<f64>>, // one per UserText/Command turn, in order
-    pub cwd: Option<PathBuf>,
     pub agent: Agent,
-    pub index: SessionIndex,          // §7 — fast filter/jump + the agent-liveness truth
+    pub meta: SessionMeta,     // cwd, model, title, started_at, source path
+    pub blocks: Vec<Block>,    // the ordered transcript, tool results already joined
+    pub metrics: Metrics,      // token / cost tally, folded during replay (§4.2)
+    pub index: SessionIndex,   // §7: turn spans, tool / agent / attachment indices, liveness
 }
 
-/// Knobs a caller may set; today parse ignores `Args` (parse_main's `_args`), so
-/// this is deliberately tiny. Fold flags are a VIEW concern and stay out of here.
+/// A presentation-ready unit — agent-neutral. A Claude `QueueEvent`, a Codex reasoning
+/// summary, and a future agent's system line all normalize into these; the block model
+/// never encodes a dialect.
+#[non_exhaustive]
+pub enum Block {
+    User(Text),
+    Say(Text),
+    Think { text: Text, duration: Option<Duration> },
+    Tool(ToolUse),      // one call: input + joined result + status
+    Agent(SubAgent),    // a spawned child: id, kind, status, rolled-up cost, lazy sub-session
+    AgentEnd(AgentRef), // the child's terminal event, at its position in the stream (§ two-event)
+    Notice(Notice),     // a generic system / meta line (queue, hook, compaction marker)
+}
+
+/// Folds a message log into a `Session`. Forward-only except on `Event::Reset`.
+pub struct Replayer { /* session + call_id→block index + fold cursor */ }
+impl Replayer {
+    pub fn new(agent: Agent) -> Self;
+    pub fn apply(&mut self, delta: &[Message]); // append; back-patch via index; rewind on Reset
+    pub fn session(&self) -> &Session;
+    pub fn into_session(self) -> Session;
+}
+
+/// The one call most callers want: detect → parse → replay, sub-agents per `opts`.
+pub fn parse_session(path: &Path) -> io::Result<Session>;
+pub fn parse_session_with(path: &Path, opts: &ParseOptions) -> io::Result<Session>;
+
 #[derive(Default, Clone)]
-pub struct ParseOptions {
-    pub subagents: SubAgentLoad, // Eager (default, today's behavior) | Summary | Skip
-}
-
-pub enum SubAgentLoad { Eager, Summary, Skip }
-
-/// Auto-detect the agent from the file head, then parse. The one call most callers
-/// want. Streaming; sub-agent tree resolved per `opts.subagents`.
-pub fn parse_session(path: &Path) -> std::io::Result<Session>;
-pub fn parse_session_with(path: &Path, opts: &ParseOptions) -> std::io::Result<Session>;
-
-/// Parse for a KNOWN agent (skips detection) — e.g. a caller that already sniffed.
-pub fn parse_session_as(agent: Agent, path: &Path, opts: &ParseOptions)
-    -> std::io::Result<Session>;
-
-/// In-memory batch (no file, no sub-agent enrich) — the live-tail / test entry.
-/// Replaces `model::parse` / `model::parse_for` (model.rs:601,607).
-pub fn parse_batch(agent: Agent, jsonl: &str) -> Vec<Block>;
-
-/// Detect the agent from a transcript's head (replaces discover::detect_agent).
-pub fn detect_agent(path: &Path) -> Agent;
+pub struct ParseOptions { pub subagents: SubAgentLoad } // Eager (default) | Summary | Skip (§4.3)
 ```
 
-Sub-agent tree exposure (unchanged shape): the tree stays inline in
-`Block::SubAgent.blocks` (`model.rs:139`), resolved recursively against the flat
-`<session>/subagents/` dir. `SubAgentLoad` controls *how much* is materialized
-(§4.3).
+Two normalizations worth calling out, because they retire today's warts:
+- **`user_times`** (today a parallel `Vec<Option<f64>>`) becomes `index.turns[i].time` —
+  the per-turn timestamp lives on the turn, not a side channel the caller must zip.
+- **Sub-agent completion** is the clean two-event shape: `Block::Agent` at the spawn point
+  carries the child's live `status`; `Block::AgentEnd` marks the terminal event at its own
+  point in the stream. Both the sync (`Agent`-tool, inline result) and async (`Task`-tool,
+  later notification) paths converge on this — the presenter reads `status`, never the raw
+  dialect. (This is exactly the bug class that made sync sub-agents show "running" forever:
+  one status field, two producers.)
 
-The two in-repo renderers become thin formatters over `Session`:
-- **`render.rs`** already takes `&[Block]`; unchanged. It reads `engine::block::*`.
-- **`html_export::snapshot`** (`html_export.rs:772`) collapses from *two* reads
-  (`parse_path_timed_for` + a second metrics `File::open`) to **one**
-  `engine::parse_session_as(agent, path, opts)` call, taking `blocks`,
-  `user_times`, `metrics`, and `cwd` straight off the returned `Session`.
-- The TUI's `build_frame` (`app.rs:199`) likewise drops its second metrics open
-  (`app.rs:217-220`): `let s = engine::parse_session(path)?;` then
-  `view.set_footer_segments(s.metrics.footer_segments())`.
+### 3.4 Layer 3 — the `Presenter` contract (data vs. view)
 
-Third-party example to ship (`examples/parse.rs`):
+The key separation: **`Session` is the data; `ViewState` is what the user is looking at.**
+Keeping them apart means the same session renders to any surface, at any fold / width /
+filter, with no mutation — and an incremental surface re-renders only what changed.
 
 ```rust
-fn main() -> std::io::Result<()> {
-    let s = claude_replay::engine::parse_session(std::path::Path::new(
-        std::env::args().nth(1).unwrap().as_str(),
-    ))?;
-    println!("{} · {} blocks · {} turns · ~${:.2}",
-        s.agent.label(), s.blocks.len(), s.user_times.len(),
-        s.metrics.cost_usd.unwrap_or(0.0));
-    Ok(())
+// replay-core::present  (the contract; concrete presenters live in the L3 crates)
+
+pub struct ViewState {
+    pub width: u16,
+    pub fold: FoldPolicy,       // default | expand-all | per-block overrides
+    pub filter: Option<Filter>, // by block kind / tool name
+    pub focus: Option<BlockId>, // selection / scroll anchor
+    pub theme: Theme,
+}
+
+/// A pure function from (data, view) to a surface. Stateless; incremental surfaces add a
+/// `present_delta` so settled blocks aren't re-rendered.
+pub trait Presenter {
+    type Output;
+    fn present(&self, session: &Session, view: &ViewState) -> Self::Output;
 }
 ```
+
+**TUI (`replay-tui`).** A `TuiPresenter` produces ratatui `Line`s; the `Viewer` wraps it
+into the full interactive object claude-replay's `app.rs` is built on — it owns a `Session`
++ `ViewState`, maps input to view changes, tails live sessions, and descends into
+sub-agents.
+
+```rust
+pub struct TuiPresenter;
+impl Presenter for TuiPresenter { type Output = Vec<ratatui::text::Line<'static>>; /* … */ }
+
+pub struct Viewer { /* session + view + a descend stack */ }
+impl Viewer {
+    pub fn new(session: Session) -> Self;
+    pub fn render(&self) -> Vec<Line<'static>>;     // = TuiPresenter over the current state
+    pub fn handle(&mut self, input: Input) -> Dirty; // j/k, fold, /search, filter, …
+    pub fn ingest(&mut self, delta: &[Message]);     // live tail (drives a Replayer inside)
+    pub fn descend(&mut self, agent: &AgentId) -> io::Result<()>; // push a child session
+    pub fn ascend(&mut self);
+}
+```
+
+**HTML (`replay-html`).** An `HtmlPresenter` emits the append-only record stream
+(`meta`/`block`/`reset` JSON — the format the browser JS already renders); `page` wraps a
+snapshot in the self-contained shell; `HtmlServer` is the live multi-agent server.
+
+```rust
+pub struct HtmlPresenter;
+impl Presenter for HtmlPresenter { type Output = Vec<Record>; /* meta/block/reset */ }
+
+pub fn page(session: &Session, view: &ViewState) -> String; // one self-contained .html
+
+pub struct HtmlServer { store: SessionStore }               // §8
+impl HtmlServer {
+    pub fn new(store: SessionStore) -> Self;
+    pub fn serve(self, addr: &str) -> io::Result<Url>;      // lazy per-agent streams + byte cursor
+}
+```
+
+### 3.5 Composition — building apps from the pieces
+
+The proof the interface is clean is that claude-replay's own binary is *nothing but*
+composition over it. Each example below is a real claude-replay surface reduced to its
+essence.
+
+**(1) A cost / tool auditor — `replay-core` alone, no presentation.** Proves the data model
+stands on its own:
+
+```rust
+let s = replay_core::parse_session(path)?;
+println!("{}: {} turns · ${:.2}", s.agent, s.index.turns.len(),
+         s.metrics.cost_usd.unwrap_or(0.0));
+for t in s.index.tools_by_count() { println!("  {:>4}× {}", t.count, t.name); }
+```
+
+**(2) A one-shot text dump — core + one presenter** (this is `--dump`):
+
+```rust
+let s = replay_core::parse_session(path)?;
+let view = ViewState { fold: FoldPolicy::Default, width: 100, ..ViewState::plain() };
+for line in replay_tui::TuiPresenter.present(&s, &view) { println!("{}", line); }
+```
+
+**(3) The interactive TUI — the `Viewer` loop** (this *is* `claude-replay <path>`):
+
+```rust
+let mut viewer = Viewer::new(replay_core::parse_session(path)?);
+let mut term = ratatui::init();
+loop {
+    term.draw(|f| f.render_widget(viewer.render_widget(), f.area()))?;
+    match input::next()? {
+        Input::Quit => break,
+        Input::Descend(id) => viewer.descend(&id)?, // into a sub-agent
+        Input::Ascend => viewer.ascend(),
+        ev => { viewer.handle(ev); }
+    }
+}
+```
+
+**(4) A live tail — incremental resume + ingest** (this is `-f`):
+
+```rust
+let agent = Parser::detect(path)?;
+let mut cursor = Cursor::start();
+let mut viewer = Viewer::new(Session::empty(agent));
+loop {
+    let delta = Parser::resume(agent, File::open(path)?, cursor)?;
+    cursor = delta.cursor;
+    viewer.ingest(&delta.messages); // back-patch + Reset handled inside; O(delta), not O(file)
+    redraw(&viewer);
+    fs_notify.wait();               // block until the file grows
+}
+```
+
+**(5) The HTML live server — the store + server** (this is `--html -f`):
+
+```rust
+let store = SessionStore::new(cache_dir); // §8 tiers
+store.see(root_path);                      // register the tree as tier (c), parse nothing yet
+let url = HtmlServer::new(store).serve("127.0.0.1:0")?; // materializes each agent on first request
+open::that(url)?;
+```
+
+Put together, claude-replay's `main.rs` is Example 3 plus a session picker; `--dump` is
+Example 2; `--html -f` is Example 5. Nothing in the binary reaches under the library — which
+is the working proof a third party could build their own transcript app (a web dashboard, a
+CI log viewer, a cost report over a directory of sessions) on the same `replay-core`.
 
 ---
 
@@ -927,8 +1146,17 @@ pub struct AttachmentEntry {
     pub downloadable: bool,         // has inline content vs path-only (reveal)
 }
 
+/// One human/user turn boundary. This is where today's parallel `user_times`
+/// (`Vec<Option<f64>>`, model.rs) re-homes: the per-turn timestamp lives ON the turn, so
+/// a presenter never has to zip a side channel against the block list (§3.3).
+pub struct TurnEntry {
+    pub at: BlockPath,              // the User/Command block that opens the turn
+    pub time: Option<Time>,         // wall-clock of the event that produced it
+}
+
 /// Derived, extensible — a new axis (commands, errors, thinking turns) is one more Vec.
 pub struct SessionIndex {
+    pub turns: Vec<TurnEntry>,      // user-turn spans + times (replaces `user_times`)
     pub agents: Vec<AgentEntry>,
     pub tools: Vec<ToolEntry>,
     pub attachments: Vec<AttachmentEntry>,
@@ -939,6 +1167,8 @@ impl SessionIndex {
     pub fn agent(&self, id: &str) -> Option<&AgentEntry>;
     pub fn active_agents(&self) -> impl Iterator<Item = &AgentEntry>;  // status not terminal
     pub fn tools_of_kind(&self, k: BlockKind) -> impl Iterator<Item = &ToolEntry>;
+    /// Tool names by descending frequency — the auditor primitive (§3.5, example 1).
+    pub fn tools_by_count(&self) -> impl Iterator<Item = ToolCount>;
     /// The next indexed entry at/after `from` matching a predicate — the "jump" primitive
     /// the TUI's `[`/`]` and a future `f`ilter mode share.
     pub fn next_from(&self, from: BlockPath, pred: impl Fn(&Entry) -> bool) -> Option<BlockPath>;
