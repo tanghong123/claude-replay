@@ -26,6 +26,178 @@ fn is_injected_event(v: &Value) -> bool {
             .unwrap_or(false)
 }
 
+/// L1 classification of a plain-string `user` message into the **structured** message the
+/// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
+/// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
+/// never sees them. Mirrors the retired `push_user_string`, but returns a `Message` instead
+/// of pushing a block. `None` drops the message (caveat-only / phantom keystroke).
+fn classify_user_string(s: &str, injected: bool) -> Option<Message> {
+    // A skill instruction body: the fold nests it into the last `Skill` block; the fallback
+    // (no skill block to nest into) is a system-note result, cleaned exactly as the old fold
+    // did — an injected body is trimmed, a bare one is not.
+    if is_skill_body(s) {
+        let fallback = if injected {
+            strip_caveat(s).trim().to_string()
+        } else {
+            strip_caveat(s)
+        };
+        return Some(Message::SkillBody {
+            text: s.to_string(),
+            fallback,
+        });
+    }
+    if injected {
+        let cleaned = strip_caveat(s);
+        let cleaned = cleaned.trim();
+        return (!cleaned.is_empty()).then(|| Message::SystemNote {
+            text: cleaned.to_string(),
+        });
+    }
+    // A background-execution `<task-notification>`: collapse to its one-line summary/status.
+    if tag_inner(s, "task-notification").is_some() {
+        if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
+            let line = line.trim();
+            if !line.is_empty() {
+                return Some(Message::SystemNote {
+                    text: line.to_string(),
+                });
+            }
+        }
+    }
+    // A slash command `<command-name>/foo</command-name>` (+ optional args / inline stdout).
+    if let Some(name) = tag_inner(s, "command-name") {
+        let args = tag_inner(s, "command-args")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut output = Vec::new();
+        if let Some(o) = tag_inner(s, "local-command-stdout") {
+            if !o.trim().is_empty() {
+                output.push(o.trim().to_string());
+            }
+        }
+        return Some(Message::Command {
+            name: name.trim().to_string(),
+            args,
+            output,
+        });
+    }
+    // A standalone stdout message — the fold attaches it to the command it follows.
+    if let Some(o) = tag_inner(s, "local-command-stdout") {
+        let o = o.trim().to_string();
+        if o.is_empty() {
+            return None;
+        }
+        return Some(Message::CommandStdout { text: o });
+    }
+    // Otherwise ordinary user prose; drop pure caveat noise / phantom keystrokes.
+    let cleaned = strip_caveat(s);
+    let has_visible = cleaned
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control());
+    if has_visible {
+        if is_skill_body(&cleaned) {
+            return Some(Message::SystemNote { text: cleaned });
+        }
+        return Some(Message::UserText { text: cleaned });
+    }
+    None
+}
+
+/// L1 classification of a non-empty `text` item inside a `user` array — simpler than the
+/// plain-string case (no command/notification parsing): a skill body nests, other injected
+/// content is a system note, else it's a human turn.
+fn classify_user_array_text(text: &str, injected: bool) -> Message {
+    if is_skill_body(text) {
+        Message::SkillBody {
+            text: text.to_string(),
+            fallback: text.to_string(),
+        }
+    } else if injected {
+        Message::SystemNote {
+            text: text.to_string(),
+        }
+    } else {
+        Message::UserText {
+            text: text.to_string(),
+        }
+    }
+}
+
+/// Injected/system content Claude flags at the event level (`isMeta`/`isCompactSummary`) —
+/// folds as a system result block; caveat-only noise is dropped. Used by the frozen
+/// reference parser [`parse_main`]; the streaming path uses [`classify_user_string`].
+#[cfg(test)]
+fn push_injected(s: &str, out: &mut Vec<Block>) {
+    let cleaned = strip_caveat(s);
+    let cleaned = cleaned.trim();
+    if !cleaned.is_empty() {
+        out.push(Block::ToolResult(cleaned.to_string()));
+    }
+}
+
+/// Turn one plain-string `user` message into block(s) — a slash command becomes a
+/// `Command`, a task-notification collapses to its summary, caveat noise is dropped, and
+/// the rest is `UserText`. Used by the frozen reference parser [`parse_main`]; the streaming
+/// path uses [`classify_user_string`].
+#[cfg(test)]
+fn push_user_string(s: &str, out: &mut Vec<Block>) {
+    if tag_inner(s, "task-notification").is_some() {
+        if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
+            let line = line.trim();
+            if !line.is_empty() {
+                out.push(Block::ToolResult(line.to_string()));
+                return;
+            }
+        }
+    }
+    if let Some(name) = tag_inner(s, "command-name") {
+        let args = tag_inner(s, "command-args")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut output = Vec::new();
+        if let Some(o) = tag_inner(s, "local-command-stdout") {
+            if !o.trim().is_empty() {
+                output.push(o.trim().to_string());
+            }
+        }
+        out.push(Block::Command {
+            name: name.trim().to_string(),
+            args,
+            output,
+        });
+        return;
+    }
+    if let Some(o) = tag_inner(s, "local-command-stdout") {
+        let o = o.trim().to_string();
+        if o.is_empty() {
+            return;
+        }
+        if let Some(Block::Command { output, .. }) = out.last_mut() {
+            output.push(o);
+        } else {
+            out.push(Block::Command {
+                name: String::new(),
+                args: String::new(),
+                output: vec![o],
+            });
+        }
+        return;
+    }
+    let cleaned = strip_caveat(s);
+    let has_visible = cleaned
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control());
+    if has_visible {
+        if is_skill_body(&cleaned) {
+            out.push(Block::ToolResult(cleaned));
+        } else {
+            out.push(Block::UserText(cleaned));
+        }
+    }
+}
+
 pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
     for k in ["file_path", "path"] {
         if let Some(v) = input.get(k).and_then(|v| v.as_str()) {
@@ -512,20 +684,16 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 return;
             };
             if let Some(s) = content.as_str() {
-                msgs.push(Message::UserString {
-                    text: s.to_string(),
-                    injected,
-                });
+                if let Some(m) = classify_user_string(s, injected) {
+                    msgs.push(m);
+                }
             } else if let Some(arr) = content.as_array() {
                 for blk in arr {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
-                                    msgs.push(Message::UserArrayText {
-                                        text: t.to_string(),
-                                        injected,
-                                    });
+                                    msgs.push(classify_user_array_text(t, injected));
                                 }
                             }
                         }
@@ -570,7 +738,31 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 _ => None,
             };
             if let Some(op) = op {
-                msgs.push(Message::QueueOp { op, content });
+                // L1 parses Claude's formats here so the shared fold never sees them: an
+                // agent completion `<task-notification>` becomes a structured `Completion`,
+                // and `prose` pre-classifies whether the enqueue renders a visible marker.
+                if op == QueueOpKind::Enqueue {
+                    if let Some(c) = &content {
+                        if is_agent_notification(c) {
+                            msgs.push(Message::Completion {
+                                tool_use_id: tag_inner(c, "tool-use-id")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                task_id: tag_inner(c, "task-id").unwrap_or_default().to_string(),
+                                status: tag_inner(c, "status").and_then(AgentStatus::from_status),
+                                description: tag_inner(c, "summary")
+                                    .map(summary_description)
+                                    .unwrap_or_default(),
+                                result: tag_inner(c, "result")
+                                    .map(str::trim)
+                                    .filter(|r| !r.is_empty())
+                                    .map(str::to_string),
+                            });
+                        }
+                    }
+                }
+                let prose = content.as_deref().map(is_queue_prose).unwrap_or(false);
+                msgs.push(Message::QueueOp { op, content, prose });
             }
         }
         Some("attachment") => {
@@ -1247,6 +1439,75 @@ fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Extract the quoted description from a completion `<summary>` like
+/// `Agent "Design the parser" finished` → `Design the parser`. Falls back to the whole
+/// trimmed summary when there's no quoted span.
+fn summary_description(summary: &str) -> String {
+    if let (Some(a), Some(b)) = (summary.find('"'), summary.rfind('"')) {
+        if b > a {
+            return summary[a + 1..b].to_string();
+        }
+    }
+    summary.trim().to_string()
+}
+
+/// Inner text of the first `<tag>…</tag>` in `s`, if present.
+fn tag_inner<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = s.find(&open)? + open.len();
+    let rest = &s[start..];
+    let end = rest.find(&close)?;
+    Some(&rest[..end])
+}
+
+/// Remove every `<local-command-caveat>…</local-command-caveat>` block (pure
+/// noise Claude Code injects around local commands), returning the remainder.
+fn strip_caveat(s: &str) -> String {
+    let (open, close) = ("<local-command-caveat>", "</local-command-caveat>");
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(open) {
+        out.push_str(&rest[..i]);
+        match rest[i + open.len()..].find(close) {
+            Some(j) => rest = &rest[i + open.len() + j + close.len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The harness injects a loaded skill's instruction body as a user message that
+/// opens with this marker. It's reference material, not user prose, so we model it
+/// as a foldable (default-collapsed) result block instead of a `❯` user turn.
+fn is_skill_body(s: &str) -> bool {
+    s.trim_start().starts_with("Base directory for this skill:")
+}
+
+/// Is this string an agent-completion `<task-notification>` — `summary` "Agent \"…\"
+/// finished" with a `status` — as opposed to a background-`Bash` or `Monitor` one?
+/// (Their task-id namespaces differ too: agents `a…`, background `b…`.)
+fn is_agent_notification(s: &str) -> bool {
+    tag_inner(s, "status").is_some()
+        && tag_inner(s, "summary")
+            .map(|sm| sm.trim_start().starts_with("Agent \""))
+            .unwrap_or(false)
+}
+
+/// A queued message worth showing as a pending human turn — genuine prose, not a
+/// background `<task-notification>`, an interrupt marker, or blank input.
+fn is_queue_prose(s: &str) -> bool {
+    let t = s.trim_start();
+    !t.is_empty()
+        && !t.starts_with("<task-notification>")
+        && !t.starts_with("[Request interrupted")
+        && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
 }
 
 #[cfg(test)]
