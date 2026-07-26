@@ -2443,6 +2443,51 @@ mod tests {
         );
     }
 
+    /// Regression: in an offline bundle an image attachment must materialize to `assets/`
+    /// and carry `att_kind:"image"` + `att_href` (no `att_datauri`) — that is exactly the
+    /// pair the JS now uses to render the image inline, matching the served page.
+    #[test]
+    fn bundle_image_attachment_emits_href_for_inline_render() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-bimg-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let img = Block::Attachment(crate::model::Attachment {
+            kind: "image",
+            name: "image.png".into(),
+            path: None,
+            content: Some(AttachmentContent::Base64 {
+                mime: "image/png".into(),
+                b64: "aGk=".into(),
+            }),
+        });
+        let mut sink = AssetSink::new(&base).unwrap();
+        let (jsonl, _) = build_jsonl_inner(
+            std::slice::from_ref(&img),
+            &[],
+            &FoldPolicy::none(),
+            "/w",
+            false, // exported/bundle (not served)
+            false,
+            Some(&mut sink),
+            json!({ "t": "meta" }),
+        );
+        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        let h = &rec["head"];
+        assert_eq!(h["att_kind"], "image");
+        assert!(
+            h.get("att_href").and_then(|v| v.as_str()).is_some(),
+            "bundled image links to assets/: {h}"
+        );
+        assert!(h.get("att_datauri").is_none(), "no data URI in a bundle");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn everything_is_html_escaped() {
         let blocks = vec![Block::UserText(

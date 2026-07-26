@@ -492,6 +492,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
 .flash { box-shadow: 0 0 0 3px var(--flash); border-radius: 8px; }
 
+/* Search highlight — every hit gets an amber mark; the current (Enter-focused) hit is
+   stronger + outlined. Amber-on-dark-text reads on both themes, so no theme split needed. */
+mark.hl { background: #fde68a; color: #1a1a1a; border-radius: 2px; padding: 0 1px; }
+mark.hl.cur { background: #f59e0b; box-shadow: 0 0 0 2px #f59e0b; }
+
 /* "New messages" badge — shown when live content arrives while scrolled up. */
 #newbadge {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 40;

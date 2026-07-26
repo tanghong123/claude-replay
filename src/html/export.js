@@ -233,9 +233,14 @@
             an.onclick = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
         }
         ac.appendChild(an);
-        if (datauri != null) {
+        // Show images inline. A served/exported page carries the bytes as a data: URI; an
+        // offline bundle materializes them to assets/<file> and links via `att_href` — both
+        // are valid <img> sources, so the bundle shows the image too (not just a download).
+        var imgsrc = datauri != null ? datauri
+            : (h.att_kind === "image" && href != null ? href : null);
+        if (imgsrc != null) {
             var img = el("img", "aimg");
-            img.src = datauri; img.alt = h.att_name || "image";
+            img.src = imgsrc; img.alt = h.att_name || "image";
             ac.appendChild(img);
         }
         return ac;
@@ -1086,23 +1091,68 @@
   window.addEventListener("resize", function () { fitBar(); }, { passive: true });
 
   // ── search ───────────────────────────────────────────────────────────
+  // `matches` holds the highlight <mark> elements (the hits), in document order. Typing
+  // wraps every occurrence in a <mark class="hl">; Enter cycles them, marking the current
+  // one `.cur` and scrolling to it (Shift+Enter goes back).
   var q = $("q");
+  function clearHl() {
+    var touched = [];
+    all("#stream mark.hl").forEach(function (m) {
+      var p = m.parentNode;
+      p.replaceChild(document.createTextNode(m.textContent), m);
+      if (touched.indexOf(p) === -1) touched.push(p);
+    });
+    touched.forEach(function (p) { p.normalize(); }); // merge the split text nodes back
+  }
+  function markHits(blk, lc, len) {
+    // Collect matching text nodes first (the walk is read-only), then rewrite each so we
+    // never mutate the tree we're walking. Matches within a single text node only — good
+    // enough for a viewer, and it never splits across the pre-rendered highlight spans.
+    var walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT, null);
+    var nodes = [], n;
+    while ((n = walker.nextNode())) {
+      if (n.nodeValue.toLowerCase().indexOf(lc) !== -1) nodes.push(n);
+    }
+    nodes.forEach(function (tn) {
+      var text = tn.nodeValue, lower = text.toLowerCase();
+      var frag = document.createDocumentFragment(), i = 0, idx;
+      while ((idx = lower.indexOf(lc, i)) !== -1) {
+        if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
+        var mk = el("mark", "hl");
+        mk.textContent = text.slice(idx, idx + len);
+        frag.appendChild(mk);
+        i = idx + len;
+      }
+      if (i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
+      tn.parentNode.replaceChild(frag, tn);
+    });
+  }
   function search(v) {
     var qc = $("qcount");
-    var needle = v.trim().toLowerCase();
+    clearHl();
     mIdx = -1;
+    var needle = v.trim();
     if (needle.length < 2) { matches = []; qc.textContent = ""; return; }
-    matches = all(".blk").filter(function (n) {
-      return n.textContent.toLowerCase().indexOf(needle) !== -1;
+    var lc = needle.toLowerCase();
+    all(".blk").forEach(function (b) {
+      if (b.textContent.toLowerCase().indexOf(lc) !== -1) markHits(b, lc, needle.length);
     });
+    matches = all("#stream mark.hl");
     qc.textContent = matches.length + " hit" + (matches.length === 1 ? "" : "s");
+  }
+  function gotoHit(i) {
+    matches.forEach(function (m) { m.classList.remove("cur"); });
+    var m = matches[i];
+    if (!m) return;
+    m.classList.add("cur");
+    $("qcount").textContent = (i + 1) + "/" + matches.length;
+    goTo(m);
   }
   q.addEventListener("input", function () { search(q.value); });
   q.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && matches.length) {
-      mIdx = (mIdx + 1) % matches.length;
-      $("qcount").textContent = mIdx + 1 + "/" + matches.length;
-      goTo(matches[mIdx]);
+      mIdx = (mIdx + (e.shiftKey ? matches.length - 1 : 1)) % matches.length;
+      gotoHit(mIdx);
     }
     if (e.key === "Escape") q.blur();
     e.stopPropagation();
