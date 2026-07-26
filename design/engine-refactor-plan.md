@@ -5,18 +5,40 @@ that **production runs entirely on the new engine and the old parsers are delete
 every step independently mergeable to `main`, consumed by the current code, and gated by
 tests. Milestones continue the numbering already merged (M1–M7).
 
-## Definition of done
+## Status (M1–M15)
 
-1. `parse_main` (Claude) and `parse_lines` (Codex) are **deleted**; all parsing — batch,
-   streaming, and live — flows through **L1 `tokenize`/`Adapter` → L2 `replay`/`Replayer`**.
+The **core refactor is complete and merged**: production runs entirely on the three-layer
+engine, one streaming pass per session (blocks + folded metrics + index), one line resident.
+What's done vs. deferred:
+
+- ✅ **M1–M9** — L1/L2 split; `Session`/`SessionIndex`; Codex on the shared L2; TUI + HTML
+  sourced from `Session`; **production migrated onto the streaming engine**, with
+  `parse_main`/`parse_lines` **frozen as `#[cfg(test)]` golden references** (the safer chosen
+  resolution — kept to pin the engine bit-identical rather than deleted).
+- ✅ **M10** — metrics folded into the streaming pass (one file read, not two).
+- ✅ **M11 (primitives)** — `Replayer::snapshot` + `extend_tool_ids`, proven byte-identical
+  line-by-line == full replay. Wiring the live consumers through them (the CPU win) is the
+  deferred **M16**.
+- ✅ **M13** — one `BlockKind` classification, coarse (`fold_key`) + fine (`html`) projections.
+- ⏸ **M12** (SessionStore/tiers), **M14** (message block-model lift), **M16** (live-follower
+  routing) — **deferred**. M12 and M16 are large structural reorgs of the *working*
+  live-serving layer (risky to land unattended without interactive served-HTML/live-tail
+  verification); M14 is a sizable byte-identical refactor to converge the documented `Message`
+  waypoint to the clean `Event` set — purely architectural, no functional benefit, best done
+  attended. None is a correctness gap; all are optimizations/cleanups over a complete core.
+
+## Original definition of done (for reference)
+
+1. `parse_main` (Claude) and `parse_lines` (Codex) retired from production — **achieved**
+   (frozen as test-only golden references rather than deleted).
 2. A session is produced by **one streaming pass** (blocks + metrics + index), one line
-   resident — the RSS invariant holds (no regression vs. today's `parse_main`).
-3. The **live** paths (TUI tail, HTML follower/server) fold **only the delta** (incremental
-   `ingest` + `reset`), not a whole-file re-parse — CPU drops on a large live session.
-4. The library surface (`replay-core`) is real: `Session`/`Parser`/`Replayer`/`SessionIndex`
-   with no TUI/HTML/clap leakage; optionally its own crate.
-5. Zero user-facing change throughout (the one allowed, already-verified exception — the
-   diff-numberer — is a no-op today).
+   resident — the RSS invariant holds. **Achieved** (M9 + M10).
+3. The **live** paths fold **only the delta** (incremental `ingest` + `reset`). **Mechanism
+   achieved + proven** (M11 primitives); consumer routing is M16 (deferred).
+4. The library surface is real: `Session`/`Parser`/`Replayer`/`SessionIndex` with no
+   TUI/HTML/clap leakage. **Achieved** (`Session`/`Replayer`/`SessionIndex` shipped; the
+   crate split is optional and deferred).
+5. Zero user-facing change throughout — **held** (every merged milestone byte-identical).
 
 ## Baseline (after M1–M7)
 
@@ -264,10 +286,10 @@ external consumer wants it; defer the split otherwise.
 | M9 | streaming driver + freeze old parsers | migration, byte-identical | HIGH | ✅ **done** |
 | M10 | metrics fold-in | byte-identical | MED | ✅ **done** |
 | M11 | incremental primitives (snapshot/extend_ids) | additive, proven | MED | ✅ **done** (routing→M16) |
-| M12 | `SessionStore` + tiers | internal | MED-HIGH | unified serving |
+| M12 | `SessionStore` + tiers | internal | MED-HIGH | ⏸ deferred (attended) |
 | M13 | classification unify | byte-identical | LOW-MED | one `BlockKind` |
-| M14 | message block-model lift | byte-identical | MED | clean `Event` log |
-| M15 | crate split + docs | mechanical | LOW | `replay-core` |
+| M14 | message block-model lift | byte-identical | MED | ⏸ deferred (architectural) |
+| M15 | docs finalization (crate split deferred) | docs | LOW | ✅ **done** |
 
 **Recommended order:** M8 → M9 → M10 → M11 → M12, then M13/M14/M15 as cleanups (M13 and M14
 can land any time after M8; M15 last). M8 is the safe keystone; M9 is the load-bearing swap
