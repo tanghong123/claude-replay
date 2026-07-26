@@ -67,8 +67,24 @@ fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
     blocks // identity — Codex does no turn grouping
 }
 
+/// Codex's `build_tool`: normalize the tool name and shape the target/diffs via
+/// `call_details` (Codex has no `SubAgent` spawns, so `id` is unused). The raw `input` was
+/// already extracted by `call_input` in the tokenizer. (Lifted to L2 in M14.)
+fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+    let (name, target, diffs) = call_details(raw_name, input, cwd);
+    Block::ToolUse {
+        name,
+        target,
+        diffs,
+        output: None,
+        patch: None,
+        read_lines: None,
+    }
+}
+
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
 pub(crate) const CODEX_SHAPING: crate::model::Shaping = crate::model::Shaping {
+    build_tool: codex_build_tool,
     apply: apply_output_shaping,
     keep_orphan: codex_keep_orphan,
     finish: codex_finish,
@@ -169,19 +185,13 @@ pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Mes
                         .get("name")
                         .and_then(Value::as_str)
                         .unwrap_or("tool");
-                    let input = call_input(payload);
-                    let (name, target, diffs) = call_details(raw_name, &input, cwd.as_str());
+                    // Raw fields only — the block is shaped in L2 via `codex_build_tool`.
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
                     msgs.push(Message::ToolUse {
                         id: call_id.to_string(),
-                        block: Block::ToolUse {
-                            name,
-                            target,
-                            diffs,
-                            output: None,
-                            patch: None,
-                            read_lines: None,
-                        },
+                        name: raw_name.to_string(),
+                        input: call_input(payload),
+                        cwd: cwd.to_string(),
                     });
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
