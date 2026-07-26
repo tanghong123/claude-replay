@@ -1334,26 +1334,27 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
 /// dropped (its stream file stays on disk; a later request revives it).
 const TAIL_TTL_MS: u128 = 30_000;
 
-/// The live server's shared state. Only *requested* agents get a stream file and get
-/// re-parsed each cycle — the rest cost nothing, which is the CPU fix vs re-parsing the
-/// whole tree. Behind locks: the agent registry (id → where to find + how to title it)
-/// and per-agent tailer state (last-seen for idle reaping + the diff baseline).
+/// The live server's shared state. Only *requested* agents become resident and get folded
+/// each cycle — the rest cost nothing (tier (c) in the store), which is the CPU fix vs
+/// re-parsing the whole tree. The session bookkeeping (the id→source registry + the resident
+/// follower set + idle reaping) lives in [`SessionStore`](crate::engine::store::SessionStore);
+/// `Live` layers the HTML rendering, the materialized `<id>.jsonl` (tier (b)), and the
+/// `/stream` byte cursor over it.
 struct Live {
     dir: std::path::PathBuf,
     agent: Agent,
     fold: FoldPolicy,
     root_path: std::path::PathBuf,
     cwd: String,
-    registry: std::sync::Mutex<std::collections::HashMap<String, AgentInfo>>,
-    tailers: std::sync::Mutex<std::collections::HashMap<String, Tailer>>,
+    store: crate::engine::store::SessionStore<AgentInfo, Tailer>,
 }
 
-/// Per-agent live state: when last requested (idle reaping), the block lines last written
-/// (the diff baseline for the next delta), and the incremental follower (M16) — a persistent
-/// `Replayer` that folds only the newly-appended lines each cycle. Its `poll` returning
-/// `None` when the source hasn't grown IS the skip-if-unchanged (no whole-file re-parse).
+/// A resident agent's live payload: the block lines last written (the diff baseline for the
+/// next delta) and the incremental follower (M16) — a persistent `Replayer` that folds only
+/// the newly-appended lines each cycle. Its `poll` returning `None` when the source hasn't
+/// grown IS the skip-if-unchanged (no whole-file re-parse). (Its idle clock lives in the
+/// store, which owns residency.)
 struct Tailer {
-    last_seen: std::time::Instant,
     prev: Vec<String>,
     follower: crate::follow::FollowParser,
 }
@@ -1364,18 +1365,14 @@ impl Live {
     /// keeps it current. Cheap on the hot path (an already-tailing id just bumps its clock).
     /// Returns false for an unknown id (not in the registry).
     fn ensure_stream(&self, id: &str) -> bool {
-        {
-            let mut t = self.tailers.lock().unwrap();
-            if let Some(tl) = t.get_mut(id) {
-                tl.last_seen = std::time::Instant::now();
-                return true;
-            }
+        if self.store.see(id) {
+            return true; // already resident (tier (a)) — just bumped its clock
         }
-        // Level-3 lookup: the registry (populated from spawn events). Fall back to
+        // Tier-(c) lookup: the registry (populated from spawn events). Fall back to
         // resolving the source directly — every agent shares the flat `subagents/` dir, so
         // a valid id resolves even if its parent was never navigated (deep links) — with a
         // plain title until its parent's spawn supplies the description.
-        let info = self.registry.lock().unwrap().get(id).cloned().or_else(|| {
+        let info = self.store.resolve(id).or_else(|| {
             crate::model::subagent_file(&self.root_path, id).map(|source| AgentInfo {
                 id: id.to_string(),
                 source,
@@ -1403,10 +1400,10 @@ impl Live {
         );
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
-        self.tailers.lock().unwrap().insert(
-            id.to_string(),
+        // Promote to tier (a): resident with its follower + diff baseline.
+        self.store.admit(
+            id,
             Tailer {
-                last_seen: std::time::Instant::now(),
                 prev: block_lines(&jsonl),
                 follower,
             },
@@ -1417,13 +1414,13 @@ impl Live {
     /// Register `parent`'s discovered children so their `?session=` links resolve to a
     /// source later — carrying the ancestry (parent's + parent) for their breadcrumb.
     fn register_children(&self, parent: &AgentInfo, children: Vec<ChildRef>) {
-        let mut reg = self.registry.lock().unwrap();
         for c in children {
-            if reg.contains_key(&c.id) {
+            if self.store.is_registered(&c.id) {
                 continue;
             }
             if let Some(ci) = child_info(&self.root_path, parent, c) {
-                reg.insert(ci.id.clone(), ci);
+                let id = ci.id.clone();
+                self.store.register_new(&id, ci);
             }
         }
     }
@@ -1454,28 +1451,21 @@ impl Live {
     fn run_tailer(self: std::sync::Arc<Self>) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-            let active: Vec<String> = {
-                let mut t = self.tailers.lock().unwrap();
-                t.retain(|_, tl| tl.last_seen.elapsed().as_millis() < TAIL_TTL_MS);
-                t.keys().cloned().collect()
-            };
-            for id in active {
-                let Some(info) = self.registry.lock().unwrap().get(&id).cloned() else {
+            self.store.reap(TAIL_TTL_MS); // drop residents idle past the TTL → tier (c)
+            for id in self.store.resident_ids() {
+                let Some(info) = self.store.resolve(&id) else {
                     continue;
                 };
                 // Fold ONLY the newly-appended lines through this agent's persistent follower
                 // (its `poll` returns `None` when the source hasn't grown — the skip that
-                // turns a constant re-parse of a huge transcript into O(delta) work). Held
-                // under the tailers lock only for the brief delta read.
-                let polled = {
-                    let mut t = self.tailers.lock().unwrap();
-                    match t.get_mut(&id) {
-                        Some(tl) => tl.follower.poll().ok().flatten(),
-                        None => None,
-                    }
-                };
+                // turns a constant re-parse of a huge transcript into O(delta) work). The
+                // poll runs under the residents lock only for the brief delta read.
+                let polled = self
+                    .store
+                    .with_resident(&id, |tl| tl.follower.poll().ok().flatten())
+                    .flatten();
                 let Some((blocks, times, metrics)) = polled else {
-                    continue; // nothing new this cycle
+                    continue; // reaped since enumeration, or nothing new this cycle
                 };
                 let (jsonl, children) = render_agent_stream(
                     self.agent, &self.fold, &self.cwd, true, &info, &blocks, &times, &metrics, None,
@@ -1483,14 +1473,13 @@ impl Live {
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                let mut t = self.tailers.lock().unwrap();
-                if let Some(tl) = t.get_mut(&id) {
+                self.store.with_resident(&id, |tl| {
                     if let Some(delta) = stream_delta(&tl.prev, &fresh, meta) {
                         let _ =
                             append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
                         tl.prev = fresh;
                     }
-                }
+                });
             }
         }
     }
@@ -1637,11 +1626,10 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         fold,
         root_path: path.to_path_buf(),
         cwd,
-        registry: std::sync::Mutex::new(std::collections::HashMap::new()),
-        tailers: std::sync::Mutex::new(std::collections::HashMap::new()),
+        store: crate::engine::store::SessionStore::new(),
     });
-    live.registry.lock().unwrap().insert(
-        sid.clone(),
+    live.store.register(
+        &sid,
         AgentInfo {
             id: sid.clone(),
             source: path.to_path_buf(),
