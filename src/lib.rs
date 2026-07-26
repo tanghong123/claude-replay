@@ -10,6 +10,7 @@ pub mod codex_discover;
 pub mod codex_metrics;
 pub mod codex_model;
 pub mod discover;
+pub mod engine;
 mod highlight;
 pub mod html_export;
 pub mod jdi;

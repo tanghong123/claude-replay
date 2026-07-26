@@ -3,6 +3,8 @@
 //! content; what's shown collapsed is a fold-policy decision made in `view`.
 //! One JSONL line can yield several blocks.
 
+use crate::engine::path::relativize;
+use crate::engine::time::epoch_secs;
 use crate::{Agent, Args};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -411,31 +413,6 @@ fn tool_fold_key(name: &str) -> &'static str {
     }
 }
 
-/// Make an absolute path relative to the session's cwd when it sits under it
-/// (matching how Claude Code shows tool targets — relative to the cwd recorded in
-/// the transcript, NOT peek's runtime cwd); else leave it as-is.
-fn relativize(p: &str, base: &str) -> String {
-    relativize_with(p, base, std::env::var("HOME").ok().as_deref())
-}
-
-/// Make `p` relative to the session cwd `base` when it sits under it; else
-/// abbreviate a `$HOME` prefix to `~` (matching Claude Code, which shows
-/// out-of-project paths as `~/…`); else leave it absolute.
-fn relativize_with(p: &str, base: &str, home: Option<&str>) -> String {
-    let path = std::path::Path::new(p);
-    if !base.is_empty() {
-        if let Ok(r) = path.strip_prefix(base) {
-            return r.display().to_string();
-        }
-    }
-    if let Some(home) = home.filter(|h| !h.is_empty()) {
-        if let Ok(r) = path.strip_prefix(home) {
-            return format!("~/{}", r.display());
-        }
-    }
-    p.to_string()
-}
-
 fn tool_target(input: &Value, cwd: &str) -> String {
     for k in ["file_path", "path"] {
         if let Some(v) = input.get(k).and_then(|v| v.as_str()) {
@@ -455,31 +432,6 @@ fn tool_target(input: &Value, cwd: &str) -> String {
         }
     }
     String::new()
-}
-
-/// Seconds since the Unix epoch for an ISO-8601 UTC timestamp like
-/// `2026-06-30T03:36:44.500Z` (we only ever use *differences*, so the absolute
-/// epoch just needs to be consistent). Returns `None` if it doesn't parse.
-fn epoch_secs(ts: &str) -> Option<f64> {
-    let (date, time) = ts.split_once('T')?;
-    let mut d = date.split('-');
-    let y: i64 = d.next()?.parse().ok()?;
-    let mo: i64 = d.next()?.parse().ok()?;
-    let da: i64 = d.next()?.parse().ok()?;
-    let time = time.trim_end_matches('Z');
-    let mut t = time.split(':');
-    let h: f64 = t.next()?.parse().ok()?;
-    let mi: f64 = t.next()?.parse().ok()?;
-    let s: f64 = t.next()?.parse().ok()?;
-    // days_from_civil (Howard Hinnant): civil date → days since 1970-01-01.
-    let yy = if mo <= 2 { y - 1 } else { y };
-    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
-    let yoe = yy - era * 400;
-    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
-    let doy = (153 * mp + 2) / 5 + da - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days as f64 * 86400.0 + h * 3600.0 + mi * 60.0 + s)
 }
 
 /// Tools Claude Code summarizes into a `Thought for …` turn line (transient reads/
@@ -1996,6 +1948,7 @@ mod tests {
 
     #[test]
     fn relativize_uses_cwd_then_home_tilde() {
+        use crate::engine::path::relativize_with;
         let home = Some("/Users/h");
         // Under the session cwd → relative.
         assert_eq!(

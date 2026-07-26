@@ -21,27 +21,11 @@ pub struct Metrics {
     pub cost_usd: Option<f64>,
 }
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-/// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds.
+/// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
+/// (integer — sub-second precision is dropped, matching the old byte-offset parser).
+/// Shares the one epoch-seconds converter with the parse layer (`engine::time`).
 pub(crate) fn parse_ts(s: &str) -> Option<i64> {
-    if s.len() < 19 {
-        return None;
-    }
-    let y: i64 = s.get(0..4)?.parse().ok()?;
-    let mo: i64 = s.get(5..7)?.parse().ok()?;
-    let d: i64 = s.get(8..10)?.parse().ok()?;
-    let h: i64 = s.get(11..13)?.parse().ok()?;
-    let mi: i64 = s.get(14..16)?.parse().ok()?;
-    let se: i64 = s.get(17..19)?.parse().ok()?;
-    Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se)
+    crate::engine::time::epoch_secs(s).map(|secs| secs as i64)
 }
 
 /// Rough USD/1M-token (input, output) list prices for cost estimation.
