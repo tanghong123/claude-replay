@@ -200,9 +200,11 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
     // The agent is a property of the file — detect it from the contents so the right
     // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
-    // Stream the parse from the file (one line resident at a time) rather than reading
-    // the whole transcript into memory — a 298 MB session peaks at ~2 GB otherwise.
-    let blocks = model::parse_path_for(agent, path, args)?;
+    // One streaming parse yields the blocks (one line resident — a 298 MB session peaks at
+    // ~2 GB otherwise), the folded metrics, and the cwd (design §3.3 / Phase 4). The TUI
+    // main frame is not sub-agent-enriched (descend loads children lazily), matching the
+    // non-enriched `parse_session_as`.
+    let s = crate::engine::parse_session_as(agent, path)?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -210,16 +212,12 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
         .to_string();
     let reader = args.follow.then(|| TailReader::open_at_end(path));
     let fold = crate::view::FoldPolicy::from_args(args);
-    let mut view = View::new(blocks, title, reader.is_some(), fold);
+    let mut view = View::new(s.blocks, title, reader.is_some(), fold);
     view.set_can_go_back(can_go_back);
-    view.set_cwd(discover::session_cwd(path));
+    view.set_cwd(s.cwd);
     view.set_can_open_picker(args.latest);
-    let metrics = crate::metrics::parse_reader_for(
-        agent,
-        std::io::BufReader::new(std::fs::File::open(path)?),
-    );
-    view.set_metrics(metrics.footer());
-    view.set_footer_segments(metrics.footer_segments());
+    view.set_metrics(s.metrics.footer());
+    view.set_footer_segments(s.metrics.footer_segments());
     view.set_descended(false);
     Ok(Frame {
         view,

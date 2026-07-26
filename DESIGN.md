@@ -500,12 +500,11 @@ The residual diff is **not** decision-free rendering:
   discovery mechanism is nailed down above; remaining work is the model + render + tail.
   *(Queued 2026-07-25; discovery verified 2026-07-25.)*
 
-- [ ] **TUI Edit/Update diff line numbers render wrong.** Reported 2026-07-25: the TUI
-  (`claude-replay`) now shows incorrect line numbers in `Update` (Edit) blocks; the
-  live-fed HTML renders them correctly. Not critical. Likely a regression in `render.rs`
-  diff-row numbering (the gutter `pad(line_no)` / hunk `old_start`/`new_start` accounting)
-  — the HTML path (`html_export::diff_part`) is correct, so diff the two. Repro with any
-  session containing an Edit with a `structuredPatch`.
+- [x] **TUI Edit/Update diff line numbers render wrong.** Reported 2026-07-25; **resolved**
+  (verified 2026-07-26). `render::render_patch` and `html_export::diff_part` now number
+  identically — both advance the old-side counter `o` on context lines. Verified with a
+  `structuredPatch` Edit (`--dump` vs `--dump-html`): both emit `10,11,12(del),12(add),13`.
+  The engine refactor's Phase 3 will fold the two numberers into one to keep them in lockstep.
 
 - [ ] **Unify the parse backend + make it a reusable engine.** *(Queued 2026-07-25.)*
   Today the TUI/`--dump` path and the HTML `--dump-html`/live-feed path both go through
