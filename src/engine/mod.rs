@@ -5,5 +5,6 @@
 //! per-agent parsers: [`time::epoch_secs`] and [`path::relativize`]. Later phases add
 //! the canonical message log (Layer 1 ↔ Layer 2 boundary) and the replay fold.
 
+pub mod message;
 pub mod path;
 pub mod time;

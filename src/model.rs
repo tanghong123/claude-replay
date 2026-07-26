@@ -3,6 +3,7 @@
 //! content; what's shown collapsed is a fold-policy decision made in `view`.
 //! One JSONL line can yield several blocks.
 
+use crate::engine::message::{Message, QueueOpKind};
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
 use crate::{Agent, Args};
@@ -590,10 +591,16 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 }
 
 /// Parse JSONL text into the **complete** block list. Kept for tests and the
-/// live-tail path (small in-memory batches); makes two cheap passes over the str.
-pub fn parse(jsonl: &str, args: &Args) -> Vec<Block> {
-    let tool_ids = scan_tool_ids(jsonl.lines());
-    parse_main(jsonl.lines(), &tool_ids, args, &mut Vec::new())
+/// live-tail path (small in-memory batches).
+///
+/// This in-memory batch entry runs the new two-layer engine — Layer 1 [`tokenize`]
+/// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
+/// bit-identical to the fused streaming `parse_main` (see `replay_tokenize_matches_parse_main`).
+/// The large-file streaming path (`parse_path` → `parse_file` → `parse_main`) still uses
+/// `parse_main` directly to keep one line resident at a time; migrating it onto a pull
+/// iterator is a later phase.
+pub fn parse(jsonl: &str, _args: &Args) -> Vec<Block> {
+    replay(&tokenize(jsonl.lines()), &mut Vec::new())
 }
 
 /// Parse JSONL text with the parser for `agent`.
@@ -841,6 +848,453 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// **Layer 1 (Claude) — tokenize.** Map each JSONL line to zero or more canonical
+/// [`Message`]s: pure line-shape classification, **no** back-patch, grouping, joins,
+/// queue lifecycle, or turn stamping (those are the fold's job — see [`replay`]). The
+/// session cwd is captured here (first non-empty `cwd` wins) purely to shape tool
+/// targets, exactly as `parse_main` does. Streaming: one `Value` resident at a time.
+///
+/// This is the L1 half of `parse_main`; `replay(tokenize(x))` is asserted bit-identical
+/// to `parse_main(x)` (see the tests). `parse_main` stays live and unchanged.
+pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
+    let mut msgs: Vec<Message> = Vec::new();
+    let mut cwd = String::new();
+    for line in lines {
+        let line = line.as_ref().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if cwd.is_empty() {
+            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                cwd = c.to_string();
+            }
+        }
+        let ev_ts = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(epoch_secs);
+        msgs.push(Message::LineStart(ev_ts));
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("assistant") => {
+                let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+                    continue;
+                };
+                for blk in content {
+                    match blk.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => {
+                            if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
+                                if !t.trim().is_empty() {
+                                    msgs.push(Message::AssistantText(t.to_string()));
+                                }
+                            }
+                        }
+                        Some("thinking") => {
+                            let t = blk
+                                .get("thinking")
+                                .or_else(|| blk.get("text"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+                            if !t.trim().is_empty() {
+                                msgs.push(Message::Thinking {
+                                    text: t.to_string(),
+                                    ts: ev_ts,
+                                });
+                            }
+                        }
+                        Some("tool_use") => {
+                            let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                            let input = blk.get("input").cloned().unwrap_or(Value::Null);
+                            let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
+                            let block = if name == "Agent" || name == "Task" {
+                                let s = |k: &str| {
+                                    input
+                                        .get(k)
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                };
+                                let agent_type = {
+                                    let t = s("subagent_type");
+                                    if t.is_empty() {
+                                        "agent".to_string()
+                                    } else {
+                                        t
+                                    }
+                                };
+                                Block::SubAgent(SubAgent {
+                                    agent_id: String::new(),
+                                    tool_use_id: id.to_string(),
+                                    agent_type,
+                                    description: s("description"),
+                                    prompt: s("prompt"),
+                                    status: AgentStatus::Running,
+                                    result: None,
+                                    output_file: None,
+                                    blocks: Vec::new(),
+                                    subtree_cost: None,
+                                })
+                            } else {
+                                Block::ToolUse {
+                                    name: name.to_string(),
+                                    target: tool_target(&input, &cwd),
+                                    diffs: extract_diffs(name, &input),
+                                    output: None,
+                                    patch: None,
+                                    read_lines: None,
+                                }
+                            };
+                            msgs.push(Message::ToolUse {
+                                id: id.to_string(),
+                                block,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") => {
+                msgs.push(Message::Trigger(ev_ts));
+                let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
+                let injected = is_injected_event(&v);
+                let Some(content) = v.pointer("/message/content") else {
+                    continue;
+                };
+                if let Some(s) = content.as_str() {
+                    msgs.push(Message::UserString {
+                        text: s.to_string(),
+                        injected,
+                    });
+                } else if let Some(arr) = content.as_array() {
+                    for blk in arr {
+                        match blk.get("type").and_then(|t| t.as_str()) {
+                            Some("text") => {
+                                if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
+                                    if !t.trim().is_empty() {
+                                        msgs.push(Message::UserArrayText {
+                                            text: t.to_string(),
+                                            injected,
+                                        });
+                                    }
+                                }
+                            }
+                            Some("image") => {
+                                if let Some(att) = image_attachment(blk) {
+                                    msgs.push(Message::Attachment(att));
+                                }
+                            }
+                            Some("tool_result") => {
+                                let tid = blk
+                                    .get("tool_use_id")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("");
+                                let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
+                                msgs.push(Message::ToolResult {
+                                    tool_use_id: tid.to_string(),
+                                    text: txt,
+                                    tur: tur.clone(),
+                                });
+                                if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
+                                    for item in items {
+                                        if let Some(att) = image_attachment(item) {
+                                            msgs.push(Message::Attachment(att));
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Some("queue-operation") => {
+                let content = v
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.to_string());
+                let op = match v.get("operation").and_then(|o| o.as_str()) {
+                    Some("enqueue") => Some(QueueOpKind::Enqueue),
+                    Some("remove") => Some(QueueOpKind::Remove),
+                    Some("dequeue") => Some(QueueOpKind::Dequeue),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    msgs.push(Message::QueueOp { op, content });
+                }
+            }
+            Some("attachment") => {
+                let a = v.get("attachment");
+                let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
+                    == Some("queued_command")
+                    && a.and_then(|a| a.get("commandMode"))
+                        .and_then(|m| m.as_str())
+                        == Some("prompt");
+                if is_prompt {
+                    if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                        if !p.trim().is_empty() {
+                            msgs.push(Message::AttachmentPrompt {
+                                text: p.to_string(),
+                            });
+                        }
+                    }
+                } else if let Some(att) = a.and_then(attachment_from_event) {
+                    msgs.push(Message::Attachment(att));
+                }
+            }
+            _ => {}
+        }
+    }
+    msgs
+}
+
+/// **Layer 2 — replay.** Fold the canonical [`Message`] log into the block list: the
+/// `id → block index` back-patch (`tool_slot` / `pending`), the thinking clock, the
+/// queue lifecycle (marker suppression + completions), user-turn stamping, and finally
+/// `group_turns` + `coalesce_activity_runs`. Agent-agnostic in spirit; for Phase 1 it
+/// still carries Claude's shaping quirks (skill-body nesting, the two-event spawn /
+/// completion split), which move here from L1 per the design (§6.1-resolved).
+///
+/// `replay(tokenize(x))` is asserted bit-identical to `parse_main(x)`. `user_times` is
+/// filled with one entry per emitted user turn, exactly as `parse_main`.
+pub(crate) fn replay(messages: &[Message], user_times: &mut Vec<Option<f64>>) -> Vec<Block> {
+    // The set of every tool_use join id (the L1 pre-scan, derived from the message log)
+    // so an orphan result is told apart from a not-yet-seen one.
+    let tool_ids: HashSet<String> = messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut out: Vec<Block> = Vec::new();
+    let mut pending_ts: Option<f64> = None;
+    let mut stamped = 0usize;
+    let mut tool_slot: HashMap<String, usize> = HashMap::new();
+    let mut pending: HashMap<String, (String, Value)> = HashMap::new();
+    let mut trigger_ts: Option<f64> = None;
+    let mut queue: Vec<QueueItem> = Vec::new();
+    let mut content_seq = 0usize;
+    let mut suppress: Vec<usize> = Vec::new();
+    let mut last_skill: Option<usize> = None;
+    let mut completions: Vec<String> = Vec::new();
+
+    for m in messages {
+        match m {
+            Message::LineStart(ts) => {
+                stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+                pending_ts = *ts;
+            }
+            Message::Trigger(ts) => {
+                if let Some(t) = ts {
+                    trigger_ts = Some(*t);
+                }
+            }
+            Message::AssistantText(t) => {
+                out.push(Block::AssistantText(t.clone()));
+                content_seq += 1;
+            }
+            Message::Thinking { text, ts } => {
+                let duration_secs = match (ts, trigger_ts) {
+                    (Some(end), Some(start)) if *end >= start => Some((end - start) as u64),
+                    _ => None,
+                };
+                out.push(Block::Thinking {
+                    text: text.clone(),
+                    duration_secs,
+                    tools: Vec::new(),
+                });
+                content_seq += 1;
+            }
+            Message::ToolUse { id, block } => {
+                out.push(block.clone());
+                content_seq += 1;
+                let idx = out.len() - 1;
+                if let Block::ToolUse { name, .. } = &out[idx] {
+                    if name == "Skill" {
+                        last_skill = Some(idx);
+                    }
+                }
+                if !id.is_empty() {
+                    tool_slot.insert(id.clone(), idx);
+                    if let Some((txt, tur)) = pending.remove(id) {
+                        apply_result(&mut out[idx], &txt, &tur);
+                    }
+                }
+            }
+            Message::ToolResult {
+                tool_use_id,
+                text,
+                tur,
+            } => {
+                if let Some(&idx) = tool_slot.get(tool_use_id) {
+                    apply_result(&mut out[idx], text, tur);
+                } else if tool_ids.contains(tool_use_id) {
+                    pending.insert(tool_use_id.clone(), (text.clone(), tur.clone()));
+                } else if !text.trim().is_empty() && !is_boilerplate(text) {
+                    out.push(Block::ToolResult(text.clone()));
+                }
+            }
+            Message::UserString { text, injected } => {
+                if is_skill_body(text) && attach_skill_body(&mut out, last_skill, text) {
+                    // Nested into its `Skill` block above — no loose result block.
+                } else if *injected {
+                    push_injected(text, &mut out);
+                } else {
+                    push_user_string(text, &mut out);
+                }
+            }
+            Message::UserArrayText { text, injected } => {
+                if is_skill_body(text) && attach_skill_body(&mut out, last_skill, text) {
+                    // Nested into its `Skill` block above.
+                } else if *injected || is_skill_body(text) {
+                    out.push(Block::ToolResult(text.clone()));
+                } else {
+                    out.push(Block::UserText(text.clone()));
+                }
+            }
+            Message::AttachmentPrompt { text } => {
+                out.push(Block::UserText(text.clone()));
+            }
+            Message::Attachment(att) => {
+                out.push(Block::Attachment(att.clone()));
+            }
+            Message::QueueOp { op, content } => match op {
+                QueueOpKind::Enqueue => {
+                    if let Some(c) = content {
+                        if is_agent_notification(c) {
+                            completions.push(c.to_string());
+                            let status = tag_inner(c, "status")
+                                .and_then(AgentStatus::from_status)
+                                .unwrap_or(AgentStatus::Completed);
+                            let description = tag_inner(c, "summary")
+                                .map(summary_description)
+                                .unwrap_or_default();
+                            let result = tag_inner(c, "result")
+                                .map(str::trim)
+                                .filter(|r| !r.is_empty())
+                                .map(str::to_string);
+                            let agent_id = tag_inner(c, "task-id")
+                                .or_else(|| tag_inner(c, "tool-use-id"))
+                                .unwrap_or_default()
+                                .to_string();
+                            out.push(Block::AgentDone {
+                                agent_id,
+                                agent_type: String::new(),
+                                description,
+                                status,
+                                result,
+                            });
+                        }
+                        let is_prose = is_queue_prose(c);
+                        let marker_idx = if is_prose {
+                            out.push(Block::QueueEvent {
+                                text: c.trim().to_string(),
+                            });
+                            Some(out.len() - 1)
+                        } else {
+                            None
+                        };
+                        queue.push(QueueItem {
+                            content: c.trim().to_string(),
+                            marker_idx,
+                            content_at_enqueue: content_seq,
+                        });
+                    }
+                }
+                QueueOpKind::Remove | QueueOpKind::Dequeue => {
+                    let popped = match content.as_deref().map(str::trim) {
+                        Some(c) => queue
+                            .iter()
+                            .position(|q| q.content == c)
+                            .map(|i| queue.remove(i)),
+                        None if !queue.is_empty() => Some(queue.remove(0)),
+                        None => None,
+                    };
+                    if let Some(item) = popped {
+                        if let Some(mi) = item.marker_idx {
+                            if content_seq == item.content_at_enqueue {
+                                suppress.push(mi);
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    }
+    stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    apply_completions_and_suppress(&mut out, &tool_slot, &completions, suppress);
+    coalesce_activity_runs(group_turns(out))
+}
+
+/// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
+/// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
+/// of prompts picked up immediately. Split out so both `parse_main` and [`replay`] share
+/// one copy. Runs before turn grouping so surviving markers keep their positions.
+fn apply_completions_and_suppress(
+    out: &mut Vec<Block>,
+    tool_slot: &HashMap<String, usize>,
+    completions: &[String],
+    suppress: Vec<usize>,
+) {
+    if !completions.is_empty() {
+        let mut agent_slot: HashMap<String, usize> = HashMap::new();
+        for (i, b) in out.iter().enumerate() {
+            if let Block::SubAgent(sa) = b {
+                if !sa.agent_id.is_empty() {
+                    agent_slot.insert(sa.agent_id.clone(), i);
+                }
+            }
+        }
+        for note in completions {
+            let idx = tag_inner(note, "tool-use-id")
+                .and_then(|t| tool_slot.get(t).copied())
+                .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
+            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
+                if let Some(st) = tag_inner(note, "status").and_then(AgentStatus::from_status) {
+                    sa.status = st;
+                }
+            }
+        }
+        let mut by_id: HashMap<String, (String, String)> = HashMap::new();
+        for b in out.iter() {
+            if let Block::SubAgent(sa) = b {
+                let v = (sa.agent_id.clone(), sa.agent_type.clone());
+                if !sa.agent_id.is_empty() {
+                    by_id.insert(sa.agent_id.clone(), v.clone());
+                }
+                if !sa.tool_use_id.is_empty() {
+                    by_id.insert(sa.tool_use_id.clone(), v);
+                }
+            }
+        }
+        for b in out.iter_mut() {
+            if let Block::AgentDone {
+                agent_id,
+                agent_type,
+                ..
+            } = b
+            {
+                if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
+                    *agent_type = ty.clone();
+                    *agent_id = real_id.clone();
+                }
+            }
+        }
+    }
+    if !suppress.is_empty() {
+        let drop: HashSet<usize> = suppress.into_iter().collect();
+        let mut i = 0usize;
+        out.retain(|_| {
+            let keep = !drop.contains(&i);
+            i += 1;
+            keep
+        });
     }
 }
 
@@ -2136,6 +2590,148 @@ mod tests {
         let via_path = parse_path(&file, &args()).unwrap();
         std::fs::remove_file(&file).ok();
         assert_eq!(format!("{via_str:?}"), format!("{via_path:?}"));
+    }
+
+    /// The Layer-1 (`tokenize`) + Layer-2 (`replay`) split must be **bit-identical** to
+    /// the fused `parse_main` — same blocks AND same `user_times` — across the whole
+    /// golden corpus. This is the Phase-1 equivalence gate: only once this is rock-solid
+    /// may `parse_main` be repointed at `tokenize`+`replay`.
+    #[test]
+    fn replay_tokenize_matches_parse_main() {
+        fn assert_equiv(jsonl: &str) {
+            let tool_ids = scan_tool_ids(jsonl.lines());
+            let mut ut_main = Vec::new();
+            let via_main = parse_main(jsonl.lines(), &tool_ids, &args(), &mut ut_main);
+            let mut ut_engine = Vec::new();
+            let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine);
+            assert_eq!(
+                format!("{via_main:?}"),
+                format!("{via_engine:?}"),
+                "blocks differ for:\n{jsonl}"
+            );
+            assert_eq!(ut_main, ut_engine, "user_times differ for:\n{jsonl}");
+        }
+
+        let corpus: &[&str] = &[
+            // Injected meta / compact-summary are not turns.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real question"}}
+{"type":"user","isMeta":true,"timestamp":"2026-06-30T03:00:01.000Z","message":{"content":"# /loop — schedule\nParse the input…"}}
+{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued…"}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}
+"##,
+            // Queue markers: immediate pickup vs a gap; interleaved task-notification.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up immediately"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:02.000Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:03.000Z","content":"picked up after a gap"}
+{"type":"assistant","timestamp":"2026-06-30T03:00:04.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:05.000Z","content":"<task-notification>\nbg\n</task-notification>"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:06.000Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"still waiting"}
+"##,
+            // Queued-command attachment renders as a turn in order; task-notification skipped.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>bg</task-notification>"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"mid-turn interjection"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"text","text":"ok"}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:06.000Z","message":{"content":"last turn"}}
+"##,
+            // The four content-bearing attachment types + a dropped bookkeeping one.
+            r##"
+{"type":"attachment","timestamp":"2026-06-30T03:00:00.000Z","attachment":{"type":"file","filename":"/w/backlog.md","displayPath":"backlog.md","content":{"type":"text","file":{"filePath":"/w/backlog.md","content":"# Backlog\nitem"}}}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:01.000Z","attachment":{"type":"plan_file_reference","planFilePath":"/p/plan-x.md","planContent":"# Plan\nstep 1"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:02.000Z","attachment":{"type":"edited_text_file","filename":"/w/src/main.rs","snippet":"1\tfn main(){}"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"compact_file_reference","filename":"/w/src/lib.rs","displayPath":"src/lib.rs"}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"skill_listing","content":"noise"}}
+"##,
+            // Base64 images from a prompt and a tool result.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"text","text":"look at this"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/shot.png"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}}]}]}}
+"##,
+            // Control-only phantom message dropped.
+            "{\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:00.000Z\",\"message\":{\"content\":\"\u{11}\"}}\n{\"type\":\"user\",\"timestamp\":\"2026-06-30T03:00:01.000Z\",\"message\":{\"content\":\"real\"}}\n",
+            // Thinking groups preceding activity tools + duration.
+            r#"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:12.000Z","message":{"content":[{"type":"thinking","thinking":"hmm let me consider"}]}}
+"#,
+            // Edit stays expanded next to thinking.
+            r#"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"thinking","thinking":"ok"}]}}
+"#,
+            // Skill body nests into the Skill call.
+            r#"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"dump-tasks"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"Launching skill: dump-tasks"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /Users/dev/.claude/skills/dump-tasks\n\n# dump-tasks\n\nTurn the work into a brief."}]}}
+"#,
+            // Orphan skill body still folds as a result.
+            r#"
+{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /x\n\n# s"}]}}
+"#,
+            // Agent spawn + completion are two events.
+            r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"Review the rewrite","prompt":"Review render.rs"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review the rewrite\" finished</summary>\n<result>Two gaps found.</result>\n</task-notification>"}
+"##,
+            // Task-notification folds to its summary line.
+            r#"
+{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"Build release\" completed (exit code 0)</summary>\n</task-notification>"}}
+"#,
+            // Nothing dropped by default: coalesced Read+Bash run, Edit expanded.
+            r#"
+{"type":"user","message":{"role":"user","content":"do it"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"ok"},{"type":"tool_use","name":"Read","input":{"file_path":"/x.rs"}},{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"FILE CONTENTS"}]}}
+"#,
+            // toolUseResult metadata joins (Edit patch, Read numLines, Bash stdout).
+            r#"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"oldLines":1,"newStart":12,"newLines":1,"lines":[" ctx","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"The file /x.rs has been updated successfully."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/y.rs"}}]}}
+{"type":"user","toolUseResult":{"type":"text","file":{"filePath":"/y.rs","content":"l1\nl2\nl3","numLines":3}},"message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"l1\nl2\nl3"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","toolUseResult":{"stdout":"file1\nfile2","stderr":""},"message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"file1\nfile2"}]}}
+"#,
+            // Result-before-tool_use still joins (out-of-order).
+            r#"
+{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /x.rs has been updated successfully."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+"#,
+            // Orphan result with no tool_use anywhere shown inline.
+            r#"
+{"type":"user","message":{"content":"go"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"ghost","content":"orphan output"}]}}
+"#,
+            // Slash command + inline stdout, caveat stripped.
+            r#"
+{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: noise</local-command-caveat><command-name>/compact</command-name><command-message>compact</command-message><command-args></command-args>"}}
+{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>"}}
+"#,
+            // Caveat-only message dropped.
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>just noise</local-command-caveat>"}}"#,
+            // A standalone assistant thinking + text with a cwd on the first line.
+            r#"{"type":"user","cwd":"/p","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","toolUseResult":{"stdout":"out","stderr":""},"message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}
+"#,
+        ];
+        for j in corpus {
+            assert_equiv(j);
+        }
     }
 
     #[test]
