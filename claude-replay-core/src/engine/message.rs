@@ -2,23 +2,24 @@
 //! engine (see `design/parser-engine.md` §0, §6.1-resolved).
 //!
 //! A `Message` is the fine-grained "one message per interesting line/content-item"
-//! vocabulary an agent's **raw parser** (Layer 1, `tokenize`) emits: pure line-shape
-//! mapping, with **no** back-patch, grouping, or joins. The agent-agnostic **replay /
-//! state builder** (Layer 2, `replay`) folds this stream into the block list — it owns
-//! the `id → block index` back-patch, the thinking clock, user-turn stamping, the queue
-//! lifecycle, and turn grouping.
+//! vocabulary an agent's **raw parser** (Layer 1, `tokenize`) emits. It is the **shared,
+//! agent-neutral interface**: each agent's L1 decoder maps *its own* raw transcript format
+//! onto these variants — including the richer ones (`Completion`, `Command`, `SkillBody`,
+//! `SystemNote`, `QueueOp`, `Attachment`). Because agents name/shape these things
+//! differently, all of that format parsing is L1's job; the variants carry **structured,
+//! normalized fields**, never raw agent strings. The agent-agnostic **replay / state
+//! builder** (Layer 2, `replay`) folds the stream into the block list — back-patch, thinking
+//! clock, user-turn stamping, queue lifecycle, turn grouping — and parses **no** raw agent
+//! format. An agent that has no analogue for a variant (Codex emits no `QueueOp`/
+//! `Completion`/`SkillBody`) simply never produces it.
 //!
-//! Phase 1 note: this is a deliberate **waypoint** toward the clean, agent-neutral `Event`
-//! vocabulary specified in `design/parser-engine.md` §3.1 — see the "Message waypoint" note
-//! there. The **block-model lift is done** (M14): no variant carries a built `Block` — the
-//! `ToolUse` variant now holds the raw `name`/`input`/`cwd`, and Layer 2 builds the block
-//! via `Shaping::build_tool`, so Layer 1 (`tokenize`) is pure line-shape → raw fields. The
-//! variants still carry the `Attachment` value type (a leaf, not a shaped block). One later,
-//! separately-gated step remains: the incremental phase's `seq` / `offset` / `Reset`
-//! envelope (§5.2 Phase 6). `tokenize` / `replay` are already pure and I/O-free, so they
-//! satisfy §3.6's sans-I/O pull core now — only the vocabulary converges.
+//! Phase note: no variant carries a built `Block` (the M14 block-model lift) — `ToolUse`
+//! holds raw `name`/`input`/`cwd` and L2 shapes the block via `Shaping::build_tool`; the
+//! richer content variants carry structured fields L1 fills in. `Attachment` is a leaf value.
+//! One later, separately-gated step remains: the incremental phase's `seq`/`offset`/`Reset`
+//! envelope (§5.2 Phase 6). `tokenize`/`replay` are pure and I/O-free (§3.6's sans-I/O core).
 
-use crate::model::Attachment;
+use crate::model::{AgentStatus, Attachment};
 use serde_json::Value;
 
 /// Which queue-operation a `queue-operation` line performed.
@@ -65,21 +66,53 @@ pub enum Message {
         text: String,
         tur: Value,
     },
-    /// A `user` line whose `message.content` is a plain string (raw), plus whether the
-    /// line is injected system content (`isMeta`/`isCompactSummary`).
-    UserString { text: String, injected: bool },
-    /// A non-empty `text` item inside a `user` array `message.content`, plus the injected
-    /// flag.
-    UserArrayText { text: String, injected: bool },
+    /// A genuine human turn — already cleaned by L1 (caveats stripped, classified as neither
+    /// a command nor injected/system content). Becomes a `UserText` block.
+    UserText { text: String },
+    /// Injected/system content that isn't a human turn — a caveat-stripped `isMeta` body, a
+    /// `/compact` summary, a task-notification's one-line summary, or an orphan skill body.
+    /// Becomes a foldable `ToolResult` block. L1 has already reduced it to its final text.
+    SystemNote { text: String },
+    /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
+    /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
+    /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.
+    SkillBody { text: String, fallback: String },
+    /// A slash-command invocation (`/name args`) with any inline stdout — L1-parsed from
+    /// Claude's `<command-name>`/`<command-args>`/`<local-command-stdout>` wrappers. Becomes
+    /// a `Command` block.
+    Command {
+        name: String,
+        args: String,
+        output: Vec<String>,
+    },
+    /// Standalone local-command stdout (no command line on the same message). The fold
+    /// appends it to the preceding `Command` block, else starts a command-less one.
+    CommandStdout { text: String },
     /// A consumed mid-turn prompt (`queued_command` with `commandMode == "prompt"`) —
     /// rendered as a user turn at the point it took effect.
     AttachmentPrompt { text: String },
     /// A file / plan / image attachment to surface as-is.
     Attachment(Attachment),
     /// A `queue-operation` line + its content (if any). The fold owns the queue
-    /// lifecycle (marker emit, FIFO pop, immediate-pickup suppression, completions).
+    /// *lifecycle* (marker emit, FIFO pop, immediate-pickup suppression) but no longer
+    /// parses the content: `prose` is L1's classification of whether this enqueue should
+    /// render as a visible `⧗ queued` marker (vs. a silent bookkeeping entry).
     QueueOp {
         op: QueueOpKind,
         content: Option<String>,
+        prose: bool,
+    },
+    /// An agent/task **completion** — the structured form of Claude's `<task-notification>`,
+    /// parsed by L1 so the fold never sees the raw format. The fold emits an `AgentDone`
+    /// block and back-patches the matching `SubAgent`'s terminal status. `status` is `None`
+    /// when the source carried no explicit status (the fold then defaults `AgentDone` to
+    /// `Completed` but leaves the spawn's status untouched). Join by `tool_use_id` first,
+    /// else `task_id`.
+    Completion {
+        tool_use_id: String,
+        task_id: String,
+        status: Option<AgentStatus>,
+        description: String,
+        result: Option<String>,
     },
 }

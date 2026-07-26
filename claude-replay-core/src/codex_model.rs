@@ -151,9 +151,11 @@ pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Mes
                             .filter(|text| role != "user" || !is_host_context(text))
                         {
                             if role == "user" {
-                                msgs.push(Message::UserArrayText {
+                                // Codex user input is always a genuine human turn — it maps
+                                // straight to the shared `UserText` (no injected/skill/command
+                                // notions to classify, unlike Claude's L1).
+                                msgs.push(Message::UserText {
                                     text: text.to_string(),
-                                    injected: false,
                                 });
                             } else {
                                 msgs.push(Message::AssistantText(text.to_string()));

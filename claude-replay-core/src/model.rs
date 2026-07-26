@@ -219,18 +219,6 @@ impl AgentStatus {
     }
 }
 
-/// Extract the quoted description from a completion `<summary>` like
-/// `Agent "Design the parser" finished` → `Design the parser`. Falls back to the whole
-/// trimmed summary when there's no quoted span.
-pub(crate) fn summary_description(summary: &str) -> String {
-    if let (Some(a), Some(b)) = (summary.find('"'), summary.rfind('"')) {
-        if b > a {
-            return summary[a + 1..b].to_string();
-        }
-    }
-    summary.trim().to_string()
-}
-
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`
 /// and the default fold policy are keyed on these (see `view`).
 /// The one presentation classification (M13) both the TUI fold policy and the HTML
@@ -337,43 +325,6 @@ pub fn fold_key(b: &Block) -> &'static str {
     block_kind(b).fold_key()
 }
 
-/// Inner text of the first `<tag>…</tag>` in `s`, if present.
-pub(crate) fn tag_inner<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = s.find(&open)? + open.len();
-    let rest = &s[start..];
-    let end = rest.find(&close)?;
-    Some(&rest[..end])
-}
-
-/// Remove every `<local-command-caveat>…</local-command-caveat>` block (pure
-/// noise Claude Code injects around local commands), returning the remainder.
-pub(crate) fn strip_caveat(s: &str) -> String {
-    let (open, close) = ("<local-command-caveat>", "</local-command-caveat>");
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find(open) {
-        out.push_str(&rest[..i]);
-        match rest[i + open.len()..].find(close) {
-            Some(j) => rest = &rest[i + open.len() + j + close.len()..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The harness injects a loaded skill's instruction body as a user message that
-/// opens with this marker. It's reference material, not user prose, so we model it
-/// as a foldable (default-collapsed) result block instead of a `❯` user turn.
-pub(crate) fn is_skill_body(s: &str) -> bool {
-    s.trim_start().starts_with("Base directory for this skill:")
-}
-
 /// Append a loaded skill's instruction body to its `Skill` tool_use block at `idx`,
 /// so the whole skill load reads as one collapsible unit (named by the skill) instead
 /// of a loose result block beside the call. Returns `false` when there's no recent
@@ -394,91 +345,6 @@ pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &st
         }
     }
     false
-}
-
-/// Injected/system content that Claude Code flags at the event level — a skill or
-/// slash-command **instruction body** (`isMeta`), a caveat, or a `/compact`
-/// continuation summary (`isCompactSummary`). None of it is a human-initiated
-/// turn, so it must never become `UserText`/`Command` (which would give it a
-/// sidebar/sticky "turn" entry it doesn't deserve). It folds as a system block
-/// instead; caveat-only noise is dropped entirely.
-pub(crate) fn push_injected(s: &str, out: &mut Vec<Block>) {
-    let cleaned = strip_caveat(s);
-    let cleaned = cleaned.trim();
-    if !cleaned.is_empty() {
-        out.push(Block::ToolResult(cleaned.to_string()));
-    }
-}
-
-/// Turn one plain-string `user` message into block(s). A slash-command
-/// invocation (`<command-name>`) and its `<local-command-stdout>` become a
-/// `Block::Command`; the `<local-command-caveat>` noise is dropped; everything
-/// else is ordinary `UserText`.
-pub(crate) fn push_user_string(s: &str, out: &mut Vec<Block>) {
-    // A background-execution notification (`<task-notification>…`): collapse the raw
-    // XML to its one-line `<summary>` (else `<status>`), as a foldable result block.
-    if tag_inner(s, "task-notification").is_some() {
-        if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
-            let line = line.trim();
-            if !line.is_empty() {
-                out.push(Block::ToolResult(line.to_string()));
-                return;
-            }
-        }
-    }
-    // A slash command: `<command-name>/foo</command-name>` (+ optional args /
-    // inline stdout). The caveat, if bundled in the same message, is ignored.
-    if let Some(name) = tag_inner(s, "command-name") {
-        let args = tag_inner(s, "command-args")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let mut output = Vec::new();
-        if let Some(o) = tag_inner(s, "local-command-stdout") {
-            if !o.trim().is_empty() {
-                output.push(o.trim().to_string());
-            }
-        }
-        out.push(Block::Command {
-            name: name.trim().to_string(),
-            args,
-            output,
-        });
-        return;
-    }
-    // A standalone stdout message — attach to the command it follows, else show
-    // it on its own (command-less).
-    if let Some(o) = tag_inner(s, "local-command-stdout") {
-        let o = o.trim().to_string();
-        if o.is_empty() {
-            return;
-        }
-        if let Some(Block::Command { output, .. }) = out.last_mut() {
-            output.push(o);
-        } else {
-            out.push(Block::Command {
-                name: String::new(),
-                args: String::new(),
-                output: vec![o],
-            });
-        }
-        return;
-    }
-    // Drop pure caveat noise; otherwise it's ordinary user prose (unless it's an
-    // injected skill body, which folds as a result block). A message with no
-    // visible character — only whitespace or control bytes like a stray `\x11`
-    // (Ctrl-Q) — is a phantom keystroke, not a turn: skip it.
-    let cleaned = strip_caveat(s);
-    let has_visible = cleaned
-        .chars()
-        .any(|c| !c.is_whitespace() && !c.is_control());
-    if has_visible {
-        if is_skill_body(&cleaned) {
-            out.push(Block::ToolResult(cleaned));
-        } else {
-            out.push(Block::UserText(cleaned));
-        }
-    }
 }
 
 /// Tools Claude Code summarizes into a `Thought for …` turn line (transient reads/
@@ -599,9 +465,13 @@ pub(crate) struct Shaping {
 /// flush, completions, then the agent-specific `finish`). Fed all messages at once it
 /// reproduces the old one-shot `replay` exactly; fed in pieces it folds **incrementally** —
 /// the keystone for the streaming production path (M9) and the live `ingest` (M11).
-/// Agent-agnostic except for `shaping`: the Claude-only quirks (skill-body nesting, the
-/// two-event spawn/completion split, queue lifecycle) fire only on Claude-shaped messages
-/// that a Codex tokenizer never emits.
+/// Agent-agnostic: it folds the shared [`Message`](crate::engine::message::Message)
+/// vocabulary and parses **no** raw agent formats — each agent's L1 decoder maps its own
+/// transcript shapes onto these structured messages (completions, commands, skill bodies,
+/// injected notes, the queue lifecycle), so the fold is the same code for every agent. The
+/// one agent-specific seam is `shaping` (tool-block build, result back-patch, orphan policy,
+/// turn `finish`). Variants an agent doesn't produce (e.g. Codex emits no `QueueOp`/
+/// `Completion`/`SkillBody`) simply never reach their arms.
 ///
 /// `tool_ids` is the L1 id pre-scan (so an orphan result is told from a not-yet-seen one);
 /// the caller supplies it — from the whole message log for a batch, or a streaming pre-scan.
@@ -619,7 +489,7 @@ pub(crate) struct Replayer<'a> {
     content_seq: usize,
     suppress: Vec<usize>,
     last_skill: Option<usize>,
-    completions: Vec<String>,
+    completions: Vec<CompletionRec>,
 }
 
 impl<'a> Replayer<'a> {
@@ -713,26 +583,38 @@ impl<'a> Replayer<'a> {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
                 }
-                Message::UserString { text, injected } => {
-                    if is_skill_body(text)
-                        && attach_skill_body(&mut self.out, self.last_skill, text)
+                Message::UserText { text } => {
+                    self.out.push(Block::UserText(text.clone()));
+                }
+                Message::SystemNote { text } => {
+                    self.out.push(Block::ToolResult(text.clone()));
+                }
+                Message::SkillBody { text, fallback } => {
+                    // L1 detected the skill body; the fold only nests it into the most recent
+                    // `Skill` block (stateful), falling back to a loose result block.
+                    if !attach_skill_body(&mut self.out, self.last_skill, text)
+                        && !fallback.is_empty()
                     {
-                        // Nested into its `Skill` block above — no loose result block.
-                    } else if *injected {
-                        push_injected(text, &mut self.out);
-                    } else {
-                        push_user_string(text, &mut self.out);
+                        self.out.push(Block::ToolResult(fallback.clone()));
                     }
                 }
-                Message::UserArrayText { text, injected } => {
-                    if is_skill_body(text)
-                        && attach_skill_body(&mut self.out, self.last_skill, text)
-                    {
-                        // Nested into its `Skill` block above.
-                    } else if *injected || is_skill_body(text) {
-                        self.out.push(Block::ToolResult(text.clone()));
+                Message::Command { name, args, output } => {
+                    self.out.push(Block::Command {
+                        name: name.clone(),
+                        args: args.clone(),
+                        output: output.clone(),
+                    });
+                }
+                Message::CommandStdout { text } => {
+                    // Attach to the command it follows, else show it command-less.
+                    if let Some(Block::Command { output, .. }) = self.out.last_mut() {
+                        output.push(text.clone());
                     } else {
-                        self.out.push(Block::UserText(text.clone()));
+                        self.out.push(Block::Command {
+                            name: String::new(),
+                            args: String::new(),
+                            output: vec![text.clone()],
+                        });
                     }
                 }
                 Message::AttachmentPrompt { text } => {
@@ -741,35 +623,37 @@ impl<'a> Replayer<'a> {
                 Message::Attachment(att) => {
                     self.out.push(Block::Attachment(att.clone()));
                 }
-                Message::QueueOp { op, content } => match op {
+                Message::Completion {
+                    tool_use_id,
+                    task_id,
+                    status,
+                    description,
+                    result,
+                } => {
+                    // L1 already parsed the notification; the fold only places the block and
+                    // records the terminal status for the post-loop `SubAgent` back-patch.
+                    self.completions.push(CompletionRec {
+                        tool_use_id: tool_use_id.clone(),
+                        task_id: task_id.clone(),
+                        status: *status,
+                    });
+                    let agent_id = if !task_id.is_empty() {
+                        task_id.clone()
+                    } else {
+                        tool_use_id.clone()
+                    };
+                    self.out.push(Block::AgentDone {
+                        agent_id,
+                        agent_type: String::new(),
+                        description: description.clone(),
+                        status: status.unwrap_or(AgentStatus::Completed),
+                        result: result.clone(),
+                    });
+                }
+                Message::QueueOp { op, content, prose } => match op {
                     QueueOpKind::Enqueue => {
                         if let Some(c) = content {
-                            if is_agent_notification(c) {
-                                self.completions.push(c.to_string());
-                                let status = tag_inner(c, "status")
-                                    .and_then(AgentStatus::from_status)
-                                    .unwrap_or(AgentStatus::Completed);
-                                let description = tag_inner(c, "summary")
-                                    .map(summary_description)
-                                    .unwrap_or_default();
-                                let result = tag_inner(c, "result")
-                                    .map(str::trim)
-                                    .filter(|r| !r.is_empty())
-                                    .map(str::to_string);
-                                let agent_id = tag_inner(c, "task-id")
-                                    .or_else(|| tag_inner(c, "tool-use-id"))
-                                    .unwrap_or_default()
-                                    .to_string();
-                                self.out.push(Block::AgentDone {
-                                    agent_id,
-                                    agent_type: String::new(),
-                                    description,
-                                    status,
-                                    result,
-                                });
-                            }
-                            let is_prose = is_queue_prose(c);
-                            let marker_idx = if is_prose {
+                            let marker_idx = if *prose {
                                 self.out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
@@ -885,7 +769,7 @@ pub(crate) fn replay(
 fn apply_completions_and_suppress(
     out: &mut Vec<Block>,
     tool_slot: &HashMap<String, usize>,
-    completions: &[String],
+    completions: &[CompletionRec],
     suppress: Vec<usize>,
 ) {
     if !completions.is_empty() {
@@ -897,12 +781,17 @@ fn apply_completions_and_suppress(
                 }
             }
         }
-        for note in completions {
-            let idx = tag_inner(note, "tool-use-id")
-                .and_then(|t| tool_slot.get(t).copied())
-                .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
+        for rec in completions {
+            let idx = (!rec.tool_use_id.is_empty())
+                .then(|| tool_slot.get(&rec.tool_use_id).copied())
+                .flatten()
+                .or_else(|| {
+                    (!rec.task_id.is_empty())
+                        .then(|| agent_slot.get(&rec.task_id).copied())
+                        .flatten()
+                });
             if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = tag_inner(note, "status").and_then(AgentStatus::from_status) {
+                if let Some(st) = rec.status {
                     sa.status = st;
                 }
             }
@@ -954,28 +843,17 @@ pub(crate) struct QueueItem {
     pub(crate) content_at_enqueue: usize,
 }
 
+/// A structured agent/task completion (L1-parsed from the raw notification) — the fold's
+/// record for back-patching a `SubAgent`'s terminal status after the loop. `status` is
+/// `None` when the source carried no explicit status (then the spawn is left untouched).
+pub(crate) struct CompletionRec {
+    pub(crate) tool_use_id: String,
+    pub(crate) task_id: String,
+    pub(crate) status: Option<AgentStatus>,
+}
+
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
 // arm — it needs the block list, `content_seq`, and `suppress`.)
-
-/// Is this string an agent-completion `<task-notification>` — `summary` "Agent \"…\"
-/// finished" with a `status` — as opposed to a background-`Bash` or `Monitor` one?
-/// (Their task-id namespaces differ too: agents `a…`, background `b…`.)
-pub(crate) fn is_agent_notification(s: &str) -> bool {
-    tag_inner(s, "status").is_some()
-        && tag_inner(s, "summary")
-            .map(|sm| sm.trim_start().starts_with("Agent \""))
-            .unwrap_or(false)
-}
-
-/// A queued message worth showing as a pending human turn — genuine prose, not a
-/// background `<task-notification>`, an interrupt marker, or blank input.
-pub(crate) fn is_queue_prose(s: &str) -> bool {
-    let t = s.trim_start();
-    !t.is_empty()
-        && !t.starts_with("<task-notification>")
-        && !t.starts_with("[Request interrupted")
-        && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
-}
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
 pub(crate) fn stamp_user_turns(
