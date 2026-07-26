@@ -51,6 +51,12 @@ reuse boundaries: a new *agent* touches only Layer 1; a new *surface* touches on
    (ratatui lines, TUI), `--dump` (text/ansi), `html_export` (the block-record stream).
    Incremental too (append blocks + `reset`; the client DOM patches).
 
+The layers also have distinct **memory profiles** (§4.4): L1 is **O(1)** (streams messages,
+holds none); L2 is **O(index)** — a resident `Session` is an *index* (id/kind/metadata +
+byte offset per block) + the current turn's content, with block content loaded on-demand
+from tier (b), **not** all blocks in RAM; L3 is **O(working set)** — only the viewport +
+margin is materialized. So holding a session resident costs ~its index, not ~its blocks.
+
 ### How each surface maps onto the layers
 
 | Surface | L1 parse | L2 replay | L3 present |
@@ -564,6 +570,50 @@ is `NotLoaded{path}` until the store's `load` promotes it to a full `Session` on
 descend — the two compose: `SubAgentLoad` decides how much a single parse materializes,
 the store decides which sessions stay resident.
 
+### 4.4 Per-layer memory footprint — index-resident, content-on-demand
+
+The three layers have very different memory profiles; the design exploits that so a large
+session is **cheap to hold resident**. The rule per layer:
+
+**Layer 1 (raw parser) — O(1), streaming.** Emits parsed messages **sequentially as the
+consumer pulls them** (a pull iterator, not a buffered `Vec`); it never holds more than the
+message it is mid-emitting. This is the one-line-resident invariant (§4.1) restated as "one
+*message* resident." L2 consumes each message and lets it go.
+
+**Layer 2 (replay / state builder) — O(index), *not* O(content).** As it folds the message
+stream it builds and keeps in RAM only:
+- the **index** — per block, its `id`, kind, a few metadata fields, and a **byte offset**
+  locating its content (in the materialized block stream on disk — tier (b) — or a
+  compressed in-RAM arena); and
+- the **session metadata** — metrics, cwd, the turn map, the §7 agent/tool/attachment
+  indices.
+It does **not** retain the full block/JSON objects. To hand a block to L3 it **loads the
+content on-demand** from the offset (read + deserialize the one record, or decompress the
+one slot). So a resident `Session` *is* the index — a small fraction of the content (a
+47 MB transcript's index is KB–low-MB, not the ~hundreds of MB the blocks would be).
+- This unifies with the incremental fold (§8.3.2): the **stable** prefix's block records
+  are immutable in tier (b) and indexed by offset; only the **unstable tail** (current
+  turn, still subject to back-patch/grouping) is held as live block objects in RAM, then
+  flushed to tier (b) when the turn completes. So L2's RAM = *the whole index + the current
+  turn's content*, nothing more.
+- It also sharpens the §8 tiers: **tier (a) "resident" = the index in RAM**; content is
+  always tier (b) (on disk / compressed). Eviction drops the index too (→ tier (c)); a
+  re-`load` rebuilds the index by a streaming L1→L2 re-parse — cheap relative to holding
+  everything, and the store can keep *many* sessions' indexes resident at once.
+
+**Layer 3 (presentation) — O(rendered working set).** The only layer that holds heavy
+objects (ratatui lines / DOM / highlighted code), and it holds only the **working set**:
+the current viewport + a margin (virtualized rendering), materialized from L2 on demand and
+dropped when scrolled far away. The TUI's existing positional `body_cache` is the seed of
+this; the HTML client's DOM is naturally windowable.
+
+**Net:** holding a session resident costs ~its index (L2); blocks stream through L1 and
+live in tier (b); only what's on screen is fully materialized (L3). To make the on-demand
+load a **direct read, not a re-fold**, tier (b) stores L2's *output* (the already
+folded/grouped block records — exactly the HTML `<id>.jsonl`), so loading block `N` never
+requires re-examining its neighbors. Refine when built: the compressed-in-RAM arena vs
+disk choice for tier (b); index-entry layout; and the L3 window/eviction policy.
+
 ---
 
 ## 5. Migration plan — refactor to the three layers with **zero user impact**
@@ -810,6 +860,9 @@ block it lives at. Two jobs:
 /// A block's location within a session's tree: the path of child indices from the
 /// root block list (len 1 = a top-level block; deeper = inside a SubAgent's blocks).
 /// A plain `usize` suffices for a single node; the path composes across the tree (§7.3).
+/// Per §4.4 the index is *content-free*: a `BlockPath` resolves (via the store's per-block
+/// `id → byte offset` map) to the block record in tier (b), loaded on-demand — so the
+/// whole `SessionIndex` stays O(index), never holding block content.
 pub type BlockPath = smallvec::SmallVec<[u32; 4]>;
 
 /// Every sub-agent spawned FROM this session node, in spawn order. Canonical for the
