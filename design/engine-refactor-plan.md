@@ -262,7 +262,7 @@ external consumer wants it; defer the split otherwise.
 |---|---|---|---|---|
 | M8 | stateful `Replayer` | additive | LOW | ✅ **done** |
 | M9 | streaming driver + freeze old parsers | migration, byte-identical | HIGH | ✅ **done** |
-| M10 | metrics fold-in | byte-identical | MED | 1 read/session |
+| M10 | metrics fold-in | byte-identical | MED | ✅ **done** |
 | M11 | incremental `ingest` + `reset` | internal, live-CPU win | HIGH | cheap live |
 | M12 | `SessionStore` + tiers | internal | MED-HIGH | unified serving |
 | M13 | classification unify | byte-identical | LOW-MED | one `BlockKind` |
