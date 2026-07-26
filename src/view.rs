@@ -1617,6 +1617,23 @@ mod tests {
             .collect()
     }
 
+    /// The default fold policy (no `--unfold`) collapses `Agent`/`Task` spawn blocks —
+    /// they classify under the "agent" fold key. (This assertion lived in `model`'s block
+    /// tests until the parser core was split into `claude-replay-core`, which has no view
+    /// layer; the policy is a view concern, so it belongs here.)
+    #[test]
+    fn default_fold_policy_collapses_agent_blocks() {
+        let jsonl = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",",
+            "\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"code-reviewer\",",
+            "\"description\":\"d\",\"prompt\":\"p\"}}]}}\n"
+        );
+        let blocks = crate::model::parse(jsonl);
+        assert!(!blocks.is_empty(), "parsed an agent spawn");
+        let pol = FoldPolicy::from_args(&crate::Args::default());
+        assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");
+    }
+
     fn draw(v: &mut View, w: u16, h: u16) -> Buffer {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         t.draw(|f| v.draw(f)).unwrap();

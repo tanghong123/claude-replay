@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::Block;
-use crate::{Agent, Args};
+use crate::Agent;
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
 /// without touching the presentation layers. Produced by one streaming parse.
@@ -43,11 +43,10 @@ pub fn parse_session(path: &Path) -> io::Result<Session> {
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    // Parsing ignores CLI flags (fold is a view-layer concern — parsing takes `_args`), so
-    // the default is exact and keeps `Args` out of the API. Metrics are folded in the SAME
-    // streaming pass (M10) — one file read, no separate `parse_reader_for`.
-    let args = Args::default();
-    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, path, &args)?;
+    // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
+    // `Args` — that keeps clap out of the core. Metrics are folded in the SAME streaming
+    // pass (M10) — one file read, no separate `parse_reader_for`.
+    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, path)?;
     let cwd = crate::discover::session_cwd(path);
     let index = SessionIndex::build(&blocks, &user_times);
     Ok(Session {
@@ -96,9 +95,8 @@ mod tests {
         let s = parse_session(&path).unwrap();
         assert_eq!(s.agent, Agent::Claude);
 
-        let args = Args::default();
         let (blocks, times, folded_metrics) =
-            crate::model::parse_path_timed_for(Agent::Claude, &path, &args).unwrap();
+            crate::model::parse_path_timed_for(Agent::Claude, &path).unwrap();
         // The retired separate metrics pass, as the byte-identical reference for the fold.
         let ref_metrics = crate::metrics::parse_reader_for(
             Agent::Claude,

@@ -206,6 +206,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "clap",
+ "claude-replay-core",
  "crossterm",
  "notify",
  "nucleo",
@@ -215,6 +216,14 @@ dependencies = [
  "serde_json",
  "syntect",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "claude-replay-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
 ]
 
 [[package]]

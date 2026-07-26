@@ -31,7 +31,7 @@ use std::time::Duration;
 )]
 struct Cli {
     /// Force a specific agent instead of auto-detecting from the directory.
-    #[arg(long, value_enum, global = true)]
+    #[arg(long, value_parser = crate::parse_agent, global = true)]
     agent: Option<Agent>,
 
     /// Print what a command would do and exit — no spawn, kill, or state change.
@@ -163,7 +163,7 @@ enum Command {
         interval: Option<u64>,
         #[arg(long)]
         max_attempts: Option<u32>,
-        #[arg(long)]
+        #[arg(long, value_parser = crate::parse_agent)]
         agent: Option<Agent>,
         /// The session was sent SIGTERM — escalate to SIGKILL if it ignores it.
         #[arg(long)]
@@ -1117,26 +1117,7 @@ fn recent_commits(cwd: &Path, n: usize) -> Vec<String> {
 /// last-activity, a tool-call histogram, the last few actions, and what the agent
 /// is currently doing. Best-effort — silently skips on a parse/read error.
 fn print_live_progress(agent: Agent, path: &Path) {
-    let args = crate::Args {
-        target: None,
-        agent: None,
-        latest: false,
-        follow: false,
-        no_thinking: false,
-        reads: true, // count Reads/greps too
-        results: true,
-        no_user: false,
-        full: false,
-        fold: None,
-        unfold: None,
-        read_match: None,
-        dump: None,
-        dump_html: None,
-        dump_all_html: None,
-        html: false,
-        width: None,
-    };
-    let Ok(blocks) = crate::model::parse_path_for(agent, path, &args) else {
+    let Ok(blocks) = crate::model::parse_path_for(agent, path) else {
         return;
     };
     let mut tools: Vec<(String, String)> = Vec::new();

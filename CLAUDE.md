@@ -24,11 +24,22 @@ never skip, stub, or defer a feature "because it needs a terminal."
 (the default suite is deterministic — no terminal needed; the tmux e2e is opt-in).
 
 ## Layout
-- `model.rs` JSONL → blocks (+ view filters) · `markdown.rs` md → ratatui lines
-- `render.rs` blocks → styled lines · `wrap.rs` width-aware wrapping
+A Cargo **workspace** with two crates. The viewer refers to core modules by their original
+paths (`crate::model`, `crate::engine`, …) via re-exports in `src/lib.rs`, so the split is
+mostly transparent when reading viewer code.
+
+**`claude-replay-core/`** — the agent-agnostic parser/replay engine. **No** TUI/HTML/CLI deps
+(only `serde_json` + `anyhow`); the crate boundary enforces "core is presentation-agnostic".
+- `model.rs` JSONL → blocks + the L2 `Replayer` fold · `codex_{model,metrics,discover}.rs` Codex
+- `engine/` `message` (L1↔L2 log) · `session`/`index` (`Session`/`SessionIndex`) · `store`
+  (`SessionStore` residency tiers) · `path`/`time` helpers
+- `metrics.rs` tokens/cost · `discover.rs` find transcript · `follow.rs` incremental `FollowParser`
+  · `tail.rs` byte-offset live tail · `agent.rs` the `Agent` enum
+
+**`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI + `agent-jdi`.
+- `markdown.rs` md → ratatui lines · `render.rs` blocks → styled lines · `wrap.rs` wrapping
 - `view.rs` state machine + draw (TestBackend-testable) · `app.rs` terminal + input
-- `tail.rs` byte-offset live tail · `discover.rs` find transcript · `theme.rs` styles
-- `metrics.rs` footer tokens/cost · `highlight.rs` syntect · `codex_{model,discover,metrics}.rs` Codex
+- `theme.rs` styles · `highlight.rs` syntect · `picker.rs` fuzzy session picker · `clipboard.rs`
 - `html_export.rs` `--dump-html` (write files) / `--html` (open browser; `-f` serves live over a
   loopback HTTP server since a `file://` page can't `fetch`) → one self-contained `.html` (fixed
   shell + `html/export.{css,js}` embedded; Rust emits an append-only JSON block stream, the JS

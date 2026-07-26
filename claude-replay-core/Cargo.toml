@@ -1,0 +1,13 @@
+[package]
+name = "claude-replay-core"
+version = "0.1.0"
+edition = "2021"
+description = "Agent-agnostic transcript parser/replay engine behind claude-replay (Claude Code & Codex sessions). No TUI/HTML/CLI dependencies."
+license = "MIT"
+repository = "https://github.com/tanghong123/claude-replay"
+keywords = ["claude", "codex", "transcript", "parser"]
+categories = ["parser-implementations"]
+
+[dependencies]
+serde_json = "1"
+anyhow = "1"

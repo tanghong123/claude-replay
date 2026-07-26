@@ -49,8 +49,8 @@ What's done vs. deferred:
 3. The **live** paths fold **only the delta** (incremental `ingest` + `reset`). **Mechanism
    achieved + proven** (M11 primitives); consumer routing is M16 (deferred).
 4. The library surface is real: `Session`/`Parser`/`Replayer`/`SessionIndex` with no
-   TUI/HTML/clap leakage. **Achieved** (`Session`/`Replayer`/`SessionIndex` shipped; the
-   crate split is optional and deferred).
+   TUI/HTML/clap leakage. **Achieved** — and now in its own `claude-replay-core` crate, so
+   the no-leakage invariant is compiler-enforced (M15).
 5. Zero user-facing change throughout — **held** (every merged milestone byte-identical).
 
 ## Baseline (after M1–M7)
@@ -277,16 +277,30 @@ spawn/completion) from the tokenizers into `Replayer`. Both tokenizers shrink to
 
 ---
 
-## M15 — library polish + optional crate split (Phase 9)
+## M15 — library polish + crate split (Phase 9) — ✅ DONE
 
-**Goal.** Ship `replay-core` as a real, documented surface.
+**Goal.** Ship `claude-replay-core` as a real, documented, dependency-isolated surface.
 
-**Changes.** Document `parse_session`/`Session`/`Parser`/`Replayer`/`SessionIndex`;
-`examples/` (parse.rs exists — add an incremental-follow example). Optionally lift `engine/`
-into a `claude-replay-core` crate (no ratatui/syntect/clap deps → mechanical) once an
-external consumer wants it; defer the split otherwise.
+**Landed.** The workspace is split: **`claude-replay-core`** holds the agent-agnostic engine
+(`model`/`codex_model`, `engine::{message,session,index,store,path,time}`, `metrics`,
+`discover`, `follow`, `tail`, `agent`) with **only** `serde_json` + `anyhow` — no
+ratatui/syntect/clap. The root `claude-replay` crate depends on it (path dep, `version` pinned
+for publish) and re-exports its modules under their original `crate::` paths, so viewer code is
+untouched. Public surface: `parse_session`/`parse_session_as`/`Session`/`SessionIndex`/`Agent`
+plus the `Replayer`/`FollowParser`/`SessionStore` types. The crate boundary now *enforces* the
+presentation-agnostic invariant that was previously convention.
 
-**Risk.** LOW.
+Prerequisite severing (phase A): the vestigial `&Args` parameter was dropped from the entire
+parse API and `Agent` became a plain enum (clap parsing moved to the binaries via a
+`value_parser`), so the core carries no clap dependency.
+
+**Verified.** Byte-identical (equivalence oracles + a full-dump & HTML diff of the pre/post
+binary on a frozen 161K-line transcript); both binaries build via the exact CI per-bin
+invocation; `binstall`/Homebrew packaging unchanged (root stays the viewer package + workspace
+root); tmux TUI e2e green (bar the pre-existing unrelated switcher flake). 246 tests, clippy 0.
+
+**Risk.** LOW (mechanical), realized — the only churn was widening `pub(crate)→pub` on the
+handful of core items the viewer reaches across the new boundary.
 
 ---
 
@@ -315,7 +329,7 @@ external consumer wants it; defer the split otherwise.
 | M12 | `SessionStore` + tiers | internal | MED-HIGH | ✅ **done** (scoped; TUI stack left separate) |
 | M13 | classification unify (BlockKind) | byte-identical | LOW-MED | ✅ **done** |
 | M14 | message block-model lift | byte-identical | MED | ✅ **done** |
-| M15 | docs finalization (crate split deferred) | docs | LOW | ✅ **done** |
+| M15 | docs finalization + `claude-replay-core` crate split | docs + workspace | LOW | ✅ **done** |
 | M16 | incremental live followers (`FollowParser`) | migration, byte-identical | HIGH | ✅ **done** |
 
 **Recommended order:** M8 → M9 → M10 → M11 → M12, then M13/M14/M15 as cleanups (M13 and M14

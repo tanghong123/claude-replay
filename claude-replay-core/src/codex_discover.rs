@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
-pub(crate) struct CodexSession {
+pub struct CodexSession {
     pub id: String,
     pub path: PathBuf,
     pub cwd: PathBuf,
@@ -205,7 +205,7 @@ pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
 /// Same scoping as `candidates_scoped`, but keeping each session's **id** (the
 /// `Candidate` drops it) — `(id, mtime, snippet)`, newest-first. For `resume`'s
 /// stale-confirm picker, which needs the id to resume the chosen one.
-pub(crate) fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
+pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
     let root = sessions_dir();
     let sessions = sessions_in(&root); // newest-first
     for anc in crate::discover::ancestors_of(cwd) {
@@ -290,14 +290,14 @@ pub(crate) fn resolve_in(root: &Path, target: Option<&str>, latest: bool) -> Res
     ))
 }
 
-pub(crate) fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
+pub fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
     resolve_in(&sessions_dir(), target, latest)
 }
 
 /// The session id of the newest rollout whose contents contain `marker` (a nonce
 /// embedded in a fresh-run prompt) — used by `agent-jdi start` to recover the id
 /// Codex assigned. Scans newest-first and stops at the first match.
-pub(crate) fn session_id_with_marker(marker: &str) -> Option<String> {
+pub fn session_id_with_marker(marker: &str) -> Option<String> {
     for s in sessions_in(&sessions_dir()) {
         let Ok(file) = File::open(&s.path) else {
             continue;
@@ -316,7 +316,7 @@ pub(crate) fn session_id_with_marker(marker: &str) -> Option<String> {
 /// Used by the `agent-jdi` Codex adapter to pick a resume target, so `resume` in a
 /// directory with no Codex history fails cleanly instead of hijacking some other
 /// project's session.
-pub(crate) fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
+pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
     latest_for_cwd_in(&sessions_dir(), cwd)
 }
 

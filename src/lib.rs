@@ -6,53 +6,32 @@
 
 pub mod app;
 mod clipboard;
-pub mod codex_discover;
-pub mod codex_metrics;
-pub mod codex_model;
-pub mod discover;
-pub mod engine;
-mod follow;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
 mod markdown;
-pub mod metrics;
-pub mod model;
 mod picker;
 mod render;
-mod tail;
 mod theme;
 pub mod view;
 mod wrap;
 
+// The agent-agnostic parser/replay engine lives in the sibling `claude-replay-core` crate
+// (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
+// the viewer keeps referring to `crate::model`, `crate::engine`, `crate::discover`, … and
+// `crate::Agent` unchanged.
+pub use claude_replay_core::{
+    codex_discover, codex_metrics, codex_model, discover, engine, follow, metrics, model, tail,
+    Agent,
+};
+
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 
-/// Which agent produced a session. Detected per file from its contents; the
-/// `--agent` flag only *filters* the picker/`--latest`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Agent {
-    Claude,
-    Codex,
-}
-
-impl Agent {
-    /// Short label for the picker row / CLI.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-
-    /// Parse a `label()` string (round-trips `meta`'s `agent=` field).
-    pub fn from_label(s: &str) -> Option<Self> {
-        match s {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            _ => None,
-        }
-    }
+/// clap `value_parser` for `--agent`: parse a `claude`/`codex` label into [`Agent`]. Keeps
+/// the `ValueEnum` derive (and thus clap) out of the core `Agent` type.
+pub(crate) fn parse_agent(s: &str) -> std::result::Result<Agent, String> {
+    Agent::from_label(s).ok_or_else(|| format!("unknown agent '{s}' (expected: claude, codex)"))
 }
 
 /// View flags. Defaults mirror the bash `claude-peek`: thinking + user turns +
@@ -68,7 +47,7 @@ pub struct Args {
     pub target: Option<String>,
 
     /// Only show sessions from this agent (claude or codex). Default: all agents.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = parse_agent)]
     pub agent: Option<Agent>,
 
     /// Open the most-recently-active transcript for this directory (or its

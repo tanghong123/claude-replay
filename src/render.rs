@@ -1287,6 +1287,61 @@ mod tests {
     use super::*;
     use ratatui::style::Color;
 
+    /// `tool_count` for a spawn is **node-scoped**: it tallies the child's own tools (here 2
+    /// Reads, coalesced into an activity list), not the parent's Bash. Exercises the
+    /// render-side counter over a `model`-parsed sub-agent tree — an integration point that
+    /// lived in `model`'s tests until the parser core was split into `claude-replay-core`.
+    #[test]
+    fn child_scoped_tool_count() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-render-subagent-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        // Parent: one Agent spawn; its own transcript has a Bash the child must NOT be
+        // credited with.
+        let parent = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_P\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"general-purpose\",\"description\":\"child\",\"prompt\":\"go\"}}]}}\n",
+            "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"achild01\",\"status\":\"completed\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"done\"}]}}\n"
+        );
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        // Child transcript: two Read tools.
+        let child = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\"go\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/a\"}}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c2\",\"name\":\"Read\",\"input\":{\"file_path\":\"/b\"}}]}}\n"
+        );
+        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
+
+        let blocks = crate::model::parse_path(&sess).unwrap();
+        let Some(crate::model::Block::SubAgent(sa)) = blocks
+            .iter()
+            .find(|b| matches!(b, crate::model::Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        assert_eq!(
+            tool_count(sa),
+            2,
+            "node-scoped tool count (child's 2 Reads, not the parent's Bash)"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     fn texts(lines: &[Line]) -> Vec<String> {
         lines
             .iter()

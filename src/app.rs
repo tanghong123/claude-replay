@@ -261,7 +261,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     if blocks.is_empty() {
         blocks = child_file
             .as_deref()
-            .and_then(|f| model::parse_path_for(parent.agent, f, args).ok())
+            .and_then(|f| model::parse_path_for(parent.agent, f).ok())
             .unwrap_or_default();
     }
     if blocks.is_empty() {
@@ -596,7 +596,7 @@ fn dump_width(args: &Args) -> usize {
 /// carries SGR colour). With no `<stem>`, the stem is deduced from the session.
 pub fn dump(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
-    let blocks = model::parse_path_for(agent, path, args)?;
+    let blocks = model::parse_path_for(agent, path)?;
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.
