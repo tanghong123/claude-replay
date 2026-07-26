@@ -3,12 +3,10 @@
 //! This is the public, agent-neutral shape a library consumer builds on (design
 //! `parser-engine.md` §3.3), without pulling in the TUI / HTML / syntect / clap layers.
 //!
-//! Milestone status: `parse_session` currently bundles today's parse ([`parse_path_timed_for`])
-//! with the (still separate) metrics pass. Two refinements land in later milestones and are
-//! deliberately *not* here yet: the within-session `SessionIndex` (agents / tools /
-//! attachments — §5.2 Phase 5), and folding metrics into the parse pass to drop the extra
-//! file read (§5.2 Phase 4). Until the index exists, per-turn timestamps ride `user_times`
-//! directly rather than `index.turns`.
+//! `parse_session` produces the whole `Session` — blocks + per-turn times + folded metrics
+//! (M10, one file read) + the derived `SessionIndex` (M4) — from one streaming pass. Per-turn
+//! timestamps still ride `user_times` directly (mirrored onto `index.turns`) until consumers
+//! migrate off the field.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,12 +43,11 @@ pub fn parse_session(path: &Path) -> io::Result<Session> {
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    // Parsing ignores CLI flags (fold is a view-layer concern — both `parse_main` and
-    // `parse_lines` take `_args`), so the default is exact and keeps `Args` out of the API.
+    // Parsing ignores CLI flags (fold is a view-layer concern — parsing takes `_args`), so
+    // the default is exact and keeps `Args` out of the API. Metrics are folded in the SAME
+    // streaming pass (M10) — one file read, no separate `parse_reader_for`.
     let args = Args::default();
-    let (blocks, user_times) = crate::model::parse_path_timed_for(agent, path, &args)?;
-    let metrics =
-        crate::metrics::parse_reader_for(agent, io::BufReader::new(std::fs::File::open(path)?));
+    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, path, &args)?;
     let cwd = crate::discover::session_cwd(path);
     let index = SessionIndex::build(&blocks, &user_times);
     Ok(Session {
@@ -100,9 +97,10 @@ mod tests {
         assert_eq!(s.agent, Agent::Claude);
 
         let args = Args::default();
-        let (blocks, times) =
+        let (blocks, times, folded_metrics) =
             crate::model::parse_path_timed_for(Agent::Claude, &path, &args).unwrap();
-        let metrics = crate::metrics::parse_reader_for(
+        // The retired separate metrics pass, as the byte-identical reference for the fold.
+        let ref_metrics = crate::metrics::parse_reader_for(
             Agent::Claude,
             io::BufReader::new(std::fs::File::open(&path).unwrap()),
         );
@@ -113,7 +111,14 @@ mod tests {
             "blocks match the existing parse"
         );
         assert_eq!(s.user_times, times, "user_times match");
-        assert_eq!(s.metrics, metrics, "metrics match the separate pass");
+        assert_eq!(
+            folded_metrics, ref_metrics,
+            "folded metrics (M10) == the separate parse_reader_for pass"
+        );
+        assert_eq!(
+            s.metrics, ref_metrics,
+            "session metrics == the reference pass"
+        );
         assert_eq!(s.cwd, crate::discover::session_cwd(&path), "cwd matches");
         assert_eq!(s.cwd.as_deref(), Some(Path::new("/repo")));
 

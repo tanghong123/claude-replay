@@ -1172,8 +1172,11 @@ fn agent_stream(
     info: &AgentInfo,
     assets: Option<&mut AssetSink>,
 ) -> Result<(String, Vec<ChildRef>)> {
-    let (blocks, user_times) = crate::model::parse_path_timed_for(agent, &info.source, args)
-        .with_context(|| format!("read transcript {}", info.source.display()))?;
+    // (M10 folds metrics into this parse; agent_stream keeps its own metrics read below,
+    // which degrades to empty usage on a second-open failure — so discard the folded copy.)
+    let (blocks, user_times, _metrics) =
+        crate::model::parse_path_timed_for(agent, &info.source, args)
+            .with_context(|| format!("read transcript {}", info.source.display()))?;
     let usage = match std::fs::File::open(&info.source) {
         Ok(f) => {
             let m = metrics::parse_reader_for(agent, std::io::BufReader::new(f));

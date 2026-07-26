@@ -26,6 +26,7 @@ pub(crate) fn parse_codex_path(path: &Path, _args: &Args) -> io::Result<Vec<Bloc
         call_ids,
         &CODEX_SHAPING,
         |line, out| decode_codex_line(line, &mut cwd, out),
+        |_| {}, // blocks only — this path doesn't need metrics
         &mut Vec::new(),
     )
 }
@@ -37,17 +38,20 @@ pub(crate) fn parse_codex_path_timed(
     path: &Path,
     _args: &Args,
     user_times: &mut Vec<Option<f64>>,
-) -> io::Result<Vec<Block>> {
+) -> io::Result<(Vec<Block>, crate::metrics::Metrics)> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
     let mut cwd = String::new();
-    crate::model::parse_stream(
+    let mut macc = crate::codex_metrics::CodexMetricsAcc::default();
+    let blocks = crate::model::parse_stream(
         open()?,
         call_ids,
         &CODEX_SHAPING,
         |line, out| decode_codex_line(line, &mut cwd, out),
+        |v| macc.push(v),
         user_times,
-    )
+    )?;
+    Ok((blocks, macc.finish()))
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
