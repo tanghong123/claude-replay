@@ -2,7 +2,6 @@
 //! (testable headless via ratatui's TestBackend).
 
 use crate::picker::Picker;
-use crate::tail::TailReader;
 use crate::view::View;
 use crate::{discover, model, Agent, Args};
 use anyhow::Result;
@@ -138,7 +137,9 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
 /// the cursor back on that spawn). The root's `from` is unused.
 struct Frame {
     view: View,
-    reader: Option<TailReader>,
+    /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
+    /// just the newly-appended lines through a persistent `Replayer`.
+    follower: Option<crate::follow::FollowParser>,
     agent: Agent,
     path: PathBuf,
     from: usize,
@@ -164,7 +165,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             args,
             &frame.path,
             &mut frame.view,
-            &mut frame.reader,
+            &mut frame.follower,
             descended,
         )?;
         match outcome {
@@ -200,28 +201,33 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
     // The agent is a property of the file — detect it from the contents so the right
     // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
-    // One streaming parse yields the blocks (one line resident — a 298 MB session peaks at
-    // ~2 GB otherwise), the folded metrics, and the cwd (design §3.3 / Phase 4). The TUI
-    // main frame is not sub-agent-enriched (descend loads children lazily), matching the
-    // non-enriched `parse_session_as`.
-    let s = crate::engine::parse_session_as(agent, path)?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let reader = args.follow.then(|| TailReader::open_at_end(path));
     let fold = crate::view::FoldPolicy::from_args(args);
-    let mut view = View::new(s.blocks, title, reader.is_some(), fold);
+    // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
+    // resident) and the tail — its first poll folds the whole current file, matching a
+    // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
+    let (blocks, cwd, metrics, follower) = if args.follow {
+        let mut f = crate::follow::FollowParser::open(agent, path);
+        let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
+        (blocks, discover::session_cwd(path), metrics, Some(f))
+    } else {
+        let s = crate::engine::parse_session_as(agent, path)?;
+        (s.blocks, s.cwd, s.metrics, None)
+    };
+    let mut view = View::new(blocks, title, follower.is_some(), fold);
     view.set_can_go_back(can_go_back);
-    view.set_cwd(s.cwd);
+    view.set_cwd(cwd);
     view.set_can_open_picker(args.latest);
-    view.set_metrics(s.metrics.footer());
-    view.set_footer_segments(s.metrics.footer_segments());
+    view.set_metrics(metrics.footer());
+    view.set_footer_segments(metrics.footer_segments());
     view.set_descended(false);
     Ok(Frame {
         view,
-        reader,
+        follower,
         agent,
         path: path.to_path_buf(),
         from,
@@ -261,12 +267,18 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     if blocks.is_empty() {
         return None;
     }
-    let reader = args
+    // Live-tail an open child through its own incremental follower (M16): its first poll
+    // re-folds the child transcript (== the blocks just loaded), then only deltas.
+    let follower = args
         .follow
-        .then(|| child_file.as_deref().map(TailReader::open_at_end))
+        .then(|| {
+            child_file
+                .as_deref()
+                .map(|f| crate::follow::FollowParser::open(parent.agent, f))
+        })
         .flatten();
     let fold = crate::view::FoldPolicy::from_args(args);
-    let mut view = View::new(blocks, title, reader.is_some(), fold);
+    let mut view = View::new(blocks, title, follower.is_some(), fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
@@ -288,7 +300,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     view.set_footer_segments(segs);
     Some(Frame {
         view,
-        reader,
+        follower,
         agent: parent.agent,
         path: parent.path.clone(),
         from: idx,
@@ -311,40 +323,26 @@ enum Outcome {
 
 fn event_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
-    agent: Agent,
+    _agent: Agent,
     args: &Args,
-    path: &Path,
+    _path: &Path,
     view: &mut View,
-    reader: &mut Option<TailReader>,
+    follower: &mut Option<crate::follow::FollowParser>,
     descended: bool,
 ) -> Result<Outcome> {
     loop {
         term.draw(|f| view.draw(f))?;
 
-        // No input this tick → pump the live tail.
+        // No input this tick → pump the live tail incrementally (M16). One path for both
+        // agents: fold only the newly-appended lines through the persistent `Replayer`
+        // (which back-patches a cross-poll tool result without a full re-parse), then update
+        // the view preserving fold toggles + scroll, and refresh the folded footer metrics.
         if !event::poll(Duration::from_millis(250))? {
-            if let Some(r) = reader.as_mut() {
-                let p = r.poll().unwrap_or_default();
-                let advanced = p.reset || !p.lines.is_empty();
-                // Codex splits a call and its output across polls, and joins them
-                // by call-id — so re-parse the whole (append-only) file to back-patch
-                // the original tool block, rather than ingesting the batch alone.
-                if p.reset || (agent == Agent::Codex && !p.lines.is_empty()) {
-                    if let Ok(blocks) = model::parse_path_for(agent, path, args) {
-                        view.reset(blocks);
-                    }
-                } else if !p.lines.is_empty() {
-                    view.ingest(model::parse_for(agent, &p.lines.join("\n"), args));
-                }
-                // The footer tokens/cost/duration must track the growing live
-                // session, not stay frozen at load — re-run the (streaming)
-                // metrics pass whenever the tail advanced.
-                if advanced {
-                    if let Ok(file) = std::fs::File::open(path) {
-                        let metrics =
-                            crate::metrics::parse_reader_for(agent, std::io::BufReader::new(file));
-                        view.set_metrics(metrics.footer());
-                    }
+            if let Some(f) = follower.as_mut() {
+                if let Ok(Some((blocks, _times, metrics))) = f.poll() {
+                    view.update(blocks);
+                    view.set_metrics(metrics.footer());
+                    view.set_footer_segments(metrics.footer_segments());
                 }
             }
             continue;

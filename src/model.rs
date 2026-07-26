@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Hunk {
     /// 1-based line number of this hunk's first line on the OLD side.
     pub old_start: usize,
@@ -22,7 +22,7 @@ pub struct Hunk {
     pub lines: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
@@ -108,7 +108,7 @@ pub enum Block {
 /// can act on it: `content.is_some()` ⇒ the bytes are embedded and **downloadable**;
 /// `content.is_none()` ⇒ only a path is known, so the action is **reveal in the file
 /// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Attachment {
     /// Short kind label for the header: `file` · `plan` · `edited` · `ref` · `image`.
     pub kind: &'static str,
@@ -123,7 +123,7 @@ pub struct Attachment {
 
 /// Embedded attachment payload. Decoded lazily — the base64 stays a string until a
 /// download actually happens (or HTML inlines it as a `data:` URI).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AttachmentContent {
     /// UTF-8 text (a `file` body or a plan) — written verbatim on download.
     Text(String),
@@ -138,7 +138,7 @@ pub enum AttachmentContent {
 /// `tool_use_id` (or `agent_id`) supplies the terminal status. `blocks` is the child
 /// transcript (`subagents/agent-<id>.jsonl`), parsed by the same `parse_main` and
 /// filled in by the path-aware wrapper; nested `SubAgent`s inside it are grandchildren.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubAgent {
     /// The child's agent id (== the completion notification's `task-id`; file stem).
     pub agent_id: String,

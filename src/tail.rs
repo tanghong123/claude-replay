@@ -23,7 +23,10 @@ pub struct Poll {
 }
 
 impl TailReader {
-    /// Start reading new bytes written *after* the current end of the file.
+    /// Start reading new bytes written *after* the current end of the file. (A general
+    /// tailing primitive; production now follows from the start via `FollowParser`, but this
+    /// remains for a "tail only new output" caller and the tail tests.)
+    #[allow(dead_code)]
     pub fn open_at_end(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
