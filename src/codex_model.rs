@@ -1,3 +1,5 @@
+use crate::engine::path::relativize;
+use crate::engine::time::epoch_secs;
 use crate::model::Block;
 use crate::Args;
 use serde_json::Value;
@@ -376,45 +378,6 @@ fn apply_output(block: &mut Block, output: String) {
             *slot = Some(output);
         }
     }
-}
-
-fn relativize(path: &str, cwd: &str) -> String {
-    let path = Path::new(path);
-    if !cwd.is_empty() {
-        if let Ok(relative) = path.strip_prefix(cwd) {
-            return relative.display().to_string();
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        if let Ok(relative) = path.strip_prefix(home) {
-            return format!("~/{}", relative.display());
-        }
-    }
-    path.display().to_string()
-}
-
-fn epoch_secs(timestamp: &str) -> Option<f64> {
-    let (date, time) = timestamp.split_once('T')?;
-    let mut date = date.split('-');
-    let year: i64 = date.next()?.parse().ok()?;
-    let month: i64 = date.next()?.parse().ok()?;
-    let day: i64 = date.next()?.parse().ok()?;
-    let mut time = time.trim_end_matches('Z').split(':');
-    let hour: f64 = time.next()?.parse().ok()?;
-    let minute: f64 = time.next()?.parse().ok()?;
-    let second: f64 = time.next()?.parse().ok()?;
-    let adjusted_year = if month <= 2 { year - 1 } else { year };
-    let era = (if adjusted_year >= 0 {
-        adjusted_year
-    } else {
-        adjusted_year - 399
-    }) / 400;
-    let year_of_era = adjusted_year - era * 400;
-    let adjusted_month = if month > 2 { month - 3 } else { month + 9 };
-    let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146097 + day_of_era - 719468;
-    Some(days as f64 * 86400.0 + hour * 3600.0 + minute * 60.0 + second)
 }
 
 #[cfg(test)]
