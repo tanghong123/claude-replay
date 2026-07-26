@@ -643,6 +643,7 @@ fn parse_file(path: &std::path::Path, _args: &Args) -> std::io::Result<Vec<Block
         tool_ids,
         &CLAUDE_SHAPING,
         |line, out| decode_line(line, &mut cwd, out),
+        |_| {}, // blocks only — this path doesn't need metrics
         &mut Vec::new(),
     )
 }
@@ -727,6 +728,7 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
     tool_ids: HashSet<String>,
     shaping: &Shaping,
     mut decode: impl FnMut(&str, &mut Vec<Message>),
+    mut fold_metrics: impl FnMut(&Value),
     user_times: &mut Vec<Option<f64>>,
 ) -> std::io::Result<Vec<Block>> {
     let mut r = Replayer::new(shaping, tool_ids);
@@ -735,6 +737,12 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
         let line = line?;
         buf.clear();
         decode(&line, &mut buf);
+        // Fold token/cost metrics in the SAME pass (M10) — one read instead of two. The
+        // metrics re-parse of the line matches the retired `parse_reader_for` exactly
+        // (from the raw line, skip on parse error), so the tally is byte-identical.
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            fold_metrics(&v);
+        }
         r.apply(&buf);
     }
     let (blocks, ut) = r.into_blocks();
@@ -746,9 +754,9 @@ pub fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
     args: &Args,
-) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
+) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
     let mut times = Vec::new();
-    let blocks = match agent {
+    let (blocks, metrics) = match agent {
         Agent::Claude => {
             use std::io::BufRead;
             let open = || -> std::io::Result<_> {
@@ -756,17 +764,20 @@ pub fn parse_path_timed_for(
             };
             let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
             let mut cwd = String::new();
-            parse_stream(
+            let mut macc = crate::metrics::MetricsAcc::default();
+            let blocks = parse_stream(
                 open()?,
                 tool_ids,
                 &CLAUDE_SHAPING,
                 |line, out| decode_line(line, &mut cwd, out),
+                |v| macc.push(v),
                 &mut times,
-            )?
+            )?;
+            (blocks, macc.finish())
         }
         Agent::Codex => crate::codex_model::parse_codex_path_timed(path, args, &mut times)?,
     };
-    Ok((blocks, times))
+    Ok((blocks, times, metrics))
 }
 
 /// Like [`parse_path_timed_for`] but ALSO loads the sub-agent tree (each `SubAgent`'s
@@ -778,7 +789,7 @@ pub fn parse_path_timed_enriched_for(
     path: &std::path::Path,
     args: &Args,
 ) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
-    let (mut blocks, times) = parse_path_timed_for(agent, path, args)?;
+    let (mut blocks, times, _metrics) = parse_path_timed_for(agent, path, args)?;
     if agent == Agent::Claude {
         if let Some(dir) = subagents_dir(path) {
             enrich_subagents(&mut blocks, &dir, args);

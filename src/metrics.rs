@@ -76,54 +76,77 @@ pub fn parse_reader_for<R: std::io::BufRead>(agent: Agent, reader: R) -> Metrics
     }
 }
 
-fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
-    let mut input = 0u64;
-    let mut cache_creation = 0u64;
-    let mut cache_read = 0u64;
-    let mut output = 0u64;
-    let mut model = String::new();
-    let mut tmin: Option<i64> = None;
-    let mut tmax: Option<i64> = None;
+/// Claude's per-line token/cost accumulator — the folding half of `parse_from_lines`, split
+/// out so the streaming engine (`model::parse_stream`, M10) can fold metrics in the same
+/// pass that builds blocks instead of a second file read. `push` sums each line's
+/// `/message/usage`; `finish` prices it.
+#[derive(Default)]
+pub(crate) struct MetricsAcc {
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+    model: String,
+    tmin: Option<i64>,
+    tmax: Option<i64>,
+}
 
-    let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    for line in lines {
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+impl MetricsAcc {
+    pub(crate) fn push(&mut self, v: &Value) {
+        let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         if let Some(u) = v.pointer("/message/usage") {
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
             // separate so it doesn't drown out genuinely-new input).
-            input += field(u, "input_tokens");
-            cache_creation += field(u, "cache_creation_input_tokens");
-            cache_read += field(u, "cache_read_input_tokens");
-            output += field(u, "output_tokens");
+            self.input += field(u, "input_tokens");
+            self.cache_creation += field(u, "cache_creation_input_tokens");
+            self.cache_read += field(u, "cache_read_input_tokens");
+            self.output += field(u, "output_tokens");
         }
         if let Some(m) = v.pointer("/message/model").and_then(|x| x.as_str()) {
-            model = m.to_string();
+            self.model = m.to_string();
         }
         if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
             if let Some(secs) = parse_ts(ts) {
-                tmin = Some(tmin.map_or(secs, |a| a.min(secs)));
-                tmax = Some(tmax.map_or(secs, |a| a.max(secs)));
+                self.tmin = Some(self.tmin.map_or(secs, |a| a.min(secs)));
+                self.tmax = Some(self.tmax.map_or(secs, |a| a.max(secs)));
             }
         }
     }
-    let duration_secs = match (tmin, tmax) {
-        (Some(a), Some(b)) => (b - a).max(0),
-        _ => 0,
-    };
-    let cost_usd = estimate_cost(&model, input, cache_creation, cache_read, output);
-    Metrics {
-        input_tokens: input,
-        cache_creation_tokens: cache_creation,
-        cache_read_tokens: cache_read,
-        output_tokens: output,
-        model,
-        duration_secs,
-        cost_usd,
+
+    pub(crate) fn finish(self) -> Metrics {
+        let duration_secs = match (self.tmin, self.tmax) {
+            (Some(a), Some(b)) => (b - a).max(0),
+            _ => 0,
+        };
+        let cost_usd = estimate_cost(
+            &self.model,
+            self.input,
+            self.cache_creation,
+            self.cache_read,
+            self.output,
+        );
+        Metrics {
+            input_tokens: self.input,
+            cache_creation_tokens: self.cache_creation,
+            cache_read_tokens: self.cache_read,
+            output_tokens: self.output,
+            model: self.model,
+            duration_secs,
+            cost_usd,
+        }
     }
+}
+
+fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
+    let mut acc = MetricsAcc::default();
+    for line in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            acc.push(&v);
+        }
+    }
+    acc.finish()
 }
 
 fn human_tokens(n: u64) -> String {

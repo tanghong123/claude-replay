@@ -2,59 +2,79 @@ use crate::metrics::{parse_ts, Metrics};
 use serde_json::Value;
 use std::io::BufRead;
 
-pub(crate) fn parse_codex_reader<R: BufRead>(reader: R) -> Metrics {
-    let mut input = 0;
-    let mut cached = 0;
-    let mut output = 0;
-    let mut model = String::new();
-    let mut first = None;
-    let mut last = None;
+/// Codex's per-line token/cost accumulator — the folding half of `parse_codex_reader`,
+/// split out so the streaming engine (`model::parse_stream`, M10) folds metrics in the same
+/// pass. Unlike Claude, Codex reports a *cumulative* `total_token_usage`, so each
+/// `token_count` event overwrites (keeping the newest total), not sums.
+#[derive(Default)]
+pub(crate) struct CodexMetricsAcc {
+    input: u64,
+    cached: u64,
+    output: u64,
+    model: String,
+    first: Option<i64>,
+    last: Option<i64>,
+}
 
-    for line in reader.lines().map_while(|line| line.ok()) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+impl CodexMetricsAcc {
+    pub(crate) fn push(&mut self, value: &Value) {
         if let Some(timestamp) = value
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(parse_ts)
         {
-            first = Some(first.map_or(timestamp, |seen: i64| seen.min(timestamp)));
-            last = Some(last.map_or(timestamp, |seen: i64| seen.max(timestamp)));
+            self.first = Some(
+                self.first
+                    .map_or(timestamp, |seen: i64| seen.min(timestamp)),
+            );
+            self.last = Some(self.last.map_or(timestamp, |seen: i64| seen.max(timestamp)));
         }
         if value.get("type").and_then(Value::as_str) == Some("turn_context") {
             if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
-                model = next.to_string();
+                self.model = next.to_string();
             }
         }
         if value.get("type").and_then(Value::as_str) == Some("event_msg")
             && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
         {
             let Some(total) = value.pointer("/payload/info/total_token_usage") else {
-                continue;
+                return;
             };
             let field = |name: &str| total.get(name).and_then(Value::as_u64).unwrap_or(0);
             let total_input = field("input_tokens");
-            cached = field("cached_input_tokens");
-            input = total_input.saturating_sub(cached);
-            output = field("output_tokens");
+            self.cached = field("cached_input_tokens");
+            self.input = total_input.saturating_sub(self.cached);
+            self.output = field("output_tokens");
         }
     }
 
-    // Codex has no cache-write tier; cached input bills at the read discount.
-    let cost_usd = crate::metrics::estimate_cost(&model, input, 0, cached, output);
-    Metrics {
-        input_tokens: input,
-        cache_creation_tokens: 0,
-        cache_read_tokens: cached,
-        output_tokens: output,
-        model,
-        duration_secs: match (first, last) {
-            (Some(start), Some(end)) => (end - start).max(0),
-            _ => 0,
-        },
-        cost_usd,
+    pub(crate) fn finish(self) -> Metrics {
+        // Codex has no cache-write tier; cached input bills at the read discount.
+        let cost_usd =
+            crate::metrics::estimate_cost(&self.model, self.input, 0, self.cached, self.output);
+        Metrics {
+            input_tokens: self.input,
+            cache_creation_tokens: 0,
+            cache_read_tokens: self.cached,
+            output_tokens: self.output,
+            model: self.model,
+            duration_secs: match (self.first, self.last) {
+                (Some(start), Some(end)) => (end - start).max(0),
+                _ => 0,
+            },
+            cost_usd,
+        }
     }
+}
+
+pub(crate) fn parse_codex_reader<R: BufRead>(reader: R) -> Metrics {
+    let mut acc = CodexMetricsAcc::default();
+    for line in reader.lines().map_while(|line| line.ok()) {
+        if let Ok(value) = serde_json::from_str::<Value>(&line) {
+            acc.push(&value);
+        }
+    }
+    acc.finish()
 }
 
 #[cfg(test)]
