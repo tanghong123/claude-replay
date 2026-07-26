@@ -205,36 +205,11 @@ fn fence_html(lang: &str, body: &str) -> String {
 
 // ── block → JSON ─────────────────────────────────────────────────────────
 
-/// The presentation kind driving `data-kind` (and the renderer's header shape).
-/// Close to `model::fold_key` but finer: it splits thinking into bare `think` vs.
-/// a grouped-activity `act`, and names `skill`/`agent` so they get a tool dot.
+/// The presentation kind driving `data-kind` (and the renderer's header shape) — the fine
+/// projection of the one shared classification (`model::BlockKind`, M13): `think`/`act`
+/// split, `tool` for a bare result.
 fn html_kind(b: &Block) -> &'static str {
-    match b {
-        Block::UserText(_) => "user",
-        Block::QueueEvent { .. } => "queue",
-        Block::Attachment(_) => "attachment",
-        Block::SubAgent(_) => "agent",
-        Block::AgentDone { .. } => "agent",
-        Block::AssistantText(_) => "assistant",
-        Block::Thinking { tools, .. } => {
-            if tools.is_empty() {
-                "think"
-            } else {
-                "act"
-            }
-        }
-        Block::ToolResult(_) => "tool",
-        Block::Command { .. } => "command",
-        Block::ToolUse { name, .. } => match name.as_str() {
-            "Bash" => "bash",
-            "Edit" | "MultiEdit" => "edit",
-            "Write" | "NotebookEdit" => "write",
-            "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" => "read",
-            "Skill" => "skill",
-            "Task" | "Agent" => "agent",
-            _ => "tool",
-        },
-    }
+    crate::model::block_kind(b).html()
 }
 
 /// Is this block rendered as a collapsible fold? User prose and assistant prose
