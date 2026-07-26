@@ -16,7 +16,7 @@
 use crate::model::{AttachmentContent, Block};
 use crate::render::{self, LineOp};
 use crate::view::FoldPolicy;
-use crate::{discover, highlight, metrics, Agent, Args};
+use crate::{discover, highlight, Agent, Args};
 use anyhow::{Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
@@ -1164,23 +1164,46 @@ fn agent_stream(
     info: &AgentInfo,
     assets: Option<&mut AssetSink>,
 ) -> Result<(String, Vec<ChildRef>)> {
-    // (M10 folds metrics into this parse; agent_stream keeps its own metrics read below,
-    // which degrades to empty usage on a second-open failure — so discard the folded copy.)
-    let (blocks, user_times, _metrics) =
+    // One parse yields blocks + per-turn times + folded metrics (M10 — no separate read).
+    let (blocks, user_times, metrics) =
         crate::model::parse_path_timed_for(agent, &info.source, args)
             .with_context(|| format!("read transcript {}", info.source.display()))?;
-    let usage = match std::fs::File::open(&info.source) {
-        Ok(f) => {
-            let m = metrics::parse_reader_for(agent, std::io::BufReader::new(f));
-            json!({
-                "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-                "cache_read": human_tokens(m.cache_read_tokens),
-                "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-                "duration_secs": m.duration_secs,
-            })
-        }
-        Err(_) => json!({}),
-    };
+    Ok(render_agent_stream(
+        agent,
+        fold,
+        cwd,
+        reveal,
+        info,
+        &blocks,
+        &user_times,
+        &metrics,
+        assets,
+    ))
+}
+
+/// The render half of `agent_stream`: an already-parsed agent (blocks + times + metrics) plus
+/// its `AgentInfo` (title / ancestry) → the per-agent stream jsonl (meta with ancestors +
+/// running-flagged children + usage, then block records) and the direct child refs. Shared by
+/// the one-shot `agent_stream` (parses first) and the incremental live tailer (M16, which
+/// folds only the delta via a `FollowParser` and passes the result straight here).
+#[allow(clippy::too_many_arguments)]
+fn render_agent_stream(
+    agent: Agent,
+    fold: &FoldPolicy,
+    cwd: &str,
+    reveal: bool,
+    info: &AgentInfo,
+    blocks: &[Block],
+    user_times: &[Option<f64>],
+    m: &crate::metrics::Metrics,
+    assets: Option<&mut AssetSink>,
+) -> (String, Vec<ChildRef>) {
+    let usage = json!({
+        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+        "cache_read": human_tokens(m.cache_read_tokens),
+        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+        "duration_secs": m.duration_secs,
+    });
     // This agent's spawned children, in launch order, each flagged running (a spawn with
     // no matching completion yet) vs done — drives the "Agents ▾" menu (active first).
     let done: std::collections::HashSet<&str> = blocks
@@ -1190,7 +1213,7 @@ fn agent_stream(
             _ => None,
         })
         .collect();
-    let child_refs = collect_child_refs(&blocks);
+    let child_refs = collect_child_refs(blocks);
     let children: Vec<Value> = child_refs
         .iter()
         .map(|c| {
@@ -1212,12 +1235,12 @@ fn agent_stream(
         .collect();
     let meta = json!({
         "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
-        "cwd": cwd, "turns": count_turns(&blocks), "tools": count_tools(&blocks),
+        "cwd": cwd, "turns": count_turns(blocks), "tools": count_tools(blocks),
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
     });
-    let (jsonl, _) = build_jsonl_inner(&blocks, &user_times, fold, cwd, reveal, true, assets, meta);
-    Ok((jsonl, child_refs))
+    let (jsonl, _) = build_jsonl_inner(blocks, user_times, fold, cwd, reveal, true, assets, meta);
+    (jsonl, child_refs)
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
@@ -1318,7 +1341,6 @@ const TAIL_TTL_MS: u128 = 30_000;
 struct Live {
     dir: std::path::PathBuf,
     agent: Agent,
-    args: Args,
     fold: FoldPolicy,
     root_path: std::path::PathBuf,
     cwd: String,
@@ -1326,20 +1348,14 @@ struct Live {
     tailers: std::sync::Mutex<std::collections::HashMap<String, Tailer>>,
 }
 
-/// Per-agent live state: when last requested (idle reaping) + the block lines last written
-/// (the diff baseline for the next delta).
+/// Per-agent live state: when last requested (idle reaping), the block lines last written
+/// (the diff baseline for the next delta), and the incremental follower (M16) — a persistent
+/// `Replayer` that folds only the newly-appended lines each cycle. Its `poll` returning
+/// `None` when the source hasn't grown IS the skip-if-unchanged (no whole-file re-parse).
 struct Tailer {
     last_seen: std::time::Instant,
     prev: Vec<String>,
-    /// The source transcript's byte length at the last parse. Claude's JSONL is
-    /// append-only, so an unchanged length means no new events → skip the re-parse
-    /// entirely (the tailer's whole CPU cost is this parse). `0` forces a first parse.
-    src_len: u64,
-}
-
-/// The current byte length of a file (0 if it can't be stat'd).
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    follower: crate::follow::FollowParser,
 }
 
 impl Live {
@@ -1374,21 +1390,25 @@ impl Live {
         if !info.source.exists() {
             return false;
         }
-        let (jsonl, children) = match agent_stream(
-            self.agent, &self.args, &self.fold, &self.cwd, true, &info, None,
-        ) {
-            Ok(v) => v,
+        // Initial generation via the incremental follower's first poll (folds the whole
+        // source once; subsequent polls in `run_tailer` fold only appended deltas).
+        let mut follower = crate::follow::FollowParser::open(self.agent, &info.source);
+        let (blocks, times, metrics) = match follower.poll() {
+            Ok(Some(t)) => t,
+            Ok(None) => (Vec::new(), Vec::new(), crate::metrics::Metrics::default()),
             Err(_) => return false,
         };
+        let (jsonl, children) = render_agent_stream(
+            self.agent, &self.fold, &self.cwd, true, &info, &blocks, &times, &metrics, None,
+        );
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
-        let src_len = file_len(&info.source);
         self.tailers.lock().unwrap().insert(
             id.to_string(),
             Tailer {
                 last_seen: std::time::Instant::now(),
                 prev: block_lines(&jsonl),
-                src_len,
+                follower,
             },
         );
         true
@@ -1443,29 +1463,28 @@ impl Live {
                 let Some(info) = self.registry.lock().unwrap().get(&id).cloned() else {
                     continue;
                 };
-                // Skip the parse entirely unless the source grew/shrank since last time.
-                // Claude's JSONL is append-only, so an unchanged length means no new
-                // events — this is what turns a constant re-parse of a huge transcript
-                // into work only when there's actually something new to render.
-                let len = file_len(&info.source);
-                {
-                    let t = self.tailers.lock().unwrap();
-                    if t.get(&id).is_some_and(|tl| tl.src_len == len) {
-                        continue;
+                // Fold ONLY the newly-appended lines through this agent's persistent follower
+                // (its `poll` returns `None` when the source hasn't grown — the skip that
+                // turns a constant re-parse of a huge transcript into O(delta) work). Held
+                // under the tailers lock only for the brief delta read.
+                let polled = {
+                    let mut t = self.tailers.lock().unwrap();
+                    match t.get_mut(&id) {
+                        Some(tl) => tl.follower.poll().ok().flatten(),
+                        None => None,
                     }
-                }
-                let (jsonl, children) = match agent_stream(
-                    self.agent, &self.args, &self.fold, &self.cwd, true, &info, None,
-                ) {
-                    Ok(v) => v,
-                    Err(_) => continue,
                 };
+                let Some((blocks, times, metrics)) = polled else {
+                    continue; // nothing new this cycle
+                };
+                let (jsonl, children) = render_agent_stream(
+                    self.agent, &self.fold, &self.cwd, true, &info, &blocks, &times, &metrics, None,
+                );
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
                 let mut t = self.tailers.lock().unwrap();
                 if let Some(tl) = t.get_mut(&id) {
-                    tl.src_len = len;
                     if let Some(delta) = stream_delta(&tl.prev, &fresh, meta) {
                         let _ =
                             append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
@@ -1615,7 +1634,6 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let live = Arc::new(Live {
         dir: dir.clone(),
         agent,
-        args: args.clone(),
         fold,
         root_path: path.to_path_buf(),
         cwd,
