@@ -513,6 +513,22 @@ everything it built at/after `from` and re-fold what follows. Everything else is
 append. This is what makes an incremental live tail cheap and a crash-safe on-disk log
 possible (§8.3.2).
 
+> **Implementation status — the `Message` waypoint.** Phase 1 (§5.2) has *landed* a working
+> L1/L2 split: `model::tokenize` (L1) + `model::replay` (L2), proven `replay(tokenize(x))`
+> **bit-identical** to `parse_main` across the golden corpus. Its message log
+> (`engine::message::Message`) is a deliberate **waypoint**, not yet this clean `Event`: to
+> reuse the exact block-shaping the golden tests already pin, its `ToolUse` variant still
+> carries a built `model::Block`, its variants stay Claude-shaped (`QueueOp`, `UserString` /
+> `UserArrayText`, `LineStart` / `Trigger`), and it has no `seq` / `offset` / `Reset`
+> envelope yet. It converges on the `Event` above in two later, separately-gated steps: the
+> **block-model lift** drops the `Block` back-reference and folds the variants into this
+> agent-neutral set (so the shaping — `tool_target`, `extract_diffs`, the two-event
+> spawn/completion split — moves wholly into L2's fold); the **incremental phase** (Phase 6)
+> adds the envelope + `Reset`. Crucially, `tokenize(lines) -> Vec<Message>` and
+> `replay(&[Message]) -> …` are already **pure, synchronous, I/O-free** functions — the split
+> embodies §3.6's sans-I/O pull core from day one, so only the *vocabulary* has to converge,
+> not the control-flow shape.
+
 ### 3.2 Layer 1 — the `Adapter` trait and the `Parser`
 
 Two pieces: the **`Adapter`** is the *entire* agent-specific surface (one impl per

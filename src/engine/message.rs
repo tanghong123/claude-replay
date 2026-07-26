@@ -8,10 +8,15 @@
 //! the `id → block index` back-patch, the thinking clock, user-turn stamping, the queue
 //! lifecycle, and turn grouping.
 //!
-//! Phase 1 note: the variants carry `crate::model` types (`Block`, `Attachment`) so the
-//! split reuses the exact block-shaping already proven correct, guaranteeing the
-//! `replay(tokenize(x)) == parse_main(x)` equivalence. A later phase lifts the block
-//! model into `engine/` and removes this back-reference.
+//! Phase 1 note: this is a deliberate **waypoint** toward the clean, agent-neutral `Event`
+//! vocabulary specified in `design/parser-engine.md` §3.1 — see the "Message waypoint" note
+//! there. The variants carry `crate::model` types (`Block`, `Attachment`) so the split
+//! reuses the exact block-shaping already proven correct, guaranteeing the
+//! `replay(tokenize(x)) == parse_main(x)` equivalence. Two later, separately-gated steps
+//! converge it: the block-model lift drops this `Block` back-reference and folds the
+//! Claude-shaped variants into the `Event` set; the incremental phase (§5.2 Phase 6) adds
+//! the `seq` / `offset` / `Reset` envelope. `tokenize` / `replay` are already pure and
+//! I/O-free, so they satisfy §3.6's sans-I/O pull core now — only the vocabulary converges.
 
 use crate::model::{Attachment, Block};
 use serde_json::Value;
