@@ -1162,6 +1162,14 @@ engine with byte-identical output; 6–8 are what make the live surfaces cheap.
 
 ## 7. Per-session indices (fast filter/jump + the liveness truth)
 
+> **Implementation status.** `engine::SessionIndex` has *landed* (§5.2 Phase 5) as the
+> **derived-view-first** cut: one scan over a `Session`'s **top-level** blocks builds
+> `turns` / `agents` / `tools` / `attachments`, so entry positions are flat `usize` indices
+> into `Session.blocks` (not the tree-addressing `BlockPath` below). `BlockPath` — needed
+> only to point into a sub-agent's *own* blocks (§7.3) — is a later refinement; the
+> single-session index needs nothing more than a position. It is built by a post-parse scan
+> (additive, byte-identical), not yet folded into pass 2 as §4.2 envisions.
+
 Alongside `blocks`, the engine builds a small set of **derived indices** during the
 same pass 2 (`§4.2` style — no extra read): every sub-agent, tool use, and attachment
 mentioned in the session, each entry carrying its metadata + a back-pointer to the
