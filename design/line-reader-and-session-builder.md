@@ -1,4 +1,4 @@
-# Design: incremental consumption — `LineReader` + `SessionBuilder`
+# Design: incremental consumption — `LineReader` + `SessionBuilder` + `SessionCache`
 
 > **Status:** proposed (not built). Two layers, designed together because the second builds
 > on the first. Tracked as tasks #18 (`LineReader`) and #19 (`SessionBuilder`).
@@ -23,10 +23,14 @@ The key realization: the fold is **already** message-iterative internally (the `
 folds line-by-line; `FollowParser` folds deltas). We are not building a new engine — we are
 exposing the incremental construction that already happens, and giving it a resume story.
 
-Two layers:
+Three layers:
 
 1. **`LineReader`** — a resumable line source (rename + extension of today's `TailReader`).
 2. **`SessionBuilder`** — folds a line source into an evolving `Session`, checkpointable.
+3. **`SessionCache`** — a keyed, lazy, self-tailing store of `Session`s: register cheap
+   metadata now, parse on first request, tail-and-update on re-request. It's what lets a flat
+   `Session` (one transcript) reference sub-agents by id while their transcripts are
+   materialized only on demand (see [`sub-agent-normalization.md`](sub-agent-normalization.md)).
 
 ```text
 source ──lines──▶ LineReader ──lines──▶ SessionBuilder ──▶ Session (snapshot)
@@ -197,17 +201,79 @@ resumable-restart share one implementation instead of three.
 
 ---
 
+## Layer 3 — `SessionCache` (task #21)
+
+### Why
+
+A flat `Session` (one transcript) references its sub-agents by id and carries only their
+*paths* (see [`sub-agent-normalization.md`](sub-agent-normalization.md)). Something has to turn
+"here is a child's transcript path" into "here is the child's live `Session`" — **lazily** (a
+tree of sub-agents can be large; parse only what's opened) and **incrementally** (re-opening a
+child should tail its new events, not re-parse). That "something" already exists, informally,
+in `html_export::serve.rs`: a `SessionStore<AgentInfo, Tailer>` that registers `id → path`,
+materializes on first request, tails on repeat, and reaps idle entries. `SessionCache` lifts
+that into a reusable engine primitive.
+
+### Shape
+
+```rust
+pub struct SessionCache { /* SessionStore<Meta, Resident> */ }
+
+impl SessionCache {
+    /// Cheap: record an id and where to load it from (a transcript path + artifact paths).
+    /// No I/O — nothing is parsed yet. A whole `Session.sub_agents` map registers in one loop.
+    pub fn register(&self, id: &str, meta: SessionSource);
+
+    /// The current `Session` for `id`, parsing it on first request and **tailing new events**
+    /// on every request after (via a resident `FollowParser`/`SessionBuilder`). `None` for an
+    /// unregistered id; `Err` if the transcript can't be read.
+    pub fn get<R>(&self, id: &str, use_session: impl FnOnce(&Session) -> R) -> Option<io::Result<R>>;
+
+    /// Drop residents idle past a TTL (their `Session` is freed; a later `get` re-parses).
+    pub fn reap(&self, ttl: Duration);
+}
+```
+
+- `register` is the bridge from the metadata map: `for (id, sa) in &session.sub_agents {
+  cache.register(id, SessionSource::from(sa)) }` — O(map), no parsing.
+- `get` is where I/O happens, and only for ids the client actually opens. First call:
+  `FollowParser::open(agent, meta.transcript).poll()` → a `Session`, admitted resident.
+  Later calls: `poll()` folds only appended bytes and updates the resident — so repeat reads
+  are O(delta) and reflect a still-running child.
+- `reap` bounds memory: an unopened or long-idle child costs only its metadata.
+
+### Access shape (a real decision)
+
+Returning a borrow while the entry sits behind the store's lock and may be mutated by a tail
+is awkward, so the API takes a **`use_session` closure** (like `SessionStore::with_resident`
+today) rather than handing out `&Session` or forcing a clone. A client that truly needs to own
+the value can clone inside the closure — cheap now that `Session` is flat (no nested child
+`Session`s to deep-copy).
+
+### Keying, and the root
+
+Keyed by a session identity — the root registers under its own session id; children under
+their `AgentId`. So the cache is general (it caches *any* session, not only sub-agents), and
+the sub-agent map is just the most common source of registrations. This is the exact
+generalization of `serve.rs`, whose `SessionStore<AgentInfo, Tailer>` already keys per agent
+id under a root.
+
 ## Sequencing
 
 1. **`LineReader`** (task #18): rename + `tell`/`open_at`/`Position`. Bounded, no new deps,
    immediately useful to a raw-line consumer. Foundation for everything else.
 2. **`SessionBuilder`** (task #19): the incremental `Session` seam; refactor `parse_session`
    and `FollowParser` onto it; add `checkpoint`/`resume`.
+3. **`SessionCache`** (task #21): the keyed lazy/tailing store, built on `SessionStore` +
+   `SessionBuilder`; refactor `html_export::serve.rs` onto it (it currently hand-rolls the
+   pattern), and pair it with the sub-agent metadata map (task #20) so children materialize on
+   demand.
 
-Both are **design-only** until prioritized. They are output-preserving refactors of existing
+All **design-only** until prioritized. They are output-preserving refactors of existing
 machinery, so implementation is gated on the usual byte-identical checks (`--dump` /
 `--dump-html` on frozen Claude + Codex transcripts) plus the follower's
-`follow_matches_full_reparse` equivalence test extended to cover checkpoint/resume.
+`follow_matches_full_reparse` equivalence test extended to cover checkpoint/resume, and (for
+the cache) a lazy-load + tail-update test mirroring `serve.rs`'s current behaviour.
 
 See [`docs/architecture.md`](../docs/architecture.md) for the engine these layers extend
 (§6 streaming parse & the live follower).
