@@ -1,7 +1,7 @@
 //! **Layer 2 — the shared fold.** The stateful [`Replayer`] folds a stream of canonical
 //! [`Message`]s (produced by any agent's Layer-1 decoder)
 //! into render [`Block`]s, via the per-agent [`Shaping`] seam. It is driven incrementally by
-//! [`SessionBuilder`](crate::engine::builder::SessionBuilder) (batch and live alike).
+//! [`SessionAccumulator`](crate::engine::builder::SessionAccumulator) (batch and live alike).
 //! Agent-agnostic: everything that differs by agent enters
 //! through `Shaping` (a `&'static` const per adapter) plus the `decode` closure. The data
 //! model it produces and block classification live in [`crate::model`]; this module is the
@@ -17,12 +17,12 @@ use std::collections::{HashMap, HashSet};
 
 /// Streaming whole-file parse for `agent`: blocks + one wall-clock timestamp per user turn +
 /// folded metrics, all in a single pass (M9/M10). Derived from the incremental fold — feeds a
-/// [`SessionBuilder`](crate::engine::builder::SessionBuilder) line-by-line (one line resident,
+/// [`SessionAccumulator`](crate::engine::builder::SessionAccumulator) line-by-line (one line resident,
 /// no whole-file `Vec`), the same driver the live [`FollowParser`](crate::FollowParser) uses.
 /// Flat (sub-agent trees are loaded separately by
 /// [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
 ///
-/// Test-only now: production goes straight through `SessionBuilder`
+/// Test-only now: production goes straight through `SessionAccumulator`
 /// ([`parse_session_as`](crate::parse_session_as) drives it directly). This wrapper is retained
 /// as the whole-file reference the equivalence gates compare the builder-driven output against.
 #[cfg(test)]
@@ -34,7 +34,7 @@ pub(crate) fn parse_path_timed_for(
     Vec<Option<EpochSeconds>>,
     crate::metrics::Metrics,
 )> {
-    let mut b = crate::engine::builder::SessionBuilder::new(agent);
+    let mut b = crate::engine::builder::SessionAccumulator::new(agent);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?; // one line resident
     Ok(b.fold())
@@ -291,7 +291,7 @@ impl<'a> Replayer<'a> {
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
     /// Returns the grouped blocks and the per-turn timestamps. Test-only now — production
-    /// finalizes non-consumingly via [`snapshot`](Self::snapshot) (the `SessionBuilder` folds
+    /// finalizes non-consumingly via [`snapshot`](Self::snapshot) (the `SessionAccumulator` folds
     /// incrementally and re-snapshots), so this consuming path is exercised only by the
     /// equivalence oracles.
     #[cfg(test)]

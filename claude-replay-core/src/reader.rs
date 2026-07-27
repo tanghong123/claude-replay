@@ -50,7 +50,7 @@ pub struct Position {
 }
 
 // The resume API (`Position::{encode,decode}`, `LineReader::{tell,open_at}`) is test-wired now;
-// its production consumer is `SessionBuilder::checkpoint`/`resume` (#19) + restart persistence
+// its production consumer is `SessionAccumulator::checkpoint`/`resume` (#19) + restart persistence
 // (#11), per the roadmap's decision A. The `allow(dead_code)` goes away when #19 wires it in.
 impl Position {
     /// Serialize to a versioned string (`crrd1:…`). A garbage or wrong-version token is

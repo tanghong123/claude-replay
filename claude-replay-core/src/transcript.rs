@@ -73,10 +73,10 @@ impl Transcript {
     pub fn parse(&self) -> io::Result<Session> {
         // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
         // `Args` — that keeps clap out of the core. Derived from the incremental fold: feed a
-        // `SessionBuilder` line-by-line (one line resident, so a multi-gigabyte transcript never
+        // `SessionAccumulator` line-by-line (one line resident, so a multi-gigabyte transcript never
         // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
         // one file read.
-        let mut b = crate::engine::builder::SessionBuilder::new(self.agent);
+        let mut b = crate::engine::builder::SessionAccumulator::new(self.agent);
         let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
         let mut s = b.snapshot();

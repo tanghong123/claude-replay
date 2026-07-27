@@ -3,7 +3,7 @@
 //! (`CLAUDE_SHAPING`, `claude_build_tool`, `apply_result`, turn grouping/coalescing), the
 //! streaming parse entry points, sub-agent transcript loading, and the tool/attachment
 //! decode helpers. The agent-neutral engine it feeds — the `Block` data model, the
-//! `Replayer` / `replay` fold, the `SessionBuilder` driver, and the shared message-handling
+//! `Replayer` / `replay` fold, the `SessionAccumulator` driver, and the shared message-handling
 //! helpers — lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
 
 use crate::engine::message::{Message, QueueOpKind};
@@ -385,7 +385,7 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
 /// bit-identical to the (now frozen, test-only) `parse_main` — see
 /// `replay_tokenize_matches_parse_main`. The large-file streaming path (the shared
-/// `SessionBuilder`, fed line-by-line by the batch parse and the live follower) runs the same
+/// `SessionAccumulator`, fed line-by-line by the batch parse and the live follower) runs the same
 /// engine per line (M9), so production no longer touches `parse_main`.
 #[cfg(test)]
 pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
@@ -410,7 +410,7 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     // Stream through the shared incremental fold in a single pass, one line resident, and keep
     // only the blocks (this sub-agent path doesn't need times or metrics).
-    let mut b = crate::engine::builder::SessionBuilder::new(Agent::Claude);
+    let mut b = crate::engine::builder::SessionAccumulator::new(Agent::Claude);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?;
     Ok(b.fold().0)
@@ -808,7 +808,7 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
 /// consumes it; the TUI passes a throwaway vec.
 ///
 /// **Frozen golden reference** (M9): production parses through the streaming engine (the shared
-/// `SessionBuilder` → `decode_line` + `Replayer`); this pre-engine parser is retained only
+/// `SessionAccumulator` → `decode_line` + `Replayer`); this pre-engine parser is retained only
 /// to pin `replay(tokenize(x))` bit-identical in `replay_tokenize_matches_parse_main`.
 #[cfg(test)]
 pub(crate) fn parse_main<S: AsRef<str>>(
@@ -1235,7 +1235,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
 /// a [`Deferred`](AttachmentContent::Deferred) locator — the **bytes are never built here**;
 /// [`load_attachment_from_event`] re-extracts them on demand. Path-only types
 /// (`edited_text_file`/`compact_file_reference`) get [`AttachmentContent::None`] (reveal). The
-/// `at`/`index` in `Deferred` are placeholders (0); `SessionBuilder::advance_at` stamps the
+/// `at`/`index` in `Deferred` are placeholders (0); `SessionAccumulator::advance_at` stamps the
 /// real byte offset one level up (where it's known).
 fn attachment_from_event(a: &Value) -> Option<Attachment> {
     fn basename(p: &str) -> String {

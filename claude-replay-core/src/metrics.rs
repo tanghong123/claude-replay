@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 /// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
 /// through the [`MetricsAccumulator`](crate::adapter) interface and ready to use; no agent
 /// currently populates it, so `extra` is empty in practice.
-/// (If `Metrics` is ever persisted — e.g. a `SessionBuilder` checkpoint — add `serde(default)`
+/// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone)]
 #[non_exhaustive]

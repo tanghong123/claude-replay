@@ -1,4 +1,4 @@
-//! **The single incremental fold orchestrator.** One `SessionBuilder` threads everything the
+//! **The single incremental fold orchestrator.** One `SessionAccumulator` threads everything the
 //! parse paths used to thread by hand — the agent's L1 `decode_line` (with its `cwd`), the
 //! shared L2 [`Replayer`] fold, and the per-agent metrics accumulator — behind one `advance`.
 //!
@@ -14,7 +14,7 @@
 use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
-use crate::engine::session::Session;
+use crate::engine::session::{BlockStore, InMemoryStore, Session};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::{AttachmentContent, Block, ByteOffset, EpochSeconds};
@@ -22,22 +22,35 @@ use crate::Agent;
 use serde_json::Value;
 use std::io;
 
-/// Folds a transcript incrementally: `advance` a batch of lines, `fold`/`snapshot` the current
-/// state, `reset` on a truncation/rewrite. Everything agent-specific — the L1 decoder, the L2
-/// `Shaping`, the metrics accumulator — comes from the agent's `TranscriptAdapter`, so the
-/// builder itself is agent-agnostic.
-pub struct SessionBuilder {
+/// Folds a transcript incrementally into a [`Session`], threading its blocks through a
+/// [`BlockStore`] `S`: `advance` a batch of lines, `fold`/`snapshot` the current state, `reset`
+/// on a truncation/rewrite. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
+/// metrics accumulator — comes from the agent's `TranscriptAdapter`, so the accumulator itself is
+/// agent-agnostic. It's an accumulator/fold (`advance` + `snapshot`), not a configure-then-build
+/// "Builder"; the storage policy is `S` (default [`InMemoryStore`] ⇒ blocks resident in RAM).
+pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     agent: Agent,
     adapter: &'static dyn TranscriptAdapter,
     replayer: Replayer<'static>,
     /// The FOLD cwd — threaded across lines by `decode_line` for path relativization.
     cwd: String,
     metrics: Box<dyn MetricsAccumulator>,
+    /// The per-block storage policy — where each finalized block's content goes on `snapshot`.
+    store: S,
 }
 
-impl SessionBuilder {
-    /// A fresh builder for `agent`: empty replayer/cwd/metrics, ready to `advance`.
+impl SessionAccumulator<InMemoryStore> {
+    /// A fresh accumulator for `agent` with the in-memory (identity) store: empty
+    /// replayer/cwd/metrics, ready to `advance`.
     pub fn new(agent: Agent) -> Self {
+        Self::with_store(agent, InMemoryStore)
+    }
+}
+
+impl<S: BlockStore> SessionAccumulator<S> {
+    /// A fresh accumulator for `agent` with an explicit [`BlockStore`]: empty
+    /// replayer/cwd/metrics, ready to `advance`.
+    pub fn with_store(agent: Agent, store: S) -> Self {
         let adapter = adapter(agent);
         Self {
             agent,
@@ -45,6 +58,7 @@ impl SessionBuilder {
             replayer: Replayer::new(adapter.shaping()),
             cwd: String::new(),
             metrics: adapter.metrics_acc(),
+            store,
         }
     }
 
@@ -121,13 +135,24 @@ impl SessionBuilder {
     }
 
     /// The current state as a [`Session`] (blocks + per-turn times + metrics + derived index),
-    /// with `cwd` left `None` — the batch entry fills it from the transcript path.
-    pub fn snapshot(&self) -> Session {
+    /// with `cwd` left `None` — the batch entry fills it from the transcript path. Each finalized
+    /// block is mapped through the [`BlockStore`] into `S::Bv` (for [`InMemoryStore`] this is
+    /// identity ⇒ byte-identical to today's `Vec<Block>`).
+    ///
+    /// Takes `&mut self` because `put` is `&mut` (the store may append to a backing tier).
+    /// Stage 1 maps-through-put per snapshot (fine for identity); Stage 2 moves to
+    /// put-once-on-emit.
+    pub fn snapshot(&mut self) -> Session<S::Bv> {
         let (blocks, user_times, metrics) = self.fold();
         let index = SessionIndex::build(&blocks, &user_times);
         // Post-pass over the finished blocks (the fold is untouched): the sub-agent entity map.
         // `transcript` stays None here — the path-aware parse fills it (it alone knows the path).
         let sub_agents = crate::engine::session::build_sub_agents(&blocks);
+        let blocks: Vec<S::Bv> = blocks
+            .into_iter()
+            .enumerate()
+            .map(|(at, b)| self.store.put(b, at))
+            .collect();
         Session {
             agent: self.agent,
             cwd: None,

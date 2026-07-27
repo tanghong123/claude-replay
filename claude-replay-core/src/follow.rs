@@ -6,19 +6,19 @@
 
 use std::path::Path;
 
-use crate::engine::builder::SessionBuilder;
-use crate::engine::session::Session;
+use crate::engine::builder::SessionAccumulator;
+use crate::engine::session::{InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
 use crate::Agent;
 
 /// Follows a transcript file, folding only newly-appended lines each poll through a shared
-/// [`SessionBuilder`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
-/// metrics accumulator — lives in the builder, so the follower itself is agent-agnostic and is
-/// just the byte-offset reader plus the same incremental fold the batch parse uses.
+/// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
+/// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
+/// is just the byte-offset reader plus the same incremental fold the batch parse uses.
 pub struct FollowParser {
-    builder: SessionBuilder,
+    builder: SessionAccumulator<InMemoryStore>,
     reader: LineReader,
 }
 
@@ -27,7 +27,7 @@ impl FollowParser {
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
         Self {
-            builder: SessionBuilder::new(agent),
+            builder: SessionAccumulator::new(agent),
             reader: LineReader::open_at_start(path),
         }
     }

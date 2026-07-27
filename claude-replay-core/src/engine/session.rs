@@ -14,19 +14,62 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
-use crate::model::{AgentId, Block, EpochSeconds, SubAgentMeta};
+use crate::model::{AgentId, Block, BlockIndex, EpochSeconds, SubAgentMeta};
 use crate::Agent;
+
+/// The per-block storage policy — the seam between the fold and where a block's content lives.
+/// `put` receives a finalized [`Block`] at its flat [`BlockIndex`] and returns the value the
+/// session actually stores (`Self::Bv`). The default [`InMemoryStore`] is identity (holds the
+/// `Block` in RAM ⇒ today's behavior); a later on-disk store returns a locator instead. The
+/// [`SessionIndex`]/metrics stay `Bv`-free, so only `Session::blocks`' element type varies.
+pub trait BlockStore {
+    /// The stored block value — `Block` for the in-memory default.
+    type Bv;
+    /// Store `b` (finalized, at flat index `at`) and return its `Bv` representation.
+    fn put(&mut self, b: Block, at: BlockIndex) -> Self::Bv;
+}
+
+/// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put` is identity, so
+/// `Session<Block>` keeps exactly today's `Vec<Block>` residency and byte-for-byte output.
+#[derive(Default)]
+pub struct InMemoryStore;
+
+impl BlockStore for InMemoryStore {
+    type Bv = Block;
+    fn put(&mut self, b: Block, _at: BlockIndex) -> Block {
+        b
+    }
+}
+
+/// Content access gated behind a trait, so most code works on the `Bv`-free [`SessionIndex`] and
+/// never names `BV`. Trivial (a borrow) for the in-memory `Session<Block>`; a disk read for a
+/// future on-disk store.
+pub trait BlockAccess {
+    /// The block at flat index `i` — borrowed when it's already resident.
+    fn block(&self, i: BlockIndex) -> std::borrow::Cow<'_, Block>;
+}
+
+impl BlockAccess for Session<Block> {
+    fn block(&self, i: BlockIndex) -> std::borrow::Cow<'_, Block> {
+        std::borrow::Cow::Borrowed(&self.blocks[i])
+    }
+}
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
 /// without touching the presentation layers. Produced by one streaming parse.
+///
+/// Parameterized over the **block value** `BV` it stores (the [`BlockStore`] policy's `Bv`), with
+/// a default of `BV = Block` so every existing `Session` means `Session<Block>` — resident blocks
+/// in RAM, today's behavior — and compiles unchanged. Only `blocks`' element type varies; the
+/// index / metrics / sub-agent map are `BV`-free.
 #[derive(Debug, Clone)]
-pub struct Session {
+pub struct Session<BV = Block> {
     /// Which agent produced the transcript.
     pub agent: Agent,
     /// The session working directory, when the transcript recorded it.
     pub cwd: Option<PathBuf>,
     /// The ordered block stream (tool results already joined onto their calls).
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<BV>,
     /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
     /// a field until consumers migrate off it.
     pub user_times: Vec<Option<EpochSeconds>>,

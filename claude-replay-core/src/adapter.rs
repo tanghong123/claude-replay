@@ -35,7 +35,7 @@ pub(crate) trait MetricsAccumulator: Send {
 
 /// The single agent-specific interface. A new agent implements this once; the engine calls
 /// it via [`adapter`]. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
-/// `shaping` const) drive the shared [`SessionBuilder`](crate::engine::builder::SessionBuilder),
+/// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
 /// which both the whole-file batch parse and the live follower feed, so batch and live share
 /// one seam. Discovery (`candidates_scoped`/`resolve_id`) and the optional
 /// `enrich`/`subagent_source` round it out.
