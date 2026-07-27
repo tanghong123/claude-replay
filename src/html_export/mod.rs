@@ -514,15 +514,9 @@ impl Emitter<'_> {
                 tools,
             } => {
                 o.insert("id".into(), json!(self.block_id()));
-                // Reuse the TUI's collapsed summary verbatim (see `render_collapsed`).
-                let summary =
-                    if text.trim().is_empty() && duration_secs.is_none() && !tools.is_empty() {
-                        render::capitalize(&render::activities(tools))
-                    } else if duration_secs.is_some() || !tools.is_empty() {
-                        render::turn_summary(*duration_secs, tools)
-                    } else {
-                        format!("Thought ({} lines)", text.lines().count())
-                    };
+                // The exact collapsed summary the TUI renders — one shared source so the two
+                // can't drift; HTML prepends the `✻` glyph.
+                let summary = render::thinking_summary(text, *duration_secs, tools);
                 head.insert("summary".into(), json!(format!("✻ {summary}")));
                 if !tools.is_empty() {
                     let items: Vec<Value> = tools.iter().map(|t| self.block(t, None)).collect();
@@ -588,11 +582,7 @@ impl Emitter<'_> {
                         }
                     }
                     "write" => {
-                        let content = diffs
-                            .iter()
-                            .map(|(_, n)| n.as_str())
-                            .find(|n| !n.is_empty())
-                            .unwrap_or("");
+                        let content = render::write_content(diffs);
                         let n = content.lines().count();
                         head.insert(
                             "chips".into(),

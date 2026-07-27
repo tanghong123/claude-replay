@@ -713,11 +713,7 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
             // pair) reads better as numbered code than as an all-`+` diff wall.
             if matches!(name.as_str(), "Write" | "NotebookEdit") {
                 out.push(tool_header(name, target, None));
-                let content = diffs
-                    .iter()
-                    .map(|(_, n)| n.as_str())
-                    .find(|n| !n.is_empty())
-                    .unwrap_or("");
+                let content = write_content(diffs);
                 let n = content.lines().count();
                 out.push(Line::styled(
                     format!("  ⎿ \u{a0}Wrote {n} lines to {target}"),
@@ -911,6 +907,31 @@ pub(crate) fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> Strin
     }
 }
 
+/// The collapsed one-line summary of a `Thinking` turn — shared by the TUI and the HTML
+/// exporter (each prepends its own glyph) so the wording can't drift between them. A pure
+/// coalesced-activity run (no thinking text, no duration) is just the activities; otherwise
+/// `<activities>, thought for Xs`; a bare thinking block with neither falls back to a line count.
+/// A Write/NotebookEdit's body: the first non-empty *new-side* text across its diffs (the
+/// transcript records a Write as a diff whose new side is the whole file). Shared so the TUI
+/// and HTML agree on which diff supplies the content.
+pub(crate) fn write_content(diffs: &[(String, String)]) -> &str {
+    diffs
+        .iter()
+        .map(|(_, n)| n.as_str())
+        .find(|n| !n.is_empty())
+        .unwrap_or("")
+}
+
+pub(crate) fn thinking_summary(text: &str, duration_secs: Option<u64>, tools: &[Block]) -> String {
+    if text.trim().is_empty() && duration_secs.is_none() && !tools.is_empty() {
+        capitalize(&activities(tools))
+    } else if duration_secs.is_some() || !tools.is_empty() {
+        turn_summary(duration_secs, tools)
+    } else {
+        format!("Thought ({} lines)", text.lines().count())
+    }
+}
+
 /// Uppercase the first character of `s` (ASCII-friendly; leaves the rest as-is).
 pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -1049,19 +1070,9 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             duration_secs,
             tools,
         } => {
-            // `<activities>, thought for Xs` (natural order) — falls back to a line
-            // count when the duration isn't derivable and no tools ran. A coalesced
-            // pure-activity run (empty text, no duration) is just the activities, with
-            // no "thought" (it isn't thinking — matches Claude Code's "ran N …" line).
-            let summary = if text.trim().is_empty() && duration_secs.is_none() && !tools.is_empty()
-            {
-                capitalize(&activities(tools))
-            } else if duration_secs.is_some() || !tools.is_empty() {
-                turn_summary(*duration_secs, tools)
-            } else {
-                format!("Thought ({} lines)", text.lines().count())
-            };
-            // No `✻` glyph on the collapsed summary — a plain 2-space-indented line.
+            // Shared with the HTML exporter (see `thinking_summary`); no `✻` glyph on the
+            // collapsed TUI line — a plain 2-space-indented line.
+            let summary = thinking_summary(text, *duration_secs, tools);
             vec![Line::from(Span::styled(format!("  {summary}"), header))]
         }
         Block::ToolUse { name, .. } if name == "Bash" => {
@@ -1076,11 +1087,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             diffs,
             ..
         } if name == "Write" || name == "NotebookEdit" => {
-            let content = diffs
-                .iter()
-                .map(|(_, n)| n.as_str())
-                .find(|n| !n.is_empty())
-                .unwrap_or("");
+            let content = write_content(diffs);
             let n = content.lines().count();
             let token = highlight::token_for_target(target);
             let mut v = vec![
@@ -1218,11 +1225,7 @@ fn body_len(b: &Block) -> usize {
             "Write" | "NotebookEdit" => {
                 // Expanded height: ⎿ result line + every content line (Write has its
                 // own `render_collapsed` arm, so this feeds only length checks).
-                let content = diffs
-                    .iter()
-                    .map(|(_, n)| n.as_str())
-                    .find(|n| !n.is_empty())
-                    .unwrap_or("");
+                let content = write_content(diffs);
                 1 + content.lines().count()
             }
             "Edit" | "MultiEdit" => {
