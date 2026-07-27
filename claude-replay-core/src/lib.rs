@@ -3,7 +3,7 @@
 //! This is the L1/L2 half of the three-layer engine: the per-agent tokenizers (Claude +
 //! Codex → a canonical `engine::message` log), the shared stateful `Replayer` fold (in
 //! `engine::replay`), session assembly ([`Session`] / [`SessionIndex`]), transcript discovery,
-//! incremental follow ([`FollowParser`]), and the live `engine::store::SessionStore`. It
+//! incremental follow ([`FollowParser`]), and the live [`SessionCache`]. It
 //! carries **no** TUI / HTML / CLI dependencies — only
 //! `serde_json` and `anyhow` — so it can be reused by any frontend. The `claude-replay`
 //! binary crate depends on it and adds the ratatui viewer, the HTML export, and the clap CLI.
@@ -34,6 +34,7 @@ pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail
 // tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
 // is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
+pub use engine::cache::{SessionCache, SessionSource};
 pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,

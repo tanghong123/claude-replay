@@ -22,6 +22,7 @@ pub mod tui;
 // agent-neutral `parse_session*`.
 pub use claude_replay_core::{
     claude_discover, codex_discover, diff, discover, engine, follow, metrics, model, Agent,
+    SessionCache, SessionSource,
 };
 
 use anyhow::Result;

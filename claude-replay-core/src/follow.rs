@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::engine::builder::SessionBuilder;
+use crate::engine::session::Session;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
@@ -31,16 +32,13 @@ impl FollowParser {
         }
     }
 
-    /// Poll: fold any newly-appended lines (or rebuild on a truncation/rewrite) and return
-    /// the current blocks + per-turn times + metrics. Returns `None` when nothing changed
-    /// since the last poll (the common idle tick). O(delta) except on a rewrite.
-    #[allow(clippy::type_complexity)]
-    pub fn poll(
-        &mut self,
-    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
+    /// Fold any newly-appended lines (or rebuild on a truncation/rewrite) into the running
+    /// builder. Returns `Ok(true)` when content advanced this tick, `Ok(false)` when nothing
+    /// changed since the last poll (the common idle tick). O(delta) except on a rewrite.
+    fn advance_from_source(&mut self) -> std::io::Result<bool> {
         let p = self.reader.poll()?;
         if !p.reset && p.lines.is_empty() {
-            return Ok(None); // nothing new this tick
+            return Ok(false); // nothing new this tick
         }
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
@@ -48,7 +46,24 @@ impl FollowParser {
             self.builder.reset();
         }
         self.builder.advance(&p.lines);
-        Ok(Some(self.builder.fold()))
+        Ok(true)
+    }
+
+    /// Poll: fold any newly-appended lines and return the current blocks + per-turn times +
+    /// metrics. Returns `None` when nothing changed since the last poll (the common idle tick).
+    #[allow(clippy::type_complexity)]
+    pub fn poll(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
+        Ok(self.advance_from_source()?.then(|| self.builder.fold()))
+    }
+
+    /// Poll and return the current state as an owned [`Session`] (blocks + per-turn times +
+    /// metrics + derived index + sub-agent map), `cwd` left `None` — the caller fills it from
+    /// the source path, like [`parse_session_as`](crate::parse_session_as) does. Returns `None`
+    /// when the source hasn't grown since the last poll (idle). Used by the residency cache.
+    pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
+        Ok(self.advance_from_source()?.then(|| self.builder.snapshot()))
     }
 }
 

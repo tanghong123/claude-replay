@@ -1,109 +1,166 @@
 //! The `--html` live server: a loopback HTTP server + the per-agent live tailer.
-//! Renders via `super`'s block/stream helpers; residency is delegated to core's
-//! `SessionStore`. Split out so the HTTP/tailer machinery doesn't share a namespace
-//! with the markdown/JSON renderer.
+//! Renders via `super`'s block/stream helpers; the session domain (the id→source registry, the
+//! resident incremental followers, and the materialized `Session`s) is owned by core's
+//! [`SessionCache`](crate::SessionCache) — the server keeps only *presentation* state (the
+//! rendered-line diff baseline + titles). Split out so the HTTP/tailer machinery doesn't share
+//! a namespace with the markdown/JSON renderer.
 
 use super::{
     block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
     session_id, AgentInfo, ChildRef, POLL_MS,
 };
 use crate::fold::FoldPolicy;
-use crate::{discover, Agent, Args};
+use crate::{discover, Agent, Args, SessionCache, SessionSource};
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// How long an agent keeps being tailed after its last request before it goes idle and is
 /// dropped (its stream file stays on disk; a later request revives it).
 const TAIL_TTL_MS: u128 = 30_000;
 
 /// The live server's shared state. Only *requested* agents become resident and get folded
-/// each cycle — the rest cost nothing (tier (c) in the store), which is the CPU fix vs
-/// re-parsing the whole tree. The session bookkeeping (the id→source registry + the resident
-/// follower set + idle reaping) lives in [`SessionStore`](crate::engine::store::SessionStore);
-/// `Live` layers the HTML rendering, the materialized `<id>.jsonl` (tier (b)), and the
-/// `/stream` byte cursor over it.
+/// each cycle — the rest cost nothing (tier (c) in the cache), which is the CPU fix vs
+/// re-parsing the whole tree. The session domain (the id→source registry + the resident
+/// incremental followers + the materialized `Session`s + idle reaping) is owned by
+/// [`SessionCache`](crate::SessionCache); `Live` keeps only the *presentation* state — the
+/// per-agent titles, the rendered-line diff baseline (`prev`), the materialized `<id>.jsonl`
+/// (tier (b)), and the `/stream` byte cursor — layered over it.
 struct Live {
     dir: std::path::PathBuf,
     agent: Agent,
     fold: FoldPolicy,
     root_path: std::path::PathBuf,
     cwd: String,
-    store: crate::engine::store::SessionStore<AgentInfo, Tailer>,
+    /// The session domain: id→source registry + resident followers + TTL reaping.
+    cache: SessionCache,
+    /// Presentation state, keyed by agent id. `prev`: the block lines last written (the diff
+    /// baseline for the next delta); its presence also marks an agent as materialized (its
+    /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
+    prev: Mutex<HashMap<String, Vec<String>>>,
+    titles: Mutex<HashMap<String, TitleInfo>>,
 }
 
-/// A resident agent's live payload: the block lines last written (the diff baseline for the
-/// next delta) and the incremental follower (M16) — a persistent `Replayer` that folds only
-/// the newly-appended lines each cycle. Its `poll` returning `None` when the source hasn't
-/// grown IS the skip-if-unchanged (no whole-file re-parse). (Its idle clock lives in the
-/// store, which owns residency.)
-struct Tailer {
-    prev: Vec<String>,
-    follower: crate::follow::FollowParser,
+/// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
+/// the stream meta except the source (which the cache owns) and the id (the map key).
+#[derive(Clone, Default)]
+struct TitleInfo {
+    title: String,
+    agent_type: String,
+    /// The ancestry from the root down to this agent's parent — `(id, title)` each — for the
+    /// breadcrumb. Empty for the root.
+    ancestors: Vec<(String, String)>,
 }
 
 impl Live {
-    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first
-    /// request), register its children, and mark it recently-seen so the background tailer
-    /// keeps it current. Cheap on the hot path (an already-tailing id just bumps its clock).
-    /// Returns false for an unknown id (not in the registry).
+    /// Reconstruct the `AgentInfo` that `render_agent_stream` / `child_info` expect from the
+    /// split state: the source (owned by the cache) + the title (owned by `titles`) + the id.
+    fn agent_info(&self, id: &str, source: std::path::PathBuf, t: &TitleInfo) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            source,
+            title: t.title.clone(),
+            agent_type: t.agent_type.clone(),
+            ancestors: t.ancestors.clone(),
+        }
+    }
+
+    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
+    /// and register its children. Cheap on the hot path (an already-materialized id short-
+    /// circuits; the background tailer keeps it current). Returns false for an unknown id.
     fn ensure_stream(&self, id: &str) -> bool {
-        if self.store.see(id) {
-            return true; // already resident (tier (a)) — just bumped its clock
+        if self.prev.lock().unwrap().contains_key(id) {
+            return true; // already materialized — the tailer keeps its stream current
         }
-        // Tier-(c) lookup: the registry (populated from spawn events). Fall back to
-        // resolving the source directly — every agent shares the flat `subagents/` dir, so
-        // a valid id resolves even if its parent was never navigated (deep links) — with a
-        // plain title until its parent's spawn supplies the description.
-        let info = self.store.resolve(id).or_else(|| {
-            discover::subagent_source(self.agent, &self.root_path, id).map(|source| AgentInfo {
-                id: id.to_string(),
-                source,
+        // Tier-(c) lookup: the cache registry (populated from spawn events). Fall back to
+        // resolving the source directly — every agent shares the flat `subagents/` dir, so a
+        // valid id resolves even if its parent was never navigated (deep links) — with a plain
+        // title until its parent's spawn supplies the description. The fallback is registered
+        // into the cache so `poll` can locate its source.
+        let (src, title) = if let Some(src) = self.cache.resolve(id) {
+            let t = self
+                .titles
+                .lock()
+                .unwrap()
+                .get(id)
+                .cloned()
+                .unwrap_or_default();
+            (src, t)
+        } else {
+            let Some(source) = discover::subagent_source(self.agent, &self.root_path, id) else {
+                return false;
+            };
+            if !source.exists() {
+                return false;
+            }
+            let src = SessionSource {
+                agent: self.agent,
+                transcript: source,
+            };
+            let t = TitleInfo {
                 title: id.to_string(),
-                agent_type: String::new(),
-                ancestors: Vec::new(), // unknown ancestry for an un-navigated deep link
-            })
-        });
-        let Some(info) = info else {
-            return false;
+                ..Default::default() // unknown ancestry/type for an un-navigated deep link
+            };
+            self.cache.register(id, src.clone());
+            self.titles
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), t.clone());
+            (src, t)
         };
-        if !info.source.exists() {
+        if !src.transcript.exists() {
             return false;
         }
-        // Initial generation via the incremental follower's first poll (folds the whole
-        // source once; subsequent polls in `run_tailer` fold only appended deltas).
-        let mut follower = crate::follow::FollowParser::open(self.agent, &info.source);
-        let (blocks, times, metrics) = match follower.poll() {
-            Ok(Some(t)) => t,
-            Ok(None) => (Vec::new(), Vec::new(), crate::metrics::Metrics::default()),
-            Err(_) => return false,
+        // Initial materialization via the cache's first poll (folds the whole source once;
+        // subsequent polls in `run_tailer` fold only appended deltas). `None` == an empty
+        // source; a read error drops the request.
+        let session = match self.cache.poll(id) {
+            Some(Ok(s)) => Some(s),
+            Some(Err(_)) => return false,
+            None => None,
+        };
+        let info = self.agent_info(id, src.transcript.clone(), &title);
+        let empty_metrics = crate::metrics::Metrics::default();
+        let (blocks, times, metrics) = match &session {
+            Some(s) => (s.blocks.as_slice(), s.user_times.as_slice(), &s.metrics),
+            None => (&[][..], &[][..], &empty_metrics),
         };
         let (jsonl, children) = render_agent_stream(
-            self.agent, &self.fold, &self.cwd, true, &info, &blocks, &times, &metrics, None,
+            self.agent, &self.fold, &self.cwd, true, &info, blocks, times, metrics, None,
         );
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
-        // Promote to tier (a): resident with its follower + diff baseline.
-        self.store.admit(
-            id,
-            Tailer {
-                prev: block_lines(&jsonl),
-                follower,
-            },
-        );
+        // Record the diff baseline (also marks the id materialized for the fast path above).
+        self.prev
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), block_lines(&jsonl));
         true
     }
 
-    /// Register `parent`'s discovered children so their `?session=` links resolve to a
-    /// source later — carrying the ancestry (parent's + parent) for their breadcrumb.
+    /// Register `parent`'s discovered children so their `?session=` links resolve to a source
+    /// later — carrying the ancestry (parent's + parent) for their breadcrumb. Splits each
+    /// child's `AgentInfo` into a cache source + a `titles` entry.
     fn register_children(&self, parent: &AgentInfo, children: Vec<ChildRef>) {
         for c in children {
-            if self.store.is_registered(&c.id) {
+            if self.cache.is_registered(&c.id) {
                 continue;
             }
             if let Some(ci) = child_info(self.agent, &self.root_path, parent, c) {
                 let id = ci.id.clone();
-                self.store.register_new(&id, ci);
+                let src = SessionSource {
+                    agent: self.agent,
+                    transcript: ci.source,
+                };
+                let t = TitleInfo {
+                    title: ci.title,
+                    agent_type: ci.agent_type,
+                    ancestors: ci.ancestors,
+                };
+                self.cache.register_new(&id, src);
+                self.titles.lock().unwrap().entry(id).or_insert(t);
             }
         }
     }
@@ -138,35 +195,47 @@ impl Live {
     fn run_tailer(self: std::sync::Arc<Self>) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-            self.store.reap(TAIL_TTL_MS); // drop residents idle past the TTL → tier (c)
-            for id in self.store.resident_ids() {
-                let Some(info) = self.store.resolve(&id) else {
+            self.cache.reap(TAIL_TTL_MS); // drop residents idle past the TTL → tier (c)
+            for id in self.cache.resident_ids() {
+                let Some(src) = self.cache.resolve(&id) else {
                     continue;
                 };
                 // Fold ONLY the newly-appended lines through this agent's persistent follower
-                // (its `poll` returns `None` when the source hasn't grown — the skip that
-                // turns a constant re-parse of a huge transcript into O(delta) work). The
-                // poll runs under the residents lock only for the brief delta read.
-                let polled = self
-                    .store
-                    .with_resident(&id, |tl| tl.follower.poll().ok().flatten())
-                    .flatten();
-                let Some((blocks, times, metrics)) = polled else {
-                    continue; // reaped since enumeration, or nothing new this cycle
+                // (the cache's `poll` returns `None` when the source hasn't grown — the skip
+                // that turns a constant re-parse of a huge transcript into O(delta) work). The
+                // follower read runs under the cache's residents lock; rendering is out here.
+                let session = match self.cache.poll(&id) {
+                    Some(Ok(s)) => s,
+                    _ => continue, // reaped since enumeration, unreadable, or nothing new
                 };
+                let title = self
+                    .titles
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                let info = self.agent_info(&id, src.transcript.clone(), &title);
                 let (jsonl, children) = render_agent_stream(
-                    self.agent, &self.fold, &self.cwd, true, &info, &blocks, &times, &metrics, None,
+                    self.agent,
+                    &self.fold,
+                    &self.cwd,
+                    true,
+                    &info,
+                    &session.blocks,
+                    &session.user_times,
+                    &session.metrics,
+                    None,
                 );
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                self.store.with_resident(&id, |tl| {
-                    if let Some(delta) = stream_delta(&tl.prev, &fresh, meta) {
-                        let _ =
-                            append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
-                        tl.prev = fresh;
-                    }
-                });
+                let mut prev = self.prev.lock().unwrap();
+                let baseline = prev.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+                if let Some(delta) = stream_delta(baseline, &fresh, meta) {
+                    let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
+                    prev.insert(id, fresh);
+                }
             }
         }
     }
@@ -313,16 +382,22 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         fold,
         root_path: path.to_path_buf(),
         cwd,
-        store: crate::engine::store::SessionStore::new(),
+        cache: SessionCache::new(),
+        prev: Mutex::new(HashMap::new()),
+        titles: Mutex::new(HashMap::new()),
     });
-    live.store.register(
+    live.cache.register(
         &sid,
-        AgentInfo {
-            id: sid.clone(),
-            source: path.to_path_buf(),
+        SessionSource {
+            agent,
+            transcript: path.to_path_buf(),
+        },
+    );
+    live.titles.lock().unwrap().insert(
+        sid.clone(),
+        TitleInfo {
             title: title.clone(),
-            agent_type: String::new(),
-            ancestors: Vec::new(),
+            ..Default::default()
         },
     );
     // The shell + the root stream up-front so the first page load is instant.
