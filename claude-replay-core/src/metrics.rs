@@ -4,7 +4,20 @@
 use crate::model::UsdCost;
 use crate::Agent;
 
+/// A session's token/cost tally.
+///
+/// **Two-way compatible by design.** The parse side is liberal: each accumulator pulls only
+/// the JSON keys it knows, defaulting a *missing* field to `0` (an **older** transcript) and
+/// *ignoring* unknown ones (a **newer** transcript) — so neither direction fails, at worst a
+/// brand-new token category isn't yet counted. The struct is `#[non_exhaustive]`, so new
+/// fields can be **added** without breaking downstream crates (they read fields + use
+/// [`Default`], never a struct literal). Evolving a *specific* agent's usage format is a
+/// change in that agent's accumulator (`claude_metrics` / `codex_metrics`), not here — the
+/// shared value stays stable. (If `Metrics` is ever persisted — e.g. a `SessionBuilder`
+/// checkpoint — add `serde(default)` per field and don't `deny_unknown_fields`, mirroring the
+/// same policy at the serialization boundary.)
 #[derive(Debug, Default, PartialEq, Clone)]
+#[non_exhaustive]
 pub struct Metrics {
     /// Genuinely-new input tokens (excludes cached content — see the two cache
     /// fields below). Small on cache-heavy sessions.
