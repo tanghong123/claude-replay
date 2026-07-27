@@ -494,8 +494,16 @@ pub(crate) struct QueueItem {
 /// record for back-patching a `SubAgent`'s terminal status after the loop. `status` is
 /// `None` when the source carried no explicit status (then the spawn is left untouched).
 pub(crate) struct CompletionRec {
+    /// The spawning `Agent`/`Task` **tool_use id** (from the notification's `<tool-use-id>`) —
+    /// the *primary* key that back-patches this completion onto its `SubAgent` spawn block
+    /// (which stores the same id). Empty when the notification carried no `<tool-use-id>`.
     pub(crate) tool_use_id: String,
+    /// The notification's `<task-id>`. For an agent completion this **is the agent's id**
+    /// (matched against `SubAgent.agent_id`) — the *fallback* join key, used when the
+    /// notification keyed by task-id rather than tool-use-id. Empty when absent.
     pub(crate) task_id: String,
+    /// Terminal state from the notification's `<status>`; `None` when it carried none (the
+    /// spawn's status is then left untouched).
     pub(crate) status: Option<AgentStatus>,
 }
 
