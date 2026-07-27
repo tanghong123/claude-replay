@@ -109,9 +109,18 @@ pub(crate) fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMe
                     },
                 );
             }
-            Block::AgentDone { agent_id, .. } => {
+            Block::AgentDone {
+                agent_id, status, ..
+            } => {
                 if let Some(m) = map.get_mut(agent_id) {
                     m.done_at = Some(at);
+                    // Two-durable-events status derivation: the finish event supersedes the
+                    // spawn's launch status with the terminal one. Same value the fold's
+                    // spawn-block back-patch produces (both come from the one completion
+                    // notification), so this is byte-identical — but it makes the map the
+                    // authoritative status source, deriving it from the events rather than
+                    // reading a mutated block (the step toward immutable spawn/finish blocks).
+                    m.status = *status;
                 }
             }
             _ => {}
