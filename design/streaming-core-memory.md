@@ -262,6 +262,21 @@ children are locators / on-disk. Never O(whole tree).
    block accessor (`Transcript`/`SessionCache` read-by-offset). `--dump`/serve/`parse_session` can
    opt into O(N)-index + paged content. Underpins `SessionCache` eviction + the resume production
    consumer (restart survival — #18's `tell`/`open_at`, still test-wired, finally used here).
+
+   **Status (landed, additive + byte-identical):** the tier-b *mechanism* is built — `serde` across
+   the `Block` model; `engine::tier_b` with `Deferred{offset,size}`, `TierBStore` (append-only
+   `serde_json`, returns the locator), and `TierBSession` (pairs `Session<Deferred>` + backing,
+   `impl BlockAccess` = seek + decode on demand); `SessionAccumulator::into_store` reclaims the
+   backing. And the two accumulator-side prerequisites for emit-and-drop: `SessionIndex::push` and
+   `push_sub_agent` (batch `build*` now delegate; each proven `incremental == batch`). **Remaining:**
+   (A) the emit-and-drop *restructure* (Replayer `base`-offset window + per-turn finalize + drain;
+   accumulator put-once + incremental index/sub_agents; `snapshot = durable ++ finish_turns(open)`) —
+   deferred to land *with* a wired tier-b consumer, since it yields **no net footprint win for the
+   in-memory default** (the accumulator then holds the durable `O(N)` the Replayer used to) and is the
+   gate-hardest hot-path change; (B) the resume/persist consumer, **design-blocked** on how to persist
+   the metadata: `SessionIndex.counts` keys are `&'static str` (not `Deserialize`-able) and `Metrics`
+   (serde-clean) can't be rebuilt from blocks. See task #30 for the option set (counts→`String`, or
+   rebuild-on-load, or persist-`Metrics`-only) + the `SessionCache` wiring.
 4. **Windowed presentation + lazy enrichment.** TUI holds a block/line window paged from tier-b;
    `--dump*`/serve stop eager-enriching the whole sub-agent tree (stream each child as its subtree
    is emitted). Drop the render-model 2–3× duplication (`raw`/`wrapped`/`body_cache`).
