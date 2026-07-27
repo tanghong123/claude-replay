@@ -290,7 +290,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let cwd = discover::session_cwd(path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let title = display_title(path);
+    let title = display_title(agent, path);
 
     // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
     // wipe any streams left by a previous run of this session so lazy materialization

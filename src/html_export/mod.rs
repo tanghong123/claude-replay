@@ -938,12 +938,38 @@ fn repo_name(cwd: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// The page's display title: the session's repo/dir name, else its id.
-pub(super) fn display_title(path: &Path) -> String {
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    repo_name(&cwd).unwrap_or_else(|| session_id(path))
+/// The browser-tab / header title — chosen so a human can pick this session out of a row of
+/// tabs. A store transcript is named by a bare session id (a UUID, or a Codex `rollout-…`),
+/// which is meaningless in a tab, so we show its **project directory** instead (from the
+/// recorded cwd); a transcript the user named and pointed at directly keeps its **file stem**.
+/// The session name leads (it's the part that survives tab truncation) and the agent label is
+/// appended, so a Claude and a Codex view of the same repo stay distinct.
+pub(super) fn display_title(agent: Agent, path: &Path) -> String {
+    let stem = session_id(path);
+    let name = if looks_like_session_id(&stem) {
+        discover::session_cwd(path)
+            .and_then(|cwd| repo_name(&cwd.display().to_string()))
+            .unwrap_or(stem)
+    } else {
+        stem // a file the user named → the stem is the meaningful name
+    };
+    format!("{name} · {}", agent.label())
+}
+
+/// Does a transcript's file stem look machine-generated (a session UUID or a Codex
+/// `rollout-…` name) rather than something a human would recognize?
+fn looks_like_session_id(stem: &str) -> bool {
+    stem.starts_with("rollout-") || is_uuid(stem)
+}
+
+/// A 8-4-4-4-12 hex UUID (the Claude/Codex session-id filename shape).
+fn is_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        })
 }
 
 /// The block lines of a stream (everything after the leading `meta` line).
@@ -1462,8 +1488,8 @@ mod tests {
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
         assert_eq!(
             recs[0]["ancestors"],
-            json!([{ "id": "sess", "title": "sess" }]),
-            "child breadcrumb points at the root"
+            json!([{ "id": "sess", "title": "sess · claude" }]),
+            "child breadcrumb points at the root (titled by session name + agent)"
         );
         assert!(
             recs.iter().any(|o| o["head"]["name"] == json!("Read")),
@@ -2097,5 +2123,45 @@ mod tests {
         // A one-off export's <body> carries no companion attributes.
         let oneoff = build_html("t", "{}", &[], None);
         assert!(oneoff.contains("<body>"), "plain body tag, no data-src");
+    }
+
+    #[test]
+    fn title_uses_project_dir_for_uuid_and_stem_for_named_file() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-title-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+
+        // A store transcript is named by a UUID → the title shows the project dir (from cwd),
+        // with the agent appended: `<project> · <agent>`.
+        let uuid = base.join("12345678-90ab-cdef-1234-567890abcdef.jsonl");
+        std::fs::write(
+            &uuid,
+            "{\"type\":\"user\",\"cwd\":\"/Users/me/code/knack\",\"message\":{\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        assert_eq!(display_title(Agent::Claude, &uuid), "knack · claude");
+
+        // A transcript the user named and pointed at directly keeps its file stem.
+        let named = base.join("my-session.jsonl");
+        std::fs::write(
+            &named,
+            "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        assert_eq!(display_title(Agent::Claude, &named), "my-session · claude");
+
+        // The UUID shape is recognized regardless of case; a non-UUID/non-store stem is kept.
+        assert!(looks_like_session_id(
+            "12345678-90AB-cdef-1234-567890abcdef"
+        ));
+        assert!(looks_like_session_id("rollout-2026-07-27T10-00-00-abc"));
+        assert!(!looks_like_session_id("knack"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

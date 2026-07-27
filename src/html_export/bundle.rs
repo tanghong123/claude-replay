@@ -44,8 +44,8 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let fold = FoldPolicy::from_args(args);
     let reveal = false;
     let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
-    // The page title is the repo name; files are named by the session id.
-    let title = display_title(path);
+    // The page title identifies the session in a browser tab; files are named by session id.
+    let title = display_title(agent, path);
 
     // `--dump-html -` streams the page to stdout (pipes / tests); never live.
     let stem = match args.dump_html.as_ref().and_then(|o| o.as_deref()) {
@@ -153,7 +153,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let cwd = discover::session_cwd(path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let title = display_title(path);
+    let title = display_title(agent, path);
     let root_id = session_id(path);
     let mut sink = AssetSink::new(&out_dir).with_context(|| "create assets dir")?;
 
