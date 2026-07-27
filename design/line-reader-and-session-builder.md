@@ -23,17 +23,16 @@ The key realization: the fold is **already** message-iterative internally (the `
 folds line-by-line; `FollowParser` folds deltas). We are not building a new engine — we are
 exposing the incremental construction that already happens, and giving it a resume story.
 
-Three layers:
+Two core layers, plus a helper that already exists:
 
 1. **`LineReader`** — a resumable line source (rename + extension of today's `TailReader`).
 2. **`SessionBuilder`** — folds a line source into an evolving `Session`, checkpointable.
-3. **`SessionCache`** — a **convenience helper** (not core): a keyed, lazy, self-tailing store
-   of `Session`s composed from layers 1–2, letting a flat `Session` reference sub-agents by id
-   while their transcripts materialize on demand. A developer can replicate or replace it from
-   the core APIs (see [`sub-agent-normalization.md`](sub-agent-normalization.md)).
 
-Layers 1–2 are core (new capability); layer 3 is a helper built strictly on top — the same
-core-vs-helper discipline the rest of the engine follows.
+Both are **core** (new capability). A lazy, keyed, self-tailing *store* of `Session`s (for
+materializing sub-agents on demand) is **convenience, not a new type** — the existing generic
+`engine::store::SessionStore` + a `FollowParser` already is it; see
+[Layer 3](#layer-3--lazy-session-store-reuse-sessionstore-dont-add-a-type-task-21). This keeps
+the core-vs-helper discipline the rest of the engine follows.
 
 ```text
 source ──lines──▶ LineReader ──lines──▶ SessionBuilder ──▶ Session (snapshot)
@@ -161,11 +160,35 @@ impl SessionBuilder {
 ```
 
 - `parse_session(path)` = `let mut b = SessionBuilder::new(agent); feed the whole file; b.snapshot()`.
-- `FollowParser` = a `SessionBuilder` fed each poll's delta (and it can now return a full
-  `Session`, not just the triple, if we want).
+- `FollowParser` = a `SessionBuilder` fed each poll's delta over a `LineReader` — so batch and
+  live share the **one** line source, and `FollowParser` gains `checkpoint`/`resume` too. It
+  can now return a full `Session`, not just the triple.
 - The huge-transcript / expensive-state consumer = advance in chunks; `snapshot()` (or a
   lower-level per-advance block view) to process-and-discard; `checkpoint()` to survive a
   restart.
+
+### Cold start from the middle — why a checkpoint is `Position` **+** fold state
+
+`FollowParser` reads through the `LineReader`, so it *can* `open_at(Position)` and pick up from
+the middle of a file — but resuming the **fold** is not the same as resuming the **reader**.
+The fold is stateful across lines: a tool result back-patches onto a `tool_use` that appeared
+earlier, thinking-turns group preceding tools, the queue lifecycle and the user-turn / metrics
+counters all carry. So:
+
+- A **bare `Position`** resumes only the raw line stream — a *tail-view* (blocks folded from
+  the offset against an empty base): correct for a raw-line consumer, **wrong** for folded
+  blocks (a result whose `tool_use` was before the offset becomes an orphan; grouping/counts
+  restart).
+- A correct mid-file resume therefore restores a **`Checkpoint` = `Position` + the `Replayer`
+  state** (blocks-so-far, `tool_slot`/`pending`/`queue`/`completions`, counters, `cwd`, metrics
+  accumulator). `resume(checkpoint)` = `LineReader::open_at(pos)` + rehydrate the `Replayer`,
+  then continue — **byte-identical to never having stopped**.
+
+The win is skipping the **re-read + re-decode** of a 100 MB prefix (and letting the client keep
+its expensive derived state), not skipping the fold state — that state is exactly what makes
+the continuation correct. (Serializing the `Replayer` couples the checkpoint to internal fold
+fields; version the checkpoint format, and fall back to a full re-parse if it doesn't load —
+the same `reset`-means-rebuild contract the `LineReader` already uses.)
 
 ### Three constraints that shape the API
 
@@ -204,32 +227,38 @@ resumable-restart share one implementation instead of three.
 
 ---
 
-## Layer 3 — `SessionCache` (task #21)
+## Layer 3 — lazy session store: reuse `SessionStore`, don't add a type (task #21)
 
-### It's a convenience helper, not a core primitive
-
-Unlike layers 1–2, `SessionCache` adds **no new capability** — it's a thin composition of the
-core APIs (`parse_session` + `FollowParser` + a keyed map + TTL reaping) that a developer could
-replicate in a dozen lines. It exists only to save the common boilerplate of "lazily open many
-sessions by id and keep them live," and it must stay opt-in: a client that wants different
-policy (eviction, keying, eager vs lazy, no tailing) uses the core APIs directly. It belongs in
-the same *helper* tier as today's generic `engine::store::SessionStore` — in fact it's just an
-opinionated wrapper over it. The whole thing a client actually needs is already core:
+The earlier drafts of this design proposed a new `SessionCache`. On reflection **we don't need
+one** — it would duplicate the generic `engine::store::SessionStore` that already ships and is
+already the convenience helper for exactly this. `SessionCache` never added a capability; it
+was only an opinionated wrapper, and the lazy-parse-then-tail behaviour isn't even in the
+store — it's a few lines of caller composition over the *core* APIs:
 
 ```rust
-// roll-your-own, if the bundled cache doesn't fit — this IS the cache, minus reaping:
+// the whole "lazy open + tail" behaviour, from the core APIs (this is what serve.rs does):
 let mut open: HashMap<AgentId, FollowParser> = HashMap::new();
 let follower = open.entry(id).or_insert_with(|| FollowParser::open(agent, &meta.transcript));
 let session = follower.poll()?;   // parses on first call, tails on later calls
 ```
 
-So the reason it's worth shipping is convenience for the common case (and to give
-`html_export::serve.rs` one place to live instead of hand-rolling it), **not** because it's
-load-bearing. A flat `Session` (one transcript) references its sub-agents by id and carries
-only their *paths* (see [`sub-agent-normalization.md`](sub-agent-normalization.md)); turning a
-path into a live `Session` — lazily (a sub-agent tree can be large; parse only what's opened)
-and incrementally (re-opening tails new events) — is exactly what this helper wraps up, and
-what `serve.rs` already does by hand with `SessionStore<AgentInfo, Tailer>`.
+So the plan is:
+
+- **Keep `engine::store::SessionStore`** as the one (generic, `Info`/`Res`) residency helper.
+  It handles the map + admit/evict + TTL reaping that the ad-hoc `HashMap` above lacks.
+- **Provide lazy session loading as a documented composition**, with `html_export::serve.rs`
+  as the reference usage (`SessionStore<AgentInfo, Tailer>` + `FollowParser`). A client that
+  wants different policy (eviction, keying, eager vs lazy) writes the ~5-line composition
+  itself against the core.
+- **Only if `serve.rs`'s hand-rolling proves worth de-duplicating** — e.g. the sub-agent
+  descend feature (#20) grows a second copy of it — factor the shared "open-or-tail a resident
+  `FollowParser` keyed by id" step into a *small helper on/beside `SessionStore`* (a
+  constructor or one method), **not** a parallel abstraction.
+
+A flat `Session` (one transcript) references its sub-agents by id and carries only their
+*paths* (see [`sub-agent-normalization.md`](sub-agent-normalization.md)); turning a path into a
+live `Session` — lazily, and tailing on re-open — is the composition above, so no new type is
+warranted.
 
 ### Shape
 
@@ -281,10 +310,10 @@ id under a root.
    immediately useful to a raw-line consumer. Foundation for everything else.
 2. **`SessionBuilder`** (task #19): the incremental `Session` seam; refactor `parse_session`
    and `FollowParser` onto it; add `checkpoint`/`resume`.
-3. **`SessionCache`** (task #21): the keyed lazy/tailing store, built on `SessionStore` +
-   `SessionBuilder`; refactor `html_export::serve.rs` onto it (it currently hand-rolls the
-   pattern), and pair it with the sub-agent metadata map (task #20) so children materialize on
-   demand.
+3. **Lazy session loading** (task #21): **no new type** — reuse `SessionStore` + `FollowParser`
+   (the composition `serve.rs` already uses) and pair it with the sub-agent metadata map
+   (task #20) so children materialize on demand. Only factor a *small* shared helper if the
+   descend feature would otherwise copy `serve.rs`'s logic.
 
 All **design-only** until prioritized. They are output-preserving refactors of existing
 machinery, so implementation is gated on the usual byte-identical checks (`--dump` /

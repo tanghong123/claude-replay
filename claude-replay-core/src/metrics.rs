@@ -13,9 +13,16 @@ use crate::Agent;
 /// fields can be **added** without breaking downstream crates (they read fields + use
 /// [`Default`], never a struct literal). Evolving a *specific* agent's usage format is a
 /// change in that agent's accumulator (`claude_metrics` / `codex_metrics`), not here — the
-/// shared value stays stable. (If `Metrics` is ever persisted — e.g. a `SessionBuilder`
-/// checkpoint — add `serde(default)` per field and don't `deny_unknown_fields`, mirroring the
-/// same policy at the serialization boundary.)
+/// shared value stays stable.
+///
+/// For a metric a *single* agent reports that the shared struct shouldn't grow a field for,
+/// the intended mechanism is an **accumulating extension bag** — `extra: BTreeMap<String, u64>`
+/// (namespaced snake_case keys, e.g. `reasoning_tokens`, `web_searches`) that the agent's
+/// accumulator folds like the typed counters. Data-only (the standard `footer` shows the typed
+/// fields), and it makes a brand-new category need *no* struct change — the complement to
+/// `#[non_exhaustive]`. Deferred until the first agent-specific metric exists (task #22).
+/// (If `Metrics` is ever persisted — e.g. a `SessionBuilder` checkpoint — add `serde(default)`
+/// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone)]
 #[non_exhaustive]
 pub struct Metrics {
