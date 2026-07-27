@@ -152,10 +152,15 @@ metadata backbone.
 
 ## Design decisions to settle before building
 
-1. **Keying + late ids.** Async spawns assign `agent_id` *after* the spawn; the fold joins via
-   `tool_use_id` and back-patches `agent_id` in `apply_completions_and_suppress` — the map is
-   finalized there. Decide the key for a spawn whose id never resolves (fall back to
-   `tool_use_id` / a synthetic key); blocks must reference whatever key the map uses.
+1. **Keying + when the id is known.** The spawn `tool_use` does **not** carry the agent id — it
+   arrives on the spawn's **`tool_result`** (`toolUseResult.agentId`, the `user` message closing
+   the `Task`/`Agent` call), where the fold back-patches it onto the `SubAgent` (join by
+   `tool_use_id`). So the id is available *immediately after the spawn* — well before the
+   completion notification — and the map can key by it then. The only id-less case is a spawn
+   whose `tool_result` never arrived (interrupted / still-launching): key those by
+   `tool_use_id` (or a synthetic key). Blocks reference whatever key the map uses.
+   (`apply_completions_and_suppress` runs later and only back-patches the terminal *status* /
+   resolves `AgentDone` — it does not assign the id.)
 2. **Renderers consult the map.** `render.rs`, `html_export`, and the viewer render a
    `SubAgentSpawn`/`AgentDone` by looking up `session.sub_agents[id]`, so their signatures gain
    access to the map (or the `&Session`). Byte-identical: same output, different source.
