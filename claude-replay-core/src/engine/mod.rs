@@ -8,7 +8,7 @@
 
 pub mod index;
 pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `Block`, never `Message`
-pub mod path;
+pub(crate) mod path; // relativize helpers — internal to the parsers + HTML path rendering
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping/parse_stream)
 pub mod session;
 pub mod store;

@@ -70,8 +70,9 @@ pub struct SessionIndex {
 
 impl SessionIndex {
     /// Build the index in one scan over the top-level blocks. `user_times` supplies each
-    /// turn's timestamp in order (exactly the order `stamp_user_turns` emits them).
-    pub fn build(blocks: &[Block], user_times: &[Option<f64>]) -> Self {
+    /// turn's timestamp in order (exactly the order `stamp_user_turns` emits them). Internal:
+    /// a consumer always receives an already-built index via [`Session`](crate::Session).
+    pub(crate) fn build(blocks: &[Block], user_times: &[Option<f64>]) -> Self {
         let mut idx = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {

@@ -37,7 +37,7 @@ pub(crate) fn scan_ids<S: AsRef<str>>(
 /// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak
 /// memory is one line + the block buffer, matching the retired `parse_main`. `tool_ids` is
 /// the pass-1 id pre-scan; `reader` is a fresh pass-2 read. This equals `replay(tokenize(x))`
-/// over the same input (proven by `parse_path_matches_parse_str` + the golden corpus).
+/// over the same input (proven by `parse_file_matches_parse_str` + the golden corpus).
 pub(crate) fn parse_stream<R: std::io::BufRead>(
     reader: R,
     tool_ids: HashSet<String>,
@@ -139,7 +139,7 @@ pub(crate) struct Replayer<'a> {
 }
 
 impl<'a> Replayer<'a> {
-    pub fn new(shaping: &'a Shaping, tool_ids: HashSet<String>) -> Self {
+    pub(crate) fn new(shaping: &'a Shaping, tool_ids: HashSet<String>) -> Self {
         Replayer {
             shaping,
             tool_ids,
@@ -159,7 +159,7 @@ impl<'a> Replayer<'a> {
     }
 
     /// Fold a batch of messages into the running state (append, back-patch, stamp).
-    pub fn apply(&mut self, messages: &[Message]) {
+    pub(crate) fn apply(&mut self, messages: &[Message]) {
         let (join_result, keep_orphan) = (self.shaping.join_result, self.shaping.keep_orphan);
         for m in messages {
             match m {
@@ -339,7 +339,7 @@ impl<'a> Replayer<'a> {
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
     /// Returns the grouped blocks and the per-turn timestamps.
-    pub fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<f64>>) {
+    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<f64>>) {
         stamp_user_turns(
             &self.out,
             &mut self.stamped,
@@ -360,7 +360,7 @@ impl<'a> Replayer<'a> {
     /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
     /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
     /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
-    pub fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
+    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
         let mut out = self.out.clone();
         let mut user_times = self.user_times.clone();
         let mut stamped = self.stamped;
@@ -381,7 +381,7 @@ impl<'a> Replayer<'a> {
     /// batch pre-scan would. Across polls, earlier deltas' ids are already accumulated; the
     /// only remaining reorder (a result physically before its tool_use) is a rewritten tail,
     /// which the follower handles by rebuilding from scratch (a `reset`).
-    pub fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
+    pub(crate) fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
         self.tool_ids.extend(ids);
     }
 }

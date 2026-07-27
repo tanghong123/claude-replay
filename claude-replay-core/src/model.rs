@@ -183,17 +183,6 @@ impl AgentStatus {
             Self::Completed | Self::Failed | Self::Killed | Self::Stopped
         )
     }
-    /// Short label for the collapsed spawn line / footer.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::AsyncLaunched => "running",
-            Self::Completed => "done",
-            Self::Failed => "failed",
-            Self::Killed => "killed",
-            Self::Stopped => "stopped",
-        }
-    }
     /// Past-tense verb for the completion event line (`Agent "…" completed`).
     pub fn done_verb(self) -> &'static str {
         match self {
