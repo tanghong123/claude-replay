@@ -9,8 +9,8 @@ use std::collections::HashMap;
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
-    // streaming path (the adapter's `parse_path_timed`) also runs on the engine now, per line
-    // via `parse_stream` + `decode_line` (M9).
+    // streaming path (the shared `SessionBuilder`) also runs on the engine now, per line
+    // via `decode_line` + `Replayer` (M9).
     crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 

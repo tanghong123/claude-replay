@@ -73,19 +73,19 @@ pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Sessio
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
-    // `Args` — that keeps clap out of the core. Metrics are folded in the SAME streaming
-    // pass (M10) — one file read, no separate `parse_reader_for`.
-    let (blocks, user_times, metrics) = crate::engine::replay::parse_path_timed_for(agent, path)?;
-    let cwd = crate::discover::session_cwd(path);
-    let index = SessionIndex::build(&blocks, &user_times);
-    Ok(Session {
-        agent,
-        cwd,
-        blocks,
-        user_times,
-        metrics,
-        index,
-    })
+    // `Args` — that keeps clap out of the core. Derived from the incremental fold: feed a
+    // `SessionBuilder` line-by-line (one line resident, so a multi-gigabyte transcript never
+    // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
+    // one file read.
+    use std::io::BufRead;
+    let mut b = crate::engine::builder::SessionBuilder::new(agent);
+    let reader = io::BufReader::new(std::fs::File::open(path)?);
+    for line in reader.lines() {
+        b.advance(std::slice::from_ref(&line?)); // one line resident
+    }
+    let mut s = b.snapshot();
+    s.cwd = crate::discover::session_cwd(path); // the builder leaves cwd None; fill it here
+    Ok(s)
 }
 
 #[cfg(test)]

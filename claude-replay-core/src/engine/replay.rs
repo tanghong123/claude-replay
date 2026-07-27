@@ -1,7 +1,8 @@
 //! **Layer 2 — the shared fold.** The stateful [`Replayer`] folds a stream of canonical
 //! [`Message`]s (produced by any agent's Layer-1 decoder)
-//! into render [`Block`]s, via the per-agent [`Shaping`] seam and the
-//! streaming [`parse_stream`] driver. Agent-agnostic: everything that differs by agent enters
+//! into render [`Block`]s, via the per-agent [`Shaping`] seam. It is driven incrementally by
+//! [`SessionBuilder`](crate::engine::builder::SessionBuilder) (batch and live alike).
+//! Agent-agnostic: everything that differs by agent enters
 //! through `Shaping` (a `&'static` const per adapter) plus the `decode` closure. The data
 //! model it produces and block classification live in [`crate::model`]; this module is the
 //! machinery that builds it. Byte-identical to the retired `parse_main`/`parse_lines` oracles
@@ -9,48 +10,22 @@
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::model::*;
+#[cfg(test)]
 use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// **The streaming L2 driver** (M9). Feed a [`Replayer`] one line's messages at a time —
-/// `decode` (the agent's per-line L1, capturing its `cwd`) turns each line into a few
-/// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak
-/// memory is one line + the block buffer, matching the retired `parse_main`. Single pass —
-/// a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an orphan
-/// (forward-references do not occur in real transcripts). This equals `replay(tokenize(x))`
-/// over the same input (proven by `parse_file_matches_parse_str` + the golden corpus).
-pub(crate) fn parse_stream<R: std::io::BufRead>(
-    reader: R,
-    shaping: &Shaping,
-    mut decode: impl FnMut(&str, &mut Vec<Message>),
-    mut fold_metrics: impl FnMut(&Value),
-    user_times: &mut Vec<Option<EpochSeconds>>,
-) -> std::io::Result<Vec<Block>> {
-    let mut r = Replayer::new(shaping);
-    let mut buf: Vec<Message> = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        buf.clear();
-        decode(&line, &mut buf);
-        // Fold token/cost metrics in the SAME pass (M10) — one read instead of two. The
-        // metrics re-parse of the line matches the retired `parse_reader_for` exactly
-        // (from the raw line, skip on parse error), so the tally is byte-identical.
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            fold_metrics(&v);
-        }
-        r.apply(&buf);
-    }
-    let (blocks, ut) = r.into_blocks();
-    user_times.extend(ut);
-    Ok(blocks)
-}
-
 /// Streaming whole-file parse for `agent`: blocks + one wall-clock timestamp per user turn +
-/// folded metrics, all in a single pass (M9/M10). The one whole-file parse seam — batch
-/// callers ([`parse_session_as`](crate::parse_session_as)) go through here; the live path
-/// folds appended bytes via [`FollowParser`](crate::FollowParser). Flat (sub-agent trees are
-/// loaded separately by [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
+/// folded metrics, all in a single pass (M9/M10). Derived from the incremental fold — feeds a
+/// [`SessionBuilder`](crate::engine::builder::SessionBuilder) line-by-line (one line resident,
+/// no whole-file `Vec`), the same driver the live [`FollowParser`](crate::FollowParser) uses.
+/// Flat (sub-agent trees are loaded separately by
+/// [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
+///
+/// Test-only now: production goes straight through `SessionBuilder`
+/// ([`parse_session_as`](crate::parse_session_as) drives it directly). This wrapper is retained
+/// as the whole-file reference the equivalence gates compare the builder-driven output against.
+#[cfg(test)]
 pub(crate) fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
@@ -59,15 +34,19 @@ pub(crate) fn parse_path_timed_for(
     Vec<Option<EpochSeconds>>,
     crate::metrics::Metrics,
 )> {
-    let mut times = Vec::new();
-    let (blocks, metrics) = crate::adapter::adapter(agent).parse_path_timed(path, &mut times)?;
-    Ok((blocks, times, metrics))
+    use std::io::BufRead;
+    let mut b = crate::engine::builder::SessionBuilder::new(agent);
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    for line in reader.lines() {
+        b.advance(std::slice::from_ref(&line?)); // one line resident
+    }
+    Ok(b.fold())
 }
 
 /// The agent-specific seam of the otherwise-shared L2 fold — one of the
 /// [`TranscriptAdapter`](crate::adapter) hooks, returned by its `shaping()`. Each agent
-/// supplies a `&'static` const (`CLAUDE_SHAPING` / `CODEX_SHAPING`); the `Replayer` /
-/// `parse_stream` fold takes it by reference on every parse (batch and live). Everything else
+/// supplies a `&'static` const (`CLAUDE_SHAPING` / `CODEX_SHAPING`); the `Replayer` fold takes
+/// it by reference on every parse (batch and live). Everything else
 /// in this module is agent-agnostic; these **four** fn-pointer hooks (each documented on its
 /// field below) are the only points Claude and Codex differ: `build_tool` (shape a `tool_use`
 /// into a block), `join_result` (attach its result), `keep_orphan` (keep a resultless
@@ -314,7 +293,11 @@ impl<'a> Replayer<'a> {
     }
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
-    /// Returns the grouped blocks and the per-turn timestamps.
+    /// Returns the grouped blocks and the per-turn timestamps. Test-only now — production
+    /// finalizes non-consumingly via [`snapshot`](Self::snapshot) (the `SessionBuilder` folds
+    /// incrementally and re-snapshots), so this consuming path is exercised only by the
+    /// equivalence oracles.
+    #[cfg(test)]
     pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         stamp_user_turns(
             &self.out,

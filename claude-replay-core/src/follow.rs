@@ -6,36 +6,28 @@
 
 use std::path::Path;
 
-use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
-use crate::engine::message::Message;
-use crate::engine::replay::Replayer;
+use crate::engine::builder::SessionBuilder;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
 use crate::Agent;
 
-/// Follows a transcript file, folding only newly-appended lines each poll. Everything
-/// agent-specific — the L1 decoder, the L2 `Shaping`, the metrics accumulator — comes from
-/// the agent's `TranscriptAdapter`, so the follower itself is agent-agnostic.
+/// Follows a transcript file, folding only newly-appended lines each poll through a shared
+/// [`SessionBuilder`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
+/// metrics accumulator — lives in the builder, so the follower itself is agent-agnostic and is
+/// just the byte-offset reader plus the same incremental fold the batch parse uses.
 pub struct FollowParser {
-    adapter: &'static dyn TranscriptAdapter,
+    builder: SessionBuilder,
     reader: LineReader,
-    replayer: Replayer<'static>,
-    cwd: String,
-    metrics: Box<dyn MetricsAccumulator>,
 }
 
 impl FollowParser {
     /// Follow `path` from the beginning: the first `poll` folds the whole current file, then
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
-        let adapter = adapter(agent);
         Self {
-            adapter,
+            builder: SessionBuilder::new(agent),
             reader: LineReader::open_at_start(path),
-            replayer: Replayer::new(adapter.shaping()),
-            cwd: String::new(),
-            metrics: adapter.metrics_acc(),
         }
     }
 
@@ -53,21 +45,10 @@ impl FollowParser {
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
             // LineReader re-read from 0, so `p.lines` is the whole new file.
-            self.replayer = Replayer::new(self.adapter.shaping());
-            self.cwd.clear();
-            self.metrics = self.adapter.metrics_acc();
+            self.builder.reset();
         }
-        let mut delta: Vec<Message> = Vec::new();
-        for line in &p.lines {
-            delta.clear();
-            self.adapter.decode_line(line, &mut self.cwd, &mut delta);
-            self.replayer.apply(&delta);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                self.metrics.push(&v);
-            }
-        }
-        let (blocks, user_times) = self.replayer.snapshot();
-        Ok(Some((blocks, user_times, self.metrics.finish())))
+        self.builder.advance(&p.lines);
+        Ok(Some(self.builder.fold()))
     }
 }
 

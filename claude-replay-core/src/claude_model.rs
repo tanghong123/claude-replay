@@ -3,8 +3,8 @@
 //! (`CLAUDE_SHAPING`, `claude_build_tool`, `apply_result`, turn grouping/coalescing), the
 //! streaming parse entry points, sub-agent transcript loading, and the tool/attachment
 //! decode helpers. The agent-neutral engine it feeds — the `Block` data model, the
-//! `Replayer` / `replay` fold, `parse_stream`, and the shared message-handling helpers —
-//! lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
+//! `Replayer` / `replay` fold, the `SessionBuilder` driver, and the shared message-handling
+//! helpers — lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::engine::path::relativize;
@@ -384,9 +384,9 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// This in-memory batch entry runs the new two-layer engine — Layer 1 [`tokenize`]
 /// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
 /// bit-identical to the (now frozen, test-only) `parse_main` — see
-/// `replay_tokenize_matches_parse_main`. The large-file streaming path (the adapter's
-/// `parse_path_timed` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
-/// production no longer touches `parse_main`.
+/// `replay_tokenize_matches_parse_main`. The large-file streaming path (the shared
+/// `SessionBuilder`, fed line-by-line by the batch parse and the live follower) runs the same
+/// engine per line (M9), so production no longer touches `parse_main`.
 #[cfg(test)]
 pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
@@ -408,16 +408,15 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 /// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
 /// resolve against the same session `subagents/` dir.
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    // Stream through the engine in a single pass, one line resident.
+    // Stream through the shared incremental fold in a single pass, one line resident, and keep
+    // only the blocks (this sub-agent path doesn't need times or metrics).
+    use std::io::BufRead;
+    let mut b = crate::engine::builder::SessionBuilder::new(Agent::Claude);
     let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    let mut cwd = String::new();
-    parse_stream(
-        reader,
-        &CLAUDE_SHAPING,
-        |line, out| decode_line(line, &mut cwd, out),
-        |_| {}, // blocks only — this path doesn't need metrics
-        &mut Vec::new(),
-    )
+    for line in reader.lines() {
+        b.advance(std::slice::from_ref(&line?));
+    }
+    Ok(b.fold().0)
 }
 
 /// The `<project>/<sessionId>/subagents/` dir for a transcript at
@@ -811,8 +810,8 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
 /// Nth user turn of the returned list is `user_times[N]`. Only the HTML export
 /// consumes it; the TUI passes a throwaway vec.
 ///
-/// **Frozen golden reference** (M9): production parses through the streaming engine
-/// (`parse_stream` → `decode_line` + `Replayer`); this pre-engine parser is retained only
+/// **Frozen golden reference** (M9): production parses through the streaming engine (the shared
+/// `SessionBuilder` → `decode_line` + `Replayer`); this pre-engine parser is retained only
 /// to pin `replay(tokenize(x))` bit-identical in `replay_tokenize_matches_parse_main`.
 #[cfg(test)]
 pub(crate) fn parse_main<S: AsRef<str>>(

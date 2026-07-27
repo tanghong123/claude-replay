@@ -12,7 +12,7 @@ use crate::discover::Candidate;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::{Block, EpochSeconds};
+use crate::model::Block;
 use crate::Agent;
 use serde_json::Value;
 use std::io;
@@ -30,9 +30,10 @@ pub(crate) trait MetricsAccumulator: Send {
 
 /// The single agent-specific interface. A new agent implements this once; the engine calls
 /// it via [`adapter`]. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
-/// `shaping` const) drive both the whole-file `parse_path_timed` and the live follower through
-/// one provided path, so batch and live share a seam. Discovery
-/// (`candidates_scoped`/`resolve_id`) and the optional `enrich`/`subagent_source` round it out.
+/// `shaping` const) drive the shared [`SessionBuilder`](crate::engine::builder::SessionBuilder),
+/// which both the whole-file batch parse and the live follower feed, so batch and live share
+/// one seam. Discovery (`candidates_scoped`/`resolve_id`) and the optional
+/// `enrich`/`subagent_source` round it out.
 pub(crate) trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
@@ -42,29 +43,6 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn sniff(&self, head: &Value) -> bool;
 
     // ── whole-file parse ──
-    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass — the
-    /// single whole-file parse seam (the flat top-level session; sub-agent trees load via
-    /// [`enrich`](Self::enrich)). A provided method: folds each line through
-    /// [`decode_line`](Self::decode_line) + [`shaping`](Self::shaping) with metrics accumulated
-    /// by [`metrics_acc`](Self::metrics_acc). Identical orchestration for every agent — no
-    /// adapter overrides it; a new agent supplies only the three hooks.
-    fn parse_path_timed(
-        &self,
-        path: &Path,
-        times: &mut Vec<Option<EpochSeconds>>,
-    ) -> io::Result<(Vec<Block>, Metrics)> {
-        let mut cwd = String::new();
-        let mut macc = self.metrics_acc();
-        let reader = io::BufReader::new(std::fs::File::open(path)?);
-        let blocks = crate::engine::replay::parse_stream(
-            reader,
-            self.shaping(),
-            |line, out| self.decode_line(line, &mut cwd, out),
-            |v| macc.push(v),
-            times,
-        )?;
-        Ok((blocks, macc.finish()))
-    }
     /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
     /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
     /// enrich. Backs [`crate::parse_session_enriched`].
