@@ -79,27 +79,45 @@ impl SessionIndex {
         let mut idx = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {
-            *idx.counts.entry(crate::model::fold_key(b)).or_default() += 1;
-            match b {
-                Block::UserText(_) | Block::Command { .. } => {
-                    let time = user_times.get(turn_i).copied().flatten();
-                    idx.turns.push(TurnEntry { at, time });
-                    turn_i += 1;
-                }
-                Block::ToolUse { name, target, .. } => idx.tools.push(ToolEntry {
-                    name: name.clone(),
-                    target: target.clone(),
-                    at,
-                }),
-                Block::Attachment(a) => idx.attachments.push(AttachmentEntry {
-                    kind: a.kind,
-                    name: a.name.clone(),
-                    at,
-                }),
-                _ => {}
-            }
+            // Advance the user-turn cursor exactly as the incremental caller would: a user turn
+            // consumes the next `user_times` entry, everything else passes `None`.
+            let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+                let t = user_times.get(turn_i).copied().flatten();
+                turn_i += 1;
+                t
+            } else {
+                None
+            };
+            idx.push(at, b, turn_time);
         }
         idx
+    }
+
+    /// Fold ONE more block (at its flat [`BlockIndex`] `at`) into the index — the incremental
+    /// unit [`build`](Self::build) is a loop over. `turn_time` is this block's timestamp **iff** it
+    /// is a user turn (`UserText`/`Command`), in the same order [`stamp_user_turns`] emits them;
+    /// pass `None` for any other block. Lets the accumulator maintain the index as durable blocks
+    /// are emitted, so the full `Vec<Block>` need never be resident to (re)build it — the emit-and-
+    /// drop / tier-b path. Proven equal to `build` block-for-block (see the test).
+    pub(crate) fn push(&mut self, at: BlockIndex, b: &Block, turn_time: Option<EpochSeconds>) {
+        *self.counts.entry(crate::model::fold_key(b)).or_default() += 1;
+        match b {
+            Block::UserText(_) | Block::Command { .. } => self.turns.push(TurnEntry {
+                at,
+                time: turn_time,
+            }),
+            Block::ToolUse { name, target, .. } => self.tools.push(ToolEntry {
+                name: name.clone(),
+                target: target.clone(),
+                at,
+            }),
+            Block::Attachment(a) => self.attachments.push(AttachmentEntry {
+                kind: a.kind,
+                name: a.name.clone(),
+                at,
+            }),
+            _ => {}
+        }
     }
 
     /// How many blocks of a given `fold_key` kind (0 if none).
@@ -202,5 +220,55 @@ mod tests {
         assert_eq!(idx.count("thinking"), 0, "none present");
         // Every block is counted exactly once.
         assert_eq!(idx.counts.values().sum::<usize>(), blocks.len());
+    }
+
+    // The incremental `push` fold must reproduce the batch `build` exactly — the property the
+    // emit-and-drop / tier-b accumulator relies on to maintain the index without the full blocks
+    // resident. Compared via Debug (the index's inner entries carry no PartialEq).
+    #[test]
+    fn incremental_push_equals_batch_build() {
+        use crate::model::{AttachmentContent, AttachmentKind};
+        let blocks = vec![
+            Block::UserText("hi".into()),
+            tool("Read"),
+            Block::AssistantText("ok".into()),
+            Block::Command {
+                name: "/compact".into(),
+                args: "".into(),
+                output: vec!["done".into()],
+            },
+            tool("Bash"),
+            sub("a1", AgentStatus::Running),
+            Block::Attachment(Attachment {
+                kind: AttachmentKind::Plan,
+                name: "plan.md".into(),
+                path: None,
+                content: AttachmentContent::None,
+            }),
+            Block::UserText("again".into()),
+        ];
+        // Three user turns (two UserText + one Command), in emit order.
+        let user_times = vec![Some(10.0), Some(20.0), Some(30.0)];
+
+        let batch = SessionIndex::build(&blocks, &user_times);
+
+        let mut incr = SessionIndex::default();
+        let mut turn_i = 0usize;
+        for (at, b) in blocks.iter().enumerate() {
+            let tt = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+                let t = user_times.get(turn_i).copied().flatten();
+                turn_i += 1;
+                t
+            } else {
+                None
+            };
+            incr.push(at, b, tt);
+        }
+
+        assert_eq!(
+            format!("{batch:?}"),
+            format!("{incr:?}"),
+            "incremental push must equal batch build"
+        );
     }
 }
