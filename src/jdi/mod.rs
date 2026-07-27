@@ -596,7 +596,7 @@ fn cmd_resume(
     )?;
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), instruction).ok();
-    persist_codex_permissions(&session, agent, handoff_permissions)?;
+    persist_permissions(&session, agent, handoff_permissions)?;
 
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
@@ -639,12 +639,12 @@ fn cmd_resume(
     Ok(())
 }
 
-fn persist_codex_permissions(
+fn persist_permissions(
     session: &Session,
     agent: Agent,
     permissions: Option<&codex::CodexPermissionSnapshot>,
 ) -> Result<()> {
-    if agent != Agent::Codex {
+    if !agent::adapter(agent).preserves_permissions() {
         // Preserve arbitrary Claude cargs, but remove a file we know was generated
         // from a previous Codex permission snapshot when the slot changes agent.
         if session
@@ -713,7 +713,7 @@ fn handoff_permission_snapshot(
     session_id: Option<&str>,
     transcript: Option<&Path>,
 ) -> Result<Option<codex::CodexPermissionSnapshot>> {
-    if agent != Agent::Codex {
+    if !agent::adapter(agent).preserves_permissions() {
         return Ok(None);
     }
     let session_id = session_id.ok_or_else(|| {
@@ -917,7 +917,7 @@ fn cmd_start(
     session.meta_set("mode", agent::Mode::Start.as_str())?;
     session.meta_set("state", "starting")?;
     std::fs::write(session.dir.join("task.md"), &task).ok();
-    persist_codex_permissions(&session, agent, None)?;
+    persist_permissions(&session, agent, None)?;
 
     let pid = supervisor::spawn_detached(&config.home, &slot)?;
     session.meta_set("pid", &pid.to_string())?;
@@ -2170,7 +2170,7 @@ mod tests {
         )
         .unwrap();
 
-        persist_codex_permissions(&session, Agent::Codex, Some(&full)).unwrap();
+        persist_permissions(&session, Agent::Codex, Some(&full)).unwrap();
         assert_eq!(
             std::fs::read_to_string(session.cargs_path()).unwrap(),
             "-c\nsandbox_mode=\"danger-full-access\"\n"
@@ -2180,7 +2180,7 @@ mod tests {
             Some("danger-full-access (preserved from current Codex turn)")
         );
 
-        persist_codex_permissions(&session, Agent::Codex, None).unwrap();
+        persist_permissions(&session, Agent::Codex, None).unwrap();
         assert!(!session.cargs_path().exists());
         assert_eq!(
             session.meta_get("permissions").as_deref(),
@@ -2201,7 +2201,7 @@ mod tests {
         session.ensure_dir().unwrap();
         std::fs::write(session.cargs_path(), "--existing-claude-arg\n").unwrap();
 
-        persist_codex_permissions(&session, Agent::Claude, None).unwrap();
+        persist_permissions(&session, Agent::Claude, None).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(session.cargs_path()).unwrap(),
@@ -2233,7 +2233,7 @@ mod tests {
             )
             .unwrap();
 
-        persist_codex_permissions(&session, Agent::Claude, None).unwrap();
+        persist_permissions(&session, Agent::Claude, None).unwrap();
 
         assert!(!session.cargs_path().exists());
         assert_eq!(permission_status_line(&session), None);

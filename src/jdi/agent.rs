@@ -231,6 +231,15 @@ pub trait AgentAdapter {
         true
     }
 
+    /// Whether a takeover should preserve this agent's per-session permission posture across
+    /// the handoff (Codex snapshots its sandbox/approval config from the live rollout and
+    /// replays it; Claude carries none). Default `false` — the supervisor then just clears any
+    /// stale permission state. Gating on this capability (not on `Agent == Codex`) keeps the
+    /// permission handling out of the spine's agent identity.
+    fn preserves_permissions(&self) -> bool {
+        false
+    }
+
     /// One-line description of the autonomy the agent runs under (for the `resume`/
     /// `start` summary's `runs with:` line). Default is generic.
     fn unattended_note(&self) -> &'static str {

@@ -316,6 +316,10 @@ impl AgentAdapter for CodexAdapter {
         false
     }
 
+    fn preserves_permissions(&self) -> bool {
+        true // Codex snapshots its sandbox/approval posture from the rollout and replays it
+    }
+
     fn continue_mode(&self) -> Mode {
         Mode::Execute
     }
