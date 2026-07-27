@@ -148,6 +148,15 @@ pub fn detect_agent(path: &Path) -> Agent {
     Agent::Claude
 }
 
+/// The source transcript of sub-agent `child_id` spawned under the session at `root`, for
+/// the given `agent` — the agent-neutral entry the presentation layer uses to descend into
+/// (or live-tail) a child without knowing the agent's on-disk layout. `None` if the agent
+/// has no sub-agent tree (Codex) or the child file doesn't exist. Routes to the agent's
+/// [`subagent_source`](crate::adapter::TranscriptAdapter::subagent_source).
+pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<PathBuf> {
+    crate::adapter::adapter(agent).subagent_source(root, child_id)
+}
+
 /// Resolve a transcript across agents (honoring the `only` filter): an existing
 /// file path (agent auto-detected on open), a session id searched in each agent's
 /// store, or — with `latest` — the most-recent transcript across agents.

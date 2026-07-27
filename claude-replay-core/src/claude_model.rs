@@ -385,7 +385,8 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// `replay_tokenize_matches_parse_main`. The large-file streaming path
 /// (`parse_path` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
 /// production no longer touches `parse_main`.
-pub fn parse(jsonl: &str) -> Vec<Block> {
+#[cfg(test)]
+pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
 
@@ -611,6 +612,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
 ///
 /// This is the L1 half of `parse_main`; `replay(tokenize(x))` is asserted bit-identical
 /// to `parse_main(x)` (see the tests). `parse_main` stays live and unchanged.
+#[cfg(test)]
 pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
     let mut msgs: Vec<Message> = Vec::new();
     let mut cwd = String::new();

@@ -734,6 +734,7 @@ impl<'a> Replayer<'a> {
 /// Batch L2 fold — `Replayer::new(); apply(all); into_blocks()`. For Claude,
 /// `replay(tokenize(x), &CLAUDE_SHAPING)` is asserted bit-identical to `parse_main(x)`; for
 /// Codex, to `parse_lines(x)`. `user_times` is filled with one entry per emitted user turn.
+#[cfg(test)]
 pub(crate) fn replay(
     messages: &[Message],
     user_times: &mut Vec<Option<f64>>,

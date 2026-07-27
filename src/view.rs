@@ -1457,7 +1457,14 @@ mod tests {
             "\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"code-reviewer\",",
             "\"description\":\"d\",\"prompt\":\"p\"}}]}}\n"
         );
-        let blocks = crate::claude_model::parse(jsonl);
+        // Parse through the public path-based entry (as a consumer would), not the core's
+        // per-agent internals — so the viewer stays off `claude_model`.
+        let path = std::env::temp_dir().join(format!("cr-fold-{}.jsonl", std::process::id()));
+        std::fs::write(&path, jsonl).unwrap();
+        let blocks = crate::engine::parse_session_as(crate::Agent::Claude, &path)
+            .unwrap()
+            .blocks;
+        let _ = std::fs::remove_file(&path);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
         let pol = FoldPolicy::from_args(&crate::Args::default());
         assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");

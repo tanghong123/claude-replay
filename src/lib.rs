@@ -21,8 +21,13 @@ mod wrap;
 // (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
 // the viewer keeps referring to `crate::model`, `crate::engine`, `crate::discover`, … and
 // `crate::Agent` unchanged.
+// `claude_discover`/`codex_discover` are re-exported because the `jdi` per-agent adapters
+// (`jdi::claude`/`jdi::codex`) legitimately reuse that agent's transcript store. The L1
+// tokenizers (`claude_model`/`codex_model`) are deliberately NOT re-exported: nothing outside
+// the core parses a raw agent format — the viewer reaches blocks only through `engine`'s
+// agent-neutral `parse_session*`.
 pub use claude_replay_core::{
-    claude_discover, claude_model, codex_discover, discover, engine, follow, metrics, model, Agent,
+    claude_discover, codex_discover, discover, engine, follow, metrics, model, Agent,
 };
 
 use anyhow::Result;

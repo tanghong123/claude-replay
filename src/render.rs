@@ -1319,7 +1319,11 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let blocks = crate::claude_model::parse_path(&sess).unwrap();
+        // Parse through the public entry point (enriched = loads the sub-agent tree), the
+        // same way a library consumer would — no reach into the core's per-agent internals.
+        let blocks = crate::engine::parse_session_enriched_as(crate::Agent::Claude, &sess)
+            .unwrap()
+            .blocks;
         let Some(crate::model::Block::SubAgent(sa)) = blocks
             .iter()
             .find(|b| matches!(b, crate::model::Block::SubAgent(_)))

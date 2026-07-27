@@ -3,7 +3,7 @@
 
 use crate::picker::Picker;
 use crate::view::View;
-use crate::{claude_model, discover, Agent, Args};
+use crate::{discover, Agent, Args};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -253,7 +253,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_file = claude_model::subagent_file(&parent.path, &agent_id);
+    let child_file = discover::subagent_source(parent.agent, &parent.path, &agent_id);
     // Parse the child once via the library entry point (enriched: its own sub-agent tree),
     // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
     // metrics instead of a second parse. A running agent's child file often appears (or fills

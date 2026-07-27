@@ -1059,8 +1059,13 @@ pub(super) fn render_agent_stream(
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
 /// description (else its type), and its ancestry is the parent's ancestry + the parent.
-pub(super) fn child_info(root_path: &Path, parent: &AgentInfo, c: ChildRef) -> Option<AgentInfo> {
-    let source = crate::claude_model::subagent_file(root_path, &c.id)?;
+pub(super) fn child_info(
+    agent: Agent,
+    root_path: &Path,
+    parent: &AgentInfo,
+    c: ChildRef,
+) -> Option<AgentInfo> {
+    let source = discover::subagent_source(agent, root_path, &c.id)?;
     let title = if c.description.is_empty() {
         c.agent_type.clone()
     } else {

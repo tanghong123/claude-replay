@@ -16,7 +16,7 @@ mod adapter;
 mod agent;
 pub mod claude_discover; // pub: the viewer's `--dump` stem + jdi's Claude supervisor use it
 pub(crate) mod claude_metrics; // internal: reached via the adapter / metrics dispatch
-pub mod claude_model; // pub: the viewer descends sub-agents via `subagent_file`
+pub(crate) mod claude_model; // internal: L1 tokenizer, reached via the adapter registry
 pub mod codex_discover; // pub: jdi's Codex supervisor uses it
 pub(crate) mod codex_metrics; // internal
 pub(crate) mod codex_model; // internal: reached via the adapter registry

@@ -56,7 +56,7 @@ impl Live {
         // a valid id resolves even if its parent was never navigated (deep links) — with a
         // plain title until its parent's spawn supplies the description.
         let info = self.store.resolve(id).or_else(|| {
-            crate::claude_model::subagent_file(&self.root_path, id).map(|source| AgentInfo {
+            discover::subagent_source(self.agent, &self.root_path, id).map(|source| AgentInfo {
                 id: id.to_string(),
                 source,
                 title: id.to_string(),
@@ -101,7 +101,7 @@ impl Live {
             if self.store.is_registered(&c.id) {
                 continue;
             }
-            if let Some(ci) = child_info(&self.root_path, parent, c) {
+            if let Some(ci) = child_info(self.agent, &self.root_path, parent, c) {
                 let id = ci.id.clone();
                 self.store.register_new(&id, ci);
             }

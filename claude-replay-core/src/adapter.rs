@@ -81,6 +81,13 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate>;
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
+    /// The source transcript of sub-agent `child_id` spawned under the session at `root`,
+    /// if it exists. Default `None` — an agent with no sub-agent tree (Codex) has none;
+    /// Claude resolves its flat `<root-stem>/subagents/agent-<id>.jsonl` layout. Backs the
+    /// presentation layer's descend-into-child and per-child HTML streams.
+    fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// The adapter for `agent`.
@@ -151,6 +158,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::claude_discover::transcript_by_id(id)
+    }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::claude_model::subagent_file(root, child_id)
     }
 }
 

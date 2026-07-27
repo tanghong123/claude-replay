@@ -180,7 +180,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .with_context(|| format!("write stream {}", info.id))?;
         count += 1;
         for c in children {
-            if let Some(ci) = child_info(path, &info, c) {
+            if let Some(ci) = child_info(agent, path, &info, c) {
                 queue.push_back(ci);
             }
         }
