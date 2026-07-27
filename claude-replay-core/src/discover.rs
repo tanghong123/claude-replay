@@ -170,11 +170,17 @@ pub fn detect_agent(path: &Path) -> Agent {
     Agent::Claude
 }
 
-/// The source transcript of sub-agent `child_id` spawned under the session at `root`, for
-/// the given `agent` — the agent-neutral entry the presentation layer uses to descend into
-/// (or live-tail) a child without knowing the agent's on-disk layout. `None` if the agent
-/// has no sub-agent tree (Codex) or the child file doesn't exist. Routes to the agent
-/// adapter's `subagent_source` hook.
+/// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
+/// for the given `agent` (Claude's flat `<root-stem>/subagents/agent-<id>.jsonl` layout).
+/// Resolves a path; it does **not** parse. `None` if the agent has no sub-agent tree (Codex)
+/// or the child file doesn't exist. Routes to the agent adapter's `subagent_source` hook.
+///
+/// This is the **lazy, on-demand** route — the presentation layer uses it to open a child from
+/// its *own* file (descend-and-live-tail in the TUI, the HTML server's deep links, the
+/// `--dump-all-html` BFS). It's distinct from the **eager**
+/// [`parse_session_enriched`](crate::parse_session_enriched), which
+/// walks the same `subagents/` dir at parse time to load each child's *blocks* into its
+/// `SubAgent` spawn. Same on-disk layout, eager-into-blocks vs. lazy-by-path.
 pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<PathBuf> {
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }
