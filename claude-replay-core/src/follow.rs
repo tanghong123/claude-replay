@@ -8,8 +8,9 @@ use std::path::Path;
 
 use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
+use crate::engine::replay::Replayer;
 use crate::metrics::Metrics;
-use crate::model::{Block, Replayer};
+use crate::model::Block;
 use crate::tail::TailReader;
 use crate::Agent;
 

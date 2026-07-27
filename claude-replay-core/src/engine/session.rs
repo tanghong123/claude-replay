@@ -75,7 +75,7 @@ pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
     // `Args` — that keeps clap out of the core. Metrics are folded in the SAME streaming
     // pass (M10) — one file read, no separate `parse_reader_for`.
-    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, path)?;
+    let (blocks, user_times, metrics) = crate::engine::replay::parse_path_timed_for(agent, path)?;
     let cwd = crate::discover::session_cwd(path);
     let index = SessionIndex::build(&blocks, &user_times);
     Ok(Session {
@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(s.agent, Agent::Claude);
 
         let (blocks, times, folded_metrics) =
-            crate::model::parse_path_timed_for(Agent::Claude, &path).unwrap();
+            crate::engine::replay::parse_path_timed_for(Agent::Claude, &path).unwrap();
         // The retired separate metrics pass, as the byte-identical reference for the fold.
         let ref_metrics = crate::metrics::parse_reader_for(
             Agent::Claude,

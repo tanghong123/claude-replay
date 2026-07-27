@@ -14,7 +14,7 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
     // `parse_stream` + `decode_codex_line` (M9).
-    crate::model::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
+    crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
 /// The whole-file Codex parse on the streaming engine (M9): pass-1 id scan, pass-2 per-line
@@ -28,7 +28,7 @@ pub(crate) fn parse_codex_path_timed(
     let call_ids = scan_join_ids(open()?.lines().map_while(|line| line.ok()));
     let mut cwd = String::new();
     let mut macc = crate::codex_metrics::CodexMetricsAcc::default();
-    let blocks = crate::model::parse_stream(
+    let blocks = crate::engine::replay::parse_stream(
         open()?,
         call_ids,
         &CODEX_SHAPING,
@@ -68,7 +68,7 @@ fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Bloc
 }
 
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
-pub(crate) const CODEX_SHAPING: crate::model::Shaping = crate::model::Shaping {
+pub(crate) const CODEX_SHAPING: crate::engine::replay::Shaping = crate::engine::replay::Shaping {
     build_tool: codex_build_tool,
     join_result: apply_output_shaping,
     keep_orphan: codex_keep_orphan,
@@ -245,7 +245,7 @@ fn parse_lines<S: AsRef<str>>(
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
-        crate::model::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
         pending_ts = timestamp;
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
@@ -341,7 +341,7 @@ fn parse_lines<S: AsRef<str>>(
             _ => {}
         }
     }
-    crate::model::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     out
 }
 
@@ -618,8 +618,11 @@ not json
             let call_ids = scan_join_ids(jsonl.lines());
             let via_lines = parse_lines(jsonl.lines(), &call_ids, &mut ut_lines);
             let mut ut_replay = Vec::new();
-            let via_replay =
-                crate::model::replay(&tokenize(jsonl.lines()), &mut ut_replay, &CODEX_SHAPING);
+            let via_replay = crate::engine::replay::replay(
+                &tokenize(jsonl.lines()),
+                &mut ut_replay,
+                &CODEX_SHAPING,
+            );
             assert_eq!(
                 format!("{via_lines:?}"),
                 format!("{via_replay:?}"),

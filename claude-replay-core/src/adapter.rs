@@ -10,8 +10,9 @@
 
 use crate::discover::Candidate;
 use crate::engine::message::Message;
+use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::{Block, Shaping};
+use crate::model::Block;
 use crate::Agent;
 use serde_json::Value;
 use std::io;

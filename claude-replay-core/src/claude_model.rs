@@ -8,6 +8,7 @@
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::engine::path::relativize;
+use crate::engine::replay::*;
 use crate::engine::time::epoch_secs;
 use crate::model::*;
 use crate::Agent;
