@@ -27,10 +27,13 @@ Three layers:
 
 1. **`LineReader`** — a resumable line source (rename + extension of today's `TailReader`).
 2. **`SessionBuilder`** — folds a line source into an evolving `Session`, checkpointable.
-3. **`SessionCache`** — a keyed, lazy, self-tailing store of `Session`s: register cheap
-   metadata now, parse on first request, tail-and-update on re-request. It's what lets a flat
-   `Session` (one transcript) reference sub-agents by id while their transcripts are
-   materialized only on demand (see [`sub-agent-normalization.md`](sub-agent-normalization.md)).
+3. **`SessionCache`** — a **convenience helper** (not core): a keyed, lazy, self-tailing store
+   of `Session`s composed from layers 1–2, letting a flat `Session` reference sub-agents by id
+   while their transcripts materialize on demand. A developer can replicate or replace it from
+   the core APIs (see [`sub-agent-normalization.md`](sub-agent-normalization.md)).
+
+Layers 1–2 are core (new capability); layer 3 is a helper built strictly on top — the same
+core-vs-helper discipline the rest of the engine follows.
 
 ```text
 source ──lines──▶ LineReader ──lines──▶ SessionBuilder ──▶ Session (snapshot)
@@ -203,16 +206,30 @@ resumable-restart share one implementation instead of three.
 
 ## Layer 3 — `SessionCache` (task #21)
 
-### Why
+### It's a convenience helper, not a core primitive
 
-A flat `Session` (one transcript) references its sub-agents by id and carries only their
-*paths* (see [`sub-agent-normalization.md`](sub-agent-normalization.md)). Something has to turn
-"here is a child's transcript path" into "here is the child's live `Session`" — **lazily** (a
-tree of sub-agents can be large; parse only what's opened) and **incrementally** (re-opening a
-child should tail its new events, not re-parse). That "something" already exists, informally,
-in `html_export::serve.rs`: a `SessionStore<AgentInfo, Tailer>` that registers `id → path`,
-materializes on first request, tails on repeat, and reaps idle entries. `SessionCache` lifts
-that into a reusable engine primitive.
+Unlike layers 1–2, `SessionCache` adds **no new capability** — it's a thin composition of the
+core APIs (`parse_session` + `FollowParser` + a keyed map + TTL reaping) that a developer could
+replicate in a dozen lines. It exists only to save the common boilerplate of "lazily open many
+sessions by id and keep them live," and it must stay opt-in: a client that wants different
+policy (eviction, keying, eager vs lazy, no tailing) uses the core APIs directly. It belongs in
+the same *helper* tier as today's generic `engine::store::SessionStore` — in fact it's just an
+opinionated wrapper over it. The whole thing a client actually needs is already core:
+
+```rust
+// roll-your-own, if the bundled cache doesn't fit — this IS the cache, minus reaping:
+let mut open: HashMap<AgentId, FollowParser> = HashMap::new();
+let follower = open.entry(id).or_insert_with(|| FollowParser::open(agent, &meta.transcript));
+let session = follower.poll()?;   // parses on first call, tails on later calls
+```
+
+So the reason it's worth shipping is convenience for the common case (and to give
+`html_export::serve.rs` one place to live instead of hand-rolling it), **not** because it's
+load-bearing. A flat `Session` (one transcript) references its sub-agents by id and carries
+only their *paths* (see [`sub-agent-normalization.md`](sub-agent-normalization.md)); turning a
+path into a live `Session` — lazily (a sub-agent tree can be large; parse only what's opened)
+and incrementally (re-opening tails new events) — is exactly what this helper wraps up, and
+what `serve.rs` already does by hand with `SessionStore<AgentInfo, Tailer>`.
 
 ### Shape
 
