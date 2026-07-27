@@ -1,0 +1,6 @@
+# Cargo aliases for the project. `cargo apidoc` builds the API reference manual — every
+# object and its API, INTERNAL and external (public items + `pub(crate)`/private via
+# `--document-private-items`) — auto-generated from the source + doc comments, so it is
+# always in sync with the code. Add `--open` to view it. See docs/developer-guide.md.
+[alias]
+apidoc = "doc --workspace --no-deps --document-private-items"

@@ -91,6 +91,25 @@ The complete curated API: `parse_session` / `parse_session_as` / `parse_session_
 cargo run -p claude-replay-core --example parse -- <transcript.jsonl> [--follow]
 ```
 
+### The API reference (auto-generated, always in sync)
+
+For the **exhaustive per-object reference** — every struct, enum, trait, and function with its
+signature and doc, across both crates — use **rustdoc**. It is generated from the source and
+the doc comments, so it never drifts from the code. A `cargo` alias builds it:
+
+```sh
+cargo apidoc          # build the reference into target/doc/
+cargo apidoc --open   # …and open it in a browser
+```
+
+`apidoc` (defined in [`.cargo/config.toml`](../.cargo/config.toml)) is
+`doc --workspace --no-deps --document-private-items`, so the manual documents **internal**
+objects (the `TranscriptAdapter` trait, the `Replayer` fold, the per-agent tokenizers, …) as
+well as the public API — everything a contributor needs, not just what a library consumer
+sees. Start at the `claude_replay_core` crate page for the engine, or `claude_replay` for the
+viewer/HTML/`agent-jdi`. This is the reference manual; the sections above and
+[Architecture](architecture.md) are the *guided* overview of it.
+
 ## 4. Adding an agent
 
 This is the payoff of the [three-layer design](architecture.md#3-the-three-layer-engine):

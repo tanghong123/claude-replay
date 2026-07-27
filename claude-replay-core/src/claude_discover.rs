@@ -82,7 +82,7 @@ fn nearest_project_transcripts(cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
 }
 
 /// Claude sessions scoped strictly to `cwd` or its nearest ancestor that has sessions — no
-/// global fallback (see [`nearest_project_transcripts`]).
+/// global fallback (see `nearest_project_transcripts`).
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     let cwd_slug = slug_for(cwd);
     let mut scoped = nearest_project_transcripts(cwd);
