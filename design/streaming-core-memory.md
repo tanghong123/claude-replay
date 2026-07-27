@@ -268,15 +268,23 @@ children are locators / on-disk. Never O(whole tree).
    `serde_json`, returns the locator), and `TierBSession` (pairs `Session<Deferred>` + backing,
    `impl BlockAccess` = seek + decode on demand); `SessionAccumulator::into_store` reclaims the
    backing. And the two accumulator-side prerequisites for emit-and-drop: `SessionIndex::push` and
-   `push_sub_agent` (batch `build*` now delegate; each proven `incremental == batch`). **Remaining:**
-   (A) the emit-and-drop *restructure* (Replayer `base`-offset window + per-turn finalize + drain;
-   accumulator put-once + incremental index/sub_agents; `snapshot = durable ++ finish_turns(open)`) —
-   deferred to land *with* a wired tier-b consumer, since it yields **no net footprint win for the
-   in-memory default** (the accumulator then holds the durable `O(N)` the Replayer used to) and is the
-   gate-hardest hot-path change; (B) the resume/persist consumer, **design-blocked** on how to persist
-   the metadata: `SessionIndex.counts` keys are `&'static str` (not `Deserialize`-able) and `Metrics`
-   (serde-clean) can't be rebuilt from blocks. See task #30 for the option set (counts→`String`, or
-   rebuild-on-load, or persist-`Metrics`-only) + the `SessionCache` wiring.
+   `push_sub_agent` (batch `build*` now delegate; each proven `incremental == batch`). And the
+   **resume consumer** — `TierBSession::persist(dir)` / `load(dir)`: persist writes the content
+   backing + a sidecar (agent, cwd, `user_times`, `metrics`, `sub_agents`, the `Vec<Deferred>`); load
+   reads them back and **rebuilds the index** from the blocks via `SessionIndex::push` (so the index's
+   `&'static str` keys never need serializing — the resolution to the earlier "design-blocked" note).
+   That's the **steady-state** footprint win: evict a finished session's blocks to disk, reload for
+   display without a full re-fold. **Remaining:** (A) the emit-and-drop *restructure* (Replayer
+   `base`-offset window — `user_times` stays fully resident, it's `O(#turns)` — + per-turn finalize +
+   drain; accumulator put-once + incremental index/sub_agents; `snapshot = durable ++
+   finish_turns(open)`) — the *parse-peak* `O(turn)` win, a further optimization on top of tier-b+
+   persist; deferred because it's the gate-hardest hot-path change and its byte-identical risk (index/
+   `user_times` rebasing) is under-covered by the linear `--dump` gate, so it needs a dedicated
+   Session-`Debug`-equality test incl. the cross-turn-suppress + turn-timestamp cases. (B) **live**
+   `SessionCache` tier-b wiring — needs a resume policy decision: the cache is a *growing* follower, so
+   re-admit must fold the delta onto the reloaded session (⇒ persist the accumulator's fold-state) *or*
+   reload-from-tier-b only when the source is unchanged (⇒ #18 `tell`/`open_at` records the byte
+   offset). See task #30.
 4. **Windowed presentation + lazy enrichment.** TUI holds a block/line window paged from tier-b;
    `--dump*`/serve stop eager-enriching the whole sub-agent tree (stream each child as its subtree
    is emitted). Drop the render-model 2–3× duplication (`raw`/`wrapped`/`body_cache`).
