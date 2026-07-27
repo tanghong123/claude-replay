@@ -13,10 +13,14 @@
 //! fragments. Everything that reaches the page is HTML-escaped here; the renderer
 //! uses `textContent` for all raw text so nothing can inject markup.
 
+use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
+use crate::highlight;
 use crate::model::{AttachmentContent, Block};
-use crate::render;
-use crate::{discover, highlight, Agent};
+use crate::present::{
+    display_name, edit_summary, spawn_chip, thinking_summary, write_content, WRITE_PREVIEW,
+};
+use crate::{discover, Agent};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -261,7 +265,7 @@ fn numbered_part(content: &str, token: &str, cap: usize) -> Value {
 }
 
 /// Diff rows for an Edit, as `[tag, num|null, text]` triples for the JS renderer. Delegates
-/// the classification + line-numbering to the shared [`render::diff_row_groups`] (the same
+/// the classification + line-numbering to the shared [`diff_row_groups`] (the same
 /// logic the TUI renders), so real-file-line-number (patch) vs local-numbering (fallback)
 /// behavior can't drift between the two presenters. The gutter grouping is a TUI concern —
 /// here the groups are simply flattened.
@@ -271,17 +275,17 @@ fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     };
     let mut rows: Vec<Value> = Vec::new();
     let (mut adds, mut dels) = (0usize, 0usize);
-    for row in render::diff_row_groups(diffs, patch.as_deref())
+    for row in diff_row_groups(diffs, patch.as_deref())
         .into_iter()
         .flat_map(|g| g.rows)
     {
         let tag = match row.kind {
-            render::DiffKind::Ctx => "ctx",
-            render::DiffKind::Add => {
+            DiffKind::Ctx => "ctx",
+            DiffKind::Add => {
                 adds += 1;
                 "add"
             }
-            render::DiffKind::Del => {
+            DiffKind::Del => {
                 dels += 1;
                 "del"
             }
@@ -384,7 +388,7 @@ impl Emitter<'_> {
                     "preview".into(),
                     json!(format!("{}: {}", sa.agent_type, sa.description)),
                 );
-                head.insert("chips".into(), json!([chip(crate::render::spawn_chip(sa))]));
+                head.insert("chips".into(), json!([chip(spawn_chip(sa))]));
                 // Cross-agent navigation: link the spawn to the child's own stream.
                 if self.linked && !sa.agent_id.is_empty() {
                     head.insert("child".into(), json!(format!("?session={}", sa.agent_id)));
@@ -516,7 +520,7 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(self.block_id()));
                 // The exact collapsed summary the TUI renders — one shared source so the two
                 // can't drift; HTML prepends the `✻` glyph.
-                let summary = render::thinking_summary(text, *duration_secs, tools);
+                let summary = thinking_summary(text, *duration_secs, tools);
                 head.insert("summary".into(), json!(format!("✻ {summary}")));
                 if !tools.is_empty() {
                     let items: Vec<Value> = tools.iter().map(|t| self.block(t, None)).collect();
@@ -544,8 +548,8 @@ impl Emitter<'_> {
                 // The tool's display name (same as the fold header) drives the
                 // client-side "filter by tool use" dropdown — one `data-tool` per
                 // tool fold, counted and grouped in the browser.
-                o.insert("tool".into(), json!(render::display_name(name)));
-                head.insert("name".into(), json!(render::display_name(name)));
+                o.insert("tool".into(), json!(display_name(name)));
+                head.insert("name".into(), json!(display_name(name)));
                 head.insert("target".into(), json!(target));
                 head.insert(
                     "dot".into(),
@@ -573,16 +577,14 @@ impl Emitter<'_> {
                                 chips.push(chip_class("del", format!("−{dels}")));
                             }
                             head.insert("chips".into(), json!(chips));
-                            body.push(
-                                json!({ "p": "note", "x": render::edit_summary(adds, dels) }),
-                            );
+                            body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
                             body.push(part);
                         } else if let Some(out) = output {
                             body.push(pre_part(out));
                         }
                     }
                     "write" => {
-                        let content = render::write_content(diffs);
+                        let content = write_content(diffs);
                         let n = content.lines().count();
                         head.insert(
                             "chips".into(),
@@ -592,14 +594,14 @@ impl Emitter<'_> {
                             "p": "note",
                             "x": format!("Wrote {n} lines to {target}"),
                         }));
-                        body.push(numbered_part(content, token, render::WRITE_PREVIEW));
+                        body.push(numbered_part(content, token, WRITE_PREVIEW));
                     }
                     "read" => {
                         if let Some(n) = read_lines {
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
                         }
                         if let Some(out) = output {
-                            body.push(numbered_part(out, token, render::WRITE_PREVIEW));
+                            body.push(numbered_part(out, token, WRITE_PREVIEW));
                         }
                     }
                     _ => {
@@ -1096,7 +1098,7 @@ impl AssetSink {
     ) -> Option<String> {
         let bytes: Vec<u8> = match content {
             AttachmentContent::Text(t) => t.clone().into_bytes(),
-            AttachmentContent::Base64 { b64, .. } => crate::clipboard::base64_decode(b64)?,
+            AttachmentContent::Base64 { b64, .. } => crate::diff::base64_decode(b64)?,
         };
         // Basename only (no traversal); ensure an extension for images.
         let raw = path.unwrap_or(name);
@@ -1825,7 +1827,7 @@ mod tests {
         let rows = diff["rows"].as_array().unwrap();
         // Context advances both sides (to old/new line 11), so the deletion is
         // old-line 11 and the insertions are new-lines 11 and 12 — the shared
-        // `render::diff_row_groups` numbering the TUI renders too.
+        // `diff_row_groups` numbering the TUI renders too.
         assert_eq!(rows[0], json!(["ctx", 10, "context"]));
         assert_eq!(rows[1], json!(["del", 11, "gone"]));
         assert_eq!(rows[2], json!(["add", 11, "added one"]));
@@ -1916,7 +1918,7 @@ mod tests {
             30,
             "all 30 rows emitted, not truncated"
         );
-        assert_eq!(num["cap"], json!(render::WRITE_PREVIEW));
+        assert_eq!(num["cap"], json!(WRITE_PREVIEW));
     }
 
     #[test]

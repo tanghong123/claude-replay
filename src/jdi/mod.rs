@@ -2124,7 +2124,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         html: false,
         width: None,
     };
-    crate::app::run(&args, path)
+    crate::tui::app::run(&args, path)
 }
 
 /// Quote args for readable display (single-line preview; not for execution).

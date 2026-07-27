@@ -1,8 +1,8 @@
 //! Terminal wiring + input loop. All view state/drawing lives in `view::View`
 //! (testable headless via ratatui's TestBackend).
 
-use crate::picker::Picker;
-use crate::view::View;
+use crate::tui::picker::Picker;
+use crate::tui::view::View;
 use crate::{discover, Agent, Args};
 use anyhow::Result;
 use crossterm::{
@@ -434,8 +434,8 @@ fn event_loop<B: ratatui::backend::Backend>(
                     // Enter activates the focused block: fold toggle, descend a sub-agent,
                     // or download (embedded) / reveal (path-only) an attachment.
                     KeyCode::Enter => match view.activate_focused() {
-                        Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
-                        Some(crate::view::Action::Descend(idx)) => {
+                        Some(crate::tui::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
+                        Some(crate::tui::view::Action::Descend(idx)) => {
                             return Ok(Outcome::Descend(idx))
                         }
                         None => {}
@@ -469,7 +469,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                 MouseEventKind::Down(MouseButton::Left) if view.agents_popup_open() => {}
                 MouseEventKind::Drag(MouseButton::Left) if view.agents_popup_open() => {}
                 MouseEventKind::Up(MouseButton::Left) if view.agents_popup_open() => {
-                    if let crate::view::PopupClick::Descend(idx) = view.agents_popup_click(m.row) {
+                    if let crate::tui::view::PopupClick::Descend(idx) =
+                        view.agents_popup_click(m.row)
+                    {
                         return Ok(Outcome::Descend(idx));
                     }
                 }
@@ -488,7 +490,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                 MouseEventKind::Up(MouseButton::Left) => {
                     if view.dragged() {
                         if let Some(text) = view.take_selection_text() {
-                            crate::clipboard::copy(&text);
+                            crate::tui::clipboard::copy(&text);
                         }
                     } else {
                         view.clear_selection();
@@ -498,8 +500,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                             // A click activates whatever it lands on: descend a sub-agent,
                             // download/reveal an attachment (or a tool-header path), else fold.
                             match view.click_at(m.row, m.column) {
-                                Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
-                                Some(crate::view::Action::Descend(idx)) => {
+                                Some(crate::tui::view::Action::Reveal(p)) => {
+                                    reveal_in_file_manager(&p)
+                                }
+                                Some(crate::tui::view::Action::Descend(idx)) => {
                                     return Ok(Outcome::Descend(idx))
                                 }
                                 None => {}
@@ -507,10 +511,12 @@ fn event_loop<B: ratatui::backend::Backend>(
                         } else if row == view.content_rows() {
                             // Footer row: the nav labels are click targets.
                             match view.footer_click(m.column as usize) {
-                                crate::view::FooterHit::EscBack if descended => {
+                                crate::tui::view::FooterHit::EscBack if descended => {
                                     return Ok(Outcome::Ascend)
                                 }
-                                crate::view::FooterHit::ActiveAgents => view.open_agents_popup(),
+                                crate::tui::view::FooterHit::ActiveAgents => {
+                                    view.open_agents_popup()
+                                }
                                 _ => {}
                             }
                         }
@@ -593,7 +599,7 @@ fn dump_width(args: &Args) -> usize {
         .ok()
         .map(|(c, _)| c as usize)
         .filter(|c| *c > 0)
-        .unwrap_or(crate::render::DUMP_WIDTH)
+        .unwrap_or(crate::tui::render::DUMP_WIDTH)
 }
 
 /// `--dump`: render the whole transcript at a chosen width and either print plain

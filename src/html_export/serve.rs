@@ -493,7 +493,7 @@ fn serve_connection(
             let p = percent_decode(v);
             let path = Path::new(&p);
             if path.exists() {
-                crate::app::reveal_in_file_manager(path);
+                crate::tui::app::reveal_in_file_manager(path);
                 return respond(&mut stream, "200 OK", "text/plain", b"revealed");
             }
         }

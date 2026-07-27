@@ -1,8 +1,14 @@
 //! Blocks -> styled ratatui lines. Each emitted line is tagged with its source
 //! block index so the viewer can fold/expand and hit-test mouse clicks.
 
+use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
+use crate::highlight;
 use crate::model::{Attachment, Block};
-use crate::{highlight, markdown, theme};
+use crate::present::{
+    display_name, edit_summary, spawn_chip, thinking_summary, turn_summary, write_content,
+    WRITE_PREVIEW,
+};
+use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -15,37 +21,6 @@ pub struct Rendered {
 /// Blocks whose body can be collapsed to a one-line placeholder.
 pub fn foldable(b: &Block) -> bool {
     crate::model::foldable(b)
-}
-
-/// A one-line summary chip for a sub-agent spawn: `<N> tools · <status>` — the tool
-/// count comes from the child transcript (direct tool/agent calls), status from the
-/// lifecycle. Empty child (unresolved on disk) → just the status.
-/// Direct tool calls in a sub-agent's child transcript (activity tools absorbed into a
-/// `Thinking` turn are counted too, since grouping folds Bash/Read/… into it).
-pub(crate) fn tool_count(sa: &crate::model::SubAgent) -> usize {
-    sa.blocks
-        .iter()
-        .map(|b| match b {
-            Block::ToolUse { .. } | Block::SubAgent(_) => 1,
-            Block::Thinking { tools, .. } => tools.len(),
-            _ => 0,
-        })
-        .sum()
-}
-
-/// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). The spawn is
-/// the *launch* event and always reads "launched" — the terminal status shows on the
-/// separate `AgentDone` completion event, not here.
-pub(crate) fn spawn_chip(sa: &crate::model::SubAgent) -> String {
-    let tools = tool_count(sa);
-    if tools > 0 {
-        format!(
-            "{tools} tool{} · launched",
-            if tools == 1 { "" } else { "s" }
-        )
-    } else {
-        "launched".to_string()
-    }
 }
 
 /// The collapsed spawn header: `⏺ Agent(<type>: <description>)  <chip>  ↵ <agent-id>` in
@@ -225,54 +200,6 @@ fn command_header_lines(name: &str, args: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// One step of a line-level diff.
-pub(crate) enum LineOp<'a> {
-    Eq(&'a str),
-    Del(&'a str),
-    Ins(&'a str),
-}
-
-/// Line-level LCS → an ordered op sequence (unchanged lines stay as context,
-/// only genuinely changed runs become -/+). Avoids the old index-zip that
-/// mispaired every line after an insertion/deletion.
-pub(crate) fn line_diff<'a>(ol: &[&'a str], nl: &[&'a str]) -> Vec<LineOp<'a>> {
-    let (n, m) = (ol.len(), nl.len());
-    let mut dp = vec![vec![0u32; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            dp[i][j] = if ol[i] == nl[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
-        }
-    }
-    let mut ops = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < n && j < m {
-        if ol[i] == nl[j] {
-            ops.push(LineOp::Eq(ol[i]));
-            i += 1;
-            j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
-            ops.push(LineOp::Del(ol[i]));
-            i += 1;
-        } else {
-            ops.push(LineOp::Ins(nl[j]));
-            j += 1;
-        }
-    }
-    while i < n {
-        ops.push(LineOp::Del(ol[i]));
-        i += 1;
-    }
-    while j < m {
-        ops.push(LineOp::Ins(nl[j]));
-        j += 1;
-    }
-    ops
-}
-
 /// Added/removed line counts from a line-level diff (for the `└ Updated` header).
 pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
     let ol: Vec<&str> = old.lines().collect();
@@ -288,10 +215,6 @@ pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
     (adds, dels)
 }
 
-/// Claude Code shows only the first `WRITE_PREVIEW` lines of a file write, then a
-/// `… +N lines` marker (the full content isn't dumped into the transcript view).
-pub(crate) const WRITE_PREVIEW: usize = 10;
-
 /// Render a whole-new-file write as syntax-highlighted, line-numbered code (no
 /// `+` gutter): `{6 spaces}{num right-aligned} {code}`. `limit` caps the shown
 /// lines (the collapsed preview shows `Some(WRITE_PREVIEW)` then `     … +N lines`,
@@ -305,7 +228,7 @@ fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Ve
     for (i, l) in lines.iter().take(shown).enumerate() {
         // 6-space margin + right-aligned number + one space, then the code.
         let mut spans = vec![
-            Span::raw(" ".repeat(crate::view::INSET)),
+            Span::raw(" ".repeat(crate::tui::view::INSET)),
             Span::styled(format!("{:>gutter$} ", i + 1), theme::dim()),
         ];
         match hl.get(i) {
@@ -350,7 +273,7 @@ fn diff_row(
     // Context rows (no bg) never reach `fill_bg`'s inset, so indent them here by
     // the same INSET that `fill_bg` applies to the +/− rows — keeps gutters aligned.
     if bg.is_none() {
-        spans.push(Span::raw(" ".repeat(crate::view::INSET)));
+        spans.push(Span::raw(" ".repeat(crate::tui::view::INSET)));
     }
     // CC layout: `{gutter} {marker}{code}` — one space after the gutter, the
     // marker (+/-/space) directly before the code (the code keeps its own indent).
@@ -396,133 +319,6 @@ fn diff_rendered_len(old: &str, new: &str) -> usize {
         }
     }
     n
-}
-
-/// One classified row of an Edit diff: its kind, the gutter line number to show (`None` =
-/// blank gutter — a deletion in the local-numbering fallback, which has no new-side position),
-/// and the row text.
-pub(crate) enum DiffKind {
-    Ctx,
-    Add,
-    Del,
-}
-pub(crate) struct DiffRow {
-    pub kind: DiffKind,
-    pub num: Option<usize>,
-    pub text: String,
-}
-/// A gutter-alignment group of diff rows: one `structuredPatch` hunk, or one `(old, new)`
-/// pair in the local-numbering fallback. `max_line` is the largest line number either side's
-/// numbering reaches — including a trailing-context position counted on the *old* side even
-/// though that row shows its new number — so the TUI sizes its gutter exactly as it always has.
-pub(crate) struct DiffGroup {
-    pub rows: Vec<DiffRow>,
-    pub max_line: usize,
-}
-
-/// **The single Edit-diff classifier + line-numberer**, shared by the TUI ([`render_diff`])
-/// and the HTML exporter (`html_export::diff_part`) so their numbering can never drift.
-/// Rows are grouped for gutter alignment: one group per `structuredPatch` hunk (real file
-/// line numbers on both sides), or — when the transcript carried no patch — one group per
-/// `(old, new)` diff pair with a local 1..N numbering over the new side (via [`line_diff`]).
-/// Context/added rows carry a new-side number; a deletion carries its OLD-side number in the
-/// patch branch and `None` in the fallback. Empty diff pairs are dropped.
-pub(crate) fn diff_row_groups(
-    diffs: &[(String, String)],
-    patch: Option<&[crate::model::Hunk]>,
-) -> Vec<DiffGroup> {
-    let mut groups = Vec::new();
-    if let Some(hunks) = patch {
-        for h in hunks {
-            // Gutter extent counts BOTH sides fully (added/context on the new side, removed/
-            // context on the old side) — a trailing-context run advances the old side past any
-            // old number actually shown, so size to `max(new_last, old_last)`.
-            let new_lines = h.lines.iter().filter(|l| !l.starts_with('-')).count();
-            let old_lines = h.lines.iter().filter(|l| !l.starts_with('+')).count();
-            let max_line = (h.new_start + new_lines.saturating_sub(1))
-                .max(h.old_start + old_lines.saturating_sub(1));
-            let mut rows = Vec::new();
-            let (mut n, mut o) = (h.new_start, h.old_start);
-            for line in &h.lines {
-                let marker = line.chars().next().unwrap_or(' ');
-                let text = line.get(marker.len_utf8()..).unwrap_or("").to_string();
-                match marker {
-                    '+' => {
-                        rows.push(DiffRow {
-                            kind: DiffKind::Add,
-                            num: Some(n),
-                            text,
-                        });
-                        n += 1;
-                    }
-                    '-' => {
-                        rows.push(DiffRow {
-                            kind: DiffKind::Del,
-                            num: Some(o),
-                            text,
-                        });
-                        o += 1;
-                    }
-                    _ => {
-                        rows.push(DiffRow {
-                            kind: DiffKind::Ctx,
-                            num: Some(n),
-                            text,
-                        });
-                        n += 1;
-                        o += 1;
-                    }
-                }
-            }
-            groups.push(DiffGroup { rows, max_line });
-        }
-    } else {
-        for (old, new) in diffs
-            .iter()
-            .filter(|(o, n)| !(o.is_empty() && n.is_empty()))
-        {
-            let ol: Vec<&str> = old.lines().collect();
-            let nl: Vec<&str> = new.lines().collect();
-            let ops = line_diff(&ol, &nl);
-            // Local numbering over the NEW side only (deletions get a blank gutter); the
-            // gutter sizes to the count of new-side lines (context + insertions).
-            let max_line = ops
-                .iter()
-                .filter(|op| matches!(op, LineOp::Eq(_) | LineOp::Ins(_)))
-                .count();
-            let mut rows = Vec::new();
-            let mut n = 0usize;
-            for op in ops {
-                match op {
-                    LineOp::Eq(l) => {
-                        n += 1;
-                        rows.push(DiffRow {
-                            kind: DiffKind::Ctx,
-                            num: Some(n),
-                            text: l.to_string(),
-                        });
-                    }
-                    LineOp::Del(l) => {
-                        rows.push(DiffRow {
-                            kind: DiffKind::Del,
-                            num: None,
-                            text: l.to_string(),
-                        });
-                    }
-                    LineOp::Ins(l) => {
-                        n += 1;
-                        rows.push(DiffRow {
-                            kind: DiffKind::Add,
-                            num: Some(n),
-                            text: l.to_string(),
-                        });
-                    }
-                }
-            }
-            groups.push(DiffGroup { rows, max_line });
-        }
-    }
-    groups
 }
 
 /// Render an Edit's diff to styled TUI rows: classify via [`diff_row_groups`], size the
@@ -787,27 +583,6 @@ fn command_output_lines(output: &[String]) -> Vec<Line<'static>> {
 /// Max output lines shown for an expanded tool block before "… N lines remaining".
 const OUTPUT_CAP: usize = 15;
 
-/// `Added N lines[, removed M lines]` (singular/plural; "removed" omitted at 0) —
-/// the Edit/MultiEdit result summary, matching Claude Code.
-pub(crate) fn edit_summary(adds: usize, dels: usize) -> String {
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
-    let a = format!("Added {adds} line{}", plural(adds));
-    if dels == 0 {
-        a
-    } else {
-        format!("{a}, removed {dels} line{}", plural(dels))
-    }
-}
-
-/// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
-/// `Update`; everything else keeps its tool name.
-pub(crate) fn display_name(name: &str) -> &str {
-    match name {
-        "Edit" | "MultiEdit" => "Update",
-        other => other,
-    }
-}
-
 /// The display-column span `[start, end)` of the `(target)` region in a tool
 /// header (`⏺ Name(target)`) — so the viewer can hit-test clicks on the path.
 /// Mirrors `tool_header`'s layout: `⏺`(1) + ` `(1) + display_name + `(target)`.
@@ -886,177 +661,6 @@ fn push_capped_output(text: &str, bg: Color, fg: Color, out: &mut Vec<Line<'stat
             base,
         )));
     }
-}
-
-/// A turn's summary label, in **natural (chronological) order**: the grouped tool
-/// calls ran first (their results fed the thinking), so the activities lead and the
-/// thinking closes — `Ran 1 shell command (ls), thought for 8s`. This matches the
-/// expanded body (tools then thinking). A bare turn is just `Thought for 8s`. The
-/// duration (`Xs` / `Xm Ys`) is omitted when unknown.
-pub(crate) fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
-    let thought = match duration_secs {
-        Some(d) if d >= 60 => format!("thought for {}m {}s", d / 60, d % 60),
-        Some(d) => format!("thought for {d}s"),
-        None => "thought".to_string(),
-    };
-    let acts = activities(tools);
-    if acts.is_empty() {
-        capitalize(&thought)
-    } else {
-        format!("{}, {thought}", capitalize(&acts))
-    }
-}
-
-/// The collapsed one-line summary of a `Thinking` turn — shared by the TUI and the HTML
-/// exporter (each prepends its own glyph) so the wording can't drift between them. A pure
-/// coalesced-activity run (no thinking text, no duration) is just the activities; otherwise
-/// `<activities>, thought for Xs`; a bare thinking block with neither falls back to a line count.
-/// A Write/NotebookEdit's body: the first non-empty *new-side* text across its diffs (the
-/// transcript records a Write as a diff whose new side is the whole file). Shared so the TUI
-/// and HTML agree on which diff supplies the content.
-pub(crate) fn write_content(diffs: &[(String, String)]) -> &str {
-    diffs
-        .iter()
-        .map(|(_, n)| n.as_str())
-        .find(|n| !n.is_empty())
-        .unwrap_or("")
-}
-
-pub(crate) fn thinking_summary(text: &str, duration_secs: Option<u64>, tools: &[Block]) -> String {
-    if text.trim().is_empty() && duration_secs.is_none() && !tools.is_empty() {
-        capitalize(&activities(tools))
-    } else if duration_secs.is_some() || !tools.is_empty() {
-        turn_summary(duration_secs, tools)
-    } else {
-        format!("Thought ({} lines)", text.lines().count())
-    }
-}
-
-/// Uppercase the first character of `s` (ASCII-friendly; leaves the rest as-is).
-pub(crate) fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
-/// The representative program name of a (possibly compound) shell command, e.g.
-/// `echo "==="; PROFILE=1 zsh -i -c exit | tail` → `zsh`. Splits on shell
-/// separators and, per segment, skips leading `VAR=value` assignments; a whole
-/// segment whose command is pure preamble (`echo`/`cd`/`for`/…) is skipped, and
-/// wrapper prefixes (`sudo`/`time`/`do`/…) are stepped over to the real command.
-/// Falls back to the first token's basename. `None` only for an empty command.
-fn command_name(cmd: &str) -> Option<String> {
-    // Whole segment is noise (its arguments aren't commands). Includes the shell
-    // block-closer keywords (`fi`/`done`/`esac`/`in`) so a compound script's control
-    // structure isn't mistaken for a command.
-    const SKIP_SEGMENT: &[&str] = &[
-        "echo", "printf", "cd", "true", "false", ":", "set", "export", "unset", "source", ".",
-        "for", "while", "until", "if", "case", "test", "[", "[[", "return", "eval", "fi", "done",
-        "esac", "in",
-    ];
-    // Prefix wrapper: the real command is the next token.
-    const SKIP_PREFIX: &[&str] = &[
-        "do", "then", "else", "elif", "time", "env", "sudo", "command", "builtin", "exec", "nohup",
-        "xargs", "{", "(", "!",
-    ];
-    let is_env = |t: &str| {
-        t.split_once('=').is_some_and(|(k, _)| {
-            !k.is_empty()
-                && k.chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        })
-    };
-    // A token that actually looks like a command word — a program/function name,
-    // not shell punctuation. Rejects block terminators (`}`), case labels
-    // (`completion)`), function-definition headers (`run_wire()`), comments (`#`),
-    // and `var=value` — all of which flattened heredoc scripts scatter into
-    // separators, and none of which should surface as a command name.
-    let plausible = |t: &str| {
-        let mut cs = t.chars();
-        cs.next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '/')
-            && t.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "_.-+/@".contains(c))
-    };
-    let base = |t: &str| t.rsplit(['/', '\\']).next().unwrap_or(t).to_string();
-    for seg in cmd.split([';', '|', '&', '\n']) {
-        let mut toks = seg.split_whitespace().filter(|t| !is_env(t));
-        let Some(mut name) = toks.next().map(base) else {
-            continue;
-        };
-        if SKIP_SEGMENT.contains(&name.as_str()) {
-            continue;
-        }
-        while SKIP_PREFIX.contains(&name.as_str()) {
-            match toks.next() {
-                Some(t) => name = base(t),
-                None => break,
-            }
-        }
-        // Only accept a real command word; otherwise this segment is structural
-        // noise (a brace, case label, comment, …) — move on to the next.
-        if plausible(&name) {
-            return Some(name);
-        }
-    }
-    cmd.split_whitespace()
-        .map(base)
-        .find(|t| plausible(t))
-        .or_else(|| cmd.split_whitespace().next().map(base))
-}
-
-/// Summarize grouped tool calls as `listed N directories, searched for N patterns,
-/// read N files, ran N shell commands (name, …), used N tools` (each clause omitted
-/// at 0). Extends Claude Code's turn line with the shell program names.
-pub(crate) fn activities(tools: &[Block]) -> String {
-    let s = |n: usize| if n == 1 { "" } else { "s" };
-    let (mut dir, mut pat, mut file, mut other) = (0, 0, 0, 0);
-    let mut shell_names: Vec<String> = Vec::new();
-    for t in tools {
-        if let Block::ToolUse { name, target, .. } = t {
-            match name.as_str() {
-                "Bash" => shell_names.push(command_name(target).unwrap_or_else(|| "sh".into())),
-                "Read" | "NotebookRead" => file += 1,
-                "Grep" | "Glob" => pat += 1,
-                "LS" => dir += 1,
-                _ => other += 1,
-            }
-        }
-    }
-    let mut parts = Vec::new();
-    if dir > 0 {
-        parts.push(format!(
-            "listed {dir} director{}",
-            if dir == 1 { "y" } else { "ies" }
-        ));
-    }
-    if pat > 0 {
-        parts.push(format!("searched for {pat} pattern{}", s(pat)));
-    }
-    if file > 0 {
-        parts.push(format!("read {file} file{}", s(file)));
-    }
-    if !shell_names.is_empty() {
-        let n = shell_names.len();
-        // Distinct program names, first-seen order — 9 `git`s read as "(git)".
-        let mut seen = std::collections::HashSet::new();
-        let uniq: Vec<&str> = shell_names
-            .iter()
-            .map(String::as_str)
-            .filter(|nm| seen.insert(*nm))
-            .collect();
-        parts.push(format!(
-            "ran {n} shell command{} ({})",
-            s(n),
-            uniq.join(", ")
-        ));
-    }
-    if other > 0 {
-        parts.push(format!("used {other} tool{}", s(other)));
-    }
-    parts.join(", ")
 }
 
 /// The collapsed representation of a foldable block. Bash/Read get a faint
@@ -1322,65 +926,6 @@ pub const DUMP_WIDTH: usize = 100;
 mod tests {
     use super::*;
     use ratatui::style::Color;
-
-    /// `tool_count` for a spawn is **node-scoped**: it tallies the child's own tools (here 2
-    /// Reads, coalesced into an activity list), not the parent's Bash. Exercises the
-    /// render-side counter over a `model`-parsed sub-agent tree — an integration point that
-    /// lived in `model`'s tests until the parser core was split into `claude-replay-core`.
-    #[test]
-    fn child_scoped_tool_count() {
-        use std::io::Write;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "cr-render-subagent-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        let sess = base.join("proj").join("sid.jsonl");
-        let sadir = base.join("proj").join("sid").join("subagents");
-        std::fs::create_dir_all(&sadir).unwrap();
-        // Parent: one Agent spawn; its own transcript has a Bash the child must NOT be
-        // credited with.
-        let parent = concat!(
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_P\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"general-purpose\",\"description\":\"child\",\"prompt\":\"go\"}}]}}\n",
-            "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"achild01\",\"status\":\"completed\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"done\"}]}}\n"
-        );
-        std::fs::File::create(&sess)
-            .unwrap()
-            .write_all(parent.as_bytes())
-            .unwrap();
-        // Child transcript: two Read tools.
-        let child = concat!(
-            "{\"type\":\"user\",\"message\":{\"content\":\"go\"}}\n",
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/a\"}}]}}\n",
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c2\",\"name\":\"Read\",\"input\":{\"file_path\":\"/b\"}}]}}\n"
-        );
-        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
-            .unwrap()
-            .write_all(child.as_bytes())
-            .unwrap();
-
-        // Parse through the public entry point (enriched = loads the sub-agent tree), the
-        // same way a library consumer would — no reach into the core's per-agent internals.
-        let blocks = crate::engine::parse_session_enriched_as(crate::Agent::Claude, &sess)
-            .unwrap()
-            .blocks;
-        let Some(crate::model::Block::SubAgent(sa)) = blocks
-            .iter()
-            .find(|b| matches!(b, crate::model::Block::SubAgent(_)))
-        else {
-            panic!("no SubAgent: {blocks:?}")
-        };
-        assert_eq!(
-            tool_count(sa),
-            2,
-            "node-scoped tool count (child's 2 Reads, not the parent's Bash)"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
     fn texts(lines: &[Line]) -> Vec<String> {
         lines
@@ -2040,28 +1585,6 @@ mod tests {
         let t = texts(&render_collapsed(&block));
         assert_eq!(t[0], "❯ /compact");
         assert!(t[1].contains("⎿ Compacted"), "first line: {:?}", t[1]);
-    }
-
-    #[test]
-    fn command_name_extracts_the_real_program() {
-        let c = |s: &str| command_name(s).unwrap();
-        assert_eq!(c("ls -la"), "ls");
-        assert_eq!(c("/usr/bin/time zsh -i -c exit"), "zsh"); // step over the `time` wrapper
-        assert_eq!(c("echo \"=== hi ===\"; grep -n foo bar"), "grep"); // skip the echo header
-        assert_eq!(c("PROFILE=1 zsh -i -c exit | tail -1"), "zsh"); // env assign + pipe filter
-        assert_eq!(c("git status | grep modified"), "git");
-        assert_eq!(c("{ zmodload zsh/zprof; exit; }"), "zmodload"); // step into the brace group
-
-        // A flattened heredoc script that defines functions/case blocks must not
-        // surface shell punctuation as the "program" — it lands on the first real
-        // invocation instead of a bare `}` / `completion)` / `run_wire()`.
-        let script = "cd /tmp # note  run_wire() { info() { printf '%s' \"$*\"; }  \
-            rowt() { case \"$1\" in shell-init) echo x; return 0;; completion) return 0;; esac; } }  \
-            rc=fresh.zshrc; : > \"$rc\" run_wire \"$rc\"; run_wire \"$rc\"";
-        let got = command_name(script).unwrap();
-        assert_eq!(got, "run_wire", "leaked shell punctuation: {got:?}");
-        // Direct: a segment that is only a block terminator yields no name.
-        assert_eq!(c("} ; grep -n x y"), "grep");
     }
 
     /// A grouped turn collapses to `Thought for Xs, <activities>` (no `✻` glyph),

@@ -20,6 +20,7 @@ pub(crate) mod claude_model; // internal: L1 tokenizer, reached via the adapter 
 pub mod codex_discover; // pub: jdi's Codex supervisor uses it
 pub(crate) mod codex_metrics; // internal
 pub(crate) mod codex_model; // internal: reached via the adapter registry
+pub mod diff;
 pub mod discover;
 pub mod engine;
 pub mod follow;

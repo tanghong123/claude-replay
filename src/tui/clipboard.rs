@@ -66,36 +66,9 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// Decode standard base64 (RFC 4648), tolerating `=` padding and embedded
-/// whitespace/newlines (transcript base64 is often line-wrapped). Returns `None` on
-/// an invalid character. Used to write embedded image attachments to disk.
-pub(crate) fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for c in s.bytes() {
-        let val = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' | b'\n' | b'\r' | b' ' | b'\t' => continue,
-            _ => return None,
-        } as u32;
-        acc = (acc << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{base64, base64_decode};
+    use super::base64;
 
     #[test]
     fn base64_matches_known_vectors() {
@@ -106,22 +79,5 @@ mod tests {
         assert_eq!(base64(b"foob"), "Zm9vYg==");
         assert_eq!(base64(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-    }
-
-    #[test]
-    fn base64_decode_roundtrips_and_tolerates_whitespace() {
-        for v in [
-            &b""[..],
-            b"f",
-            b"fo",
-            b"foo",
-            b"foobar",
-            &[0u8, 255, 16, 128, 3][..],
-        ] {
-            assert_eq!(base64_decode(&base64(v)).as_deref(), Some(v));
-        }
-        // Line-wrapped input (as transcripts store image data) decodes the same.
-        assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
-        assert_eq!(base64_decode("!!bad"), None);
     }
 }

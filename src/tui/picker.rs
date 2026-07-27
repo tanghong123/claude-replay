@@ -2,7 +2,7 @@
 //! is given). Decoupled from the terminal so it's testable headless.
 
 use crate::discover::Candidate;
-use crate::theme;
+use crate::tui::theme;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32Str};
 use ratatui::layout::Rect;

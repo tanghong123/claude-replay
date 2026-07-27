@@ -4,8 +4,8 @@
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
 use crate::model::{Attachment, AttachmentContent, Block};
-use crate::picker::Picker;
-use crate::{render, theme, wrap};
+use crate::tui::picker::Picker;
+use crate::tui::{render, theme, wrap};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1372,7 +1372,7 @@ fn write_attachment_to(dir: &Path, a: &Attachment) -> std::io::Result<PathBuf> {
     use std::io::{Error, ErrorKind, Write};
     let bytes: Vec<u8> = match a.content.as_ref() {
         Some(AttachmentContent::Text(t)) => t.clone().into_bytes(),
-        Some(AttachmentContent::Base64 { b64, .. }) => crate::clipboard::base64_decode(b64)
+        Some(AttachmentContent::Base64 { b64, .. }) => crate::diff::base64_decode(b64)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
         None => return Err(Error::new(ErrorKind::InvalidInput, "nothing to download")),
     };
@@ -2057,7 +2057,7 @@ mod tests {
         let Block::SubAgent(spawn) = &v.blocks[1] else {
             unreachable!()
         };
-        let (ids, ide) = crate::render::agent_id_span(spawn).expect("id span");
+        let (ids, ide) = crate::tui::render::agent_id_span(spawn).expect("id span");
         // Click on the header caret (col 0) toggles the fold, does not descend.
         assert_eq!(v.click_at(row, 0), None, "header click folds, not descends");
         assert!(!v.is_collapsed(1), "header click expanded it");
@@ -2109,7 +2109,7 @@ mod tests {
             unreachable!()
         };
         assert!(
-            crate::render::agent_id_span(spawn).is_some(),
+            crate::tui::render::agent_id_span(spawn).is_some(),
             "running agent shows the ↵ id descend target"
         );
         // It counts as active (footer `a active N` + `a` popup).
@@ -2148,8 +2148,9 @@ mod tests {
         assert!(dref.blocks.is_empty(), "completion child loads lazily");
         // Mouse: clicking the header id descends; clicking the caret (col 0) folds.
         let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
-        let (s, e) = crate::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
-            .expect("done id span");
+        let (s, e) =
+            crate::tui::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
+                .expect("done id span");
         assert_eq!(
             v.click_at(row, ((s + e) / 2) as u16),
             Some(Action::Descend(1)),
