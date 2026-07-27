@@ -382,7 +382,7 @@ impl View {
     }
     /// Hit-test a mouse click against the open `a` popup (a full-content-area overlay:
     /// header at row 0, one agent per row from row 1, footer at the bottom — mirrors
-    /// [`render_agents_popup`]). A click on an agent row selects + descends into it; any
+    /// `render_agents_popup`). A click on an agent row selects + descends into it; any
     /// other click is swallowed so it never leaks to the content underneath (`Esc`/`a`
     /// closes the popup).
     pub fn agents_popup_click(&mut self, row: u16) -> PopupClick {

@@ -51,10 +51,12 @@ mostly transparent when reading viewer code.
 - `markdown.rs` md → ratatui lines · `render.rs` blocks → styled lines · `wrap.rs` wrapping
 - `view.rs` state machine + draw (TestBackend-testable) · `app.rs` terminal + input
 - `theme.rs` styles · `highlight.rs` syntect · `picker.rs` fuzzy session picker · `clipboard.rs`
-- `html_export.rs` `--dump-html` (write files) / `--html` (open browser; `-f` serves live over a
-  loopback HTTP server since a `file://` page can't `fetch`) → one self-contained `.html` (fixed
-  shell + `html/export.{css,js}` embedded; Rust emits an append-only JSON block stream, the JS
-  renders it; `-f` writes a companion `<stem>.jsonl` the page polls). Reuses `model`/`render`/`markdown`/`highlight`.
+- `html_export/` (`mod.rs` render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline
+  writers · `serve.rs` the `--html` live server) `--dump-html` (write files) / `--html` (open
+  browser; `-f` serves live over a loopback HTTP server since a `file://` page can't `fetch`) →
+  one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust emits an
+  append-only JSON block stream, the JS renders it; `-f` writes a companion `<stem>.jsonl` the
+  page polls). Reuses `model`/`render`/`markdown`/`highlight`.
 - `jdi/` the **`agent-jdi`** binary (unattended-run supervisor); see `src/jdi/DESIGN.md`
 
 The viewer's phased plan (P0–P8) is **built** — see `DESIGN.md` for the design

@@ -1,6 +1,6 @@
 //! **Layer 2 — the shared fold.** The stateful [`Replayer`] folds a stream of canonical
-//! [`Message`](crate::engine::message::Message)s (produced by any agent's Layer-1 decoder)
-//! into render [`Block`](crate::model::Block)s, via the per-agent [`Shaping`] seam and the
+//! [`Message`]s (produced by any agent's Layer-1 decoder)
+//! into render [`Block`]s, via the per-agent [`Shaping`] seam and the
 //! streaming [`parse_stream`] driver. Agent-agnostic: everything that differs by agent enters
 //! through `Shaping` (a `&'static` const per adapter) plus the `decode` closure. The data
 //! model it produces and block classification live in [`crate::model`]; this module is the
@@ -80,7 +80,7 @@ pub(crate) fn parse_path_timed_for(
 }
 
 /// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the
-/// `Adapter` (design §3.2). Everything else in [`replay`] is agent-agnostic; these three
+/// `Adapter` (design §3.2). Everything else in this module is agent-agnostic; these three
 /// hooks are the only points Claude and Codex differ:
 /// - `apply`: back-patch a tool result onto its `ToolUse` block (Claude reads the
 ///   `toolUseResult` metadata for diffs/read-count; Codex just sets the output text).
@@ -111,7 +111,7 @@ pub(crate) struct Shaping {
 /// flush, completions, then the agent-specific `finish`). Fed all messages at once it
 /// reproduces the old one-shot `replay` exactly; fed in pieces it folds **incrementally** —
 /// the keystone for the streaming production path (M9) and the live `ingest` (M11).
-/// Agent-agnostic: it folds the shared [`Message`](crate::engine::message::Message)
+/// Agent-agnostic: it folds the shared [`Message`]
 /// vocabulary and parses **no** raw agent formats — each agent's L1 decoder maps its own
 /// transcript shapes onto these structured messages (completions, commands, skill bodies,
 /// injected notes, the queue lifecycle), so the fold is the same code for every agent. The
@@ -411,7 +411,7 @@ pub(crate) fn replay(
 
 /// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
 /// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
-/// of prompts picked up immediately. Split out so both `parse_main` and [`replay`] share
+/// of prompts picked up immediately. Split out so both `parse_main` and `replay` share
 /// one copy. Runs before turn grouping so surviving markers keep their positions.
 fn apply_completions_and_suppress(
     out: &mut Vec<Block>,

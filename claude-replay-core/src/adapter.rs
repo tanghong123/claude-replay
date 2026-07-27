@@ -30,9 +30,10 @@ pub(crate) trait MetricsAccumulator: Send {
 }
 
 /// The single agent-specific interface. A new agent implements this once; the engine calls
-/// it via [`adapter`]. Whole-file parsing (`parse_path*`) and the incremental-follower
-/// primitives (`shaping`/`decode_line`/`metrics_acc`) are both here so the batch and live
-/// paths share one seam.
+/// it via [`adapter`]. The four per-agent hooks (`sniff`/`scan_join_ids`/`decode_line`/
+/// `metrics_acc` + the `shaping` const) drive both the whole-file `parse_path_timed` and the
+/// live follower through one provided path, so batch and live share a seam. Discovery
+/// (`candidates_scoped`/`resolve_id`) and the optional `enrich`/`subagent_source` round it out.
 pub(crate) trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;

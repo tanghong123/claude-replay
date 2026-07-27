@@ -1,10 +1,9 @@
 //! The **agent-neutral render-block vocabulary**: the [`Block`] data model (+ [`Attachment`],
 //! [`SubAgent`], [`AgentStatus`], …) and its classification — [`block_kind`] and the coarse
 //! [`fold_key`] / fine [`BlockKind::html`] projections that drive folding and styling. The
-//! machinery that *builds* these blocks — the Layer-2 [`Replayer`](crate::engine::replay::Replayer)
-//! fold, its [`Shaping`](crate::engine::replay::Shaping) seam, the [`parse_stream`](crate::engine::replay::parse_stream)
-//! driver — lives in [`crate::engine::replay`]; each agent's Layer-1 tokenizer in
-//! [`crate::claude_model`] / [`crate::codex_model`]. Nothing here is dropped or truncated;
+//! machinery that *builds* these blocks — the Layer-2 `Replayer` fold, its `Shaping` seam, the
+//! `parse_stream` driver — lives in `engine::replay`; each agent's Layer-1 tokenizer in
+//! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
@@ -19,7 +18,7 @@ pub struct Hunk {
     pub lines: Vec<String>,
 }
 
-/// One render block — the agent-neutral unit of a parsed transcript. A [`Session`]'s
+/// One render block — the agent-neutral unit of a parsed transcript. A [`Session`](crate::Session)'s
 /// `blocks` is an ordered `Vec<Block>` with tool results already joined onto their calls and
 /// activity coalesced into thinking turns; each variant carries the content a presenter needs.
 /// Classify a block with [`block_kind`] / [`fold_key`] and test collapsibility with [`foldable`].

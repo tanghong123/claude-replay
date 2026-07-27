@@ -1,5 +1,5 @@
 //! Incremental live follower (M16): fold only the newly-appended lines through a persistent
-//! [`Replayer`], instead of re-parsing the whole file each poll. The `snapshot` is proven
+//! `Replayer`, instead of re-parsing the whole file each poll. The `snapshot` is proven
 //! byte-identical to a full re-parse (`follow_matches_full_reparse`), at O(delta) work per
 //! poll — no whole-file re-read/re-decode. On a truncation/rewrite (compaction) the tail
 //! resets and the Replayer rebuilds from scratch (a full replay of the new content).
@@ -16,7 +16,7 @@ use crate::Agent;
 
 /// Follows a transcript file, folding only newly-appended lines each poll. Everything
 /// agent-specific — the L1 decoder, the L2 `Shaping`, the metrics accumulator — comes from
-/// the [`TranscriptAdapter`], so the follower itself is agent-agnostic.
+/// the agent's `TranscriptAdapter`, so the follower itself is agent-agnostic.
 pub struct FollowParser {
     adapter: &'static dyn TranscriptAdapter,
     tail: TailReader,

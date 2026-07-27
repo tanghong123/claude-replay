@@ -125,7 +125,7 @@ pub fn session_id(path: &Path) -> Option<String> {
 }
 
 /// Auto-detect which agent wrote a transcript by sniffing its first lines — asking each
-/// registered adapter's [`sniff`](crate::adapter::TranscriptAdapter::sniff) (a Codex rollout
+/// registered adapter's `sniff` (a Codex rollout
 /// opens with a `session_meta`/`payload` event; a Claude transcript has top-level
 /// `sessionId`/`message`). Defaults to Claude. A new agent adds a `sniff`, not an arm here.
 pub fn detect_agent(path: &Path) -> Agent {
@@ -153,8 +153,8 @@ pub fn detect_agent(path: &Path) -> Agent {
 /// The source transcript of sub-agent `child_id` spawned under the session at `root`, for
 /// the given `agent` — the agent-neutral entry the presentation layer uses to descend into
 /// (or live-tail) a child without knowing the agent's on-disk layout. `None` if the agent
-/// has no sub-agent tree (Codex) or the child file doesn't exist. Routes to the agent's
-/// [`subagent_source`](crate::adapter::TranscriptAdapter::subagent_source).
+/// has no sub-agent tree (Codex) or the child file doesn't exist. Routes to the agent
+/// adapter's `subagent_source` hook.
 pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<PathBuf> {
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }

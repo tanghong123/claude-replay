@@ -1834,8 +1834,8 @@ mod tests {
         let diff = body.iter().find(|p| p["p"] == "diff").expect("diff part");
         let rows = diff["rows"].as_array().unwrap();
         // Context advances both sides (to old/new line 11), so the deletion is
-        // old-line 11 and the insertions are new-lines 11 and 12 — same numbering
-        // the TUI's `render_patch` produces.
+        // old-line 11 and the insertions are new-lines 11 and 12 — the shared
+        // `render::diff_row_groups` numbering the TUI renders too.
         assert_eq!(rows[0], json!(["ctx", 10, "context"]));
         assert_eq!(rows[1], json!(["del", 11, "gone"]));
         assert_eq!(rows[2], json!(["add", 11, "added one"]));

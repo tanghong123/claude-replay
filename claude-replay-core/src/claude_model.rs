@@ -383,8 +383,8 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// This in-memory batch entry runs the new two-layer engine — Layer 1 [`tokenize`]
 /// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
 /// bit-identical to the (now frozen, test-only) `parse_main` — see
-/// `replay_tokenize_matches_parse_main`. The large-file streaming path
-/// (`parse_path` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
+/// `replay_tokenize_matches_parse_main`. The large-file streaming path (the adapter's
+/// `parse_path_timed` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
 /// production no longer touches `parse_main`.
 #[cfg(test)]
 pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
@@ -402,9 +402,10 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
     }
 }
 
-/// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw
-/// pass. `parse_path` wraps this with `enrich_subagents`; the recursion reuses this so
-/// grandchildren resolve against the same session `subagents/` dir.
+/// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
+/// the adapter's `parse_path_timed` builds on. `enrich_tree` (the adapter's `enrich`, backing
+/// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
+/// resolve against the same session `subagents/` dir.
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
@@ -1835,9 +1836,9 @@ mod tests {
         assert_eq!(fold_key(&blocks[1]), "agent");
     }
 
-    /// `parse_path` loads each `SubAgent`'s child transcript from the flat
-    /// `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is **node-
-    /// scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
+    /// `enrich_tree` (via `parse_session_enriched`) loads each `SubAgent`'s child transcript
+    /// from the flat `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is
+    /// **node-scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
     #[test]
     fn enrich_loads_child_scoped_and_rolls_up_cost() {
         use std::io::Write;
@@ -2069,10 +2070,10 @@ mod tests {
         assert_eq!(t, "orphan output");
     }
 
-    /// `parse_path` (streaming file read, two passes) must produce exactly what
+    /// `parse_file` (streaming file read, two passes) must produce exactly what
     /// `parse(&str)` produces for the same content.
     #[test]
-    fn parse_path_matches_parse_str() {
+    fn parse_file_matches_parse_str() {
         let jsonl = concat!(
             r#"{"type":"user","cwd":"/p","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}"#,
             "\n",

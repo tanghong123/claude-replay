@@ -1,10 +1,10 @@
 //! **claude-replay-core** — the agent-agnostic transcript parser/replay engine.
 //!
-//! This is the L1/L2 half of the three-layer engine (`design/parser-engine.md`): the
-//! per-agent tokenizers (Claude + Codex → a canonical [`engine::message`] log), the shared
-//! stateful [`model::Replayer`] fold, session assembly ([`Session`] / [`SessionIndex`]),
-//! transcript discovery, incremental follow ([`follow::FollowParser`]), and the live
-//! [`engine::store::SessionStore`]. It carries **no** TUI / HTML / CLI dependencies — only
+//! This is the L1/L2 half of the three-layer engine: the per-agent tokenizers (Claude +
+//! Codex → a canonical `engine::message` log), the shared stateful `Replayer` fold (in
+//! `engine::replay`), session assembly ([`Session`] / [`SessionIndex`]), transcript discovery,
+//! incremental follow ([`FollowParser`]), and the live `engine::store::SessionStore`. It
+//! carries **no** TUI / HTML / CLI dependencies — only
 //! `serde_json` and `anyhow` — so it can be reused by any frontend. The `claude-replay`
 //! binary crate depends on it and adds the ratatui viewer, the HTML export, and the clap CLI.
 //!

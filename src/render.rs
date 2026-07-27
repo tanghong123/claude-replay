@@ -365,9 +365,9 @@ fn diff_row(
     Line::from(spans)
 }
 
-/// How many lines `diff_lines` will emit for this (old,new) pair — computed
+/// How many rows the fallback diff will emit for this (old,new) pair — computed
 /// cheaply (no `Line` allocation) so a collapsed block's `⋯ N folded` count is
-/// exact without building the body. Mirrors `diff_lines`' pairing rule.
+/// exact without building the body. Mirrors `diff_row_groups`' fallback pairing rule.
 fn diff_rendered_len(old: &str, new: &str) -> usize {
     let ol: Vec<&str> = old.lines().collect();
     let nl: Vec<&str> = new.lines().collect();

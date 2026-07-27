@@ -237,7 +237,8 @@ agent-neutrality is compiler-enforced:
     engine stays untouched.
 - **`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI, plus the
   `agent-jdi` binary. `markdown`/`render`/`wrap`/`view`/`app`/`theme`/`highlight`/`picker` ·
-  `html_export.rs` · `jdi/` (see [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md)).
+  `html_export/` (`mod`=render core, `bundle`=offline writers, `serve`=live server) ·
+  `jdi/` (see [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md)).
 
 The golden visual-parity fixtures **and** the comparison harness live in a separate
 private repo, `claude-replay-eval` (they contain real Claude session content and are
