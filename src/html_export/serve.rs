@@ -28,6 +28,7 @@ struct Live {
     agent: Agent,
     fold: FoldPolicy,
     root_path: std::path::PathBuf,
+    graph: crate::SessionGraph,
     cwd: String,
     store: crate::engine::store::SessionStore<AgentInfo, Tailer>,
 }
@@ -56,13 +57,15 @@ impl Live {
         // a valid id resolves even if its parent was never navigated (deep links) — with a
         // plain title until its parent's spawn supplies the description.
         let info = self.store.resolve(id).or_else(|| {
-            discover::subagent_source(self.agent, &self.root_path, id).map(|source| AgentInfo {
-                id: id.to_string(),
-                source,
-                title: id.to_string(),
-                agent_type: String::new(),
-                ancestors: Vec::new(), // unknown ancestry for an un-navigated deep link
-            })
+            self.graph
+                .subagent_source(&self.root_path, id)
+                .map(|source| AgentInfo {
+                    id: id.to_string(),
+                    source,
+                    title: id.to_string(),
+                    agent_type: String::new(),
+                    ancestors: Vec::new(), // unknown ancestry for an un-navigated deep link
+                })
         });
         let Some(info) = info else {
             return false;
@@ -72,7 +75,11 @@ impl Live {
         }
         // Initial generation via the incremental follower's first poll (folds the whole
         // source once; subsequent polls in `run_tailer` fold only appended deltas).
-        let mut follower = crate::follow::FollowParser::open(self.agent, &info.source);
+        let mut follower = crate::follow::FollowParser::open_with_graph(
+            self.agent,
+            &info.source,
+            self.graph.clone(),
+        );
         let (blocks, times, metrics) = match follower.poll() {
             Ok(Some(t)) => t,
             Ok(None) => (Vec::new(), Vec::new(), crate::metrics::Metrics::default()),
@@ -101,7 +108,7 @@ impl Live {
             if self.store.is_registered(&c.id) {
                 continue;
             }
-            if let Some(ci) = child_info(self.agent, &self.root_path, parent, c) {
+            if let Some(ci) = child_info(&self.graph, &self.root_path, parent, c) {
                 let id = ci.id.clone();
                 self.store.register_new(&id, ci);
             }
@@ -210,11 +217,12 @@ pub(super) fn follow_and_append(
     companion: &Path,
     mut prev: Vec<String>,
     reveal: bool,
+    graph: crate::SessionGraph,
 ) -> Result<()> {
     // Incremental follower (M16): fold only the newly-appended lines each poll instead of
     // re-parsing the whole file. `open` starts at byte 0, so the first poll folds the file
     // to the current state (== the initial export → no diff), then only deltas thereafter.
-    let mut follower = crate::follow::FollowParser::open(agent, path);
+    let mut follower = crate::follow::FollowParser::open_with_graph(agent, path, graph);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
         let polled = match follower.poll() {
@@ -291,6 +299,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let title = display_title(agent, path);
+    let graph = crate::SessionGraph::open(agent, path);
 
     // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
     // wipe any streams left by a previous run of this session so lazy materialization
@@ -308,6 +317,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         agent,
         fold,
         root_path: path.to_path_buf(),
+        graph,
         cwd,
         store: crate::engine::store::SessionStore::new(),
     });
@@ -518,5 +528,106 @@ fn serve_connection(
             respond(&mut stream, "200 OK", ct, &bytes)
         }
         Err(_) => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn codex_subagent_served_live_materializes_child_source_lazily() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-codex-live-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let day = base.join("sessions/2026/07/27");
+        let streams = base.join("streams");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::create_dir_all(&streams).unwrap();
+        let parent = day.join("p.jsonl");
+        let child = day.join("c.jsonl");
+        let unrelated = day.join("unrelated.jsonl");
+        let mut p = std::fs::File::create(&parent).unwrap();
+        writeln!(
+            p,
+            r#"{{"type":"session_meta","payload":{{"id":"p","cwd":"/repo","source":"cli"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            p,
+            r#"{{"type":"response_item","payload":{{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn","arguments":"{{\"task_name\":\"review\",\"message\":\"encrypted\"}}"}}}}"#
+        )
+        .unwrap();
+        let child_meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "c",
+                "cwd": "/repo",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "p",
+                            "agent_path": "/root/review",
+                            "agent_nickname": "Hume"
+                        }
+                    }
+                },
+                "agent_path": "/root/review",
+                "agent_nickname": "Hume"
+            }
+        });
+        let child_message = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "served child body"}]
+            }
+        });
+        std::fs::write(&child, format!("{child_meta}\n{child_message}\n")).unwrap();
+        std::fs::write(
+            &unrelated,
+            r#"{"type":"session_meta","payload":{"id":"unrelated","cwd":"/repo","source":"cli"}}"#,
+        )
+        .unwrap();
+        let graph = crate::SessionGraph::open(Agent::Codex, &parent);
+        let live = Live {
+            dir: streams.clone(),
+            agent: Agent::Codex,
+            fold: FoldPolicy::default(),
+            root_path: parent.clone(),
+            graph,
+            cwd: "/repo".into(),
+            store: crate::engine::store::SessionStore::new(),
+        };
+        live.store.register(
+            "p",
+            AgentInfo {
+                id: "p".into(),
+                source: parent,
+                title: "repo".into(),
+                agent_type: String::new(),
+                ancestors: Vec::new(),
+            },
+        );
+
+        assert!(live.ensure_stream("p"));
+        assert_eq!(live.store.resolve("c").unwrap().source, child);
+        assert!(live.ensure_stream("c"));
+        let child_stream = std::fs::read_to_string(streams.join("c.jsonl")).unwrap();
+        assert!(child_stream.contains("served child body"));
+        assert!(
+            !live.ensure_stream("unrelated"),
+            "served deep links must remain scoped to the anchored operation tree"
+        );
+        assert!(!streams.join("unrelated.jsonl").exists());
+        std::fs::remove_dir_all(base).ok();
     }
 }

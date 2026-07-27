@@ -6,9 +6,23 @@
 //! dispatchers — live in [`crate::discover`].
 
 use crate::discover::{ancestors_of, Candidate};
+use crate::session_graph::SessionGraphBackend;
 use crate::Agent;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+#[derive(Default)]
+pub(crate) struct ClaudeSessionGraph;
+
+impl SessionGraphBackend for ClaudeSessionGraph {
+    fn enrich(&mut self, source: &Path, blocks: &mut [crate::Block]) {
+        crate::claude_model::enrich_tree(source, blocks);
+    }
+
+    fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::claude_model::subagent_file(root, child_id)
+    }
+}
 
 /// Root under which Claude Code writes per-project transcript dirs.
 pub(crate) fn projects_dir() -> PathBuf {

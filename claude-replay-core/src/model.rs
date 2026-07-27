@@ -73,7 +73,7 @@ pub enum Block {
     /// prompt, the result, and one selectable row per spawned agent id — activating a
     /// row descends into that agent's transcript (`blocks`). See `SubAgent`.
     SubAgent(SubAgent),
-    /// A sub-agent **completion** event — the later `<task-notification>` for a spawned
+    /// A sub-agent **completion** event — a later lifecycle notification for a spawned
     /// agent, rendered as its OWN message at the point the notification arrived (the
     /// spawn `SubAgent` block stays "launched" up where it was created). Reads
     /// `⏺ Agent(type: description) done · <result>` in the agent hue. See the two-event
@@ -83,11 +83,11 @@ pub enum Block {
         agent_id: String,
         /// The agent kind, copied from the matching spawn (may be empty if unmatched).
         agent_type: String,
-        /// The agent's description, from the notification `<summary>` (`Agent "…" …`).
+        /// The agent's description, normalized from the completion event.
         description: String,
-        /// The terminal state from the notification `<status>`.
+        /// The terminal state from the completion event.
         status: AgentStatus,
-        /// The agent's returned text, from the notification `<result>` (if any).
+        /// The agent's returned text, if any.
         result: Option<String>,
     },
     /// A slash command (e.g. `/compact`) and its local stdout. Rendered like
@@ -132,12 +132,11 @@ pub enum AttachmentContent {
     Base64 { mime: String, b64: String },
 }
 
-/// A spawned sub-agent (`Agent`/`Task` tool). The spawn's `input` gives
-/// `agent_type`/`description`/`prompt`; its `tool_result`'s `toolUseResult` gives
-/// `agent_id`/`status`/`result`/`output_file`; a later `<task-notification>` keyed by
-/// `tool_use_id` (or `agent_id`) supplies the terminal status. `blocks` is the child
-/// transcript (`subagents/agent-<id>.jsonl`), parsed by the same `parse_main` and
-/// filled in by the path-aware wrapper; nested `SubAgent`s inside it are grandchildren.
+/// A spawned sub-agent, normalized from the source agent's collaboration protocol.
+/// Format-specific call/result fields and parent/child rollout metadata are resolved
+/// behind [`TranscriptAdapter`](crate::adapter::TranscriptAdapter) and its
+/// operation-scoped [`SessionGraph`](crate::SessionGraph). `blocks` is the resolved
+/// child transcript, if enrichment loaded it; nested `SubAgent`s are grandchildren.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubAgent {
     /// The child's agent id (== the completion notification's `task-id`; file stem).
@@ -154,15 +153,14 @@ pub struct SubAgent {
     pub result: Option<String>,
     /// For an async spawn, the `tasks/agent-<id>.output` path (result lands here).
     pub output_file: Option<String>,
-    /// The child transcript, parsed via `parse_main`. Empty until the path-aware
-    /// wrapper resolves `subagents/agent-<id>.jsonl` (absent for a copied `.jsonl`).
+    /// The child transcript. Empty until the operation graph resolves and enriches
+    /// the child source (also empty for a copied standalone transcript).
     pub blocks: Vec<Block>,
     /// This agent's own cost plus all descendants', rolled up. `None` if unknown.
     pub subtree_cost: Option<f64>,
 }
 
-/// A sub-agent's lifecycle state. Launched states come from the spawn's
-/// `toolUseResult.status`; terminal states from its completion `<task-notification>`.
+/// A sub-agent's normalized lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     /// Spawned synchronously and still shown running (no result yet seen).

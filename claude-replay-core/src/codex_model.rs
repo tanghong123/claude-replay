@@ -1,7 +1,7 @@
 use crate::engine::message::Message;
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
-use crate::model::Block;
+use crate::model::{AgentStatus, Block, SubAgent};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -19,7 +19,12 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 /// output is skipped for Edit/Write. Shim it into `Shaping::apply`'s `(&mut Block, &str,
 /// &Value)` signature (the `Value` is always Null for Codex).
 fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
-    apply_output(block, text.to_string());
+    match block {
+        // The spawn call returns relationship metadata, not the child's answer.
+        // The terminal agent_message supplies the renderable result.
+        Block::SubAgent(_) => {}
+        _ => apply_output(block, text.to_string()),
+    }
 }
 fn codex_keep_orphan(_t: &str) -> bool {
     true // Codex keeps every non-empty orphan output (no boilerplate filter)
@@ -29,9 +34,22 @@ fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
 }
 
 /// Codex's `build_tool`: normalize the tool name and shape the target/diffs via
-/// `call_details` (Codex has no `SubAgent` spawns, so `id` is unused). The raw `input` was
-/// already extracted by `call_input` in the tokenizer. (Lifted to L2 in M14.)
-fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+/// `call_details`. Collaboration spawns lift into the shared SubAgent vocabulary.
+fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+    if raw_name == COLLABORATION_SPAWN {
+        return Block::SubAgent(SubAgent {
+            agent_id: String::new(),
+            tool_use_id: id.to_string(),
+            agent_type: "agent".to_string(),
+            description: string_field(input, &["task_name", "description"]),
+            prompt: String::new(),
+            status: AgentStatus::Running,
+            result: None,
+            output_file: None,
+            blocks: Vec::new(),
+            subtree_cost: None,
+        });
+    }
     let (name, target, diffs) = call_details(raw_name, input, cwd);
     Block::ToolUse {
         name,
@@ -50,6 +68,10 @@ pub(crate) const CODEX_SHAPING: crate::engine::replay::Shaping = crate::engine::
     keep_orphan: codex_keep_orphan,
     finish_turns: codex_finish,
 };
+
+// API tool names cannot contain NUL, so a raw dotted tool name cannot collide
+// with this adapter-private canonical marker.
+const COLLABORATION_SPAWN: &str = "\0collaboration.spawn_agent";
 
 /// **Layer 1 — Codex tokenize.** Map Codex's `response_item` line shapes to the canonical
 /// message log (design §3.2). Pure line-shaping — no back-patch / grouping (that is the
@@ -149,11 +171,15 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         .get("name")
                         .and_then(Value::as_str)
                         .unwrap_or("tool");
+                    let canonical_name = match payload.get("namespace").and_then(Value::as_str) {
+                        Some("collaboration") if raw_name == "spawn_agent" => COLLABORATION_SPAWN,
+                        _ => raw_name,
+                    };
                     // Raw fields only — the block is shaped in L2 via `codex_build_tool`.
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
                     msgs.push(Message::ToolUse {
                         id: call_id.to_string(),
-                        name: raw_name.to_string(),
+                        name: canonical_name.to_string(),
                         input: call_input(payload),
                         cwd: cwd.to_string(),
                     });
@@ -168,11 +194,58 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         tur: Value::Null,
                     });
                 }
+                Some("agent_message") => {
+                    if let Some((author, description, result)) = terminal_agent_message(payload) {
+                        msgs.push(Message::Completion {
+                            tool_use_id: String::new(),
+                            task_id: author,
+                            status: Some(AgentStatus::Completed),
+                            description,
+                            result: Some(result),
+                        });
+                    }
+                }
                 _ => {}
             }
         }
         _ => {}
     }
+}
+
+fn terminal_agent_message(payload: &Value) -> Option<(String, String, String)> {
+    let author = payload.get("author").and_then(Value::as_str)?.trim();
+    if author.is_empty() {
+        return None;
+    }
+    let text = payload
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut lines = text.lines();
+    let terminal = lines
+        .by_ref()
+        .find_map(|line| line.trim().strip_prefix("Message Type:"))
+        .is_some_and(|kind| kind.trim() == "FINAL_ANSWER");
+    if !terminal {
+        return None;
+    }
+    let result = text
+        .split_once("Payload:")
+        .map(|(_, result)| result.trim())
+        .filter(|result| !result.is_empty())
+        .unwrap_or(text.trim())
+        .to_string();
+    let description = author
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(author)
+        .to_string();
+    Some((author.to_string(), description, result))
 }
 
 pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
@@ -518,7 +591,78 @@ fn apply_output(block: &mut Block, output: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Block;
+    use crate::model::{AgentStatus, Block};
+
+    #[test]
+    fn collaboration_spawn_and_terminal_agent_message_use_shared_agent_blocks() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"encrypted\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"task_name\":\"/root/review/spec_axis\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review/spec_axis","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+
+        let Block::SubAgent(spawn) = &blocks[0] else {
+            panic!("collaboration.spawn_agent should be a shared SubAgent block");
+        };
+        assert_eq!(spawn.tool_use_id, "c1");
+        assert_eq!(spawn.description, "spec_axis");
+        assert!(!spawn.prompt.contains("encrypted"));
+        assert_eq!(spawn.result, None);
+        assert!(matches!(
+            &blocks[1],
+            Block::AgentDone {
+                agent_id,
+                status: AgentStatus::Completed,
+                result: Some(result),
+                ..
+            } if agent_id == "/root/review/spec_axis" && result == "PASS"
+        ));
+    }
+
+    #[test]
+    fn spawn_agent_without_collaboration_namespace_stays_generic() {
+        let jsonl = r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"plain\"}"}}"#;
+        let blocks = parse_codex(jsonl);
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolUse { name, .. } if name == "spawn_agent"
+        ));
+    }
+
+    #[test]
+    fn dotted_spawn_agent_without_collaboration_namespace_stays_generic() {
+        let jsonl = r#"{"type":"response_item","payload":{"type":"function_call","name":"collaboration.spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"plain\"}"}}"#;
+        let blocks = parse_codex(jsonl);
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolUse { name, .. } if name == "collaboration.spawn_agent"
+        ));
+    }
+
+    #[test]
+    fn malformed_collaboration_payload_degrades_without_inventing_relationships() {
+        for jsonl in [
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"not-json"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"{}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"agent_message","content":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: UPDATE\nPayload:\nworking"}]}}"#,
+        ] {
+            let blocks = parse_codex(jsonl);
+            assert!(
+                blocks.iter().all(|block| match block {
+                    Block::SubAgent(agent) => agent.agent_id.is_empty(),
+                    Block::AgentDone { .. } => false,
+                    _ => true,
+                }),
+                "malformed collaboration data must not invent a child: {blocks:?}"
+            );
+        }
+    }
 
     #[test]
     fn parses_canonical_response_items_without_event_duplicates() {

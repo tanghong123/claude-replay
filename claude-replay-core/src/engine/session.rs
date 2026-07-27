@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::Block;
-use crate::Agent;
+use crate::{Agent, SessionGraph};
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
 /// without touching the presentation layers. Produced by one streaming parse.
@@ -65,13 +65,28 @@ pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
 
 /// [`parse_session_enriched`] for a **known** agent (skips detection).
 pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    let mut s = parse_session_as(agent, path)?;
-    crate::adapter::adapter(agent).enrich(path, &mut s.blocks);
-    Ok(s)
+    parse_session_with_graph(agent, path, SessionGraph::open(agent, path))
 }
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
+    parse_session_flat(agent, path)
+}
+
+/// Parse a known-agent transcript and enrich it through an operation graph shared
+/// with the surrounding TUI, HTML traversal, or live follower.
+pub fn parse_session_with_graph(
+    agent: Agent,
+    path: &Path,
+    graph: SessionGraph,
+) -> io::Result<Session> {
+    let mut session = parse_session_flat(agent, path)?;
+    graph.enrich(path, &mut session.blocks);
+    session.index = SessionIndex::build(&session.blocks, &session.user_times);
+    Ok(session)
+}
+
+fn parse_session_flat(agent: Agent, path: &Path) -> io::Result<Session> {
     // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
     // `Args` — that keeps clap out of the core. Metrics are folded in the SAME streaming
     // pass (M10) — one file read, no separate `parse_reader_for`.

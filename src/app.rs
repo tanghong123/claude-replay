@@ -140,6 +140,7 @@ struct Frame {
     /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
     /// just the newly-appended lines through a persistent `Replayer`.
     follower: Option<crate::follow::FollowParser>,
+    graph: crate::SessionGraph,
     agent: Agent,
     path: PathBuf,
     from: usize,
@@ -207,15 +208,16 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
         .unwrap_or("session")
         .to_string();
     let fold = crate::fold::FoldPolicy::from_args(args);
+    let graph = crate::SessionGraph::open(agent, path);
     // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
     // resident) and the tail — its first poll folds the whole current file, matching a
     // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
     let (blocks, cwd, metrics, follower) = if args.follow {
-        let mut f = crate::follow::FollowParser::open(agent, path);
+        let mut f = crate::follow::FollowParser::open_with_graph(agent, path, graph.clone());
         let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
         (blocks, discover::session_cwd(path), metrics, Some(f))
     } else {
-        let s = crate::engine::parse_session_as(agent, path)?;
+        let s = crate::engine::parse_session_with_graph(agent, path, graph.clone())?;
         (s.blocks, s.cwd, s.metrics, None)
     };
     let mut view = View::new(blocks, title, follower.is_some(), fold);
@@ -228,6 +230,7 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
     Ok(Frame {
         view,
         follower,
+        graph,
         agent,
         path: path.to_path_buf(),
         from,
@@ -253,14 +256,14 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_file = discover::subagent_source(parent.agent, &parent.path, &agent_id);
+    let child_file = parent.graph.subagent_source(&parent.path, &agent_id);
     // Parse the child once via the library entry point (enriched: its own sub-agent tree),
     // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
     // metrics instead of a second parse. A running agent's child file often appears (or fills
     // in) AFTER the parent was parsed, so we load it fresh at descend time.
-    let child_session = child_file
-        .as_deref()
-        .and_then(|f| crate::engine::parse_session_enriched_as(parent.agent, f).ok());
+    let child_session = child_file.as_deref().and_then(|f| {
+        crate::engine::parse_session_with_graph(parent.agent, f, parent.graph.clone()).ok()
+    });
     if blocks.is_empty() {
         if let Some(s) = &child_session {
             blocks = s.blocks.clone();
@@ -274,9 +277,9 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     let follower = args
         .follow
         .then(|| {
-            child_file
-                .as_deref()
-                .map(|f| crate::follow::FollowParser::open(parent.agent, f))
+            child_file.as_deref().map(|f| {
+                crate::follow::FollowParser::open_with_graph(parent.agent, f, parent.graph.clone())
+            })
         })
         .flatten();
     let fold = crate::fold::FoldPolicy::from_args(args);
@@ -301,8 +304,9 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     Some(Frame {
         view,
         follower,
+        graph: parent.graph.clone(),
         agent: parent.agent,
-        path: parent.path.clone(),
+        path: child_file.unwrap_or_else(|| parent.path.clone()),
         from: idx,
     })
 }

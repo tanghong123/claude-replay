@@ -1,7 +1,9 @@
 use crate::discover::Candidate;
+use crate::session_graph::SessionGraphBackend;
 use crate::Agent;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -13,6 +15,261 @@ pub struct CodexSession {
     pub path: PathBuf,
     pub cwd: PathBuf,
     pub mtime: SystemTime,
+}
+
+#[derive(Debug, Clone)]
+struct CodexGraphNode {
+    id: String,
+    path: PathBuf,
+    parent_thread_id: Option<String>,
+    agent_path: Option<String>,
+    agent_nickname: Option<String>,
+}
+
+pub(crate) struct CodexSessionGraph {
+    sessions_root: PathBuf,
+    anchor_path: PathBuf,
+    anchor_id: Option<String>,
+    nodes: Vec<CodexGraphNode>,
+    refresh_attempted: HashSet<(String, String)>,
+}
+
+impl CodexSessionGraph {
+    pub(crate) fn open(anchor: &Path) -> Self {
+        let root = anchor
+            .ancestors()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("sessions"))
+            .map(Path::to_path_buf)
+            .unwrap_or_else(sessions_dir);
+        Self::open_in(&root, anchor)
+    }
+
+    pub(crate) fn open_in(sessions_root: &Path, anchor: &Path) -> Self {
+        let nodes = graph_nodes_in(sessions_root);
+        let anchor_id = nodes
+            .iter()
+            .find(|node| same_path(&node.path, anchor))
+            .map(|node| node.id.clone())
+            .or_else(|| graph_node_from_path(anchor).map(|node| node.id));
+        Self {
+            sessions_root: sessions_root.to_path_buf(),
+            anchor_path: anchor.to_path_buf(),
+            anchor_id,
+            nodes,
+            refresh_attempted: HashSet::new(),
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.nodes = graph_nodes_in(&self.sessions_root);
+        if self.anchor_id.is_none() {
+            self.anchor_id = self
+                .nodes
+                .iter()
+                .find(|node| same_path(&node.path, &self.anchor_path))
+                .map(|node| node.id.clone())
+                .or_else(|| graph_node_from_path(&self.anchor_path).map(|node| node.id));
+        }
+    }
+
+    fn source_id(&self, source: &Path) -> Option<String> {
+        self.nodes
+            .iter()
+            .find(|node| same_path(&node.path, source))
+            .map(|node| node.id.clone())
+            .or_else(|| graph_node_from_path(source).map(|node| node.id))
+            .filter(|id| self.is_reachable(id))
+    }
+
+    fn is_reachable(&self, id: &str) -> bool {
+        let Some(anchor) = self.anchor_id.as_deref() else {
+            return false;
+        };
+        let mut current = id;
+        let mut seen = HashSet::new();
+        loop {
+            if current == anchor {
+                return true;
+            }
+            if !seen.insert(current.to_string()) {
+                return false;
+            }
+            let Some(parent) = self
+                .nodes
+                .iter()
+                .find(|node| node.id == current)
+                .and_then(|node| node.parent_thread_id.as_deref())
+            else {
+                return false;
+            };
+            current = parent;
+        }
+    }
+
+    /// Resolve all relationship-bearing blocks and return stable identities for
+    /// unresolved spawns. The caller uses those identities to budget at most one
+    /// sessions-root refresh per newly observed spawn.
+    fn resolve_blocks(&self, source: &Path, blocks: &mut [crate::Block]) -> Vec<(String, String)> {
+        let Some(source_id) = self.source_id(source) else {
+            return Vec::new();
+        };
+        let children: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.parent_thread_id.as_deref() == Some(source_id.as_str()) && node.path.is_file()
+            })
+            .collect();
+
+        for block in blocks.iter_mut() {
+            match block {
+                crate::Block::SubAgent(agent) if agent.agent_id.is_empty() => {
+                    let matches: Vec<_> = children
+                        .iter()
+                        .copied()
+                        .filter(|node| child_matches_description(node, &agent.description))
+                        .collect();
+                    if let [child] = matches.as_slice() {
+                        agent.agent_id.clone_from(&child.id);
+                        agent.agent_type = child
+                            .agent_nickname
+                            .clone()
+                            .unwrap_or_else(|| "agent".to_string());
+                    }
+                }
+                crate::Block::AgentDone {
+                    agent_id,
+                    agent_type,
+                    ..
+                } => {
+                    let matches: Vec<_> = children
+                        .iter()
+                        .copied()
+                        .filter(|node| node.agent_path.as_deref() == Some(agent_id.as_str()))
+                        .collect();
+                    if let [child] = matches.as_slice() {
+                        agent_id.clone_from(&child.id);
+                        *agent_type = child
+                            .agent_nickname
+                            .clone()
+                            .unwrap_or_else(|| "agent".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        blocks
+            .iter()
+            .filter_map(|block| match block {
+                crate::Block::SubAgent(agent) if agent.agent_id.is_empty() => Some((
+                    source_id.clone(),
+                    if agent.tool_use_id.is_empty() {
+                        agent.description.clone()
+                    } else {
+                        agent.tool_use_id.clone()
+                    },
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl SessionGraphBackend for CodexSessionGraph {
+    fn enrich(&mut self, source: &Path, blocks: &mut [crate::Block]) {
+        // A live follower can open an empty rollout before `session_meta` is
+        // appended. Recover the anchor as soon as that metadata becomes visible,
+        // so the later child refresh remains scoped to the correct tree.
+        if self.anchor_id.is_none() && graph_node_from_path(source).is_some() {
+            self.refresh();
+        }
+        let unresolved = self.resolve_blocks(source, blocks);
+        let mut refresh = false;
+        for key in unresolved {
+            refresh |= self.refresh_attempted.insert(key);
+        }
+        if refresh {
+            self.refresh();
+            self.resolve_blocks(source, blocks);
+        }
+    }
+
+    fn subagent_source(&mut self, _root: &Path, child_id: &str) -> Option<PathBuf> {
+        self.nodes
+            .iter()
+            .find(|node| {
+                node.id == child_id
+                    && self.anchor_id.as_deref() != Some(child_id)
+                    && self.is_reachable(child_id)
+                    && node.path.is_file()
+            })
+            .map(|node| node.path.clone())
+    }
+}
+
+fn graph_nodes_in(root: &Path) -> Vec<CodexGraphNode> {
+    jsonl_files(root)
+        .iter()
+        .filter_map(|path| graph_node_from_path(path))
+        .collect()
+}
+
+fn graph_node_from_path(path: &Path) -> Option<CodexGraphNode> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok).take(100) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let payload = value.get("payload")?;
+        let id = payload
+            .get("id")
+            .or_else(|| payload.get("session_id"))?
+            .as_str()?
+            .to_string();
+        let spawn = payload.pointer("/source/subagent/thread_spawn");
+        let string = |key: &str| {
+            payload
+                .get(key)
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    spawn
+                        .and_then(|value| value.get(key))
+                        .and_then(Value::as_str)
+                })
+                .map(str::to_string)
+        };
+        return Some(CodexGraphNode {
+            id,
+            path: path.to_path_buf(),
+            parent_thread_id: string("parent_thread_id"),
+            agent_path: string("agent_path"),
+            agent_nickname: string("agent_nickname"),
+        });
+    }
+    None
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || std::fs::canonicalize(left)
+            .ok()
+            .zip(std::fs::canonicalize(right).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn child_matches_description(node: &CodexGraphNode, description: &str) -> bool {
+    node.agent_path.as_deref().is_some_and(|path| {
+        path == description
+            || path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf == description)
+    })
 }
 
 pub(crate) fn codex_home() -> PathBuf {
@@ -424,6 +681,87 @@ mod tests {
             )
             .unwrap();
         }
+
+        fn graph_rollout(
+            &self,
+            id: &str,
+            cwd: &Path,
+            parent_thread_id: Option<&str>,
+            agent_path: Option<&str>,
+            agent_nickname: Option<&str>,
+        ) -> PathBuf {
+            fs::create_dir_all(cwd).unwrap();
+            let dir = self.sessions.join("2026/07/23");
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!("rollout-{id}.jsonl"));
+            let source = parent_thread_id.map(|parent| {
+                serde_json::json!({
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": parent,
+                            "agent_path": agent_path,
+                            "agent_nickname": agent_nickname
+                        }
+                    }
+                })
+            });
+            let meta = serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": id,
+                    "cwd": cwd,
+                    "source": source.unwrap_or_else(|| serde_json::json!("cli")),
+                    "agent_path": agent_path,
+                    "agent_nickname": agent_nickname
+                }
+            });
+            fs::write(&path, format!("{meta}\n")).unwrap();
+            path
+        }
+
+        fn append_spawn(path: &Path, task_name: &str, author: Option<&str>) {
+            use std::io::Write;
+            let call = serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "namespace": "collaboration",
+                    "call_id": "call-spawn",
+                    "arguments": serde_json::json!({
+                        "task_name": task_name,
+                        "message": "encrypted"
+                    }).to_string()
+                }
+            });
+            let output = serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-spawn",
+                    "output": serde_json::json!({
+                        "task_name": format!("/root/review/{task_name}")
+                    }).to_string()
+                }
+            });
+            let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{call}").unwrap();
+            writeln!(file, "{output}").unwrap();
+            if let Some(author) = author {
+                let completion = serde_json::json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "agent_message",
+                        "author": author,
+                        "content": [{
+                            "type": "input_text",
+                            "text": "Message Type: FINAL_ANSWER\nPayload:\nPASS"
+                        }]
+                    }
+                });
+                writeln!(file, "{completion}").unwrap();
+            }
+        }
     }
 
     impl Drop for Fixture {
@@ -537,5 +875,266 @@ mod tests {
             latest_for_cwd_in(&fixture.sessions, &repo_a).map(|s| s.id),
             Some("sa".to_string())
         );
+    }
+
+    #[test]
+    fn graph_resolves_direct_child_id_nickname_source_and_completion() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "spec_axis", Some("/root/review/spec_axis"));
+        let child = fixture.graph_rollout(
+            "c",
+            &cwd,
+            Some("p"),
+            Some("/root/review/spec_axis"),
+            Some("Hume"),
+        );
+        fixture.graph_rollout(
+            "g",
+            &cwd,
+            Some("c"),
+            Some("/root/review/spec_axis/audit"),
+            Some("Nash"),
+        );
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        let crate::Block::SubAgent(spawn) = &blocks[0] else {
+            panic!("expected spawn");
+        };
+        assert_eq!(spawn.agent_id, "c");
+        assert_eq!(spawn.agent_type, "Hume");
+        assert_eq!(spawn.status, crate::AgentStatus::Completed);
+        assert!(matches!(
+            &blocks[1],
+            crate::Block::AgentDone { agent_id, .. } if agent_id == "c"
+        ));
+        assert_eq!(graph.subagent_source(&parent, "c"), Some(child));
+    }
+
+    #[test]
+    fn graph_leaves_ambiguous_or_missing_spawns_unlinked() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "spec_axis", None);
+        fixture.graph_rollout(
+            "c1",
+            &cwd,
+            Some("p"),
+            Some("/root/one/spec_axis"),
+            Some("One"),
+        );
+        fixture.graph_rollout(
+            "c2",
+            &cwd,
+            Some("p"),
+            Some("/root/two/spec_axis"),
+            Some("Two"),
+        );
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
+        ));
+
+        let missing_parent = fixture.graph_rollout("missing-p", &cwd, None, None, None);
+        Fixture::append_spawn(&missing_parent, "not_created", None);
+        let missing_graph = crate::SessionGraph::from_backend(Box::new(
+            CodexSessionGraph::open_in(&fixture.sessions, &missing_parent),
+        ));
+        let mut missing = crate::engine::parse_session_as(crate::Agent::Codex, &missing_parent)
+            .unwrap()
+            .blocks;
+        missing_graph.enrich(&missing_parent, &mut missing);
+        assert!(matches!(
+            &missing[0],
+            crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
+        ));
+    }
+
+    #[test]
+    fn graph_refreshes_when_child_appears_after_open() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "late_child", None);
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        let child = fixture.graph_rollout(
+            "late",
+            &cwd,
+            Some("p"),
+            Some("/root/review/late_child"),
+            Some("Late"),
+        );
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn)
+                if spawn.agent_id == "late" && spawn.agent_type == "Late"
+        ));
+        assert_eq!(graph.subagent_source(&parent, "late"), Some(child));
+    }
+
+    #[test]
+    fn graph_rejects_session_ids_outside_the_anchored_tree() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "linked", None);
+        let linked = fixture.graph_rollout(
+            "linked-id",
+            &cwd,
+            Some("p"),
+            Some("/root/linked"),
+            Some("Link"),
+        );
+        fixture.graph_rollout("unrelated", &cwd, None, None, None);
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+
+        assert_eq!(graph.subagent_source(&parent, "linked-id"), Some(linked));
+        assert_eq!(
+            graph.subagent_source(&parent, "unrelated"),
+            None,
+            "an operation graph must not resolve an unrelated rollout by UUID"
+        );
+    }
+
+    #[test]
+    fn graph_suppresses_links_when_the_cached_child_source_is_missing() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "gone", None);
+        let child =
+            fixture.graph_rollout("gone-id", &cwd, Some("p"), Some("/root/gone"), Some("Gone"));
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        fs::remove_file(&child).unwrap();
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
+        ));
+        assert_eq!(graph.subagent_source(&parent, "gone-id"), None);
+    }
+
+    #[test]
+    fn graph_refreshes_each_unresolved_spawn_only_once() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "missing", None);
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+        fixture.graph_rollout(
+            "too-late",
+            &cwd,
+            Some("p"),
+            Some("/root/missing"),
+            Some("Late"),
+        );
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
+        ));
+    }
+
+    #[test]
+    fn graph_defaults_resolved_agent_types_when_nickname_is_missing() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "review", Some("/root/review"));
+        fixture.graph_rollout("c", &cwd, Some("p"), Some("/root/review"), None);
+        let graph = crate::SessionGraph::from_backend(Box::new(CodexSessionGraph::open_in(
+            &fixture.sessions,
+            &parent,
+        )));
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn)
+                if spawn.agent_id == "c" && spawn.agent_type == "agent"
+        ));
+        assert!(matches!(
+            &blocks[1],
+            crate::Block::AgentDone {
+                agent_id,
+                agent_type,
+                ..
+            } if agent_id == "c" && agent_type == "agent"
+        ));
+    }
+
+    #[test]
+    fn public_session_graph_open_uses_the_adapter_backed_codex_tree() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let parent = fixture.graph_rollout("p", &cwd, None, None, None);
+        Fixture::append_spawn(&parent, "review", None);
+        let child = fixture.graph_rollout("c", &cwd, Some("p"), Some("/root/review"), Some("Hume"));
+        let graph = crate::SessionGraph::open(crate::Agent::Codex, &parent);
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks;
+
+        graph.enrich(&parent, &mut blocks);
+
+        assert!(matches!(
+            &blocks[0],
+            crate::Block::SubAgent(spawn)
+                if spawn.agent_id == "c" && spawn.agent_type == "Hume"
+        ));
+        assert_eq!(graph.subagent_source(&parent, "c"), Some(child));
     }
 }

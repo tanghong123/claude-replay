@@ -1,10 +1,11 @@
 //! **The per-agent seam** — one trait, one registry.
 //!
 //! Everything that varies by agent lives behind [`TranscriptAdapter`]: the Layer-1
-//! tokenizer + its `Shaping` hooks, the metrics accumulator, transcript detection, and
-//! discovery. The rest of the engine (the [`Replayer`](crate::engine::replay::Replayer) fold,
-//! `Session`, the parse dispatchers, the live follower) is agent-agnostic and reaches the
-//! per-agent behavior only through [`adapter`]. Adding an agent is therefore one `impl
+//! tokenizer + its `Shaping` hooks, the metrics accumulator, transcript detection,
+//! discovery, and relationship-graph construction. The rest of the engine (the
+//! [`Replayer`](crate::engine::replay::Replayer) fold, `Session`, the parse dispatchers,
+//! the live follower) is agent-agnostic and reaches the per-agent behavior only through
+//! [`adapter`]. Adding an agent is therefore one `impl
 //! TranscriptAdapter` + one row in [`adapter`]/[`adapters`] — no `match agent` scattered
 //! across the codebase. (This mirrors `jdi::agent::adapter` on the supervisor side.)
 
@@ -13,7 +14,7 @@ use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
 use crate::model::Block;
-use crate::Agent;
+use crate::{Agent, SessionGraph};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io;
@@ -33,7 +34,8 @@ pub(crate) trait MetricsAccumulator: Send {
 /// it via [`adapter`]. The four per-agent hooks (`sniff`/`scan_join_ids`/`decode_line`/
 /// `metrics_acc` + the `shaping` const) drive both the whole-file `parse_path_timed` and the
 /// live follower through one provided path, so batch and live share a seam. Discovery
-/// (`candidates_scoped`/`resolve_id`) and the optional `enrich`/`subagent_source` round it out.
+/// (`candidates_scoped`/`resolve_id`) and operation-scoped [`SessionGraph`] construction
+/// round it out.
 pub(crate) trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
@@ -44,12 +46,12 @@ pub(crate) trait TranscriptAdapter: Sync {
 
     // ── whole-file parse ──
     /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass — the
-    /// single whole-file parse seam (the flat top-level session; sub-agent trees load via
-    /// [`enrich`](Self::enrich)). A provided method: pass-1 [`scan_join_ids`](Self::scan_join_ids),
-    /// then pass-2 folds each line through [`decode_line`](Self::decode_line) +
-    /// [`shaping`](Self::shaping) with metrics accumulated by [`metrics_acc`](Self::metrics_acc).
-    /// Identical orchestration for every agent — no adapter overrides it; a new agent supplies
-    /// only the four hooks.
+    /// single whole-file parse seam (the flat source; relationship enrichment is applied
+    /// afterward by an operation-scoped [`SessionGraph`]). A provided method: pass-1
+    /// [`scan_join_ids`](Self::scan_join_ids), then pass-2 folds each line through
+    /// [`decode_line`](Self::decode_line) + [`shaping`](Self::shaping) with metrics
+    /// accumulated by [`metrics_acc`](Self::metrics_acc). Identical orchestration for every
+    /// agent — no adapter overrides it; a new agent supplies only the four hooks.
     fn parse_path_timed(
         &self,
         path: &Path,
@@ -74,10 +76,6 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// lives at a different JSON path in each format; the shared line-streaming skeleton is
     /// [`scan_ids`](crate::engine::replay::scan_ids). Streams the file — no whole-file buffer.
     fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>>;
-    /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
-    /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
-    /// enrich. Backs [`crate::parse_session_enriched`].
-    fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
@@ -107,12 +105,12 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate>;
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
-    /// The source transcript of sub-agent `child_id` spawned under the session at `root`,
-    /// if it exists. Default `None` — an agent with no sub-agent tree (Codex) has none;
-    /// Claude resolves its flat `<root-stem>/subagents/agent-<id>.jsonl` layout. Backs the
-    /// presentation layer's descend-into-child and per-child HTML streams.
-    fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
-        None
+    /// Create an operation-scoped relationship resolver anchored at `anchor`.
+    fn session_graph(&self, anchor: &Path) -> SessionGraph;
+    /// Resolve a child through a short-lived operation graph. Presentation paths
+    /// that traverse more than one node share a graph directly instead.
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        self.session_graph(root).subagent_source(root, child_id)
     }
 }
 
@@ -164,9 +162,6 @@ impl TranscriptAdapter for ClaudeAdapter {
             f.lines().map_while(Result::ok),
         ))
     }
-    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        crate::claude_model::enrich_tree(path, blocks)
-    }
     fn shaping(&self) -> &'static Shaping {
         &crate::claude_model::CLAUDE_SHAPING
     }
@@ -184,6 +179,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         crate::claude_model::subagent_file(root, child_id)
+    }
+    fn session_graph(&self, _anchor: &Path) -> SessionGraph {
+        SessionGraph::from_backend(Box::new(crate::claude_discover::ClaudeSessionGraph))
     }
 }
 
@@ -220,5 +218,10 @@ impl TranscriptAdapter for CodexAdapter {
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::codex_discover::resolve(Some(id), false).ok()
+    }
+    fn session_graph(&self, anchor: &Path) -> SessionGraph {
+        SessionGraph::from_backend(Box::new(crate::codex_discover::CodexSessionGraph::open(
+            anchor,
+        )))
     }
 }

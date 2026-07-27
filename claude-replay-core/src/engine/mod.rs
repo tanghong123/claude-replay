@@ -16,5 +16,6 @@ pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metric
 
 pub use index::SessionIndex;
 pub use session::{
-    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,
+    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
+    parse_session_with_graph, Session,
 };

@@ -36,14 +36,19 @@ mostly transparent when reading viewer code.
   `session`/`index` (`Session`/`SessionIndex`) · `store` (`SessionStore` tiers) · `path`/`time` ·
   `metrics.rs` the `Metrics` value + pricing · `discover.rs` the `Candidate` type +
   `detect_agent`/`session_cwd`/`session_id`/`subagent_source`/`resolve_any` ·
-  `follow.rs` incremental `FollowParser` · `tail.rs` byte-offset tail · `agent.rs` the `Agent` enum ·
-  `adapter.rs` the `TranscriptAdapter` trait + `adapter()`/`adapters()` registry (the one per-agent seam)
+  `follow.rs` incremental `FollowParser` · `session_graph.rs` the cloneable,
+  operation-scoped relationship resolver · `tail.rs` byte-offset tail · `agent.rs` the
+  `Agent` enum · `adapter.rs` the `TranscriptAdapter` trait + `adapter()`/`adapters()`
+  registry (the one per-agent seam)
 - **Per-agent L1 adapters** (symmetric, each feeds the shared engine): `claude_model.rs` /
-  `codex_model.rs` (tokenizer + `Shaping`) · `claude_metrics.rs` / `codex_metrics.rs` (token/cost
-  folding) · `claude_discover.rs` / `codex_discover.rs` (that agent's transcript store). A new
-  agent = a `*_model`/`*_metrics`/`*_discover` trio + one `impl TranscriptAdapter` row in
-  `adapter.rs`; the shared engine is
-  never touched. Each adapter owns its test suite (the byte-identical equivalence gates live
+  `codex_model.rs` (tokenizer + `Shaping`) · `claude_metrics.rs` / `codex_metrics.rs`
+  (token/cost folding) · `claude_discover.rs` / `codex_discover.rs` (that agent's
+  transcript store and `SessionGraph` backend). Both agents normalize lifecycle events
+  to shared `Block::SubAgent`/`Block::AgentDone` values; format-specific parent/child
+  association, source lookup, and status resolution stay behind `TranscriptAdapter`.
+  A new agent = a `*_model`/`*_metrics`/`*_discover` trio + one
+  `impl TranscriptAdapter` row in `adapter.rs`; the shared engine is never touched.
+  Each adapter owns its test suite (the byte-identical equivalence gates live
   in `claude_model`/`codex_model`); `model`'s tests are the agent-neutral ones only
   (`block_kind`/`fold_key`, `relativize`).
 
@@ -56,7 +61,9 @@ mostly transparent when reading viewer code.
   browser; `-f` serves live over a loopback HTTP server since a `file://` page can't `fetch`) →
   one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust emits an
   append-only JSON block stream, the JS renders it; `-f` writes a companion `<stem>.jsonl` the
-  page polls). Reuses `model`/`render`/`markdown`/`highlight`.
+  page polls). Reuses `model`/`render`/`markdown`/`highlight`. TUI and HTML child navigation
+  consume only `SessionGraph` plus the shared agent blocks; there are no Claude/Codex-specific
+  presentation or CSS/JS branches.
 - `jdi/` the **`agent-jdi`** binary (unattended-run supervisor); see `src/jdi/DESIGN.md`
 
 The viewer's phased plan (P0–P8) is **built** — see `DESIGN.md` for the design

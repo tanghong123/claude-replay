@@ -20,9 +20,10 @@ fn build_stream(
     path: &Path,
     fold: &FoldPolicy,
     reveal: bool,
+    graph: crate::SessionGraph,
 ) -> Result<(String, Vec<(String, String)>)> {
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
-    let s = crate::engine::parse_session_as(agent, path)
+    let s = crate::engine::parse_session_with_graph(agent, path, graph)
         .with_context(|| format!("read transcript {}", path.display()))?;
     let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
     Ok(render_snapshot(
@@ -43,7 +44,8 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let reveal = false;
-    let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
+    let graph = crate::SessionGraph::open(agent, path);
+    let (jsonl, turns) = build_stream(agent, path, &fold, reveal, graph.clone())?;
     // The page title identifies the session in a browser tab; files are named by session id.
     let title = display_title(agent, path);
 
@@ -102,6 +104,7 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
         Path::new(&cpath),
         block_lines(&jsonl),
         reveal,
+        graph,
     )
 }
 
@@ -118,11 +121,12 @@ fn agent_stream(
     reveal: bool,
     info: &AgentInfo,
     assets: Option<&mut AssetSink>,
+    graph: crate::SessionGraph,
 ) -> Result<(String, Vec<ChildRef>)> {
     // Parse via the canonical `parse_session_as` — the same entry `build_stream` uses, so both
     // HTML paths go through one place. `cwd` stays the caller-supplied session cwd (every agent
     // in a tree shares the root's, which a sub-agent transcript may not itself record).
-    let s = crate::engine::parse_session_as(agent, &info.source)
+    let s = crate::engine::parse_session_with_graph(agent, &info.source, graph)
         .with_context(|| format!("read transcript {}", info.source.display()))?;
     Ok(render_agent_stream(
         agent,
@@ -155,6 +159,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .unwrap_or_default();
     let title = display_title(agent, path);
     let root_id = session_id(path);
+    let graph = crate::SessionGraph::open(agent, path);
     let mut sink = AssetSink::new(&out_dir).with_context(|| "create assets dir")?;
 
     // BFS over sources from the root; each agent's stream is parsed from its OWN source,
@@ -172,7 +177,15 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         if !seen.insert(info.id.clone()) || !info.source.exists() {
             continue;
         }
-        let (jsonl, children) = agent_stream(agent, &fold, &cwd, false, &info, Some(&mut sink))?;
+        let (jsonl, children) = agent_stream(
+            agent,
+            &fold,
+            &cwd,
+            false,
+            &info,
+            Some(&mut sink),
+            graph.clone(),
+        )?;
         std::fs::write(
             out_dir.join(format!("{}.jsonl", info.id)),
             format!("{jsonl}\n"),
@@ -180,7 +193,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .with_context(|| format!("write stream {}", info.id))?;
         count += 1;
         for c in children {
-            if let Some(ci) = child_info(agent, path, &info, c) {
+            if let Some(ci) = child_info(&graph, path, &info, c) {
                 queue.push_back(ci);
             }
         }
@@ -201,4 +214,170 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     );
     println!("{}", out_dir.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::html_export::{CSS, JS};
+    use serde_json::{json, Value};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn codex_subagent_bundle_reuses_shared_navigation_contract() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-codex-bundle-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let day = base.join("sessions/2026/07/27");
+        std::fs::create_dir_all(&day).unwrap();
+        let parent = day.join("p.jsonl");
+        let child = day.join("c.jsonl");
+        let grandchild = day.join("g.jsonl");
+
+        fn meta(
+            id: &str,
+            parent: Option<&str>,
+            path: Option<&str>,
+            nickname: Option<&str>,
+        ) -> Value {
+            let source = parent.map(|parent| {
+                json!({
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": parent,
+                            "agent_path": path,
+                            "agent_nickname": nickname
+                        }
+                    }
+                })
+            });
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": id,
+                    "cwd": "/repo",
+                    "source": source.unwrap_or_else(|| json!("cli")),
+                    "agent_path": path,
+                    "agent_nickname": nickname
+                }
+            })
+        }
+
+        fn append_spawn(file: &mut std::fs::File, call: &str, task: &str) {
+            let spawn = json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "namespace": "collaboration",
+                    "call_id": call,
+                    "arguments": json!({
+                        "task_name": task,
+                        "message": "encrypted"
+                    }).to_string()
+                }
+            });
+            let output = json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": call,
+                    "output": json!({ "task_name": format!("/root/{task}") }).to_string()
+                }
+            });
+            writeln!(file, "{spawn}").unwrap();
+            writeln!(file, "{output}").unwrap();
+        }
+
+        let mut p = std::fs::File::create(&parent).unwrap();
+        writeln!(p, "{}", meta("p", None, None, None)).unwrap();
+        append_spawn(&mut p, "spawn-c", "review");
+        writeln!(
+            p,
+            "{}",
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "agent_message",
+                    "author": "/root/review",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "Message Type: FINAL_ANSWER\nPayload:\nPASS"
+                    }]
+                }
+            })
+        )
+        .unwrap();
+
+        let mut c = std::fs::File::create(&child).unwrap();
+        writeln!(
+            c,
+            "{}",
+            meta("c", Some("p"), Some("/root/review"), Some("Hume"))
+        )
+        .unwrap();
+        append_spawn(&mut c, "spawn-g", "audit");
+
+        let mut g = std::fs::File::create(&grandchild).unwrap();
+        writeln!(
+            g,
+            "{}",
+            meta("g", Some("c"), Some("/root/review/audit"), Some("Nash"))
+        )
+        .unwrap();
+        writeln!(
+            g,
+            "{}",
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}]
+                }
+            })
+        )
+        .unwrap();
+
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            parent.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &parent).unwrap();
+
+        assert!(out.join("p.jsonl").is_file());
+        assert!(out.join("c.jsonl").is_file());
+        assert!(out.join("g.jsonl").is_file());
+        let root = std::fs::read_to_string(out.join("p.jsonl")).unwrap();
+        let root_records: Vec<Value> = root
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(root_records[0]["children"][0]["id"], json!("c"));
+        assert_eq!(root_records[0]["children"][0]["running"], json!(false));
+        assert!(root_records
+            .iter()
+            .any(|record| record["head"]["child"] == json!("?session=c")));
+
+        let child_stream = std::fs::read_to_string(out.join("c.jsonl")).unwrap();
+        let child_meta: Value = serde_json::from_str(child_stream.lines().next().unwrap()).unwrap();
+        assert_eq!(child_meta["ancestors"][0]["id"], json!("p"));
+        assert_eq!(
+            child_meta["ancestors"][0]["title"],
+            root_records[0]["title"]
+        );
+        assert_eq!(child_meta["children"][0]["id"], json!("g"));
+        assert!(!CSS.to_ascii_lowercase().contains("codex"));
+        assert!(!JS.to_ascii_lowercase().contains("codex"));
+        std::fs::remove_dir_all(base).ok();
+    }
 }

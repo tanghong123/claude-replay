@@ -25,6 +25,7 @@ pub mod engine;
 pub mod follow;
 pub mod metrics;
 pub mod model;
+mod session_graph;
 pub(crate) mod tail; // internal: the follower's byte-offset primitive
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
@@ -35,9 +36,10 @@ pub(crate) mod tail; // internal: the follower's byte-offset primitive
 pub use agent::Agent;
 pub use engine::index::{AgentEntry, AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
-    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,
-    SessionIndex,
+    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
+    parse_session_with_graph, Session, SessionIndex,
 };
 pub use follow::FollowParser;
 pub use metrics::Metrics;
 pub use model::{AgentStatus, Attachment, AttachmentContent, Block, Hunk, SubAgent};
+pub use session_graph::SessionGraph;

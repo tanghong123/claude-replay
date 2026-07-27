@@ -27,7 +27,7 @@ mod wrap;
 // the core parses a raw agent format — the viewer reaches blocks only through `engine`'s
 // agent-neutral `parse_session*`.
 pub use claude_replay_core::{
-    claude_discover, codex_discover, discover, engine, follow, metrics, model, Agent,
+    claude_discover, codex_discover, discover, engine, follow, metrics, model, Agent, SessionGraph,
 };
 
 use anyhow::Result;
