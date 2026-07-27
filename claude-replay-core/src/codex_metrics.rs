@@ -12,9 +12,18 @@ pub(crate) struct CodexMetricsAcc {
     output: u64,
     model: String,
     span: TimeSpan,
+    extra: std::collections::BTreeMap<String, u64>,
 }
 
 impl CodexMetricsAcc {
+    /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
+    /// key) — the seam for a Codex-only counter. Nothing calls it yet; the interface is ready
+    /// for the first such metric (task #22).
+    #[allow(dead_code)]
+    pub(crate) fn bump(&mut self, key: &str, n: u64) {
+        *self.extra.entry(key.to_string()).or_default() += n;
+    }
+
     pub(crate) fn push(&mut self, value: &Value) {
         if let Some(timestamp) = value
             .get("timestamp")
@@ -54,6 +63,7 @@ impl CodexMetricsAcc {
             model: self.model,
             duration_secs: self.span.duration_secs(),
             cost_usd,
+            extra: self.extra,
         }
     }
 }

@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 /// follower can move between threads (the HTML live server tails on a background thread).
 pub(crate) trait MetricsAccumulator: Send {
     /// Fold one raw transcript line's usage into the running total.
+    ///
+    /// This is also the seam for **agent-specific** metrics the shared [`Metrics`] shouldn't
+    /// grow a typed field for: an accumulator folds such a counter into the accumulating
+    /// [`Metrics::extra`] bag here (each impl has a `bump(key, n)` helper), and `finish` emits
+    /// it. No agent populates `extra` yet — the interface is ready for the first one.
     fn push(&mut self, v: &Value);
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;

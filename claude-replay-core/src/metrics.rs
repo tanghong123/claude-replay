@@ -3,6 +3,7 @@
 
 use crate::model::UsdCost;
 use crate::Agent;
+use std::collections::BTreeMap;
 
 /// A session's token/cost tally.
 ///
@@ -16,11 +17,12 @@ use crate::Agent;
 /// shared value stays stable.
 ///
 /// For a metric a *single* agent reports that the shared struct shouldn't grow a field for,
-/// the intended mechanism is an **accumulating extension bag** — `extra: BTreeMap<String, u64>`
-/// (namespaced snake_case keys, e.g. `reasoning_tokens`, `web_searches`) that the agent's
-/// accumulator folds like the typed counters. Data-only (the standard `footer` shows the typed
-/// fields), and it makes a brand-new category need *no* struct change — the complement to
-/// `#[non_exhaustive]`. Deferred until the first agent-specific metric exists (task #22).
+/// the mechanism is the **accumulating extension bag** [`extra`](Self::extra) below — an
+/// agent's accumulator folds keys into it (via its `bump` helper) exactly like the typed
+/// counters. Data-only (the standard `footer` shows the typed fields), and it makes a brand-new
+/// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
+/// through the [`MetricsAccumulator`](crate::adapter) interface and ready to use; no agent
+/// currently populates it, so `extra` is empty in practice.
 /// (If `Metrics` is ever persisted — e.g. a `SessionBuilder` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone)]
@@ -41,6 +43,11 @@ pub struct Metrics {
     /// Best-effort estimated cost in US dollars; see [`UsdCost`]. `None` when the model isn't
     /// priced.
     pub cost_usd: Option<UsdCost>,
+    /// **Agent-specific metrics** an accumulator folded in — namespaced snake_case keys (e.g.
+    /// `reasoning_tokens`, `web_searches`), summed across the session. The accumulating
+    /// extension bag: data-only (not shown by the standard [`footer`](Self::footer)), so a
+    /// brand-new category needs no struct change. Empty for an agent that reports none.
+    pub extra: BTreeMap<String, u64>,
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
