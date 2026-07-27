@@ -202,31 +202,14 @@ pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     candidates_scoped_in(&sessions_dir(), cwd)
 }
 
-/// Same scoping as `candidates_scoped`, but keeping each session's **id** (the
-/// `Candidate` drops it) — `(id, mtime, snippet)`, newest-first. For `resume`'s
-/// stale-confirm picker, which needs the id to resume the chosen one.
-pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
-    let root = sessions_dir();
-    let sessions = sessions_in(&root); // newest-first
-    for anc in crate::discover::ancestors_of(cwd) {
-        let anc_n = normalized(&anc);
-        let matched: Vec<&CodexSession> = sessions
-            .iter()
-            .filter(|s| normalized(&s.cwd) == anc_n)
-            .collect();
-        if matched.is_empty() {
-            continue;
-        }
-        return matched
-            .into_iter()
-            .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
-            .collect();
-    }
-    Vec::new()
-}
-
-fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
-    let sessions = sessions_in(root); // newest-first
+/// The **nearest ancestor of `cwd`** (walking up the directory chain) that owns any Codex
+/// sessions, and its sessions — the "no global fallback" scoping every scoped lookup shares.
+/// Returns those sessions (newest-first, borrowed from `sessions`) plus whether the match was
+/// `cwd` itself (exact — used for picker affinity). Empty if no ancestor up to the root owns one.
+fn nearest_ancestor_sessions<'a>(
+    sessions: &'a [CodexSession],
+    cwd: &Path,
+) -> (Vec<&'a CodexSession>, bool) {
     let cwd_n = normalized(cwd);
     for anc in crate::discover::ancestors_of(cwd) {
         let anc_n = normalized(&anc);
@@ -234,31 +217,47 @@ fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
             .iter()
             .filter(|s| normalized(&s.cwd) == anc_n)
             .collect();
-        if matched.is_empty() {
-            continue;
+        if !matched.is_empty() {
+            return (matched, anc_n == cwd_n);
         }
-        let is_exact = anc_n == cwd_n;
-        return matched
-            .into_iter()
-            .map(|s| {
-                let project = s
-                    .cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("session")
-                    .to_string();
-                Candidate {
-                    path: s.path.clone(),
-                    mtime: s.mtime,
-                    project,
-                    snippet: first_user_snippet(&s.path),
-                    cwd_affinity: is_exact,
-                    agent: Agent::Codex,
-                }
-            })
-            .collect();
     }
-    Vec::new()
+    (Vec::new(), false)
+}
+
+/// Same scoping as `candidates_scoped`, but keeping each session's **id** (the
+/// `Candidate` drops it) — `(id, mtime, snippet)`, newest-first. For `resume`'s
+/// stale-confirm picker, which needs the id to resume the chosen one.
+pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
+    let sessions = sessions_in(&sessions_dir()); // newest-first
+    let (matched, _) = nearest_ancestor_sessions(&sessions, cwd);
+    matched
+        .into_iter()
+        .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
+        .collect()
+}
+
+fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
+    let sessions = sessions_in(root); // newest-first
+    let (matched, is_exact) = nearest_ancestor_sessions(&sessions, cwd);
+    matched
+        .into_iter()
+        .map(|s| {
+            let project = s
+                .cwd
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("session")
+                .to_string();
+            Candidate {
+                path: s.path.clone(),
+                mtime: s.mtime,
+                project,
+                snippet: first_user_snippet(&s.path),
+                cwd_affinity: is_exact,
+                agent: Agent::Codex,
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn resolve_in(root: &Path, target: Option<&str>, latest: bool) -> Result<PathBuf> {
@@ -322,14 +321,11 @@ pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
 
 fn latest_for_cwd_in(root: &Path, cwd: &Path) -> Option<CodexSession> {
     let sessions = sessions_in(root); // newest-first
-    for anc in crate::discover::ancestors_of(cwd) {
-        let anc_n = normalized(&anc);
-        // `sessions` is newest-first, so the first match at this ancestor is newest.
-        if let Some(s) = sessions.iter().find(|s| normalized(&s.cwd) == anc_n) {
-            return Some(s.clone());
-        }
-    }
-    None
+                                      // The nearest ancestor's matches are newest-first, so the first is the latest.
+    nearest_ancestor_sessions(&sessions, cwd)
+        .0
+        .first()
+        .map(|s| (*s).clone())
 }
 
 #[cfg(test)]
