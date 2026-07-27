@@ -12,6 +12,7 @@
 //! which guarantees the "core is presentation-agnostic" invariant that was previously only a
 //! convention.
 
+mod adapter;
 mod agent;
 pub mod claude_discover;
 pub mod claude_metrics;

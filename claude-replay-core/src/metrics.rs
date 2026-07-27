@@ -63,11 +63,8 @@ pub(crate) fn estimate_cost(
 
 /// Metrics via the reader for `agent` — dispatches to each agent's adapter
 /// (`claude_metrics` / `codex_metrics`); the returned [`Metrics`] shape is shared.
-pub fn parse_reader_for<R: std::io::BufRead>(agent: Agent, reader: R) -> Metrics {
-    match agent {
-        Agent::Claude => crate::claude_metrics::parse_reader(reader),
-        Agent::Codex => crate::codex_metrics::parse_codex_reader(reader),
-    }
+pub fn parse_reader_for<R: std::io::BufRead>(agent: Agent, mut reader: R) -> Metrics {
+    crate::adapter::adapter(agent).parse_reader(&mut reader)
 }
 
 pub(crate) fn human_tokens(n: u64) -> String {

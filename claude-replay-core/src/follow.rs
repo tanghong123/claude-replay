@@ -6,75 +6,35 @@
 
 use std::path::Path;
 
+use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::metrics::Metrics;
-use crate::model::{Block, Replayer, Shaping};
+use crate::model::{Block, Replayer};
 use crate::tail::TailReader;
 use crate::Agent;
 
-/// The agent-specific metrics accumulator, held across polls (Codex reports a cumulative
-/// total; Claude sums). Snapshotted (cloned) each poll without consuming it.
-enum MetricsFold {
-    Claude(crate::claude_metrics::MetricsAcc),
-    Codex(crate::codex_metrics::CodexMetricsAcc),
-}
-
-impl MetricsFold {
-    fn fresh(agent: Agent) -> Self {
-        match agent {
-            Agent::Claude => Self::Claude(Default::default()),
-            Agent::Codex => Self::Codex(Default::default()),
-        }
-    }
-    fn push(&mut self, v: &serde_json::Value) {
-        match self {
-            Self::Claude(a) => a.push(v),
-            Self::Codex(a) => a.push(v),
-        }
-    }
-    fn snapshot(&self) -> Metrics {
-        match self {
-            Self::Claude(a) => a.clone().finish(),
-            Self::Codex(a) => a.clone().finish(),
-        }
-    }
-}
-
-type DecodeFn = fn(&str, &mut String, &mut Vec<Message>);
-
-/// Follows a transcript file, folding only newly-appended lines each poll.
+/// Follows a transcript file, folding only newly-appended lines each poll. Everything
+/// agent-specific — the L1 decoder, the L2 `Shaping`, the metrics accumulator — comes from
+/// the [`TranscriptAdapter`], so the follower itself is agent-agnostic.
 pub struct FollowParser {
-    agent: Agent,
+    adapter: &'static dyn TranscriptAdapter,
     tail: TailReader,
-    shaping: &'static Shaping,
-    decode: DecodeFn,
     replayer: Replayer<'static>,
     cwd: String,
-    metrics: MetricsFold,
+    metrics: Box<dyn MetricsAccumulator>,
 }
 
 impl FollowParser {
     /// Follow `path` from the beginning: the first `poll` folds the whole current file, then
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
-        let (shaping, decode): (&'static Shaping, DecodeFn) = match agent {
-            Agent::Claude => (
-                &crate::claude_model::CLAUDE_SHAPING,
-                crate::claude_model::decode_line,
-            ),
-            Agent::Codex => (
-                &crate::codex_model::CODEX_SHAPING,
-                crate::codex_model::decode_codex_line,
-            ),
-        };
+        let adapter = adapter(agent);
         Self {
-            agent,
+            adapter,
             tail: TailReader::open_at_start(path),
-            shaping,
-            decode,
-            replayer: Replayer::new(shaping, std::collections::HashSet::new()),
+            replayer: Replayer::new(adapter.shaping(), std::collections::HashSet::new()),
             cwd: String::new(),
-            metrics: MetricsFold::fresh(agent),
+            metrics: adapter.metrics_acc(),
         }
     }
 
@@ -90,14 +50,14 @@ impl FollowParser {
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
             // TailReader re-read from 0, so `p.lines` is the whole new file.
-            self.replayer = Replayer::new(self.shaping, std::collections::HashSet::new());
+            self.replayer = Replayer::new(self.adapter.shaping(), std::collections::HashSet::new());
             self.cwd.clear();
-            self.metrics = MetricsFold::fresh(self.agent);
+            self.metrics = self.adapter.metrics_acc();
         }
         let mut delta: Vec<Message> = Vec::new();
         for line in &p.lines {
             delta.clear();
-            (self.decode)(line, &mut self.cwd, &mut delta);
+            self.adapter.decode_line(line, &mut self.cwd, &mut delta);
             // Pre-scan this delta's tool ids so a result whose tool_use is later in the same
             // delta is held pending, not mis-emitted as an orphan (matches a batch pre-scan).
             self.replayer
@@ -111,7 +71,7 @@ impl FollowParser {
             }
         }
         let (blocks, user_times) = self.replayer.snapshot();
-        Ok(Some((blocks, user_times, self.metrics.snapshot())))
+        Ok(Some((blocks, user_times, self.metrics.finish())))
     }
 }
 

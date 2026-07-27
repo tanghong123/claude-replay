@@ -421,20 +421,13 @@ pub fn parse_path_timed_for(
     path: &std::path::Path,
 ) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
     let mut times = Vec::new();
-    // Each agent's L1 adapter owns its streaming parse; the shared driver is `parse_stream`.
-    let (blocks, metrics) = match agent {
-        Agent::Claude => crate::claude_model::parse_claude_path_timed(path, &mut times)?,
-        Agent::Codex => crate::codex_model::parse_codex_path_timed(path, &mut times)?,
-    };
+    let (blocks, metrics) = crate::adapter::adapter(agent).parse_path_timed(path, &mut times)?;
     Ok((blocks, times, metrics))
 }
 
 /// Streaming file parse with the parser for `agent`.
 pub fn parse_path_for(agent: Agent, path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    match agent {
-        Agent::Claude => crate::claude_model::parse_path(path),
-        Agent::Codex => crate::codex_model::parse_codex_path(path),
-    }
+    crate::adapter::adapter(agent).parse_path(path)
 }
 
 /// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the
