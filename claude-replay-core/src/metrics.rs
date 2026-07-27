@@ -27,6 +27,28 @@ pub(crate) fn parse_ts(s: &str) -> Option<i64> {
     crate::engine::time::epoch_secs(s).map(|secs| secs as i64)
 }
 
+/// Running min/max of observed epoch-second timestamps → a session duration. Both agents'
+/// metrics accumulators fold their per-line timestamps through this (each parses the raw
+/// timestamp its own way, then `observe`s the seconds).
+#[derive(Default, Clone)]
+pub(crate) struct TimeSpan {
+    min: Option<i64>,
+    max: Option<i64>,
+}
+impl TimeSpan {
+    pub(crate) fn observe(&mut self, secs: i64) {
+        self.min = Some(self.min.map_or(secs, |a| a.min(secs)));
+        self.max = Some(self.max.map_or(secs, |a| a.max(secs)));
+    }
+    /// Elapsed wall-clock seconds (clamped to ≥ 0); `0` if fewer than two timestamps seen.
+    pub(crate) fn duration_secs(&self) -> i64 {
+        match (self.min, self.max) {
+            (Some(a), Some(b)) => (b - a).max(0),
+            _ => 0,
+        }
+    }
+}
+
 /// Rough USD/1M-token (input, output) list prices for cost estimation.
 /// Best-effort — rates are approximate and drift over time.
 fn price(model: &str) -> Option<(f64, f64)> {

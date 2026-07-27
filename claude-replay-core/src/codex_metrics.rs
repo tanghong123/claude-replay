@@ -1,4 +1,4 @@
-use crate::metrics::{parse_ts, Metrics};
+use crate::metrics::{parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Codex's per-line token/cost accumulator, folded through the shared
@@ -11,8 +11,7 @@ pub(crate) struct CodexMetricsAcc {
     cached: u64,
     output: u64,
     model: String,
-    first: Option<i64>,
-    last: Option<i64>,
+    span: TimeSpan,
 }
 
 impl CodexMetricsAcc {
@@ -22,11 +21,7 @@ impl CodexMetricsAcc {
             .and_then(Value::as_str)
             .and_then(parse_ts)
         {
-            self.first = Some(
-                self.first
-                    .map_or(timestamp, |seen: i64| seen.min(timestamp)),
-            );
-            self.last = Some(self.last.map_or(timestamp, |seen: i64| seen.max(timestamp)));
+            self.span.observe(timestamp);
         }
         if value.get("type").and_then(Value::as_str) == Some("turn_context") {
             if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
@@ -57,10 +52,7 @@ impl CodexMetricsAcc {
             cache_read_tokens: self.cached,
             output_tokens: self.output,
             model: self.model,
-            duration_secs: match (self.first, self.last) {
-                (Some(start), Some(end)) => (end - start).max(0),
-                _ => 0,
-            },
+            duration_secs: self.span.duration_secs(),
             cost_usd,
         }
     }

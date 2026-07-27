@@ -3,7 +3,7 @@
 //! into a running [`MetricsAcc`]; the agent-neutral [`Metrics`] value, pricing, and footer
 //! formatting live in [`crate::metrics`].
 
-use crate::metrics::{estimate_cost, parse_ts, Metrics};
+use crate::metrics::{estimate_cost, parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Claude's per-line token/cost accumulator, folded through the shared
@@ -18,8 +18,7 @@ pub(crate) struct MetricsAcc {
     cache_read: u64,
     output: u64,
     model: String,
-    tmin: Option<i64>,
-    tmax: Option<i64>,
+    span: TimeSpan,
 }
 
 impl MetricsAcc {
@@ -40,17 +39,13 @@ impl MetricsAcc {
         }
         if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
             if let Some(secs) = parse_ts(ts) {
-                self.tmin = Some(self.tmin.map_or(secs, |a| a.min(secs)));
-                self.tmax = Some(self.tmax.map_or(secs, |a| a.max(secs)));
+                self.span.observe(secs);
             }
         }
     }
 
     pub(crate) fn finish(self) -> Metrics {
-        let duration_secs = match (self.tmin, self.tmax) {
-            (Some(a), Some(b)) => (b - a).max(0),
-            _ => 0,
-        };
+        let duration_secs = self.span.duration_secs();
         let cost_usd = estimate_cost(
             &self.model,
             self.input,
