@@ -6,15 +6,10 @@
 use crate::metrics::{estimate_cost, parse_ts, Metrics};
 use serde_json::Value;
 
-/// Stream the metrics pass straight from a reader, so a large transcript never
-/// has to be fully resident as a `String` (one line at a time).
-pub(crate) fn parse_reader<R: std::io::BufRead>(reader: R) -> Metrics {
-    parse_from_lines(reader.lines().map_while(Result::ok))
-}
-
-/// Claude's per-line token/cost accumulator — the folding half of `parse_from_lines`, split
-/// out so the streaming engine (`model::parse_stream`, M10) can fold metrics in the same
-/// pass that builds blocks instead of a second file read. `push` sums each line's
+/// Claude's per-line token/cost accumulator, folded through the shared
+/// [`MetricsAccumulator`](crate::adapter::MetricsAccumulator) seam — so the streaming engine
+/// (`model::parse_stream`, M10) folds metrics in the same pass that builds blocks, and the
+/// metrics-only reader path (`metrics::parse_reader_for`) reuses it. `push` sums each line's
 /// `/message/usage`; `finish` prices it.
 #[derive(Default, Clone)]
 pub(crate) struct MetricsAcc {
@@ -75,20 +70,16 @@ impl MetricsAcc {
     }
 }
 
-fn parse_from_lines(lines: impl Iterator<Item = String>) -> Metrics {
-    let mut acc = MetricsAcc::default();
-    for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            acc.push(&v);
-        }
-    }
-    acc.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::human_tokens;
+    use crate::metrics::{human_tokens, parse_reader_for};
+
+    /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
+    /// default path with Claude's accumulator.
+    fn parse_reader(jsonl: &str) -> Metrics {
+        parse_reader_for(crate::Agent::Claude, std::io::Cursor::new(jsonl))
+    }
 
     #[test]
     fn parses_tokens_model_duration_cost() {
@@ -96,7 +87,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-28T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500}}}
 {"type":"assistant","timestamp":"2026-06-28T10:02:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":2000,"output_tokens":1500}}}
 "#;
-        let m = parse_reader(std::io::Cursor::new(jsonl));
+        let m = parse_reader(jsonl);
         assert_eq!(m.input_tokens, 3000);
         assert_eq!(m.output_tokens, 2000);
         assert_eq!(m.duration_secs, 120);
@@ -114,7 +105,7 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-28T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"cache_creation_input_tokens":40000,"cache_read_input_tokens":2000000,"output_tokens":5000}}}
 {"type":"assistant","timestamp":"2026-06-28T10:01:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":500,"cache_creation_input_tokens":10000,"cache_read_input_tokens":3000000,"output_tokens":5000}}}
 "#;
-        let m = parse_reader(std::io::Cursor::new(jsonl));
+        let m = parse_reader(jsonl);
         assert_eq!(m.input_tokens, 1500);
         assert_eq!(m.cache_creation_tokens, 50000);
         assert_eq!(m.cache_read_tokens, 5000000);

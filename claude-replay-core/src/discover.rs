@@ -56,11 +56,10 @@ pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     // Each agent is scoped to cwd-or-nearest-ancestor-with-sessions, with no global
     // fallback — so a session for an unrelated directory never shows here.
-    if only != Some(Agent::Codex) {
-        out.extend(crate::claude_discover::claude_candidates_scoped(&cwd));
-    }
-    if only != Some(Agent::Claude) {
-        out.extend(crate::codex_discover::candidates_scoped(&cwd));
+    for a in crate::adapter::adapters() {
+        if only.is_none() || only == Some(a.agent()) {
+            out.extend(a.candidates_scoped(&cwd));
+        }
     }
     out.sort_by(|a, b| {
         b.cwd_affinity
@@ -123,9 +122,10 @@ pub fn session_id(path: &Path) -> Option<String> {
     None
 }
 
-/// Auto-detect which agent wrote a transcript by sniffing its first lines: a
-/// Codex rollout opens with a `session_meta` event and wraps events in `payload`;
-/// a Claude transcript has top-level `sessionId`/`message`. Defaults to Claude.
+/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking each
+/// registered adapter's [`sniff`](crate::adapter::TranscriptAdapter::sniff) (a Codex rollout
+/// opens with a `session_meta`/`payload` event; a Claude transcript has top-level
+/// `sessionId`/`message`). Defaults to Claude. A new agent adds a `sniff`, not an arm here.
 pub fn detect_agent(path: &Path) -> Agent {
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
@@ -139,15 +139,10 @@ pub fn detect_agent(path: &Path) -> Agent {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        let ty = v.get("type").and_then(Value::as_str);
-        if ty == Some("session_meta")
-            || (v.get("payload").is_some()
-                && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
-        {
-            return Agent::Codex;
-        }
-        if v.get("sessionId").is_some() || v.get("message").is_some() {
-            return Agent::Claude;
+        for a in crate::adapter::adapters() {
+            if a.sniff(&v) {
+                return a.agent();
+            }
         }
     }
     Agent::Claude
@@ -163,14 +158,11 @@ pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> R
             return Ok(as_path);
         }
         // Session id: look in each in-scope agent's store via its adapter.
-        if only != Some(Agent::Codex) {
-            if let Some(hit) = crate::claude_discover::transcript_by_id(t) {
-                return Ok(hit);
-            }
-        }
-        if only != Some(Agent::Claude) {
-            if let Ok(hit) = crate::codex_discover::resolve(Some(t), false) {
-                return Ok(hit);
+        for a in crate::adapter::adapters() {
+            if only.is_none() || only == Some(a.agent()) {
+                if let Some(hit) = a.resolve_id(t) {
+                    return Ok(hit);
+                }
             }
         }
         return Err(anyhow!(

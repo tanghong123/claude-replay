@@ -1,11 +1,10 @@
 use crate::metrics::{parse_ts, Metrics};
 use serde_json::Value;
-use std::io::BufRead;
 
-/// Codex's per-line token/cost accumulator — the folding half of `parse_codex_reader`,
-/// split out so the streaming engine (`model::parse_stream`, M10) folds metrics in the same
-/// pass. Unlike Claude, Codex reports a *cumulative* `total_token_usage`, so each
-/// `token_count` event overwrites (keeping the newest total), not sums.
+/// Codex's per-line token/cost accumulator, folded through the shared
+/// [`MetricsAccumulator`](crate::adapter::MetricsAccumulator) seam. Unlike Claude, Codex
+/// reports a *cumulative* `total_token_usage`, so each `token_count` event overwrites
+/// (keeping the newest total), not sums.
 #[derive(Default, Clone)]
 pub(crate) struct CodexMetricsAcc {
     input: u64,
@@ -67,19 +66,16 @@ impl CodexMetricsAcc {
     }
 }
 
-pub(crate) fn parse_codex_reader<R: BufRead>(reader: R) -> Metrics {
-    let mut acc = CodexMetricsAcc::default();
-    for line in reader.lines().map_while(|line| line.ok()) {
-        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-            acc.push(&value);
-        }
-    }
-    acc.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::parse_reader_for;
+
+    /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
+    /// default path with Codex's accumulator.
+    fn parse_codex_reader(jsonl: &str) -> Metrics {
+        parse_reader_for(crate::Agent::Codex, std::io::Cursor::new(jsonl))
+    }
 
     #[test]
     fn uses_newest_cumulative_usage_and_keeps_cached_input_separate() {
@@ -88,7 +84,7 @@ mod tests {
 {"timestamp":"2026-07-18T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20}}}}
 {"timestamp":"2026-07-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":80}}}}
 "#;
-        let metrics = parse_codex_reader(std::io::Cursor::new(jsonl));
+        let metrics = parse_codex_reader(jsonl);
         assert_eq!(metrics.input_tokens, 100);
         assert_eq!(metrics.cache_read_tokens, 200);
         assert_eq!(metrics.output_tokens, 80);
