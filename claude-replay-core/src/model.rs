@@ -6,6 +6,7 @@
 //! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // ── semantic aliases for otherwise-ambiguous primitives ────────────────────────────────────
@@ -38,7 +39,7 @@ pub type AgentId = String;
 
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hunk {
     /// 1-based line number of this hunk's first line on the OLD side.
     pub old_start: usize,
@@ -52,7 +53,7 @@ pub struct Hunk {
 /// `blocks` is an ordered `Vec<Block>` with tool results already joined onto their calls and
 /// activity coalesced into thinking turns; each variant carries the content a presenter needs.
 /// Classify a block with [`block_kind`] / [`fold_key`] and test collapsibility with [`foldable`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
@@ -142,7 +143,7 @@ pub enum Block {
 /// What an [`Attachment`] is — the closed set that drives its header label and how it's
 /// surfaced. `File` is an embedded file body; `Plan` a plan-mode document; `Edited` / `Ref`
 /// mark a file the turn edited or merely referenced; `Image` an embedded image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentKind {
     File,
     Plan,
@@ -168,7 +169,7 @@ impl std::fmt::Display for AttachmentKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     /// What kind of attachment this is (drives the header label); see [`AttachmentKind`].
     pub kind: AttachmentKind,
@@ -187,7 +188,7 @@ pub struct Attachment {
 /// attachment at a time — via [`crate::Transcript::load_attachment`] and dropped after use.
 ///
 /// "Downloadable" (the old `content.is_some()`) is `matches!(content, AttachmentContent::Deferred { .. })`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttachmentContent {
     /// Path-only: no embedded content (reveal `path` in the file manager).
     None,
@@ -216,7 +217,7 @@ pub enum LoadedAttachment {
 /// `tool_use_id` (or `agent_id`) supplies the terminal status. `blocks` is the child
 /// transcript (`subagents/agent-<id>.jsonl`), parsed by the same `parse_main` and
 /// filled in by the path-aware wrapper; nested `SubAgent`s inside it are grandchildren.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubAgent {
     /// The child's agent id (== the completion notification's `task-id`; file stem).
     pub agent_id: String,
@@ -242,7 +243,7 @@ pub struct SubAgent {
 
 /// A sub-agent's lifecycle state. Launched states come from the spawn's
 /// `toolUseResult.status`; terminal states from its completion `<task-notification>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentStatus {
     /// Spawned synchronously and still shown running (no result yet seen).
     Running,

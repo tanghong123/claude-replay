@@ -117,6 +117,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
         Ok(())
     }
 
+    /// Consume the accumulator, returning its [`BlockStore`]. For a tier-b store this is how a
+    /// consumer reclaims the backing after the final [`snapshot`](Self::snapshot) (pair it with the
+    /// `Session<Deferred>` in a [`TierBSession`](crate::engine::tier_b::TierBSession) to read blocks).
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
     /// Rebuild from scratch — recreate the replayer, clear the cwd, and take a fresh metrics
     /// accumulator. The live follower calls this on a truncation/compaction (the reader re-read
     /// from 0, so the next `advance` folds the whole new file).
