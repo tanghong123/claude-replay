@@ -15,6 +15,7 @@ use crate::metrics::Metrics;
 use crate::model::Block;
 use crate::Agent;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -40,15 +41,38 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// (Used by [`crate::discover::detect_agent`]; the sniffs are mutually exclusive.)
     fn sniff(&self, head: &Value) -> bool;
 
-    // ── whole-file parse (owns its pass-1 id scan + pass-2 streaming fold) ──
-    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass. The
+    // ── whole-file parse ──
+    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass — the
     /// single whole-file parse seam (the flat top-level session; sub-agent trees load via
-    /// [`enrich`](Self::enrich)).
+    /// [`enrich`](Self::enrich)). A provided method: pass-1 [`scan_join_ids`](Self::scan_join_ids),
+    /// then pass-2 folds each line through [`decode_line`](Self::decode_line) +
+    /// [`shaping`](Self::shaping) with metrics accumulated by [`metrics_acc`](Self::metrics_acc).
+    /// Identical orchestration for every agent — no adapter overrides it; a new agent supplies
+    /// only the four hooks.
     fn parse_path_timed(
         &self,
         path: &Path,
         times: &mut Vec<Option<f64>>,
-    ) -> io::Result<(Vec<Block>, Metrics)>;
+    ) -> io::Result<(Vec<Block>, Metrics)> {
+        let ids = self.scan_join_ids(path)?; // pass 1
+        let mut cwd = String::new();
+        let mut macc = self.metrics_acc();
+        let reader = io::BufReader::new(std::fs::File::open(path)?); // pass 2 (fresh read)
+        let blocks = crate::engine::replay::parse_stream(
+            reader,
+            ids,
+            self.shaping(),
+            |line, out| self.decode_line(line, &mut cwd, out),
+            |v| macc.push(v),
+            times,
+        )?;
+        Ok((blocks, macc.finish()))
+    }
+    /// Pass-1 id pre-scan: the tool-call ids a later result will be joined onto (so a
+    /// forward-referencing result isn't mis-emitted as an orphan). Per-agent because the id
+    /// lives at a different JSON path in each format; the shared line-streaming skeleton is
+    /// [`scan_ids`](crate::engine::replay::scan_ids). Streams the file — no whole-file buffer.
+    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>>;
     /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
     /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
     /// enrich. Backs [`crate::parse_session_enriched`].
@@ -132,12 +156,10 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn sniff(&self, head: &Value) -> bool {
         head.get("sessionId").is_some() || head.get("message").is_some()
     }
-    fn parse_path_timed(
-        &self,
-        path: &Path,
-        times: &mut Vec<Option<f64>>,
-    ) -> io::Result<(Vec<Block>, Metrics)> {
-        crate::claude_model::parse_claude_path_timed(path, times)
+    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
+        use std::io::BufRead;
+        let f = io::BufReader::new(std::fs::File::open(path)?);
+        Ok(crate::claude_model::scan_join_ids(f.lines().map_while(Result::ok)))
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         crate::claude_model::enrich_tree(path, blocks)
@@ -174,12 +196,10 @@ impl TranscriptAdapter for CodexAdapter {
             || (head.get("payload").is_some()
                 && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
     }
-    fn parse_path_timed(
-        &self,
-        path: &Path,
-        times: &mut Vec<Option<f64>>,
-    ) -> io::Result<(Vec<Block>, Metrics)> {
-        crate::codex_model::parse_codex_path_timed(path, times)
+    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
+        use std::io::BufRead;
+        let f = io::BufReader::new(std::fs::File::open(path)?);
+        Ok(crate::codex_model::scan_join_ids(f.lines().map_while(Result::ok)))
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING

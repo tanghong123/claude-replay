@@ -6,8 +6,6 @@ use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io::{self, BufRead};
-use std::path::Path;
 
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
@@ -15,28 +13,6 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
     // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
     // `parse_stream` + `decode_codex_line` (M9).
     crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
-}
-
-/// The whole-file Codex parse on the streaming engine (M9): pass-1 id scan, pass-2 per-line
-/// `decode_codex_line` folded through the shared `Replayer` — one line resident, no whole-file
-/// `Vec<Message>`. Returns blocks + one timestamp per user turn + folded metrics.
-pub(crate) fn parse_codex_path_timed(
-    path: &Path,
-    user_times: &mut Vec<Option<f64>>,
-) -> io::Result<(Vec<Block>, crate::metrics::Metrics)> {
-    let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let call_ids = scan_join_ids(open()?.lines().map_while(|line| line.ok()));
-    let mut cwd = String::new();
-    let mut macc = crate::codex_metrics::CodexMetricsAcc::default();
-    let blocks = crate::engine::replay::parse_stream(
-        open()?,
-        call_ids,
-        &CODEX_SHAPING,
-        |line, out| decode_codex_line(line, &mut cwd, out),
-        |v| macc.push(v),
-        user_times,
-    )?;
-    Ok((blocks, macc.finish()))
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
@@ -199,14 +175,10 @@ pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Mes
     }
 }
 
-fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for line in lines {
-        let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
-            continue;
-        };
+pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
+    crate::engine::replay::scan_ids(lines, |value, out| {
         if value.get("type").and_then(Value::as_str) != Some("response_item") {
-            continue;
+            return;
         }
         let kind = value.pointer("/payload/type").and_then(Value::as_str);
         if matches!(kind, Some("function_call" | "custom_tool_call")) {
@@ -214,8 +186,7 @@ fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<Strin
                 out.insert(id.to_string());
             }
         }
-    }
-    out
+    })
 }
 
 /// **Frozen golden reference** (M9): production parses Codex through the streaming engine;
@@ -596,7 +567,9 @@ not json
         let expected = parse_codex(jsonl);
         let path = std::env::temp_dir().join(format!("codex-model-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let (actual, _) = parse_codex_path_timed(&path, &mut Vec::new()).unwrap();
+        // Through the public dispatcher (the adapter's default `parse_path_timed`).
+        let (actual, _, _) =
+            crate::engine::replay::parse_path_timed_for(crate::Agent::Codex, &path).unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert!(matches!(

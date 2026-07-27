@@ -13,6 +13,25 @@ use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// **Pass-1 id pre-scan.** Collect the tool-call ids that a later result WILL be joined onto,
+/// so a result whose `tool_use` appears further down the stream is held pending rather than
+/// mis-emitted as an orphan (the streaming fold matches a whole-file batch this way). The
+/// read/trim/parse/skip-non-JSON skeleton is shared; each agent supplies `extract`, which pulls
+/// this line's join ids into the set (Claude reads `assistant`→`tool_use.id`; Codex reads
+/// `response_item`→`call_id`).
+pub(crate) fn scan_ids<S: AsRef<str>>(
+    lines: impl Iterator<Item = S>,
+    extract: impl Fn(&Value, &mut HashSet<String>),
+) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for line in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(line.as_ref().trim()) {
+            extract(&v, &mut ids);
+        }
+    }
+    ids
+}
+
 /// **The streaming L2 driver** (M9). Feed a [`Replayer`] one line's messages at a time —
 /// `decode` (the agent's per-line L1, capturing its `cwd`) turns each line into a few
 /// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak

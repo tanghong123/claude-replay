@@ -423,29 +423,6 @@ fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     )
 }
 
-/// Claude's streaming timed parse — blocks + one timestamp per user turn + folded metrics,
-/// in one pass (M9/M10). The Claude arm of `model::parse_path_timed_for`, mirroring
-/// `codex_model::parse_codex_path_timed` so the dispatcher is symmetric.
-pub(crate) fn parse_claude_path_timed(
-    path: &std::path::Path,
-    user_times: &mut Vec<Option<f64>>,
-) -> std::io::Result<(Vec<Block>, crate::metrics::Metrics)> {
-    use std::io::BufRead;
-    let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let tool_ids = scan_join_ids(open()?.lines().map_while(|r| r.ok()));
-    let mut cwd = String::new();
-    let mut macc = crate::claude_metrics::MetricsAcc::default();
-    let blocks = parse_stream(
-        open()?,
-        tool_ids,
-        &CLAUDE_SHAPING,
-        |line, out| decode_line(line, &mut cwd, out),
-        |v| macc.push(v),
-        user_times,
-    )?;
-    Ok((blocks, macc.finish()))
-}
-
 /// The `<project>/<sessionId>/subagents/` dir for a transcript at
 /// `<project>/<sessionId>.jsonl`, if it exists on disk.
 fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -514,15 +491,7 @@ fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<
 
 /// Pass 1: the set of every `tool_use` id in the transcript.
 pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for line in lines {
-        let line = line.as_ref().trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    crate::engine::replay::scan_ids(lines, |v, ids| {
         if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
             if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
                 for blk in arr {
@@ -534,8 +503,7 @@ pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Ha
                 }
             }
         }
-    }
-    ids
+    })
 }
 
 /// Fill a `tool_use` block's result fields (output / diff line numbers / read
