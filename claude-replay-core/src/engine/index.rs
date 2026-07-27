@@ -2,56 +2,86 @@
 //! and the sub-agent liveness truth (design `parser-engine.md` §7).
 //!
 //! Milestone status: this is the **derived-view-first** cut (§5.2 Phase 5). It is built by
-//! one scan over a `Session`'s **top-level** blocks, so positions are flat `usize` indices
+//! one scan over a `Session`'s **top-level** blocks, so positions are flat [`BlockIndex`]es
 //! into `Session.blocks`. The tree-addressing `BlockPath` (for descending into a sub-agent's
 //! own blocks, §7.3) is a later refinement; nothing here needs it yet. Building it as a
 //! derived view keeps it additive and byte-identical — no change to the block model.
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::model::{AgentStatus, Block};
+use crate::model::{AgentStatus, AttachmentKind, Block, BlockIndex, EpochSeconds, UsdCost};
 
 /// A user/human turn boundary. Re-homes today's parallel `user_times` onto the turn.
 #[derive(Debug, Clone)]
 pub struct TurnEntry {
-    /// Position of the `UserText` / `Command` block that opens the turn.
-    pub at: usize,
-    /// Wall-clock of the event that produced it (epoch seconds), when recorded.
-    pub time: Option<f64>,
+    /// Zero-based **index into the [`Session`](crate::Session)'s `blocks`** of the `UserText`
+    /// or `Command` block that opens this turn — a position in the flat top-level block list,
+    /// **not** a byte offset into the transcript nor a line number. It's a valid subscript of
+    /// `session.blocks` (`session.blocks[at]`), used to scroll/jump to the turn.
+    pub at: BlockIndex,
+    /// When the turn was submitted, as a Unix timestamp in **seconds since the epoch** (`f64`
+    /// so sub-second precision survives, though transcripts are whole-second in practice).
+    /// `None` when the transcript recorded no timestamp for this turn.
+    pub time: Option<EpochSeconds>,
 }
 
-/// A spawned sub-agent. `status` is the liveness truth (`active_agents` filters on it).
+/// A spawned sub-agent (an `Agent`/`Task` tool call), with its liveness. `status` is the
+/// liveness truth ([`active_agents`](SessionIndex::active_agents) filters on it).
 #[derive(Debug, Clone)]
 pub struct AgentEntry {
+    /// The sub-agent's id **as recorded in the transcript** (Claude's `toolUseResult.agentId`);
+    /// it also names the child transcript file `agent-<id>.jsonl`. **Empty string** when the
+    /// transcript hasn't assigned one yet (e.g. a spawn whose completion event hasn't arrived).
     pub id: String,
+    /// The sub-agent's **type label from the spawn** — a free-form string the caller chose
+    /// (Claude's `subagent_type`, e.g. `general-purpose`, `code-reviewer`, `Explore`, or a
+    /// user-defined agent). This is an **open set**, not a fixed enum, and it is **not** the
+    /// [`Agent`](crate::Agent) that produced the transcript. **Empty string** when the spawn
+    /// recorded no type.
     pub agent_type: String,
+    /// The human task description from the spawn input (Claude's `description`). May be empty.
     pub description: String,
+    /// Terminal-or-running state — the liveness signal; see [`AgentStatus`].
     pub status: AgentStatus,
-    /// Position of the spawn (`SubAgent`) block — the jump target.
-    pub at: usize,
-    pub subtree_cost: Option<f64>,
+    /// Zero-based **index into the [`Session`](crate::Session)'s `blocks`** of this spawn's
+    /// `SubAgent` block — the jump target. A flat top-level position, **not** a byte offset.
+    pub at: BlockIndex,
+    /// Estimated **cost in US dollars** of this sub-agent *and everything it spawned* (its
+    /// subtree), rolled up from token usage — dollars, not tokens, hence `f64` not `u64`.
+    /// `None` when the child transcript wasn't loaded or the cost couldn't be derived.
+    pub subtree_cost: Option<UsdCost>,
 }
 
-/// A tool call (`ToolUse`) — its display name + target, at its block position.
+/// A tool call (`ToolUse`).
 #[derive(Debug, Clone)]
 pub struct ToolEntry {
+    /// The tool's canonical display name (e.g. `Read`, `Bash`, `Edit`, `Agent`). An **open
+    /// set** — includes arbitrary MCP/skill tool names — so it stays a `String`, not an enum.
     pub name: String,
+    /// The short human target shown in the header — a repo-relative path, a command, a
+    /// description — exactly as rendered. May be empty for a tool with no natural target.
     pub target: String,
-    pub at: usize,
+    /// Index of the `ToolUse` block; see [`BlockIndex`].
+    pub at: BlockIndex,
 }
 
 /// A surfaced attachment (`Attachment`).
 #[derive(Debug, Clone)]
 pub struct AttachmentEntry {
-    pub kind: &'static str,
+    /// What the attachment is; see [`AttachmentKind`].
+    pub kind: AttachmentKind,
+    /// Display name — a repo-relative path when known, else the basename.
     pub name: String,
-    pub at: usize,
+    /// Index of the `Attachment` block; see [`BlockIndex`].
+    pub at: BlockIndex,
 }
 
 /// A tool name paired with how many times it was called (the auditor primitive, §3.5).
 #[derive(Debug, Clone)]
 pub struct ToolCount {
+    /// The tool's display name (matches the `name` of the [`ToolEntry`]s it counts).
     pub name: String,
+    /// Number of `ToolUse` blocks with this name in the session (always ≥ 1).
     pub count: usize,
 }
 
@@ -181,7 +211,7 @@ mod tests {
             sub("a1", AgentStatus::Running),
             sub("a2", AgentStatus::Completed),
             Block::Attachment(Attachment {
-                kind: "image",
+                kind: AttachmentKind::Image,
                 name: "img.png".into(),
                 path: None,
                 content: None,
@@ -212,7 +242,7 @@ mod tests {
 
         // Attachments.
         assert_eq!(idx.attachments.len(), 1);
-        assert_eq!(idx.attachments[0].kind, "image");
+        assert_eq!(idx.attachments[0].kind, AttachmentKind::Image);
         assert_eq!(idx.attachments[0].at, 6);
 
         // Block-kind histogram (fold_key-keyed): 2 users, 2 reads + 1 bash, 2 agents, 1 image.

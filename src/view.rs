@@ -1986,7 +1986,7 @@ mod tests {
         let blocks = vec![
             Block::UserText("go".into()),
             Block::Attachment(Attachment {
-                kind: "ref",
+                kind: crate::model::AttachmentKind::Ref,
                 name: "src/lib.rs".into(),
                 path: Some("/w/src/lib.rs".into()),
                 content: None,
@@ -2321,7 +2321,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let text = Attachment {
-            kind: "file",
+            kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
             content: Some(AttachmentContent::Text("hello".into())),
@@ -2335,7 +2335,7 @@ mod tests {
 
         // A base64 image decodes to bytes; the extension comes from the MIME type.
         let img = Attachment {
-            kind: "image",
+            kind: crate::model::AttachmentKind::Image,
             name: "shot".into(),
             path: None,
             content: Some(AttachmentContent::Base64 {

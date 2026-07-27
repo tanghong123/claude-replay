@@ -1289,7 +1289,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 .map(str::to_string)
                 .or_else(|| path.map(basename))?;
             Some(Attachment {
-                kind: "file",
+                kind: AttachmentKind::File,
                 name,
                 path: path.map(str::to_string),
                 content: Some(AttachmentContent::Text(content.to_string())),
@@ -1300,7 +1300,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
             let content = s("planContent")?;
             let path = s("planFilePath");
             Some(Attachment {
-                kind: "plan",
+                kind: AttachmentKind::Plan,
                 name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
                 path: path.map(str::to_string),
                 content: Some(AttachmentContent::Text(content.to_string())),
@@ -1310,7 +1310,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
         "edited_text_file" => {
             let path = s("filename")?;
             Some(Attachment {
-                kind: "edited",
+                kind: AttachmentKind::Edited,
                 name: basename(path),
                 path: Some(path.to_string()),
                 content: None,
@@ -1323,7 +1323,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 .map(str::to_string)
                 .unwrap_or_else(|| basename(path));
             Some(Attachment {
-                kind: "ref",
+                kind: AttachmentKind::Ref,
                 name,
                 path: Some(path.to_string()),
                 content: None,
@@ -1357,7 +1357,7 @@ fn image_attachment(blk: &Value) -> Option<Attachment> {
         .filter(|e| !e.is_empty())
         .unwrap_or("png");
     Some(Attachment {
-        kind: "image",
+        kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
         content: Some(AttachmentContent::Base64 { mime, b64 }),
@@ -1617,7 +1617,7 @@ mod tests {
             .iter()
             .filter_map(|b| match b {
                 Block::Attachment(a) => Some((
-                    a.kind,
+                    a.kind.as_str(),
                     a.name.as_str(),
                     a.content.is_some(),
                     a.path.as_deref(),
@@ -1637,7 +1637,7 @@ mod tests {
         );
         // The embedded `file` content is the real bytes, ready to download.
         let file_text = blocks.iter().find_map(|b| match b {
-            Block::Attachment(a) if a.kind == "file" => a.content.as_ref(),
+            Block::Attachment(a) if a.kind == AttachmentKind::File => a.content.as_ref(),
             _ => None,
         });
         assert!(matches!(
@@ -1661,7 +1661,7 @@ mod tests {
         let imgs: Vec<(&str, &str)> = blocks
             .iter()
             .filter_map(|b| match b {
-                Block::Attachment(a) if a.kind == "image" => match &a.content {
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => match &a.content {
                     Some(AttachmentContent::Base64 { mime, .. }) => {
                         Some((a.name.as_str(), mime.as_str()))
                     }

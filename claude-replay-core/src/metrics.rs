@@ -1,6 +1,7 @@
 //! Session metrics parsed from the transcript: token totals, wall-clock
 //! duration, model, and a best-effort USD cost estimate.
 
+use crate::model::UsdCost;
 use crate::Agent;
 
 #[derive(Debug, Default, PartialEq, Clone)]
@@ -17,7 +18,9 @@ pub struct Metrics {
     pub output_tokens: u64,
     pub model: String,
     pub duration_secs: i64,
-    pub cost_usd: Option<f64>,
+    /// Best-effort estimated cost in US dollars; see [`UsdCost`]. `None` when the model isn't
+    /// priced.
+    pub cost_usd: Option<UsdCost>,
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
