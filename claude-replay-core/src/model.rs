@@ -359,14 +359,6 @@ pub fn is_activity_tool(name: &str) -> bool {
     )
 }
 
-/// Parse JSONL text with the parser for `agent`.
-pub fn parse_for(agent: Agent, jsonl: &str) -> Vec<Block> {
-    match agent {
-        Agent::Claude => crate::claude_model::parse(jsonl),
-        Agent::Codex => crate::codex_model::parse_codex(jsonl),
-    }
-}
-
 /// Like `parse_path_for`, but also returns one wall-clock timestamp (epoch
 /// seconds) per **user turn**, in order — the HTML export shows them beside each
 /// turn. Codex transcripts yield the same shape.
@@ -414,21 +406,6 @@ pub fn parse_path_timed_for(
         Agent::Codex => crate::codex_model::parse_codex_path_timed(path, &mut times)?,
     };
     Ok((blocks, times, metrics))
-}
-
-/// Like [`parse_path_timed_for`] but ALSO loads the sub-agent tree (each `SubAgent`'s
-/// child transcript, recursively) — the enriched form the multi-file HTML bundle needs
-/// so every agent's blocks and subtree cost are available. (The plain timed parse skips
-/// enrichment for the single-file snapshot, which never drills down.)
-pub fn parse_path_timed_enriched_for(
-    agent: Agent,
-    path: &std::path::Path,
-) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
-    let (mut blocks, times, _metrics) = parse_path_timed_for(agent, path)?;
-    if agent == Agent::Claude {
-        crate::claude_model::enrich_from_subagents(path, &mut blocks);
-    }
-    Ok((blocks, times))
 }
 
 /// Streaming file parse with the parser for `agent`.

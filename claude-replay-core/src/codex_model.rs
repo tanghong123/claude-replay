@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-pub(crate) fn parse_codex(jsonl: &str) -> Vec<Block> {
+pub fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
     // `parse_stream` + `decode_codex_line` (M9).
