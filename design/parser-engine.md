@@ -1,5 +1,14 @@
 # Design: the three-layer session engine (parse · replay · present)
 
+> **Historical design-of-record.** The current, maintained architecture reference is
+> [`docs/architecture.md`](../docs/architecture.md) (with the
+> [developer guide](../docs/developer-guide.md)). This file records the *design as it was
+> conceived*; some names/locations have since moved — notably the L2 fold now lives in
+> `engine::replay` (not `model`), the L1↔L2 `Message` vocabulary is crate-internal, and the
+> curated public API is `parse_session*` / `Session` / `SessionIndex` / `FollowParser` /
+> `Metrics` / `Block` (there is no public `Adapter`/`Parser`/`SessionStore` type). Read it for
+> the *why*; trust `docs/architecture.md` for the *what-is*.
+
 Status: **built** — M1–M16 merged; production runs entirely on this engine, split into the
 `claude-replay-core` crate (per-agent L1 adapters + shared L2 fold + presenters). This file
 is the **design of record**; see `engine-refactor-plan.md` for per-milestone status. Grew out

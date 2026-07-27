@@ -1,5 +1,12 @@
 # Design: streaming transcript parse (cut the load-time memory spike)
 
+> **Superseded / historical.** Streaming is implemented and folded into the engine — see
+> [`docs/architecture.md` §6](docs/architecture.md#6-streaming-parse--the-live-follower). Some
+> symbols here predate the crate split: the in-memory batch `parse` is now
+> `claude_model::parse` (test-only), the whole-file entry is the adapter's `parse_path_timed`
+> (composed from `scan_join_ids` + `engine::replay::parse_stream`), and metrics fold through
+> `TranscriptAdapter::parse_reader`. Kept for the measurements + rationale below.
+
 Status: **implemented on branch `perf/streaming-parse`.** Scope: `model::parse`
 (+ the file reads in `app.rs`, and a streaming `metrics::parse_reader`). Does
 **not** touch the render model, live-tail correctness, or the picker.

@@ -215,6 +215,15 @@ cargo test                                  # deterministic; no terminal needed
 cargo test --test tmux_smoke -- --ignored   # opt-in end-to-end via private tmux
 ```
 
+### Developer docs
+
+- **[docs/architecture.md](docs/architecture.md)** — the system design: the three-layer
+  engine (decode → fold → present), the two-crate boundary, the data model, and the
+  per-agent `TranscriptAdapter` seam.
+- **[docs/developer-guide.md](docs/developer-guide.md)** — build & test (incl. headless TUI
+  testing and the byte-identical gate), using the engine as a library, and a step-by-step
+  **[add-an-agent walkthrough](docs/developer-guide.md#4-adding-an-agent)**.
+
 ### Source layout
 
 A Cargo **workspace** with two crates, split so the parsing engine is reusable and its
