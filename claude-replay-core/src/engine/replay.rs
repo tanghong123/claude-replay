@@ -95,7 +95,6 @@ pub(crate) struct Replayer<'a> {
     content_seq: usize,
     suppress: Vec<BlockIndex>,
     last_skill: Option<BlockIndex>,
-    completions: Vec<CompletionRec>,
 }
 
 impl<'a> Replayer<'a> {
@@ -112,7 +111,6 @@ impl<'a> Replayer<'a> {
             content_seq: 0,
             suppress: Vec::new(),
             last_skill: None,
-            completions: Vec::new(),
         }
     }
 
@@ -228,13 +226,10 @@ impl<'a> Replayer<'a> {
                     description,
                     result,
                 } => {
-                    // L1 already parsed the notification; the fold only places the block and
-                    // records the terminal status for the post-loop `SubAgent` back-patch.
-                    self.completions.push(CompletionRec {
-                        tool_use_id: tool_use_id.clone(),
-                        task_id: task_id.clone(),
-                        status: *status,
-                    });
+                    // L1 already parsed the notification; the fold only places the `AgentDone`
+                    // block. No status back-patch onto the spawn — the terminal status is
+                    // derived by the `sub_agents` index from this finish event (two durable
+                    // events), so the spawn/finish blocks stay immutable.
                     let agent_id = if !task_id.is_empty() {
                         task_id.clone()
                     } else {
@@ -302,12 +297,7 @@ impl<'a> Replayer<'a> {
             self.pending_ts,
             &mut self.user_times,
         );
-        apply_completions_and_suppress(
-            &mut self.out,
-            &self.tool_slot,
-            &self.completions,
-            self.suppress,
-        );
+        apply_completions_and_suppress(&mut self.out, self.suppress);
         let blocks = (self.shaping.finish_turns)(self.out);
         (blocks, self.user_times)
     }
@@ -321,12 +311,7 @@ impl<'a> Replayer<'a> {
         let mut user_times = self.user_times.clone();
         let mut stamped = self.stamped;
         stamp_user_turns(&out, &mut stamped, self.pending_ts, &mut user_times);
-        apply_completions_and_suppress(
-            &mut out,
-            &self.tool_slot,
-            &self.completions,
-            self.suppress.clone(),
-        );
+        apply_completions_and_suppress(&mut out, self.suppress.clone());
         let blocks = (self.shaping.finish_turns)(out);
         (blocks, user_times)
     }
@@ -352,59 +337,34 @@ pub(crate) fn replay(
 /// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
 /// of prompts picked up immediately. Split out so both `parse_main` and `replay` share
 /// one copy. Runs before turn grouping so surviving markers keep their positions.
-fn apply_completions_and_suppress(
-    out: &mut Vec<Block>,
-    tool_slot: &HashMap<String, BlockIndex>,
-    completions: &[CompletionRec],
-    suppress: Vec<BlockIndex>,
-) {
-    if !completions.is_empty() {
-        let mut agent_slot: HashMap<String, usize> = HashMap::new();
-        for (i, b) in out.iter().enumerate() {
-            if let Block::SubAgent(sa) = b {
-                if !sa.agent_id.is_empty() {
-                    agent_slot.insert(sa.agent_id.clone(), i);
-                }
+fn apply_completions_and_suppress(out: &mut Vec<Block>, suppress: Vec<BlockIndex>) {
+    // Resolve each `AgentDone` completion's `agent_type`/`agent_id` from its matching spawn (the
+    // two events share an identity). NO status back-patch: the spawn block keeps its launch
+    // status, and the terminal status is derived by the `sub_agents` index from the AgentDone
+    // event (see `build_sub_agents`) — so the spawn/finish blocks stay immutable. Runs
+    // unconditionally: it is a no-op when there are no `SubAgent`/`AgentDone` blocks.
+    let mut by_id: HashMap<String, (String, String)> = HashMap::new();
+    for b in out.iter() {
+        if let Block::SubAgent(sa) = b {
+            let v = (sa.agent_id.clone(), sa.agent_type.clone());
+            if !sa.agent_id.is_empty() {
+                by_id.insert(sa.agent_id.clone(), v.clone());
+            }
+            if !sa.tool_use_id.is_empty() {
+                by_id.insert(sa.tool_use_id.clone(), v);
             }
         }
-        for rec in completions {
-            let idx = (!rec.tool_use_id.is_empty())
-                .then(|| tool_slot.get(&rec.tool_use_id).copied())
-                .flatten()
-                .or_else(|| {
-                    (!rec.task_id.is_empty())
-                        .then(|| agent_slot.get(&rec.task_id).copied())
-                        .flatten()
-                });
-            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = rec.status {
-                    sa.status = st;
-                }
-            }
-        }
-        let mut by_id: HashMap<String, (String, String)> = HashMap::new();
-        for b in out.iter() {
-            if let Block::SubAgent(sa) = b {
-                let v = (sa.agent_id.clone(), sa.agent_type.clone());
-                if !sa.agent_id.is_empty() {
-                    by_id.insert(sa.agent_id.clone(), v.clone());
-                }
-                if !sa.tool_use_id.is_empty() {
-                    by_id.insert(sa.tool_use_id.clone(), v);
-                }
-            }
-        }
-        for b in out.iter_mut() {
-            if let Block::AgentDone {
-                agent_id,
-                agent_type,
-                ..
-            } = b
-            {
-                if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
-                    *agent_type = ty.clone();
-                    *agent_id = real_id.clone();
-                }
+    }
+    for b in out.iter_mut() {
+        if let Block::AgentDone {
+            agent_id,
+            agent_type,
+            ..
+        } = b
+        {
+            if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
+                *agent_type = ty.clone();
+                *agent_id = real_id.clone();
             }
         }
     }
@@ -427,23 +387,6 @@ pub(crate) struct QueueItem {
     pub(crate) content: String,
     pub(crate) marker_idx: Option<BlockIndex>,
     pub(crate) content_at_enqueue: usize,
-}
-
-/// A structured agent/task completion (L1-parsed from the raw notification) — the fold's
-/// record for back-patching a `SubAgent`'s terminal status after the loop. `status` is
-/// `None` when the source carried no explicit status (then the spawn is left untouched).
-pub(crate) struct CompletionRec {
-    /// The spawning `Agent`/`Task` **tool_use id** (from the notification's `<tool-use-id>`) —
-    /// the *primary* key that back-patches this completion onto its `SubAgent` spawn block
-    /// (which stores the same id). Empty when the notification carried no `<tool-use-id>`.
-    pub(crate) tool_use_id: String,
-    /// The notification's `<task-id>`. For an agent completion this **is the agent's id**
-    /// (matched against `SubAgent.agent_id`) — the *fallback* join key, used when the
-    /// notification keyed by task-id rather than tool-use-id. Empty when absent.
-    pub(crate) task_id: String,
-    /// Terminal state from the notification's `<status>`; `None` when it carried none (the
-    /// spawn's status is then left untouched).
-    pub(crate) status: Option<AgentStatus>,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`

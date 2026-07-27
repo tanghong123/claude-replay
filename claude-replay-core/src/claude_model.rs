@@ -854,10 +854,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
     let mut last_skill: Option<BlockIndex> = None;
-    // Agent-completion `<task-notification>` strings, collected as seen and applied to
-    // their `SubAgent` block after the loop (by `tool-use-id`, else `task-id`==agentId),
-    // before any block removal shifts `tool_slot`'s indices.
-    let mut completions: Vec<String> = Vec::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -1058,8 +1054,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     Some("enqueue") => {
                         if let Some(c) = content {
                             if is_agent_notification(c) {
-                                completions.push(c.to_string());
-                                // Also render the completion as its OWN event at this
+                                // Render the completion as its OWN event at this
                                 // position (the spawn stays "launched" up where it was
                                 // created). Type is copied from the matching spawn in a
                                 // post-enrich pass (`stamp_agent_done_types`).
@@ -1156,34 +1151,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
         }
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-    // Apply agent-completion notifications to their `SubAgent` block — terminal status
-    // + inline result. MUST run before the `suppress` filter below removes blocks (which
-    // would invalidate `tool_slot`'s indices). Join by `tool-use-id`, else `task-id`.
-    if !completions.is_empty() {
-        let mut agent_slot: HashMap<String, BlockIndex> = HashMap::new();
-        for (i, b) in out.iter().enumerate() {
-            if let Block::SubAgent(sa) = b {
-                if !sa.agent_id.is_empty() {
-                    agent_slot.insert(sa.agent_id.clone(), i);
-                }
-            }
-        }
-        for note in &completions {
-            let idx = tag_inner(note, "tool-use-id")
-                .and_then(|t| tool_slot.get(t).copied())
-                .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
-            // Back-patch only the spawn's status (drives active-tracking: a terminal
-            // status drops the agent from `a active N`). The result text renders on the
-            // separate `AgentDone` completion event, not folded back onto the spawn.
-            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = tag_inner(note, "status").and_then(status_from_str) {
-                    sa.status = st;
-                }
-            }
-        }
-        // Give each `AgentDone` event its spawn's `agent_type` (the notification carries
-        // only status/summary/result), resolving its id from the spawn's `tool_use_id`
-        // when the notification keyed by `tool-use-id` rather than `task-id`.
+    // Give each `AgentDone` event its spawn's `agent_type`/`agent_id` (the notification
+    // carries only status/summary/result), resolving its id from the spawn's `tool_use_id`
+    // when the notification keyed by `tool-use-id` rather than `task-id`. NO status
+    // back-patch: the spawn keeps its launch status; the `sub_agents` index derives the
+    // terminal status from the AgentDone event (two durable events). MUST run before the
+    // `suppress` filter below removes blocks. A no-op when there are no `AgentDone` blocks.
+    {
         let mut by_id: HashMap<String, (String, String)> = HashMap::new(); // id/toolid → (agent_id, type)
         for b in out.iter() {
             if let Block::SubAgent(sa) = b {
@@ -1889,12 +1863,20 @@ mod tests {
         assert_eq!(sa.prompt, "Review render.rs");
         assert_eq!(
             sa.status,
-            AgentStatus::Completed,
-            "spawn status back-patched for active-tracking"
+            AgentStatus::AsyncLaunched,
+            "spawn keeps its LAUNCH status — no back-patch; the spawn/finish blocks are immutable"
         );
         assert_eq!(
             sa.result, None,
             "result renders on AgentDone, not the spawn"
+        );
+        // The terminal status is DERIVED by the sub_agents index from the AgentDone (finish)
+        // event superseding the spawn — not by mutating the spawn block (two durable events).
+        let map = crate::engine::build_sub_agents(&blocks);
+        assert_eq!(
+            map["aXYZ1234"].status,
+            AgentStatus::Completed,
+            "index derives terminal status from the finish event"
         );
         // The completion is a distinct AgentDone event carrying status + result, with the
         // agent_type resolved back from the spawn.
