@@ -278,6 +278,18 @@ pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
     }
 }
 
+/// Render queued backlog items into the numbered `### Backlog item N` block that a dump
+/// prompt folds in. Shared by both adapters' `prompt_for` (the surrounding prose that
+/// introduces the block is per-agent; this inner list is identical).
+pub(crate) fn format_backlog_items(backlog: &[String]) -> String {
+    backlog
+        .iter()
+        .enumerate()
+        .map(|(i, b)| format!("### Backlog item {}\n{}", i + 1, b.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Locate an agent CLI on PATH (then the usual install dirs), never returning our
 /// own executable. Used by adapters' `resolve_binary`.
 pub fn which(name: &str) -> Option<PathBuf> {

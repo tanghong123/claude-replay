@@ -292,13 +292,7 @@ impl AgentAdapter for CodexAdapter {
         // `drained/` when the turn comes back clean, so a prompt that omitted them
         // would silently discard the human's queued follow-ups.
         if !brief.backlog.is_empty() {
-            let items = brief
-                .backlog
-                .iter()
-                .enumerate()
-                .map(|(i, b)| format!("### Backlog item {}\n{}", i + 1, b.trim()))
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            let items = super::agent::format_backlog_items(&brief.backlog);
             out.push_str(&format!(
                 "\n\nThe human queued the following {} follow-up message(s) for THIS \
                  session while you were working. Go through them ONE BY ONE: understand \
