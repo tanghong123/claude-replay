@@ -98,39 +98,47 @@ pub struct Session<BV = Block> {
 pub fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
     let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
     for (at, b) in blocks.iter().enumerate() {
-        match b {
-            Block::SubAgent(sa) if !sa.agent_id.is_empty() => {
-                map.insert(
-                    sa.agent_id.clone(),
-                    SubAgentMeta {
-                        agent_type: sa.agent_type.clone(),
-                        status: sa.status,
-                        subtree_cost: sa.subtree_cost,
-                        transcript: None,
-                        output_file: sa.output_file.clone(),
-                        spawn_at: at,
-                        done_at: None,
-                    },
-                );
-            }
-            Block::AgentDone {
-                agent_id, status, ..
-            } => {
-                if let Some(m) = map.get_mut(agent_id) {
-                    m.done_at = Some(at);
-                    // Two-durable-events status derivation: the finish event supersedes the
-                    // spawn's launch status with the terminal one. Same value the fold's
-                    // spawn-block back-patch produces (both come from the one completion
-                    // notification), so this is byte-identical — but it makes the map the
-                    // authoritative status source, deriving it from the events rather than
-                    // reading a mutated block (the step toward immutable spawn/finish blocks).
-                    m.status = *status;
-                }
-            }
-            _ => {}
-        }
+        push_sub_agent(&mut map, at, b);
     }
     map
+}
+
+/// Fold ONE block (at its flat [`BlockIndex`] `at`) into a sub-agent map — the incremental unit
+/// [`build_sub_agents`] loops over. A spawn `SubAgent` (non-empty id) inserts an entry; a later
+/// `AgentDone` back-fills `done_at` and supersedes the status with the terminal one (two durable
+/// events). Lets the emit-and-drop / tier-b accumulator maintain the map as durable blocks emit,
+/// so the full `Vec<Block>` need never be resident. Proven equal to `build_sub_agents`.
+pub(crate) fn push_sub_agent(map: &mut BTreeMap<AgentId, SubAgentMeta>, at: BlockIndex, b: &Block) {
+    match b {
+        Block::SubAgent(sa) if !sa.agent_id.is_empty() => {
+            map.insert(
+                sa.agent_id.clone(),
+                SubAgentMeta {
+                    agent_type: sa.agent_type.clone(),
+                    status: sa.status,
+                    subtree_cost: sa.subtree_cost,
+                    transcript: None,
+                    output_file: sa.output_file.clone(),
+                    spawn_at: at,
+                    done_at: None,
+                },
+            );
+        }
+        Block::AgentDone {
+            agent_id, status, ..
+        } => {
+            if let Some(m) = map.get_mut(agent_id) {
+                m.done_at = Some(at);
+                // Two-durable-events status derivation: the finish event supersedes the spawn's
+                // launch status with the terminal one. Same value the fold's spawn-block back-patch
+                // produced (both from the one completion notification), so byte-identical — but it
+                // makes the map the authoritative status source, derived from the events rather than
+                // a mutated block (immutable spawn/finish blocks).
+                m.status = *status;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Fill each entry's `transcript` with its child transcript file (`subagents/agent-<id>.jsonl`)
@@ -309,6 +317,54 @@ mod tests {
             a2.transcript.is_none(),
             "no path-aware parse → no transcript"
         );
+    }
+
+    // The incremental `push_sub_agent` fold must reproduce the batch `build_sub_agents` exactly —
+    // the property the emit-and-drop / tier-b accumulator relies on to maintain the sub-agent map
+    // without the full blocks resident.
+    #[test]
+    fn incremental_push_sub_agent_equals_batch_build() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: Some(format!("/t/{id}.out")),
+                blocks: Vec::new(),
+                subtree_cost: Some(2.5),
+            })
+        };
+        let done = |id: &str, status| Block::AgentDone {
+            agent_id: id.into(),
+            agent_type: "gp".into(),
+            description: format!("do {id}"),
+            status,
+            result: Some("r".into()),
+        };
+        let blocks = vec![
+            Block::UserText("hi".into()),
+            spawn("a1", AgentStatus::AsyncLaunched),
+            spawn("a2", AgentStatus::Running),
+            spawn("", AgentStatus::Running),
+            done("a1", AgentStatus::Completed),
+            done("ghost", AgentStatus::Failed),
+            spawn("a3", AgentStatus::Running),
+            done("a3", AgentStatus::Killed),
+        ];
+
+        let batch = build_sub_agents(&blocks);
+
+        let mut incr: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
+        for (at, b) in blocks.iter().enumerate() {
+            push_sub_agent(&mut incr, at, b);
+        }
+
+        assert_eq!(batch, incr, "incremental push must equal batch build");
     }
 
     /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk
