@@ -175,6 +175,11 @@ pub fn detect_agent(path: &Path) -> Agent {
 /// Resolves a path; it does **not** parse. `None` if the agent has no sub-agent tree (Codex)
 /// or the child file doesn't exist. Routes to the agent adapter's `subagent_source` hook.
 ///
+/// The path is **derived from that on-disk layout, not read from the transcript**: a spawn
+/// records the child's `agentId` and (for an async spawn) its result `outputFile`, but *not*
+/// the child transcript's path — so it must be reconstructed from `root` + `child_id`, which
+/// is what this does.
+///
 /// This is the **lazy, on-demand** route — the presentation layer uses it to open a child from
 /// its *own* file (descend-and-live-tail in the TUI, the HTML server's deep links, the
 /// `--dump-all-html` BFS). It's distinct from the **eager**
