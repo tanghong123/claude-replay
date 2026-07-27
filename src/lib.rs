@@ -6,6 +6,7 @@
 
 pub mod app;
 mod clipboard;
+mod fold;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
@@ -160,7 +161,7 @@ pub fn run_viewer() -> Result<()> {
     if args.dump_all_html.is_some() {
         html_export::dump_all_html(&args, &path)
     } else if args.dump_html.is_some() {
-        html_export::export(&args, &path)
+        html_export::dump_html(&args, &path)
     } else if args.dump.is_some() {
         app::dump(&args, &path)
     } else {

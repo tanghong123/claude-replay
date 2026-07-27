@@ -206,7 +206,7 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let fold = crate::view::FoldPolicy::from_args(args);
+    let fold = crate::fold::FoldPolicy::from_args(args);
     // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
     // resident) and the tail — its first poll folds the whole current file, matching a
     // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
@@ -277,7 +277,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
                 .map(|f| crate::follow::FollowParser::open(parent.agent, f))
         })
         .flatten();
-    let fold = crate::view::FoldPolicy::from_args(args);
+    let fold = crate::fold::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, follower.is_some(), fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
@@ -602,7 +602,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.
     // Fold with the same policy as the TUI (default-folded thinking/reads/tools…),
     // so the dump reflects what the viewer actually shows; `--full` expands it all.
-    let fold = crate::view::FoldPolicy::from_args(args);
+    let fold = crate::fold::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, "dump", false, fold);
     let lines = view.rendered_lines(width as u16);
 
