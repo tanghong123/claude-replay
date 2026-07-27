@@ -177,7 +177,7 @@ impl TranscriptAdapter for ClaudeAdapter {
         Box::new(crate::claude_metrics::MetricsAcc::default())
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
-        crate::claude_discover::claude_candidates_scoped(cwd)
+        crate::claude_discover::candidates_scoped(cwd)
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::claude_discover::transcript_by_id(id)
@@ -210,7 +210,7 @@ impl TranscriptAdapter for CodexAdapter {
         &crate::codex_model::CODEX_SHAPING
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        crate::codex_model::decode_codex_line(line, cwd, out)
+        crate::codex_model::decode_line(line, cwd, out)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(crate::codex_metrics::CodexMetricsAcc::default())

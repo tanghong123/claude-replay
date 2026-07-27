@@ -69,19 +69,23 @@ fn transcripts_in_project(slug: &str) -> Vec<(SystemTime, PathBuf)> {
     out
 }
 
-/// Claude sessions scoped strictly to `cwd` or its **nearest ancestor that has
-/// sessions** — no global fallback (a directory with no session history up its
-/// chain yields nothing, so unrelated projects never leak in).
-pub fn claude_candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+/// The `(mtime, path)` transcripts of the **nearest ancestor of `cwd`** (up the directory
+/// chain) that owns any — the "no global fallback" scoping both scoped Claude lookups share
+/// (a directory with no session history up its chain yields nothing, so unrelated projects
+/// never leak in). Mirrors `codex_discover::nearest_ancestor_sessions`.
+fn nearest_project_transcripts(cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
+    ancestors_of(cwd)
+        .into_iter()
+        .map(|dir| transcripts_in_project(&slug_for(&dir)))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default()
+}
+
+/// Claude sessions scoped strictly to `cwd` or its nearest ancestor that has sessions — no
+/// global fallback (see [`nearest_project_transcripts`]).
+pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     let cwd_slug = slug_for(cwd);
-    let mut scoped: Vec<(SystemTime, PathBuf)> = Vec::new();
-    for dir in ancestors_of(cwd) {
-        let t = transcripts_in_project(&slug_for(&dir));
-        if !t.is_empty() {
-            scoped = t;
-            break;
-        }
-    }
+    let mut scoped = nearest_project_transcripts(cwd);
     scoped.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     scoped
         .into_iter()
@@ -133,25 +137,22 @@ fn first_user_snippet(path: &Path) -> String {
 /// target, so `resume` in a directory with no history fails cleanly rather than
 /// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    for anc in ancestors_of(cwd) {
-        let mut ts = transcripts_in_project(&slug_for(&anc));
-        ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
-        if let Some((m, p)) = ts.into_iter().next() {
-            let id = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            return Some((id, p, m));
-        }
-    }
-    None
+    let mut ts = nearest_project_transcripts(cwd);
+    ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+    ts.into_iter().next().map(|(m, p)| {
+        let id = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        (id, p, m)
+    })
 }
 
 /// The deterministic transcript path for a Claude `session_id` in `cwd` — the file
 /// Claude Code *will* write. May not exist yet (used by `agent-jdi start` to follow
 /// a fresh run whose id was pinned via `--session-id`).
-pub fn claude_transcript_path(cwd: &Path, id: &str) -> PathBuf {
+pub fn transcript_path(cwd: &Path, id: &str) -> PathBuf {
     projects_dir()
         .join(slug_for(cwd))
         .join(format!("{id}.jsonl"))

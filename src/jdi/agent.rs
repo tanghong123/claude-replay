@@ -278,6 +278,12 @@ pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
     }
 }
 
+/// Seconds since `mtime` (a session's idle time), clamped to 0 if the clock went backwards.
+/// The shared idiom behind every adapter's `idle_secs` in `ResumableSession`/`SessionBrief`.
+pub(crate) fn idle_secs(mtime: std::time::SystemTime) -> u64 {
+    mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0)
+}
+
 /// Render queued backlog items into the numbered `### Backlog item N` block that a dump
 /// prompt folds in. Shared by both adapters' `prompt_for` (the surrounding prose that
 /// introduces the block is per-agent; this inner list is identical).

@@ -136,7 +136,7 @@ impl AgentAdapter for ClaudeAdapter {
     fn discover_resumable(&self, cwd: &Path) -> Result<ResumableSession> {
         let (id, path, mtime) = claude_discover::latest_for_cwd(cwd)
             .ok_or_else(|| anyhow!("no Claude session found for {}", cwd.display()))?;
-        let idle_secs = mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+        let idle_secs = super::agent::idle_secs(mtime);
         Ok(ResumableSession {
             id,
             transcript: path,
@@ -149,7 +149,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn sessions_for_cwd(&self, cwd: &Path) -> Vec<super::agent::SessionBrief> {
-        claude_discover::claude_candidates_scoped(cwd)
+        claude_discover::candidates_scoped(cwd)
             .into_iter()
             .map(|c| super::agent::SessionBrief {
                 id: c
@@ -158,7 +158,7 @@ impl AgentAdapter for ClaudeAdapter {
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string(),
-                idle_secs: c.mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0),
+                idle_secs: super::agent::idle_secs(c.mtime),
                 snippet: c.snippet,
             })
             .collect()
@@ -167,7 +167,7 @@ impl AgentAdapter for ClaudeAdapter {
     /// Claude pins the id, so the transcript path is deterministic even before the
     /// file exists.
     fn expected_transcript(&self, session_id: &str, cwd: &Path) -> Option<PathBuf> {
-        Some(claude_discover::claude_transcript_path(cwd, session_id))
+        Some(claude_discover::transcript_path(cwd, session_id))
     }
 
     fn prompt_for(&self, mode: Mode, brief: &Brief, session_id: &str) -> String {

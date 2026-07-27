@@ -259,7 +259,7 @@ impl AgentAdapter for CodexAdapter {
     fn discover_resumable(&self, cwd: &Path) -> Result<ResumableSession> {
         let s = codex_discover::latest_for_cwd(cwd)
             .ok_or_else(|| anyhow!("no Codex session found for {}", cwd.display()))?;
-        let idle_secs = s.mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+        let idle_secs = super::agent::idle_secs(s.mtime);
         Ok(ResumableSession {
             id: s.id,
             transcript: s.path,
@@ -276,7 +276,7 @@ impl AgentAdapter for CodexAdapter {
             .into_iter()
             .map(|(id, mtime, snippet)| super::agent::SessionBrief {
                 id,
-                idle_secs: mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0),
+                idle_secs: super::agent::idle_secs(mtime),
                 snippet,
             })
             .collect()

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (the adapter's `parse_path_timed`) also runs on the engine now, per line
-    // via `parse_stream` + `decode_codex_line` (M9).
+    // via `parse_stream` + `decode_line` (M9).
     crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
@@ -60,7 +60,7 @@ fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
     let mut msgs: Vec<Message> = Vec::new();
     let mut cwd = String::new();
     for line in lines {
-        decode_codex_line(line.as_ref(), &mut cwd, &mut msgs);
+        decode_line(line.as_ref(), &mut cwd, &mut msgs);
     }
     msgs
 }
@@ -69,7 +69,7 @@ fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
 /// 0+ canonical messages appended to `msgs`; `cwd` is threaded across lines (set from
 /// `session_meta`). `tokenize` is this over every line; the streaming driver (M9) calls it
 /// one line at a time so no whole-file `Vec<Message>` is built.
-pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return;
     };
