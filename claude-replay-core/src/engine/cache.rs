@@ -8,7 +8,7 @@
 //! titles) — the follower and the `Session` live here.
 //!
 //! ## Residency tiers
-//! - **(c) registered** — a keyed [`SessionSource`] (agent + transcript path): we know where a
+//! - **(c) registered** — a keyed [`Transcript`] (agent + transcript path): we know where a
 //!   session lives, but hold no follower. Costs nothing; the common case for a large sub-agent
 //!   tree whose children were discovered but never opened.
 //! - **(a) resident** — a registered session [`poll`](SessionCache::poll)ed recently: it holds
@@ -21,20 +21,12 @@
 //! cache calls; the only work under a cache lock is the brief O(delta) follower read in `poll`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::engine::session::{populate_sub_agent_transcripts, Session};
 use crate::follow::FollowParser;
-use crate::Agent;
-
-/// A session's tier-(c) descriptor: which agent wrote the transcript and where it lives.
-#[derive(Clone)]
-pub struct SessionSource {
-    pub agent: Agent,
-    pub transcript: PathBuf,
-}
+use crate::Transcript;
 
 /// A resident session: an open incremental follower over its source. Its idle clock lives in
 /// the residents map alongside it.
@@ -46,8 +38,8 @@ struct Resident {
 /// domain — the followers and the materialized [`Session`]s — so its consumer (the live server)
 /// keeps only presentation state.
 pub struct SessionCache {
-    /// Tier (c): every known session → where to find it.
-    registry: Mutex<HashMap<String, SessionSource>>,
+    /// Tier (c): every known session → its [`Transcript`] source handle.
+    registry: Mutex<HashMap<String, Transcript>>,
     /// Tier (a): the currently-resident subset → (last polled, open follower).
     residents: Mutex<HashMap<String, (Instant, Resident)>>,
 }
@@ -67,13 +59,13 @@ impl SessionCache {
     }
 
     /// Register (or overwrite) a session's tier-(c) source.
-    pub fn register(&self, id: &str, src: SessionSource) {
+    pub fn register(&self, id: &str, src: Transcript) {
         self.registry.lock().unwrap().insert(id.to_string(), src);
     }
 
     /// Register a session only if not already known — preserves the first (richest,
     /// ancestry-bearing) descriptor against a later bare fallback.
-    pub fn register_new(&self, id: &str, src: SessionSource) {
+    pub fn register_new(&self, id: &str, src: Transcript) {
         self.registry
             .lock()
             .unwrap()
@@ -87,7 +79,7 @@ impl SessionCache {
     }
 
     /// The tier-(c) source for `id`, if known.
-    pub fn resolve(&self, id: &str) -> Option<SessionSource> {
+    pub fn resolve(&self, id: &str) -> Option<Transcript> {
         self.registry.lock().unwrap().get(id).cloned()
     }
 
@@ -104,7 +96,7 @@ impl SessionCache {
             (
                 Instant::now(),
                 Resident {
-                    follower: FollowParser::open(src.agent, &src.transcript),
+                    follower: src.follow(),
                 },
             )
         });
@@ -114,8 +106,8 @@ impl SessionCache {
                 // Assemble the full Session exactly as `parse_session_as` does: the builder
                 // leaves `cwd` None and each sub-agent's `transcript` None (it has no file
                 // path); fill both from the source path now that we know it.
-                session.cwd = crate::discover::session_cwd(&src.transcript);
-                populate_sub_agent_transcripts(src.agent, &src.transcript, &mut session.sub_agents);
+                session.cwd = crate::discover::session_cwd(src.path());
+                populate_sub_agent_transcripts(src.agent(), src.path(), &mut session.sub_agents);
                 Some(Ok(session))
             }
             Ok(None) => None,
@@ -141,8 +133,9 @@ impl SessionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_session_as;
+    use crate::{parse_session_as, Agent};
     use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tmp() -> PathBuf {
@@ -170,13 +163,7 @@ mod tests {
         let path = tmp();
         std::fs::write(&path, format!("{CLAUDE_1}{CLAUDE_2}")).unwrap();
         let cache = SessionCache::new();
-        cache.register(
-            "s",
-            SessionSource {
-                agent: Agent::Claude,
-                transcript: path.clone(),
-            },
-        );
+        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
         let polled = cache.poll("s").expect("registered").expect("readable");
         let full = parse_session_as(Agent::Claude, &path).unwrap();
         assert_eq!(
@@ -204,13 +191,7 @@ mod tests {
         assert!(cache.resident_ids().is_empty());
 
         // Register (tier c), then the first poll materializes it (tier a).
-        cache.register(
-            "s",
-            SessionSource {
-                agent: Agent::Claude,
-                transcript: path.clone(),
-            },
-        );
+        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
         assert!(cache.is_registered("s"));
         let s1 = cache.poll("s").expect("registered").expect("readable");
         assert_eq!(cache.resident_ids(), vec!["s".to_string()]);
@@ -248,22 +229,10 @@ mod tests {
     #[test]
     fn register_new_preserves_first_source() {
         let cache = SessionCache::new();
-        cache.register_new(
-            "c",
-            SessionSource {
-                agent: Agent::Claude,
-                transcript: PathBuf::from("rich"),
-            },
-        );
-        cache.register_new(
-            "c",
-            SessionSource {
-                agent: Agent::Codex,
-                transcript: PathBuf::from("bare"),
-            },
-        );
+        cache.register_new("c", Transcript::open(Agent::Claude, PathBuf::from("rich")));
+        cache.register_new("c", Transcript::open(Agent::Codex, PathBuf::from("bare")));
         let s = cache.resolve("c").expect("registered");
-        assert_eq!(s.transcript, PathBuf::from("rich"));
-        assert_eq!(s.agent, Agent::Claude);
+        assert_eq!(s.path(), PathBuf::from("rich").as_path());
+        assert_eq!(s.agent(), Agent::Claude);
     }
 }

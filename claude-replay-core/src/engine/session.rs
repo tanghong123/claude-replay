@@ -106,7 +106,7 @@ pub(crate) fn populate_sub_agent_transcripts(
 ///
 /// For a live tail (fold only appended bytes each poll), use [`FollowParser`](crate::FollowParser).
 pub fn parse_session(path: &Path) -> io::Result<Session> {
-    parse_session_as(crate::discover::detect_agent(path), path)
+    crate::Transcript::detect(path).parse()
 }
 
 /// Like [`parse_session`], but also loads the **sub-agent tree** — each `SubAgent`'s child
@@ -115,32 +115,20 @@ pub fn parse_session(path: &Path) -> io::Result<Session> {
 /// use this when you need the whole tree. Only the nested `SubAgent.blocks` change — the
 /// top-level `blocks`/`index`/`metrics` are identical to `parse_session`.
 pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
-    parse_session_enriched_as(crate::discover::detect_agent(path), path)
+    crate::Transcript::detect(path).parse_enriched()
 }
 
 /// [`parse_session_enriched`] for a **known** agent (skips detection).
 pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    let mut s = parse_session_as(agent, path)?;
-    crate::adapter::adapter(agent).enrich(path, &mut s.blocks);
-    Ok(s)
+    crate::Transcript::open(agent, path).parse_enriched()
 }
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
+///
+/// A thin wrapper over [`Transcript::parse`](crate::Transcript::parse), which holds the real
+/// streaming-fold logic. Kept as a documented, widely-called free-function entry point.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
-    // `Args` — that keeps clap out of the core. Derived from the incremental fold: feed a
-    // `SessionBuilder` line-by-line (one line resident, so a multi-gigabyte transcript never
-    // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
-    // one file read.
-    let mut b = crate::engine::builder::SessionBuilder::new(agent);
-    let mut reader = io::BufReader::new(std::fs::File::open(path)?);
-    b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
-    let mut s = b.snapshot();
-    s.cwd = crate::discover::session_cwd(path); // the builder leaves cwd None; fill it here
-                                                // The builder can't resolve child transcript paths (it has no file path); now that we know
-                                                // `path`, fill each `sub_agents[*].transcript` so the map can locate each child transcript.
-    populate_sub_agent_transcripts(agent, path, &mut s.sub_agents);
-    Ok(s)
+    crate::Transcript::open(agent, path).parse()
 }
 
 #[cfg(test)]

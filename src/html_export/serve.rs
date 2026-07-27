@@ -10,7 +10,7 @@ use super::{
     session_id, AgentInfo, ChildRef, POLL_MS,
 };
 use crate::fold::FoldPolicy;
-use crate::{discover, Agent, Args, SessionCache, SessionSource};
+use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
@@ -95,10 +95,7 @@ impl Live {
             if !source.exists() {
                 return false;
             }
-            let src = SessionSource {
-                agent: self.agent,
-                transcript: source,
-            };
+            let src = Transcript::open(self.agent, source);
             let t = TitleInfo {
                 title: id.to_string(),
                 ..Default::default() // unknown ancestry/type for an un-navigated deep link
@@ -110,7 +107,7 @@ impl Live {
                 .insert(id.to_string(), t.clone());
             (src, t)
         };
-        if !src.transcript.exists() {
+        if !src.path().exists() {
             return false;
         }
         // Initial materialization via the cache's first poll (folds the whole source once;
@@ -121,7 +118,7 @@ impl Live {
             Some(Err(_)) => return false,
             None => None,
         };
-        let info = self.agent_info(id, src.transcript.clone(), &title);
+        let info = self.agent_info(id, src.path().to_path_buf(), &title);
         let empty_metrics = crate::metrics::Metrics::default();
         let (blocks, times, metrics) = match &session {
             Some(s) => (s.blocks.as_slice(), s.user_times.as_slice(), &s.metrics),
@@ -150,10 +147,7 @@ impl Live {
             }
             if let Some(ci) = child_info(self.agent, &self.root_path, parent, c) {
                 let id = ci.id.clone();
-                let src = SessionSource {
-                    agent: self.agent,
-                    transcript: ci.source,
-                };
+                let src = Transcript::open(self.agent, ci.source);
                 let t = TitleInfo {
                     title: ci.title,
                     agent_type: ci.agent_type,
@@ -215,7 +209,7 @@ impl Live {
                     .get(&id)
                     .cloned()
                     .unwrap_or_default();
-                let info = self.agent_info(&id, src.transcript.clone(), &title);
+                let info = self.agent_info(&id, src.path().to_path_buf(), &title);
                 let (jsonl, children) = render_agent_stream(
                     self.agent,
                     &self.fold,
@@ -386,13 +380,8 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         prev: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
     });
-    live.cache.register(
-        &sid,
-        SessionSource {
-            agent,
-            transcript: path.to_path_buf(),
-        },
-    );
+    live.cache
+        .register(&sid, Transcript::open(agent, path.to_path_buf()));
     live.titles.lock().unwrap().insert(
         sid.clone(),
         TitleInfo {

@@ -215,19 +215,20 @@ fn build_frame(
     // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
     // resident) and the tail — its first poll folds the whole current file, matching a
     // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
+    let transcript = crate::Transcript::open(agent, path);
     let (blocks, cwd, metrics, follower) = if args.follow {
-        let mut f = crate::follow::FollowParser::open(agent, path);
+        let mut f = transcript.follow();
         let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
         (blocks, discover::session_cwd(path), metrics, Some(f))
     } else {
-        let s = crate::engine::parse_session_as(agent, path)?;
+        let s = transcript.parse()?;
         (s.blocks, s.cwd, s.metrics, None)
     };
     let mut view = View::new(blocks, title, follower.is_some(), fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
     // The blocks hold only attachment locators; give the view the transcript to load them from.
-    view.set_source(Some(crate::Transcript::open(agent, path)));
+    view.set_source(Some(transcript));
     view.set_can_open_picker(args.latest);
     view.set_metrics(metrics.footer());
     view.set_footer_segments(metrics.footer_segments());
@@ -260,14 +261,15 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_file = discover::subagent_source(parent.agent, &parent.path, &agent_id);
+    let child_transcript = discover::subagent_source(parent.agent, &parent.path, &agent_id)
+        .map(|f| crate::Transcript::open(parent.agent, f));
     // Parse the child once via the library entry point (enriched: its own sub-agent tree),
     // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
     // metrics instead of a second parse. A running agent's child file often appears (or fills
     // in) AFTER the parent was parsed, so we load it fresh at descend time.
-    let child_session = child_file
-        .as_deref()
-        .and_then(|f| crate::engine::parse_session_enriched_as(parent.agent, f).ok());
+    let child_session = child_transcript
+        .as_ref()
+        .and_then(|t| t.parse_enriched().ok());
     if blocks.is_empty() {
         if let Some(s) = &child_session {
             blocks = s.blocks.clone();
@@ -280,11 +282,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     // re-folds the child transcript (== the blocks just loaded), then only deltas.
     let follower = args
         .follow
-        .then(|| {
-            child_file
-                .as_deref()
-                .map(|f| crate::follow::FollowParser::open(parent.agent, f))
-        })
+        .then(|| child_transcript.as_ref().map(|t| t.follow()))
         .flatten();
     let fold = crate::fold::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, follower.is_some(), fold);
@@ -293,11 +291,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
     // A descended child's attachment locators point into the child's own transcript file.
-    view.set_source(
-        child_file
-            .as_deref()
-            .map(|f| crate::Transcript::open(parent.agent, f)),
-    );
+    view.set_source(child_transcript);
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
     // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped. Reuse the
     // metrics from the parse above (no second read).

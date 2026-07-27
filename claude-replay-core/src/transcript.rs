@@ -1,22 +1,37 @@
-//! **On-demand attachment loading** — the [`Transcript`] source object.
+//! The [`Transcript`] source handle — the canonical way to name a transcript file and decode
+//! it.
 //!
-//! A resident [`Session`](crate::Session) holds only a locator per attachment
+//! A `Transcript` is the cheap, clonable handle (agent + path) that identifies one transcript
+//! source. It is the single object the rest of the API threads instead of a bare `(agent,
+//! path)` pair: from it a caller can [`parse`](Transcript::parse) a whole [`Session`],
+//! [`parse_enriched`](Transcript::parse_enriched) the sub-agent tree, open an incremental
+//! [`follow`](Transcript::follow)er, or resolve a deferred attachment locator with
+//! [`load_attachment`](Transcript::load_attachment).
+//!
+//! It is **stateless** — it holds no open handle and caches nothing. Every method opens the
+//! file, does its work, and returns owned data the caller drops after use. `Clone` is cheap
+//! (an [`Agent`] tag + a [`PathBuf`]).
+//!
+//! ## Attachment loading
+//! A resident [`Session`] holds only a locator per attachment
 //! ([`AttachmentContent::Deferred`](crate::model::AttachmentContent::Deferred)) — never the
-//! embedded bytes. A [`Transcript`] is the cheap handle (agent + path) a presenter keeps to
-//! turn a locator into content on demand: [`Transcript::load_attachment`] seeks to the
-//! recorded byte offset, reads that ONE line, and re-runs the same extraction the parser uses
-//! to yield a [`LoadedAttachment`]. It is **stateless** — it caches nothing, reads on demand
-//! each call, and returns owned bytes the caller drops after use, so at most one attachment is
-//! resident at a time. Caching, if ever wanted, is a presentation-layer concern.
+//! embedded bytes. [`Transcript::load_attachment`] turns such a locator into content on demand:
+//! it seeks to the recorded byte offset, reads that ONE line, and re-runs the same extraction
+//! the parser uses to yield a [`LoadedAttachment`]. It reads on demand each call and returns
+//! owned bytes, so at most one attachment is resident at a time. Caching, if ever wanted, is a
+//! presentation-layer concern.
 
-use crate::model::{ByteOffset, LoadedAttachment};
-use crate::Agent;
 use std::io::{self, BufRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// A cheap, clonable handle to a transcript file — the "source" a presenter holds to resolve
-/// [`Deferred`](crate::model::AttachmentContent::Deferred) attachment locators on demand.
-/// Holds only the agent + path; loads nothing until asked.
+use crate::engine::session::{populate_sub_agent_transcripts, Session};
+use crate::follow::FollowParser;
+use crate::model::{ByteOffset, LoadedAttachment};
+use crate::Agent;
+
+/// A cheap, clonable handle to a transcript file — the canonical source object the API threads
+/// instead of a bare `(agent, path)` pair. Holds only the agent + path; loads nothing until
+/// asked, caches nothing between calls.
 #[derive(Debug, Clone)]
 pub struct Transcript {
     agent: Agent,
@@ -32,6 +47,14 @@ impl Transcript {
         }
     }
 
+    /// A handle to the transcript at `path`, auto-detecting the agent from the file's head
+    /// (see [`detect_agent`](crate::discover::detect_agent)).
+    pub fn detect(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let agent = crate::discover::detect_agent(&path);
+        Self { agent, path }
+    }
+
     /// The agent this transcript is decoded as.
     pub fn agent(&self) -> Agent {
         self.agent
@@ -40,6 +63,47 @@ impl Transcript {
     /// The transcript path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Parse the whole file into a [`Session`] — blocks + per-turn times + folded metrics + the
+    /// derived index + cwd — from one streaming pass. This is the real implementation behind
+    /// [`parse_session_as`](crate::parse_session_as); the free functions are thin wrappers over
+    /// it. Sub-agent child transcripts are NOT loaded (`SubAgent.blocks` stays empty); use
+    /// [`parse_enriched`](Transcript::parse_enriched) for the whole tree.
+    pub fn parse(&self) -> io::Result<Session> {
+        // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
+        // `Args` — that keeps clap out of the core. Derived from the incremental fold: feed a
+        // `SessionBuilder` line-by-line (one line resident, so a multi-gigabyte transcript never
+        // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
+        // one file read.
+        let mut b = crate::engine::builder::SessionBuilder::new(self.agent);
+        let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
+        b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
+        let mut s = b.snapshot();
+        s.cwd = crate::discover::session_cwd(&self.path); // the builder leaves cwd None; fill it
+                                                          // The builder can't resolve child transcript paths (it has no file path); now that we
+                                                          // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.
+        populate_sub_agent_transcripts(self.agent, &self.path, &mut s.sub_agents);
+        Ok(s)
+    }
+
+    /// Like [`parse`](Transcript::parse), but also loads the **sub-agent tree** — each
+    /// `SubAgent`'s child transcript (recursively) into its `blocks`. Only the nested
+    /// `SubAgent.blocks` change — the top-level `blocks`/`index`/`metrics` are identical to
+    /// [`parse`](Transcript::parse). The real implementation behind
+    /// [`parse_session_enriched_as`](crate::parse_session_enriched_as).
+    pub fn parse_enriched(&self) -> io::Result<Session> {
+        let mut s = self.parse()?;
+        crate::adapter::adapter(self.agent).enrich(&self.path, &mut s.blocks);
+        Ok(s)
+    }
+
+    /// Open an incremental [`FollowParser`] over this source (folds the whole current file on
+    /// the first poll, then only appended bytes). The constructor
+    /// [`FollowParser::open`](crate::FollowParser::open) is equivalent; this is the handle-based
+    /// entry point.
+    pub fn follow(&self) -> FollowParser {
+        FollowParser::open(self.agent, &self.path)
     }
 
     /// Load the content embedded at byte offset `at`, `index`-th content-bearing attachment on
@@ -168,6 +232,38 @@ mod tests {
                 b64: "BBB=".into()
             })
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `detect` sniffs the agent from the file head, and `parse`/`parse_enriched`/`follow`
+    /// on the handle equal the free-function entry points they back.
+    #[test]
+    fn handle_methods_match_the_free_functions() {
+        let body = concat!(
+            r#"{"type":"user","cwd":"/repo","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":3,"output_tokens":5}},"timestamp":"2026-07-26T10:00:01Z"}"#,
+            "\n",
+        );
+        let path = tmp(body);
+
+        let detected = Transcript::detect(&path);
+        assert_eq!(detected.agent(), Agent::Claude);
+        assert_eq!(detected.path(), path.as_path());
+
+        let via_handle = Transcript::open(Agent::Claude, &path).parse().unwrap();
+        let via_free = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
+        assert_eq!(format!("{via_handle:?}"), format!("{via_free:?}"));
+
+        let enriched_handle = detected.parse_enriched().unwrap();
+        let enriched_free = crate::engine::parse_session_enriched(&path).unwrap();
+        assert_eq!(format!("{enriched_handle:?}"), format!("{enriched_free:?}"));
+
+        // `follow`'s first poll folds the whole file → equals a full parse.
+        let mut f = detected.follow();
+        let s = f.poll_session().unwrap().expect("content");
+        assert_eq!(format!("{:?}", s.blocks), format!("{:?}", via_free.blocks));
+
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -14,7 +14,6 @@
 
 mod adapter;
 mod agent;
-pub mod attachment; // the `Transcript` on-demand attachment loader (lazy content)
 pub mod claude_discover; // pub: the viewer's `--dump` stem + jdi's Claude supervisor use it
 pub(crate) mod claude_metrics; // internal: reached via the adapter / metrics dispatch
 pub(crate) mod claude_model; // internal: L1 tokenizer, reached via the adapter registry
@@ -28,6 +27,7 @@ pub mod follow;
 pub mod metrics;
 pub mod model;
 pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail + resume)
+pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
 // The intended surface for a library consumer. [`parse_session`] is THE entry point: it
@@ -35,8 +35,7 @@ pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail
 // tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
 // is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
-pub use attachment::Transcript;
-pub use engine::cache::{SessionCache, SessionSource};
+pub use engine::cache::SessionCache;
 pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,
@@ -48,3 +47,4 @@ pub use model::{
     AgentId, AgentStatus, Attachment, AttachmentContent, Block, Hunk, LoadedAttachment, SubAgent,
     SubAgentMeta,
 };
+pub use transcript::Transcript;
