@@ -23,14 +23,21 @@ pub struct Candidate {
     /// The transcript file's last-modified time — the recency key the picker sorts by
     /// (most-recent first, after `cwd_affinity`).
     pub mtime: SystemTime,
-    /// A short, human-ish project label for the picker row — the leaf segment of the
-    /// session's directory (e.g. `claude-replay`), not a full path.
+    /// Which codebase/directory the session was working in, as a short human-recognizable
+    /// label — the **leaf name of the session's working directory**, derived from the cwd the
+    /// transcript recorded (a session under `/Users/you/code/knack` → `"knack"`). It groups
+    /// and labels rows in the picker instead of showing an opaque id or a long path. Not a
+    /// path, and not guaranteed unique (two dirs can share a leaf name).
     pub project: String,
-    /// A one-line preview: the session's first genuine user message, whitespace-compacted and
-    /// truncated (host-context / boilerplate messages skipped). Empty when none was found.
+    /// A preview of *what the session was about*, so you can recognise it at a glance: its
+    /// **first genuine user prompt**, whitespace-collapsed and truncated to ~one line (e.g.
+    /// `"add a --width flag to the CLI"`). Host-context / boilerplate messages are skipped;
+    /// empty when the session has no user prompt yet.
     pub snippet: String,
-    /// `true` when this session's project is the **current working directory's** project (an
-    /// exact cwd match) — the picker ranks these ahead of the rest.
+    /// Whether this session belongs to the directory you're launching from **right now** —
+    /// `true` iff its `project` matches the current working directory's. It's purely a
+    /// **ranking hint**: the picker lists affinity sessions first, so "the sessions for *this*
+    /// repo" float to the top, above everything else sorted by recency.
     pub cwd_affinity: bool,
     /// Which agent wrote this transcript (Claude / Codex) — shown as a badge and used to
     /// dispatch to the right parser.
