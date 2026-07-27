@@ -15,6 +15,7 @@ use crate::Agent;
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::collections::HashSet;
 
 /// Parse Claude's `toolUseResult.status` / `<task-notification>` `<status>` string into the
@@ -407,16 +408,11 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 /// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
 /// resolve against the same session `subagents/` dir.
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    use std::io::BufRead;
-    let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
-    // tell a genuine orphan tool_result from one whose tool_use appears later.
-    let tool_ids = scan_join_ids(open()?.lines().map_while(|r| r.ok()));
-    // Pass 2: stream through the engine, one line resident.
+    // Stream through the engine in a single pass, one line resident.
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut cwd = String::new();
     parse_stream(
-        open()?,
-        tool_ids,
+        reader,
         &CLAUDE_SHAPING,
         |line, out| decode_line(line, &mut cwd, out),
         |_| {}, // blocks only — this path doesn't need metrics
@@ -488,23 +484,6 @@ fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<
         None if desc > 0.0 => Some(desc),
         None => None,
     }
-}
-
-/// Pass 1: the set of every `tool_use` id in the transcript.
-pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    crate::engine::replay::scan_ids(lines, |v, ids| {
-        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
-                for blk in arr {
-                    if blk.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                        if let Some(id) = blk.get("id").and_then(|s| s.as_str()) {
-                            ids.insert(id.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    })
 }
 
 /// Fill a `tool_use` block's result fields (output / diff line numbers / read
@@ -819,16 +798,13 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
     finish_turns: claude_finish,
 };
 
-/// Pass 2: build blocks in order, streaming one line at a time. Nothing is dropped
+/// Build blocks in order, streaming one line at a time. Nothing is dropped
 /// or truncated. A `tool_use` is emitted immediately with an empty result; its
 /// `tool_result` **back-patches** the already-emitted block in place (via
-/// `tool_slot`: id → block index). Transcripts are **not** strictly ordered — a
-/// result can precede its tool_use (compaction / sidechain reordering) — so a
-/// result whose tool_use we haven't emitted yet is held in `pending` and applied
-/// when that tool_use arrives (its id is in `tool_ids`); only a result whose id is
-/// in **no** tool_use is a genuine orphan, emitted inline. This reproduces the old
-/// two-pass semantics exactly while keeping at most one line's `Value` live.
-/// `_args` is unused (fold flags are resolved in `view`).
+/// `tool_slot`: id → block index). A result whose tool_use hasn't been seen yet is a
+/// genuine orphan, emitted inline (forward-references — a result physically before its
+/// own tool_use — do not occur in real transcripts: 0/209 scanned). Keeps at most one
+/// line's `Value` live. `_args` is unused (fold flags are resolved in `view`).
 /// `user_times` is filled with one entry per emitted **user turn** (`UserText` /
 /// `Command`), in order: the epoch-seconds of the event that produced it (`None`
 /// when unparsable). Turn grouping never absorbs or reorders user blocks, so the
@@ -841,7 +817,6 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
 #[cfg(test)]
 pub(crate) fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    tool_ids: &HashSet<String>,
     user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
@@ -851,8 +826,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     let mut stamped = 0usize;
     // tool_use id -> index of its ToolUse block in `out`, for result back-patching.
     let mut tool_slot: HashMap<String, BlockIndex> = HashMap::new();
-    // Results seen before their tool_use (id is in `tool_ids`), awaiting it.
-    let mut pending: HashMap<String, (String, Value)> = HashMap::new();
     // The session's cwd (from the transcript) — tool targets are shown relative to
     // it. CC records it on every event, so it's set from the first line, before any
     // tool_use; fall back to "" (absolute paths) if a tool_use somehow precedes it.
@@ -997,10 +970,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                             if !id.is_empty() {
                                 tool_slot.insert(id.to_string(), idx);
-                                // A result that arrived before this tool_use? Apply it now.
-                                if let Some((txt, tur)) = pending.remove(id) {
-                                    apply_result(&mut out[idx], &txt, &tur);
-                                }
                             }
                         }
                         _ => {}
@@ -1062,11 +1031,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 if let Some(&idx) = tool_slot.get(tid) {
                                     // Its tool_use is already emitted — back-patch in place.
                                     apply_result(&mut out[idx], &txt, &tur);
-                                } else if tool_ids.contains(tid) {
-                                    // Its tool_use appears later — hold until then (last wins).
-                                    pending.insert(tid.to_string(), (txt, tur.clone()));
                                 } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
-                                    // No tool_use anywhere — a genuine orphan, shown inline.
+                                    // No tool_use seen yet — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
                                 }
                                 // A tool result may also carry image(s) (e.g. reading a
@@ -1251,7 +1217,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // Drop the `⧗ queued:` markers of prompts picked up immediately (no agent work
     // between submit and pickup) — their `❯` turn alone conveys them. Prompts still
     // queued at the end keep their marker (a live `-f` session's in-flight input).
-    // Safe here: `tool_slot`/`pending` are finished, and this runs before turn grouping
+    // Safe here: `tool_slot` is finished, and this runs before turn grouping
     // so surviving markers keep their positions.
     let _ = queue; // consumed via `suppress` during the loop; nothing to flush
     if !suppress.is_empty() {
@@ -2030,27 +1996,29 @@ mod tests {
         );
     }
 
-    /// Transcripts are NOT strictly ordered: a `tool_result` can appear *before*
-    /// its `tool_use` (compaction / sidechain reordering — seen in real 78/298 MB
-    /// sessions). The streaming parse must still join them (via the tool_use id
-    /// pre-scan + a pending buffer), or the Edit loses its structuredPatch line
-    /// numbers and a Read loses its content.
+    /// A synthetic reversed pair — a `tool_result` physically *before* its own `tool_use` —
+    /// does NOT join under the single-pass fold: forward-references do not occur in real
+    /// transcripts (0/209 scanned), so the not-yet-seen result renders as an inline orphan and
+    /// the later `tool_use` is emitted result-less.
     #[test]
-    fn result_before_tool_use_still_joins() {
+    fn result_before_tool_use_renders_as_orphan() {
         let jsonl = r#"
-{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /x.rs has been updated successfully."}]}}
+{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"reversed result text"}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 "#;
         let blocks = parse(jsonl);
-        // The out-of-order result joined its Edit — no stray orphan block.
-        assert_eq!(kinds(&blocks), vec!["edit"], "{blocks:?}");
-        let Block::ToolUse { patch, .. } = &blocks[0] else {
+        // The reversed result renders inline as an orphan; the Edit follows, result-less.
+        assert_eq!(kinds(&blocks), vec!["tool_result", "edit"], "{blocks:?}");
+        let Block::ToolResult(t) = &blocks[0] else {
+            panic!("expected orphan ToolResult");
+        };
+        assert_eq!(t, "reversed result text");
+        let Block::ToolUse { patch, .. } = &blocks[1] else {
             panic!("expected Edit ToolUse");
         };
-        assert_eq!(
-            patch.as_ref().expect("patch joined from earlier result")[0].new_start,
-            88,
-            "structuredPatch line number lost — result-before-use not joined"
+        assert!(
+            patch.is_none(),
+            "reversed pair must not join — the Edit has no patch"
         );
     }
 
@@ -2070,7 +2038,7 @@ mod tests {
         assert_eq!(t, "orphan output");
     }
 
-    /// `parse_file` (streaming file read, two passes) must produce exactly what
+    /// `parse_file` (streaming single-pass file read) must produce exactly what
     /// `parse(&str)` produces for the same content.
     #[test]
     fn parse_file_matches_parse_str() {
@@ -2099,9 +2067,8 @@ mod tests {
     #[test]
     fn replay_tokenize_matches_parse_main() {
         fn assert_equiv(jsonl: &str) {
-            let tool_ids = scan_join_ids(jsonl.lines());
             let mut ut_main = Vec::new();
-            let via_main = parse_main(jsonl.lines(), &tool_ids, &mut ut_main);
+            let via_main = parse_main(jsonl.lines(), &mut ut_main);
             let mut ut_engine = Vec::new();
             let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine, &CLAUDE_SHAPING);
             assert_eq!(
@@ -2237,26 +2204,17 @@ mod tests {
     /// M8 keystone: folding messages in two pieces (`apply(a); apply(b)`) equals one
     /// `apply(all)` for every split point — same blocks, same `user_times`. This is the
     /// property that makes the streaming (M9) and incremental (M11) paths safe. Covers the
-    /// state that must survive a split: the tool back-patch (`tool_slot`/`pending`), the
+    /// state that must survive a split: the tool back-patch (`tool_slot`), the
     /// queue lifecycle, the thinking clock (`trigger_ts`), and stamping (`pending_ts`).
     #[test]
     fn replayer_split_apply_is_identical() {
-        fn ids(msgs: &[Message]) -> std::collections::HashSet<String> {
-            msgs.iter()
-                .filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                })
-                .collect()
-        }
         fn assert_split(jsonl: &str) {
             let msgs = tokenize(jsonl.lines());
-            let ti = ids(&msgs);
-            let mut whole = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+            let mut whole = Replayer::new(&CLAUDE_SHAPING);
             whole.apply(&msgs);
             let whole = whole.into_blocks();
             for k in 0..=msgs.len() {
-                let mut r = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+                let mut r = Replayer::new(&CLAUDE_SHAPING);
                 r.apply(&msgs[..k]);
                 r.apply(&msgs[k..]);
                 let split = r.into_blocks();
@@ -2306,23 +2264,19 @@ mod tests {
     }
 
     /// M11 keystone: driving the `Replayer` **one line at a time** (a live tail: `decode` the
-    /// line, pre-scan its ids via `extend_tool_ids`, `apply`, `snapshot`) yields byte-identical
-    /// blocks + user_times to a full batch `replay(tokenize(whole))` — at EVERY prefix, not
-    /// just the end. This is the incremental-fold guarantee the live follower (M11 routing)
-    /// stands on; a rewritten tail is handled by the follower rebuilding from scratch (which
-    /// is trivially the full replay of the new content).
+    /// line, `apply`, `snapshot`) yields byte-identical blocks + user_times to a full batch
+    /// `replay(tokenize(whole))` — at EVERY prefix, not just the end. This is the
+    /// incremental-fold guarantee the live follower (M11 routing) stands on; a rewritten tail
+    /// is handled by the follower rebuilding from scratch (which is trivially the full replay
+    /// of the new content).
     #[test]
     fn incremental_line_by_line_matches_full_replay() {
         fn assert_follow(lines: &[&str]) {
             let mut cwd = String::new();
-            let mut r = Replayer::new(&CLAUDE_SHAPING, std::collections::HashSet::new());
+            let mut r = Replayer::new(&CLAUDE_SHAPING);
             for (i, line) in lines.iter().enumerate() {
                 let mut delta = Vec::new();
                 decode_line(line, &mut cwd, &mut delta);
-                r.extend_tool_ids(delta.iter().filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                }));
                 r.apply(&delta);
                 // Snapshot after each line must match a full replay of the lines so far.
                 let (inc_blocks, inc_ut) = r.snapshot();

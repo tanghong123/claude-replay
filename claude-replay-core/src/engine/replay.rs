@@ -13,40 +13,21 @@ use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// **Pass-1 id pre-scan.** Collect the tool-call ids that a later result WILL be joined onto,
-/// so a result whose `tool_use` appears further down the stream is held pending rather than
-/// mis-emitted as an orphan (the streaming fold matches a whole-file batch this way). The
-/// read/trim/parse/skip-non-JSON skeleton is shared; each agent supplies `extract`, which pulls
-/// this line's join ids into the set (Claude reads `assistant`→`tool_use.id`; Codex reads
-/// `response_item`→`call_id`).
-pub(crate) fn scan_ids<S: AsRef<str>>(
-    lines: impl Iterator<Item = S>,
-    extract: impl Fn(&Value, &mut HashSet<String>),
-) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(line.as_ref().trim()) {
-            extract(&v, &mut ids);
-        }
-    }
-    ids
-}
-
 /// **The streaming L2 driver** (M9). Feed a [`Replayer`] one line's messages at a time —
 /// `decode` (the agent's per-line L1, capturing its `cwd`) turns each line into a few
 /// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak
-/// memory is one line + the block buffer, matching the retired `parse_main`. `tool_ids` is
-/// the pass-1 id pre-scan; `reader` is a fresh pass-2 read. This equals `replay(tokenize(x))`
+/// memory is one line + the block buffer, matching the retired `parse_main`. Single pass —
+/// a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an orphan
+/// (forward-references do not occur in real transcripts). This equals `replay(tokenize(x))`
 /// over the same input (proven by `parse_file_matches_parse_str` + the golden corpus).
 pub(crate) fn parse_stream<R: std::io::BufRead>(
     reader: R,
-    tool_ids: HashSet<String>,
     shaping: &Shaping,
     mut decode: impl FnMut(&str, &mut Vec<Message>),
     mut fold_metrics: impl FnMut(&Value),
     user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> std::io::Result<Vec<Block>> {
-    let mut r = Replayer::new(shaping, tool_ids);
+    let mut r = Replayer::new(shaping);
     let mut buf: Vec<Message> = Vec::new();
     for line in reader.lines() {
         let line = line?;
@@ -123,17 +104,16 @@ pub(crate) struct Shaping {
 /// turn `finish`). Variants an agent doesn't produce (e.g. Codex emits no `QueueOp`/
 /// `Completion`/`SkillBody`) simply never reach their arms.
 ///
-/// `tool_ids` is the L1 id pre-scan (so an orphan result is told from a not-yet-seen one);
-/// the caller supplies it — from the whole message log for a batch, or a streaming pre-scan.
+/// Single pass: a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an
+/// orphan (forward-references — a result physically before its own tool_use — do not occur in
+/// real transcripts: 0/209 scanned).
 pub(crate) struct Replayer<'a> {
     shaping: &'a Shaping,
-    tool_ids: HashSet<String>,
     out: Vec<Block>,
     user_times: Vec<Option<EpochSeconds>>,
     pending_ts: Option<EpochSeconds>,
     stamped: usize,
     tool_slot: HashMap<String, BlockIndex>,
-    pending: HashMap<String, (String, Value)>,
     trigger_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     content_seq: usize,
@@ -143,16 +123,14 @@ pub(crate) struct Replayer<'a> {
 }
 
 impl<'a> Replayer<'a> {
-    pub(crate) fn new(shaping: &'a Shaping, tool_ids: HashSet<String>) -> Self {
+    pub(crate) fn new(shaping: &'a Shaping) -> Self {
         Replayer {
             shaping,
-            tool_ids,
             out: Vec::new(),
             user_times: Vec::new(),
             pending_ts: None,
             stamped: 0,
             tool_slot: HashMap::new(),
-            pending: HashMap::new(),
             trigger_ts: None,
             queue: Vec::new(),
             content_seq: 0,
@@ -214,9 +192,6 @@ impl<'a> Replayer<'a> {
                     }
                     if !id.is_empty() {
                         self.tool_slot.insert(id.clone(), idx);
-                        if let Some((txt, tur)) = self.pending.remove(id) {
-                            join_result(&mut self.out[idx], &txt, &tur);
-                        }
                     }
                 }
                 Message::ToolResult {
@@ -226,9 +201,6 @@ impl<'a> Replayer<'a> {
                 } => {
                     if let Some(&idx) = self.tool_slot.get(tool_use_id) {
                         join_result(&mut self.out[idx], text, tur);
-                    } else if self.tool_ids.contains(tool_use_id) {
-                        self.pending
-                            .insert(tool_use_id.clone(), (text.clone(), tur.clone()));
                     } else if !text.trim().is_empty() && keep_orphan(text) {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
@@ -378,16 +350,6 @@ impl<'a> Replayer<'a> {
         let blocks = (self.shaping.finish_turns)(out);
         (blocks, user_times)
     }
-
-    /// Merge more tool_use join ids into the pre-scan set (M11): a live follower pre-scans
-    /// each *delta* for its ids and extends before applying, so a result whose tool_use is
-    /// later in the SAME delta is held pending (not mis-emitted as an orphan) — exactly as a
-    /// batch pre-scan would. Across polls, earlier deltas' ids are already accumulated; the
-    /// only remaining reorder (a result physically before its tool_use) is a rewritten tail,
-    /// which the follower handles by rebuilding from scratch (a `reset`).
-    pub(crate) fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
-        self.tool_ids.extend(ids);
-    }
 }
 
 /// Batch L2 fold — `Replayer::new(); apply(all); into_blocks()`. For Claude,
@@ -399,14 +361,7 @@ pub(crate) fn replay(
     user_times: &mut Vec<Option<f64>>,
     shaping: &Shaping,
 ) -> Vec<Block> {
-    let tool_ids: HashSet<String> = messages
-        .iter()
-        .filter_map(|m| match m {
-            Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut r = Replayer::new(shaping, tool_ids);
+    let mut r = Replayer::new(shaping);
     r.apply(messages);
     let (blocks, ut) = r.into_blocks();
     user_times.extend(ut);

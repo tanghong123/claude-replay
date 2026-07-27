@@ -33,7 +33,7 @@ impl FollowParser {
         Self {
             adapter,
             tail: TailReader::open_at_start(path),
-            replayer: Replayer::new(adapter.shaping(), std::collections::HashSet::new()),
+            replayer: Replayer::new(adapter.shaping()),
             cwd: String::new(),
             metrics: adapter.metrics_acc(),
         }
@@ -53,7 +53,7 @@ impl FollowParser {
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
             // TailReader re-read from 0, so `p.lines` is the whole new file.
-            self.replayer = Replayer::new(self.adapter.shaping(), std::collections::HashSet::new());
+            self.replayer = Replayer::new(self.adapter.shaping());
             self.cwd.clear();
             self.metrics = self.adapter.metrics_acc();
         }
@@ -61,13 +61,6 @@ impl FollowParser {
         for line in &p.lines {
             delta.clear();
             self.adapter.decode_line(line, &mut self.cwd, &mut delta);
-            // Pre-scan this delta's tool ids so a result whose tool_use is later in the same
-            // delta is held pending, not mis-emitted as an orphan (matches a batch pre-scan).
-            self.replayer
-                .extend_tool_ids(delta.iter().filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                }));
             self.replayer.apply(&delta);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                 self.metrics.push(&v);

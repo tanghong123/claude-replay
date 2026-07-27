@@ -5,7 +5,6 @@ use crate::model::Block;
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
@@ -175,27 +174,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
     }
 }
 
-pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    crate::engine::replay::scan_ids(lines, |value, out| {
-        if value.get("type").and_then(Value::as_str) != Some("response_item") {
-            return;
-        }
-        let kind = value.pointer("/payload/type").and_then(Value::as_str);
-        if matches!(kind, Some("function_call" | "custom_tool_call")) {
-            if let Some(id) = value.pointer("/payload/call_id").and_then(Value::as_str) {
-                out.insert(id.to_string());
-            }
-        }
-    })
-}
-
 /// **Frozen golden reference** (M9): production parses Codex through the streaming engine;
 /// this pre-engine parser is retained only to pin the shared `replay` bit-identical in
 /// `codex_replay_matches_parse_lines`.
 #[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    call_ids: &HashSet<String>,
     user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
@@ -204,7 +188,6 @@ fn parse_lines<S: AsRef<str>>(
     let mut pending_ts: Option<crate::model::EpochSeconds> = None;
     let mut stamped = 0usize;
     let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
-    let mut pending: HashMap<String, String> = HashMap::new();
     let mut cwd = String::new();
     let mut trigger_ts = None;
 
@@ -287,9 +270,6 @@ fn parse_lines<S: AsRef<str>>(
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
                             slots.insert(call_id.to_string(), index);
-                            if let Some(output) = pending.remove(call_id) {
-                                apply_output(&mut out[index], output);
-                            }
                         }
                     }
                     Some("function_call_output" | "custom_tool_call_output") => {
@@ -300,8 +280,6 @@ fn parse_lines<S: AsRef<str>>(
                         let output = output_text(payload.get("output").unwrap_or(&Value::Null));
                         if let Some(index) = slots.get(call_id).copied() {
                             apply_output(&mut out[index], output);
-                        } else if call_ids.contains(call_id) {
-                            pending.insert(call_id.to_string(), output);
                         } else if !output.trim().is_empty() {
                             out.push(Block::ToolResult(output));
                         }
@@ -544,10 +522,16 @@ not json
         assert!(blocks.iter().any(
             |block| matches!(block, Block::Thinking { text, .. } if text == "Inspect parser")
         ));
+        // `call-1`'s output precedes its `function_call` — a synthetic reversed pair.
+        // Forward-references do not occur in real transcripts (0/209 scanned), so the
+        // single-pass fold renders the not-yet-joined output as an inline orphan and the
+        // Bash tool_use stays result-less.
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolResult(text) if text == "ok")));
         assert!(blocks.iter().any(|block| matches!(
             block,
-            Block::ToolUse { name, output: Some(output), .. }
-                if name == "Bash" && output == "ok"
+            Block::ToolUse { name, output: None, .. } if name == "Bash"
         )));
         assert_eq!(
             blocks
@@ -588,8 +572,7 @@ not json
     fn codex_replay_matches_parse_lines() {
         fn equiv(jsonl: &str) {
             let mut ut_lines = Vec::new();
-            let call_ids = scan_join_ids(jsonl.lines());
-            let via_lines = parse_lines(jsonl.lines(), &call_ids, &mut ut_lines);
+            let via_lines = parse_lines(jsonl.lines(), &mut ut_lines);
             let mut ut_replay = Vec::new();
             let via_replay = crate::engine::replay::replay(
                 &tokenize(jsonl.lines()),
