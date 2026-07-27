@@ -168,7 +168,7 @@ mod tests {
                 kind: AttachmentKind::Image,
                 name: "img.png".into(),
                 path: None,
-                content: None,
+                content: crate::model::AttachmentContent::None,
             }),
             Block::UserText("again".into()),
         ];

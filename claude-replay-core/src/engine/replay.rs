@@ -34,12 +34,9 @@ pub(crate) fn parse_path_timed_for(
     Vec<Option<EpochSeconds>>,
     crate::metrics::Metrics,
 )> {
-    use std::io::BufRead;
     let mut b = crate::engine::builder::SessionBuilder::new(agent);
-    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    for line in reader.lines() {
-        b.advance(std::slice::from_ref(&line?)); // one line resident
-    }
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    b.advance_reader(&mut reader)?; // one line resident
     Ok(b.fold())
 }
 

@@ -410,12 +410,9 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     // Stream through the shared incremental fold in a single pass, one line resident, and keep
     // only the blocks (this sub-agent path doesn't need times or metrics).
-    use std::io::BufRead;
     let mut b = crate::engine::builder::SessionBuilder::new(Agent::Claude);
-    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    for line in reader.lines() {
-        b.advance(std::slice::from_ref(&line?));
-    }
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    b.advance_reader(&mut reader)?;
     Ok(b.fold().0)
 }
 
@@ -1234,18 +1231,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
 /// Build an [`Attachment`] from a `type:"attachment"` event's inner `attachment`
 /// object, for the types that carry a file/plan worth surfacing. Returns `None` for
 /// harness bookkeeping (listings, reminders, deltas, plan-mode toggles) and for
-/// `queued_command` (rendered as a turn elsewhere). `content: Some` ⇒ downloadable
-/// (embedded bytes); `content: None` ⇒ path-only (reveal in file manager).
+/// `queued_command` (rendered as a turn elsewhere). Content-bearing types (`file`/`plan`) get
+/// a [`Deferred`](AttachmentContent::Deferred) locator — the **bytes are never built here**;
+/// [`load_attachment_from_event`] re-extracts them on demand. Path-only types
+/// (`edited_text_file`/`compact_file_reference`) get [`AttachmentContent::None`] (reveal). The
+/// `at`/`index` in `Deferred` are placeholders (0); `SessionBuilder::advance_at` stamps the
+/// real byte offset one level up (where it's known).
 fn attachment_from_event(a: &Value) -> Option<Attachment> {
     fn basename(p: &str) -> String {
         p.rsplit('/').next().unwrap_or(p).to_string()
     }
     let s = |k: &str| a.get(k).and_then(|x| x.as_str());
     match a.get("type").and_then(|t| t.as_str())? {
-        // Full attached-file bytes, embedded → downloadable.
+        // Full attached-file bytes, embedded → downloadable (loaded on demand).
         "file" => {
             let f = a.get("content")?.get("file")?;
-            let content = f.get("content").and_then(|c| c.as_str())?;
+            f.get("content").and_then(|c| c.as_str())?; // require content, but never build it
             let path = f
                 .get("filePath")
                 .and_then(|p| p.as_str())
@@ -1257,18 +1258,18 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::File,
                 name,
                 path: path.map(str::to_string),
-                content: Some(AttachmentContent::Text(content.to_string())),
+                content: AttachmentContent::Deferred { at: 0, index: 0 },
             })
         }
         // Full plan markdown, embedded and not shown inline anywhere → downloadable.
         "plan_file_reference" => {
-            let content = s("planContent")?;
+            s("planContent")?; // require plan content, but never build it
             let path = s("planFilePath");
             Some(Attachment {
                 kind: AttachmentKind::Plan,
                 name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
                 path: path.map(str::to_string),
-                content: Some(AttachmentContent::Text(content.to_string())),
+                content: AttachmentContent::Deferred { at: 0, index: 0 },
             })
         }
         // An in-editor file — its inline `snippet` is truncated, so reveal the real file.
@@ -1278,7 +1279,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::Edited,
                 name: basename(path),
                 path: Some(path.to_string()),
-                content: None,
+                content: AttachmentContent::None,
             })
         }
         // A bare pointer to a file that was in context → reveal.
@@ -1291,9 +1292,25 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::Ref,
                 name,
                 path: Some(path.to_string()),
-                content: None,
+                content: AttachmentContent::None,
             })
         }
+        _ => None,
+    }
+}
+
+/// The load-time twin of [`attachment_from_event`]: re-extract the embedded **bytes** for a
+/// content-bearing `attachment` event (`file` / `plan`), as a [`LoadedAttachment`]. Returns
+/// `None` for path-only / bookkeeping types (they carry no bytes). Kept structurally parallel
+/// to [`attachment_from_event`] so the two never diverge on which types are loadable.
+fn load_attachment_from_event(a: &Value) -> Option<LoadedAttachment> {
+    let s = |k: &str| a.get(k).and_then(|x| x.as_str());
+    match a.get("type").and_then(|t| t.as_str())? {
+        "file" => {
+            let content = a.get("content")?.get("file")?.get("content")?.as_str()?;
+            Some(LoadedAttachment::Text(content.to_string()))
+        }
+        "plan_file_reference" => Some(LoadedAttachment::Text(s("planContent")?.to_string())),
         _ => None,
     }
 }
@@ -1303,19 +1320,8 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
 /// `attachment` events — they ride inside message/tool-result content — so this is a
 /// separate path from [`attachment_from_event`]. `None` for non-image / non-base64.
 fn image_attachment(blk: &Value) -> Option<Attachment> {
-    if blk.get("type").and_then(|t| t.as_str()) != Some("image") {
-        return None;
-    }
-    let src = blk.get("source")?;
-    if src.get("type").and_then(|t| t.as_str()) != Some("base64") {
-        return None;
-    }
-    let b64 = src.get("data").and_then(|d| d.as_str())?.to_string();
-    let mime = src
-        .get("media_type")
-        .and_then(|m| m.as_str())
-        .unwrap_or("image/png")
-        .to_string();
+    let src = image_source(blk)?;
+    let mime = image_mime(src);
     let ext = mime
         .rsplit('/')
         .next()
@@ -1325,8 +1331,101 @@ fn image_attachment(blk: &Value) -> Option<Attachment> {
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
-        content: Some(AttachmentContent::Base64 { mime, b64 }),
+        // The base64 bytes are NEVER built here — `load_image_attachment` re-extracts them on
+        // demand. `at`/`index` are placeholders; `advance_at` stamps the real byte offset.
+        content: AttachmentContent::Deferred { at: 0, index: 0 },
     })
+}
+
+/// The `{type:"base64",…}` source of an `image` content block, or `None` if `blk` isn't a
+/// base64 image. The shared shape check for both the metadata ([`image_attachment`]) and the
+/// bytes ([`load_image_attachment`]) paths.
+fn image_source(blk: &Value) -> Option<&Value> {
+    if blk.get("type").and_then(|t| t.as_str()) != Some("image") {
+        return None;
+    }
+    let src = blk.get("source")?;
+    (src.get("type").and_then(|t| t.as_str()) == Some("base64")).then_some(src)
+}
+
+fn image_mime(src: &Value) -> String {
+    src.get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("image/png")
+        .to_string()
+}
+
+/// The load-time twin of [`image_attachment`]: re-extract the embedded base64 **bytes** for an
+/// `image` content block as a [`LoadedAttachment`]. `None` for non-image / non-base64 blocks.
+fn load_image_attachment(blk: &Value) -> Option<LoadedAttachment> {
+    let src = image_source(blk)?;
+    let b64 = src.get("data").and_then(|d| d.as_str())?.to_string();
+    Some(LoadedAttachment::Base64 {
+        mime: image_mime(src),
+        b64,
+    })
+}
+
+/// Load the `index`-th content-bearing attachment embedded on ONE raw transcript `line` — the
+/// on-demand byte-fetch backing [`crate::Transcript::load_attachment`]. Walks the line's JSON
+/// in the SAME order [`decode_line`] emits its attachments (user-message images, then each
+/// tool-result's images; or the sole `attachment`-event file/plan), so `index` lines up with
+/// the ordinal `advance_at` stamped into the `Deferred` locator. Only one [`LoadedAttachment`]
+/// is alive at any instant (each non-matching candidate is built then dropped as we count),
+/// keeping the load O(1) in memory.
+pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAttachment> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    // Count content-bearing attachments in document order; return the `index`-th one. Building
+    // each candidate transiently (then dropping non-matches) keeps a single one resident.
+    let mut seen = 0usize;
+    let mut take = |la: Option<LoadedAttachment>| -> Option<Option<LoadedAttachment>> {
+        // Outer Some ⇒ "stop, this is our answer"; inner Option carries the (matched) content.
+        match la {
+            Some(la) => {
+                if seen == index {
+                    Some(Some(la))
+                } else {
+                    seen += 1;
+                    None // drop this candidate; keep counting
+                }
+            }
+            None => None,
+        }
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("user") => {
+            let content = v.pointer("/message/content").and_then(|c| c.as_array())?;
+            for blk in content {
+                match blk.get("type").and_then(|t| t.as_str()) {
+                    Some("image") => {
+                        if let Some(hit) = take(load_image_attachment(blk)) {
+                            return hit;
+                        }
+                    }
+                    Some("tool_result") => {
+                        if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
+                            for item in items {
+                                if let Some(hit) = take(load_image_attachment(item)) {
+                                    return hit;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        Some("attachment") => v
+            .get("attachment")
+            .and_then(load_attachment_from_event)
+            .filter(|_| index == 0),
+        _ => None,
+    }
 }
 
 fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
@@ -1565,9 +1664,10 @@ mod tests {
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:
-    /// `file`/`plan` carry embedded text (downloadable → `content: Some`), while
+    /// `file`/`plan` carry embedded text (downloadable → a `Deferred` locator), while
     /// `edited_text_file`/`compact_file_reference` are path-only (reveal → `content:
-    /// None`). Bookkeeping attachments (e.g. `skill_listing`) stay dropped.
+    /// None`). Bookkeeping attachments (e.g. `skill_listing`) stay dropped. The bytes are
+    /// never resident — only a locator — so we re-load them via `nth_loaded_attachment`.
     #[test]
     fn attachment_events_surface_with_download_vs_reveal() {
         let jsonl = r##"
@@ -1584,7 +1684,8 @@ mod tests {
                 Block::Attachment(a) => Some((
                     a.kind.as_str(),
                     a.name.as_str(),
-                    a.content.is_some(),
+                    // Downloadable ⇒ a `Deferred` locator; path-only ⇒ `None`.
+                    matches!(a.content, AttachmentContent::Deferred { .. }),
                     a.path.as_deref(),
                 )),
                 _ => None,
@@ -1600,15 +1701,16 @@ mod tests {
             ],
             "{blocks:?}"
         );
-        // The embedded `file` content is the real bytes, ready to download.
-        let file_text = blocks.iter().find_map(|b| match b {
-            Block::Attachment(a) if a.kind == AttachmentKind::File => a.content.as_ref(),
-            _ => None,
-        });
-        assert!(matches!(
-            file_text,
-            Some(AttachmentContent::Text(t)) if t == "# Backlog\nitem"
-        ));
+        // No bytes are held resident — the block carries only a locator. Re-load the `file`
+        // body on demand from its own transcript line (index 0).
+        let file_line = jsonl
+            .lines()
+            .find(|l| l.contains("\"type\":\"file\""))
+            .unwrap();
+        assert_eq!(
+            nth_loaded_attachment(file_line, 0),
+            Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
     }
 
     /// Base64 images surface as downloadable `Block::Attachment`s from both paths: a
@@ -1623,22 +1725,38 @@ mod tests {
 {"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}}]}]}}
 "##;
         let blocks = parse(jsonl);
-        let imgs: Vec<(&str, &str)> = blocks
+        // The blocks carry only locators (name + a `Deferred` marker) — no base64 resident.
+        let imgs: Vec<(&str, bool)> = blocks
             .iter()
             .filter_map(|b| match b {
-                Block::Attachment(a) if a.kind == AttachmentKind::Image => match &a.content {
-                    Some(AttachmentContent::Base64 { mime, .. }) => {
-                        Some((a.name.as_str(), mime.as_str()))
-                    }
-                    _ => None,
-                },
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => Some((
+                    a.name.as_str(),
+                    matches!(a.content, AttachmentContent::Deferred { .. }),
+                )),
                 _ => None,
             })
             .collect();
         assert_eq!(
             imgs,
-            vec![("image.png", "image/png"), ("image.jpeg", "image/jpeg")],
+            vec![("image.png", true), ("image.jpeg", true)],
             "{blocks:?}"
+        );
+        // The mime/bytes are re-loaded on demand from each image's own line (index 0).
+        let prompt_line = jsonl.lines().find(|l| l.contains("look at this")).unwrap();
+        assert_eq!(
+            nth_loaded_attachment(prompt_line, 0),
+            Some(LoadedAttachment::Base64 {
+                mime: "image/png".into(),
+                b64: "Zm9v".into()
+            })
+        );
+        let result_line = jsonl.lines().find(|l| l.contains("tool_result")).unwrap();
+        assert_eq!(
+            nth_loaded_attachment(result_line, 0),
+            Some(LoadedAttachment::Base64 {
+                mime: "image/jpeg".into(),
+                b64: "YmFy".into()
+            })
         );
     }
 

@@ -3,9 +3,10 @@
 
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
-use crate::model::{Attachment, AttachmentContent, Block};
+use crate::model::{Attachment, AttachmentContent, Block, LoadedAttachment};
 use crate::tui::picker::Picker;
 use crate::tui::{render, theme, wrap};
+use crate::Transcript;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -278,6 +279,9 @@ pub struct View {
     cache_width: Option<u16>, // width the cache was built at; a change invalidates it
     cwd: Option<PathBuf>,     // session working dir — reverses a header's relativized path
     flash: Option<String>,    // transient status (e.g. "Saved to …"); cleared on next input
+    // The transcript these blocks were parsed from — the source for loading a `Deferred`
+    // attachment's bytes on demand (this view holds only locators, never the content).
+    source: Option<Transcript>,
 }
 
 impl View {
@@ -321,6 +325,7 @@ impl View {
             cache_width: None,
             cwd: None,
             flash: None,
+            source: None,
         }
     }
 
@@ -408,6 +413,11 @@ impl View {
     /// path click still resolves against the real working dir.
     pub fn cwd_ref(&self) -> Option<&PathBuf> {
         self.cwd.as_ref()
+    }
+    /// Record the transcript these blocks came from — the source for loading a `Deferred`
+    /// attachment's bytes on demand when the reader downloads one.
+    pub fn set_source(&mut self, source: Option<Transcript>) {
+        self.source = source;
     }
 
     /// Mark that this viewer was reached through the session picker, so `Esc`
@@ -743,8 +753,8 @@ impl View {
             }
             Some(Block::Attachment(a)) => {
                 let a = a.clone();
-                if a.content.is_some() {
-                    self.flash = Some(match save_attachment(&a) {
+                if matches!(a.content, AttachmentContent::Deferred { .. }) {
+                    self.flash = Some(match save_attachment(&a, self.source.as_ref()) {
                         Ok(p) => format!("Saved {}", pretty_home(&p)),
                         Err(e) => format!("Download failed: {e}"),
                     });
@@ -1360,26 +1370,53 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
 }
 
 /// Save an embedded attachment to the user's Downloads folder, never overwriting (a
-/// numeric suffix is added on collision). Text is written verbatim; base64 (images) is
-/// decoded first. Returns the written path. Synchronous by design — payloads are small
-/// (see `DESIGN.md`).
-fn save_attachment(a: &Attachment) -> std::io::Result<PathBuf> {
-    write_attachment_to(&downloads_dir(), a)
+/// numeric suffix is added on collision). The bytes are loaded on demand from `source` (the
+/// transcript) — one attachment resident at a time — then written and dropped. Text is written
+/// verbatim; base64 (images) is decoded first. Returns the written path. Synchronous by design
+/// — payloads are small (see `DESIGN.md`).
+fn save_attachment(a: &Attachment, source: Option<&Transcript>) -> std::io::Result<PathBuf> {
+    write_attachment_to(&downloads_dir(), a, source)
 }
 
-/// The testable core of [`save_attachment`]: write `a`'s embedded bytes into `dir`.
-fn write_attachment_to(dir: &Path, a: &Attachment) -> std::io::Result<PathBuf> {
+/// The testable core of [`save_attachment`]: load `a`'s embedded bytes from `source` and write
+/// them into `dir`.
+fn write_attachment_to(
+    dir: &Path,
+    a: &Attachment,
+    source: Option<&Transcript>,
+) -> std::io::Result<PathBuf> {
     use std::io::{Error, ErrorKind, Write};
-    let bytes: Vec<u8> = match a.content.as_ref() {
-        Some(AttachmentContent::Text(t)) => t.clone().into_bytes(),
-        Some(AttachmentContent::Base64 { b64, .. }) => crate::diff::base64_decode(b64)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
-        None => return Err(Error::new(ErrorKind::InvalidInput, "nothing to download")),
+    let loaded = load_attachment_content(a, source)?;
+    let (bytes, mime): (Vec<u8>, Option<String>) = match loaded {
+        LoadedAttachment::Text(t) => (t.into_bytes(), None),
+        LoadedAttachment::Base64 { b64, mime } => (
+            crate::diff::base64_decode(&b64)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
+            Some(mime),
+        ),
     };
     std::fs::create_dir_all(dir)?;
-    let path = unique_path(dir, &download_filename(a));
+    let path = unique_path(dir, &download_filename(a, mime.as_deref()));
     std::fs::File::create(&path)?.write_all(&bytes)?;
     Ok(path)
+}
+
+/// Load a `Deferred` attachment's bytes from its transcript `source`, on demand. Errors if the
+/// attachment is path-only (nothing to download), the source is missing, or the locator is
+/// stale (the line no longer holds that content).
+fn load_attachment_content(
+    a: &Attachment,
+    source: Option<&Transcript>,
+) -> std::io::Result<LoadedAttachment> {
+    use std::io::{Error, ErrorKind};
+    let AttachmentContent::Deferred { at, index } = &a.content else {
+        return Err(Error::new(ErrorKind::InvalidInput, "nothing to download"));
+    };
+    let source =
+        source.ok_or_else(|| Error::new(ErrorKind::NotFound, "no transcript to load from"))?;
+    source
+        .load_attachment(*at, *index)?
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "attachment content not found"))
 }
 
 /// `~/Downloads` (via `$HOME`), falling back to the current directory.
@@ -1391,14 +1428,14 @@ fn downloads_dir() -> PathBuf {
 }
 
 /// The download filename for an attachment: the basename of its path/name, with an
-/// image extension appended from the MIME type when the name lacks one.
-fn download_filename(a: &Attachment) -> String {
+/// image extension appended from the loaded content's MIME type when the name lacks one.
+fn download_filename(a: &Attachment, mime: Option<&str>) -> String {
     let base = a.path.as_deref().unwrap_or(&a.name);
     let mut name = base.rsplit('/').next().unwrap_or(base).to_string();
     if name.is_empty() {
         name = "attachment".into();
     }
-    if let Some(AttachmentContent::Base64 { mime, .. }) = &a.content {
+    if let Some(mime) = mime {
         if !name.contains('.') {
             if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
                 name.push('.');
@@ -1994,7 +2031,7 @@ mod tests {
                 kind: crate::model::AttachmentKind::Ref,
                 name: "src/lib.rs".into(),
                 path: Some("/w/src/lib.rs".into()),
-                content: None,
+                content: AttachmentContent::None,
             }),
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
@@ -2313,47 +2350,65 @@ mod tests {
         assert!(footer.contains('q'), "hint run survives: {footer:?}");
     }
 
-    /// The download core writes embedded content into a target dir, decoding base64 and
-    /// never overwriting an existing file.
+    /// The download core loads embedded content on demand from the transcript source and writes
+    /// it into a target dir, decoding base64 and never overwriting an existing file. The blocks
+    /// carry only `Deferred` locators — the bytes come from `Transcript::load_attachment`.
     #[test]
     fn write_attachment_saves_text_image_and_avoids_overwrite() {
+        use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cr-attach-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
+        let uniq = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cr-attach-{}-{}", std::process::id(), uniq));
         let _ = std::fs::remove_dir_all(&dir);
 
+        // A real transcript: a `file` attachment on line 0, a base64 image on line 1.
+        let l0 = r#"{"type":"attachment","attachment":{"type":"file","filename":"/w/notes.md","displayPath":"notes.md","content":{"type":"text","file":{"filePath":"/w/notes.md","content":"hello"}}}}"#;
+        let l1 = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}"#;
+        let tpath = std::env::temp_dir().join(format!(
+            "cr-attach-src-{}-{}.jsonl",
+            std::process::id(),
+            uniq
+        ));
+        std::fs::File::create(&tpath)
+            .unwrap()
+            .write_all(format!("{l0}\n{l1}\n").as_bytes())
+            .unwrap();
+        let src = Transcript::open(crate::Agent::Claude, &tpath);
+
+        let off_img = (l0.len() + 1) as u64;
         let text = Attachment {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
-            content: Some(AttachmentContent::Text("hello".into())),
+            content: AttachmentContent::Deferred { at: 0, index: 0 },
         };
-        let p1 = write_attachment_to(&dir, &text).unwrap();
+        let p1 = write_attachment_to(&dir, &text, Some(&src)).unwrap();
         assert_eq!(p1.file_name().unwrap(), "notes.md");
         assert_eq!(std::fs::read_to_string(&p1).unwrap(), "hello");
         // A second save of the same name must not overwrite.
-        let p2 = write_attachment_to(&dir, &text).unwrap();
+        let p2 = write_attachment_to(&dir, &text, Some(&src)).unwrap();
         assert_eq!(p2.file_name().unwrap(), "notes (1).md");
 
-        // A base64 image decodes to bytes; the extension comes from the MIME type.
+        // A base64 image decodes to bytes; the extension comes from the loaded MIME type.
         let img = Attachment {
             kind: crate::model::AttachmentKind::Image,
             name: "shot".into(),
             path: None,
-            content: Some(AttachmentContent::Base64 {
-                mime: "image/png".into(),
-                b64: "Zm9v".into(), // "foo"
-            }),
+            content: AttachmentContent::Deferred {
+                at: off_img,
+                index: 0,
+            },
         };
-        let pi = write_attachment_to(&dir, &img).unwrap();
+        let pi = write_attachment_to(&dir, &img, Some(&src)).unwrap();
         assert_eq!(pi.file_name().unwrap(), "shot.png");
         assert_eq!(std::fs::read(&pi).unwrap(), b"foo");
 
+        // No source → a graceful error, never a panic.
+        assert!(write_attachment_to(&dir, &text, None).is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&tpath);
     }
 
     #[test]

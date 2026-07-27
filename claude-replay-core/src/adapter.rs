@@ -71,6 +71,19 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// A fresh metrics accumulator for this agent.
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator>;
 
+    /// Extract the `index`-th content-bearing attachment's bytes from one raw transcript
+    /// `line` (the line a [`Deferred`](crate::model::AttachmentContent::Deferred) locator points
+    /// at), for [`Transcript::load_attachment`](crate::Transcript::load_attachment). Default
+    /// `None` — an agent whose transcripts embed no attachments (Codex) never produces a
+    /// `Deferred` locator, so this is never called for it.
+    fn load_attachment(
+        &self,
+        _line: &str,
+        _index: usize,
+    ) -> Option<crate::model::LoadedAttachment> {
+        None
+    }
+
     // ── discovery ──
     /// Sessions for `cwd` (or its nearest ancestor with sessions), as picker candidates.
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate>;
@@ -137,6 +150,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(crate::claude_metrics::MetricsAcc::default())
+    }
+    fn load_attachment(&self, line: &str, index: usize) -> Option<crate::model::LoadedAttachment> {
+        crate::claude_model::nth_loaded_attachment(line, index)
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
         crate::claude_discover::candidates_scoped(cwd)

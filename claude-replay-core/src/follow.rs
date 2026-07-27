@@ -45,7 +45,11 @@ impl FollowParser {
             // LineReader re-read from 0, so `p.lines` is the whole new file.
             self.builder.reset();
         }
-        self.builder.advance(&p.lines);
+        // Fold each appended line with its file start offset, so attachment locators in a LIVE
+        // session get correct byte offsets (same as a batch parse).
+        for (offset, line) in p.offsets.iter().zip(&p.lines) {
+            self.builder.advance_at(*offset, line);
+        }
         Ok(true)
     }
 

@@ -89,6 +89,9 @@ impl Position {
 pub struct Poll {
     /// Complete new lines (no trailing newline) since the last poll.
     pub lines: Vec<String>,
+    /// The **start byte offset** in the file of each line in `lines` (parallel, same length) —
+    /// so the follower can stamp attachment locators without re-deriving positions.
+    pub offsets: Vec<crate::model::ByteOffset>,
     /// True if a truncation/rewrite (or a stale `open_at` position) was detected and we re-read
     /// from 0 — `lines` then holds the whole current file.
     pub reset: bool,
@@ -181,24 +184,32 @@ impl LineReader {
     /// state: advance the offset + rolling hash, split off complete lines into `out`, keep a
     /// trailing partial in `pending`, and set the identity `anchor` from the first line if unset.
     fn consume(&mut self, buf: &[u8], out: &mut Poll) {
+        // File offset of `pending`'s first byte: bytes consumed so far, minus the held partial.
+        // (Assumes valid UTF-8 — `pending` is built via lossy decode, the same assumption the
+        // anchor/consumed-hash logic already relies on; JSONL transcripts are UTF-8.)
+        let base = self.offset - self.pending.len() as u64;
         self.offset += buf.len() as u64;
         self.hasher.write(buf);
         self.pending.push_str(&String::from_utf8_lossy(buf));
         let ends_newline = self.pending.ends_with('\n');
-        let mut parts: Vec<&str> = self.pending.split('\n').collect();
+        let combined = std::mem::take(&mut self.pending);
+        let mut parts: Vec<&str> = combined.split('\n').collect();
         let rest = if ends_newline {
             parts.pop(); // trailing "" after the final newline
             String::new()
         } else {
             parts.pop().unwrap_or("").to_string()
         };
+        let mut pos = 0u64; // byte position of the current part's start within `combined`
         for p in parts {
             if !p.is_empty() {
                 if self.anchor.is_none() {
                     self.anchor = Some(hash_bytes(p.as_bytes()));
                 }
+                out.offsets.push(base + pos);
                 out.lines.push(p.to_string());
             }
+            pos += p.len() as u64 + 1; // + the '\n' that split consumed
         }
         self.pending = rest;
     }

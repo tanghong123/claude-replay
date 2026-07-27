@@ -132,12 +132,9 @@ pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     // `SessionBuilder` line-by-line (one line resident, so a multi-gigabyte transcript never
     // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
     // one file read.
-    use std::io::BufRead;
     let mut b = crate::engine::builder::SessionBuilder::new(agent);
-    let reader = io::BufReader::new(std::fs::File::open(path)?);
-    for line in reader.lines() {
-        b.advance(std::slice::from_ref(&line?)); // one line resident
-    }
+    let mut reader = io::BufReader::new(std::fs::File::open(path)?);
+    b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
     let mut s = b.snapshot();
     s.cwd = crate::discover::session_cwd(path); // the builder leaves cwd None; fill it here
                                                 // The builder can't resolve child transcript paths (it has no file path); now that we know

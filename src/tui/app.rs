@@ -226,6 +226,8 @@ fn build_frame(
     let mut view = View::new(blocks, title, follower.is_some(), fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
+    // The blocks hold only attachment locators; give the view the transcript to load them from.
+    view.set_source(Some(crate::Transcript::open(agent, path)));
     view.set_can_open_picker(args.latest);
     view.set_metrics(metrics.footer());
     view.set_footer_segments(metrics.footer_segments());
@@ -290,6 +292,12 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
+    // A descended child's attachment locators point into the child's own transcript file.
+    view.set_source(
+        child_file
+            .as_deref()
+            .map(|f| crate::Transcript::open(parent.agent, f)),
+    );
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
     // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped. Reuse the
     // metrics from the parse above (no second read).

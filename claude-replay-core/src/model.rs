@@ -135,8 +135,9 @@ pub enum Block {
 }
 
 /// A file / plan / image the transcript carried. The viewer surfaces it so the reader
-/// can act on it: `content.is_some()` ⇒ the bytes are embedded and **downloadable**;
-/// `content.is_none()` ⇒ only a path is known, so the action is **reveal in the file
+/// can act on it: a [`AttachmentContent::Deferred`] locator ⇒ the bytes are embedded in the
+/// transcript and **downloadable** (loaded on demand via [`crate::Transcript::load_attachment`]);
+/// [`AttachmentContent::None`] ⇒ only a path is known, so the action is **reveal in the file
 /// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
 /// What an [`Attachment`] is — the closed set that drives its header label and how it's
 /// surfaced. `File` is an embedded file body; `Plan` a plan-mode document; `Edited` / `Ref`
@@ -176,14 +177,32 @@ pub struct Attachment {
     /// Absolute on-disk path, when known — the reveal-in-file-manager target and the
     /// default filename for a download.
     pub path: Option<String>,
-    /// Embedded content, when the transcript carried it (makes it downloadable).
-    pub content: Option<AttachmentContent>,
+    /// A **locator** for the content — never the bytes. See [`AttachmentContent`].
+    pub content: AttachmentContent,
 }
 
-/// Embedded attachment payload. Decoded lazily — the base64 stays a string until a
-/// download actually happens (or HTML inlines it as a `data:` URI).
+/// A **locator** for an attachment's content — never the bytes. A resident
+/// [`Session`](crate::Session) holds only this per attachment, so a transcript full of
+/// embedded files/images never balloons into memory. Content is loaded on demand — one
+/// attachment at a time — via [`crate::Transcript::load_attachment`] and dropped after use.
+///
+/// "Downloadable" (the old `content.is_some()`) is `matches!(content, AttachmentContent::Deferred { .. })`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttachmentContent {
+    /// Path-only: no embedded content (reveal `path` in the file manager).
+    None,
+    /// Content is embedded in the transcript on the line at this byte offset; load on demand.
+    /// `index` disambiguates several content-bearing attachments on ONE line (e.g. two images
+    /// pasted into one user message) — the 0-based ordinal among that line's loadable
+    /// attachments, in document order. Almost always `0` (one per line).
+    Deferred { at: ByteOffset, index: usize },
+}
+
+/// Attachment content actually loaded into memory (transiently) by
+/// [`crate::Transcript::load_attachment`]. One of these is resident at a time — built,
+/// embedded/written by the caller, then dropped. Never stored on a [`Block`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadedAttachment {
     /// UTF-8 text (a `file` body or a plan) — written verbatim on download.
     Text(String),
     /// Base64 bytes + MIME type (an image) — decoded on download, or inlined as a
