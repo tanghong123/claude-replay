@@ -26,7 +26,7 @@ pub mod engine;
 pub mod follow;
 pub mod metrics;
 pub mod model;
-pub(crate) mod tail; // internal: the follower's byte-offset primitive
+pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail + resume)
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
 // The intended surface for a library consumer. [`parse_session`] is THE entry point: it

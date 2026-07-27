@@ -11,7 +11,7 @@ use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
-use crate::tail::TailReader;
+use crate::reader::LineReader;
 use crate::Agent;
 
 /// Follows a transcript file, folding only newly-appended lines each poll. Everything
@@ -19,7 +19,7 @@ use crate::Agent;
 /// the agent's `TranscriptAdapter`, so the follower itself is agent-agnostic.
 pub struct FollowParser {
     adapter: &'static dyn TranscriptAdapter,
-    tail: TailReader,
+    reader: LineReader,
     replayer: Replayer<'static>,
     cwd: String,
     metrics: Box<dyn MetricsAccumulator>,
@@ -32,7 +32,7 @@ impl FollowParser {
         let adapter = adapter(agent);
         Self {
             adapter,
-            tail: TailReader::open_at_start(path),
+            reader: LineReader::open_at_start(path),
             replayer: Replayer::new(adapter.shaping()),
             cwd: String::new(),
             metrics: adapter.metrics_acc(),
@@ -46,13 +46,13 @@ impl FollowParser {
     pub fn poll(
         &mut self,
     ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
-        let p = self.tail.poll()?;
+        let p = self.reader.poll()?;
         if !p.reset && p.lines.is_empty() {
             return Ok(None); // nothing new this tick
         }
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
-            // TailReader re-read from 0, so `p.lines` is the whole new file.
+            // LineReader re-read from 0, so `p.lines` is the whole new file.
             self.replayer = Replayer::new(self.adapter.shaping());
             self.cwd.clear();
             self.metrics = self.adapter.metrics_acc();
