@@ -35,8 +35,21 @@ pub struct Session {
     pub index: SessionIndex,
 }
 
-/// Auto-detect the agent from the transcript head, then parse into a [`Session`].
-/// Streaming (one line resident); no sub-agent enrichment.
+/// **The entry point.** Auto-detect the agent from the transcript head, then parse the file
+/// into a [`Session`] (blocks + index + metrics + cwd). Streaming — one line resident, so a
+/// multi-gigabyte transcript never balloons into memory. Sub-agent child transcripts are NOT
+/// loaded (`SubAgent.blocks` stays empty); this is the flat top-level session.
+///
+/// ```no_run
+/// let session = claude_replay_core::parse_session(std::path::Path::new("session.jsonl"))?;
+/// println!("{} blocks, {} turns", session.blocks.len(), session.index.turns.len());
+/// for block in &session.blocks {
+///     // render / analyze `block` — see `claude_replay_core::Block`
+/// }
+/// # Ok::<(), std::io::Error>(())
+/// ```
+///
+/// For a live tail (fold only appended bytes each poll), use [`FollowParser`](crate::FollowParser).
 pub fn parse_session(path: &Path) -> io::Result<Session> {
     parse_session_as(crate::discover::detect_agent(path), path)
 }

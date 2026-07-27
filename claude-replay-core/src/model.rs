@@ -23,6 +23,10 @@ pub struct Hunk {
     pub lines: Vec<String>,
 }
 
+/// One render block — the agent-neutral unit of a parsed transcript. A [`Session`]'s
+/// `blocks` is an ordered `Vec<Block>` with tool results already joined onto their calls and
+/// activity coalesced into thinking turns; each variant carries the content a presenter needs.
+/// Classify a block with [`block_kind`] / [`fold_key`] and test collapsibility with [`foldable`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).

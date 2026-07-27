@@ -26,5 +26,14 @@ pub mod metrics;
 pub mod model;
 pub mod tail;
 
+// ── Public API ────────────────────────────────────────────────────────────────────────
+// The intended surface for a library consumer. [`parse_session`] is THE entry point: it
+// returns a [`Session`] (blocks + index + metrics + cwd) for a transcript path. For a live
+// tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
+// is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
+pub use engine::index::{AgentEntry, AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{parse_session, parse_session_as, Session, SessionIndex};
+pub use follow::FollowParser;
+pub use metrics::Metrics;
+pub use model::{AgentStatus, Attachment, AttachmentContent, Block, Hunk, SubAgent};
