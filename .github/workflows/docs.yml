@@ -1,0 +1,59 @@
+name: API docs
+
+# Build the rustdoc API reference (every object, internal + external) and publish it to
+# GitHub Pages on every push to main. The reference is generated from source, never committed,
+# so it stays in sync with the code. RUSTDOCFLAGS denies warnings, so a broken doc link fails
+# the build (the reference can't silently rot).
+#
+# One-time setup: repo Settings → Pages → Build and deployment → Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it (Pages best practice).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: --deny warnings
+
+jobs:
+  build:
+    name: build rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the reference (both crates, incl. internal items)
+        run: cargo doc --workspace --no-deps --document-private-items
+      - name: Landing redirect → the engine crate
+        run: |
+          echo '<!doctype html><meta charset="utf-8">' \
+               '<meta http-equiv="refresh" content="0; url=claude_replay_core/index.html">' \
+               '<a href="claude_replay_core/index.html">claude-replay API reference</a>' \
+               > target/doc/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

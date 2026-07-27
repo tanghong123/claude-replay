@@ -224,10 +224,12 @@ cargo test --test tmux_smoke -- --ignored   # opt-in end-to-end via private tmux
 - **[docs/developer-guide.md](docs/developer-guide.md)** — build & test (incl. headless TUI
   testing and the byte-identical gate), using the engine as a library, and a step-by-step
   **[add-an-agent walkthrough](docs/developer-guide.md#4-adding-an-agent)**.
-- **API reference** — run `cargo apidoc --open` (alias for `cargo doc --workspace --no-deps
-  --document-private-items`). Auto-generated from the source, so it always matches the code;
-  documents every object incl. internal ones (the `TranscriptAdapter` seam, the `Replayer`
-  fold, …), not just the public API.
+- **API reference** — auto-generated from the source, so it always matches the code; documents
+  every object incl. internal ones (the `TranscriptAdapter` seam, the `Replayer` fold, …), not
+  just the public API. Read it locally with `cargo apidoc --open` (alias for `cargo doc
+  --workspace --no-deps --document-private-items`), or browse the hosted copy — the
+  [`API docs` workflow](.github/workflows/docs.yml) rebuilds and publishes it to GitHub Pages
+  on every push to `main`.
 
 ### Source layout
 
