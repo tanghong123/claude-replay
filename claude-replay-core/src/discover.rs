@@ -179,9 +179,19 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }
 
-/// Resolve a transcript across agents (honoring the `only` filter): an existing
-/// file path (agent auto-detected on open), a session id searched in each agent's
-/// store, or — with `latest` — the most-recent transcript across agents.
+/// Resolve which transcript to open, across agents, and return its path.
+///
+/// - `target` — an explicit selection, **either a filesystem path to a `.jsonl` transcript OR
+///   a bare session id**, tried in that order: if the string names an existing file, that file
+///   is used (and its agent is auto-detected on open); otherwise it's looked up as a session id
+///   in each in-scope agent's store. `None` means "no explicit target — fall back to `latest`".
+/// - `only` — restrict the search to a single agent's store; `None` searches every agent.
+/// - `latest` — used only when `target` is `None`: pick the most-recent transcript for the
+///   current directory (or its nearest ancestor that has sessions; cwd-matches first, no global
+///   fallback) instead of erroring.
+///
+/// Precedence: `target` (as a path, then as a session id) → else `latest` → else an `Err`
+/// asking for one of them.
 pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     if let Some(t) = target {
         let as_path = PathBuf::from(t);
