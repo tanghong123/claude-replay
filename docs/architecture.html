@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Standalone, self-contained render of docs/architecture.md (no external assets).
+     The Markdown is the maintained source of the narrative; regenerate this page when
+     the architecture changes. Per-object API detail lives in rustdoc: `cargo apidoc`. -->
+<title>claude-replay — Engine Architecture</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ── tokens ─────────────────────────────────────────────────────────────── */
+  :root{
+    --paper:#f2f3f5; --surface:#ffffff; --surface-2:#f7f8fa;
+    --ink:#191c22; --muted:#5c6675; --faint:#8b94a2;
+    --line:#e2e5ea; --line-strong:#cfd4dc;
+    --accent:#b9741f; --accent-ink:#8a560f; --accent-wash:#f5ead9;
+    --add:#3f9163; --del:#c0564f; --thinking:#7a5bd0;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"Cascadia Code","Liberation Mono",Consolas,monospace;
+    --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --measure:68ch;
+    --shadow:0 1px 2px rgba(20,25,35,.05),0 8px 28px -14px rgba(20,25,35,.18);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0e1116; --surface:#151a21; --surface-2:#11151b;
+      --ink:#dfe4ec; --muted:#98a2b1; --faint:#6b7684;
+      --line:#242b35; --line-strong:#333c48;
+      --accent:#e3a659; --accent-ink:#f0c48c; --accent-wash:#211a10;
+      --add:#5cb07f; --del:#e07d75; --thinking:#a58af0;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 34px -16px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#f2f3f5; --surface:#ffffff; --surface-2:#f7f8fa;
+    --ink:#191c22; --muted:#5c6675; --faint:#8b94a2;
+    --line:#e2e5ea; --line-strong:#cfd4dc;
+    --accent:#b9741f; --accent-ink:#8a560f; --accent-wash:#f5ead9;
+    --add:#3f9163; --del:#c0564f; --thinking:#7a5bd0;
+    --shadow:0 1px 2px rgba(20,25,35,.05),0 8px 28px -14px rgba(20,25,35,.18);
+  }
+  :root[data-theme="dark"]{
+    --paper:#0e1116; --surface:#151a21; --surface-2:#11151b;
+    --ink:#dfe4ec; --muted:#98a2b1; --faint:#6b7684;
+    --line:#242b35; --line-strong:#333c48;
+    --accent:#e3a659; --accent-ink:#f0c48c; --accent-wash:#211a10;
+    --add:#5cb07f; --del:#e07d75; --thinking:#a58af0;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 34px -16px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:16.5px;line-height:1.62;-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px}
+  .col{max-width:var(--measure)}
+  a{color:var(--accent-ink);text-underline-offset:2px;text-decoration-thickness:1px}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--line);
+    padding:.08em .38em;border-radius:5px;white-space:nowrap}
+  h1,h2,h3{text-wrap:balance;line-height:1.15;letter-spacing:-.01em}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent-ink);font-weight:600}
+
+  /* ── top bar ────────────────────────────────────────────────────────────── */
+  header.bar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:saturate(1.4) blur(8px);border-bottom:1px solid var(--line)}
+  .bar .wrap{display:flex;align-items:center;gap:18px;height:56px}
+  .brand{font-family:var(--mono);font-weight:600;letter-spacing:-.02em;display:flex;align-items:center;gap:9px}
+  .brand .dot{color:var(--accent)}
+  .bar nav{margin-left:auto;display:flex;gap:22px;font-family:var(--mono);font-size:13px}
+  .bar nav a{color:var(--muted);text-decoration:none}
+  .bar nav a:hover{color:var(--ink)}
+  @media(max-width:720px){.bar nav{display:none}}
+
+  /* ── hero ───────────────────────────────────────────────────────────────── */
+  .hero{padding:72px 0 40px;border-bottom:1px solid var(--line)}
+  .hero h1{font-family:var(--mono);font-size:clamp(30px,5.4vw,50px);font-weight:600;margin:.35em 0 .3em;letter-spacing:-.03em}
+  .hero h1 .re{color:var(--accent)}
+  .hero p.lede{font-size:clamp(17px,2.3vw,21px);color:var(--muted);max-width:60ch;margin:0}
+  .hero .meta{margin-top:26px;display:flex;flex-wrap:wrap;gap:10px}
+  .chip{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--surface);
+    border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+  .chip b{color:var(--ink);font-weight:600}
+
+  /* ── pipeline diagram (the thesis) ──────────────────────────────────────── */
+  .pipe{margin:36px 0 6px;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+    box-shadow:var(--shadow);overflow:hidden}
+  .pipe-head{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;
+    border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em}
+  .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;padding:22px}
+  .layer{border:1px solid var(--line);border-radius:11px;padding:16px 15px;background:var(--surface-2);display:flex;flex-direction:column;gap:9px}
+  .layer.core{background:var(--accent-wash);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+  .layer .lname{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--muted)}
+  .layer.core .lname{color:var(--accent-ink)}
+  .layer .lwhat{font-size:14px;line-height:1.45}
+  .layer .lmods{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:auto}
+  .arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:0 6px;min-width:78px}
+  .arrow .token{font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--surface);
+    border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap}
+  .arrow .line{font-family:var(--mono);color:var(--line-strong);font-size:17px}
+  @media(max-width:760px){
+    .flow{grid-template-columns:1fr;gap:6px}
+    .arrow{flex-direction:row;min-width:0;padding:4px 0;transform:rotate(90deg)}
+  }
+
+  /* ── sections ───────────────────────────────────────────────────────────── */
+  section{padding:52px 0;border-bottom:1px solid var(--line)}
+  section h2{font-size:clamp(22px,3vw,30px);font-weight:650;margin:.2em 0 .1em}
+  section .kicker{margin:0 0 22px;color:var(--muted);max-width:var(--measure)}
+  section p{max-width:var(--measure)}
+  h3{font-size:17px;margin:30px 0 8px;font-family:var(--mono);font-weight:600;letter-spacing:-.01em}
+  ul.clean{max-width:var(--measure);padding-left:0;list-style:none;display:flex;flex-direction:column;gap:12px}
+  ul.clean li{padding-left:22px;position:relative}
+  ul.clean li::before{content:"▸";position:absolute;left:0;color:var(--accent);font-size:13px;top:2px}
+  ul.clean li b{font-weight:600}
+
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:8px}
+  .card{border:1px solid var(--line);border-radius:11px;padding:16px 16px 15px;background:var(--surface)}
+  .card h4{margin:0 0 6px;font-family:var(--mono);font-size:14px;font-weight:600}
+  .card p{margin:0;font-size:14px;color:var(--muted);max-width:none}
+
+  /* tables */
+  .tblwrap{overflow-x:auto;margin-top:10px;border:1px solid var(--line);border-radius:11px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  tbody tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  td .role{color:var(--muted)}
+  .badge{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .badge.ext{color:var(--add);border-color:color-mix(in srgb,var(--add) 45%,var(--line))}
+  .badge.def{color:var(--accent-ink);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+
+  /* code block */
+  pre{font-family:var(--mono);font-size:13px;line-height:1.6;background:var(--surface);border:1px solid var(--line);
+    border-radius:11px;padding:16px 18px;overflow-x:auto;max-width:100%;box-shadow:var(--shadow)}
+  pre .c{color:var(--faint)}          /* comment */
+  pre .k{color:var(--accent-ink)}     /* keyword-ish */
+
+  /* block-glyph legend + diff sample (the payoff) */
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:10px}
+  .gl{display:flex;gap:10px;align-items:baseline;font-size:13.5px;color:var(--muted);
+    border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:var(--surface)}
+  .gl .g{font-family:var(--mono);font-size:17px;color:var(--ink);width:1.4em;text-align:center}
+  .term{font-family:var(--mono);font-size:12.5px;line-height:1.75;background:var(--surface);border:1px solid var(--line);
+    border-radius:11px;padding:14px 16px;overflow-x:auto;box-shadow:var(--shadow);margin-top:16px}
+  .term .g{color:var(--accent)} .term .th{color:var(--thinking)} .term .mut{color:var(--faint)}
+  .term .add{color:var(--add)} .term .del{color:var(--del)}
+  .term .ln{color:var(--faint);user-select:none}
+
+  /* steps (add an agent) */
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0 0;display:flex;flex-direction:column;gap:12px;max-width:var(--measure)}
+  ol.steps li{counter-increment:s;position:relative;padding:14px 16px 14px 54px;border:1px solid var(--line);
+    border-radius:11px;background:var(--surface)}
+  ol.steps li::before{content:counter(s);position:absolute;left:14px;top:13px;width:26px;height:26px;border-radius:7px;
+    display:grid;place-items:center;font-family:var(--mono);font-size:13px;font-weight:600;
+    background:var(--accent-wash);color:var(--accent-ink);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}
+  ol.steps li b{font-family:var(--mono);font-weight:600}
+  ol.steps li .d{color:var(--muted);font-size:14.5px}
+
+  .callout{border-left:3px solid var(--accent);background:var(--surface-2);border-radius:0 10px 10px 0;
+    padding:14px 18px;margin:22px 0;max-width:var(--measure)}
+  .callout b{font-family:var(--mono);font-size:13px}
+
+  footer{padding:44px 0 70px;color:var(--muted);font-size:14px}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline}
+  footer .cmd{font-family:var(--mono);color:var(--ink);background:var(--surface);border:1px solid var(--line);
+    padding:3px 9px;border-radius:6px}
+
+  .toggle{margin-left:12px;font-family:var(--mono);font-size:12px;background:var(--surface);color:var(--muted);
+    border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer}
+  .toggle:hover{color:var(--ink)}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="wrap">
+    <span class="brand"><span class="dot">⏺</span>claude&#8288;-replay</span>
+    <nav>
+      <a href="#layers">Layers</a>
+      <a href="#model">Model</a>
+      <a href="#adapter">Adapter</a>
+      <a href="#extend">Add an agent</a>
+      <a href="#reference">Reference</a>
+    </nav>
+    <button class="toggle" id="themer" aria-label="Toggle colour theme">◐ theme</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow">Developer documentation · architecture</div>
+    <h1>The transcript engine<br>behind claude&#8288;<span class="re">-replay</span></h1>
+    <p class="lede">A read-only viewer for AI coding-agent sessions — built so the parsing
+      engine is <b>agent-agnostic</b> and <b>presentation-agnostic</b>: any frontend can reuse it,
+      and adding a new agent is one small adapter that touches no shared code.</p>
+    <div class="meta">
+      <span class="chip"><b>Rust</b> workspace · 2 crates</span>
+      <span class="chip"><b>3</b>-layer engine</span>
+      <span class="chip">Claude&nbsp;+&nbsp;Codex</span>
+      <span class="chip"><b>Headless</b>-testable TUI</span>
+    </div>
+
+    <div class="pipe" role="img" aria-label="Three-layer pipeline: raw JSONL decoded to canonical Messages, folded to a Block stream, presented.">
+      <div class="pipe-head"><span>THE PIPELINE</span><span>one job per layer · agent-specifics confined to L1</span></div>
+      <div class="flow">
+        <div class="layer">
+          <div class="lname">L1 · decode</div>
+          <div class="lwhat">Map one agent's raw JSONL lines onto a canonical message vocabulary.</div>
+          <div class="lmods">claude_model · codex_model</div>
+        </div>
+        <div class="arrow"><span class="token">Message</span><span class="line">→</span></div>
+        <div class="layer core">
+          <div class="lname">L2 · fold — shared</div>
+          <div class="lwhat">One <code>Replayer</code> folds messages into render blocks: join results, group turns, resolve the queue.</div>
+          <div class="lmods">engine::replay</div>
+        </div>
+        <div class="arrow"><span class="token">Block</span><span class="line">→</span></div>
+        <div class="layer">
+          <div class="lname">L3 · present</div>
+          <div class="lwhat">Terminal viewer, HTML export, <code>--dump</code> — consume blocks, never raw lines.</div>
+          <div class="lmods">view · html_export</div>
+        </div>
+      </div>
+    </div>
+    <p class="col" style="color:var(--muted);font-size:14px;margin-top:14px">
+      The colour tells the story: everything agent-specific lives in <b>L1</b>; the meaty,
+      correctness-critical work — the <b style="color:var(--accent-ink)">shared fold</b> — is written
+      <em>once</em> and reused by every agent.</p>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section id="overview">
+    <div class="eyebrow">Overview</div>
+    <h2>What it is, and the one goal that shapes it</h2>
+    <p class="kicker">claude-replay reads an agent's session transcript — a JSONL log from Claude Code
+      or Codex — and replays it as a readable, foldable stream: user turns, assistant prose, thinking,
+      tool calls with their results and diffs, sub-agent spawns, attachments, slash commands. It is
+      read-only and fully testable without a terminal.</p>
+    <p>Every structural decision serves one goal: <b>the engine knows nothing about presentation, and
+      almost nothing about any specific agent.</b> That makes the parser reusable by any frontend, and
+      makes "support a new agent" a bounded, local change instead of a sprawl across the codebase.</p>
+  </section>
+
+  <section id="crates">
+    <div class="eyebrow">Boundary</div>
+    <h2>Two crates, one compiler-enforced line</h2>
+    <p class="kicker">The workspace splits into the engine and the presenters. The split isn't a
+      convention — it's enforced by the dependency graph.</p>
+    <div class="cards">
+      <div class="card">
+        <h4>claude-replay-core</h4>
+        <p>The engine. Its <em>only</em> dependencies are <code>serde_json</code> + <code>anyhow</code> —
+          no ratatui, syntect, clap, or HTML. So it <b>cannot</b> reach a presentation dependency; "the
+          core is presentation-agnostic" is guaranteed, not merely intended.</p>
+      </div>
+      <div class="card">
+        <h4>claude-replay (root)</h4>
+        <p>The presenters + CLI: the ratatui viewer, the HTML export, the <code>agent-jdi</code>
+          supervisor. Depends on the core and re-exports its modules under their original paths, so
+          viewer code reads as if the split weren't there.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="layers">
+    <div class="eyebrow">The three layers</div>
+    <h2>Decode → fold → present</h2>
+    <p class="kicker">Parsing is a pipeline; each layer has exactly one job. The only place that knows a
+      specific agent's raw format is Layer&nbsp;1.</p>
+    <h3>L1 — decode (agent-specific)</h3>
+    <p><code>claude_model</code> / <code>codex_model</code> map that agent's raw line shapes onto a single
+      canonical <b>Message</b> vocabulary (<code>UserText</code>, <code>Thinking</code>,
+      <code>ToolUse</code>, <code>ToolResult</code>, <code>Command</code>, <code>Attachment</code>, …).
+      Different agents name things differently; the L1 decoder is the <em>only</em> code that knows those
+      names. Nothing downstream ever parses a raw agent format.</p>
+    <h3>L2 — fold (shared)</h3>
+    <p>The <code>Replayer</code> folds the message stream into the <b>Block</b> render model — joining
+      each tool result onto its call, grouping thinking turns, coalescing activity runs, resolving the
+      queued-prompt lifecycle, stamping per-turn times. It is agent-agnostic; the four points agents
+      genuinely differ are isolated in a small <code>Shaping</code> seam. <em>Hundreds of lines of
+      fold logic are written once and shared</em> — that's what the canonical Message between L1 and L2
+      buys you.</p>
+    <h3>L3 — present</h3>
+    <p>The viewer, the HTML export, and <code>--dump</code> consume the <code>Block</code> stream. They
+      never see a <code>Message</code> or a raw line — so a bug in one presenter can't be a parsing bug,
+      and all three share one source of truth for classification and diff rendering.</p>
+  </section>
+
+  <section id="model">
+    <div class="eyebrow">Data model</div>
+    <h2>Everything a presenter needs is a <code>Block</code></h2>
+    <p class="kicker">The presenter-facing vocabulary is small and stable. A <code>Session</code> is the
+      whole parse; its <code>blocks</code> already have results joined onto calls, and nothing is dropped
+      or truncated — what shows collapsed is a <em>view</em> decision, not a parse decision.</p>
+    <div class="legend" aria-hidden="false">
+      <div class="gl"><span class="g">❯</span> user turn / command</div>
+      <div class="gl"><span class="g">✻</span> thinking (grouped)</div>
+      <div class="gl"><span class="g">⏺</span> tool call</div>
+      <div class="gl"><span class="g">⎿</span> joined result</div>
+      <div class="gl"><span class="g">⧗</span> queued prompt</div>
+    </div>
+    <div class="term" aria-label="Sample rendered block stream with an edit diff">
+<span class="mut">❯</span> add a --width flag<br>
+<span class="th">✻</span> <span class="mut">Ran 1 command (ls), thought for 6s</span><br>
+<span class="g">⏺</span> Edit(src/lib.rs)<br>
+&nbsp;&nbsp;<span class="mut">⎿</span> <span class="ln">104</span> &nbsp;&nbsp;pub struct Args {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="add">105 +&nbsp;&nbsp;&nbsp;&nbsp;pub width: Option&lt;usize&gt;,</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="del">105 -&nbsp;&nbsp;&nbsp;&nbsp;pub width: usize,</span><br>
+&nbsp;&nbsp;<span class="mut">⎿</span> <span class="ln">106</span> &nbsp;&nbsp;}
+    </div>
+    <p style="margin-top:20px">Alongside the blocks, a <code>Session</code> carries a
+      <code>SessionIndex</code> (turns / sub-agents / tool counts / attachments, computed in one scan so
+      presenters don't re-walk), a <code>Metrics</code> tally, and the session <code>cwd</code>. Block
+      <b>classification</b> is one function — <code>block_kind</code> — projected two ways: a coarse
+      <code>fold_key</code> (grouping) and a fine HTML class (styling), so the TUI and HTML can never
+      disagree on what a block <em>is</em>.</p>
+  </section>
+
+  <section id="adapter">
+    <div class="eyebrow">The per-agent seam</div>
+    <h2>One trait, one registry</h2>
+    <p class="kicker">Everything that varies by agent lives behind <code>TranscriptAdapter</code>,
+      resolved through a two-function registry — <code>adapter(agent)</code> to dispatch,
+      <code>adapters()</code> to iterate. There is no <code>match agent</code> scattered through the
+      engine.</p>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th>Hook</th><th>Role</th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><code>sniff</code></td><td class="role">Does this transcript look like mine? (drives auto-detect)</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>decode_line</code></td><td class="role"><b>L1</b>: one raw line → 0+ canonical messages</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>scan_join_ids</code></td><td class="role">Pass-1 pre-scan: the tool-call ids a later result joins onto</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>shaping</code></td><td class="role">The four L2 fn-pointers (build tool · join result · keep-orphan · finish)</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>metrics_acc</code></td><td class="role">A fresh token/cost accumulator</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>candidates_scoped</code> · <code>resolve_id</code></td><td class="role">Discovery: sessions for a cwd · id → path</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>parse_path_timed</code> · <code>parse_reader</code></td><td class="role">Whole-file parse · metrics-only fold</td><td><span class="badge def">provided</span></td></tr>
+          <tr><td><code>enrich</code> · <code>subagent_source</code></td><td class="role">The sub-agent tree (Claude has one; Codex doesn't)</td><td><span class="badge def">no-op / None</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">The whole-file parse is a <b>provided</b> method: it composes
+      <code>scan_join_ids</code> → the streaming fold → the metrics accumulator. So a new agent supplies
+      only the small per-agent hooks and gets batch <em>and</em> live parsing for free. The
+      <code>agent-jdi</code> supervisor mirrors this exactly with its own adapter trait + registry.</p>
+  </section>
+
+  <section id="streaming">
+    <div class="eyebrow">Scale &amp; liveness</div>
+    <h2>Streaming parse, incremental follow</h2>
+    <p class="kicker">Transcripts can reach hundreds of megabytes, so parsing streams — one line
+      resident, two passes, never a whole-file <code>Vec&lt;Value&gt;</code>.</p>
+    <ul class="clean">
+      <li><b>One-shot</b> — <code>parse_session(path)</code> auto-detects the agent and returns a whole
+        <code>Session</code>. <code>parse_session_as</code> skips detection; the <code>_enriched</code>
+        variants also load the sub-agent tree.</li>
+      <li><b>Live tail</b> — <code>FollowParser::open(agent, path)</code> holds a persistent
+        <code>Replayer</code>; each <code>poll()</code> folds only newly-appended bytes — O(delta), no
+        re-read — and is proven byte-identical to a full re-parse at every append. A
+        truncation/rewrite (compaction) resets and rebuilds.</li>
+    </ul>
+    <pre><span class="c">// the entire surface a library consumer needs</span>
+<span class="k">let</span> session = claude_replay_core::parse_session(path)?;      <span class="c">// one-shot</span>
+<span class="k">let mut</span> f = claude_replay_core::FollowParser::open(agent, path); <span class="c">// live</span>
+<span class="k">while let</span> Some((blocks, times, metrics)) = f.poll()? { <span class="c">/* re-render */</span> }</pre>
+  </section>
+
+  <section id="extend">
+    <div class="eyebrow">Extending</div>
+    <h2>Adding an agent</h2>
+    <p class="kicker">The payoff of the design: a new agent (say <code>Gemini</code>) is a
+      <code>*_model</code> / <code>*_metrics</code> / <code>*_discover</code> trio plus one
+      <code>impl&nbsp;TranscriptAdapter</code> row. The shared engine is never touched.</p>
+    <ol class="steps">
+      <li><b>Register</b> <span class="d">— add the <code>Agent::Gemini</code> variant + label.</span></li>
+      <li><b>gemini_model.rs</b> <span class="d">— the L1 decoder: <code>decode_line</code>, <code>scan_join_ids</code>, and a <code>GEMINI_SHAPING</code> const. The only place that knows Gemini's raw format.</span></li>
+      <li><b>gemini_metrics.rs</b> <span class="d">— a small token/cost accumulator (reuse <code>TimeSpan</code> + <code>estimate_cost</code>).</span></li>
+      <li><b>gemini_discover.rs</b> <span class="d">— where Gemini keeps transcripts: <code>candidates_scoped</code> + <code>resolve_id</code>.</span></li>
+      <li><b>impl TranscriptAdapter</b> <span class="d">— a unit struct delegating to the three modules; inherit the provided/defaulted hooks.</span></li>
+      <li><b>Register the row</b> <span class="d">— one arm in <code>adapter()</code> and one entry in <code>adapters()</code>.</span></li>
+      <li><b>Test it</b> <span class="d">— an L1 equivalence gate + a <code>FollowParser</code> round-trip; then the usual fmt / clippy / test.</span></li>
+    </ol>
+    <div class="callout"><b>What you did NOT touch:</b> the fold, the <code>Block</code> model,
+      <code>Session</code>/<code>SessionIndex</code>, the discovery facade, the live follower, or any
+      presenter. <code>sniff</code> makes auto-detect recognise the format; the registry row makes it
+      reachable everywhere.</div>
+  </section>
+
+  <section id="testing">
+    <div class="eyebrow">Confidence</div>
+    <h2>Testing &amp; the invariants it holds itself to</h2>
+    <div class="cards">
+      <div class="card"><h4>Headless TUI</h4><p>All view state lives in <code>View</code>, driven under ratatui's <code>TestBackend</code> — assert cells in an in-memory buffer, no terminal. A tmux e2e covers the real binary.</p></div>
+      <div class="card"><h4>Byte-identical refactors</h4><p>The streaming parse is pinned bit-identical to frozen oracle parsers, and every refactor is checked with <code>--dump</code> / <code>--dump-html</code> diffs on frozen Claude + Codex transcripts.</p></div>
+      <div class="card"><h4>Crate boundary</h4><p>The core's dependency set makes a presentation import a compile error — the agnosticism can't rot.</p></div>
+      <div class="card"><h4>One classifier · one fold</h4><p>Block classification and the L2 fold exist once; per-agent differences live only in <code>decode_line</code> + <code>Shaping</code>.</p></div>
+    </div>
+  </section>
+
+  <section id="reference">
+    <div class="eyebrow">Reference manual</div>
+    <h2>Every object — always in sync</h2>
+    <p class="kicker">The exhaustive per-object API reference is <b>auto-generated from the source</b> by
+      rustdoc, so it never drifts from the code. It documents <em>internal</em> objects (the
+      <code>TranscriptAdapter</code> seam, the <code>Replayer</code>, the tokenizers) as well as the
+      public API.</p>
+    <pre><span class="c"># build + open the full reference (both crates, incl. internal items)</span>
+cargo apidoc --open
+<span class="c"># alias for: cargo doc --workspace --no-deps --document-private-items</span></pre>
+    <p style="margin-top:18px">This page and the written guide are the <em>guided</em> overview; rustdoc
+      is the encyclopaedia. Start at the <code>claude_replay_core</code> crate page for the engine, or
+      <code>claude_replay</code> for the viewer / HTML / <code>agent-jdi</code>.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>claude-replay · engine architecture</span>
+    <span>·</span>
+    <span>narrative: <span class="cmd">docs/architecture.md</span> · <span class="cmd">docs/developer-guide.md</span></span>
+    <span>·</span>
+    <span>API: <span class="cmd">cargo apidoc</span></span>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var btn=document.getElementById('themer');
+    function cur(){var a=document.documentElement.getAttribute('data-theme');
+      if(a)return a;return window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';}
+    btn.addEventListener('click',function(){
+      var next=cur()==='dark'?'light':'dark';
+      document.documentElement.setAttribute('data-theme',next);
+    });
+  })();
+</script>
+
+</body>
+</html>

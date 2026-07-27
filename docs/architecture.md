@@ -1,5 +1,12 @@
 # claude-replay — Architecture
 
+> This Markdown is the maintained source of the architecture narrative (it renders inline on
+> GitHub). A **standalone, graphics-rich HTML render** of the same material — the pipeline
+> diagram, the block-glyph legend, a diff sample, both light/dark — lives at
+> [`docs/architecture.html`](architecture.html); open it locally or host it. For the
+> exhaustive per-object API, generate the reference with `cargo apidoc` (see the
+> [Developer Guide](developer-guide.md#the-api-reference-auto-generated-always-in-sync)).
+
 A developer-facing design document for the `claude-replay` workspace: the reusable
 transcript **engine** and the **presenters** built on it (a terminal viewer, an HTML export,
 and the `agent-jdi` supervisor). For the hands-on "how do I build/test/extend this" material

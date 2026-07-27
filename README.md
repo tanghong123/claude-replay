@@ -219,7 +219,8 @@ cargo test --test tmux_smoke -- --ignored   # opt-in end-to-end via private tmux
 
 - **[docs/architecture.md](docs/architecture.md)** — the system design: the three-layer
   engine (decode → fold → present), the two-crate boundary, the data model, and the
-  per-agent `TranscriptAdapter` seam.
+  per-agent `TranscriptAdapter` seam. (Also as a standalone graphics-rich page:
+  [docs/architecture.html](docs/architecture.html) — open locally / host it.)
 - **[docs/developer-guide.md](docs/developer-guide.md)** — build & test (incl. headless TUI
   testing and the byte-identical gate), using the engine as a library, and a step-by-step
   **[add-an-agent walkthrough](docs/developer-guide.md#4-adding-an-agent)**.
