@@ -13,15 +13,28 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// A pickable session, with metadata for the picker UI.
+/// A pickable session — one transcript on disk plus the metadata the fuzzy session picker
+/// shows and ranks by. Produced by [`candidates_all`] / the per-agent discovery.
 #[derive(Clone)]
 pub struct Candidate {
+    /// Absolute path to the transcript `.jsonl` this entry opens (what a selection resolves
+    /// to, and what [`detect_agent`] / [`parse_session`](crate::parse_session) are handed).
     pub path: PathBuf,
+    /// The transcript file's last-modified time — the recency key the picker sorts by
+    /// (most-recent first, after `cwd_affinity`).
     pub mtime: SystemTime,
-    pub project: String,    // human-ish project name (last path segment)
-    pub snippet: String,    // first user message, truncated
-    pub cwd_affinity: bool, // belongs to the current working directory's project
-    pub agent: Agent,       // which agent produced this session
+    /// A short, human-ish project label for the picker row — the leaf segment of the
+    /// session's directory (e.g. `claude-replay`), not a full path.
+    pub project: String,
+    /// A one-line preview: the session's first genuine user message, whitespace-compacted and
+    /// truncated (host-context / boilerplate messages skipped). Empty when none was found.
+    pub snippet: String,
+    /// `true` when this session's project is the **current working directory's** project (an
+    /// exact cwd match) — the picker ranks these ahead of the rest.
+    pub cwd_affinity: bool,
+    /// Which agent wrote this transcript (Claude / Codex) — shown as a badge and used to
+    /// dispatch to the right parser.
+    pub agent: Agent,
 }
 
 /// Directories from `cwd` up to (and including) `$HOME` — the ancestors we probe
