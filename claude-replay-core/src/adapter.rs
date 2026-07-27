@@ -39,10 +39,10 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// (Used by [`crate::discover::detect_agent`]; the sniffs are mutually exclusive.)
     fn sniff(&self, head: &Value) -> bool;
 
-    // ── whole-file parse (each owns its pass-1 id scan + pass-2 streaming fold) ──
-    /// Blocks only (Claude also loads the sub-agent tree; Codex has none).
-    fn parse_path(&self, path: &Path) -> io::Result<Vec<Block>>;
-    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass.
+    // ── whole-file parse (owns its pass-1 id scan + pass-2 streaming fold) ──
+    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass. The
+    /// single whole-file parse seam (the flat top-level session; sub-agent trees load via
+    /// [`enrich`](Self::enrich)).
     fn parse_path_timed(
         &self,
         path: &Path,
@@ -131,9 +131,6 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn sniff(&self, head: &Value) -> bool {
         head.get("sessionId").is_some() || head.get("message").is_some()
     }
-    fn parse_path(&self, path: &Path) -> io::Result<Vec<Block>> {
-        crate::claude_model::parse_path(path)
-    }
     fn parse_path_timed(
         &self,
         path: &Path,
@@ -175,9 +172,6 @@ impl TranscriptAdapter for CodexAdapter {
         ty == Some("session_meta")
             || (head.get("payload").is_some()
                 && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
-    }
-    fn parse_path(&self, path: &Path) -> io::Result<Vec<Block>> {
-        crate::codex_model::parse_codex_path(path)
     }
     fn parse_path_timed(
         &self,

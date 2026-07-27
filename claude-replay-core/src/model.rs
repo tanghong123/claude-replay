@@ -367,7 +367,7 @@ pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &st
 /// normalizes its own tool names onto these (see `codex_model::normalize_tool_name`), so a
 /// tool a given agent never emits simply never matches. A new agent maps its tools into this
 /// vocabulary in its adapter; the shared classifiers don't grow per-agent arms.
-pub fn is_activity_tool(name: &str) -> bool {
+pub(crate) fn is_activity_tool(name: &str) -> bool {
     matches!(
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
@@ -410,18 +410,18 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
     Ok(blocks)
 }
 
-pub fn parse_path_timed_for(
+/// Streaming whole-file parse for `agent`: blocks + one wall-clock timestamp per user turn +
+/// folded metrics, all in a single pass (M9/M10). The one whole-file parse seam — batch
+/// callers ([`parse_session_as`](crate::parse_session_as)) go through here; the live path
+/// folds appended bytes via [`FollowParser`](crate::FollowParser). Flat (sub-agent trees are
+/// loaded separately by [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
+pub(crate) fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
 ) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
     let mut times = Vec::new();
     let (blocks, metrics) = crate::adapter::adapter(agent).parse_path_timed(path, &mut times)?;
     Ok((blocks, times, metrics))
-}
-
-/// Streaming file parse with the parser for `agent`.
-pub fn parse_path_for(agent: Agent, path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    crate::adapter::adapter(agent).parse_path(path)
 }
 
 /// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the

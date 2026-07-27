@@ -17,23 +17,9 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
     crate::model::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
-pub(crate) fn parse_codex_path(path: &Path) -> io::Result<Vec<Block>> {
-    let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let call_ids = scan_join_ids(open()?.lines().map_while(|line| line.ok()));
-    let mut cwd = String::new();
-    crate::model::parse_stream(
-        open()?,
-        call_ids,
-        &CODEX_SHAPING,
-        |line, out| decode_codex_line(line, &mut cwd, out),
-        |_| {}, // blocks only — this path doesn't need metrics
-        &mut Vec::new(),
-    )
-}
-
-/// `parse_codex_path` + one timestamp per user turn, on the streaming engine (M9): pass-1
-/// id scan, pass-2 per-line `decode_codex_line` folded through the shared `Replayer` — one
-/// line resident, no whole-file `Vec<Message>`.
+/// The whole-file Codex parse on the streaming engine (M9): pass-1 id scan, pass-2 per-line
+/// `decode_codex_line` folded through the shared `Replayer` — one line resident, no whole-file
+/// `Vec<Message>`. Returns blocks + one timestamp per user turn + folded metrics.
 pub(crate) fn parse_codex_path_timed(
     path: &Path,
     user_times: &mut Vec<Option<f64>>,
@@ -610,7 +596,7 @@ not json
         let expected = parse_codex(jsonl);
         let path = std::env::temp_dir().join(format!("codex-model-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let actual = parse_codex_path(&path).unwrap();
+        let (actual, _) = parse_codex_path_timed(&path, &mut Vec::new()).unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert!(matches!(

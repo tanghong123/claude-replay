@@ -41,7 +41,9 @@ pub(crate) fn ancestors_of(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// [`ancestors_of`] the current working directory.
+/// [`ancestors_of`] the current working directory. (Test-only since the scoped-discovery
+/// callers all pass an explicit cwd; kept for the cwd-ancestor-chain test.)
+#[cfg(test)]
 pub(crate) fn ancestor_dirs() -> Vec<PathBuf> {
     match std::env::current_dir() {
         Ok(cwd) => ancestors_of(&cwd),

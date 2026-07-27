@@ -5,13 +5,13 @@
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in [`crate::discover`].
 
-use crate::discover::{ancestor_dirs, ancestors_of, Candidate};
+use crate::discover::{ancestors_of, Candidate};
 use crate::Agent;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Root under which Claude Code writes per-project transcript dirs.
-pub fn projects_dir() -> PathBuf {
+pub(crate) fn projects_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CLAUDE_PROJECTS_DIR") {
         return PathBuf::from(p);
     }
@@ -20,7 +20,7 @@ pub fn projects_dir() -> PathBuf {
 }
 
 /// All transcript files under the projects dir, newest first (by mtime).
-pub fn all_transcripts() -> Vec<PathBuf> {
+pub(crate) fn all_transcripts() -> Vec<PathBuf> {
     let mut out: Vec<(SystemTime, PathBuf)> = Vec::new();
     let root = projects_dir();
     let Ok(projects) = std::fs::read_dir(&root) else {
@@ -125,65 +125,6 @@ fn first_user_snippet(path: &Path) -> String {
         }
     }
     String::new()
-}
-
-/// All Claude sessions as pickable candidates, ranked most-recent first.
-///
-/// To avoid reading a snippet from *every* transcript on the machine, discovery
-/// is scoped: walk from the cwd up to `$HOME` and use the **nearest ancestor
-/// directory that has any sessions**. Only if nothing matches up to `$HOME` do we
-/// fall back to scanning every project.
-pub fn candidates() -> Vec<Candidate> {
-    let cwd_slug = std::env::current_dir().ok().map(|d| slug_for(&d));
-
-    // Nearest ancestor (cwd → … → $HOME) that owns any sessions.
-    let mut scoped: Vec<(SystemTime, PathBuf)> = Vec::new();
-    for dir in ancestor_dirs() {
-        let t = transcripts_in_project(&slug_for(&dir));
-        if !t.is_empty() {
-            scoped = t;
-            break;
-        }
-    }
-
-    let entries: Vec<PathBuf> = if scoped.is_empty() {
-        all_transcripts() // fallback: nothing local up to $HOME
-    } else {
-        scoped.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
-        scoped.into_iter().map(|(_, p)| p).collect()
-    };
-
-    let mut out: Vec<Candidate> = Vec::new();
-    for path in entries {
-        let mtime = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let proj_slug = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let project = proj_slug
-            .rsplit('-')
-            .next()
-            .unwrap_or(&proj_slug)
-            .to_string();
-        let cwd_affinity = cwd_slug.as_deref() == Some(proj_slug.as_str());
-        out.push(Candidate {
-            path: path.clone(),
-            mtime,
-            project,
-            snippet: first_user_snippet(&path),
-            cwd_affinity,
-            agent: Agent::Claude,
-        });
-    }
-    out.sort_by(|a, b| {
-        b.cwd_affinity
-            .cmp(&a.cwd_affinity)
-            .then(b.mtime.cmp(&a.mtime))
-    });
-    out
 }
 
 /// The newest Claude transcript for `cwd` **or its nearest ancestor that has one**:

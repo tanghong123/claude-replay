@@ -6,11 +6,11 @@
 //! the canonical message log (Layer 1 ↔ Layer 2 boundary) and the replay fold.
 
 pub mod index;
-pub mod message;
+pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `Block`, never `Message`
 pub mod path;
 pub mod session;
 pub mod store;
-pub mod time;
+pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metrics
 
 pub use index::SessionIndex;
 pub use session::{

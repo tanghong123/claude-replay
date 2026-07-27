@@ -390,16 +390,6 @@ pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
 
-/// Parse a transcript file by **streaming** it — one line resident at a time, in
-/// two passes (each a fresh read) — so a large transcript never balloons into a
-/// whole-file `Vec<Value>` (~5–8× the file in RAM) or a whole-file `String`. See
-/// `STREAMING-PARSE-DESIGN.md`.
-pub fn parse_path(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    let mut blocks = parse_file(path)?;
-    enrich_tree(path, &mut blocks);
-    Ok(blocks)
-}
-
 /// Load each spawned sub-agent's child transcript (recursively) into its `SubAgent.blocks`,
 /// so a spawn can be descended into and its subtree cost rolled up. All of a session's agents
 /// — any depth — share one flat `<session>/subagents/` dir, so one dir resolves the whole
@@ -1913,7 +1903,8 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let blocks = parse_path(&sess).unwrap();
+        let mut blocks = parse_file(&sess).unwrap();
+        enrich_tree(&sess, &mut blocks); // load the sub-agent tree
         let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
         else {
             panic!("no SubAgent: {blocks:?}")
@@ -2126,7 +2117,7 @@ mod tests {
         let via_str = parse(jsonl);
         let file = std::env::temp_dir().join("claude-replay-parse-path-test.jsonl");
         std::fs::write(&file, jsonl).unwrap();
-        let via_path = parse_path(&file).unwrap();
+        let via_path = parse_file(&file).unwrap(); // flat streaming parse (no sub-agents here)
         std::fs::remove_file(&file).ok();
         assert_eq!(format!("{via_str:?}"), format!("{via_path:?}"));
     }
