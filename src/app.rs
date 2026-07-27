@@ -726,41 +726,17 @@ fn color_sgr(c: ratatui::style::Color, fg: bool) -> Vec<String> {
     }
 }
 
-/// The first `"key":"…"` string value in the transcript JSON, if present.
-fn json_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
-    let pat = format!("\"{key}\":\"");
-    let start = content.find(&pat)? + pat.len();
-    let rest = &content[start..];
-    let end = rest.find('"')?;
-    Some(&rest[..end])
-}
-
 /// Deduce the default dump stem: `<basename>-<pathhash>-<sessionid>-<width>` where
 /// basename/pathhash come from the session's project cwd, sessionid is its first 6
-/// chars, and width is the render width. cwd/sessionId are read from the transcript.
+/// chars, and width is the render width. cwd/sessionId are read from the transcript via
+/// the agent-neutral `discover` helpers (so a Codex rollout — whose cwd/id live under
+/// `payload` — deduces a correct stem, not the `"session"` fallback a Claude-only scan gave).
 pub(crate) fn deduce_stem(path: &Path, width: Option<usize>) -> String {
     use std::hash::{Hash, Hasher};
-    use std::io::BufRead;
-    // cwd/sessionId live in the transcript's first event; read a bounded prefix
-    // rather than pull the whole (possibly huge) file into memory.
-    let mut content = String::new();
-    if let Ok(f) = std::fs::File::open(path) {
-        for line in std::io::BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .take(50)
-        {
-            content.push_str(&line);
-            content.push('\n');
-            if json_field(&content, "cwd").is_some() && json_field(&content, "sessionId").is_some()
-            {
-                break;
-            }
-        }
-    }
-    let content = content.as_str();
-    let cwd = json_field(content, "cwd").unwrap_or("");
-    let basename = Path::new(cwd)
+    let cwd = discover::session_cwd(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let basename = Path::new(&cwd)
         .file_name()
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
@@ -768,14 +744,12 @@ pub(crate) fn deduce_stem(path: &Path, width: Option<usize>) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut h);
     let pathhash: String = format!("{:016x}", h.finish())[..6].to_string();
-    let sid = json_field(content, "sessionId")
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string()
-        });
+    let sid = discover::session_id(path).unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string()
+    });
     let sid6: String = sid.chars().take(6).collect();
     // `--dump` suffixes the render width (its output is width-specific); the HTML
     // export reflows in the browser, so it passes `None` and omits it.

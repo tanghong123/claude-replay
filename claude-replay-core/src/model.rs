@@ -325,6 +325,23 @@ pub fn fold_key(b: &Block) -> &'static str {
     block_kind(b).fold_key()
 }
 
+/// Whether a block can be collapsed/expanded (has foldable body content). The single
+/// source of truth for both presenters — the TUI (`render::foldable`) and the HTML export
+/// (`html_export::is_fold`) delegate here so they can never disagree. Prose turns
+/// (`UserText`/`AssistantText`), the `⧗ queued` marker, and attachments are not foldable;
+/// tools, results, thinking, commands, and sub-agent spawn/completion blocks are.
+pub fn foldable(b: &Block) -> bool {
+    matches!(
+        b,
+        Block::ToolUse { .. }
+            | Block::ToolResult(_)
+            | Block::Thinking { .. }
+            | Block::Command { .. }
+            | Block::SubAgent(_)
+            | Block::AgentDone { .. }
+    )
+}
+
 /// Append a loaded skill's instruction body to its `Skill` tool_use block at `idx`,
 /// so the whole skill load reads as one collapsible unit (named by the skill) instead
 /// of a loose result block beside the call. Returns `false` when there's no recent
