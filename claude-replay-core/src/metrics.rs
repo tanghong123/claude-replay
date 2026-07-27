@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 /// currently populates it, so `extra` is empty in practice.
 /// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
-#[derive(Debug, Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Metrics {
     /// Genuinely-new input tokens (excludes cached content — see the two cache

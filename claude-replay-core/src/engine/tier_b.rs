@@ -13,13 +13,19 @@
 //! path. Until then, drive it via one `advance_reader(..)` + one `snapshot()`.
 
 use crate::engine::session::{BlockAccess, BlockStore, Session};
-use crate::model::{Block, BlockIndex, ByteOffset};
+use crate::engine::SessionIndex;
+use crate::metrics::Metrics;
+use crate::model::{AgentId, Block, BlockIndex, ByteOffset, SubAgentMeta};
+use crate::Agent;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// A locator into a tier-b backing: the block's serialized bytes are
 /// `backing[offset .. offset + size]`. `Vec<Deferred>` (a `Session<Deferred>`'s `blocks`) **is** the
 /// tier-b index — O(N) tiny locators, no content resident.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Deferred {
     /// Byte offset of this block's record in the backing.
     pub offset: ByteOffset,
@@ -99,6 +105,92 @@ impl TierBSession {
         let end = start + d.size as usize;
         serde_json::from_slice(&self.backing[start..end]).expect("tier-b: valid block record")
     }
+
+    /// **Persist** this session to `dir` so it can be reloaded without re-folding the transcript
+    /// (restart / `SessionCache` re-admit survival). Writes two files: `blocks.tierb` (the
+    /// append-only content backing — the bulk) and `session.json` (a small sidecar: agent, cwd,
+    /// `user_times`, `metrics`, `sub_agents`, and the `Vec<Deferred>` offset table).
+    ///
+    /// The [`SessionIndex`] is deliberately **not** written — it is fully derivable from the blocks
+    /// plus `user_times`, so it's rebuilt on [`load`](Self::load). (That also sidesteps serializing
+    /// the index's `&'static str` count keys.) `Metrics` can't be re-derived from blocks — its token
+    /// tallies come from the raw transcript — so it is persisted.
+    pub fn persist(&self, dir: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join(BLOCKS_FILE), &self.backing)?;
+        let sidecar = Sidecar {
+            agent: self.session.agent,
+            cwd: self.session.cwd.clone(),
+            user_times: self.session.user_times.clone(),
+            metrics: self.session.metrics.clone(),
+            sub_agents: self.session.sub_agents.clone(),
+            blocks: self.session.blocks.clone(),
+        };
+        let json = serde_json::to_vec(&sidecar).map_err(to_io)?;
+        std::fs::write(dir.join(SIDECAR_FILE), json)?;
+        Ok(())
+    }
+
+    /// **Reload** a session persisted by [`persist`](Self::persist): read the backing + sidecar and
+    /// rebuild the [`SessionIndex`] by folding the blocks back through [`SessionIndex::push`] (which
+    /// equals a batch `build`). The result is byte-identical to the session that was persisted —
+    /// same blocks, index, metrics, `user_times`, `sub_agents` — for the cost of one pass over the
+    /// backing instead of a full transcript re-fold.
+    pub fn load(dir: &Path) -> io::Result<Self> {
+        let backing = std::fs::read(dir.join(BLOCKS_FILE))?;
+        let sidecar: Sidecar =
+            serde_json::from_slice(&std::fs::read(dir.join(SIDECAR_FILE))?).map_err(to_io)?;
+
+        // Rebuild the index incrementally from the (re-decoded) blocks — never holding them all
+        // resident — advancing the user-turn cursor exactly as `SessionIndex::build` does.
+        let mut index = SessionIndex::default();
+        let mut turn_i = 0usize;
+        for (at, d) in sidecar.blocks.iter().enumerate() {
+            let start = d.offset as usize;
+            let b: Block =
+                serde_json::from_slice(&backing[start..start + d.size as usize]).map_err(to_io)?;
+            let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+                let t = sidecar.user_times.get(turn_i).copied().flatten();
+                turn_i += 1;
+                t
+            } else {
+                None
+            };
+            index.push(at, &b, turn_time);
+        }
+
+        let session = Session {
+            agent: sidecar.agent,
+            cwd: sidecar.cwd,
+            blocks: sidecar.blocks,
+            user_times: sidecar.user_times,
+            metrics: sidecar.metrics,
+            index,
+            sub_agents: sidecar.sub_agents,
+        };
+        Ok(Self { session, backing })
+    }
+}
+
+/// File names inside a persisted tier-b session directory.
+const BLOCKS_FILE: &str = "blocks.tierb";
+const SIDECAR_FILE: &str = "session.json";
+
+/// The persisted metadata beside the content backing. Everything that is **not** re-derivable from
+/// the blocks (so the index is absent — rebuilt on load).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Sidecar {
+    agent: Agent,
+    cwd: Option<PathBuf>,
+    user_times: Vec<Option<crate::model::EpochSeconds>>,
+    metrics: Metrics,
+    sub_agents: BTreeMap<AgentId, SubAgentMeta>,
+    blocks: Vec<Deferred>,
+}
+
+/// Map a `serde_json` error into an `io::Error` (persist/load surface `io::Result`).
+fn to_io(e: serde_json::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
 impl BlockAccess for TierBSession {
@@ -222,6 +314,60 @@ mod tests {
         // The Bv-free metadata is store-independent.
         assert_eq!(mem_session.user_times, tb_sess.session.user_times);
         assert_eq!(mem_session.sub_agents, tb_sess.session.sub_agents);
+    }
+
+    // Persist a tier-b session to disk and reload it: every block, the rebuilt index, metrics,
+    // user_times, and sub_agents must match the pre-persist session exactly — a restart survives
+    // without re-folding the transcript.
+    #[test]
+    fn persist_then_load_reconstructs_the_session() {
+        use crate::engine::session::BlockAccess;
+        use crate::engine::SessionAccumulator;
+        use crate::Agent;
+        use std::io::Cursor;
+
+        let jsonl = r##"
+{"type":"user","message":{"content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"review","prompt":"review it"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"review\" finished</summary>\n<result>Two gaps.</result>\n</task-notification>"}
+{"type":"user","message":{"content":[{"type":"text","text":"thanks"}]}}
+"##;
+
+        let mut acc = SessionAccumulator::with_store(Agent::Claude, TierBStore::new());
+        acc.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
+            .unwrap();
+        let session = acc.snapshot();
+        let backing = acc.into_store().into_backing();
+        let before = TierBSession::new(session, backing);
+
+        let dir = std::env::temp_dir().join(format!("tierb-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        before.persist(&dir).unwrap();
+        let after = TierBSession::load(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(before.session.blocks.len(), after.session.blocks.len());
+        assert!(before.session.blocks.len() >= 5);
+        for i in 0..before.session.blocks.len() {
+            assert_eq!(
+                before.block(i),
+                after.block(i),
+                "block {i} survives persist→load"
+            );
+        }
+        assert_eq!(before.session.agent, after.session.agent);
+        assert_eq!(before.session.cwd, after.session.cwd);
+        assert_eq!(before.session.user_times, after.session.user_times);
+        assert_eq!(before.session.metrics, after.session.metrics);
+        assert_eq!(before.session.sub_agents, after.session.sub_agents);
+        // The index is rebuilt on load — must equal the original (compared via Debug; no PartialEq).
+        assert_eq!(
+            format!("{:?}", before.session.index),
+            format!("{:?}", after.session.index),
+            "rebuilt index equals the persisted session's"
+        );
     }
 
     #[test]

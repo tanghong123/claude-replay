@@ -281,7 +281,7 @@ impl AgentStatus {
 /// Replaces the derived `SessionIndex.agents` copy. The blocks remain the source for what they
 /// render; this is the navigation/lookup index. Keyed by [`AgentId`] in a
 /// [`Session`](crate::Session)'s `sub_agents` map.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubAgentMeta {
     /// The sub-agent's **type label from the spawn** (`SubAgent::agent_type`) — a free-form,
     /// open-set string (e.g. `general-purpose`, `code-reviewer`), **not** the [`Agent`](crate::Agent)
