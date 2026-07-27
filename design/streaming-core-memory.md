@@ -27,12 +27,30 @@ turn-local or become index updates; only content within the current turn must st
 |---|---|---|---|
 | **Back-patch** (`tool_result`→`tool_use`) | fills `output`/`patch` | its result arrives (post-#24, results follow uses, ~adjacent) | held in the **turn window** |
 | **Grouping** (`finish_turns`) | thinking absorbs the following activity run; runs coalesce | the turn closes (next user turn) | finalized per-turn, then emitted |
+| **Queue-marker suppress** (dequeue → drop a `⧗ queued:` marker) | removes an immediately-picked-up marker | content advances past the marker's enqueue (`content_seq > content_at_enqueue`) or it's dequeued | held while **suppressible** (see below) |
 | **Reset** (file shrink) | invalidates everything | — | a **`Reset` event** → consumer discards + re-emit; **defensive only, see below** |
 
 Back-patch + grouping are turn-local ⇒ the fold holds only the **current turn**'s content; when the
 turn closes it finalizes (group + resolve joins) and **emits the turn's blocks, then drops them**.
 So the Replayer's resident **content** is **O(turn)**, while it maintains the O(N) **index** as it
-goes. There is **no async block mutation.**
+goes. There is **no async block *mutation*** — but see the queue-marker caveat next.
+
+### The queue-marker suppress pins the frontier (the one cross-turn *drop*)
+
+A prose `⧗ queued:` marker is dropped iff, at its dequeue, `content_seq == content_at_enqueue` (the
+prompt was picked up with no agent work in between). `content_seq` advances only on assistant /
+thinking / tool content — **not** on a `UserText`/`Command` turn boundary. So in a rapid type-ahead
+case (enqueue → an unanswered user turn → immediate dequeue) the suppress can target a marker that
+sits **behind** a turn boundary. Today one global `apply_suppress` over the single `out` buffer
+handles this for free; a naive per-turn buffer-split would make that suppress index **stale** (the
+marker already finalized + dropped) — the one thing that breaks byte-identicality under emit-and-drop.
+
+**Frontier rule (reference-stable):** a closed turn is durable/emittable only once it holds **no
+still-suppressible marker** — i.e. every pending queue item whose `marker_idx` lands in that turn has
+either been dequeued or seen `content_seq` advance past its `content_at_enqueue`. Since content
+advances every assistant turn and type-ahead depth is tiny, markers unpin almost immediately, so the
+resident window stays **O(turn + pending type-ahead) ≈ O(turn)**. This keeps every suppress target
+resident when its suppress fires, so per-turn finalize stays byte-identical to the global pass.
 
 **Reset does not occur in real transcripts — they are append-only.** `/compact` *appends* a
 summary line (`isCompactSummary`) and the session keeps appending (verified: summaries sit
@@ -222,11 +240,25 @@ children are locators / on-disk. Never O(whole tree).
 1. **Sink seam (zero behavior/footprint change).** Give `SessionBuilder` a `Sink`; the default is
    the in-memory sink that reconstructs today's `Vec<Block>`. Pure refactor — the equivalence
    oracle + `verify.sh` prove identical output. Establishes the interface.
-2. **Emit-and-drop past the turn frontier.** Finalize per-turn (prove `finish_turns` is turn-local),
-   turn async completions into `StatusPatch` on the index (prove ≡ `apply_completions_and_suppress`).
-   Core content goes O(turn); the in-memory sink still yields the same `Vec<Block>`. **This is the
-   correctness pivot** — gate hardest here.
-3. **Tier-b on-disk sink.** Serialize blocks append-only + per-block offsets in the index; a paged
+2. **Un-conflate state from display — no cross-turn block *mutation* (LANDED, byte-identical).**
+   The sub-agent status back-patch is gone: the spawn/finish are two immutable durable events and the
+   terminal status is derived by the `sub_agents` index (`build_sub_agents`). `AgentDone` resolves its
+   spawn's id/type at emit-time from a running `agent_ids` map (O(#agents)) rather than a finalize
+   scan over — soon-dropped — spawn blocks; `apply_completions_and_suppress` shrank to a pure
+   index-keyed `apply_suppress`. This removes every cross-turn *mutation*, leaving only the
+   queue-marker *drop* (above). Proven via the equivalence oracle (`replay(tokenize) == parse_main`,
+   the unchanged reference) + end-to-end `--dump`/`--dump-html`/`--dump-all-html` diffs.
+   *Remaining plumbing (emit-and-drop of finalized turns) is folded into stage 3* — see the note there:
+   per-turn finalize is proven turn-local (`finish_turns(⊕turns) == ⊕finish_turns(turn_i)`, since a
+   `UserText`/`Command` boundary breaks both grouping passes), but the *buffer-split that actually
+   drops content* has zero footprint payoff until a **dropping** sink exists (the in-memory sink here
+   re-accumulates), and its one hazard — the queue-marker frontier pin — is cleanest to build against
+   tier-b's concrete offset model. So it lands with the consumer that exercises it.
+3. **Tier-b on-disk sink + emit-and-drop.** Fold in stage-2's remaining plumbing here, against a real
+   dropping consumer: the `Replayer` finalizes per-turn behind the queue-marker-pinned frontier and
+   **emits** finalized turns; the `SessionAccumulator` pulls them into the store and the Replayer
+   keeps only the open window (content → O(turn)). Then: serialize blocks append-only + per-block
+   offsets in the index; a paged
    block accessor (`Transcript`/`SessionCache` read-by-offset). `--dump`/serve/`parse_session` can
    opt into O(N)-index + paged content. Underpins `SessionCache` eviction + the resume production
    consumer (restart survival — #18's `tell`/`open_at`, still test-wired, finally used here).
