@@ -398,101 +398,151 @@ fn diff_rendered_len(old: &str, new: &str) -> usize {
     n
 }
 
-fn diff_lines(old: &str, new: &str, token: &str, out: &mut Vec<Line<'static>>) {
-    let ol: Vec<&str> = old.lines().collect();
-    let nl: Vec<&str> = new.lines().collect();
-    let ops = line_diff(&ol, &nl);
-
-    // Local hunk numbering over the NEW side. The transcript's Edit payload has
-    // no absolute file line numbers, so this numbers 1..N within the hunk — an
-    // intentional approximation (context + additions get numbers; deletions
-    // don't exist on the new side, so they show a blank gutter).
-    let new_total = ops
-        .iter()
-        .filter(|o| matches!(o, LineOp::Eq(_) | LineOp::Ins(_)))
-        .count();
-    let gw = new_total.to_string().len().max(1);
-
-    // No truncation — the whole hunk is emitted (folding controls cost).
-    let mut n = 0usize;
-    for op in &ops {
-        match op {
-            LineOp::Eq(l) => {
-                n += 1;
-                out.push(diff_row(gw, Some(n), ' ', l, token, None));
-            }
-            LineOp::Del(l) => {
-                out.push(diff_row(
-                    gw,
-                    None,
-                    '-',
-                    l,
-                    token,
-                    Some(theme::diff_del_bg()),
-                ));
-            }
-            LineOp::Ins(l) => {
-                n += 1;
-                out.push(diff_row(
-                    gw,
-                    Some(n),
-                    '+',
-                    l,
-                    token,
-                    Some(theme::diff_add_bg()),
-                ));
-            }
-        }
-    }
+/// One classified row of an Edit diff: its kind, the gutter line number to show (`None` =
+/// blank gutter — a deletion in the local-numbering fallback, which has no new-side position),
+/// and the row text.
+pub(crate) enum DiffKind {
+    Ctx,
+    Add,
+    Del,
+}
+pub(crate) struct DiffRow {
+    pub kind: DiffKind,
+    pub num: Option<usize>,
+    pub text: String,
+}
+/// A gutter-alignment group of diff rows: one `structuredPatch` hunk, or one `(old, new)`
+/// pair in the local-numbering fallback. `max_line` is the largest line number either side's
+/// numbering reaches — including a trailing-context position counted on the *old* side even
+/// though that row shows its new number — so the TUI sizes its gutter exactly as it always has.
+pub(crate) struct DiffGroup {
+    pub rows: Vec<DiffRow>,
+    pub max_line: usize,
 }
 
-/// Render Edit/MultiEdit hunks from the transcript's `structuredPatch`, which
-/// carries **real file line numbers** (`new_start`). Context/added rows are
-/// numbered on the new side; deletions get a blank gutter. Add/del rows fill with
-/// the diff bg; code is syntax-highlighted by `token`.
-fn render_patch(hunks: &[crate::model::Hunk], token: &str, out: &mut Vec<Line<'static>>) {
-    for h in hunks {
-        // Gutter width from the largest line number in this hunk — CC numbers both
-        // sides (added/context on the new side, removed on the old side).
-        let new_lines = h.lines.iter().filter(|l| !l.starts_with('-')).count();
-        let old_lines = h.lines.iter().filter(|l| !l.starts_with('+')).count();
-        let new_last = h.new_start + new_lines.saturating_sub(1);
-        let old_last = h.old_start + old_lines.saturating_sub(1);
-        let gw = new_last.max(old_last).to_string().len().max(1);
-        let mut n = h.new_start;
-        let mut o = h.old_start;
-        for line in &h.lines {
-            let marker = line.chars().next().unwrap_or(' ');
-            let text = line.get(marker.len_utf8()..).unwrap_or("");
-            match marker {
-                '+' => {
-                    out.push(diff_row(
-                        gw,
-                        Some(n),
-                        '+',
-                        text,
-                        token,
-                        Some(theme::diff_add_bg()),
-                    ));
-                    n += 1;
-                }
-                '-' => {
-                    out.push(diff_row(
-                        gw,
-                        Some(o),
-                        '-',
-                        text,
-                        token,
-                        Some(theme::diff_del_bg()),
-                    ));
-                    o += 1;
-                }
-                _ => {
-                    out.push(diff_row(gw, Some(n), ' ', text, token, None));
-                    n += 1;
-                    o += 1;
+/// **The single Edit-diff classifier + line-numberer**, shared by the TUI ([`render_diff`])
+/// and the HTML exporter (`html_export::diff_part`) so their numbering can never drift.
+/// Rows are grouped for gutter alignment: one group per `structuredPatch` hunk (real file
+/// line numbers on both sides), or — when the transcript carried no patch — one group per
+/// `(old, new)` diff pair with a local 1..N numbering over the new side (via [`line_diff`]).
+/// Context/added rows carry a new-side number; a deletion carries its OLD-side number in the
+/// patch branch and `None` in the fallback. Empty diff pairs are dropped.
+pub(crate) fn diff_row_groups(
+    diffs: &[(String, String)],
+    patch: Option<&[crate::model::Hunk]>,
+) -> Vec<DiffGroup> {
+    let mut groups = Vec::new();
+    if let Some(hunks) = patch {
+        for h in hunks {
+            // Gutter extent counts BOTH sides fully (added/context on the new side, removed/
+            // context on the old side) — a trailing-context run advances the old side past any
+            // old number actually shown, so size to `max(new_last, old_last)`.
+            let new_lines = h.lines.iter().filter(|l| !l.starts_with('-')).count();
+            let old_lines = h.lines.iter().filter(|l| !l.starts_with('+')).count();
+            let max_line = (h.new_start + new_lines.saturating_sub(1))
+                .max(h.old_start + old_lines.saturating_sub(1));
+            let mut rows = Vec::new();
+            let (mut n, mut o) = (h.new_start, h.old_start);
+            for line in &h.lines {
+                let marker = line.chars().next().unwrap_or(' ');
+                let text = line.get(marker.len_utf8()..).unwrap_or("").to_string();
+                match marker {
+                    '+' => {
+                        rows.push(DiffRow {
+                            kind: DiffKind::Add,
+                            num: Some(n),
+                            text,
+                        });
+                        n += 1;
+                    }
+                    '-' => {
+                        rows.push(DiffRow {
+                            kind: DiffKind::Del,
+                            num: Some(o),
+                            text,
+                        });
+                        o += 1;
+                    }
+                    _ => {
+                        rows.push(DiffRow {
+                            kind: DiffKind::Ctx,
+                            num: Some(n),
+                            text,
+                        });
+                        n += 1;
+                        o += 1;
+                    }
                 }
             }
+            groups.push(DiffGroup { rows, max_line });
+        }
+    } else {
+        for (old, new) in diffs
+            .iter()
+            .filter(|(o, n)| !(o.is_empty() && n.is_empty()))
+        {
+            let ol: Vec<&str> = old.lines().collect();
+            let nl: Vec<&str> = new.lines().collect();
+            let ops = line_diff(&ol, &nl);
+            // Local numbering over the NEW side only (deletions get a blank gutter); the
+            // gutter sizes to the count of new-side lines (context + insertions).
+            let max_line = ops
+                .iter()
+                .filter(|op| matches!(op, LineOp::Eq(_) | LineOp::Ins(_)))
+                .count();
+            let mut rows = Vec::new();
+            let mut n = 0usize;
+            for op in ops {
+                match op {
+                    LineOp::Eq(l) => {
+                        n += 1;
+                        rows.push(DiffRow {
+                            kind: DiffKind::Ctx,
+                            num: Some(n),
+                            text: l.to_string(),
+                        });
+                    }
+                    LineOp::Del(l) => {
+                        rows.push(DiffRow {
+                            kind: DiffKind::Del,
+                            num: None,
+                            text: l.to_string(),
+                        });
+                    }
+                    LineOp::Ins(l) => {
+                        n += 1;
+                        rows.push(DiffRow {
+                            kind: DiffKind::Add,
+                            num: Some(n),
+                            text: l.to_string(),
+                        });
+                    }
+                }
+            }
+            groups.push(DiffGroup { rows, max_line });
+        }
+    }
+    groups
+}
+
+/// Render an Edit's diff to styled TUI rows: classify via [`diff_row_groups`], size the
+/// gutter per group (from its `max_line`), and emit one styled `diff_row` each. Add/del rows
+/// fill with the diff bg; code is syntax-highlighted by `token`.
+fn render_diff(
+    diffs: &[(String, String)],
+    patch: Option<&[crate::model::Hunk]>,
+    token: &str,
+    out: &mut Vec<Line<'static>>,
+) {
+    for group in diff_row_groups(diffs, patch) {
+        let gw = group.max_line.to_string().len().max(1);
+        for r in &group.rows {
+            let (marker, bg) = match r.kind {
+                DiffKind::Ctx => (' ', None),
+                DiffKind::Add => ('+', Some(theme::diff_add_bg())),
+                DiffKind::Del => ('-', Some(theme::diff_del_bg())),
+            };
+            out.push(diff_row(gw, r.num, marker, &r.text, token, bg));
         }
     }
 }
@@ -687,17 +737,8 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                     theme::result(),
                 ));
                 // Prefer the transcript's structuredPatch (real file line numbers);
-                // fall back to our own line-diff (local numbering) when absent.
-                if let Some(hunks) = patch {
-                    render_patch(hunks, token, &mut out);
-                } else {
-                    for (old, new) in diffs {
-                        if old.is_empty() && new.is_empty() {
-                            continue;
-                        }
-                        diff_lines(old, new, token, &mut out);
-                    }
-                }
+                // `diff_row_groups` falls back to our own line-diff (local numbering) when absent.
+                render_diff(diffs, patch.as_deref(), token, &mut out);
             } else {
                 // Bash / Read / other tools — header + (capped) output, on the
                 // expanded shell/read background block (medium-dark gray, full
@@ -1463,7 +1504,12 @@ mod tests {
     #[test]
     fn inserted_line_keeps_others_as_context() {
         let mut out = Vec::new();
-        diff_lines("a\nb\nc", "a\nb\nX\nc", "", &mut out);
+        render_diff(
+            &[("a\nb\nc".into(), "a\nb\nX\nc".into())],
+            None,
+            "",
+            &mut out,
+        );
         let t = texts(&out);
         let all = t.join("\n");
 
@@ -1482,7 +1528,12 @@ mod tests {
     #[test]
     fn changed_line_shows_del_then_add_with_bg() {
         let mut out = Vec::new();
-        diff_lines("hello world", "hello brave world", "txt", &mut out);
+        render_diff(
+            &[("hello world".into(), "hello brave world".into())],
+            None,
+            "txt",
+            &mut out,
+        );
         let del = out
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content == "-"))

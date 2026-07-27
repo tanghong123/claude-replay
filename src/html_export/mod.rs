@@ -15,7 +15,7 @@
 
 use crate::fold::FoldPolicy;
 use crate::model::{AttachmentContent, Block};
-use crate::render::{self, LineOp};
+use crate::render;
 use crate::{discover, highlight, Agent};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
@@ -260,67 +260,35 @@ fn numbered_part(content: &str, token: &str, cap: usize) -> Value {
     json!({ "p": "num", "rows": rows, "cap": cap })
 }
 
-/// Diff rows for an Edit: real file line numbers when the transcript carried a
-/// `structuredPatch`, else a local 1..N numbering over the new side (mirrors the
-/// TUI's `render_patch` / `diff_lines`).
+/// Diff rows for an Edit, as `[tag, num|null, text]` triples for the JS renderer. Delegates
+/// the classification + line-numbering to the shared [`render::diff_row_groups`] (the same
+/// logic the TUI renders), so real-file-line-number (patch) vs local-numbering (fallback)
+/// behavior can't drift between the two presenters. The gutter grouping is a TUI concern —
+/// here the groups are simply flattened.
 fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     let Block::ToolUse { diffs, patch, .. } = b else {
         return None;
     };
     let mut rows: Vec<Value> = Vec::new();
     let (mut adds, mut dels) = (0usize, 0usize);
-
-    if let Some(hunks) = patch {
-        for h in hunks {
-            let (mut n, mut o) = (h.new_start, h.old_start);
-            for line in &h.lines {
-                let marker = line.chars().next().unwrap_or(' ');
-                let text = line.get(marker.len_utf8()..).unwrap_or("");
-                match marker {
-                    '+' => {
-                        rows.push(json!(["add", n, text]));
-                        adds += 1;
-                        n += 1;
-                    }
-                    '-' => {
-                        rows.push(json!(["del", o, text]));
-                        dels += 1;
-                        o += 1;
-                    }
-                    _ => {
-                        rows.push(json!(["ctx", n, text]));
-                        n += 1;
-                        o += 1;
-                    }
-                }
+    for row in render::diff_row_groups(diffs, patch.as_deref())
+        .into_iter()
+        .flat_map(|g| g.rows)
+    {
+        let tag = match row.kind {
+            render::DiffKind::Ctx => "ctx",
+            render::DiffKind::Add => {
+                adds += 1;
+                "add"
             }
-        }
-    } else {
-        for (old, new) in diffs
-            .iter()
-            .filter(|(o, n)| !(o.is_empty() && n.is_empty()))
-        {
-            let ol: Vec<&str> = old.lines().collect();
-            let nl: Vec<&str> = new.lines().collect();
-            let mut n = 0usize;
-            for op in render::line_diff(&ol, &nl) {
-                match op {
-                    LineOp::Eq(l) => {
-                        n += 1;
-                        rows.push(json!(["ctx", n, l]));
-                    }
-                    LineOp::Del(l) => {
-                        dels += 1;
-                        rows.push(json!(["del", Value::Null, l]));
-                    }
-                    LineOp::Ins(l) => {
-                        n += 1;
-                        adds += 1;
-                        rows.push(json!(["add", n, l]));
-                    }
-                }
+            render::DiffKind::Del => {
+                dels += 1;
+                "del"
             }
-        }
+        };
+        // `num` is a number for context/adds (and old-side deletions from a patch), or
+        // null for a fallback deletion — `json!(Option)` serializes exactly that.
+        rows.push(json!([tag, row.num, row.text]));
     }
     if rows.is_empty() {
         return None;

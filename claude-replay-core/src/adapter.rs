@@ -2,7 +2,7 @@
 //!
 //! Everything that varies by agent lives behind [`TranscriptAdapter`]: the Layer-1
 //! tokenizer + its `Shaping` hooks, the metrics accumulator, transcript detection, and
-//! discovery. The rest of the engine (the [`Replayer`](crate::model::Replayer) fold,
+//! discovery. The rest of the engine (the [`Replayer`](crate::engine::replay::Replayer) fold,
 //! `Session`, the parse dispatchers, the live follower) is agent-agnostic and reaches the
 //! per-agent behavior only through [`adapter`]. Adding an agent is therefore one `impl
 //! TranscriptAdapter` + one row in [`adapter`]/[`adapters`] — no `match agent` scattered
@@ -159,7 +159,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
         use std::io::BufRead;
         let f = io::BufReader::new(std::fs::File::open(path)?);
-        Ok(crate::claude_model::scan_join_ids(f.lines().map_while(Result::ok)))
+        Ok(crate::claude_model::scan_join_ids(
+            f.lines().map_while(Result::ok),
+        ))
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         crate::claude_model::enrich_tree(path, blocks)
@@ -199,7 +201,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
         use std::io::BufRead;
         let f = io::BufReader::new(std::fs::File::open(path)?);
-        Ok(crate::codex_model::scan_join_ids(f.lines().map_while(Result::ok)))
+        Ok(crate::codex_model::scan_join_ids(
+            f.lines().map_while(Result::ok),
+        ))
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING
