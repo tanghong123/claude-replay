@@ -1462,10 +1462,7 @@ fn takeover_unmanaged(
     let agent = detect::agent_for(&cwd, forced).ok_or_else(|| anyhow_no_session(&cwd))?;
     let adapter = agent::adapter(agent);
     let resumable = adapter.discover_resumable(&cwd)?;
-    let bin = match agent {
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-    };
+    let bin = agent.label(); // "claude" / "codex" — same mapping, no duplicate match
     let live = live_agent_for_session(bin, &resumable.id, &cwd)?;
     let cmds = adapter.resume_commands(&resumable.id);
 

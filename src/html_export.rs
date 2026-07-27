@@ -13,9 +13,9 @@
 //! fragments. Everything that reaches the page is HTML-escaped here; the renderer
 //! uses `textContent` for all raw text so nothing can inject markup.
 
+use crate::fold::FoldPolicy;
 use crate::model::{AttachmentContent, Block};
 use crate::render::{self, LineOp};
-use crate::view::FoldPolicy;
 use crate::{discover, highlight, Agent, Args};
 use anyhow::{Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -934,7 +934,7 @@ fn count_tools(blocks: &[Block]) -> usize {
 /// The whole append-only stream for `path` right now: the `meta` line followed by
 /// one line per block. Re-run each poll cycle in live mode; the loop appends only
 /// the lines that are new since the previous cycle.
-fn snapshot(
+fn build_stream(
     agent: Agent,
     path: &Path,
     fold: &FoldPolicy,
@@ -1033,11 +1033,11 @@ fn block_lines(jsonl: &str) -> Vec<String> {
 
 /// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
 /// path links (their absolute `file://` paths don't resolve on another machine).
-pub fn export(args: &Args, path: &Path) -> Result<()> {
+pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let reveal = false;
-    let (jsonl, turns) = snapshot(agent, path, &fold, reveal)?;
+    let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
     // The page title is the repo name; files are named by the session id.
     let title = display_title(path);
 
