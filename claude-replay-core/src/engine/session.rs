@@ -8,12 +8,13 @@
 //! timestamps still ride `user_times` directly (mirrored onto `index.turns`) until consumers
 //! migrate off the field.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
-use crate::model::{Block, EpochSeconds};
+use crate::model::{AgentId, Block, EpochSeconds, SubAgentMeta};
 use crate::Agent;
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
@@ -31,8 +32,62 @@ pub struct Session {
     pub user_times: Vec<Option<EpochSeconds>>,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
-    /// Derived within-session indices — turns / agents / tools / attachments (§7).
+    /// Derived within-session indices — turns / tools / attachments (§7).
     pub index: SessionIndex,
+    /// The per-session sub-agent entity map, keyed by [`AgentId`]: the single lookup-owner of
+    /// each spawned sub-agent's attributes + pointers to its two lifecycle blocks (`spawn_at` /
+    /// `done_at`) and its on-disk artifacts (`transcript` / `output_file`). Built as a post-pass
+    /// over the finished `blocks`; `transcript` is filled by the path-aware parse. Empty for an
+    /// agent with no sub-agents (Codex). Replaces the retired `SessionIndex.agents`.
+    pub sub_agents: BTreeMap<AgentId, SubAgentMeta>,
+}
+
+/// Build the sub-agent entity map as a **post-pass over the finished top-level blocks** (the
+/// fold is untouched): one [`SubAgentMeta`] per spawn [`Block::SubAgent`] with a non-empty
+/// `agent_id`, with `done_at` back-filled from the matching completion [`Block::AgentDone`].
+/// `transcript` is left `None` here — the path-aware parse fills it (see
+/// [`populate_sub_agent_transcripts`]). An unmatched `AgentDone` (no spawn) is ignored, mirroring
+/// the retired `SessionIndex.agents`.
+pub(crate) fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
+    let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
+    for (at, b) in blocks.iter().enumerate() {
+        match b {
+            Block::SubAgent(sa) if !sa.agent_id.is_empty() => {
+                map.insert(
+                    sa.agent_id.clone(),
+                    SubAgentMeta {
+                        agent_type: sa.agent_type.clone(),
+                        status: sa.status,
+                        subtree_cost: sa.subtree_cost,
+                        transcript: None,
+                        output_file: sa.output_file.clone(),
+                        spawn_at: at,
+                        done_at: None,
+                    },
+                );
+            }
+            Block::AgentDone { agent_id, .. } => {
+                if let Some(m) = map.get_mut(agent_id) {
+                    m.done_at = Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+/// Fill each entry's `transcript` with its child transcript file (`subagents/agent-<id>.jsonl`)
+/// via the agent's discovery hook. A no-op for an agent without sub-agents, or where the file is
+/// absent (leaves `None`). Called by the path-aware parse, which alone knows the transcript path.
+pub(crate) fn populate_sub_agent_transcripts(
+    agent: Agent,
+    path: &Path,
+    map: &mut BTreeMap<AgentId, SubAgentMeta>,
+) {
+    for (id, m) in map.iter_mut() {
+        m.transcript = crate::discover::subagent_source(agent, path, id);
+    }
 }
 
 /// **The entry point.** Auto-detect the agent from the transcript head, then parse the file
@@ -85,6 +140,9 @@ pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     }
     let mut s = b.snapshot();
     s.cwd = crate::discover::session_cwd(path); // the builder leaves cwd None; fill it here
+                                                // The builder can't resolve child transcript paths (it has no file path); now that we know
+                                                // `path`, fill each `sub_agents[*].transcript` so the map can locate each child transcript.
+    populate_sub_agent_transcripts(agent, path, &mut s.sub_agents);
     Ok(s)
 }
 
@@ -150,5 +208,117 @@ mod tests {
         assert_eq!(s.cwd.as_deref(), Some(Path::new("/repo")));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `build_sub_agents` keys the map by agent id, its `spawn_at`/`done_at` point at the
+    /// `SubAgent` spawn and the `AgentDone` completion, and a spawn without a completion has
+    /// `done_at == None`. An empty-id spawn and an unmatched `AgentDone` produce no entry.
+    #[test]
+    fn sub_agents_map_points_at_lifecycle_blocks() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: Vec::new(),
+                subtree_cost: Some(2.5),
+            })
+        };
+        let done = |id: &str| Block::AgentDone {
+            agent_id: id.into(),
+            agent_type: "gp".into(),
+            description: format!("do {id}"),
+            status: AgentStatus::Completed,
+            result: None,
+        };
+        let blocks = vec![
+            Block::UserText("hi".into()),        // 0
+            spawn("a1", AgentStatus::Completed), // 1
+            spawn("a2", AgentStatus::Running),   // 2 — never completes
+            spawn("", AgentStatus::Running),     // 3 — empty id: skipped
+            done("a1"),                          // 4 — completes a1
+            done("ghost"),                       // 5 — no spawn: ignored
+        ];
+        let map = build_sub_agents(&blocks);
+
+        assert_eq!(map.len(), 2, "a1 + a2 only (empty id + ghost dropped)");
+
+        let a1 = &map["a1"];
+        assert_eq!(a1.spawn_at, 1);
+        assert!(matches!(blocks[a1.spawn_at], Block::SubAgent(_)));
+        assert_eq!(a1.done_at, Some(4));
+        assert!(matches!(
+            blocks[a1.done_at.unwrap()],
+            Block::AgentDone { .. }
+        ));
+        assert_eq!(a1.agent_type, "gp");
+        assert_eq!(a1.subtree_cost, Some(2.5));
+
+        let a2 = &map["a2"];
+        assert_eq!(a2.spawn_at, 2);
+        assert_eq!(a2.done_at, None, "a2 never completed");
+        assert_eq!(a2.status, AgentStatus::Running);
+        assert!(
+            a2.transcript.is_none(),
+            "no path-aware parse → no transcript"
+        );
+    }
+
+    /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk
+    /// transcript (`<session>/subagents/agent-<id>.jsonl`).
+    #[test]
+    fn enriched_parse_populates_transcript() {
+        let base = std::env::temp_dir().join(format!(
+            "cr-session-tx-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let parent = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}"#,
+            "\n",
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#,
+            "\n",
+        );
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        let child = concat!(
+            r#"{"type":"user","message":{"content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+            "\n",
+        );
+        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
+
+        let s = parse_session_enriched_as(Agent::Claude, &sess).unwrap();
+        let meta = s
+            .sub_agents
+            .get("achild01")
+            .expect("achild01 in sub_agents map");
+        assert_eq!(
+            meta.transcript.as_deref(),
+            Some(sadir.join("agent-achild01.jsonl").as_path()),
+            "child transcript path resolved"
+        );
+        assert!(matches!(s.blocks[meta.spawn_at], Block::SubAgent(_)));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

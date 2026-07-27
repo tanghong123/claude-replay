@@ -1,9 +1,30 @@
 # Design: normalize sub-agents into a Session metadata map
 
-> **Status:** proposed (not built). A public data-model change, output-preserving, gated on
-> byte-identical diffs. Tracked as task #20. Pairs with **lazy session loading** (task #21) —
-> the existing `SessionStore` + `FollowParser`, no new type — which materializes the parsed
-> child transcripts on demand. Supersedes `SessionIndex.agents` / `AgentEntry`.
+> **Status: BUILT (2026-07) — additive variant.** Task #20 shipped as an *additive* change, NOT
+> the field-lifting collapse the body below proposes. What was built:
+> - `Session.sub_agents: BTreeMap<AgentId, SubAgentMeta>` was **added** as the single
+>   lookup-owner, replacing the derived `SessionIndex.agents` / `AgentEntry` copy.
+> - `SubAgentMeta` holds the intrinsic attrs (`agent_type`, `status`, `subtree_cost`), the
+>   **artifact locations** (`transcript` path, `output_file`), and **`BlockIndex` pointers to both
+>   lifecycle events** (`spawn_at`, `done_at`).
+> - **The `Block::SubAgent`/`AgentDone` blocks were left fully intact** — no field dropped. Reason:
+>   the spawn's and the completion's `description`/`result` genuinely diverge, so lifting the
+>   *shared* attributes into the map while collapsing the blocks to `{ agent_id }` (below) is not
+>   byte-identical. Keeping the blocks whole and adding the map is trivially output-preserving
+>   (renderers unchanged) and still delivers the single owner + O(1) lookup + event/artifact
+>   pointers.
+> - The map is built as a **post-pass over the finished blocks** (`build_sub_agents`); the fold is
+>   untouched.
+>
+> Lifting the truly-intrinsic, non-divergent fields *out* of the blocks into the map is a **memory
+> optimization deferred** to later (it would shrink the retained model but requires renderers to
+> consult the map). The block-collapsing design below is retained as the eventual target for that
+> optimization.
+>
+> ---
+>
+> _Original proposal (the field-lifting collapse — deferred):_ A public data-model change,
+> output-preserving, gated on byte-identical diffs. Pairs with **lazy session loading** (task #21).
 
 ## Problem
 

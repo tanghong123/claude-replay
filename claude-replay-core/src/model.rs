@@ -6,6 +6,8 @@
 //! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
+use std::path::PathBuf;
+
 // ── semantic aliases for otherwise-ambiguous primitives ────────────────────────────────────
 // Transparent type aliases (not distinct types): they make a field's *meaning* — and its unit
 // — readable at the API surface, without the `.0` ergonomics of a newtype. Use them wherever
@@ -28,6 +30,11 @@ pub type UsdCost = f64;
 
 /// A byte offset into a transcript file (a position, not a length/count).
 pub type ByteOffset = u64;
+
+/// A spawned sub-agent's id — its [`SubAgent::agent_id`] (== the completion event's
+/// `AgentDone::agent_id`), which also names the child transcript file `agent-<id>.jsonl`. The
+/// key of a [`Session`](crate::Session)'s `sub_agents` map ([`SubAgentMeta`]).
+pub type AgentId = String;
 
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
@@ -247,6 +254,40 @@ impl AgentStatus {
             Self::Running | Self::AsyncLaunched => "finished",
         }
     }
+}
+
+/// The single lookup-owner of a spawned sub-agent's intrinsic attributes + the pointers needed
+/// to locate its lifecycle events (in the parent's `blocks`) and its on-disk artifacts.
+/// Replaces the derived `SessionIndex.agents` copy. The blocks remain the source for what they
+/// render; this is the navigation/lookup index. Keyed by [`AgentId`] in a
+/// [`Session`](crate::Session)'s `sub_agents` map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubAgentMeta {
+    /// The sub-agent's **type label from the spawn** (`SubAgent::agent_type`) — a free-form,
+    /// open-set string (e.g. `general-purpose`, `code-reviewer`), **not** the [`Agent`](crate::Agent)
+    /// that produced the transcript. May be empty.
+    pub agent_type: String,
+    /// Terminal-or-running truth — the liveness signal; see [`AgentStatus`]. Mirrors the spawn
+    /// `SubAgent::status`.
+    pub status: AgentStatus,
+    /// Rolled-up **cost in US dollars** of this sub-agent *and* its descendants, from the spawn
+    /// `SubAgent::subtree_cost`. `None` when the child transcript wasn't loaded or cost couldn't
+    /// be derived.
+    pub subtree_cost: Option<UsdCost>,
+    // ── locate the agent's generated artifacts ──
+    /// The child transcript file (`subagents/agent-<id>.jsonl`), resolved by the path-aware
+    /// parse. `None` on a flat/unresolved parse or when the file is absent.
+    pub transcript: Option<PathBuf>,
+    /// The async result sidecar (`tasks/agent-<id>.output`) for a background spawn, from the
+    /// spawn `SubAgent::output_file`. `None` for a synchronous spawn.
+    pub output_file: Option<String>,
+    // ── pointers to the two events in the parent's blocks vector ──
+    /// Index into the parent [`Session`](crate::Session)'s `blocks` of this agent's spawn
+    /// [`Block::SubAgent`] — the jump target; see [`BlockIndex`].
+    pub spawn_at: BlockIndex,
+    /// Index into the parent's `blocks` of the matching completion [`Block::AgentDone`], if it
+    /// arrived; `None` while the agent is still running / its completion never came.
+    pub done_at: Option<BlockIndex>,
 }
 
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`

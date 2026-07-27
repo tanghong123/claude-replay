@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
         session.blocks.len(),
         session.index.turns.len(),
         session.index.tools.len(),
-        session.index.agents.len(),
+        session.sub_agents.len(),
     );
     println!("metrics: {}", session.metrics.footer());
 

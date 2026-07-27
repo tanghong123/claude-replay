@@ -1,5 +1,6 @@
-//! The [`SessionIndex`] — per-session derived indices for fast filter / jump / analysis,
-//! and the sub-agent liveness truth (design `parser-engine.md` §7).
+//! The [`SessionIndex`] — per-session derived indices for fast filter / jump / analysis
+//! (design `parser-engine.md` §7). The sub-agent entity map (spawn liveness + lifecycle
+//! pointers) now lives on [`Session.sub_agents`](crate::Session), keyed by agent id.
 //!
 //! Milestone status: this is the **derived-view-first** cut (§5.2 Phase 5). It is built by
 //! one scan over a `Session`'s **top-level** blocks, so positions are flat [`BlockIndex`]es
@@ -9,7 +10,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::model::{AgentStatus, AttachmentKind, Block, BlockIndex, EpochSeconds, UsdCost};
+use crate::model::{AttachmentKind, Block, BlockIndex, EpochSeconds};
 
 /// A user/human turn boundary. Re-homes today's parallel `user_times` onto the turn.
 #[derive(Debug, Clone)]
@@ -23,33 +24,6 @@ pub struct TurnEntry {
     /// so sub-second precision survives, though transcripts are whole-second in practice).
     /// `None` when the transcript recorded no timestamp for this turn.
     pub time: Option<EpochSeconds>,
-}
-
-/// A spawned sub-agent (an `Agent`/`Task` tool call), with its liveness. `status` is the
-/// liveness truth ([`active_agents`](SessionIndex::active_agents) filters on it).
-#[derive(Debug, Clone)]
-pub struct AgentEntry {
-    /// The sub-agent's id **as recorded in the transcript** (Claude's `toolUseResult.agentId`);
-    /// it also names the child transcript file `agent-<id>.jsonl`. **Empty string** when the
-    /// transcript hasn't assigned one yet (e.g. a spawn whose completion event hasn't arrived).
-    pub id: String,
-    /// The sub-agent's **type label from the spawn** — a free-form string the caller chose
-    /// (Claude's `subagent_type`, e.g. `general-purpose`, `code-reviewer`, `Explore`, or a
-    /// user-defined agent). This is an **open set**, not a fixed enum, and it is **not** the
-    /// [`Agent`](crate::Agent) that produced the transcript. **Empty string** when the spawn
-    /// recorded no type.
-    pub agent_type: String,
-    /// The human task description from the spawn input (Claude's `description`). May be empty.
-    pub description: String,
-    /// Terminal-or-running state — the liveness signal; see [`AgentStatus`].
-    pub status: AgentStatus,
-    /// Zero-based **index into the [`Session`](crate::Session)'s `blocks`** of this spawn's
-    /// `SubAgent` block — the jump target. A flat top-level position, **not** a byte offset.
-    pub at: BlockIndex,
-    /// Estimated **cost in US dollars** of this sub-agent *and everything it spawned* (its
-    /// subtree), rolled up from token usage — dollars, not tokens, hence `f64` not `u64`.
-    /// `None` when the child transcript wasn't loaded or the cost couldn't be derived.
-    pub subtree_cost: Option<UsdCost>,
 }
 
 /// A tool call (`ToolUse`).
@@ -89,7 +63,6 @@ pub struct ToolCount {
 #[derive(Debug, Clone, Default)]
 pub struct SessionIndex {
     pub turns: Vec<TurnEntry>,
-    pub agents: Vec<AgentEntry>,
     pub tools: Vec<ToolEntry>,
     pub attachments: Vec<AttachmentEntry>,
     /// How many blocks of each kind, keyed by the canonical `fold_key` classification (the
@@ -113,14 +86,6 @@ impl SessionIndex {
                     idx.turns.push(TurnEntry { at, time });
                     turn_i += 1;
                 }
-                Block::SubAgent(sa) => idx.agents.push(AgentEntry {
-                    id: sa.agent_id.clone(),
-                    agent_type: sa.agent_type.clone(),
-                    description: sa.description.clone(),
-                    status: sa.status,
-                    at,
-                    subtree_cost: sa.subtree_cost,
-                }),
                 Block::ToolUse { name, target, .. } => idx.tools.push(ToolEntry {
                     name: name.clone(),
                     target: target.clone(),
@@ -135,17 +100,6 @@ impl SessionIndex {
             }
         }
         idx
-    }
-
-    /// The sub-agents that are still running (status not terminal) — the liveness truth the
-    /// TUI's `a active N` footer and the HTML "Agents ▾" menu read.
-    pub fn active_agents(&self) -> impl Iterator<Item = &AgentEntry> {
-        self.agents.iter().filter(|a| !a.status.is_terminal())
-    }
-
-    /// Look up a sub-agent by id.
-    pub fn agent(&self, id: &str) -> Option<&AgentEntry> {
-        self.agents.iter().find(|a| a.id == id)
     }
 
     /// How many blocks of a given `fold_key` kind (0 if none).
@@ -174,7 +128,7 @@ impl SessionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Attachment, SubAgent};
+    use crate::model::{AgentStatus, Attachment, SubAgent};
 
     fn sub(id: &str, status: AgentStatus) -> Block {
         Block::SubAgent(SubAgent {
@@ -227,12 +181,6 @@ mod tests {
         assert_eq!(idx.turns[0].time, Some(10.0));
         assert_eq!(idx.turns[1].at, 7);
         assert_eq!(idx.turns[1].time, Some(20.0));
-
-        // Agents + liveness: a1 running, a2 done → only a1 is active.
-        assert_eq!(idx.agents.len(), 2);
-        let active: Vec<&str> = idx.active_agents().map(|a| a.id.as_str()).collect();
-        assert_eq!(active, vec!["a1"]);
-        assert_eq!(idx.agent("a2").unwrap().status, AgentStatus::Completed);
 
         // Tools by count: Read (2) before Bash (1).
         let counts = idx.tools_by_count();

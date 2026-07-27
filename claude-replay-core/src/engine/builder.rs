@@ -85,6 +85,9 @@ impl SessionBuilder {
     pub fn snapshot(&self) -> Session {
         let (blocks, user_times, metrics) = self.fold();
         let index = SessionIndex::build(&blocks, &user_times);
+        // Post-pass over the finished blocks (the fold is untouched): the sub-agent entity map.
+        // `transcript` stays None here — the path-aware parse fills it (it alone knows the path).
+        let sub_agents = crate::engine::session::build_sub_agents(&blocks);
         Session {
             agent: self.agent,
             cwd: None,
@@ -92,6 +95,7 @@ impl SessionBuilder {
             user_times,
             metrics,
             index,
+            sub_agents,
         }
     }
 }
