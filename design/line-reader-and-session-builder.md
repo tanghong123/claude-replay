@@ -227,7 +227,16 @@ resumable-restart share one implementation instead of three.
 
 ---
 
-## Layer 3 — lazy session store: reuse `SessionStore`, don't add a type (task #21)
+## Layer 3 — lazy session store (task #21)
+
+> **SUPERSEDED (2026-07).** This section argued for "reuse `SessionStore`, no new type." That
+> was reversed after auditing how the store is actually used: it has exactly one consumer, which
+> bundles *presentation* state (`prev`) and *session* state (`follower`) into the generic `Res`
+> slot — a coupling the genericity exists only to serve. The decision is now to **build a
+> concrete `SessionCache` that owns parsed `Session`s and have the HTML server depend on it**,
+> with `SessionStore` folded in as private machinery. See
+> [`session-cache.md`](session-cache.md) for the current design. The text below is kept for the
+> reasoning it records, but its conclusion no longer holds.
 
 The earlier drafts of this design proposed a new `SessionCache`. On reflection **we don't need
 one** — it would duplicate the generic `engine::store::SessionStore` that already ships and is
