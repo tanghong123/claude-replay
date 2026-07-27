@@ -95,6 +95,25 @@ pub(crate) struct Replayer<'a> {
     content_seq: usize,
     suppress: Vec<BlockIndex>,
     last_skill: Option<BlockIndex>,
+    // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
+    // each `SubAgent` spawn is emitted and refreshed when its result fills `agent_id`. It lets an
+    // `AgentDone` resolve its spawn's id/type at emit-time from O(#agents) state instead of a
+    // finalize-time scan over all blocks — so resolution survives emit-and-drop of the spawn.
+    agent_ids: HashMap<String, (String, String)>,
+}
+
+/// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
+/// `tool_use_id` and, once known, its `agent_id`). No-op for non-`SubAgent` blocks.
+fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
+    if let Block::SubAgent(sa) = b {
+        let v = (sa.agent_id.clone(), sa.agent_type.clone());
+        if !sa.tool_use_id.is_empty() {
+            map.insert(sa.tool_use_id.clone(), v.clone());
+        }
+        if !sa.agent_id.is_empty() {
+            map.insert(sa.agent_id.clone(), v);
+        }
+    }
 }
 
 impl<'a> Replayer<'a> {
@@ -111,6 +130,7 @@ impl<'a> Replayer<'a> {
             content_seq: 0,
             suppress: Vec::new(),
             last_skill: None,
+            agent_ids: HashMap::new(),
         }
     }
 
@@ -164,6 +184,7 @@ impl<'a> Replayer<'a> {
                             self.last_skill = Some(idx);
                         }
                     }
+                    record_agent(&mut self.agent_ids, &self.out[idx]);
                     if !id.is_empty() {
                         self.tool_slot.insert(id.clone(), idx);
                     }
@@ -175,6 +196,9 @@ impl<'a> Replayer<'a> {
                 } => {
                     if let Some(&idx) = self.tool_slot.get(tool_use_id) {
                         join_result(&mut self.out[idx], text, tur);
+                        // The result may have filled the spawn's `agent_id`; refresh the map so a
+                        // later `AgentDone` resolves the real id (not just the `tool_use_id`).
+                        record_agent(&mut self.agent_ids, &self.out[idx]);
                     } else if !text.trim().is_empty() && keep_orphan(text) {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
@@ -229,15 +253,22 @@ impl<'a> Replayer<'a> {
                     // L1 already parsed the notification; the fold only places the `AgentDone`
                     // block. No status back-patch onto the spawn — the terminal status is
                     // derived by the `sub_agents` index from this finish event (two durable
-                    // events), so the spawn/finish blocks stay immutable.
-                    let agent_id = if !task_id.is_empty() {
+                    // events), so the spawn/finish blocks stay immutable. The spawn's real
+                    // id/type are resolved here from the running `agent_ids` map (populated as the
+                    // spawn was emitted), so no finalize-time scan over the — possibly dropped —
+                    // spawn block is needed.
+                    let key = if !task_id.is_empty() {
                         task_id.clone()
                     } else {
                         tool_use_id.clone()
                     };
+                    let (agent_id, agent_type) = match self.agent_ids.get(&key) {
+                        Some((real_id, ty)) => (real_id.clone(), ty.clone()),
+                        None => (key, String::new()),
+                    };
                     self.out.push(Block::AgentDone {
                         agent_id,
-                        agent_type: String::new(),
+                        agent_type,
                         description: description.clone(),
                         status: status.unwrap_or(AgentStatus::Completed),
                         result: result.clone(),
@@ -297,7 +328,7 @@ impl<'a> Replayer<'a> {
             self.pending_ts,
             &mut self.user_times,
         );
-        apply_completions_and_suppress(&mut self.out, self.suppress);
+        apply_suppress(&mut self.out, self.suppress);
         let blocks = (self.shaping.finish_turns)(self.out);
         (blocks, self.user_times)
     }
@@ -311,7 +342,7 @@ impl<'a> Replayer<'a> {
         let mut user_times = self.user_times.clone();
         let mut stamped = self.stamped;
         stamp_user_turns(&out, &mut stamped, self.pending_ts, &mut user_times);
-        apply_completions_and_suppress(&mut out, self.suppress.clone());
+        apply_suppress(&mut out, self.suppress.clone());
         let blocks = (self.shaping.finish_turns)(out);
         (blocks, user_times)
     }
@@ -337,37 +368,10 @@ pub(crate) fn replay(
 /// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
 /// of prompts picked up immediately. Split out so both `parse_main` and `replay` share
 /// one copy. Runs before turn grouping so surviving markers keep their positions.
-fn apply_completions_and_suppress(out: &mut Vec<Block>, suppress: Vec<BlockIndex>) {
-    // Resolve each `AgentDone` completion's `agent_type`/`agent_id` from its matching spawn (the
-    // two events share an identity). NO status back-patch: the spawn block keeps its launch
-    // status, and the terminal status is derived by the `sub_agents` index from the AgentDone
-    // event (see `build_sub_agents`) — so the spawn/finish blocks stay immutable. Runs
-    // unconditionally: it is a no-op when there are no `SubAgent`/`AgentDone` blocks.
-    let mut by_id: HashMap<String, (String, String)> = HashMap::new();
-    for b in out.iter() {
-        if let Block::SubAgent(sa) = b {
-            let v = (sa.agent_id.clone(), sa.agent_type.clone());
-            if !sa.agent_id.is_empty() {
-                by_id.insert(sa.agent_id.clone(), v.clone());
-            }
-            if !sa.tool_use_id.is_empty() {
-                by_id.insert(sa.tool_use_id.clone(), v);
-            }
-        }
-    }
-    for b in out.iter_mut() {
-        if let Block::AgentDone {
-            agent_id,
-            agent_type,
-            ..
-        } = b
-        {
-            if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
-                *agent_type = ty.clone();
-                *agent_id = real_id.clone();
-            }
-        }
-    }
+fn apply_suppress(out: &mut Vec<Block>, suppress: Vec<BlockIndex>) {
+    // Drop the marker blocks flagged for suppression (immediately-picked-up `⧗ queued:` markers).
+    // AgentDone id/type resolution is no longer done here — it happens at emit-time from the
+    // running `agent_ids` map, so this stays a pure index-keyed filter.
     if !suppress.is_empty() {
         let drop: HashSet<usize> = suppress.into_iter().collect();
         let mut i = 0usize;
