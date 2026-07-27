@@ -14,18 +14,18 @@
 
 mod adapter;
 mod agent;
-pub mod claude_discover;
-pub mod claude_metrics;
-pub mod claude_model;
-pub mod codex_discover;
-pub mod codex_metrics;
-pub mod codex_model;
+pub mod claude_discover; // pub: the viewer's `--dump` stem + jdi's Claude supervisor use it
+pub(crate) mod claude_metrics; // internal: reached via the adapter / metrics dispatch
+pub mod claude_model; // pub: the viewer descends sub-agents via `subagent_file`
+pub mod codex_discover; // pub: jdi's Codex supervisor uses it
+pub(crate) mod codex_metrics; // internal
+pub(crate) mod codex_model; // internal: reached via the adapter registry
 pub mod discover;
 pub mod engine;
 pub mod follow;
 pub mod metrics;
 pub mod model;
-pub mod tail;
+pub(crate) mod tail; // internal: the follower's byte-offset primitive
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
 // The intended surface for a library consumer. [`parse_session`] is THE entry point: it

@@ -181,17 +181,6 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
-    /// Parse a `toolUseResult.status` / notification `<status>` string.
-    pub fn from_status(s: &str) -> Option<Self> {
-        Some(match s {
-            "async_launched" => Self::AsyncLaunched,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            "killed" => Self::Killed,
-            "stopped" => Self::Stopped,
-            _ => return None,
-        })
-    }
     /// A terminal state — no more activity expected (drives "running" animation off).
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -368,11 +357,16 @@ pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &st
     false
 }
 
-/// Tools Claude Code summarizes into a `Thought for …` turn line (transient reads/
-/// searches whose results feed the thinking) rather than showing expanded. Edit/
-/// Write/other tools produce durable output (diffs, etc.) and stay expanded.
-/// `pub(crate)` so the live-tail path (`view::ingest`) can re-group a thinking
-/// block with activity tools that arrived in an earlier poll.
+/// Tools that get summarized into a `Thought for …` turn line (transient reads/searches
+/// whose results feed the thinking) rather than shown expanded; Edit/Write/other tools
+/// produce durable output (diffs, etc.) and stay expanded.
+///
+/// **Canonical tool vocabulary.** This and [`block_kind`] (and the fold's `"Skill"` check)
+/// classify on Claude Code's tool *names* — that's the engine's canonical vocabulary. It's
+/// agent-neutral by contract, not by coincidence: each agent's `Shaping::build_tool`
+/// normalizes its own tool names onto these (see `codex_model::normalize_tool_name`), so a
+/// tool a given agent never emits simply never matches. A new agent maps its tools into this
+/// vocabulary in its adapter; the shared classifiers don't grow per-agent arms.
 pub fn is_activity_tool(name: &str) -> bool {
     matches!(
         name,
@@ -445,9 +439,15 @@ pub(crate) struct Shaping {
     /// block construction (Claude's `Agent`/`Task`→`SubAgent`, Codex's name normalization)
     /// lives in Layer 2, not the tokenizer.
     pub build_tool: fn(&str, &str, &Value, &str) -> Block,
-    pub apply: fn(&mut Block, &str, &Value),
+    /// Join a tool result onto its `ToolUse` block (Claude reads `toolUseResult` for
+    /// diffs/read-count; Codex just sets the output text). Named to avoid colliding with
+    /// [`Replayer::apply`], which folds a whole message batch.
+    pub join_result: fn(&mut Block, &str, &Value),
+    /// Keep a resultless orphan result (already non-empty)? Claude drops boilerplate; Codex
+    /// keeps every non-empty output.
     pub keep_orphan: fn(&str) -> bool,
-    pub finish: fn(Vec<Block>) -> Vec<Block>,
+    /// Final turn shaping — Claude groups thinking + coalesces activity runs; Codex is identity.
+    pub finish_turns: fn(Vec<Block>) -> Vec<Block>,
 }
 
 /// **Layer 2 — the stateful replayer** (design §3.3). `apply` folds a batch of messages
@@ -505,7 +505,7 @@ impl<'a> Replayer<'a> {
 
     /// Fold a batch of messages into the running state (append, back-patch, stamp).
     pub fn apply(&mut self, messages: &[Message]) {
-        let (apply, keep_orphan) = (self.shaping.apply, self.shaping.keep_orphan);
+        let (join_result, keep_orphan) = (self.shaping.join_result, self.shaping.keep_orphan);
         for m in messages {
             match m {
                 Message::LineStart(ts) => {
@@ -556,7 +556,7 @@ impl<'a> Replayer<'a> {
                     if !id.is_empty() {
                         self.tool_slot.insert(id.clone(), idx);
                         if let Some((txt, tur)) = self.pending.remove(id) {
-                            apply(&mut self.out[idx], &txt, &tur);
+                            join_result(&mut self.out[idx], &txt, &tur);
                         }
                     }
                 }
@@ -566,7 +566,7 @@ impl<'a> Replayer<'a> {
                     tur,
                 } => {
                     if let Some(&idx) = self.tool_slot.get(tool_use_id) {
-                        apply(&mut self.out[idx], text, tur);
+                        join_result(&mut self.out[idx], text, tur);
                     } else if self.tool_ids.contains(tool_use_id) {
                         self.pending
                             .insert(tool_use_id.clone(), (text.clone(), tur.clone()));
@@ -697,7 +697,7 @@ impl<'a> Replayer<'a> {
             &self.completions,
             self.suppress,
         );
-        let blocks = (self.shaping.finish)(self.out);
+        let blocks = (self.shaping.finish_turns)(self.out);
         (blocks, self.user_times)
     }
 
@@ -716,7 +716,7 @@ impl<'a> Replayer<'a> {
             &self.completions,
             self.suppress.clone(),
         );
-        let blocks = (self.shaping.finish)(out);
+        let blocks = (self.shaping.finish_turns)(out);
         (blocks, user_times)
     }
 

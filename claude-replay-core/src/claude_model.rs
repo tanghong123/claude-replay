@@ -16,6 +16,20 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// Parse Claude's `toolUseResult.status` / `<task-notification>` `<status>` string into the
+/// shared [`AgentStatus`]. Claude-format-specific, so it lives in the Claude adapter (the
+/// `AgentStatus` enum itself is agent-neutral).
+fn status_from_str(s: &str) -> Option<AgentStatus> {
+    Some(match s {
+        "async_launched" => AgentStatus::AsyncLaunched,
+        "completed" => AgentStatus::Completed,
+        "failed" => AgentStatus::Failed,
+        "killed" => AgentStatus::Killed,
+        "stopped" => AgentStatus::Stopped,
+        _ => return None,
+    })
+}
+
 /// Is this `user` event injected/system content rather than a human turn?
 /// `isMeta` marks instruction/skill/caveat bodies; `isCompactSummary` marks the
 /// summary `/compact` writes back into the transcript.
@@ -399,7 +413,7 @@ fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
     // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
     // tell a genuine orphan tool_result from one whose tool_use appears later.
-    let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
+    let tool_ids = scan_join_ids(open()?.lines().map_while(|r| r.ok()));
     // Pass 2: stream through the engine, one line resident.
     let mut cwd = String::new();
     parse_stream(
@@ -421,7 +435,7 @@ pub(crate) fn parse_claude_path_timed(
 ) -> std::io::Result<(Vec<Block>, crate::metrics::Metrics)> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let tool_ids = scan_tool_ids(open()?.lines().map_while(|r| r.ok()));
+    let tool_ids = scan_join_ids(open()?.lines().map_while(|r| r.ok()));
     let mut cwd = String::new();
     let mut macc = crate::claude_metrics::MetricsAcc::default();
     let blocks = parse_stream(
@@ -502,7 +516,7 @@ fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<
 }
 
 /// Pass 1: the set of every `tool_use` id in the transcript.
-pub(crate) fn scan_tool_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
+pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
     let mut ids = HashSet::new();
     for line in lines {
         let line = line.as_ref().trim();
@@ -554,7 +568,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
             if let Some(st) = tur
                 .get("status")
                 .and_then(|v| v.as_str())
-                .and_then(AgentStatus::from_status)
+                .and_then(status_from_str)
             {
                 sa.status = st;
             }
@@ -740,7 +754,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                     .unwrap_or_default()
                                     .to_string(),
                                 task_id: tag_inner(c, "task-id").unwrap_or_default().to_string(),
-                                status: tag_inner(c, "status").and_then(AgentStatus::from_status),
+                                status: tag_inner(c, "status").and_then(status_from_str),
                                 description: tag_inner(c, "summary")
                                     .map(summary_description)
                                     .unwrap_or_default(),
@@ -833,9 +847,9 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
 /// Claude's shaping — the historical `parse_main` behavior.
 pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
     build_tool: claude_build_tool,
-    apply: apply_result,
+    join_result: apply_result,
     keep_orphan: claude_keep_orphan,
-    finish: claude_finish,
+    finish_turns: claude_finish,
 };
 
 /// Pass 2: build blocks in order, streaming one line at a time. Nothing is dropped
@@ -1121,7 +1135,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 // created). Type is copied from the matching spawn in a
                                 // post-enrich pass (`stamp_agent_done_types`).
                                 let status = tag_inner(c, "status")
-                                    .and_then(AgentStatus::from_status)
+                                    .and_then(status_from_str)
                                     .unwrap_or(AgentStatus::Completed);
                                 let description = tag_inner(c, "summary")
                                     .map(summary_description)
@@ -1233,7 +1247,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // status drops the agent from `a active N`). The result text renders on the
             // separate `AgentDone` completion event, not folded back onto the spawn.
             if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = tag_inner(note, "status").and_then(AgentStatus::from_status) {
+                if let Some(st) = tag_inner(note, "status").and_then(status_from_str) {
                     sa.status = st;
                 }
             }
@@ -2117,7 +2131,7 @@ mod tests {
     #[test]
     fn replay_tokenize_matches_parse_main() {
         fn assert_equiv(jsonl: &str) {
-            let tool_ids = scan_tool_ids(jsonl.lines());
+            let tool_ids = scan_join_ids(jsonl.lines());
             let mut ut_main = Vec::new();
             let via_main = parse_main(jsonl.lines(), &tool_ids, &mut ut_main);
             let mut ut_engine = Vec::new();

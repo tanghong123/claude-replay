@@ -21,8 +21,7 @@ mod wrap;
 // the viewer keeps referring to `crate::model`, `crate::engine`, `crate::discover`, … and
 // `crate::Agent` unchanged.
 pub use claude_replay_core::{
-    claude_discover, claude_metrics, claude_model, codex_discover, codex_metrics, codex_model,
-    discover, engine, follow, metrics, model, tail, Agent,
+    claude_discover, claude_model, codex_discover, discover, engine, follow, metrics, model, Agent,
 };
 
 use anyhow::Result;

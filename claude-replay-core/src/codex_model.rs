@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-pub fn parse_codex(jsonl: &str) -> Vec<Block> {
+#[cfg(test)]
+fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (`parse_codex_path*`) also runs on the engine now, per line via
     // `parse_stream` + `decode_codex_line` (M9).
@@ -18,7 +19,7 @@ pub fn parse_codex(jsonl: &str) -> Vec<Block> {
 
 pub(crate) fn parse_codex_path(path: &Path) -> io::Result<Vec<Block>> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
+    let call_ids = scan_join_ids(open()?.lines().map_while(|line| line.ok()));
     let mut cwd = String::new();
     crate::model::parse_stream(
         open()?,
@@ -38,7 +39,7 @@ pub(crate) fn parse_codex_path_timed(
     user_times: &mut Vec<Option<f64>>,
 ) -> io::Result<(Vec<Block>, crate::metrics::Metrics)> {
     let open = || -> io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    let call_ids = scan_call_ids(open()?.lines().map_while(|line| line.ok()));
+    let call_ids = scan_join_ids(open()?.lines().map_while(|line| line.ok()));
     let mut cwd = String::new();
     let mut macc = crate::codex_metrics::CodexMetricsAcc::default();
     let blocks = crate::model::parse_stream(
@@ -83,16 +84,17 @@ fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Bloc
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
 pub(crate) const CODEX_SHAPING: crate::model::Shaping = crate::model::Shaping {
     build_tool: codex_build_tool,
-    apply: apply_output_shaping,
+    join_result: apply_output_shaping,
     keep_orphan: codex_keep_orphan,
-    finish: codex_finish,
+    finish_turns: codex_finish,
 };
 
 /// **Layer 1 — Codex tokenize.** Map Codex's `response_item` line shapes to the canonical
 /// message log (design §3.2). Pure line-shaping — no back-patch / grouping (that is the
 /// shared `replay`). `replay(tokenize(x), &CODEX_SHAPING)` is asserted bit-identical to
 /// `parse_lines(x)`.
-pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
+#[cfg(test)]
+fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
     let mut msgs: Vec<Message> = Vec::new();
     let mut cwd = String::new();
     for line in lines {
@@ -211,7 +213,7 @@ pub(crate) fn decode_codex_line(line: &str, cwd: &mut String, msgs: &mut Vec<Mes
     }
 }
 
-fn scan_call_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
+fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in lines {
         let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
@@ -627,7 +629,7 @@ not json
     fn codex_replay_matches_parse_lines() {
         fn equiv(jsonl: &str) {
             let mut ut_lines = Vec::new();
-            let call_ids = scan_call_ids(jsonl.lines());
+            let call_ids = scan_join_ids(jsonl.lines());
             let via_lines = parse_lines(jsonl.lines(), &call_ids, &mut ut_lines);
             let mut ut_replay = Vec::new();
             let via_replay =
