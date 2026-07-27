@@ -16,15 +16,18 @@
 use crate::fold::FoldPolicy;
 use crate::model::{AttachmentContent, Block};
 use crate::render::{self, LineOp};
-use crate::{discover, highlight, Agent, Args};
-use anyhow::{Context, Result};
+use crate::{discover, highlight, Agent};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
-// This module is the render core (markdown/JSON/page assembly + the parse-and-render
-// entries `dump_html`/`dump_all_html`); the `--html` live server lives in `serve`.
+// This module is the render core (markdown → HTML, the JSON block emitter, page assembly).
+// The offline bundles (`dump_html`/`dump_all_html`) live in `bundle`; the `--html` live
+// server in `serve`. All three public entries are re-exported so `html_export::{dump_html,
+// dump_all_html, serve}` stays the crate's surface.
+mod bundle;
 mod serve;
+pub use bundle::{dump_all_html, dump_html};
 pub use serve::serve;
 
 const CSS: &str = include_str!("../html/export.css");
@@ -370,69 +373,6 @@ struct Emitter<'a> {
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
     turns: Vec<(String, String)>,
-}
-
-/// De-conflicting writer for embedded attachments in an offline bundle: materializes each
-/// attachment into `<bundle>/assets/` under a unique filename and returns its relative
-/// `assets/<name>` href. Names that collide across the tree get a `-N` suffix.
-pub(super) struct AssetSink {
-    dir: std::path::PathBuf,
-    used: std::collections::HashMap<String, usize>,
-}
-
-impl AssetSink {
-    fn new(bundle_dir: &Path) -> std::io::Result<Self> {
-        let dir = bundle_dir.join("assets");
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self {
-            dir,
-            used: std::collections::HashMap::new(),
-        })
-    }
-
-    /// Write `content` under a unique name derived from `name`/`path`; return the
-    /// `assets/<file>` href, or `None` if the bytes couldn't be written.
-    fn materialize(
-        &mut self,
-        name: &str,
-        path: Option<&str>,
-        content: &AttachmentContent,
-    ) -> Option<String> {
-        let bytes: Vec<u8> = match content {
-            AttachmentContent::Text(t) => t.clone().into_bytes(),
-            AttachmentContent::Base64 { b64, .. } => crate::clipboard::base64_decode(b64)?,
-        };
-        // Basename only (no traversal); ensure an extension for images.
-        let raw = path.unwrap_or(name);
-        let mut base = Path::new(raw)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("attachment")
-            .to_string();
-        if base.is_empty() {
-            base = "attachment".into();
-        }
-        if let AttachmentContent::Base64 { mime, .. } = content {
-            if !base.contains('.') {
-                if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
-                    base = format!("{base}.{ext}");
-                }
-            }
-        }
-        // De-conflict: first use keeps the name, later ones get `-N` before the extension.
-        let n = self.used.entry(base.clone()).or_insert(0);
-        let fname = if *n == 0 {
-            base.clone()
-        } else {
-            match base.rsplit_once('.') {
-                Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
-                None => format!("{base}-{n}"),
-            }
-        };
-        *n += 1;
-        std::fs::write(self.dir.join(&fname), &bytes).ok()?;
-        Some(format!("assets/{fname}"))
-    }
 }
 
 impl Emitter<'_> {
@@ -936,31 +876,6 @@ fn count_tools(blocks: &[Block]) -> usize {
         .sum()
 }
 
-/// The whole append-only stream for `path` right now: the `meta` line followed by
-/// one line per block. Re-run each poll cycle in live mode; the loop appends only
-/// the lines that are new since the previous cycle.
-fn build_stream(
-    agent: Agent,
-    path: &Path,
-    fold: &FoldPolicy,
-    reveal: bool,
-) -> Result<(String, Vec<(String, String)>)> {
-    // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
-    let s = crate::engine::parse_session_as(agent, path)
-        .with_context(|| format!("read transcript {}", path.display()))?;
-    let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
-    Ok(render_snapshot(
-        agent,
-        path,
-        &s.blocks,
-        &s.user_times,
-        &s.metrics,
-        &cwd,
-        fold,
-        reveal,
-    ))
-}
-
 /// The render half of `snapshot`: an already-parsed session → the meta line + block-record
 /// JSONL. Shared by the one-shot `snapshot` (parses first) and the incremental live follower
 /// (M16, which folds only the delta via a `FollowParser` and passes the result straight here).
@@ -1036,74 +951,6 @@ pub(super) fn block_lines(jsonl: &str) -> Vec<String> {
     jsonl.lines().skip(1).map(String::from).collect()
 }
 
-/// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
-/// path links (their absolute `file://` paths don't resolve on another machine).
-pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
-    let agent = discover::detect_agent(path);
-    let fold = FoldPolicy::from_args(args);
-    let reveal = false;
-    let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
-    // The page title is the repo name; files are named by the session id.
-    let title = display_title(path);
-
-    // `--dump-html -` streams the page to stdout (pipes / tests); never live.
-    let stem = match args.dump_html.as_ref().and_then(|o| o.as_deref()) {
-        Some("-") => {
-            print!("{}", build_html(&title, &jsonl, &turns, None));
-            return Ok(());
-        }
-        Some(s) => s.to_string(),
-        None => crate::app::deduce_stem(path, None),
-    };
-
-    // Live: the page renders the inline snapshot immediately, then polls the
-    // companion for appended lines — so it works standalone *and* keeps up. The
-    // page references the companion by **basename** (same directory as the .html),
-    // so `fetch` resolves it relative to the page's own URL.
-    let companion = if args.follow {
-        let cpath = format!("{stem}.jsonl");
-        std::fs::write(&cpath, format!("{jsonl}\n")).with_context(|| format!("write {cpath}"))?;
-        let src = Path::new(&cpath)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&cpath)
-            .to_string();
-        Some((cpath, src))
-    } else {
-        None
-    };
-    let html_path = format!("{stem}.html");
-    std::fs::write(
-        &html_path,
-        build_html(
-            &title,
-            &jsonl,
-            &turns,
-            companion.as_ref().map(|(_, s)| s.as_str()),
-        ),
-    )
-    .with_context(|| format!("write {html_path}"))?;
-
-    let Some((cpath, _)) = companion else {
-        eprintln!("wrote {html_path}");
-        println!("{stem}");
-        return Ok(());
-    };
-
-    // Live tail: poll the transcript, appending any block lines that appeared
-    // since the last cycle. Runs until interrupted (like `claude-replay -f`).
-    eprintln!("wrote {html_path} + {cpath} (live — open it and it follows; Ctrl-C to stop)");
-    println!("{stem}");
-    serve::follow_and_append(
-        agent,
-        path,
-        &fold,
-        Path::new(&cpath),
-        block_lines(&jsonl),
-        reveal,
-    )
-}
-
 /// Enough to generate + locate one agent's stream. The root and every discovered
 /// sub-agent get one; `source` is the transcript the stream is parsed from.
 #[derive(Clone)]
@@ -1146,38 +993,6 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
             _ => None,
         })
         .collect()
-}
-
-/// Parse ONE agent's source transcript (NOT the whole tree) into its stream jsonl: the
-/// `meta` line + one line per block, cross-linked to its direct children via `child:`.
-/// The single generator both paths share — the offline dump (eager over every source) and
-/// the live server (lazy, one source per *requested* agent) — so a live tailer re-parses
-/// only the ONE agent being viewed, not the tree. Returns the jsonl + the direct child
-/// refs (to register/queue). `cwd` is the session cwd (shared by every agent).
-fn agent_stream(
-    agent: Agent,
-    fold: &FoldPolicy,
-    cwd: &str,
-    reveal: bool,
-    info: &AgentInfo,
-    assets: Option<&mut AssetSink>,
-) -> Result<(String, Vec<ChildRef>)> {
-    // Parse via the canonical `parse_session_as` — the same entry `build_stream` uses, so both
-    // HTML paths go through one place. `cwd` stays the caller-supplied session cwd (every agent
-    // in a tree shares the root's, which a sub-agent transcript may not itself record).
-    let s = crate::engine::parse_session_as(agent, &info.source)
-        .with_context(|| format!("read transcript {}", info.source.display()))?;
-    Ok(render_agent_stream(
-        agent,
-        fold,
-        cwd,
-        reveal,
-        info,
-        &s.blocks,
-        &s.user_times,
-        &s.metrics,
-        assets,
-    ))
 }
 
 /// The render half of `agent_stream`: an already-parsed agent (blocks + times + metrics) plus
@@ -1262,70 +1077,69 @@ pub(super) fn child_info(root_path: &Path, parent: &AgentInfo, c: ChildRef) -> O
     })
 }
 
-/// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html` shell
-/// plus one `<id>.jsonl` per agent reachable from the root, cross-linked via `child:` so
-/// the whole tree is navigable offline. Serve the dir with any static file server. Unlike
-/// the lazy served path, this walks EVERY reachable agent eagerly (blocking is fine for a
-/// one-shot export) and materializes embedded attachments into `assets/`.
-pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
-    let agent = discover::detect_agent(path);
-    let fold = FoldPolicy::from_args(args);
-    let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
-        Some(s) => std::path::PathBuf::from(s),
-        None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
-    };
-    std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let title = display_title(path);
-    let root_id = session_id(path);
-    let mut sink = AssetSink::new(&out_dir).with_context(|| "create assets dir")?;
+// The asset sink for the offline bundle — populated by the block emitter (render),
+// constructed by `bundle`.
+/// De-conflicting writer for embedded attachments in an offline bundle: materializes each
+/// attachment into `<bundle>/assets/` under a unique filename and returns its relative
+/// `assets/<name>` href. Names that collide across the tree get a `-N` suffix.
+pub(super) struct AssetSink {
+    dir: std::path::PathBuf,
+    used: std::collections::HashMap<String, usize>,
+}
 
-    // BFS over sources from the root; each agent's stream is parsed from its OWN source,
-    // its direct children discovered and queued (grandchildren surface when a child runs).
-    let mut queue = std::collections::VecDeque::from([AgentInfo {
-        id: root_id.clone(),
-        source: path.to_path_buf(),
-        title: title.clone(),
-        agent_type: String::new(),
-        ancestors: Vec::new(),
-    }]);
-    let mut seen = std::collections::HashSet::new();
-    let mut count = 0usize;
-    while let Some(info) = queue.pop_front() {
-        if !seen.insert(info.id.clone()) || !info.source.exists() {
-            continue;
+impl AssetSink {
+    fn new(bundle_dir: &Path) -> std::io::Result<Self> {
+        let dir = bundle_dir.join("assets");
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self {
+            dir,
+            used: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Write `content` under a unique name derived from `name`/`path`; return the
+    /// `assets/<file>` href, or `None` if the bytes couldn't be written.
+    fn materialize(
+        &mut self,
+        name: &str,
+        path: Option<&str>,
+        content: &AttachmentContent,
+    ) -> Option<String> {
+        let bytes: Vec<u8> = match content {
+            AttachmentContent::Text(t) => t.clone().into_bytes(),
+            AttachmentContent::Base64 { b64, .. } => crate::clipboard::base64_decode(b64)?,
+        };
+        // Basename only (no traversal); ensure an extension for images.
+        let raw = path.unwrap_or(name);
+        let mut base = Path::new(raw)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        if base.is_empty() {
+            base = "attachment".into();
         }
-        let (jsonl, children) = agent_stream(agent, &fold, &cwd, false, &info, Some(&mut sink))?;
-        std::fs::write(
-            out_dir.join(format!("{}.jsonl", info.id)),
-            format!("{jsonl}\n"),
-        )
-        .with_context(|| format!("write stream {}", info.id))?;
-        count += 1;
-        for c in children {
-            if let Some(ci) = child_info(path, &info, c) {
-                queue.push_back(ci);
+        if let AttachmentContent::Base64 { mime, .. } = content {
+            if !base.contains('.') {
+                if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
+                    base = format!("{base}.{ext}");
+                }
             }
         }
+        // De-conflict: first use keeps the name, later ones get `-N` before the extension.
+        let n = self.used.entry(base.clone()).or_insert(0);
+        let fname = if *n == 0 {
+            base.clone()
+        } else {
+            match base.rsplit_once('.') {
+                Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
+                None => format!("{base}-{n}"),
+            }
+        };
+        *n += 1;
+        std::fs::write(self.dir.join(&fname), &bytes).ok()?;
+        Some(format!("assets/{fname}"))
     }
-    std::fs::write(
-        out_dir.join("index.html"),
-        build_shell(&title, &root_id, false),
-    )
-    .with_context(|| "write index.html")?;
-
-    eprintln!(
-        "wrote {} — {count} agent stream(s) + index.html",
-        out_dir.display()
-    );
-    eprintln!(
-        "  serve it:  (cd {} && python3 -m http.server)  then open http://localhost:8000/",
-        out_dir.display()
-    );
-    println!("{}", out_dir.display());
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2253,7 +2067,8 @@ mod tests {
 
     #[test]
     fn html_flag_parses_and_conflicts_with_the_dump_modes() {
-        use clap::Parser;
+        use crate::Args;
+        use clap::Parser as _;
         // `--html` alone, and with `-f`.
         assert!(
             Args::try_parse_from(["claude-replay", "sid", "--html"])
