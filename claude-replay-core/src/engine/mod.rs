@@ -13,4 +13,6 @@ pub mod store;
 pub mod time;
 
 pub use index::SessionIndex;
-pub use session::{parse_session, parse_session_as, Session};
+pub use session::{
+    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,
+};

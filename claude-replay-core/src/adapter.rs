@@ -48,6 +48,10 @@ pub(crate) trait TranscriptAdapter: Sync {
         path: &Path,
         times: &mut Vec<Option<f64>>,
     ) -> io::Result<(Vec<Block>, Metrics)>;
+    /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
+    /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
+    /// enrich. Backs [`crate::parse_session_enriched`].
+    fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
@@ -129,6 +133,9 @@ impl TranscriptAdapter for ClaudeAdapter {
         times: &mut Vec<Option<f64>>,
     ) -> io::Result<(Vec<Block>, Metrics)> {
         crate::claude_model::parse_claude_path_timed(path, times)
+    }
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        crate::claude_model::enrich_tree(path, blocks)
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::claude_model::CLAUDE_SHAPING

@@ -34,7 +34,10 @@ pub(crate) mod tail; // internal: the follower's byte-offset primitive
 // is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
 pub use engine::index::{AgentEntry, AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
-pub use engine::{parse_session, parse_session_as, Session, SessionIndex};
+pub use engine::{
+    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as, Session,
+    SessionIndex,
+};
 pub use follow::FollowParser;
 pub use metrics::Metrics;
 pub use model::{AgentStatus, Attachment, AttachmentContent, Block, Hunk, SubAgent};

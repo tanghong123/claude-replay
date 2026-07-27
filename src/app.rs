@@ -3,7 +3,7 @@
 
 use crate::picker::Picker;
 use crate::view::View;
-use crate::{claude_model, discover, model, Agent, Args};
+use crate::{claude_model, discover, Agent, Args};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -254,15 +254,17 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
     let child_file = claude_model::subagent_file(&parent.path, &agent_id);
-    // A running agent's child file often appears (or fills in) AFTER the parent was
-    // parsed, so `sa.blocks` is empty even though the transcript now exists on disk.
-    // Load it fresh at descend time so a just-spawned agent is reachable. Still `None`
-    // only when there's genuinely nothing to open (no id, no file yet).
+    // Parse the child once via the library entry point (enriched: its own sub-agent tree),
+    // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
+    // metrics instead of a second parse. A running agent's child file often appears (or fills
+    // in) AFTER the parent was parsed, so we load it fresh at descend time.
+    let child_session = child_file
+        .as_deref()
+        .and_then(|f| crate::engine::parse_session_enriched_as(parent.agent, f).ok());
     if blocks.is_empty() {
-        blocks = child_file
-            .as_deref()
-            .and_then(|f| model::parse_path_for(parent.agent, f).ok())
-            .unwrap_or_default();
+        if let Some(s) = &child_session {
+            blocks = s.blocks.clone();
+        }
     }
     if blocks.is_empty() {
         return None;
@@ -284,13 +286,11 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
-    // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped.
+    // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped. Reuse the
+    // metrics from the parse above (no second read).
     let mut segs = vec![(agent_type, 3u8)];
-    if let Some(cf) = &child_file {
-        if let Ok(f) = std::fs::File::open(cf) {
-            let m = crate::metrics::parse_reader_for(parent.agent, std::io::BufReader::new(f));
-            segs = m.footer_segments();
-        }
+    if let Some(s) = &child_session {
+        segs = s.metrics.footer_segments();
     }
     // Prefer the subtree cost (child + descendants) over the child's own cost segment.
     if let Some(cost) = subtree_cost {
@@ -596,7 +596,9 @@ fn dump_width(args: &Args) -> usize {
 /// carries SGR colour). With no `<stem>`, the stem is deduced from the session.
 pub fn dump(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
-    let blocks = model::parse_path_for(agent, path)?;
+    // Dogfood the library entry point: one `parse_session_enriched_as` yields the full block
+    // tree (incl. sub-agents). `--dump` only needs the blocks here.
+    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks;
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.

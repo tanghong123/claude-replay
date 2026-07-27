@@ -54,6 +54,22 @@ pub fn parse_session(path: &Path) -> io::Result<Session> {
     parse_session_as(crate::discover::detect_agent(path), path)
 }
 
+/// Like [`parse_session`], but also loads the **sub-agent tree** — each `SubAgent`'s child
+/// transcript (recursively) into its `blocks`, so a consumer can descend into spawned agents
+/// or roll up subtree cost. `parse_session` leaves `SubAgent.blocks` empty (cheaper, flat);
+/// use this when you need the whole tree. Only the nested `SubAgent.blocks` change — the
+/// top-level `blocks`/`index`/`metrics` are identical to `parse_session`.
+pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
+    parse_session_enriched_as(crate::discover::detect_agent(path), path)
+}
+
+/// [`parse_session_enriched`] for a **known** agent (skips detection).
+pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
+    let mut s = parse_session_as(agent, path)?;
+    crate::adapter::adapter(agent).enrich(path, &mut s.blocks);
+    Ok(s)
+}
+
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no

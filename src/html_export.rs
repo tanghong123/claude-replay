@@ -1157,8 +1157,10 @@ fn agent_stream(
     info: &AgentInfo,
     assets: Option<&mut AssetSink>,
 ) -> Result<(String, Vec<ChildRef>)> {
-    // One parse yields blocks + per-turn times + folded metrics (M10 — no separate read).
-    let (blocks, user_times, metrics) = crate::model::parse_path_timed_for(agent, &info.source)
+    // Parse via the canonical `parse_session_as` — the same entry `build_stream` uses, so both
+    // HTML paths go through one place. `cwd` stays the caller-supplied session cwd (every agent
+    // in a tree shares the root's, which a sub-agent transcript may not itself record).
+    let s = crate::engine::parse_session_as(agent, &info.source)
         .with_context(|| format!("read transcript {}", info.source.display()))?;
     Ok(render_agent_stream(
         agent,
@@ -1166,9 +1168,9 @@ fn agent_stream(
         cwd,
         reveal,
         info,
-        &blocks,
-        &user_times,
-        &metrics,
+        &s.blocks,
+        &s.user_times,
+        &s.metrics,
         assets,
     ))
 }

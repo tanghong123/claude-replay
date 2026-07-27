@@ -395,14 +395,19 @@ pub fn parse(jsonl: &str) -> Vec<Block> {
 /// `STREAMING-PARSE-DESIGN.md`.
 pub fn parse_path(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     let mut blocks = parse_file(path)?;
-    // Load each spawned sub-agent's child transcript (recursively) so a `SubAgent`
-    // block can be descended into and its subtree cost rolled up. All of a session's
-    // agents — any depth — share one flat `<session>/subagents/` dir (they share the
-    // session id), so one dir resolves the whole tree.
-    if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(&mut blocks, &dir);
-    }
+    enrich_tree(path, &mut blocks);
     Ok(blocks)
+}
+
+/// Load each spawned sub-agent's child transcript (recursively) into its `SubAgent.blocks`,
+/// so a spawn can be descended into and its subtree cost rolled up. All of a session's agents
+/// — any depth — share one flat `<session>/subagents/` dir, so one dir resolves the whole
+/// tree. No-op when the dir is absent. This is the enrichment behind `parse_session_enriched`
+/// (the Claude adapter's `TranscriptAdapter::enrich`).
+pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
+    if let Some(dir) = subagents_dir(path) {
+        enrich_subagents(blocks, &dir);
+    }
 }
 
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw

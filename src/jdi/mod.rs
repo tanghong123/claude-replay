@@ -1117,9 +1117,11 @@ fn recent_commits(cwd: &Path, n: usize) -> Vec<String> {
 /// last-activity, a tool-call histogram, the last few actions, and what the agent
 /// is currently doing. Best-effort — silently skips on a parse/read error.
 fn print_live_progress(agent: Agent, path: &Path) {
-    let Ok(blocks) = crate::model::parse_path_for(agent, path) else {
+    // Dogfood the library entry point (the whole transcript incl. sub-agent tree).
+    let Ok(session) = crate::engine::parse_session_enriched_as(agent, path) else {
         return;
     };
+    let blocks = session.blocks;
     let mut tools: Vec<(String, String)> = Vec::new();
     let mut currently: Option<String> = None;
     collect_tool_activity(&blocks, &mut tools, &mut currently);
