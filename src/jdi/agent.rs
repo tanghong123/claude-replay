@@ -270,12 +270,19 @@ pub trait AgentAdapter {
 }
 
 /// The adapter registry: the one place that knows every agent. Adding an agent is
-/// a new module + one arm here.
+/// a new module + one arm here (and one entry in [`agents`]).
 pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
     match agent {
         Agent::Claude => Box::new(super::claude::ClaudeAdapter),
         Agent::Codex => Box::new(super::codex::CodexAdapter),
     }
+}
+
+/// Every agent the supervisor knows, in a stable order — the single list detection iterates,
+/// mirroring the engine's `adapter::adapters()`. Keeps the agent set in one place instead of
+/// hardcoded at each iteration site.
+pub fn agents() -> &'static [Agent] {
+    &[Agent::Claude, Agent::Codex]
 }
 
 /// Seconds since `mtime` (a session's idle time), clamped to 0 if the clock went backwards.

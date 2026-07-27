@@ -13,7 +13,7 @@ pub fn agent_for(cwd: &Path, forced: Option<Agent>) -> Option<Agent> {
         return Some(a);
     }
     let mut best: Option<(Agent, u64)> = None;
-    for a in [Agent::Claude, Agent::Codex] {
+    for &a in agent::agents() {
         if let Ok(s) = agent::adapter(a).discover_resumable(cwd) {
             if best.map(|(_, idle)| s.idle_secs < idle).unwrap_or(true) {
                 best = Some((a, s.idle_secs));
