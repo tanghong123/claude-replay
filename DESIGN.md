@@ -1,6 +1,6 @@
 # claude-replay — design & todo
 
-An interactive, **read-only** Claude Code session viewer: *as if you ran
+An interactive, **read-only** AI-agent session viewer (Claude Code + Codex): *as if you ran
 `claude --resume`, but you can't type commands.* Successor to the bash
 `claude-peek` pager.
 
@@ -80,7 +80,15 @@ the spec/scope of record.
 - Pin schema expectations to a Claude Code version (scrollback pins ~v2.1.x) and
   snapshot-test against real transcript fixtures; skip/҂log unknown event types.
 
-## Live-tail turn grouping (current behavior)
+## Live-tail turn grouping (historical — pre-M16)
+
+> **Note (post-refactor):** this section predates the engine refactor. Since M16 the live
+> path folds through `FollowParser`/`Replayer` (which produce a fully-regrouped cumulative
+> snapshot each poll), so the view no longer re-groups — the "live path differs from a full
+> re-parse" concern below is resolved. Module references are also pre-split: the Claude
+> tokenizer/`parse`/`group_turns`/`push_user_string` cited here now live privately in
+> `claude_model.rs`; `model.rs` is the agent-neutral engine. Kept for the rationale; the
+> current design of record is `design/parser-engine.md`.
 
 How a thinking block and the activity tools it processed collapse into one
 `✻ Ran N …, thought for Xs` line — and why the live path differs from a full
@@ -504,19 +512,16 @@ The residual diff is **not** decision-free rendering:
   (verified 2026-07-26). `render::render_patch` and `html_export::diff_part` now number
   identically — both advance the old-side counter `o` on context lines. Verified with a
   `structuredPatch` Edit (`--dump` vs `--dump-html`): both emit `10,11,12(del),12(add),13`.
-  The engine refactor's Phase 3 will fold the two numberers into one to keep them in lockstep.
+  The two numberers were folded into one in the engine refactor (M13, done).
 
-- [ ] **Unify the parse backend + make it a reusable engine.** *(Queued 2026-07-25.)*
-  Today the TUI/`--dump` path and the HTML `--dump-html`/live-feed path both go through
-  `model::parse_*` but diverge downstream (`render.rs`→ratatui lines vs. `html_export.rs`→
-  a JSON block stream), and each re-derives things (fold policy, metrics, sub-agent
-  enrich). Refactor so both surfaces share ONE backend: a clean `model` core that yields
-  the block tree + metrics + sub-agent tree, with thin per-surface renderers on top. Then
-  expose that core as an independent library (a `claude-replay-core` crate, or a stable
-  `pub` API on the existing lib) so other software can parse Claude/Codex transcripts
-  into the block model without the TUI/HTML layers. Deliverables: a documented public
-  parse API (`parse_session(path) -> Session { blocks, metrics, agents }`), the two
-  renderers reduced to formatters over it, and a doc/example of third-party use.
+- [x] **Unify the parse backend + make it a reusable engine.** *(Done — engine refactor
+  M1–M16; see `design/engine-refactor-plan.md`.)* Both surfaces now share ONE backend: the
+  `claude-replay-core` crate yields `parse_session(path) -> Session { blocks, index,
+  metrics, cwd, … }`, with the TUI (`render.rs`) and HTML (`html_export.rs`) reduced to
+  formatters over it. The core is an independent library (no TUI/HTML/CLI deps) that any
+  program can use to parse Claude/Codex transcripts into the block model. **Remaining
+  sub-item:** a documented third-party usage example (`claude-replay-core/examples/`) —
+  tracked under the API-ergonomics review.
 
 - [ ] **Download transcripts from web / desktop sources.** *(Queued 2026-07-25;
   research in `design/transcript-sources.md`.)* Today the viewer reads local `.jsonl`

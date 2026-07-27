@@ -1,8 +1,10 @@
 # Design: the three-layer session engine (parse · replay · present)
 
-Status: **proposal** (no code yet). Grew out of the DESIGN.md backlog item "Unify the
-parse backend + make it a reusable engine" (`DESIGN.md:501`), but the **scope is now the
-whole engine, not just the parser**: the three-layer architecture (§0) — an agent-specific
+Status: **built** — M1–M16 merged; production runs entirely on this engine, split into the
+`claude-replay-core` crate (per-agent L1 adapters + shared L2 fold + presenters). This file
+is the **design of record**; see `engine-refactor-plan.md` for per-milestone status. Grew out
+of the DESIGN.md backlog item "Unify the parse backend + make it a reusable engine", but the
+**scope is now the whole engine, not just the parser**: the three-layer architecture (§0) — an agent-specific
 **raw parser** (Layer 1), an agent-agnostic **replay / state builder** (Layer 2), and thin
 per-surface **presenters** (Layer 3) — made **incremental and live** (byte-offset resume,
 mutation-safe append-only log, forward-fold replay, a tiered session store), consumed by

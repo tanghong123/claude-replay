@@ -97,6 +97,32 @@ pub fn session_cwd(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The session id recorded in the transcript head — Claude's top-level `sessionId` or
+/// Codex's `payload.id` of `session_meta`. `None` when absent (a caller then falls back to
+/// the file stem). Agent-neutral, mirroring [`session_cwd`].
+pub fn session_id(path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    for line in std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .take(50)
+    {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(id) = v.get("sessionId").and_then(Value::as_str) {
+            return Some(id.to_string());
+        }
+        if v.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(id) = v.pointer("/payload/id").and_then(Value::as_str) {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Auto-detect which agent wrote a transcript by sniffing its first lines: a
 /// Codex rollout opens with a `session_meta` event and wraps events in `payload`;
 /// a Claude transcript has top-level `sessionId`/`message`. Defaults to Claude.

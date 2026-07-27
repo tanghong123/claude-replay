@@ -325,6 +325,23 @@ pub fn fold_key(b: &Block) -> &'static str {
     block_kind(b).fold_key()
 }
 
+/// Whether a block can be collapsed/expanded (has foldable body content). The single
+/// source of truth for both presenters — the TUI (`render::foldable`) and the HTML export
+/// (`html_export::is_fold`) delegate here so they can never disagree. Prose turns
+/// (`UserText`/`AssistantText`), the `⧗ queued` marker, and attachments are not foldable;
+/// tools, results, thinking, commands, and sub-agent spawn/completion blocks are.
+pub fn foldable(b: &Block) -> bool {
+    matches!(
+        b,
+        Block::ToolUse { .. }
+            | Block::ToolResult(_)
+            | Block::Thinking { .. }
+            | Block::Command { .. }
+            | Block::SubAgent(_)
+            | Block::AgentDone { .. }
+    )
+}
+
 /// Append a loaded skill's instruction body to its `Skill` tool_use block at `idx`,
 /// so the whole skill load reads as one collapsible unit (named by the skill) instead
 /// of a loose result block beside the call. Returns `false` when there's no recent
@@ -357,14 +374,6 @@ pub fn is_activity_tool(name: &str) -> bool {
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
     )
-}
-
-/// Parse JSONL text with the parser for `agent`.
-pub fn parse_for(agent: Agent, jsonl: &str) -> Vec<Block> {
-    match agent {
-        Agent::Claude => crate::claude_model::parse(jsonl),
-        Agent::Codex => crate::codex_model::parse_codex(jsonl),
-    }
 }
 
 /// Like `parse_path_for`, but also returns one wall-clock timestamp (epoch
@@ -414,21 +423,6 @@ pub fn parse_path_timed_for(
         Agent::Codex => crate::codex_model::parse_codex_path_timed(path, &mut times)?,
     };
     Ok((blocks, times, metrics))
-}
-
-/// Like [`parse_path_timed_for`] but ALSO loads the sub-agent tree (each `SubAgent`'s
-/// child transcript, recursively) — the enriched form the multi-file HTML bundle needs
-/// so every agent's blocks and subtree cost are available. (The plain timed parse skips
-/// enrichment for the single-file snapshot, which never drills down.)
-pub fn parse_path_timed_enriched_for(
-    agent: Agent,
-    path: &std::path::Path,
-) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>)> {
-    let (mut blocks, times, _metrics) = parse_path_timed_for(agent, path)?;
-    if agent == Agent::Claude {
-        crate::claude_model::enrich_from_subagents(path, &mut blocks);
-    }
-    Ok((blocks, times))
 }
 
 /// Streaming file parse with the parser for `agent`.

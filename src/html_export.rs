@@ -215,13 +215,7 @@ fn html_kind(b: &Block) -> &'static str {
 /// Is this block rendered as a collapsible fold? User prose and assistant prose
 /// are always-open cards; everything else folds.
 fn is_fold(b: &Block) -> bool {
-    !matches!(
-        b,
-        Block::UserText(_)
-            | Block::AssistantText(_)
-            | Block::QueueEvent { .. }
-            | Block::Attachment(_)
-    )
+    crate::model::foldable(b)
 }
 
 /// A short single-line label for the sidebar / sticky bar.

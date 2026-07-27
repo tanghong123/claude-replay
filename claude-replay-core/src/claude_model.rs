@@ -435,15 +435,6 @@ pub(crate) fn parse_claude_path_timed(
     Ok((blocks, macc.finish()))
 }
 
-/// Load a Claude session's sub-agent tree into its `SubAgent` blocks (each child
-/// transcript, recursively), if the flat `<session>/subagents/` dir exists. The Claude arm
-/// of `model::parse_path_timed_enriched_for`.
-pub(crate) fn enrich_from_subagents(path: &std::path::Path, blocks: &mut [Block]) {
-    if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(blocks, &dir);
-    }
-}
-
 /// The `<project>/<sessionId>/subagents/` dir for a transcript at
 /// `<project>/<sessionId>.jsonl`, if it exists on disk.
 fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {

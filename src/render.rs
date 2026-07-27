@@ -14,15 +14,7 @@ pub struct Rendered {
 
 /// Blocks whose body can be collapsed to a one-line placeholder.
 pub fn foldable(b: &Block) -> bool {
-    matches!(
-        b,
-        Block::ToolUse { .. }
-            | Block::ToolResult(_)
-            | Block::Thinking { .. }
-            | Block::Command { .. }
-            | Block::SubAgent(_)
-            | Block::AgentDone { .. }
-    )
+    crate::model::foldable(b)
 }
 
 /// A one-line summary chip for a sub-agent spawn: `<N> tools · <status>` — the tool

@@ -346,7 +346,7 @@ pub struct View {
     collapsed: Vec<bool>,        // per-block fold state
     raw: Vec<Line<'static>>,     // unwrapped styled lines (width-aware: tables)
     raw_tag: Vec<usize>,         // raw[i] belongs to block raw_tag[i]
-    raw_dirty: bool,             // raw needs rebuilding (fold/ingest/reset)
+    raw_dirty: bool,             // raw needs rebuilding (fold toggle / live update)
     wrapped: Vec<Line<'static>>, // wrapped to `width`
     wrapped_tag: Vec<usize>,     // wrapped[i] belongs to block wrapped_tag[i]
     width: u16,
@@ -1107,89 +1107,13 @@ impl View {
         self.matches.len()
     }
 
-    /// Append newly-tailed blocks; bumps the new-message count while scrolled back.
-    pub fn ingest(&mut self, mut new_blocks: Vec<Block>) {
-        if new_blocks.is_empty() {
-            return;
-        }
-        // Re-group across the poll boundary. `group_turns` runs per parse batch, so
-        // a thinking block whose preceding activity tools were delivered in an
-        // EARLIER poll couldn't absorb them — they'd linger as separate expanded
-        // blocks until a restart re-parsed the whole file. If this batch opens with
-        // a thinking turn, pull the trailing run of activity tool calls off the tail
-        // of the existing blocks into it, matching a full re-parse.
-        if let Some(Block::Thinking { tools, .. }) = new_blocks.first_mut() {
-            let mut stolen: Vec<Block> = Vec::new();
-            while matches!(
-                self.blocks.last(),
-                Some(Block::ToolUse { name, .. }) if crate::model::is_activity_tool(name)
-            ) {
-                stolen.push(self.blocks.pop().unwrap());
-                self.collapsed.pop();
-            }
-            if !stolen.is_empty() {
-                // `stolen` is tail-first; restore chronological order, then append
-                // the tools this batch already grouped in.
-                stolen.reverse();
-                stolen.extend(std::mem::take(tools));
-                *tools = stolen;
-                // The popped blocks vacated their cache slots — drop the stale tail
-                // so `render_raw`'s positional cache doesn't serve them for the new
-                // blocks that take their place.
-                self.body_cache.truncate(self.blocks.len());
-            }
-        }
-        let n = new_blocks.len();
-        // Live equivalent of the batch parser's immediate-pickup suppression: a queued
-        // prompt whose `⧗ queued:` marker is the current tail (nothing emitted since)
-        // was picked up immediately, so the arriving `❯` turn REPLACES the marker
-        // rather than following it. A full re-parse (or the HTML live path) already does
-        // this; the append-based tail must do it by hand. If agent work arrived between
-        // the marker and the turn, the marker is no longer the tail and stays (delayed).
-        let fresh = self.fold.collapsed_for(&new_blocks);
-        for (b, c) in new_blocks.into_iter().zip(fresh) {
-            if let Block::UserText(t) = &b {
-                // Look only at the TRAILING run of `⧗ queued:` markers (those with no
-                // agent block emitted after them). A match there is an immediate pickup
-                // → drop that marker so this turn replaces it. Once agent work lands, the
-                // run is empty and the marker survives (a delayed pickup keeps both).
-                let run_start = self
-                    .blocks
-                    .iter()
-                    .rposition(|x| !matches!(x, Block::QueueEvent { .. }))
-                    .map_or(0, |i| i + 1);
-                if let Some(off) = self.blocks[run_start..]
-                    .iter()
-                    .position(|x| matches!(x, Block::QueueEvent { text } if text == t))
-                {
-                    let idx = run_start + off;
-                    self.blocks.remove(idx);
-                    self.collapsed.remove(idx);
-                    self.body_cache.truncate(idx); // positional cache invalid from here
-                }
-            }
-            self.collapsed.push(c);
-            self.blocks.push(b);
-        }
-        self.rebuild_raw();
-        if !self.follow {
-            self.new_count += n;
-        }
-    }
-
-    /// Replace all content (after a transcript truncation/rewrite).
-    pub fn reset(&mut self, blocks: Vec<Block>) {
-        self.collapsed = self.fold.collapsed_for(&blocks);
-        self.blocks = blocks;
-        self.body_cache.clear(); // indices no longer map to the old blocks
-        self.rebuild_raw();
-    }
-
     /// Incremental live update (M16): replace the blocks with a fresh `FollowParser` snapshot
     /// while PRESERVING per-block fold toggles and the render cache for the unchanged prefix
     /// — so a live tail doesn't reset the user's expands/collapses or re-render settled
     /// blocks each poll. Only the changed/appended tail (a back-patched tool block, new
-    /// turns) recomputes. Replaces the old ingest/full-reparse split with one correct path.
+    /// turns) recomputes. This is the sole live path: the `FollowParser` snapshot is already
+    /// fully regrouped (thinking absorbs its tools, immediate-pickup markers suppressed) by the
+    /// shared `Replayer`, so the view just diffs and swaps — no view-level re-grouping.
     pub fn update(&mut self, new_blocks: Vec<Block>) {
         // Longest unchanged prefix — keep its fold state and render cache.
         let d = self
@@ -1198,6 +1122,12 @@ impl View {
             .zip(&new_blocks)
             .take_while(|(a, b)| a == b)
             .count();
+        // Live "▼ N new — G to jump" badge: while scrolled back (not following), accumulate
+        // the net growth so the reader sees how much arrived below. Follow mode stays pinned
+        // to the bottom, so it shows no badge. (A back-patch that doesn't grow bumps nothing.)
+        if !self.follow {
+            self.new_count += new_blocks.len().saturating_sub(self.blocks.len());
+        }
         let tail = self.fold.collapsed_for(&new_blocks[d..]);
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
@@ -2125,7 +2055,8 @@ mod tests {
         draw(&mut v, 40, 10);
         v.scroll_by(-20);
         assert!(!v.follow());
-        v.ingest(blocks(3));
+        // Live path: a poll delivers the cumulative snapshot (100 old + 3 new).
+        v.update(blocks(103));
         assert_eq!(v.new_count(), 3);
         let buf = draw(&mut v, 40, 10);
         assert!(row(&buf, 9).contains("3 new"));
@@ -2135,106 +2066,12 @@ mod tests {
         assert!(!row(&buf, 9).contains("new"));
     }
 
-    /// Live tail: activity tools that arrive in one poll and a thinking block that
-    /// arrives in a LATER poll must still group — the thinking absorbs the earlier
-    /// tools instead of leaving them as separate expanded blocks (which only a
-    /// restart used to fix).
-    #[test]
-    fn live_thinking_absorbs_tools_from_an_earlier_poll() {
-        let tool = |name: &str, target: &str| Block::ToolUse {
-            name: name.into(),
-            target: target.into(),
-            diffs: vec![],
-            output: Some("out".into()),
-            patch: None,
-            read_lines: None,
-        };
-        let mut v = View::new(
-            vec![Block::UserText("go".into())],
-            "t",
-            true,
-            FoldPolicy::default(),
-        );
-        draw(&mut v, 60, 20);
-
-        // Poll 1: the tools land as their own top-level blocks.
-        v.ingest(vec![tool("Bash", "ls"), tool("Read", "x.rs")]);
-        assert_eq!(v.block_kinds(), vec!["user", "bash", "read"]);
-
-        // Poll 2: the thinking block arrives alone — it should swallow both tools.
-        v.ingest(vec![Block::Thinking {
-            text: "pondering the plan".into(),
-            duration_secs: None,
-            tools: vec![],
-        }]);
-        assert_eq!(
-            v.block_kinds(),
-            vec!["user", "thinking"],
-            "thinking did not absorb the earlier-poll tools"
-        );
-
-        // The thinking folds by default; its collapsed summary names the absorbed
-        // activities, and the tool bodies are hidden (grouped, not expanded).
-        assert!(v.is_collapsed(1), "thinking should fold by default");
-        let buf = draw(&mut v, 60, 20);
-        let body: String = (0..19).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
-        assert!(
-            body.contains("(ls)") && body.contains("thought"),
-            "collapsed summary missing absorbed activities:\n{body}"
-        );
-    }
-
-    /// Live-tail two-tier queue collapse: a `⧗ queued:` marker shown in one poll is
-    /// REPLACED by its `❯` turn when the pickup (a `queued_command` attachment → a
-    /// matching `UserText`) arrives immediately after (nothing in between). If agent
-    /// work arrives between them, the marker survives (a delayed pickup).
-    #[test]
-    fn live_immediate_pickup_replaces_queued_marker_with_the_turn() {
-        let tool = |name: &str| Block::ToolUse {
-            name: name.into(),
-            target: "x".into(),
-            diffs: vec![],
-            output: Some("out".into()),
-            patch: None,
-            read_lines: None,
-        };
-        let mut v = View::new(
-            vec![Block::UserText("go".into())],
-            "t",
-            true,
-            FoldPolicy::default(),
-        );
-        draw(&mut v, 60, 20);
-
-        // Poll 1: two prompts queued while the agent is busy → two markers at the tail.
-        v.ingest(vec![
-            Block::QueueEvent {
-                text: "immediate one".into(),
-            },
-            Block::QueueEvent {
-                text: "delayed one".into(),
-            },
-        ]);
-        assert_eq!(v.block_kinds(), vec!["user", "queue", "queue"]);
-
-        // Poll 2: "immediate one" is picked up right away (its marker is the tail) →
-        // the arriving turn replaces the marker, not appends after it.
-        v.ingest(vec![Block::UserText("immediate one".into())]);
-        assert_eq!(
-            v.block_kinds(),
-            vec!["user", "queue", "user"],
-            "immediate marker should be replaced by its turn"
-        );
-
-        // Poll 3: agent work arrives, THEN "delayed one" is picked up → its marker
-        // (no longer the tail) survives alongside the turn.
-        v.ingest(vec![tool("Bash"), Block::UserText("delayed one".into())]);
-        assert_eq!(
-            v.block_kinds(),
-            vec!["user", "queue", "user", "bash", "user"],
-            "delayed marker should survive its turn"
-        );
-    }
+    // NOTE: cross-poll re-grouping (a thinking block absorbing activity tools delivered in
+    // an earlier poll) and live immediate-pickup marker suppression used to be done here in
+    // the view's `ingest`. Since M16 the `FollowParser`/`Replayer` produce a fully-regrouped
+    // cumulative snapshot each poll, so `update` just diffs and swaps — the behavior is owned
+    // (and byte-identically tested) by core: `incremental_line_by_line_matches_full_replay`
+    // and `queue_markers_suppress_on_immediate_pickup_but_survive_a_gap` in `claude_model`.
 
     /// `[`/`]` can focus an attachment (it isn't foldable but is actionable), and
     /// activating a path-only attachment returns its path for the caller to reveal.
@@ -2611,7 +2448,9 @@ mod tests {
     fn following_view_keeps_new_content_visible() {
         let mut v = View::new(blocks(10), "t", true, FoldPolicy::none());
         draw(&mut v, 40, 8);
-        v.ingest(vec![Block::AssistantText("SENTINEL_TAIL".into())]);
+        let mut snapshot = blocks(10);
+        snapshot.push(Block::AssistantText("SENTINEL_TAIL".into()));
+        v.update(snapshot);
         let buf = draw(&mut v, 40, 8);
         let body: String = (0..7).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
         assert!(body.contains("SENTINEL_TAIL"), "tail not visible:\n{body}");
