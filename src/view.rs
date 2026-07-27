@@ -216,7 +216,7 @@ pub enum Action {
     /// Reveal this path in the OS file manager (a tool-header path / path-only attachment).
     Reveal(PathBuf),
     /// Descend into the `SubAgent` at this block index (open its child transcript).
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
 }
 
 /// A resolved descend target — the agent to open, plus any pre-loaded child transcript
@@ -225,14 +225,14 @@ pub struct DescendRef {
     pub agent_id: String,
     pub agent_type: String,
     pub blocks: Vec<Block>,
-    pub subtree_cost: Option<f64>,
+    pub subtree_cost: Option<crate::model::UsdCost>,
 }
 
 /// The outcome of a mouse click while the `a` active-sub-agents popup is open.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PopupClick {
     /// Clicked an agent row — descend into the sub-agent at this block index.
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
     /// Clicked elsewhere on the overlay — swallowed, popup stays open (`Esc`/`a` closes).
     Border,
     /// No popup was open.
@@ -241,12 +241,12 @@ pub enum PopupClick {
 
 pub struct View {
     blocks: Vec<Block>,
-    collapsed: Vec<bool>,        // per-block fold state
-    raw: Vec<Line<'static>>,     // unwrapped styled lines (width-aware: tables)
-    raw_tag: Vec<usize>,         // raw[i] belongs to block raw_tag[i]
-    raw_dirty: bool,             // raw needs rebuilding (fold toggle / live update)
-    wrapped: Vec<Line<'static>>, // wrapped to `width`
-    wrapped_tag: Vec<usize>,     // wrapped[i] belongs to block wrapped_tag[i]
+    collapsed: Vec<bool>,                       // per-block fold state
+    raw: Vec<Line<'static>>,                    // unwrapped styled lines (width-aware: tables)
+    raw_tag: Vec<crate::model::BlockIndex>,     // raw[i] belongs to block raw_tag[i]
+    raw_dirty: bool,                            // raw needs rebuilding (fold toggle / live update)
+    wrapped: Vec<Line<'static>>,                // wrapped to `width`
+    wrapped_tag: Vec<crate::model::BlockIndex>, // wrapped[i] belongs to block wrapped_tag[i]
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
     scroll: usize, // top wrapped-line index
@@ -255,20 +255,20 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,                  // current needle (empty = no search)
-    searching: bool,                // in `/` input mode
-    matches: Vec<usize>,            // wrapped-line indices containing the needle
-    match_pos: usize,               // index into `matches`
-    metrics: String,                // footer text (tokens/cost/duration/model) — legacy string
+    query: String,                           // current needle (empty = no search)
+    searching: bool,                         // in `/` input mode
+    matches: Vec<usize>,                     // wrapped-line indices containing the needle
+    match_pos: usize,                        // index into `matches`
+    metrics: String, // footer text (tokens/cost/duration/model) — legacy string
     footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
-    descended: bool,                // this view is a descended sub-agent (footer shows `esc back`)
-    fold: FoldPolicy,               // per-type default fold policy (applied to new content)
-    focus: Option<usize>,           // focused foldable block index ([ / ] / hover)
-    show_help: bool,                // `?` help overlay visible
-    agents_popup: Option<usize>,    // `a` active-sub-agents popup: selected row, when open
-    can_go_back: bool,              // launched via the picker → Esc returns to the session list
-    can_open_picker: bool,          // `s` opens the session switcher overlay (--latest launch)
-    switcher: Option<Picker>,       // session switcher overlay, when open
+    descended: bool, // this view is a descended sub-agent (footer shows `esc back`)
+    fold: FoldPolicy, // per-type default fold policy (applied to new content)
+    focus: Option<crate::model::BlockIndex>, // focused foldable block index ([ / ] / hover)
+    show_help: bool, // `?` help overlay visible
+    agents_popup: Option<usize>, // `a` active-sub-agents popup: selected row, when open
+    can_go_back: bool, // launched via the picker → Esc returns to the session list
+    can_open_picker: bool, // `s` opens the session switcher overlay (--latest launch)
+    switcher: Option<Picker>, // session switcher overlay, when open
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
@@ -344,7 +344,7 @@ impl View {
     }
     /// Block indices of THIS node's direct sub-agents that are still running (spawned,
     /// no terminal status) — the `a` popup's rows, node-scoped.
-    fn active_agent_indices(&self) -> Vec<usize> {
+    fn active_agent_indices(&self) -> Vec<crate::model::BlockIndex> {
         self.blocks
             .iter()
             .enumerate()
@@ -376,7 +376,7 @@ impl View {
     }
     /// Confirm the popup selection: close it and return the selected active agent's block
     /// index (for the caller to `Descend` into).
-    pub fn agents_popup_confirm(&mut self) -> Option<usize> {
+    pub fn agents_popup_confirm(&mut self) -> Option<crate::model::BlockIndex> {
         let sel = self.agents_popup.take()?;
         self.active_agent_indices().get(sel).copied()
     }
@@ -526,7 +526,7 @@ impl View {
         self.view_h
     }
     #[cfg(test)]
-    pub fn is_collapsed(&self, i: usize) -> bool {
+    pub fn is_collapsed(&self, i: crate::model::BlockIndex) -> bool {
         self.collapsed[i]
     }
     /// The fold-key of every top-level block (for asserting live-tail grouping).
@@ -536,7 +536,7 @@ impl View {
     }
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
-    pub fn block_of_line(&self, line: usize) -> Option<usize> {
+    pub fn block_of_line(&self, line: usize) -> Option<crate::model::BlockIndex> {
         self.wrapped_tag.get(line).copied()
     }
 
@@ -622,7 +622,7 @@ impl View {
 
     // --- fold / expand (P4) ---
     /// Toggle the collapse state of a foldable block by index.
-    pub fn toggle_block(&mut self, i: usize) {
+    pub fn toggle_block(&mut self, i: crate::model::BlockIndex) {
         if self.blocks.get(i).map(render::foldable).unwrap_or(false) {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
@@ -697,7 +697,7 @@ impl View {
 
     /// Is the click at `(idx, col)` on a spawn / completion header's descend-target agent
     /// id? Works for both the `SubAgent` spawn and the `AgentDone` completion (any status).
-    fn agent_id_hit(&self, b: usize, idx: usize, col: usize) -> bool {
+    fn agent_id_hit(&self, b: crate::model::BlockIndex, idx: usize, col: usize) -> bool {
         // Only the header's own first row carries the id.
         if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
             return false;
@@ -719,7 +719,7 @@ impl View {
     /// The KEYBOARD (`Enter`) action for block `b`. A [`Block::SubAgent`] with a loaded
     /// child **descends** directly (Space still folds it); an [`Attachment`] downloads
     /// (flashed) or reveals its path; any other block toggles its fold.
-    fn activate_block(&mut self, b: usize) -> Option<Action> {
+    fn activate_block(&mut self, b: crate::model::BlockIndex) -> Option<Action> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => {
                 if sa.agent_id.is_empty() {
@@ -761,7 +761,7 @@ impl View {
     }
 
     /// The `SubAgent` at block index `b` — the caller descends using its `blocks`.
-    pub fn subagent_at(&self, b: usize) -> Option<&crate::model::SubAgent> {
+    pub fn subagent_at(&self, b: crate::model::BlockIndex) -> Option<&crate::model::SubAgent> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => Some(sa),
             _ => None,
@@ -771,7 +771,7 @@ impl View {
     /// The descend target at block index `b` — a `SubAgent` spawn (with any pre-loaded
     /// child `blocks`) OR an `AgentDone` completion (whose child always loads lazily from
     /// its file). `None` for any other block or a missing agent id.
-    pub fn descend_ref_at(&self, b: usize) -> Option<DescendRef> {
+    pub fn descend_ref_at(&self, b: crate::model::BlockIndex) -> Option<DescendRef> {
         match self.blocks.get(b)? {
             Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(DescendRef {
                 agent_id: sa.agent_id.clone(),
@@ -795,7 +795,7 @@ impl View {
 
     /// Land the cursor on block `b` (the spawn we returned from) WITHOUT changing any
     /// fold state — the return-from-descend focus restore (§2.2). Scrolls it into view.
-    pub fn focus_block(&mut self, b: usize) {
+    pub fn focus_block(&mut self, b: crate::model::BlockIndex) {
         if b < self.blocks.len() {
             self.focus = Some(b);
             self.scroll_block_into_view(b);
@@ -806,7 +806,12 @@ impl View {
     /// first (header) row of a tool block and `col` falls within its `(target)`
     /// span — and the resolved path actually exists (so a `Bash(ls)` command or a
     /// `Grep(pattern)` header never masquerades as a file). Else `None`.
-    fn header_path_hit(&self, b: usize, idx: usize, col: usize) -> Option<PathBuf> {
+    fn header_path_hit(
+        &self,
+        b: crate::model::BlockIndex,
+        idx: usize,
+        col: usize,
+    ) -> Option<PathBuf> {
         // Only the header's own first row carries the path.
         if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
             return None;
@@ -846,7 +851,7 @@ impl View {
     // --- expandable-element focus ([ / ] / hover / Enter) ---
     /// Block indices the `[`/`]` keys can focus: foldable blocks plus attachments
     /// (which aren't foldable but are actionable via Enter — download/reveal).
-    fn focusable_blocks(&self) -> Vec<usize> {
+    fn focusable_blocks(&self) -> Vec<crate::model::BlockIndex> {
         (0..self.blocks.len())
             .filter(|&i| {
                 render::foldable(&self.blocks[i]) || matches!(self.blocks[i], Block::Attachment(_))
@@ -876,7 +881,7 @@ impl View {
         self.focus = Some(b);
         self.scroll_block_into_view(b);
     }
-    fn scroll_block_into_view(&mut self, b: usize) {
+    fn scroll_block_into_view(&mut self, b: crate::model::BlockIndex) {
         if let Some(idx) = self.wrapped_tag.iter().position(|&t| t == b) {
             if idx < self.scroll {
                 self.scroll = idx;
@@ -933,7 +938,7 @@ impl View {
         }
     }
     #[cfg(test)]
-    pub fn focused_block(&self) -> Option<usize> {
+    pub fn focused_block(&self) -> Option<crate::model::BlockIndex> {
         self.focus
     }
 

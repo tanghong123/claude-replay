@@ -44,7 +44,7 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
     shaping: &Shaping,
     mut decode: impl FnMut(&str, &mut Vec<Message>),
     mut fold_metrics: impl FnMut(&Value),
-    user_times: &mut Vec<Option<f64>>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> std::io::Result<Vec<Block>> {
     let mut r = Replayer::new(shaping, tool_ids);
     let mut buf: Vec<Message> = Vec::new();
@@ -73,7 +73,11 @@ pub(crate) fn parse_stream<R: std::io::BufRead>(
 pub(crate) fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
-) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
+) -> std::io::Result<(
+    Vec<Block>,
+    Vec<Option<EpochSeconds>>,
+    crate::metrics::Metrics,
+)> {
     let mut times = Vec::new();
     let (blocks, metrics) = crate::adapter::adapter(agent).parse_path_timed(path, &mut times)?;
     Ok((blocks, times, metrics))
@@ -125,16 +129,16 @@ pub(crate) struct Replayer<'a> {
     shaping: &'a Shaping,
     tool_ids: HashSet<String>,
     out: Vec<Block>,
-    user_times: Vec<Option<f64>>,
-    pending_ts: Option<f64>,
+    user_times: Vec<Option<EpochSeconds>>,
+    pending_ts: Option<EpochSeconds>,
     stamped: usize,
-    tool_slot: HashMap<String, usize>,
+    tool_slot: HashMap<String, BlockIndex>,
     pending: HashMap<String, (String, Value)>,
-    trigger_ts: Option<f64>,
+    trigger_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     content_seq: usize,
-    suppress: Vec<usize>,
-    last_skill: Option<usize>,
+    suppress: Vec<BlockIndex>,
+    last_skill: Option<BlockIndex>,
     completions: Vec<CompletionRec>,
 }
 
@@ -339,7 +343,7 @@ impl<'a> Replayer<'a> {
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
     /// Returns the grouped blocks and the per-turn timestamps.
-    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<f64>>) {
+    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         stamp_user_turns(
             &self.out,
             &mut self.stamped,
@@ -360,7 +364,7 @@ impl<'a> Replayer<'a> {
     /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
     /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
     /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
-    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
+    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let mut out = self.out.clone();
         let mut user_times = self.user_times.clone();
         let mut stamped = self.stamped;
@@ -415,9 +419,9 @@ pub(crate) fn replay(
 /// one copy. Runs before turn grouping so surviving markers keep their positions.
 fn apply_completions_and_suppress(
     out: &mut Vec<Block>,
-    tool_slot: &HashMap<String, usize>,
+    tool_slot: &HashMap<String, BlockIndex>,
     completions: &[CompletionRec],
-    suppress: Vec<usize>,
+    suppress: Vec<BlockIndex>,
 ) {
     if !completions.is_empty() {
         let mut agent_slot: HashMap<String, usize> = HashMap::new();
@@ -486,7 +490,7 @@ fn apply_completions_and_suppress(
 /// happened in between (immediate → suppress the marker).
 pub(crate) struct QueueItem {
     pub(crate) content: String,
-    pub(crate) marker_idx: Option<usize>,
+    pub(crate) marker_idx: Option<BlockIndex>,
     pub(crate) content_at_enqueue: usize,
 }
 
@@ -514,8 +518,8 @@ pub(crate) struct CompletionRec {
 pub(crate) fn stamp_user_turns(
     out: &[Block],
     stamped: &mut usize,
-    ts: Option<f64>,
-    user_times: &mut Vec<Option<f64>>,
+    ts: Option<EpochSeconds>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) {
     for b in &out[*stamped..] {
         if matches!(b, Block::UserText(_) | Block::Command { .. }) {

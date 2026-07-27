@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 /// Rendered lines plus a parallel "which block produced this line" vector.
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
-    pub block_of: Vec<usize>,
+    pub block_of: Vec<crate::model::BlockIndex>,
 }
 
 /// Blocks whose body can be collapsed to a one-line placeholder.

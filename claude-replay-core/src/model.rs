@@ -26,6 +26,9 @@ pub type EpochSeconds = f64;
 /// A monetary amount in **US dollars** — e.g. an estimated token cost (dollars, not tokens).
 pub type UsdCost = f64;
 
+/// A byte offset into a transcript file (a position, not a length/count).
+pub type ByteOffset = u64;
+
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
 #[derive(Debug, Clone, PartialEq)]

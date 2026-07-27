@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 pub struct TailReader {
     path: PathBuf,
-    offset: u64,
+    offset: crate::model::ByteOffset,
     pending: String,
 }
 

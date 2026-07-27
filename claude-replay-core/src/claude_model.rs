@@ -472,11 +472,11 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
 
 /// A sub-agent's own cost (from its transcript's metrics) plus all descendants'
 /// rolled-up costs. `None` when neither is known.
-fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<f64> {
+fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<UsdCost> {
     let own = std::fs::File::open(child_path).ok().and_then(|f| {
         crate::metrics::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
     });
-    let desc: f64 = child_blocks
+    let desc: UsdCost = child_blocks
         .iter()
         .filter_map(|b| match b {
             Block::SubAgent(sa) => sa.subtree_cost,
@@ -842,15 +842,15 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
 pub(crate) fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     tool_ids: &HashSet<String>,
-    user_times: &mut Vec<Option<f64>>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     // Timestamp for blocks emitted by the event being processed, plus how far we've
     // stamped. Flushed at the next iteration so an early `continue` can't lose it.
-    let mut pending_ts: Option<f64> = None;
+    let mut pending_ts: Option<EpochSeconds> = None;
     let mut stamped = 0usize;
     // tool_use id -> index of its ToolUse block in `out`, for result back-patching.
-    let mut tool_slot: HashMap<String, usize> = HashMap::new();
+    let mut tool_slot: HashMap<String, BlockIndex> = HashMap::new();
     // Results seen before their tool_use (id is in `tool_ids`), awaiting it.
     let mut pending: HashMap<String, (String, Value)> = HashMap::new();
     // The session's cwd (from the transcript) — tool targets are shown relative to
@@ -859,7 +859,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     let mut cwd = String::new();
     // Timestamp of the last user/tool-result event — the moment the model's next
     // generation was requested — so a thinking block's duration is `its ts − this`.
-    let mut trigger_ts: Option<f64> = None;
+    let mut trigger_ts: Option<EpochSeconds> = None;
     // Messages the human submits mid-turn are recorded as `queue-operation` events
     // (not `user` events). Their lifecycle: `enqueue` → `remove`/`dequeue` (a FIFO
     // front pop) when the agent picks the prompt up → a `queued_command` **attachment**
@@ -879,12 +879,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // in `suppress` and are filtered out after the loop (safe — `tool_slot` is only
     // used during the loop).
     let mut content_seq = 0usize;
-    let mut suppress: Vec<usize> = Vec::new();
+    let mut suppress: Vec<BlockIndex> = Vec::new();
     // Index of the most recent `Skill` tool_use block. The harness delivers a loaded
     // skill's instruction body as a following injected user message ("Base directory
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
-    let mut last_skill: Option<usize> = None;
+    let mut last_skill: Option<BlockIndex> = None;
     // Agent-completion `<task-notification>` strings, collected as seen and applied to
     // their `SubAgent` block after the loop (by `tool-use-id`, else `task-id`==agentId),
     // before any block removal shifts `tool_slot`'s indices.
@@ -1198,7 +1198,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // + inline result. MUST run before the `suppress` filter below removes blocks (which
     // would invalidate `tool_slot`'s indices). Join by `tool-use-id`, else `task-id`.
     if !completions.is_empty() {
-        let mut agent_slot: HashMap<String, usize> = HashMap::new();
+        let mut agent_slot: HashMap<String, BlockIndex> = HashMap::new();
         for (i, b) in out.iter().enumerate() {
             if let Block::SubAgent(sa) = b {
                 if !sa.agent_id.is_empty() {

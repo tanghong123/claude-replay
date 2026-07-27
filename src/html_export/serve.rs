@@ -115,7 +115,11 @@ impl Live {
     /// (the requested `from` clamped to EOF). The client uses `start` to place the chunk
     /// idempotently: it discards any prefix it already has and sets its cursor to
     /// `start + bytes.len()`, so a re-fetch or a past-EOF request can't desync it.
-    fn stream_bytes(&self, id: &str, from: u64) -> (u64, Vec<u8>) {
+    fn stream_bytes(
+        &self,
+        id: &str,
+        from: crate::model::ByteOffset,
+    ) -> (crate::model::ByteOffset, Vec<u8>) {
         match std::fs::read(self.dir.join(format!("{id}.jsonl"))) {
             Ok(bytes) => {
                 let start = (from as usize).min(bytes.len());

@@ -196,14 +196,14 @@ pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Ha
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
     call_ids: &HashSet<String>,
-    user_times: &mut Vec<Option<f64>>,
+    user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
     // See `model::parse_main`: stamp the previous event's user turns on the next
     // iteration so an early `continue` can't drop them.
-    let mut pending_ts: Option<f64> = None;
+    let mut pending_ts: Option<crate::model::EpochSeconds> = None;
     let mut stamped = 0usize;
-    let mut slots: HashMap<String, usize> = HashMap::new();
+    let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
     let mut pending: HashMap<String, String> = HashMap::new();
     let mut cwd = String::new();
     let mut trigger_ts = None;

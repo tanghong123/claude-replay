@@ -99,7 +99,7 @@ pub(crate) fn estimate_cost(
     cache_creation: u64,
     cache_read: u64,
     output: u64,
-) -> Option<f64> {
+) -> Option<UsdCost> {
     price(model).map(|(pi, po)| {
         (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
             + output as f64 / 1e6 * po

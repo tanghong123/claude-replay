@@ -19,7 +19,7 @@
 //! One later, separately-gated step remains: the incremental phase's `seq`/`offset`/`Reset`
 //! envelope (§5.2 Phase 6). `tokenize`/`replay` are pure and I/O-free (§3.6's sans-I/O core).
 
-use crate::model::{AgentStatus, Attachment};
+use crate::model::{AgentStatus, Attachment, EpochSeconds};
 use serde_json::Value;
 
 /// Which queue-operation a `queue-operation` line performed.
@@ -38,15 +38,18 @@ pub enum Message {
     /// timestamp. Drives the deferred user-turn stamping: the fold stamps the *previous*
     /// line's turns with the running `pending_ts`, then adopts this line's ts — exactly
     /// `parse_main`'s `pending_ts` / `stamped` dance, so `user_times` come out identical.
-    LineStart(Option<f64>),
+    LineStart(Option<EpochSeconds>),
     /// A `user`-type line occurred — the trigger that resets the thinking-duration clock.
     /// Emitted right after this line's `LineStart`, before its content messages.
-    Trigger(Option<f64>),
+    Trigger(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
     /// Assistant thinking content item + this line's ts (the fold computes the duration
     /// as `ts − trigger_ts`).
-    Thinking { text: String, ts: Option<f64> },
+    Thinking {
+        text: String,
+        ts: Option<EpochSeconds>,
+    },
     /// A `tool_use` (an ordinary tool or an `Agent`/`Task` spawn) — its **raw** fields
     /// (the join `id`, the tool `name`, the call `input`, and the session `cwd` used to
     /// relativize path targets), NOT a built block. The fold builds the block via the

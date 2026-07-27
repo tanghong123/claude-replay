@@ -10,7 +10,7 @@ use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
 use crate::metrics::Metrics;
-use crate::model::Block;
+use crate::model::{Block, EpochSeconds};
 use crate::tail::TailReader;
 use crate::Agent;
 
@@ -43,7 +43,9 @@ impl FollowParser {
     /// the current blocks + per-turn times + metrics. Returns `None` when nothing changed
     /// since the last poll (the common idle tick). O(delta) except on a rewrite.
     #[allow(clippy::type_complexity)]
-    pub fn poll(&mut self) -> std::io::Result<Option<(Vec<Block>, Vec<Option<f64>>, Metrics)>> {
+    pub fn poll(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
         let p = self.tail.poll()?;
         if !p.reset && p.lines.is_empty() {
             return Ok(None); // nothing new this tick

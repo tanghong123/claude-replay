@@ -337,7 +337,7 @@ struct Emitter<'a> {
     /// written file? Set only for the offline `--dump-all-html` bundle (portable + offline
     /// downloadable); `None` for served (`reveal` Blob/data-URI) and single-file exports.
     assets: Option<&'a mut AssetSink>,
-    next_block: usize,
+    next_block: crate::model::BlockIndex,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
     turns: Vec<(String, String)>,

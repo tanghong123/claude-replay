@@ -142,7 +142,7 @@ struct Frame {
     follower: Option<crate::follow::FollowParser>,
     agent: Agent,
     path: PathBuf,
-    from: usize,
+    from: crate::model::BlockIndex,
 }
 
 /// View a session, staying in the viewer across `s`-switches AND sub-agent descents. A
@@ -197,7 +197,12 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 
 /// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
-fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Result<Frame> {
+fn build_frame(
+    args: &Args,
+    path: &Path,
+    can_go_back: bool,
+    from: crate::model::BlockIndex,
+) -> Result<Frame> {
     // The agent is a property of the file — detect it from the contents so the right
     // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
@@ -238,7 +243,7 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
 /// completion) at block index `idx` of `parent`'s view. A spawn reuses its already-parsed
 /// child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads the
 /// child transcript from disk. `None` if `idx` isn't a descendable agent block.
-fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
+fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex) -> Option<Frame> {
     let dref = parent.view.descend_ref_at(idx)?;
     // Own the fields we need so the borrow of `parent.view` ends before we touch
     // `parent.path` / build the view.
@@ -316,7 +321,7 @@ enum Outcome {
     /// Switch to another session (chosen via the `s` switcher overlay).
     Switch(PathBuf),
     /// Descend into the sub-agent at this block index of the current view.
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
     /// Ascend to the parent view (the sub-agent `Esc`/`⌫`), landing on the spawn block.
     Ascend,
 }
