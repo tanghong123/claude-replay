@@ -85,7 +85,20 @@ pub(crate) struct Shaping {
 /// real transcripts: 0/209 scanned).
 pub(crate) struct Replayer<'a> {
     shaping: &'a Shaping,
+    /// The **resident window** of raw (pre-`finish_turns`) blocks: logical indices `base..`. Blocks
+    /// before `base` are complete turns that have been finalized (grouped) into `durable` and dropped
+    /// from `out` — so content is O(turn), not O(N). Every stored index below (`tool_slot`,
+    /// `suppress`, `last_skill`, `stamped`, `queue[].marker_idx`) is **logical**; subtract `base` to
+    /// index `out`.
     out: Vec<Block>,
+    /// Finalized (grouped) blocks of the completed turns, in order — the durable prefix. Appended to
+    /// as turns close; concatenated ahead of `finish_turns(out)` to reproduce the whole session
+    /// (per-turn finalize distributes over user-turn boundaries, so this equals a global finalize).
+    durable: Vec<Block>,
+    /// Count of raw blocks already finalized-and-dropped from the front of `out` — the logical index
+    /// of `out[0]`. Always sits **at a turn boundary** (a `UserText`/`Command`), so the durable /
+    /// open split never cuts a turn.
+    base: usize,
     user_times: Vec<Option<EpochSeconds>>,
     pending_ts: Option<EpochSeconds>,
     stamped: usize,
@@ -121,6 +134,8 @@ impl<'a> Replayer<'a> {
         Replayer {
             shaping,
             out: Vec::new(),
+            durable: Vec::new(),
+            base: 0,
             user_times: Vec::new(),
             pending_ts: None,
             stamped: 0,
@@ -140,12 +155,10 @@ impl<'a> Replayer<'a> {
         for m in messages {
             match m {
                 Message::LineStart(ts) => {
-                    stamp_user_turns(
-                        &self.out,
-                        &mut self.stamped,
-                        self.pending_ts,
-                        &mut self.user_times,
-                    );
+                    // Stamp over the resident window; `stamped` is logical, so translate by `base`.
+                    let mut ws = self.stamped - self.base;
+                    stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+                    self.stamped = self.base + ws;
                     self.pending_ts = *ts;
                 }
                 Message::Trigger(ts) => {
@@ -178,15 +191,16 @@ impl<'a> Replayer<'a> {
                     self.out
                         .push((self.shaping.build_tool)(id, name, input, cwd));
                     self.content_seq += 1;
-                    let idx = self.out.len() - 1;
-                    if let Block::ToolUse { name, .. } = &self.out[idx] {
+                    let rel = self.out.len() - 1;
+                    let logical = self.base + rel;
+                    if let Block::ToolUse { name, .. } = &self.out[rel] {
                         if name == "Skill" {
-                            self.last_skill = Some(idx);
+                            self.last_skill = Some(logical);
                         }
                     }
-                    record_agent(&mut self.agent_ids, &self.out[idx]);
+                    record_agent(&mut self.agent_ids, &self.out[rel]);
                     if !id.is_empty() {
-                        self.tool_slot.insert(id.clone(), idx);
+                        self.tool_slot.insert(id.clone(), logical);
                     }
                 }
                 Message::ToolResult {
@@ -194,11 +208,11 @@ impl<'a> Replayer<'a> {
                     text,
                     tur,
                 } => {
-                    if let Some(&idx) = self.tool_slot.get(tool_use_id) {
-                        join_result(&mut self.out[idx], text, tur);
+                    if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                        join_result(&mut self.out[rel], text, tur);
                         // The result may have filled the spawn's `agent_id`; refresh the map so a
                         // later `AgentDone` resolves the real id (not just the `tool_use_id`).
-                        record_agent(&mut self.agent_ids, &self.out[idx]);
+                        record_agent(&mut self.agent_ids, &self.out[rel]);
                     } else if !text.trim().is_empty() && keep_orphan(text) {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
@@ -212,8 +226,11 @@ impl<'a> Replayer<'a> {
                 Message::SkillBody { text, fallback } => {
                     // L1 detected the skill body; the fold only nests it into the most recent
                     // `Skill` block (stateful), falling back to a loose result block.
-                    if !attach_skill_body(&mut self.out, self.last_skill, text)
-                        && !fallback.is_empty()
+                    if !attach_skill_body(
+                        &mut self.out,
+                        self.last_skill.map(|i| i - self.base),
+                        text,
+                    ) && !fallback.is_empty()
                     {
                         self.out.push(Block::ToolResult(fallback.clone()));
                     }
@@ -281,7 +298,7 @@ impl<'a> Replayer<'a> {
                                 self.out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
-                                Some(self.out.len() - 1)
+                                Some(self.base + self.out.len() - 1)
                             } else {
                                 None
                             };
@@ -313,6 +330,94 @@ impl<'a> Replayer<'a> {
                 },
             }
         }
+        self.finalize_completed();
+    }
+
+    /// Drop the completed turns behind the open window: finalize (group + suppress) every turn
+    /// before the **last** user-turn boundary and move the result into `durable`, then discard those
+    /// raw blocks from `out` and advance `base`. Runs only when the prompt queue is **empty** — while
+    /// any prompt is pending, its `⧗ queued:` marker might still be suppressed at dequeue, so we keep
+    /// its turn resident (the queue-marker-pinned frontier). Content stays O(turn); the durable prefix
+    /// grows. A no-op until at least one full turn has closed.
+    fn finalize_completed(&mut self) {
+        if !self.queue.is_empty() {
+            return;
+        }
+        // The open turn starts at the last user-turn boundary in the window; everything before it is
+        // complete. Nothing to drop if there's no boundary, or the only turn is the open one.
+        let Some(mut k) = self
+            .out
+            .iter()
+            .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+        else {
+            return;
+        };
+        // Pin the turn holding `last_skill`: a `SkillBody` can still nest into a `Skill` block from
+        // an earlier turn (the back-reference persists until the next skill), so that block must stay
+        // resident. Cap the drop at the turn boundary at/before it. (The queue-marker back-reference
+        // is already pinned by the `queue.is_empty()` guard above.)
+        if let Some(ls_rel) = self.last_skill.map(|i| i - self.base) {
+            if ls_rel < k {
+                k = self.out[..=ls_rel]
+                    .iter()
+                    .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+                    .unwrap_or(0);
+            }
+        }
+        if k == 0 {
+            return;
+        }
+        // Drain the completed raw blocks [0..k) from the window front.
+        let drained: Vec<Block> = self.out.drain(0..k).collect();
+        // Apply the suppression flagged for this range (logical indices in [base, base+k)), then
+        // finalize (group) and append to the durable prefix.
+        let lo = self.base;
+        let hi = self.base + k;
+        let drop: HashSet<usize> = self
+            .suppress
+            .iter()
+            .copied()
+            .filter(|&i| (lo..hi).contains(&i))
+            .collect();
+        let raw: Vec<Block> = drained
+            .into_iter()
+            .enumerate()
+            .filter(|(off, _)| !drop.contains(&(lo + off)))
+            .map(|(_, b)| b)
+            .collect();
+        let finalized = (self.shaping.finish_turns)(raw);
+        self.durable.extend(finalized);
+        // Advance the frontier and retire indices that pointed into the dropped turns.
+        self.base = hi;
+        self.suppress.retain(|&i| i >= self.base);
+        self.tool_slot.retain(|_, &mut v| v >= self.base);
+        if matches!(self.last_skill, Some(i) if i < self.base) {
+            self.last_skill = None;
+        }
+    }
+
+    /// Assemble the full presentable block list: the finalized `durable` prefix followed by the
+    /// finalized open window (suppression applied window-relative). Because `base` always sits at a
+    /// user-turn boundary and `finish_turns` distributes over such boundaries, this equals a single
+    /// global finalize of the whole raw stream.
+    fn assemble(&self, mut open: Vec<Block>) -> Vec<Block> {
+        let drop: HashSet<usize> = self
+            .suppress
+            .iter()
+            .filter(|&&i| i >= self.base)
+            .map(|&i| i - self.base)
+            .collect();
+        if !drop.is_empty() {
+            let mut i = 0usize;
+            open.retain(|_| {
+                let keep = !drop.contains(&i);
+                i += 1;
+                keep
+            });
+        }
+        let mut all = self.durable.clone();
+        all.extend((self.shaping.finish_turns)(open));
+        all
     }
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
@@ -322,14 +427,11 @@ impl<'a> Replayer<'a> {
     /// equivalence oracles.
     #[cfg(test)]
     pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
-        stamp_user_turns(
-            &self.out,
-            &mut self.stamped,
-            self.pending_ts,
-            &mut self.user_times,
-        );
-        apply_suppress(&mut self.out, self.suppress);
-        let blocks = (self.shaping.finish_turns)(self.out);
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.stamped = self.base + ws;
+        let open = std::mem::take(&mut self.out);
+        let blocks = self.assemble(open);
         (blocks, self.user_times)
     }
 
@@ -338,12 +440,11 @@ impl<'a> Replayer<'a> {
     /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
     /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
     pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
-        let mut out = self.out.clone();
+        let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut stamped = self.stamped;
-        stamp_user_turns(&out, &mut stamped, self.pending_ts, &mut user_times);
-        apply_suppress(&mut out, self.suppress.clone());
-        let blocks = (self.shaping.finish_turns)(out);
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
+        let blocks = self.assemble(open);
         (blocks, user_times)
     }
 }
@@ -362,25 +463,6 @@ pub(crate) fn replay(
     let (blocks, ut) = r.into_blocks();
     user_times.extend(ut);
     blocks
-}
-
-/// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
-/// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
-/// of prompts picked up immediately. Split out so both `parse_main` and `replay` share
-/// one copy. Runs before turn grouping so surviving markers keep their positions.
-fn apply_suppress(out: &mut Vec<Block>, suppress: Vec<BlockIndex>) {
-    // Drop the marker blocks flagged for suppression (immediately-picked-up `⧗ queued:` markers).
-    // AgentDone id/type resolution is no longer done here — it happens at emit-time from the
-    // running `agent_ids` map, so this stays a pure index-keyed filter.
-    if !suppress.is_empty() {
-        let drop: HashSet<usize> = suppress.into_iter().collect();
-        let mut i = 0usize;
-        out.retain(|_| {
-            let keep = !drop.contains(&i);
-            i += 1;
-            keep
-        });
-    }
 }
 
 /// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
