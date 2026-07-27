@@ -18,6 +18,6 @@ pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metric
 pub use builder::SessionAccumulator;
 pub use index::SessionIndex;
 pub use session::{
-    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
-    BlockAccess, BlockStore, InMemoryStore, Session,
+    build_sub_agents, parse_session, parse_session_as, parse_session_enriched,
+    parse_session_enriched_as, BlockAccess, BlockStore, InMemoryStore, Session,
 };

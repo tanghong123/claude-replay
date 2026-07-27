@@ -1001,6 +1001,10 @@ pub(super) struct ChildRef {
 /// The direct sub-agents spawned in this source (its own `SubAgent` blocks). Drives lazy
 /// stream generation — parsing ONE source reveals only its direct children.
 fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
+    // Terminal-ness from the sub-agent index (derived from spawn + finish events), not the
+    // spawn block's status — the step off reading a back-patched block. Byte-identical: every
+    // non-empty-id spawn is in the map, with the same terminal value the back-patch produced.
+    let agents = crate::engine::build_sub_agents(blocks);
     blocks
         .iter()
         .filter_map(|b| match b {
@@ -1008,7 +1012,10 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
                 id: sa.agent_id.clone(),
                 description: sa.description.clone(),
                 agent_type: sa.agent_type.clone(),
-                terminal: sa.status.is_terminal(),
+                terminal: agents
+                    .get(&sa.agent_id)
+                    .map(|m| m.status.is_terminal())
+                    .unwrap_or(false),
             }),
             _ => None,
         })

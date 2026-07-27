@@ -91,7 +91,11 @@ pub struct Session<BV = Block> {
 /// `transcript` is left `None` here — the path-aware parse fills it (see
 /// [`populate_sub_agent_transcripts`]). An unmatched `AgentDone` (no spawn) is ignored, mirroring
 /// the retired `SessionIndex.agents`.
-pub(crate) fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
+/// Build the per-session sub-agent index from a block list: one entry per spawn, keyed by
+/// agent id, with status derived from the two durable events (spawn → running/async; a later
+/// `AgentDone` → terminal). The authoritative status source for renderers (they compute this
+/// from their own blocks) — the step off reading a mutated spawn block.
+pub fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
     let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
     for (at, b) in blocks.iter().enumerate() {
         match b {

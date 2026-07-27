@@ -350,10 +350,17 @@ impl View {
     /// Block indices of THIS node's direct sub-agents that are still running (spawned,
     /// no terminal status) — the `a` popup's rows, node-scoped.
     fn active_agent_indices(&self) -> Vec<crate::model::BlockIndex> {
+        // Terminal-ness from the sub-agent index (derived from the spawn + finish events),
+        // not the spawn block's status — the step off reading a back-patched block. Equivalent:
+        // an empty-id / running spawn has no terminal map entry, so it stays "active".
+        let agents = crate::engine::build_sub_agents(&self.blocks);
         self.blocks
             .iter()
             .enumerate()
-            .filter(|(_, b)| matches!(b, Block::SubAgent(sa) if !sa.status.is_terminal()))
+            .filter(|(_, b)| {
+                matches!(b, Block::SubAgent(sa)
+                    if !agents.get(&sa.agent_id).map(|m| m.status.is_terminal()).unwrap_or(false))
+            })
             .map(|(i, _)| i)
             .collect()
     }
