@@ -516,6 +516,14 @@ fn serve_connection(
     if !allowed {
         return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
     }
+    // A served static shell fetches `<id>.jsonl` directly (rather than `/stream`).
+    // Materialize a registered child on that first request, just as the live route
+    // does, while retaining the graph-backed tree scoping in `ensure_stream`.
+    if let (Some(live), Some(id)) = (live, name.strip_suffix(".jsonl")) {
+        if id.is_empty() || !live.ensure_stream(id) {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+    }
     match std::fs::read(root.join(name)) {
         Ok(bytes) => {
             let ct = if name.ends_with(".html") {
@@ -535,8 +543,70 @@ fn serve_connection(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn http_get(port: u16, path: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn static_jsonl_route_materializes_registered_claude_child() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-claude-static-route-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let streams = base.join("streams");
+        std::fs::create_dir_all(&streams).unwrap();
+        let parent = base.join("root.jsonl");
+        let child = base.join("root/subagents/agent-child.jsonl");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(&parent, "").unwrap();
+        std::fs::write(
+            &child,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"served static child\"}]}}\n",
+        )
+        .unwrap();
+
+        let live = std::sync::Arc::new(Live {
+            dir: streams.clone(),
+            agent: Agent::Claude,
+            fold: FoldPolicy::default(),
+            root_path: parent.clone(),
+            graph: crate::SessionGraph::open(Agent::Claude, &parent),
+            cwd: "/repo".into(),
+            store: crate::engine::store::SessionStore::new(),
+        });
+        live.store.register(
+            "child",
+            AgentInfo {
+                id: "child".into(),
+                source: child,
+                title: "child".into(),
+                agent_type: "Explore".into(),
+                ancestors: vec![("root".into(), "root".into())],
+            },
+        );
+
+        let port = spawn_http_server(streams.clone(), Some(live)).unwrap();
+        let response = http_get(port, "/child.jsonl");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.contains("served static child"), "{response}");
+        assert!(streams.join("child.jsonl").is_file());
+        std::fs::remove_dir_all(base).ok();
+    }
 
     #[test]
     fn codex_subagent_served_live_materializes_child_source_lazily() {
