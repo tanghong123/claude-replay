@@ -753,12 +753,31 @@
     if (pollMs > 0 && usePull) {
       // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
       // drives the tail (the server folds on our request), so an idle page costs the server nothing.
+      // Committed arrives as a POINTER (`committed_ext: {offset, len}`) into the server's on-disk
+      // record log; we range-read it via `/records` (phase two), then apply both zones atomically.
+      // The inflight guard spans both fetches and the cursor advances only after both succeed; a
+      // failed or 409 (stale-epoch after a reset) range read drops the whole reply — the next tick
+      // re-pulls with the old cursor and the protocol resyncs us.
       var inflightP = false;
       var pullTick = function () {
         if (inflightP) return;
         inflightP = true;
         fetch("pull?session=" + encodeURIComponent(sess) + "&cursor=" + cursorStr(), { cache: "no-store" })
           .then(function (r) { return r.json(); })
+          .then(function (reply) {
+            var ext = reply.committed_ext;
+            if (!ext || !ext.len) { reply.committed = []; return reply; }
+            return fetch("records?session=" + encodeURIComponent(sess) + "&from=" + ext.offset +
+                         "&len=" + ext.len + "&epoch=" + reply.epoch, { cache: "no-store" })
+              .then(function (rr) {
+                if (!rr.ok) throw new Error("stale records"); // 409 ⇒ drop the reply, re-pull
+                return rr.text();
+              })
+              .then(function (text) {
+                reply.committed = text.split("\n").filter(function (l) { return l.trim(); }).map(JSON.parse);
+                return reply;
+              });
+          })
           .then(function (reply) {
             var wasAtBottom = atBottom();
             var before = stream.childElementCount;
@@ -770,7 +789,7 @@
               spy();
             }
           })
-          .catch(function () { /* server gone / mid-write — retry next tick */ })
+          .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
           .finally(function () { inflightP = false; });
       };
       pullTick();

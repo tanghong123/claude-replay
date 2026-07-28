@@ -282,7 +282,7 @@ impl Live {
             return Some(
                 json!({
                     "t": "pull", "epoch": epoch,
-                    "committed_from": cf, "committed": [],
+                    "committed_from": cf, "committed_ext": Value::Null,
                     "provisional_gen": gen,
                     "provisional_from": pf, "provisional": [],
                     "meta": Value::Null,
@@ -341,8 +341,10 @@ impl Live {
             Some(&transcript),
             &mut open_emit,
         );
-        // Slice each zone at the cursor (via the tested pull_indices), then read the committed
-        // records straight off the on-disk log — never materializing all committed in RAM.
+        // Slice each zone at the cursor (via the tested pull_indices). The committed zone is
+        // returned as a POINTER `{offset, len}` into the on-disk `<id>.records` log — the client
+        // range-reads it via `/records` (Part 2 of the pull design): the reply never carries the
+        // committed bytes, so the server buffers none of them.
         let (cf, pf) = pull_indices(
             d.epoch,
             pr.offsets.len(),
@@ -350,11 +352,8 @@ impl Live {
             d.provisional_gen,
             cursor,
         );
-        let committed_bytes = read_range(
-            &log_path,
-            pr.offsets.get(cf).copied().unwrap_or(pr.len),
-            pr.len,
-        );
+        let start = pr.offsets.get(cf).copied().unwrap_or(pr.len);
+        let committed_ext = (pr.len > start).then_some((start, pr.len - start));
         drop(rmap);
         // The meta wire record from the maintained header (no block scan) + this agent's
         // presentation info. Children get a one-time source+parent-pointer note so their
@@ -362,11 +361,6 @@ impl Live {
         // (`derive_title`) — this pull touches no other session's presentation state.
         let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics);
         self.register_child_sources(id, &d.meta.children);
-        let committed_records: Vec<&str> = std::str::from_utf8(&committed_bytes)
-            .unwrap_or("")
-            .lines()
-            .filter(|l| !l.is_empty())
-            .collect();
         let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
             .iter()
             .map(String::as_str)
@@ -375,11 +369,28 @@ impl Live {
             d.epoch,
             d.provisional_gen,
             cf,
-            &committed_records,
+            committed_ext,
             pf,
             &provisional_records,
             &meta,
         ))
+    }
+
+    /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
+    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(())` → **409**
+    /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
+    /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
+    /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the render lock
+    /// so a concurrent reset can't swap the log mid-read.
+    fn records_bytes(&self, id: &str, from: u64, len: u64, epoch: u64) -> Result<Vec<u8>, ()> {
+        let rmap = self.render.lock().unwrap();
+        let pr = rmap.get(id).ok_or(())?;
+        if pr.epoch != epoch {
+            return Err(());
+        }
+        let end = from.saturating_add(len).min(pr.len);
+        let log_path = self.dir.join(format!("{id}.records"));
+        Ok(read_range(&log_path, from.min(end), end))
     }
 
     /// Register `parent`'s discovered children so their `?session=` links resolve to a source
@@ -548,24 +559,28 @@ fn read_range(path: &Path, start: u64, end: u64) -> Vec<u8> {
     }
 }
 
-/// Build the `/pull` wire reply string by splicing the raw record strings into the two zone arrays —
-/// no per-record parse: each `committed`/`provisional` record is already a JSON object, so
-/// `[rec1,rec2,…]` is a valid array. The content-blind client applies "truncate to `from`, then
-/// extend" per zone (see `export.js`).
+/// Build the `/pull` wire reply string. The **provisional** records are spliced inline (already
+/// JSON objects, so `[rec1,rec2,…]` is a valid array — no per-record parse); the **committed**
+/// zone is a pointer `committed_ext: {offset, len}` into `<id>.records` that the client
+/// range-reads via `/records` (`null` when there is nothing new). The content-blind client
+/// materializes the committed records from the range read, then applies "truncate to `from`,
+/// then extend" per zone (see `export.js`).
 fn pull_reply_json(
     epoch: u64,
     provisional_gen: u64,
     committed_from: usize,
-    committed_records: &[&str],
+    committed_ext: Option<(u64, u64)>,
     provisional_from: usize,
     provisional_records: &[&str],
     meta: &Value,
 ) -> String {
-    let arr = |recs: &[&str]| format!("[{}]", recs.join(","));
-    let committed = arr(committed_records);
-    let provisional = arr(provisional_records);
+    let provisional = format!("[{}]", provisional_records.join(","));
+    let ext = match committed_ext {
+        Some((offset, len)) if len > 0 => format!("{{\"offset\":{offset},\"len\":{len}}}"),
+        _ => "null".into(),
+    };
     format!(
-        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed\":{committed},\"provisional_gen\":{provisional_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
+        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed_ext\":{ext},\"provisional_gen\":{provisional_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
     )
 }
 
@@ -884,6 +899,37 @@ fn serve_connection(
             None => respond(&mut stream, "404 Not Found", "text/plain", b"no such agent"),
         };
     }
+    // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
+    // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
+    // reset since the pointer was issued) — the client drops the reply and re-pulls.
+    if name == "records" {
+        let Some(live) = live else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"no live server",
+            );
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let num = |k| {
+            query_get(query, k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+        return match live.records_bytes(id, num("from"), num("len"), num("epoch")) {
+            Ok(bytes) => respond(
+                &mut stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &bytes,
+            ),
+            Err(()) => respond(&mut stream, "409 Conflict", "text/plain", b"stale epoch"),
+        };
+    }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
     // served page can't follow a `file://` link: browsers block http→file navigation).
     if name == "__reveal" {
@@ -927,35 +973,109 @@ fn serve_connection(
 mod tests {
     use super::*;
 
-    /// `pull_reply_json` splices the raw record strings into a valid two-zone reply (no re-parse):
-    /// arrays of the block records, the `*_from` indices, and the meta object.
+    /// `pull_reply_json` splices the provisional records inline (no re-parse) and carries the
+    /// committed zone as a `{offset, len}` pointer into the on-disk record log (`null` when
+    /// empty) — the Part-2 wire the client range-reads via `/records`.
     #[test]
-    fn pull_reply_json_splices_records_into_valid_wire() {
+    fn pull_reply_json_carries_pointer_and_spliced_provisional() {
         let meta = json!({ "t": "meta" });
-        let s = pull_reply_json(
-            5,
-            3,
-            2,
-            &[r#"{"id":"a"}"#, r#"{"id":"b"}"#],
-            1,
-            &[r#"{"id":"p"}"#],
-            &meta,
-        );
+        let s = pull_reply_json(5, 3, 2, Some((128, 4096)), 1, &[r#"{"id":"p"}"#], &meta);
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["epoch"], 5);
         assert_eq!(v["committed_from"], 2);
-        assert_eq!(v["committed"].as_array().unwrap().len(), 2);
-        assert_eq!(v["committed"][0]["id"], "a");
+        assert_eq!(v["committed_ext"]["offset"], 128);
+        assert_eq!(v["committed_ext"]["len"], 4096);
         assert_eq!(v["provisional_gen"], 3);
         assert_eq!(v["provisional_from"], 1);
         assert_eq!(v["provisional"].as_array().unwrap().len(), 1);
         assert_eq!(v["provisional"][0]["id"], "p");
         assert_eq!(v["meta"]["t"], "meta");
 
-        // Empty zones (idle) ⇒ valid empty arrays.
-        let v: Value = serde_json::from_str(&pull_reply_json(1, 0, 0, &[], 0, &[], &meta)).unwrap();
-        assert_eq!(v["committed"].as_array().unwrap().len(), 0);
+        // No committed delta (None or zero-length) ⇒ a null pointer, valid empty provisional.
+        let v: Value =
+            serde_json::from_str(&pull_reply_json(1, 0, 0, None, 0, &[], &meta)).unwrap();
+        assert!(v["committed_ext"].is_null());
         assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
+        let v: Value =
+            serde_json::from_str(&pull_reply_json(1, 0, 3, Some((9, 0)), 0, &[], &meta)).unwrap();
+        assert!(v["committed_ext"].is_null(), "zero-length ⇒ null pointer");
+    }
+
+    /// Part 2 end-to-end (no HTTP): a pull whose reply carries a `committed_ext` pointer, the
+    /// `/records` range read materializing exactly the committed records, the applied cursor
+    /// round-tripping to an idle re-pull, and the stale-epoch 409 path.
+    #[test]
+    fn pull_committed_pointer_round_trips_via_records() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-serve-p2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]},"timestamp":"2026-07-26T10:00:01Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:02Z"}"#, "\n",
+        )).unwrap();
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::Claude,
+            fold: FoldPolicy::default(),
+            root_path: sess.clone(),
+            cwd: "/r".into(),
+            cache: SessionCache::new(),
+            prev: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            shared: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+
+        // Fresh cursor: turn 1 committed (the second user turn opened turn 2) ⇒ the reply carries
+        // a pointer, not inline committed records.
+        let reply = live.pull_response("sid", Cursor::default()).expect("reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        let ext = &v["committed_ext"];
+        assert!(!ext.is_null(), "committed delta ⇒ pointer present");
+        let (from, len) = (
+            ext["offset"].as_u64().unwrap(),
+            ext["len"].as_u64().unwrap(),
+        );
+        let epoch = v["epoch"].as_u64().unwrap();
+
+        // Phase two: the range read materializes exactly the committed records, in order.
+        let bytes = live
+            .records_bytes("sid", from, len, epoch)
+            .expect("current epoch serves");
+        let recs: Vec<Value> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(!recs.is_empty(), "committed turn 1 delivered");
+        assert_eq!(recs[0]["id"], "t1", "first committed record is user turn 1");
+
+        // The cursor a client derives from the materialized records + reply counts round-trips
+        // to an idle re-pull (null pointer, empty provisional).
+        let next = Cursor {
+            epoch,
+            committed_id: v["committed_from"].as_u64().unwrap() as usize + recs.len(),
+            provisional_gen: v["provisional_gen"].as_u64().unwrap(),
+            provisional_index: v["provisional_from"].as_u64().unwrap() as usize
+                + v["provisional"].as_array().unwrap().len(),
+        };
+        let idle: Value = serde_json::from_str(&live.pull_response("sid", next).unwrap()).unwrap();
+        assert!(idle["committed_ext"].is_null(), "idle ⇒ null pointer");
+        assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
+
+        // A pointer issued before a reset must not read a recreated log: stale epoch ⇒ Err (409).
+        assert!(live.records_bytes("sid", from, len, epoch + 1).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The child-nav inversion end-to-end (no HTTP): a parent's pull registers its child's
