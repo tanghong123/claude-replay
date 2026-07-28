@@ -13,20 +13,29 @@
 //!
 //! [`pull`](SharedSession::pull) then answers any client [`Cursor`] against the current zones.
 //!
-//! Scope: this is the single-owner state machine + serve logic. The concurrency wrapper the design
-//! sketches — an `Arc` sharing lock-free `committed` reads with a `Mutex`-guarded tail, and
-//! multiple clients borrowing the tail on demand — lands when the HTML server is wired onto it
-//! (real concurrent clients); it wraps this state without changing the transitions below.
+//! Concurrency (§9a): the state is interior-mutable behind one `Mutex`, so a `SharedSession` wraps
+//! in an `Arc` and any number of client threads call [`pull`](SharedSession::pull) / [`advance`]
+//! (SharedSession::advance) on `&self`. Advancing is **borrow-to-tail**: the thread that folds new
+//! source lines is a client's own (the HTTP `/pull` handler calls `advance` then `pull`) — the
+//! cache owns no background thread. A pull is O(delta): fold (idle-cheap when nothing new) + a
+//! zone-slice copy, all under the brief lock.
+//!
+//! On the single `Mutex` vs the design's "lock-free committed": every pull reads the *provisional*
+//! zone (to serve it), which lives with the tail, so a pull always touches the tail regardless —
+//! lock-free committed reads would help only a *tail-bypassing historical range-read* API, which
+//! does not exist yet. So one `Mutex` is the honest fit for the current pull-only access; a
+//! lock-free committed volume is a later optimization gated on that future API.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use super::stream::{pull, Cursor, PullReply};
 use crate::follow::FollowParser;
 use crate::model::Block;
 use crate::Agent;
 
-/// The live, pull-servable state of one followed session (see the module docs).
-pub struct SharedSession {
+/// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
+struct Inner {
     follower: FollowParser,
     /// Session validity token. A client cursor with a stale `epoch` resyncs. Starts at 1 so a
     /// default (`epoch == 0`) cursor from a fresh client mismatches and resyncs on its first pull.
@@ -39,59 +48,71 @@ pub struct SharedSession {
     provisional: Vec<Block>,
 }
 
+/// The live, pull-servable state of one followed session (see the module docs). `Arc`-shareable;
+/// all methods take `&self`.
+pub struct SharedSession {
+    inner: Mutex<Inner>,
+}
+
 impl SharedSession {
     /// Open a shared session following `path` for `agent`. The first [`advance`](Self::advance)
     /// folds the current file; later ones fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
         Self {
-            follower: FollowParser::open(agent, path),
-            epoch: 1,
-            provisional_gen: 0,
-            committed: Vec::new(),
-            provisional: Vec::new(),
+            inner: Mutex::new(Inner {
+                follower: FollowParser::open(agent, path),
+                epoch: 1,
+                provisional_gen: 0,
+                committed: Vec::new(),
+                provisional: Vec::new(),
+            }),
         }
     }
 
     /// Borrow the caller's thread to tail the source: fold any newly-appended lines, refresh the
     /// committed / provisional zones, and advance `epoch` / `provisional_gen` per §9a (see the
     /// module docs). Returns `true` when content advanced, `false` on an idle tick.
-    pub fn advance(&mut self) -> std::io::Result<bool> {
-        let Some((session, reset, patch_floor)) = self.follower.poll_shared()? else {
+    pub fn advance(&self) -> std::io::Result<bool> {
+        let mut g = self.inner.lock().unwrap();
+        let Some((session, reset, patch_floor)) = g.follower.poll_shared()? else {
             return Ok(false);
         };
         // A commit is visible as growth of the append-only committed prefix (compare BEFORE we
         // adopt the new zones). Reset takes priority (it also invalidates committed).
-        let committed_grew = session.committed.len() > self.committed.len();
+        let committed_grew = session.committed.len() > g.committed.len();
         if reset {
-            self.epoch += 1;
-            self.provisional_gen += 1;
+            g.epoch += 1;
+            g.provisional_gen += 1;
         } else if committed_grew || patch_floor.is_some() {
-            self.provisional_gen += 1;
+            g.provisional_gen += 1;
         }
-        self.committed = session.committed;
-        self.provisional = session.provisional;
+        g.committed = session.committed;
+        g.provisional = session.provisional;
         Ok(true)
     }
 
-    /// Serve a client's [`Cursor`] against the current state — see [`pull`].
+    /// Serve a client's [`Cursor`] against the current state — see [`pull`]. Does **not** advance;
+    /// a client that wants the freshest tail calls [`advance`](Self::advance) first (the `/pull`
+    /// handler does).
     pub fn pull(&self, cursor: Cursor) -> PullReply {
+        let g = self.inner.lock().unwrap();
         pull(
-            self.epoch,
-            &self.committed,
-            &self.provisional,
-            self.provisional_gen,
+            g.epoch,
+            &g.committed,
+            &g.provisional,
+            g.provisional_gen,
             cursor,
         )
     }
 
     /// The current session epoch (bumped on reset).
     pub fn epoch(&self) -> u64 {
-        self.epoch
+        self.inner.lock().unwrap().epoch
     }
 
     /// The current provisional generation (bumped on commit or back-patch).
     pub fn provisional_gen(&self) -> u64 {
-        self.provisional_gen
+        self.inner.lock().unwrap().provisional_gen
     }
 }
 
@@ -130,10 +151,15 @@ mod tests {
 
     /// The gen/epoch transitions §9a prescribes: append leaves `gen` unchanged, an in-place
     /// back-patch bumps it, a commit bumps it, and a truncation bumps `epoch`.
+    // Test-only view of the committed count (the field lives behind the Mutex now).
+    fn committed_len(ss: &SharedSession) -> usize {
+        ss.inner.lock().unwrap().committed.len()
+    }
+
     #[test]
     fn gen_and_epoch_track_append_backpatch_commit_reset() {
         let path = tmp();
-        let mut ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::Claude, &path);
         assert_eq!((ss.epoch(), ss.provisional_gen()), (1, 0));
 
         // Open the turn (append only) — no gen bump.
@@ -142,7 +168,7 @@ mod tests {
         append(&path, TOOL);
         assert!(ss.advance().unwrap());
         assert_eq!(ss.provisional_gen(), 0, "pure appends don't bump gen");
-        assert!(ss.committed.is_empty(), "turn still open");
+        assert_eq!(committed_len(&ss), 0, "turn still open");
 
         // tool_result back-patches the already-emitted ToolUse ⇒ gen bumps.
         append(&path, RESULT);
@@ -158,7 +184,7 @@ mod tests {
         append(&path, USER2);
         assert!(ss.advance().unwrap());
         assert_eq!(ss.provisional_gen(), 2, "commit bumps gen");
-        assert!(!ss.committed.is_empty(), "turn 1 committed");
+        assert!(committed_len(&ss) > 0, "turn 1 committed");
         assert_eq!(ss.epoch(), 1, "no reset yet");
 
         // Idle tick: nothing advances, counters unchanged.
@@ -179,7 +205,7 @@ mod tests {
     #[test]
     fn pull_serves_resync_append_backpatch_and_commit() {
         let path = tmp();
-        let mut ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::Claude, &path);
         append(&path, USER1);
         append(&path, TOOL);
         ss.advance().unwrap();
@@ -219,6 +245,50 @@ mod tests {
         assert_eq!(r.committed_from, 0, "client had no committed yet");
         assert_eq!(r.provisional_from, 0, "provisional reset on commit");
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The `Arc` sharing the concurrency wrapper exists for: many client threads hold the same
+    /// `Arc<SharedSession>` and pull concurrently while another advances the tail — no data race,
+    /// no deadlock, and every reply is internally consistent (a self-describing cursor round-trip).
+    #[test]
+    fn arc_shared_across_threads_concurrent_pull_and_advance() {
+        use std::sync::Arc;
+        let path = tmp();
+        std::fs::write(&path, USER1).unwrap();
+        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        ss.advance().unwrap();
+
+        let writer = {
+            let ss = Arc::clone(&ss);
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for chunk in [TOOL, RESULT, TEXT, USER2] {
+                    append(&path, chunk);
+                    ss.advance().unwrap();
+                }
+            })
+        };
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let ss = Arc::clone(&ss);
+                std::thread::spawn(move || {
+                    let mut c = Cursor::default();
+                    for _ in 0..50 {
+                        let r = ss.pull(c);
+                        // The reply's own next_cursor must be a valid position to pull again.
+                        c = r.next_cursor();
+                    }
+                    c
+                })
+            })
+            .collect();
+        writer.join().unwrap();
+        for r in readers {
+            let c = r.join().unwrap();
+            // Every reader ended holding this session's current epoch (it resynced past the start).
+            assert_eq!(c.epoch, ss.epoch());
+        }
         let _ = std::fs::remove_file(&path);
     }
 }
