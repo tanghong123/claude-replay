@@ -144,27 +144,13 @@ pub fn pull(
     provisional_gen: u64,
     cursor: Cursor,
 ) -> PullReply {
-    if cursor.epoch != epoch {
-        // Resync: everything from 0, at the current provisional generation.
-        return PullReply {
-            epoch,
-            committed_from: 0,
-            committed: committed.to_vec(),
-            provisional_gen,
-            provisional_from: 0,
-            provisional: provisional.to_vec(),
-        };
-    }
-    let committed_from = cursor.committed_id.min(committed.len());
-    let committed_grew = committed.len() > committed_from;
-    // provisional_from: 0 on a commit (old provisional became committed) or a gen change (an
-    // in-place patch may have altered a block the client holds ⇒ resend whole); else the
-    // append-only suffix within the same generation.
-    let provisional_from = if committed_grew || cursor.provisional_gen != provisional_gen {
-        0
-    } else {
-        cursor.provisional_index.min(provisional.len())
-    };
+    let (committed_from, provisional_from) = pull_indices(
+        epoch,
+        committed.len(),
+        provisional.len(),
+        provisional_gen,
+        cursor,
+    );
     PullReply {
         epoch,
         committed_from,
@@ -173,6 +159,31 @@ pub fn pull(
         provisional_from,
         provisional: provisional[provisional_from..].to_vec(),
     }
+}
+
+/// The zone start indices [`pull`] would produce — the index math **without** the block payloads,
+/// from the zone *lengths* alone. Lets a caller decide idleness cheaply (both `*_from` at their
+/// zone end + a matching epoch ⇒ nothing to send) *before* paying an O(N) clone/render. On an epoch
+/// mismatch both are `0` (a full resync). A commit (committed grew past the cursor) or a gen change
+/// resets `provisional_from` to `0`; else it is the append-only suffix within the generation.
+pub fn pull_indices(
+    epoch: u64,
+    n_committed: usize,
+    n_provisional: usize,
+    provisional_gen: u64,
+    cursor: Cursor,
+) -> (usize, usize) {
+    if cursor.epoch != epoch {
+        return (0, 0); // resync: everything from 0
+    }
+    let committed_from = cursor.committed_id.min(n_committed);
+    let committed_grew = n_committed > committed_from;
+    let provisional_from = if committed_grew || cursor.provisional_gen != provisional_gen {
+        0
+    } else {
+        cursor.provisional_index.min(n_provisional)
+    };
+    (committed_from, provisional_from)
 }
 
 #[cfg(test)]

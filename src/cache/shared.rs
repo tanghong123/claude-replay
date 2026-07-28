@@ -153,6 +153,19 @@ impl SharedSession {
         }
     }
 
+    /// The protocol counters only — `(epoch, provisional_gen, n_committed, n_provisional)` — a
+    /// cheap read (no block clone) so the `/pull` handler can decide idleness via
+    /// [`pull_indices`](super::stream::pull_indices) before paying [`render_snapshot`](Self::render_snapshot)'s
+    /// O(N) clone + render.
+    pub fn counters(&self) -> (u64, u64, usize, usize) {
+        let g = self.inner.lock().unwrap();
+        let (nc, np) = g
+            .last
+            .as_ref()
+            .map_or((0, 0), |s| (s.committed.len(), s.provisional.len()));
+        (g.epoch, g.provisional_gen, nc, np)
+    }
+
     /// The current session epoch (bumped on reset).
     pub fn epoch(&self) -> u64 {
         self.inner.lock().unwrap().epoch

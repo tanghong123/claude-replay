@@ -9,7 +9,7 @@ use super::{
     block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
     session_id, AgentInfo, ChildRef, POLL_MS,
 };
-use crate::cache::{pull, Cursor, RenderSnapshot, SharedSession};
+use crate::cache::{pull, pull_indices, Cursor, RenderSnapshot, SharedSession};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
@@ -178,6 +178,25 @@ impl Live {
         };
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
         let _ = shared.advance();
+        // Idle fast-path: decide from the counters alone (no block clone/render) whether this
+        // cursor has anything to receive. The baseline `/stream` tailer skips all work on an idle
+        // session; without this, an attached client polling a large quiet session would pay an
+        // O(N) clone + render every tick — the opposite of the pull version's whole point.
+        let (epoch, gen, nc, np) = shared.counters();
+        let (cf, pf) = pull_indices(epoch, nc, np, gen, cursor);
+        if cursor.epoch == epoch && cf == nc && pf == np {
+            // Nothing to send: empty zones, no `meta` (the client ignores an idle reply's meta).
+            return Some(
+                json!({
+                    "t": "pull", "epoch": epoch,
+                    "committed_from": cf, "committed": [],
+                    "provisional_gen": gen,
+                    "provisional_from": pf, "provisional": [],
+                    "meta": Value::Null,
+                })
+                .to_string(),
+            );
+        }
         let snap = shared.render_snapshot();
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
         let (jsonl, children) = render_agent_stream(
@@ -326,6 +345,14 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
 /// indices. `committed` blocks are permanent appends; `provisional` is a truncate-from + append.
 /// The content-blind client applies "truncate to `from`, then extend" per zone (see `export.js`).
 fn pull_wire(snap: &RenderSnapshot, lines: &[String], meta: &str, cursor: Cursor) -> String {
+    // One rendered line per block — the slicing below relies on it. A future renderer that emits a
+    // multi-line record would silently misplace blocks (we clamp rather than panic); fail loudly in
+    // debug so that regression is caught, not shipped.
+    debug_assert_eq!(
+        lines.len(),
+        snap.blocks.len(),
+        "pull_wire expects one rendered line per block"
+    );
     // The committed/provisional split in line-space (clamped to the rendered lines defensively;
     // in practice `lines.len() == blocks.len()` — one rendered line per block).
     let n = snap.n_committed.min(lines.len());
