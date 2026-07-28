@@ -109,10 +109,17 @@ pub enum Message {
     /// `Completed` but leaves the spawn's status untouched). Join by `tool_use_id` first,
     /// else `task_id`.
     Completion {
+        /// The spawning `Agent`/`Task` tool_use id (`<tool-use-id>`) — the primary join to the
+        /// `SubAgent` spawn. Empty when the notification carried none.
         tool_use_id: String,
+        /// The `<task-id>`; for an agent completion this **is the agent's id** (fallback join,
+        /// matched against `SubAgent.agent_id`). Empty when absent.
         task_id: String,
+        /// Terminal state (`<status>`); `None` when the notification carried none.
         status: Option<AgentStatus>,
+        /// Human description from the notification (`Agent "…"`).
         description: String,
+        /// The agent's returned text (`<result>`), if any.
         result: Option<String>,
     },
 }

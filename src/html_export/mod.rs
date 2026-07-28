@@ -450,7 +450,7 @@ impl Emitter<'_> {
             // name shows; the served `--html` page also gets the path/content to act on.
             Block::Attachment(a) => {
                 o.insert("id".into(), json!(self.block_id()));
-                head.insert("att_kind".into(), json!(a.kind));
+                head.insert("att_kind".into(), json!(a.kind.as_str()));
                 head.insert("att_name".into(), json!(a.name.clone()));
                 head.insert("att_dl".into(), json!(a.content.is_some()));
                 // Only a served page (`--html`, `reveal == true`) gets the payload/path
@@ -1712,7 +1712,7 @@ mod tests {
     #[test]
     fn attachment_streams_payload_only_when_served() {
         let file = Block::Attachment(crate::model::Attachment {
-            kind: "file",
+            kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
             content: Some(AttachmentContent::Text("hello".into())),
@@ -1765,7 +1765,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let img = Block::Attachment(crate::model::Attachment {
-            kind: "image",
+            kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
             path: None,
             content: Some(AttachmentContent::Base64 {

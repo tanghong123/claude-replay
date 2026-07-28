@@ -79,14 +79,14 @@ pub(crate) fn parse_path_timed_for(
     Ok((blocks, times, metrics))
 }
 
-/// The small agent-specific seam of the otherwise-shared L2 fold — the embryo of the
-/// `Adapter` (design §3.2). Everything else in this module is agent-agnostic; these three
-/// hooks are the only points Claude and Codex differ:
-/// - `apply`: back-patch a tool result onto its `ToolUse` block (Claude reads the
-///   `toolUseResult` metadata for diffs/read-count; Codex just sets the output text).
-/// - `keep_orphan`: keep a resultless orphan result (already checked non-empty)? Claude
-///   drops boilerplate; Codex keeps every non-empty output.
-/// - `finish`: final turn shaping — Claude groups + coalesces activity; Codex is identity.
+/// The agent-specific seam of the otherwise-shared L2 fold — one of the
+/// [`TranscriptAdapter`](crate::adapter) hooks, returned by its `shaping()`. Each agent
+/// supplies a `&'static` const (`CLAUDE_SHAPING` / `CODEX_SHAPING`); the `Replayer` /
+/// `parse_stream` fold takes it by reference on every parse (batch and live). Everything else
+/// in this module is agent-agnostic; these **four** fn-pointer hooks (each documented on its
+/// field below) are the only points Claude and Codex differ: `build_tool` (shape a `tool_use`
+/// into a block), `join_result` (attach its result), `keep_orphan` (keep a resultless
+/// result?), and `finish_turns` (final turn shaping).
 pub(crate) struct Shaping {
     /// Build the block for a `tool_use` from its raw fields (`id`, `name`, `input`, `cwd`).
     /// This is the block-model lift's L2 hook (M14): the tokenizer emits raw
@@ -494,8 +494,16 @@ pub(crate) struct QueueItem {
 /// record for back-patching a `SubAgent`'s terminal status after the loop. `status` is
 /// `None` when the source carried no explicit status (then the spawn is left untouched).
 pub(crate) struct CompletionRec {
+    /// The spawning `Agent`/`Task` **tool_use id** (from the notification's `<tool-use-id>`) —
+    /// the *primary* key that back-patches this completion onto its `SubAgent` spawn block
+    /// (which stores the same id). Empty when the notification carried no `<tool-use-id>`.
     pub(crate) tool_use_id: String,
+    /// The notification's `<task-id>`. For an agent completion this **is the agent's id**
+    /// (matched against `SubAgent.agent_id`) — the *fallback* join key, used when the
+    /// notification keyed by task-id rather than tool-use-id. Empty when absent.
     pub(crate) task_id: String,
+    /// Terminal state from the notification's `<status>`; `None` when it carried none (the
+    /// spawn's status is then left untouched).
     pub(crate) status: Option<AgentStatus>,
 }
 

@@ -1,9 +1,30 @@
 //! Session metrics parsed from the transcript: token totals, wall-clock
 //! duration, model, and a best-effort USD cost estimate.
 
+use crate::model::UsdCost;
 use crate::Agent;
 
+/// A session's token/cost tally.
+///
+/// **Two-way compatible by design.** The parse side is liberal: each accumulator pulls only
+/// the JSON keys it knows, defaulting a *missing* field to `0` (an **older** transcript) and
+/// *ignoring* unknown ones (a **newer** transcript) — so neither direction fails, at worst a
+/// brand-new token category isn't yet counted. The struct is `#[non_exhaustive]`, so new
+/// fields can be **added** without breaking downstream crates (they read fields + use
+/// [`Default`], never a struct literal). Evolving a *specific* agent's usage format is a
+/// change in that agent's accumulator (`claude_metrics` / `codex_metrics`), not here — the
+/// shared value stays stable.
+///
+/// For a metric a *single* agent reports that the shared struct shouldn't grow a field for,
+/// the intended mechanism is an **accumulating extension bag** — `extra: BTreeMap<String, u64>`
+/// (namespaced snake_case keys, e.g. `reasoning_tokens`, `web_searches`) that the agent's
+/// accumulator folds like the typed counters. Data-only (the standard `footer` shows the typed
+/// fields), and it makes a brand-new category need *no* struct change — the complement to
+/// `#[non_exhaustive]`. Deferred until the first agent-specific metric exists (task #22).
+/// (If `Metrics` is ever persisted — e.g. a `SessionBuilder` checkpoint — add `serde(default)`
+/// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone)]
+#[non_exhaustive]
 pub struct Metrics {
     /// Genuinely-new input tokens (excludes cached content — see the two cache
     /// fields below). Small on cache-heavy sessions.
@@ -17,7 +38,9 @@ pub struct Metrics {
     pub output_tokens: u64,
     pub model: String,
     pub duration_secs: i64,
-    pub cost_usd: Option<f64>,
+    /// Best-effort estimated cost in US dollars; see [`UsdCost`]. `None` when the model isn't
+    /// priced.
+    pub cost_usd: Option<UsdCost>,
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds

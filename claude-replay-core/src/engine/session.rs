@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
-use crate::model::Block;
+use crate::model::{Block, EpochSeconds};
 use crate::{Agent, SessionGraph};
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
@@ -28,7 +28,7 @@ pub struct Session {
     pub blocks: Vec<Block>,
     /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
     /// a field until consumers migrate off it.
-    pub user_times: Vec<Option<f64>>,
+    pub user_times: Vec<Option<EpochSeconds>>,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
     /// Derived within-session indices — turns / agents / tools / attachments (§7).

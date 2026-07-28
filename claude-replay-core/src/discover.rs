@@ -13,15 +13,35 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// A pickable session, with metadata for the picker UI.
+/// A pickable session — one transcript on disk plus the metadata the fuzzy session picker
+/// shows and ranks by. Produced by [`candidates_all`] / the per-agent discovery.
 #[derive(Clone)]
 pub struct Candidate {
+    /// Absolute path to the transcript `.jsonl` this entry opens (what a selection resolves
+    /// to, and what [`detect_agent`] / [`parse_session`](crate::parse_session) are handed).
     pub path: PathBuf,
+    /// The transcript file's last-modified time — the recency key the picker sorts by
+    /// (most-recent first, after `cwd_affinity`).
     pub mtime: SystemTime,
-    pub project: String,    // human-ish project name (last path segment)
-    pub snippet: String,    // first user message, truncated
-    pub cwd_affinity: bool, // belongs to the current working directory's project
-    pub agent: Agent,       // which agent produced this session
+    /// Which codebase/directory the session was working in, as a short human-recognizable
+    /// label — the **leaf name of the session's working directory**, derived from the cwd the
+    /// transcript recorded (a session under `/Users/you/code/knack` → `"knack"`). It groups
+    /// and labels rows in the picker instead of showing an opaque id or a long path. Not a
+    /// path, and not guaranteed unique (two dirs can share a leaf name).
+    pub project: String,
+    /// A preview of *what the session was about*, so you can recognise it at a glance: its
+    /// **first genuine user prompt**, whitespace-collapsed and truncated to ~one line (e.g.
+    /// `"add a --width flag to the CLI"`). Host-context / boilerplate messages are skipped;
+    /// empty when the session has no user prompt yet.
+    pub snippet: String,
+    /// Whether this session belongs to the directory you're launching from **right now** —
+    /// `true` iff its `project` matches the current working directory's. It's purely a
+    /// **ranking hint**: the picker lists affinity sessions first, so "the sessions for *this*
+    /// repo" float to the top, above everything else sorted by recency.
+    pub cwd_affinity: bool,
+    /// Which agent wrote this transcript (Claude / Codex) — shown as a badge and used to
+    /// dispatch to the right parser.
+    pub agent: Agent,
 }
 
 /// Directories from `cwd` up to (and including) `$HOME` — the ancestors we probe
@@ -150,18 +170,39 @@ pub fn detect_agent(path: &Path) -> Agent {
     Agent::Claude
 }
 
-/// The source transcript of sub-agent `child_id` spawned under the session at `root`, for
-/// the given `agent` — the agent-neutral entry the presentation layer uses to descend into
-/// (or live-tail) a child without knowing the agent's on-disk layout. `None` if the agent
-/// has no sub-agent tree (Codex) or the child file doesn't exist. Routes to the agent
-/// adapter's `subagent_source` hook.
+/// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
+/// for the given `agent` (Claude's flat `<root-stem>/subagents/agent-<id>.jsonl` layout).
+/// Resolves a path; it does **not** parse. `None` if the agent has no sub-agent tree (Codex)
+/// or the child file doesn't exist. Routes to the agent adapter's `subagent_source` hook.
+///
+/// The path is **derived from that on-disk layout, not read from the transcript**: a spawn
+/// records the child's `agentId` and (for an async spawn) its result `outputFile`, but *not*
+/// the child transcript's path — so it must be reconstructed from `root` + `child_id`, which
+/// is what this does.
+///
+/// This is the **lazy, on-demand** route — the presentation layer uses it to open a child from
+/// its *own* file (descend-and-live-tail in the TUI, the HTML server's deep links, the
+/// `--dump-all-html` BFS). It's distinct from the **eager**
+/// [`parse_session_enriched`](crate::parse_session_enriched), which
+/// walks the same `subagents/` dir at parse time to load each child's *blocks* into its
+/// `SubAgent` spawn. Same on-disk layout, eager-into-blocks vs. lazy-by-path.
 pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<PathBuf> {
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }
 
-/// Resolve a transcript across agents (honoring the `only` filter): an existing
-/// file path (agent auto-detected on open), a session id searched in each agent's
-/// store, or — with `latest` — the most-recent transcript across agents.
+/// Resolve which transcript to open, across agents, and return its path.
+///
+/// - `target` — an explicit selection, **either a filesystem path to a `.jsonl` transcript OR
+///   a bare session id**, tried in that order: if the string names an existing file, that file
+///   is used (and its agent is auto-detected on open); otherwise it's looked up as a session id
+///   in each in-scope agent's store. `None` means "no explicit target — fall back to `latest`".
+/// - `only` — restrict the search to a single agent's store; `None` searches every agent.
+/// - `latest` — used only when `target` is `None`: pick the most-recent transcript for the
+///   current directory (or its nearest ancestor that has sessions; cwd-matches first, no global
+///   fallback) instead of erroring.
+///
+/// Precedence: `target` (as a path, then as a session id) → else `latest` → else an `Err`
+/// asking for one of them.
 pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     if let Some(t) = target {
         let as_path = PathBuf::from(t);

@@ -6,6 +6,26 @@
 //! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
+// ── semantic aliases for otherwise-ambiguous primitives ────────────────────────────────────
+// Transparent type aliases (not distinct types): they make a field's *meaning* — and its unit
+// — readable at the API surface, without the `.0` ergonomics of a newtype. Use them wherever
+// the public data model carries one of these quantities.
+
+/// A flat, **zero-based index into a [`Session`](crate::Session)'s `blocks`** — the position of
+/// a block in the top-level stream (a valid subscript, `session.blocks[i]`). It is **not** a
+/// byte offset into the transcript nor a line number.
+pub type BlockIndex = usize;
+
+/// An absolute instant as **seconds since the Unix epoch, 1970-01-01T00:00:00 UTC**. Parsed
+/// from the transcript's ISO-8601 UTC timestamps (`…Z`), so it is **UTC-based and
+/// timezone-independent** — no local-zone offset is ever applied; render in whatever zone you
+/// like. `f64` keeps sub-second precision (transcripts are whole-second in practice). A
+/// duration is the difference of two of these, in seconds.
+pub type EpochSeconds = f64;
+
+/// A monetary amount in **US dollars** — e.g. an estimated token cost (dollars, not tokens).
+pub type UsdCost = f64;
+
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,10 +128,39 @@ pub enum Block {
 /// can act on it: `content.is_some()` ⇒ the bytes are embedded and **downloadable**;
 /// `content.is_none()` ⇒ only a path is known, so the action is **reveal in the file
 /// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
+/// What an [`Attachment`] is — the closed set that drives its header label and how it's
+/// surfaced. `File` is an embedded file body; `Plan` a plan-mode document; `Edited` / `Ref`
+/// mark a file the turn edited or merely referenced; `Image` an embedded image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    File,
+    Plan,
+    Edited,
+    Ref,
+    Image,
+}
+impl AttachmentKind {
+    /// The lowercase label shown in the block header (`file`/`plan`/`edited`/`ref`/`image`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Plan => "plan",
+            Self::Edited => "edited",
+            Self::Ref => "ref",
+            Self::Image => "image",
+        }
+    }
+}
+impl std::fmt::Display for AttachmentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attachment {
-    /// Short kind label for the header: `file` · `plan` · `edited` · `ref` · `image`.
-    pub kind: &'static str,
+    /// What kind of attachment this is (drives the header label); see [`AttachmentKind`].
+    pub kind: AttachmentKind,
     /// Display name — a repo-relative path when available, else the file's basename.
     pub name: String,
     /// Absolute on-disk path, when known — the reveal-in-file-manager target and the
@@ -156,8 +205,9 @@ pub struct SubAgent {
     /// The child transcript. Empty until the operation graph resolves and enriches
     /// the child source (also empty for a copied standalone transcript).
     pub blocks: Vec<Block>,
-    /// This agent's own cost plus all descendants', rolled up. `None` if unknown.
-    pub subtree_cost: Option<f64>,
+    /// This agent's own cost plus all descendants', rolled up (US dollars); see [`UsdCost`].
+    /// `None` if unknown.
+    pub subtree_cost: Option<UsdCost>,
 }
 
 /// A sub-agent's normalized lifecycle state.
