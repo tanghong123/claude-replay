@@ -176,17 +176,16 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // Post-pass over the finished blocks (the fold is untouched): the sub-agent entity map.
         // `transcript` stays None here — the path-aware parse fills it (it alone knows the path).
         let sub_agents = crate::engine::session::build_sub_agents(&blocks);
-        // The committed prefix was already `put` once (on drain); map only the open tail through the
-        // store so `put` fires exactly once per block. `blocks[base..]` is exactly the open window.
+        // The committed prefix was already `put` once (on drain). The open tail (`blocks[base..]`)
+        // is the finalized-but-not-committed **provisional** turn — it is NEVER stored (kept as raw
+        // `Block`s), so the store stays committed-only.
         let base = self.committed.len();
-        let mut bvs: Vec<S::Bv> = self.committed.clone();
-        for (i, b) in blocks[base..].iter().enumerate() {
-            bvs.push(self.store.put(b.clone(), base + i));
-        }
+        let provisional: Vec<Block> = blocks[base..].to_vec();
         Session {
             agent: self.agent,
             cwd: None,
-            blocks: bvs,
+            committed: self.committed.clone(),
+            provisional,
             user_times,
             metrics,
             index,

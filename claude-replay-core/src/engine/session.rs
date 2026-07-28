@@ -61,25 +61,36 @@ pub trait BlockAccess {
 
 impl BlockAccess for Session<Block> {
     fn block(&self, i: BlockIndex) -> std::borrow::Cow<'_, Block> {
-        std::borrow::Cow::Borrowed(&self.blocks[i])
+        let c = self.committed.len();
+        std::borrow::Cow::Borrowed(if i < c {
+            &self.committed[i]
+        } else {
+            &self.provisional[i - c]
+        })
     }
 }
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
 /// without touching the presentation layers. Produced by one streaming parse.
 ///
-/// Parameterized over the **block value** `BV` it stores (the [`BlockStore`] policy's `Bv`), with
-/// a default of `BV = Block` so every existing `Session` means `Session<Block>` — resident blocks
-/// in RAM, today's behavior — and compiles unchanged. Only `blocks`' element type varies; the
-/// index / metrics / sub-agent map are `BV`-free.
+/// **Opinionated about the durability frontier:** the block stream is split into `committed` (past
+/// the frontier — grouped, immutable, `put` through the [`BlockStore`] policy `BV`) and
+/// `provisional` (the still-open turn — finalized for display but not yet committed, so never
+/// stored; always raw [`Block`]s, O(turn)). The full display stream is `committed ++ provisional`
+/// (see [`blocks`](Session::blocks) for `Session<Block>`). Parameterized over `BV` (default `Block`):
+/// `committed`'s element type varies (RAM `Block`, or an on-disk locator); `provisional`, the index,
+/// metrics, and sub-agent map are `BV`-free.
 #[derive(Debug, Clone)]
 pub struct Session<BV = Block> {
     /// Which agent produced the transcript.
     pub agent: Agent,
     /// The session working directory, when the transcript recorded it.
     pub cwd: Option<PathBuf>,
-    /// The ordered block stream (tool results already joined onto their calls).
-    pub blocks: Vec<BV>,
+    /// Durable blocks past the commit frontier — grouped, immutable, `put` through the store `BV`.
+    pub committed: Vec<BV>,
+    /// The open turn: finalized for display but **not committed** (may still change), so never
+    /// stored — always raw [`Block`]s, O(turn). The display stream is `committed ++ provisional`.
+    pub provisional: Vec<Block>,
     /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
     /// a field until consumers migrate off it.
     pub user_times: Vec<Option<EpochSeconds>>,
@@ -90,9 +101,27 @@ pub struct Session<BV = Block> {
     /// The per-session sub-agent entity map, keyed by [`AgentId`]: the single lookup-owner of
     /// each spawned sub-agent's attributes + pointers to its two lifecycle blocks (`spawn_at` /
     /// `done_at`) and its on-disk artifacts (`transcript` / `output_file`). Built as a post-pass
-    /// over the finished `blocks`; `transcript` is filled by the path-aware parse. Empty for an
+    /// over the finished blocks; `transcript` is filled by the path-aware parse. Empty for an
     /// agent with no sub-agents (Codex). Replaces the retired `SessionIndex.agents`.
     pub sub_agents: BTreeMap<AgentId, SubAgentMeta>,
+}
+
+impl<BV> Session<BV> {
+    /// Total block count (`committed + provisional`) — the length of the display stream.
+    pub fn block_count(&self) -> usize {
+        self.committed.len() + self.provisional.len()
+    }
+}
+
+impl Session<Block> {
+    /// The full display stream `committed ++ provisional` as one owned `Vec<Block>` — the
+    /// compatibility view for consumers that want the flat block list (the in-memory `Block` case).
+    pub fn blocks(&self) -> Vec<Block> {
+        let mut v = Vec::with_capacity(self.block_count());
+        v.extend(self.committed.iter().cloned());
+        v.extend(self.provisional.iter().cloned());
+        v
+    }
 }
 
 /// Build the sub-agent entity map as a **post-pass over the finished top-level blocks** (the
@@ -171,8 +200,8 @@ pub(crate) fn populate_sub_agent_transcripts(
 ///
 /// ```no_run
 /// let session = claude_replay_core::parse_session(std::path::Path::new("session.jsonl"))?;
-/// println!("{} blocks, {} turns", session.blocks.len(), session.index.turns.len());
-/// for block in &session.blocks {
+/// println!("{} blocks, {} turns", session.block_count(), session.index.turns.len());
+/// for block in session.blocks() {
 ///     // render / analyze `block` — see `claude_replay_core::Block`
 /// }
 /// # Ok::<(), std::io::Error>(())
@@ -250,7 +279,7 @@ mod tests {
         );
         // `Block` isn't `PartialEq` (like the other equivalence tests, compare via Debug).
         assert_eq!(
-            format!("{:?}", s.blocks),
+            format!("{:?}", s.blocks()),
             format!("{:?}", blocks),
             "blocks match the existing parse"
         );
@@ -424,7 +453,7 @@ mod tests {
             Some(sadir.join("agent-achild01.jsonl").as_path()),
             "child transcript path resolved"
         );
-        assert!(matches!(s.blocks[meta.spawn_at], Block::SubAgent(_)));
+        assert!(matches!(s.blocks()[meta.spawn_at], Block::SubAgent(_)));
 
         let _ = std::fs::remove_dir_all(&base);
     }

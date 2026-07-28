@@ -274,7 +274,7 @@ mod tests {
         // same way a library consumer would — no reach into the core's per-agent internals.
         let blocks = crate::engine::parse_session_enriched_as(crate::Agent::Claude, &sess)
             .unwrap()
-            .blocks;
+            .blocks();
         let Some(crate::model::Block::SubAgent(sa)) = blocks
             .iter()
             .find(|b| matches!(b, crate::model::Block::SubAgent(_)))

@@ -24,11 +24,16 @@ fn build_stream(
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
     let s = crate::engine::parse_session_as(agent, path)
         .with_context(|| format!("read transcript {}", path.display()))?;
-    let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
+    let cwd = s
+        .cwd
+        .clone()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let blocks = s.blocks();
     Ok(render_snapshot(
         agent,
         path,
-        &s.blocks,
+        &blocks,
         &s.user_times,
         &s.metrics,
         &cwd,
@@ -124,13 +129,14 @@ fn agent_stream(
     // in a tree shares the root's, which a sub-agent transcript may not itself record).
     let s = crate::engine::parse_session_as(agent, &info.source)
         .with_context(|| format!("read transcript {}", info.source.display()))?;
+    let blocks = s.blocks();
     Ok(render_agent_stream(
         agent,
         fold,
         cwd,
         reveal,
         info,
-        &s.blocks,
+        &blocks,
         &s.user_times,
         &s.metrics,
         assets,

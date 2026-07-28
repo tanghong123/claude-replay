@@ -195,7 +195,7 @@ mod tests {
         assert!(cache.is_registered("s"));
         let s1 = cache.poll("s").expect("registered").expect("readable");
         assert_eq!(cache.resident_ids(), vec!["s".to_string()]);
-        let blocks1 = s1.blocks.len();
+        let blocks1 = s1.block_count();
 
         // A second poll on an unchanged file → None (idle, no growth).
         assert!(cache.poll("s").is_none());
@@ -203,7 +203,7 @@ mod tests {
         // Append → poll returns the grown session, still == a full parse.
         append(&path, CLAUDE_2);
         let s2 = cache.poll("s").expect("registered").expect("readable");
-        assert!(s2.blocks.len() >= blocks1, "grew");
+        assert!(s2.block_count() >= blocks1, "grew");
         assert_eq!(
             format!("{s2:?}"),
             format!("{:?}", parse_session_as(Agent::Claude, &path).unwrap())

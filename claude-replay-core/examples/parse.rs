@@ -25,7 +25,7 @@ fn main() -> std::io::Result<()> {
         "agent={:?}  cwd={:?}  {} blocks  {} turns  {} tools  {} sub-agents",
         session.agent,
         session.cwd,
-        session.blocks.len(),
+        session.block_count(),
         session.index.turns.len(),
         session.index.tools.len(),
         session.sub_agents.len(),
@@ -33,7 +33,7 @@ fn main() -> std::io::Result<()> {
     println!("metrics: {}", session.metrics.footer());
 
     // A tiny "renderer": one line per block, labelled by its kind.
-    for (i, block) in session.blocks.iter().enumerate() {
+    for (i, block) in session.blocks().iter().enumerate() {
         let (kind, preview) = describe(block);
         println!("{i:>4}  {kind:<10}  {preview}");
     }

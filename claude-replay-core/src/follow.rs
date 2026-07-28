@@ -99,7 +99,7 @@ mod tests {
             let s = crate::engine::parse_session_as(agent, &path).unwrap();
             assert_eq!(
                 format!("{:?}", fblocks),
-                format!("{:?}", s.blocks),
+                format!("{:?}", s.blocks()),
                 "blocks differ after chunk {i} ({agent:?})"
             );
             assert_eq!(ftimes, s.user_times, "user_times differ after chunk {i}");
@@ -115,7 +115,7 @@ mod tests {
         let s = crate::engine::parse_session_as(agent, &path).unwrap();
         assert_eq!(
             format!("{:?}", fblocks),
-            format!("{:?}", s.blocks),
+            format!("{:?}", s.blocks()),
             "blocks differ after rewrite ({agent:?})"
         );
         let _ = std::fs::remove_file(&path);

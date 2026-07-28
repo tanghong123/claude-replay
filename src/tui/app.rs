@@ -222,7 +222,7 @@ fn build_frame(
         (blocks, discover::session_cwd(path), metrics, Some(f))
     } else {
         let s = transcript.parse()?;
-        (s.blocks, s.cwd, s.metrics, None)
+        (s.blocks(), s.cwd, s.metrics, None)
     };
     let mut view = View::new(blocks, title, follower.is_some(), fold);
     view.set_can_go_back(can_go_back);
@@ -272,7 +272,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
         .and_then(|t| t.parse_enriched().ok());
     if blocks.is_empty() {
         if let Some(s) = &child_session {
-            blocks = s.blocks.clone();
+            blocks = s.blocks();
         }
     }
     if blocks.is_empty() {
@@ -611,7 +611,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     // Dogfood the library entry point: one `parse_session_enriched_as` yields the full block
     // tree (incl. sub-agents). `--dump` only needs the blocks here.
-    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks;
+    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks();
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.

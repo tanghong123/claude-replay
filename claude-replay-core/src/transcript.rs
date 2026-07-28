@@ -94,7 +94,11 @@ impl Transcript {
     /// [`parse_session_enriched_as`](crate::parse_session_enriched_as).
     pub fn parse_enriched(&self) -> io::Result<Session> {
         let mut s = self.parse()?;
-        crate::adapter::adapter(self.agent).enrich(&self.path, &mut s.blocks);
+        // Enrich fills each `SubAgent`'s child transcript in place — over both the committed and the
+        // provisional blocks (a spawn may sit in either).
+        let adapter = crate::adapter::adapter(self.agent);
+        adapter.enrich(&self.path, &mut s.committed);
+        adapter.enrich(&self.path, &mut s.provisional);
         Ok(s)
     }
 
@@ -171,12 +175,12 @@ mod tests {
         let path = tmp(&body);
 
         let s = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
-        let atts: Vec<&Block> = s
-            .blocks
+        let blocks = s.blocks();
+        let atts: Vec<&Block> = blocks
             .iter()
             .filter(|b| matches!(b, Block::Attachment(_)))
             .collect();
-        assert_eq!(atts.len(), 4, "{:?}", s.blocks);
+        assert_eq!(atts.len(), 4, "{blocks:?}");
 
         // Expected byte offsets = the start of each line in `body`.
         let off0 = 0u64;
@@ -214,8 +218,9 @@ mod tests {
         let line = r##"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA="}},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BBB="}}]}}"##;
         let path = tmp(&format!("{line}\n"));
         let s = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
-        let locs: Vec<(ByteOffset, usize)> = s.blocks.iter().filter_map(deferred).collect();
-        assert_eq!(locs, vec![(0, 0), (0, 1)], "{:?}", s.blocks);
+        let blocks = s.blocks();
+        let locs: Vec<(ByteOffset, usize)> = blocks.iter().filter_map(deferred).collect();
+        assert_eq!(locs, vec![(0, 0), (0, 1)], "{blocks:?}");
 
         let t = Transcript::open(Agent::Claude, &path);
         assert_eq!(
@@ -262,7 +267,10 @@ mod tests {
         // `follow`'s first poll folds the whole file → equals a full parse.
         let mut f = detected.follow();
         let s = f.poll_session().unwrap().expect("content");
-        assert_eq!(format!("{:?}", s.blocks), format!("{:?}", via_free.blocks));
+        assert_eq!(
+            format!("{:?}", s.blocks()),
+            format!("{:?}", via_free.blocks())
+        );
 
         let _ = std::fs::remove_file(&path);
     }

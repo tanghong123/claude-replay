@@ -1512,7 +1512,7 @@ mod tests {
         std::fs::write(&path, jsonl).unwrap();
         let blocks = crate::engine::parse_session_as(crate::Agent::Claude, &path)
             .unwrap()
-            .blocks;
+            .blocks();
         let _ = std::fs::remove_file(&path);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
         let pol = FoldPolicy::from_args(&crate::Args::default());

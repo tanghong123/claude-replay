@@ -131,7 +131,8 @@ impl TierBSession {
             user_times: self.session.user_times.clone(),
             metrics: self.session.metrics.clone(),
             sub_agents: self.session.sub_agents.clone(),
-            blocks: self.session.blocks.clone(),
+            committed: self.session.committed.clone(),
+            provisional: self.session.provisional.clone(),
         };
         let json = serde_json::to_vec(&sidecar).map_err(to_io)?;
         std::fs::write(dir.join(SIDECAR_FILE), json)?;
@@ -148,14 +149,13 @@ impl TierBSession {
         let sidecar: Sidecar =
             serde_json::from_slice(&std::fs::read(dir.join(SIDECAR_FILE))?).map_err(to_io)?;
 
-        // Rebuild the index incrementally from the (re-decoded) blocks — never holding them all
-        // resident — advancing the user-turn cursor exactly as `SessionIndex::build` does.
+        // Rebuild the index incrementally over the committed blocks (re-decoded from the backing)
+        // then the resident provisional tail — advancing the user-turn cursor exactly as
+        // `SessionIndex::build` does. Committed content is never held all-resident.
         let mut index = SessionIndex::default();
         let mut turn_i = 0usize;
-        for (at, d) in sidecar.blocks.iter().enumerate() {
-            let start = d.offset as usize;
-            let b: Block =
-                serde_json::from_slice(&backing[start..start + d.size as usize]).map_err(to_io)?;
+        let mut at = 0usize;
+        let mut push = |index: &mut SessionIndex, b: &Block| {
             let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
                 let t = sidecar.user_times.get(turn_i).copied().flatten();
                 turn_i += 1;
@@ -163,13 +163,24 @@ impl TierBSession {
             } else {
                 None
             };
-            index.push(at, &b, turn_time);
+            index.push(at, b, turn_time);
+            at += 1;
+        };
+        for d in &sidecar.committed {
+            let start = d.offset as usize;
+            let b: Block =
+                serde_json::from_slice(&backing[start..start + d.size as usize]).map_err(to_io)?;
+            push(&mut index, &b);
+        }
+        for b in &sidecar.provisional {
+            push(&mut index, b);
         }
 
         let session = Session {
             agent: sidecar.agent,
             cwd: sidecar.cwd,
-            blocks: sidecar.blocks,
+            committed: sidecar.committed,
+            provisional: sidecar.provisional,
             user_times: sidecar.user_times,
             metrics: sidecar.metrics,
             index,
@@ -192,7 +203,8 @@ struct Sidecar {
     user_times: Vec<Option<crate::model::EpochSeconds>>,
     metrics: Metrics,
     sub_agents: BTreeMap<AgentId, SubAgentMeta>,
-    blocks: Vec<Deferred>,
+    committed: Vec<Deferred>,
+    provisional: Vec<Block>,
 }
 
 /// Map a `serde_json` error into an `io::Error` (persist/load surface `io::Result`).
@@ -201,9 +213,15 @@ fn to_io(e: serde_json::Error) -> io::Error {
 }
 
 impl BlockAccess for TierBSession {
-    /// Materialize the block at flat index `i` from the backing — always `Cow::Owned` (a decode).
+    /// Materialize the block at flat index `i`: a decode from the backing for a committed block, a
+    /// borrow for the resident provisional tail.
     fn block(&self, i: BlockIndex) -> Cow<'_, Block> {
-        Cow::Owned(self.read(self.session.blocks[i]))
+        let c = self.session.committed.len();
+        if i < c {
+            Cow::Owned(self.read(self.session.committed[i]))
+        } else {
+            Cow::Borrowed(&self.session.provisional[i - c])
+        }
     }
 }
 
@@ -303,15 +321,15 @@ mod tests {
         let tb_sess = TierBSession::new(tb_session, backing);
 
         assert_eq!(
-            mem_session.blocks.len(),
-            tb_sess.session.blocks.len(),
+            mem_session.block_count(),
+            tb_sess.session.block_count(),
             "same block count"
         );
         assert!(
-            mem_session.blocks.len() >= 5,
+            mem_session.block_count() >= 5,
             "fixture produced real blocks"
         );
-        for i in 0..mem_session.blocks.len() {
+        for i in 0..mem_session.block_count() {
             assert_eq!(
                 mem_session.block(i),
                 tb_sess.block(i),
@@ -355,9 +373,9 @@ mod tests {
         let after = TierBSession::load(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert_eq!(before.session.blocks.len(), after.session.blocks.len());
-        assert!(before.session.blocks.len() >= 5);
-        for i in 0..before.session.blocks.len() {
+        assert_eq!(before.session.block_count(), after.session.block_count());
+        assert!(before.session.block_count() >= 5);
+        for i in 0..before.session.block_count() {
             assert_eq!(
                 before.block(i),
                 after.block(i),
@@ -400,7 +418,8 @@ mod tests {
         let session = Session {
             agent: crate::Agent::Claude,
             cwd: None,
-            blocks: locators,
+            committed: locators,
+            provisional: vec![],
             user_times: vec![],
             metrics: Default::default(),
             index: Default::default(),

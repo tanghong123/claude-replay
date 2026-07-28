@@ -120,8 +120,13 @@ impl Live {
         };
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
         let empty_metrics = crate::metrics::Metrics::default();
+        let blocks_owned = session.as_ref().map(|s| s.blocks());
         let (blocks, times, metrics) = match &session {
-            Some(s) => (s.blocks.as_slice(), s.user_times.as_slice(), &s.metrics),
+            Some(s) => (
+                blocks_owned.as_deref().unwrap_or(&[]),
+                s.user_times.as_slice(),
+                &s.metrics,
+            ),
             None => (&[][..], &[][..], &empty_metrics),
         };
         let (jsonl, children) = render_agent_stream(
@@ -210,13 +215,14 @@ impl Live {
                     .cloned()
                     .unwrap_or_default();
                 let info = self.agent_info(&id, src.path().to_path_buf(), &title);
+                let blocks = session.blocks();
                 let (jsonl, children) = render_agent_stream(
                     self.agent,
                     &self.fold,
                     &self.cwd,
                     true,
                     &info,
-                    &session.blocks,
+                    &blocks,
                     &session.user_times,
                     &session.metrics,
                     None,
