@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::engine::session::{populate_sub_agent_transcripts, Session};
+use crate::engine::session::Session;
 use crate::follow::FollowParser;
 use crate::Transcript;
 
@@ -101,18 +101,9 @@ impl SessionCache {
             )
         });
         *last_seen = Instant::now();
-        match resident.follower.poll_session() {
-            Ok(Some(mut session)) => {
-                // Assemble the full Session exactly as `parse_session_as` does: the builder
-                // leaves `cwd` None and each sub-agent's `transcript` None (it has no file
-                // path); fill both from the source path now that we know it.
-                session.cwd = crate::discover::session_cwd(src.path());
-                populate_sub_agent_transcripts(src.agent(), src.path(), &mut session.sub_agents);
-                Some(Ok(session))
-            }
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
-        }
+        // `poll_session` returns a fully-assembled Session (cwd + sub-agent transcripts filled),
+        // so the cache needs no core internals — the step toward moving it into the present layer.
+        resident.follower.poll_session().transpose()
     }
 
     /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their registry

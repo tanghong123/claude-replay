@@ -4,7 +4,7 @@
 //! poll — no whole-file re-read/re-decode. On a truncation/rewrite (compaction) the tail
 //! resets and the Replayer rebuilds from scratch (a full replay of the new content).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::engine::builder::SessionAccumulator;
 use crate::engine::session::{InMemoryStore, Session};
@@ -18,6 +18,8 @@ use crate::Agent;
 /// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
 /// is just the byte-offset reader plus the same incremental fold the batch parse uses.
 pub struct FollowParser {
+    agent: Agent,
+    path: PathBuf,
     builder: SessionAccumulator<InMemoryStore>,
     reader: LineReader,
 }
@@ -27,6 +29,8 @@ impl FollowParser {
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
         Self {
+            agent,
+            path: path.to_path_buf(),
             builder: SessionAccumulator::new(agent),
             reader: LineReader::open_at_start(path),
         }
@@ -62,12 +66,24 @@ impl FollowParser {
         Ok(self.advance_from_source()?.then(|| self.builder.fold()))
     }
 
-    /// Poll and return the current state as an owned [`Session`] (blocks + per-turn times +
-    /// metrics + derived index + sub-agent map), `cwd` left `None` — the caller fills it from
-    /// the source path, like [`parse_session_as`](crate::parse_session_as) does. Returns `None`
-    /// when the source hasn't grown since the last poll (idle). Used by the residency cache.
+    /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
+    /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
+    /// `transcript` filled from the source path (exactly as
+    /// [`parse_session_as`](crate::parse_session_as) does). Returns `None` when the source hasn't
+    /// grown since the last poll (idle). This is the residency cache's single assembly point — it
+    /// needs no core internals.
     pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
-        Ok(self.advance_from_source()?.then(|| self.builder.snapshot()))
+        if !self.advance_from_source()? {
+            return Ok(None);
+        }
+        let mut s = self.builder.snapshot();
+        s.cwd = crate::discover::session_cwd(&self.path);
+        crate::engine::session::populate_sub_agent_transcripts(
+            self.agent,
+            &self.path,
+            &mut s.sub_agents,
+        );
+        Ok(Some(s))
     }
 }
 
