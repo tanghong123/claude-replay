@@ -177,7 +177,7 @@ impl CodexSessionGraph {
 }
 
 impl SessionGraphBackend for CodexSessionGraph {
-    fn enrich(&mut self, source: &Path, blocks: &mut [crate::Block]) {
+    fn resolve(&mut self, source: &Path, blocks: &mut [crate::Block]) {
         // A live follower can open an empty rollout before `session_meta` is
         // appended. Recover the anchor as soon as that metadata becomes visible,
         // so the later child refresh remains scoped to the correct tree.
@@ -905,7 +905,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         let crate::Block::SubAgent(spawn) = &blocks[0] else {
             panic!("expected spawn");
@@ -948,7 +948,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],
@@ -963,7 +963,7 @@ mod tests {
         let mut missing = crate::engine::parse_session_as(crate::Agent::Codex, &missing_parent)
             .unwrap()
             .blocks;
-        missing_graph.enrich(&missing_parent, &mut missing);
+        missing_graph.resolve_relationships(&missing_parent, &mut missing);
         assert!(matches!(
             &missing[0],
             crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
@@ -991,7 +991,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],
@@ -1045,7 +1045,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],
@@ -1068,7 +1068,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
         fixture.graph_rollout(
             "too-late",
             &cwd,
@@ -1076,7 +1076,7 @@ mod tests {
             Some("/root/missing"),
             Some("Late"),
         );
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],
@@ -1099,7 +1099,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],
@@ -1128,7 +1128,7 @@ mod tests {
             .unwrap()
             .blocks;
 
-        graph.enrich(&parent, &mut blocks);
+        graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
             &blocks[0],

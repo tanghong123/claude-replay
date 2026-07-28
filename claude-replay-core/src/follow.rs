@@ -81,7 +81,7 @@ impl FollowParser {
             }
         }
         let (mut blocks, user_times) = self.replayer.snapshot();
-        self.graph.enrich(&self.source, &mut blocks);
+        self.graph.resolve_relationships(&self.source, &mut blocks);
         Ok(Some((blocks, user_times, self.metrics.finish())))
     }
 }

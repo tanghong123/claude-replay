@@ -54,18 +54,24 @@ pub fn parse_session(path: &Path) -> io::Result<Session> {
     parse_session_as(crate::discover::detect_agent(path), path)
 }
 
-/// Like [`parse_session`], but also loads the **sub-agent tree** — each `SubAgent`'s child
-/// transcript (recursively) into its `blocks`, so a consumer can descend into spawned agents
-/// or roll up subtree cost. `parse_session` leaves `SubAgent.blocks` empty (cheaper, flat);
-/// use this when you need the whole tree. Only the nested `SubAgent.blocks` change — the
-/// top-level `blocks`/`index`/`metrics` are identical to `parse_session`.
+/// Like [`parse_session`], but also resolves relationship metadata and loads the
+/// **sub-agent tree** — each `SubAgent`'s child transcript recursively into its `blocks`,
+/// so a consumer can descend into spawned agents or roll up subtree cost. `parse_session`
+/// leaves `SubAgent.blocks` empty (cheaper, flat); use this when you need the whole tree.
+/// Top-level transcript content and metrics are unchanged; resolved relationship ids,
+/// the agent index, and nested child content may differ.
 pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
     parse_session_enriched_as(crate::discover::detect_agent(path), path)
 }
 
 /// [`parse_session_enriched`] for a **known** agent (skips detection).
 pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    parse_session_with_graph(agent, path, SessionGraph::open(agent, path))
+    let graph = SessionGraph::open(agent, path);
+    let mut session = parse_session_with_graph(agent, path, graph.clone())?;
+    let mut seen = std::collections::HashSet::new();
+    enrich_subagent_tree(agent, path, &graph, &mut session.blocks, &mut seen);
+    session.index = SessionIndex::build(&session.blocks, &session.user_times);
+    Ok(session)
 }
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
@@ -73,15 +79,16 @@ pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
     parse_session_flat(agent, path)
 }
 
-/// Parse a known-agent transcript and enrich it through an operation graph shared
-/// with the surrounding TUI, HTML traversal, or live follower.
+/// Parse a known-agent transcript and resolve its relationship metadata through an
+/// operation graph shared with the surrounding TUI, HTML traversal, or live follower.
+/// Child transcript content remains lazy; use [`parse_session_enriched_as`] for an eager tree.
 pub fn parse_session_with_graph(
     agent: Agent,
     path: &Path,
     graph: SessionGraph,
 ) -> io::Result<Session> {
     let mut session = parse_session_flat(agent, path)?;
-    graph.enrich(path, &mut session.blocks);
+    graph.resolve_relationships(path, &mut session.blocks);
     session.index = SessionIndex::build(&session.blocks, &session.user_times);
     Ok(session)
 }
@@ -101,6 +108,47 @@ fn parse_session_flat(agent: Agent, path: &Path) -> io::Result<Session> {
         metrics,
         index,
     })
+}
+
+fn enrich_subagent_tree(
+    agent: Agent,
+    root: &Path,
+    graph: &SessionGraph,
+    blocks: &mut [Block],
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for block in blocks {
+        let Block::SubAgent(subagent) = block else {
+            continue;
+        };
+        if subagent.agent_id.is_empty() || !seen.insert(subagent.agent_id.clone()) {
+            continue;
+        }
+        let Some(source) = graph.subagent_source(root, &subagent.agent_id) else {
+            continue;
+        };
+        let Ok(mut child) = parse_session_with_graph(agent, &source, graph.clone()) else {
+            continue;
+        };
+        enrich_subagent_tree(agent, root, graph, &mut child.blocks, seen);
+        subagent.subtree_cost = subtree_cost(&child.metrics, &child.blocks);
+        subagent.blocks = child.blocks;
+    }
+}
+
+fn subtree_cost(metrics: &Metrics, blocks: &[Block]) -> Option<crate::model::UsdCost> {
+    let descendants: crate::model::UsdCost = blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::SubAgent(subagent) => subagent.subtree_cost,
+            _ => None,
+        })
+        .sum();
+    match metrics.cost_usd {
+        Some(own) => Some(own + descendants),
+        None if descendants > 0.0 => Some(descendants),
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +213,135 @@ mod tests {
         assert_eq!(s.cwd.as_deref(), Some(Path::new("/repo")));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn enriched_claude_session_loads_child_content_separately_from_resolution() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-session-enriched-claude-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let parent = base.join("project").join("root.jsonl");
+        let child = base
+            .join("project")
+            .join("root")
+            .join("subagents")
+            .join("agent-child.jsonl");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"spawn","name":"Agent","input":{"subagent_type":"Explore","description":"inspect","prompt":"go"}}]}}"#,
+                "\n",
+                r#"{"type":"user","toolUseResult":{"agentId":"child","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"spawn","content":"done"}]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"child turn"}]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let session = parse_session_enriched_as(Agent::Claude, &parent).unwrap();
+        let Some(Block::SubAgent(agent)) = session
+            .blocks
+            .iter()
+            .find(|block| matches!(block, Block::SubAgent(_)))
+        else {
+            panic!("expected Claude sub-agent: {:#?}", session.blocks);
+        };
+        assert!(
+            !agent.blocks.is_empty(),
+            "the explicit eager API must load Claude child content"
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn enriched_codex_session_loads_child_tree_recursively() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-session-enriched-codex-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let day = base.join("sessions").join("2026").join("07").join("28");
+        std::fs::create_dir_all(&day).unwrap();
+        let parent = day.join("rollout-parent.jsonl");
+        let child = day.join("rollout-child.jsonl");
+        let grandchild = day.join("rollout-grandchild.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-child","arguments":"{\"task_name\":\"review\",\"message\":\"inspect\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-child","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Reviewer"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child turn"}]}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-grandchild","arguments":"{\"task_name\":\"audit\",\"message\":\"audit\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-grandchild","output":"{\"task_name\":\"/root/review/audit\"}"}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &grandchild,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"grandchild","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"child","agent_path":"/root/review/audit","agent_nickname":"Auditor"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"grandchild result"}]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let session = parse_session_enriched_as(Agent::Codex, &parent).unwrap();
+        let Some(Block::SubAgent(child_agent)) = session
+            .blocks
+            .iter()
+            .find(|block| matches!(block, Block::SubAgent(_)))
+        else {
+            panic!("expected Codex child: {:#?}", session.blocks);
+        };
+        assert_eq!(child_agent.agent_id, "child");
+        let Some(Block::SubAgent(grandchild_agent)) = child_agent
+            .blocks
+            .iter()
+            .find(|block| matches!(block, Block::SubAgent(_)))
+        else {
+            panic!(
+                "expected Codex grandchild in child blocks: {:#?}",
+                child_agent.blocks
+            );
+        };
+        assert_eq!(grandchild_agent.agent_id, "grandchild");
+        assert!(
+            !grandchild_agent.blocks.is_empty(),
+            "the explicit eager API must recursively load Codex descendants"
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

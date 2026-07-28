@@ -46,7 +46,7 @@ pub(crate) trait TranscriptAdapter: Sync {
 
     // ── whole-file parse ──
     /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass — the
-    /// single whole-file parse seam (the flat source; relationship enrichment is applied
+    /// single whole-file parse seam (the flat source; relationship resolution is applied
     /// afterward by an operation-scoped [`SessionGraph`]). A provided method: pass-1
     /// [`scan_join_ids`](Self::scan_join_ids), then pass-2 folds each line through
     /// [`decode_line`](Self::decode_line) + [`shaping`](Self::shaping) with metrics
@@ -78,6 +78,7 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>>;
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
+    #[cfg(test)]
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
         let mut acc = self.metrics_acc();
         let mut line = String::new();

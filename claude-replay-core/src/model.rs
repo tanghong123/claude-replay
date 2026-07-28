@@ -184,8 +184,8 @@ pub enum AttachmentContent {
 /// A spawned sub-agent, normalized from the source agent's collaboration protocol.
 /// Format-specific call/result fields and parent/child rollout metadata are resolved
 /// behind [`TranscriptAdapter`](crate::adapter::TranscriptAdapter) and its
-/// operation-scoped [`SessionGraph`](crate::SessionGraph). `blocks` is the resolved
-/// child transcript, if enrichment loaded it; nested `SubAgent`s are grandchildren.
+/// operation-scoped [`SessionGraph`](crate::SessionGraph). `blocks` is the child transcript
+/// only when the explicit eager session API loaded it; nested `SubAgent`s are grandchildren.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubAgent {
     /// The child's agent id (== the completion notification's `task-id`; file stem).
@@ -202,8 +202,8 @@ pub struct SubAgent {
     pub result: Option<String>,
     /// For an async spawn, the `tasks/agent-<id>.output` path (result lands here).
     pub output_file: Option<String>,
-    /// The child transcript. Empty until the operation graph resolves and enriches
-    /// the child source (also empty for a copied standalone transcript).
+    /// The child transcript. Empty on flat and live paths; populated only by the explicit
+    /// eager session API (also empty when no child source can be resolved).
     pub blocks: Vec<Block>,
     /// This agent's own cost plus all descendants', rolled up (US dollars); see [`UsdCost`].
     /// `None` if unknown.

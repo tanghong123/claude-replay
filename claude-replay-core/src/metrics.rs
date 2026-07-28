@@ -2,6 +2,7 @@
 //! duration, model, and a best-effort USD cost estimate.
 
 use crate::model::UsdCost;
+#[cfg(test)]
 use crate::Agent;
 
 /// A session's token/cost tally.
@@ -108,6 +109,7 @@ pub(crate) fn estimate_cost(
 
 /// Metrics via the reader for `agent` — dispatches to each agent's adapter
 /// (`claude_metrics` / `codex_metrics`); the returned [`Metrics`] shape is shared.
+#[cfg(test)]
 pub(crate) fn parse_reader_for<R: std::io::BufRead>(agent: Agent, mut reader: R) -> Metrics {
     crate::adapter::adapter(agent).parse_reader(&mut reader)
 }

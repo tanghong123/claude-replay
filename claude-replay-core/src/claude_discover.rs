@@ -15,9 +15,7 @@ use std::time::SystemTime;
 pub(crate) struct ClaudeSessionGraph;
 
 impl SessionGraphBackend for ClaudeSessionGraph {
-    fn enrich(&mut self, source: &Path, blocks: &mut [crate::Block]) {
-        crate::claude_model::enrich_tree(source, blocks);
-    }
+    fn resolve(&mut self, _source: &Path, _blocks: &mut [crate::Block]) {}
 
     fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf> {
         crate::claude_model::subagent_file(root, child_id)

@@ -13,7 +13,7 @@ pub struct SessionGraph {
 }
 
 pub(crate) trait SessionGraphBackend: Send {
-    fn enrich(&mut self, source: &Path, blocks: &mut [Block]);
+    fn resolve(&mut self, source: &Path, blocks: &mut [Block]);
     fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf>;
 }
 
@@ -28,8 +28,10 @@ impl SessionGraph {
         }
     }
 
-    pub fn enrich(&self, source: &Path, blocks: &mut [Block]) {
-        self.with_backend(|backend| backend.enrich(source, blocks));
+    /// Resolve agent-specific relationship identifiers and lifecycle state without
+    /// loading child transcript content.
+    pub fn resolve_relationships(&self, source: &Path, blocks: &mut [Block]) {
+        self.with_backend(|backend| backend.resolve(source, blocks));
         synchronize_terminal_status(blocks);
     }
 
@@ -92,7 +94,7 @@ mod tests {
     }
 
     impl SessionGraphBackend for CountingBackend {
-        fn enrich(&mut self, _source: &Path, _blocks: &mut [Block]) {
+        fn resolve(&mut self, _source: &Path, _blocks: &mut [Block]) {
             self.calls.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -110,7 +112,7 @@ mod tests {
         }));
         let clone = graph.clone();
 
-        graph.enrich(Path::new("root.jsonl"), &mut []);
+        graph.resolve_relationships(Path::new("root.jsonl"), &mut []);
         clone.subagent_source(Path::new("root.jsonl"), "child");
 
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -143,7 +145,58 @@ mod tests {
     }
 
     #[test]
-    fn enrichment_synchronizes_resolved_terminal_status() {
+    fn claude_relationship_resolution_keeps_child_content_lazy() {
+        let base = std::env::temp_dir().join(format!(
+            "claude-replay-session-graph-lazy-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let root = base.join("session.jsonl");
+        let child = base
+            .join("session")
+            .join("subagents")
+            .join("agent-child.jsonl");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(&root, "").unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"child turn"}]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let mut blocks = vec![Block::SubAgent(SubAgent {
+            agent_id: "child".into(),
+            tool_use_id: "call".into(),
+            agent_type: "Explore".into(),
+            description: "inspect".into(),
+            prompt: "inspect".into(),
+            status: AgentStatus::Running,
+            result: None,
+            output_file: None,
+            blocks: Vec::new(),
+            subtree_cost: None,
+        })];
+
+        let graph = SessionGraph::open(Agent::Claude, &root);
+        graph.resolve_relationships(&root, &mut blocks);
+
+        let Block::SubAgent(agent) = &blocks[0] else {
+            panic!("expected sub-agent");
+        };
+        assert!(
+            agent.blocks.is_empty(),
+            "relationship resolution must not eagerly parse child transcripts"
+        );
+        assert_eq!(graph.subagent_source(&root, "child"), Some(child));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn relationship_resolution_synchronizes_terminal_status() {
         let graph = SessionGraph::from_backend(Box::new(CountingBackend {
             calls: Arc::new(AtomicUsize::new(0)),
         }));
@@ -169,7 +222,7 @@ mod tests {
             },
         ];
 
-        graph.enrich(Path::new("root.jsonl"), &mut blocks);
+        graph.resolve_relationships(Path::new("root.jsonl"), &mut blocks);
 
         let Block::SubAgent(spawn) = &blocks[0] else {
             panic!("expected spawn");

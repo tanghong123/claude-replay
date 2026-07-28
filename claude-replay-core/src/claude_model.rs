@@ -11,6 +11,7 @@ use crate::engine::path::relativize;
 use crate::engine::replay::*;
 use crate::engine::time::epoch_secs;
 use crate::model::*;
+#[cfg(test)]
 use crate::Agent;
 use serde_json::Value;
 #[cfg(test)]
@@ -391,21 +392,9 @@ pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
 }
 
-/// Load each spawned sub-agent's child transcript (recursively) into its `SubAgent.blocks`,
-/// so a spawn can be descended into and its subtree cost rolled up. All of a session's agents
-/// — any depth — share one flat `<session>/subagents/` dir, so one dir resolves the whole
-/// tree. No-op when the dir is absent. This is the enrichment behind `parse_session_enriched`
-/// (the Claude adapter's `TranscriptAdapter::enrich`).
-pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
-    if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(blocks, &dir);
-    }
-}
-
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
-/// the adapter's `parse_path_timed` builds on. `enrich_tree` (the adapter's `enrich`, backing
-/// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
-/// resolve against the same session `subagents/` dir.
+/// the adapter's `parse_path_timed` builds on. Kept as a test-only byte-equivalence reference.
+#[cfg(test)]
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     use std::io::BufRead;
     let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
@@ -424,14 +413,6 @@ fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     )
 }
 
-/// The `<project>/<sessionId>/subagents/` dir for a transcript at
-/// `<project>/<sessionId>.jsonl`, if it exists on disk.
-fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    let stem = path.file_stem()?.to_str()?;
-    let dir = path.parent()?.join(stem).join("subagents");
-    dir.is_dir().then_some(dir)
-}
-
 /// The on-disk transcript for `agent_id` under the root session at `session_path`
 /// (`<session>/subagents/agent-<id>.jsonl`), if it exists — the file a descended child is
 /// live-tailed from. All of a session's agents (any depth) share this one flat dir.
@@ -443,51 +424,6 @@ pub fn subagent_file(session_path: &std::path::Path, agent_id: &str) -> Option<s
         .join("subagents")
         .join(format!("agent-{agent_id}.jsonl"));
     f.is_file().then_some(f)
-}
-
-/// Fill each `SubAgent` block's `blocks` (child transcript) + `subtree_cost` by parsing
-/// `<sadir>/agent-<id>.jsonl`, recursing into grandchildren against the same `sadir`.
-/// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
-/// never a dead affordance.
-fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
-    for b in blocks.iter_mut() {
-        if let Block::SubAgent(sa) = b {
-            if sa.agent_id.is_empty() {
-                continue;
-            }
-            let child = sadir.join(format!("agent-{}.jsonl", sa.agent_id));
-            let Ok(mut cb) = parse_file(&child) else {
-                continue;
-            };
-            enrich_subagents(&mut cb, sadir); // grandchildren (same flat dir)
-                                              // The completion `<task-notification>` is the sole authority for terminal
-                                              // status — a child file existing does NOT mean the agent finished (it keeps
-                                              // growing while it runs). Upgrading to Completed here would hide a live agent
-                                              // from `active`, so leave the status alone and only attach the transcript.
-            sa.subtree_cost = subtree_cost(&child, &cb);
-            sa.blocks = cb;
-        }
-    }
-}
-
-/// A sub-agent's own cost (from its transcript's metrics) plus all descendants'
-/// rolled-up costs. `None` when neither is known.
-fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<f64> {
-    let own = std::fs::File::open(child_path).ok().and_then(|f| {
-        crate::metrics::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
-    });
-    let desc: f64 = child_blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::SubAgent(sa) => sa.subtree_cost,
-            _ => None,
-        })
-        .sum();
-    match own {
-        Some(o) => Some(o + desc),
-        None if desc > 0.0 => Some(desc),
-        None => None,
-    }
 }
 
 /// Pass 1: the set of every `tool_use` id in the transcript.
@@ -1836,9 +1772,9 @@ mod tests {
         assert_eq!(fold_key(&blocks[1]), "agent");
     }
 
-    /// `enrich_tree` (via `parse_session_enriched`) loads each `SubAgent`'s child transcript
-    /// from the flat `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is
-    /// **node-scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
+    /// `parse_session_enriched` loads each `SubAgent`'s child transcript from the flat
+    /// `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is **node-scoped**
+    /// (the child's tools, not the parent's), and `subtree_cost` rolls up.
     #[test]
     fn enrich_loads_child_scoped_and_rolls_up_cost() {
         use std::io::Write;
@@ -1873,8 +1809,9 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let mut blocks = parse_file(&sess).unwrap();
-        enrich_tree(&sess, &mut blocks); // load the sub-agent tree
+        let blocks = crate::engine::parse_session_enriched_as(Agent::Claude, &sess)
+            .unwrap()
+            .blocks;
         let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
         else {
             panic!("no SubAgent: {blocks:?}")
