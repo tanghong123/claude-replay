@@ -400,7 +400,21 @@ impl<'a> Replayer<'a> {
     /// finalized open window (suppression applied window-relative). Because `base` always sits at a
     /// user-turn boundary and `finish_turns` distributes over such boundaries, this equals a single
     /// global finalize of the whole raw stream.
-    fn assemble(&self, mut open: Vec<Block>) -> Vec<Block> {
+    /// The whole finalized stream (`durable ++ finalize_open(open)`) — the pre-C2 combined view.
+    /// Test-only now: production splits this into [`drain_committed`] + [`open_snapshot`] so the
+    /// replayer never holds the durable prefix. Kept for the equivalence oracles.
+    #[cfg(test)]
+    fn assemble(&self, open: Vec<Block>) -> Vec<Block> {
+        let mut all = self.durable.clone();
+        all.extend(self.finalize_open(open));
+        all
+    }
+
+    /// Finalize just the open window: apply the remaining (window-relative) suppression, then
+    /// `finish_turns` — **without** the `durable` prefix. This is the committed/open split point:
+    /// `assemble` = `durable ++ finalize_open(open)`, and the accumulator combines its own drained
+    /// committed blocks with this.
+    fn finalize_open(&self, mut open: Vec<Block>) -> Vec<Block> {
         let drop: HashSet<usize> = self
             .suppress
             .iter()
@@ -415,9 +429,25 @@ impl<'a> Replayer<'a> {
                 keep
             });
         }
-        let mut all = self.durable.clone();
-        all.extend((self.shaping.finish_turns)(open));
-        all
+        (self.shaping.finish_turns)(open)
+    }
+
+    /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
+    /// crossed the durability frontier), removing them from the replayer — so its resident content
+    /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
+    pub(crate) fn drain_committed(&mut self) -> Vec<Block> {
+        std::mem::take(&mut self.durable)
+    }
+
+    /// The finalized **open** window (the still-provisional tail) + the full per-turn timestamps
+    /// (pending stamps flushed) — the non-consuming complement to [`drain_committed`]. The
+    /// accumulator's snapshot is `committed ++ open_snapshot().0`.
+    pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let open = self.out.clone();
+        let mut user_times = self.user_times.clone();
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
+        (self.finalize_open(open), user_times)
     }
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
@@ -435,10 +465,11 @@ impl<'a> Replayer<'a> {
         (blocks, self.user_times)
     }
 
-    /// Non-consuming finalize (M11): the current presentable blocks + per-turn times, WITHOUT
-    /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
-    /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
-    /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
+    /// Non-consuming finalize: the whole presentable stream + per-turn times over cloned state.
+    /// Test-only now — production drives [`drain_committed`] + [`open_snapshot`] via the
+    /// `SessionAccumulator` (the replayer never materializes the durable prefix). Kept for the
+    /// direct-replayer incremental tests.
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();

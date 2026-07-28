@@ -35,8 +35,13 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// The FOLD cwd — threaded across lines by `decode_line` for path relativization.
     cwd: String,
     metrics: Box<dyn MetricsAccumulator>,
-    /// The per-block storage policy — where each finalized block's content goes on `snapshot`.
+    /// The per-block storage policy — where each committed block's content goes.
     store: S,
+    /// The **committed** blocks, `put` through the store exactly once as each turn crosses the
+    /// durability frontier (drained from the replayer per `advance`). The replayer keeps only the
+    /// open window, so its resident content is O(turn); this owns the O(N) committed prefix (which
+    /// for a deferred store is a tiny locator table, content on disk).
+    committed: Vec<S::Bv>,
 }
 
 impl SessionAccumulator<InMemoryStore> {
@@ -59,6 +64,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             cwd: String::new(),
             metrics: adapter.metrics_acc(),
             store,
+            committed: Vec::new(),
         }
     }
 
@@ -85,6 +91,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
             }
         }
         self.replayer.apply(&delta);
+        // Drain the turns that just crossed the durability frontier and `put` each once — the
+        // replayer drops them, keeping its content O(turn); we own the committed prefix.
+        for b in self.replayer.drain_committed() {
+            let at = self.committed.len();
+            let bv = self.store.put(b, at);
+            self.committed.push(bv);
+        }
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             self.metrics.push(&v);
         }
@@ -131,13 +144,21 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.replayer = Replayer::new(self.adapter.shaping());
         self.cwd.clear();
         self.metrics = self.adapter.metrics_acc();
+        self.committed.clear();
     }
 
     /// The current presentable blocks + per-turn times + folded metrics, WITHOUT consuming the
     /// builder (so the follower can `advance` a delta, `fold` to render, then keep folding).
     /// Same output as a full whole-file parse.
     pub(crate) fn fold(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics) {
-        let (blocks, times) = self.replayer.snapshot();
+        let (open, times) = self.replayer.open_snapshot();
+        // Reconstruct the block stream: committed (read back from the store) ++ the open tail.
+        let mut blocks: Vec<Block> = self
+            .committed
+            .iter()
+            .map(|bv| self.store.get(bv).into_owned())
+            .collect();
+        blocks.extend(open);
         (blocks, times, self.metrics.finish())
     }
 
@@ -155,15 +176,17 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // Post-pass over the finished blocks (the fold is untouched): the sub-agent entity map.
         // `transcript` stays None here — the path-aware parse fills it (it alone knows the path).
         let sub_agents = crate::engine::session::build_sub_agents(&blocks);
-        let blocks: Vec<S::Bv> = blocks
-            .into_iter()
-            .enumerate()
-            .map(|(at, b)| self.store.put(b, at))
-            .collect();
+        // The committed prefix was already `put` once (on drain); map only the open tail through the
+        // store so `put` fires exactly once per block. `blocks[base..]` is exactly the open window.
+        let base = self.committed.len();
+        let mut bvs: Vec<S::Bv> = self.committed.clone();
+        for (i, b) in blocks[base..].iter().enumerate() {
+            bvs.push(self.store.put(b.clone(), base + i));
+        }
         Session {
             agent: self.agent,
             cwd: None,
-            blocks,
+            blocks: bvs,
             user_times,
             metrics,
             index,

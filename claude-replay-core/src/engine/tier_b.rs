@@ -80,6 +80,13 @@ impl BlockStore for TierBStore {
             size: json.len() as u32,
         }
     }
+    fn get<'a>(&'a self, d: &'a Deferred) -> Cow<'a, Block> {
+        let start = d.offset as usize;
+        Cow::Owned(
+            serde_json::from_slice(&self.buf[start..start + d.size as usize])
+                .expect("tier-b: valid block record"),
+        )
+    }
 }
 
 /// A `Session<Deferred>` paired with its tier-b backing — the client-side handle that can actually

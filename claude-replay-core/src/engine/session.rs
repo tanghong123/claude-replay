@@ -23,14 +23,21 @@ use crate::Agent;
 /// `Block` in RAM ⇒ today's behavior); a later on-disk store returns a locator instead. The
 /// [`SessionIndex`]/metrics stay `Bv`-free, so only `Session::blocks`' element type varies.
 pub trait BlockStore {
-    /// The stored block value — `Block` for the in-memory default.
-    type Bv;
-    /// Store `b` (finalized, at flat index `at`) and return its `Bv` representation.
+    /// The stored block value — `Block` for the in-memory default. `Clone` so the accumulator can
+    /// hand out the committed `Vec<Bv>` in a snapshot (identity `Block` clone in RAM; a cheap
+    /// `Copy` for an on-disk locator).
+    type Bv: Clone;
+    /// Store `b` (finalized, at flat index `at`) and return its `Bv` representation. Called **once**
+    /// per committed block as the accumulator drains it from the replayer.
     fn put(&mut self, b: Block, at: BlockIndex) -> Self::Bv;
+    /// Read a stored value back to its [`Block`] — identity (a borrow) for the in-memory default, a
+    /// decode for an on-disk store. Lets the accumulator reconstruct the block stream from the
+    /// committed `Vec<Bv>` without re-folding.
+    fn get<'a>(&'a self, bv: &'a Self::Bv) -> std::borrow::Cow<'a, Block>;
 }
 
-/// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put` is identity, so
-/// `Session<Block>` keeps exactly today's `Vec<Block>` residency and byte-for-byte output.
+/// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put`/`get` are identity,
+/// so `Session<Block>` keeps exactly today's `Vec<Block>` residency and byte-for-byte output.
 #[derive(Default)]
 pub struct InMemoryStore;
 
@@ -38,6 +45,9 @@ impl BlockStore for InMemoryStore {
     type Bv = Block;
     fn put(&mut self, b: Block, _at: BlockIndex) -> Block {
         b
+    }
+    fn get<'a>(&'a self, bv: &'a Block) -> std::borrow::Cow<'a, Block> {
+        std::borrow::Cow::Borrowed(bv)
     }
 }
 
