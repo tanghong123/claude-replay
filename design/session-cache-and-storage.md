@@ -336,32 +336,43 @@ cleared yet — a reader could momentarily see a block twice. Fix: tag the provi
 ### The serializable pull cursor
 
 ```
-Cursor( committed_id, provisional_index )    // + the server validates against SharedSession.epoch
+Cursor( committed_id, provisional_gen )    // + epoch (session validity) — see below
 ```
 
 - **`committed_id`** — monotonic, **rewind-free, durable**: committed is append-only, so this only
   advances and its target never changes. The serializable anchor — safe to hand a remote process or
   keep across a restart. Representation: a committed **`BvLog` byte offset** (a remote seeks the log
   directly — no shared state, no offset table needed).
-- **`provisional_index`** — **ephemeral**: a position into the *current* provisional (the open turn
-  following `committed_id`). Advances on pure append; **resets to 0** on the two non-appending
-  mutations — a **commit** or an **open-turn regroup** (thinking absorbs the activity run / a run
-  coalesces before the turn commits).
-- **`epoch`** — a session validity token the server checks each pull; a mismatch (truncation/Reset)
-  tells a returning remote to re-sync from 0. Kept **outside** the two-number cursor so the common
-  path stays exactly two numbers.
+- **`provisional_gen`** — a **version of the open turn**, not a block index. *Correction from the
+  first sketch* (`provisional_index`): building it surfaced that the open turn is **not append-only**
+  — a tool block in the current turn **back-patches** (its output fills in when the `tool_result`
+  arrives) **without adding a block**. A raw index (a count) can't see that same-length content
+  change, so a client would show a stale, output-less tool call. `provisional_gen` bumps on **any**
+  open-turn change (append, back-patch, or regroup); a change ⇒ the server replaces the provisional.
+  Still two positions + an epoch — only the second position's *meaning* changed. (Committed stays a
+  true index precisely because it's append-only.)
+- **`epoch`** — a session validity token the client carries and the server checks each pull; a
+  mismatch (truncation/Reset) ⇒ re-sync from 0. Conceptually the "third field" beside the two
+  positions; it rides in the serialized cursor so a remote is self-validating.
 
 ### The pull protocol
 
-Given `Cursor(committed_id, provisional_index)`, load `M` + `provisional{after}`:
+Given `Cursor(committed_id, provisional_gen)` + its `epoch`, against live `(M, provisional, gen,
+epoch')`:
 
-- **`M > committed_id`** (a commit happened — possibly several turns, several blocks) → serve
-  `committed[committed_id..M]`; the client **discards its whole provisional** (it became that
-  committed range) and reads the fresh open turn from provisional index 0. **Committed progress takes
-  priority** — a pull never also serves stale provisional deltas from the old epoch.
-- **`M == committed_id`** → serve `provisional[provisional_index..]` (open-turn append), or a
-  provisional rewind + `provisional[0..]` if it regrouped.
-- Return `Cursor(M, len(provisional))`.
+- **`epoch != epoch'`** → **`Resync`**: serve `committed[0..M]` + `provisional`, render fresh.
+- **`M > committed_id`** (a commit happened — possibly several turns/blocks) → **`Update`**: serve
+  `committed[committed_id..M]` **and replace** the provisional with the current one; the client
+  discards its old provisional (it *became* that committed range). Committed progress takes priority.
+- **`M == committed_id` and `gen != provisional_gen`** (open turn changed, no commit — append,
+  back-patch, or regroup) → **`Update`** with an empty committed range + the replaced provisional.
+- else → **`Idle`**.
+- Return `Cursor(M, gen)`.
+
+The provisional is **replaced whole** on any change (it's O(turn) and mutable via back-patch), not
+served incrementally — so the client's render is "append committed rows, replace the provisional
+tail." (An incremental-provisional-append optimization would need a proven append-only sub-window of
+the open turn; deferred.)
 
 The client's render maps 1:1 to the two cases — **append committed rows** (permanent) or **replace
 the provisional tail** (transient). That is exactly the `append` / `reset-from` the HTML feed does
@@ -426,7 +437,7 @@ remaining work).** In dependency order:
    through `Emit::Meta`; remove the standalone core sidecar json.
 4. **`SharedSession` + `reconcile` + `viewport` + `Renderer`** (present) — the `Arc<SharedSession>`
    (lock-free committed reads + tail `Mutex` + `epoch`, §9a); the serializable `Cursor(committed_id,
-   provisional_index)` pull protocol; extract `reconcile` out of `html_export` (delete the snapshot-
+   provisional_gen)` pull protocol; extract `reconcile` out of `html_export` (delete the snapshot-
    diff; the open-turn rewind becomes the wire form of the cursor's discard); the windowed block/line
    model + render cache.
 5. **Both frontends on the cache** — the HTML server holds an `Arc<SharedSession>` + a `Cursor` per
