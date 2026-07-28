@@ -433,6 +433,28 @@ fn explicit_resumable(
     })
 }
 
+/// The most recent write anywhere in a session's transcript TREE: the root transcript
+/// plus every child transcript under its `<stem>/subagents/` dir — the signal that the
+/// session is actively working even when the root is quiet (a sub-agent holds the turn).
+/// `None` when nothing is readable.
+fn latest_tree_activity(transcript: &Path) -> Option<std::time::SystemTime> {
+    let mut latest = std::fs::metadata(transcript)
+        .and_then(|m| m.modified())
+        .ok();
+    let subagents = transcript
+        .parent()
+        .zip(transcript.file_stem())
+        .map(|(dir, stem)| dir.join(stem).join("subagents"));
+    if let Some(entries) = subagents.and_then(|d| std::fs::read_dir(d).ok()) {
+        for e in entries.flatten() {
+            if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
+                latest = Some(latest.map_or(m, |cur| cur.max(m)));
+            }
+        }
+    }
+    latest
+}
+
 /// Seconds after which the newest session is "stale" enough to double-check (env
 /// `AGENT_JDI_STALE`, default 1h — mirrors the bash `CLAUDE_JDI_STALE`).
 fn stale_secs() -> u64 {
@@ -1904,20 +1926,38 @@ fn cmd_handoff_wait(
     // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
     // If we asked it to quit (SIGTERM) and it's still alive after a grace period,
     // escalate to SIGKILL — otherwise an agent that ignores SIGTERM would leave the
-    // handoff armed forever.
-    const GRACE_SECS: usize = 10;
-    for elapsed in 0..7200usize {
+    // handoff armed forever. BUT never SIGKILL a session that is actively WORKING
+    // (#32): an agent honors SIGTERM only at a turn boundary, and mid-turn its root
+    // transcript can sit quiet for minutes while sub-agents do the work — so
+    // liveness is judged on the whole transcript TREE (root + its subagents/ dir).
+    // Escalate only once the tree has been quiet for the grace period; a busy
+    // session keeps its SIGTERM pending and exits at the next boundary.
+    const GRACE_SECS: u64 = 10;
+    let activity_root = agent
+        .zip(session)
+        .and_then(|(a, sid)| agent::adapter(a).transcript_path(sid, cwd));
+    let mut killed = false;
+    for elapsed in 0..7200u64 {
         if !state::pid_alive(watch_pid) {
             break;
         }
-        if escalate && elapsed == GRACE_SECS {
-            std::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(watch_pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .ok();
+        if escalate && !killed && elapsed >= GRACE_SECS {
+            let busy = activity_root
+                .as_deref()
+                .and_then(latest_tree_activity)
+                .and_then(|t| t.elapsed().ok())
+                .map(|idle| idle.as_secs() < GRACE_SECS)
+                .unwrap_or(false);
+            if !busy {
+                std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(watch_pid.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .ok();
+                killed = true;
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -2238,6 +2278,29 @@ mod tests {
         assert!(!session.cargs_path().exists());
         assert_eq!(permission_status_line(&session), None);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn subagent_activity_counts_as_session_liveness() {
+        // A quiet ROOT transcript with a freshly-written child under <stem>/subagents/ must
+        // register as recent tree activity — the #32 signal that stops the handoff watcher
+        // from SIGKILLing a session whose work is happening in sub-agents.
+        let root = std::env::temp_dir().join(format!("jdi-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sadir = root.join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let transcript = root.join("sid.jsonl");
+        std::fs::write(&transcript, "{}\n").unwrap();
+        let root_mtime = std::fs::metadata(&transcript).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // distinct mtimes
+        std::fs::write(sadir.join("agent-child.jsonl"), "{}\n").unwrap();
+
+        let latest = latest_tree_activity(&transcript).expect("readable tree");
+        assert!(
+            latest > root_mtime,
+            "the child's later write must dominate the quiet root"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
