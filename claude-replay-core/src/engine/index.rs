@@ -99,7 +99,7 @@ impl SessionIndex {
     /// pass `None` for any other block. Lets the accumulator maintain the index as durable blocks
     /// are emitted, so the full `Vec<Block>` need never be resident to (re)build it — the emit-and-
     /// drop / tier-b path. Proven equal to `build` block-for-block (see the test).
-    pub(crate) fn push(&mut self, at: BlockIndex, b: &Block, turn_time: Option<EpochSeconds>) {
+    pub fn push(&mut self, at: BlockIndex, b: &Block, turn_time: Option<EpochSeconds>) {
         *self.counts.entry(crate::model::fold_key(b)).or_default() += 1;
         match b {
             Block::UserText(_) | Block::Command { .. } => self.turns.push(TurnEntry {

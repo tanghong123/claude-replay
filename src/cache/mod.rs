@@ -20,6 +20,8 @@
 //! cache can't self-deadlock. The expensive work — rendering — happens in the caller *between*
 //! cache calls; the only work under a cache lock is the brief O(delta) follower read in `poll`.
 
+mod tier_b;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;

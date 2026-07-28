@@ -11,9 +11,14 @@
 //! batch** parse (put each block exactly once). The Stage-3 emit-and-drop rewrite makes `put`
 //! fire once at the durability frontier, which is what unlocks tier-b for the live/repeated-snapshot
 //! path. Until then, drive it via one `advance_reader(..)` + one `snapshot()`.
+//!
+//! **Wiring status:** the store lives in the cache now but is not yet driven by it — the cache
+//! still materializes `Session<Block>` (InMemory). It becomes the cache's `DeferredStore` when the
+//! `SharedSession` + pull path lands (design §9a / §11 Phase C step 4). Hence `allow(dead_code)`.
+#![allow(dead_code)]
 
-use crate::engine::session::{BlockAccess, BlockStore, Session};
 use crate::engine::SessionIndex;
+use crate::engine::{BlockAccess, BlockStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{AgentId, Block, BlockIndex, ByteOffset, SubAgentMeta};
 use crate::Agent;
