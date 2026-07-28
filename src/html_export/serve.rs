@@ -52,14 +52,20 @@ struct Live {
     render: Mutex<HashMap<String, PullRender>>,
 }
 
-/// Per-id render-once state for `/pull`: how far the committed prefix has been rendered (the cached
-/// wire records + the carried [`EmitState`] so the next committed range's anchors follow on), plus
-/// the epoch it belongs to (a change ⇒ the cache is stale ⇒ reset).
+/// Per-id render-once state for `/pull`. Committed blocks are rendered **once** (as they commit)
+/// into an on-disk append-only log `<id>.records`; the rendered JSON records live on **disk**, never
+/// resident. Only this is in RAM: the carried [`EmitState`] (so the next committed range's anchors
+/// follow on), the per-record **offset table**, and the log length. A poll reads the committed byte
+/// range it needs straight off the log. Reset (new file) when the session epoch changes.
 #[derive(Default)]
 struct PullRender {
     epoch: u64,
     emit: EmitState,
-    committed_lines: Vec<String>,
+    /// Byte offset where each committed record starts in the on-disk log; `offsets.len()` is the
+    /// number of committed blocks rendered so far (8 bytes/block resident — not the record itself).
+    offsets: Vec<u64>,
+    /// Current log length (EOF), so the next record's offset is O(1).
+    len: u64,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -221,9 +227,11 @@ impl Live {
         // Attachments load from THIS agent's own transcript.
         let transcript = crate::Transcript::open(self.agent, info.source.clone());
 
-        // Render-once: advance the committed render cache by the newly-committed blocks only, then
-        // render the open turn from a *clone* of the committed `EmitState` (its ephemeral anchors
-        // never pollute the committed state). A poll renders O(open-turn), not O(session).
+        // Render-once TO DISK: append the newly-committed blocks' records to `<id>.records` (they
+        // never re-render and never sit in RAM), carrying EmitState so anchors follow on. The open
+        // turn renders from a *clone* of that state each poll (ephemeral anchors don't pollute it).
+        // A poll renders O(open-turn) and reads only the committed byte range the cursor needs.
+        let log_path = self.dir.join(format!("{id}.records"));
         let mut rmap = self.render.lock().unwrap();
         let pr = rmap.entry(id.to_string()).or_default();
         if pr.epoch != snap.epoch {
@@ -231,8 +239,9 @@ impl Live {
                 epoch: snap.epoch,
                 ..Default::default()
             };
+            let _ = std::fs::remove_file(&log_path); // discard the stale log
         }
-        let cached = pr.committed_lines.len().min(n);
+        let cached = pr.offsets.len().min(n);
         if n > cached {
             let new_lines = render_blocks(
                 &snap.blocks[cached..n],
@@ -245,7 +254,7 @@ impl Live {
                 Some(&transcript),
                 &mut pr.emit,
             );
-            pr.committed_lines.extend(new_lines);
+            append_records(&log_path, &new_lines, &mut pr.offsets, &mut pr.len);
         }
         let mut open_emit = pr.emit.clone();
         let provisional_lines = render_blocks(
@@ -259,13 +268,38 @@ impl Live {
             Some(&transcript),
             &mut open_emit,
         );
-        Some(pull_wire_rendered(
+        // Slice each zone at the cursor (via the tested pull_indices), then read the committed
+        // records straight off the on-disk log — never materializing all committed in RAM.
+        let (cf, pf) = pull_indices(
+            snap.epoch,
+            pr.offsets.len(),
+            provisional_lines.len(),
+            snap.provisional_gen,
+            cursor,
+        );
+        let committed_bytes = read_range(
+            &log_path,
+            pr.offsets.get(cf).copied().unwrap_or(pr.len),
+            pr.len,
+        );
+        drop(rmap);
+        let committed_records: Vec<&str> = std::str::from_utf8(&committed_bytes)
+            .unwrap_or("")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        Some(pull_reply_json(
             snap.epoch,
             snap.provisional_gen,
-            &pr.committed_lines,
-            &provisional_lines,
+            cf,
+            &committed_records,
+            pf,
+            &provisional_records,
             &meta,
-            cursor,
         ))
     }
 
@@ -391,38 +425,69 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
     Some(out)
 }
 
-/// Build the `/pull` wire reply from the **render-once** zones: `committed_lines` are the committed
-/// blocks' wire records (rendered once as they committed, cached per-id), `provisional_lines` are
-/// the open turn re-rendered this poll. Runs the **tested** [`pull_indices`] math to find each
-/// zone's `*_from`, then slices — `committed_lines[cf..]` (permanent appends) + `provisional_lines
-/// [pf..]` (truncate-from + append). The content-blind client applies "truncate to `from`, then
+/// Append rendered records to the on-disk log (one per line), updating the resident offset table +
+/// length. Best-effort: a record whose write fails is simply not counted (the next poll re-tries).
+fn append_records(path: &Path, records: &[String], offsets: &mut Vec<u64>, len: &mut u64) {
+    if records.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        for r in records {
+            if f.write_all(r.as_bytes())
+                .and_then(|_| f.write_all(b"\n"))
+                .is_ok()
+            {
+                offsets.push(*len);
+                *len += r.len() as u64 + 1;
+            }
+        }
+    }
+}
+
+/// Read `[start, end)` bytes off the log (the committed records the cursor needs). Empty on any I/O
+/// error or an empty range — the committed zone is then simply absent from this reply.
+fn read_range(path: &Path, start: u64, end: u64) -> Vec<u8> {
+    if end <= start {
+        return Vec::new();
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    match std::fs::File::open(path) {
+        Ok(mut f) => {
+            let mut buf = vec![0u8; (end - start) as usize];
+            if f.seek(SeekFrom::Start(start)).is_ok() && f.read_exact(&mut buf).is_ok() {
+                buf
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Build the `/pull` wire reply string by splicing the raw record strings into the two zone arrays —
+/// no per-record parse: each `committed`/`provisional` record is already a JSON object, so
+/// `[rec1,rec2,…]` is a valid array. The content-blind client applies "truncate to `from`, then
 /// extend" per zone (see `export.js`).
-fn pull_wire_rendered(
+fn pull_reply_json(
     epoch: u64,
     provisional_gen: u64,
-    committed_lines: &[String],
-    provisional_lines: &[String],
+    committed_from: usize,
+    committed_records: &[&str],
+    provisional_from: usize,
+    provisional_records: &[&str],
     meta: &Value,
-    cursor: Cursor,
 ) -> String {
-    let n = committed_lines.len(); // all committed is rendered+cached ⇒ len == n_committed
-    let (cf, pf) = pull_indices(epoch, n, provisional_lines.len(), provisional_gen, cursor);
-    let to_vals = |ls: &[String]| -> Vec<Value> {
-        ls.iter()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap_or(Value::Null))
-            .collect()
-    };
-    json!({
-        "t": "pull",
-        "epoch": epoch,
-        "committed_from": cf,
-        "committed": to_vals(&committed_lines[cf.min(n)..]),
-        "provisional_gen": provisional_gen,
-        "provisional_from": pf,
-        "provisional": to_vals(&provisional_lines[pf.min(provisional_lines.len())..]),
-        "meta": meta.clone(),
-    })
-    .to_string()
+    let arr = |recs: &[&str]| format!("[{}]", recs.join(","));
+    let committed = arr(committed_records);
+    let provisional = arr(provisional_records);
+    format!(
+        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed\":{committed},\"provisional_gen\":{provisional_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
+    )
 }
 
 /// Poll the transcript forever, streaming changes to `companion`. Shared by
@@ -782,51 +847,62 @@ fn serve_connection(
 mod tests {
     use super::*;
 
-    fn lines(total: usize) -> Vec<String> {
-        (0..total).map(|i| format!("{{\"i\":{i}}}")).collect()
-    }
-
-    /// `pull_wire_rendered` maps the pull-index math onto the pre-rendered committed/provisional
-    /// line records: a fresh cursor resyncs (all lines), an up-to-date cursor is idle (empty zones),
-    /// and a catching-up / stale-gen cursor gets the committed slice + a provisional reset.
+    /// `pull_reply_json` splices the raw record strings into a valid two-zone reply (no re-parse):
+    /// arrays of the block records, the `*_from` indices, and the meta object.
     #[test]
-    fn pull_wire_rendered_resync_idle_and_catchup() {
-        // 2 committed + 2 provisional, epoch 5, gen 3.
-        let committed = lines(2);
-        let provisional = lines(2);
+    fn pull_reply_json_splices_records_into_valid_wire() {
         let meta = json!({ "t": "meta" });
-        let wire = |c: Cursor| -> Value {
-            serde_json::from_str(&pull_wire_rendered(
-                5,
-                3,
-                &committed,
-                &provisional,
-                &meta,
-                c,
-            ))
-            .unwrap()
-        };
-
-        // Fresh (epoch-0) cursor ⇒ resync: all committed + all provisional.
-        let v = wire(Cursor::default());
+        let s = pull_reply_json(
+            5,
+            3,
+            2,
+            &[r#"{"id":"a"}"#, r#"{"id":"b"}"#],
+            1,
+            &[r#"{"id":"p"}"#],
+            &meta,
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["epoch"], 5);
-        assert_eq!(v["committed_from"], 0);
+        assert_eq!(v["committed_from"], 2);
         assert_eq!(v["committed"].as_array().unwrap().len(), 2);
+        assert_eq!(v["committed"][0]["id"], "a");
         assert_eq!(v["provisional_gen"], 3);
-        assert_eq!(v["provisional_from"], 0);
-        assert_eq!(v["provisional"].as_array().unwrap().len(), 2);
+        assert_eq!(v["provisional_from"], 1);
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 1);
+        assert_eq!(v["provisional"][0]["id"], "p");
         assert_eq!(v["meta"]["t"], "meta");
 
-        // Up-to-date cursor (epoch 5, committed 2, gen 3, index 2) ⇒ idle.
-        let v = wire(Cursor::from_query("5.2.3.2"));
+        // Empty zones (idle) ⇒ valid empty arrays.
+        let v: Value = serde_json::from_str(&pull_reply_json(1, 0, 0, &[], 0, &[], &meta)).unwrap();
         assert_eq!(v["committed"].as_array().unwrap().len(), 0);
         assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
+    }
 
-        // Catching-up cursor with a stale gen ⇒ committed slice + whole provisional (from 0).
-        let v = wire(Cursor::from_query("5.0.1.0"));
-        assert_eq!(v["committed_from"], 0);
-        assert_eq!(v["committed"].as_array().unwrap().len(), 2);
-        assert_eq!(v["provisional_from"], 0);
-        assert_eq!(v["provisional"].as_array().unwrap().len(), 2);
+    /// append_records → read_range round-trips: records land on disk in order, and reading from a
+    /// given committed offset returns exactly the records from there on (the render-once serve path).
+    #[test]
+    fn append_then_read_range_round_trips() {
+        let dir = std::env::temp_dir().join(format!("cr-records-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("t.records");
+        let _ = std::fs::remove_file(&path);
+        let mut offsets = Vec::new();
+        let mut len = 0u64;
+        let recs = vec![
+            r#"{"i":0}"#.to_string(),
+            r#"{"i":1}"#.to_string(),
+            r#"{"i":2}"#.to_string(),
+        ];
+        append_records(&path, &recs, &mut offsets, &mut len);
+        assert_eq!(offsets.len(), 3);
+        // Read from record 1 to EOF → records 1 and 2 only.
+        let bytes = read_range(&path, offsets[1], len);
+        let got: Vec<&str> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(got, vec![r#"{"i":1}"#, r#"{"i":2}"#]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

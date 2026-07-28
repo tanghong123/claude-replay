@@ -244,8 +244,8 @@ pub enum PopupClick {
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>,                       // per-block fold state
-    raw_dirty: bool,                            // wrapped needs rebuilding (fold toggle / live update)
-    wrapped: Vec<Line<'static>>,                // wrapped to `width`
+    raw_dirty: bool, // wrapped needs rebuilding (fold toggle / live update)
+    wrapped: Vec<Line<'static>>, // wrapped to `width`
     wrapped_tag: Vec<crate::model::BlockIndex>, // wrapped[i] belongs to block wrapped_tag[i]
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
