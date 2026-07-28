@@ -3,8 +3,11 @@
 //! The cache holds the *joined* view: `committed` (append-only for the whole session) and
 //! `provisional` (the open turn), which the server **patches in place** as the Replayer folds
 //! messages — a tool's output lands on its `ToolUse` block, a sub-agent flips `Running →
-//! Completed`. Because the join stays server-side, the client is a **type-blind framebuffer**:
-//! it never inspects a block, never matches a `tool_use_id`, never learns what a `ToolUse` is.
+//! Completed`. Because the join stays server-side, the client is **content-blind**: it never
+//! inspects a block, matches a `tool_use_id`, or learns what a `ToolUse` is. It is **not**, though,
+//! a dumb framebuffer — it is **protocol-aware and stateful**: it must understand the returned
+//! cursor's semantics and keep two distinct tracked zones (a `committed` buffer it only *appends*
+//! to; a `provisional` buffer it *replaces or extends* per the reply). Content-blind, protocol-aware.
 //!
 //! A client's position is **four numbers**: `Cursor { epoch, committed_id, provisional_gen,
 //! provisional_index }`.
@@ -16,8 +19,8 @@
 //! - `provisional_index` — append position within the current generation.
 //! - `epoch` — session validity (a mismatch ⇒ resync).
 //!
-//! Per zone the reply is **self-describing** via `*_from`, and the client applies one rule:
-//! *"truncate to `from`, then extend."* `provisional_from` is:
+//! Per zone the reply is **self-describing** via `*_from`, and the client applies one rule *per
+//! tracked zone*: *"truncate to `from`, then extend."* `provisional_from` is:
 //! - the request's `provisional_index` when the **gen is unchanged** (append-only suffix — the
 //!   common, cheap case);
 //! - `0` when the **gen changed** (an in-place patch may have altered a block the client already
