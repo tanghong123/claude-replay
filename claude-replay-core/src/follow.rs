@@ -194,6 +194,22 @@ impl<S: BlockStore> FollowParser<S> {
     pub fn session_meta(&self) -> crate::engine::session::SessionMeta {
         self.builder.session_meta()
     }
+
+    /// The committed locator/value slice (`&[S::Bv]`, no decode) — see
+    /// [`SessionAccumulator::committed`](crate::engine::SessionAccumulator::committed).
+    pub fn committed(&self) -> &[S::Bv] {
+        self.builder.committed()
+    }
+
+    /// The follower's storage policy (store-level facts, e.g. a tier-b backing's length).
+    pub fn store(&self) -> &S {
+        self.builder.store()
+    }
+
+    /// The transcript path this follower tails.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// The `Session`-assembling polls — only for the in-memory store, whose `Bv` **is** [`Block`]

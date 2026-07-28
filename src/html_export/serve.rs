@@ -246,15 +246,33 @@ impl Live {
         }
         // Lazy reap (this path owns no background thread), then fetch-or-materialize the
         // pull-servable resident — both owned by the cache (one resident set, one policy).
-        self.cache.reap(TAIL_TTL_MS);
-        let shared = self.cache.shared_session(id, || {
+        // Each evicted resident hibernates its serving state to a sidecar beside its backing, so
+        // revisiting an UNCHANGED session reloads instead of re-folding the whole transcript.
+        for (rid, ss) in self.cache.reap(TAIL_TTL_MS) {
+            let _ = ss.hibernate(&self.dir.join(format!("{rid}.state")));
+        }
+        let blocks_path = self.dir.join(format!("{id}.blocks"));
+        let state_path = self.dir.join(format!("{id}.state"));
+        let open_fresh = || {
             // Committed block content spills to an on-disk tier-b backing next to the render log
             // (falls back to an off-heap buffer if the file can't be created) — a followed
             // session's resident footprint is O(open turn) + locator/offset tables, not O(N).
-            let store = TierBStore::file(&self.dir.join(format!("{id}.blocks")))
-                .unwrap_or_else(|_| TierBStore::new());
+            let store = TierBStore::file(&blocks_path).unwrap_or_else(|_| TierBStore::new());
             SharedSession::with_store(self.agent, src.path(), store)
+        };
+        let mut shared = self.cache.shared_session(id, || {
+            // Restore-from-materialization first (valid only while the source is unchanged);
+            // else fold fresh. A restored session keeps its epoch/gen, so a client that held its
+            // cursor across the eviction continues seamlessly.
+            SharedSession::restore(src.path(), &state_path, &blocks_path)
+                .unwrap_or_else(&open_fresh)
         });
+        if shared.hibernation_stale() {
+            // The source changed after restore: drop the materialization and refold from scratch
+            // (the fresh epoch resyncs clients) — the pre-hibernation eviction behavior.
+            self.cache.remove_pull(id);
+            shared = self.cache.shared_session(id, open_fresh);
+        }
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
         let _ = shared.advance();
         // Idle fast-path: decide from the counters alone (no block clone/render) whether this

@@ -190,7 +190,7 @@ pub(crate) fn push_sub_agent(map: &mut BTreeMap<AgentId, SubAgentMeta>, at: Bloc
 /// reads without rescanning the session. Counts match `count_turns` / `count_tools` over the
 /// display stream; `children` matches a block walk (order + duplicates), with `running` derived
 /// from the same two lifecycle events the sub-agent map uses.
-#[derive(Clone, Default, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionMeta {
     /// User turns — `#(UserText | Command)`.
     pub turns: usize,
@@ -202,7 +202,7 @@ pub struct SessionMeta {
 }
 
 /// One spawned sub-agent in a [`SessionMeta`] — the header/menu view of a child.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChildMeta {
     pub id: AgentId,
     pub description: String,

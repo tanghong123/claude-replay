@@ -26,12 +26,12 @@
 //! does not exist yet. So one `Mutex` is the honest fit for the current pull-only access; a
 //! lock-free committed volume is a later optimization gated on that future API.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::stream::{pull_indices, Cursor, PullReply};
 use crate::engine::session::{BlockStore, InMemoryStore};
-use crate::engine::SessionMeta;
+use crate::engine::{SessionMeta, StreamRead};
 use crate::follow::FollowParser;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
@@ -64,10 +64,11 @@ pub struct PullDelta {
 }
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
-/// The block state lives **in the follower's accumulator** (the committed prefix is owned there
-/// and never cloned whole); this adds only the two protocol counters and a cached zone length.
+/// The block state lives **in the body** (the committed prefix is owned by the follower's
+/// accumulator — or by a restored materialization — and never cloned whole); this adds only the
+/// two protocol counters and a cached zone length.
 struct Inner<S: BlockStore> {
-    follower: FollowParser<S>,
+    body: Body<S>,
     /// Session validity token. A client cursor with a stale `epoch` resyncs. Starts at 1 so a
     /// default (`epoch == 0`) cursor from a fresh client mismatches and resyncs on its first pull.
     epoch: u64,
@@ -77,6 +78,77 @@ struct Inner<S: BlockStore> {
     /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
     /// the open window on every quiet poll.
     n_provisional: usize,
+}
+
+/// Where a session's state comes from: a **live** follower folding the source, or a
+/// **hibernated** materialization reloaded from disk (an evicted resident whose source hasn't
+/// changed since it was persisted — see [`SharedSession::hibernate`]/[`restore`]
+/// (SharedSession::restore)). A hibernated body serves every read from restored state and never
+/// folds; if its source later changes, [`hibernation_stale`](SharedSession::hibernation_stale)
+/// reports it and the owner replaces the whole session with a fresh live one (the epoch change
+/// resyncs clients — identical to today's discard-and-refold behavior).
+enum Body<S: BlockStore> {
+    // Boxed: a follower (reader buffers + accumulator) dwarfs the hibernated sidecar state.
+    Live(Box<FollowParser<S>>),
+    Hibernated(Box<Hibernated<S>>),
+}
+
+/// A restored materialization: the store re-opened over its on-disk backing + the small sidecar
+/// state. Content stays on disk; reads decode on demand through the locators.
+struct Hibernated<S: BlockStore> {
+    store: S,
+    committed: Vec<S::Bv>,
+    provisional: Vec<Block>,
+    user_times: Vec<Option<EpochSeconds>>,
+    metrics: Metrics,
+    meta: SessionMeta,
+    /// The tailed source + its byte length at hibernation — the validity check
+    /// [`hibernation_stale`](SharedSession::hibernation_stale) re-evaluates.
+    src: PathBuf,
+    src_len: u64,
+}
+
+impl<S: BlockStore> Body<S> {
+    fn committed_len(&self) -> usize {
+        match self {
+            Body::Live(f) => f.committed_len(),
+            Body::Hibernated(h) => h.committed.len(),
+        }
+    }
+    fn open_finalized(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        match self {
+            Body::Live(f) => f.open_finalized(),
+            Body::Hibernated(h) => (h.provisional.clone(), h.user_times.clone()),
+        }
+    }
+    fn committed_tail(&self, from: usize) -> Vec<Block> {
+        match self {
+            Body::Live(f) => f.committed_tail(from),
+            Body::Hibernated(h) => h.committed[from.min(h.committed.len())..]
+                .iter()
+                .map(|bv| h.store.get(bv).into_owned())
+                .collect(),
+        }
+    }
+    fn stream_read(&self, from: usize) -> StreamRead {
+        match self {
+            Body::Live(f) => f.stream_read(from),
+            Body::Hibernated(h) => StreamRead {
+                committed_delta: self.committed_tail(from),
+                provisional: h.provisional.clone(),
+                user_times: h.user_times.clone(),
+                metrics: h.metrics.clone(),
+                meta: h.meta.clone(),
+                n_committed: h.committed.len(),
+            },
+        }
+    }
+    fn session_meta(&self) -> SessionMeta {
+        match self {
+            Body::Live(f) => f.session_meta(),
+            Body::Hibernated(h) => h.meta.clone(),
+        }
+    }
 }
 
 /// The live, pull-servable state of one followed session (see the module docs). `Arc`-shareable;
@@ -103,7 +175,7 @@ impl<S: BlockStore> SharedSession<S> {
     pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                follower: FollowParser::with_store(agent, path, store),
+                body: Body::Live(Box::new(FollowParser::with_store(agent, path, store))),
                 epoch: 1,
                 provisional_gen: 0,
                 n_provisional: 0,
@@ -118,20 +190,27 @@ impl<S: BlockStore> SharedSession<S> {
     /// stay owned by the accumulator and are read delta-sized at pull time.
     pub fn advance(&self) -> std::io::Result<bool> {
         let mut g = self.inner.lock().unwrap();
-        // A commit is visible as growth of the append-only committed prefix (compare BEFORE the
-        // fold). Reset takes priority (it also invalidates committed).
-        let prev_committed = g.follower.committed_len();
-        let Some((reset, patch_floor)) = g.follower.advance_stream()? else {
+        // A hibernated body never folds: its source was unchanged when restored. If the source
+        // later changes, `hibernation_stale` reports it and the owner swaps in a fresh live
+        // session (whose new epoch resyncs clients).
+        let Body::Live(follower) = &mut g.body else {
             return Ok(false);
         };
-        let committed_grew = g.follower.committed_len() > prev_committed;
+        // A commit is visible as growth of the append-only committed prefix (compare BEFORE the
+        // fold). Reset takes priority (it also invalidates committed).
+        let prev_committed = follower.committed_len();
+        let Some((reset, patch_floor)) = follower.advance_stream()? else {
+            return Ok(false);
+        };
+        let committed_grew = follower.committed_len() > prev_committed;
+        let n_provisional = follower.provisional_len();
         if reset {
             g.epoch += 1;
             g.provisional_gen += 1;
         } else if committed_grew || patch_floor.is_some() {
             g.provisional_gen += 1;
         }
-        g.n_provisional = g.follower.provisional_len();
+        g.n_provisional = n_provisional;
         Ok(true)
     }
 
@@ -142,10 +221,10 @@ impl<S: BlockStore> SharedSession<S> {
     /// `/pull` handler does).
     pub fn pull(&self, cursor: Cursor) -> PullReply {
         let g = self.inner.lock().unwrap();
-        let (provisional, _times) = g.follower.open_finalized();
+        let (provisional, _times) = g.body.open_finalized();
         let (committed_from, provisional_from) = pull_indices(
             g.epoch,
-            g.follower.committed_len(),
+            g.body.committed_len(),
             provisional.len(),
             g.provisional_gen,
             cursor,
@@ -153,7 +232,7 @@ impl<S: BlockStore> SharedSession<S> {
         PullReply {
             epoch: g.epoch,
             committed_from,
-            committed: g.follower.committed_tail(committed_from),
+            committed: g.body.committed_tail(committed_from),
             provisional_gen: g.provisional_gen,
             provisional_from,
             provisional: provisional[provisional_from..].to_vec(),
@@ -172,9 +251,9 @@ impl<S: BlockStore> SharedSession<S> {
         let from = if reset {
             0 // stale render cache: every committed block re-renders
         } else {
-            rendered_committed.min(g.follower.committed_len())
+            rendered_committed.min(g.body.committed_len())
         };
-        let r = g.follower.stream_read(from);
+        let r = g.body.stream_read(from);
         PullDelta {
             epoch: g.epoch,
             provisional_gen: g.provisional_gen,
@@ -197,7 +276,7 @@ impl<S: BlockStore> SharedSession<S> {
         (
             g.epoch,
             g.provisional_gen,
-            g.follower.committed_len(),
+            g.body.committed_len(),
             g.n_provisional,
         )
     }
@@ -207,7 +286,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// *child* session's first resolve reads off its **parent** to derive its title/breadcrumb
     /// once (the child-nav inversion) — no per-pull cross-session writes.
     pub fn session_meta(&self) -> SessionMeta {
-        self.inner.lock().unwrap().follower.session_meta()
+        self.inner.lock().unwrap().body.session_meta()
     }
 
     /// The current session epoch (bumped on reset).
@@ -218,6 +297,113 @@ impl<S: BlockStore> SharedSession<S> {
     /// The current provisional generation (bumped on commit or back-patch).
     pub fn provisional_gen(&self) -> u64 {
         self.inner.lock().unwrap().provisional_gen
+    }
+
+    /// Whether this is a **hibernated** session whose source has changed since it was persisted —
+    /// its restored state no longer matches the file, so the owner should drop it and materialize
+    /// a fresh live session (the new epoch resyncs clients; same effect as today's
+    /// discard-and-refold after an eviction). Always `false` for a live body.
+    pub fn hibernation_stale(&self) -> bool {
+        let g = self.inner.lock().unwrap();
+        match &g.body {
+            Body::Live(_) => false,
+            Body::Hibernated(h) => {
+                std::fs::metadata(&h.src).map(|m| m.len()).unwrap_or(0) != h.src_len
+            }
+        }
+    }
+}
+
+/// The persisted sidecar beside a tier-b `.blocks` backing: everything a pull needs to serve an
+/// **unchanged** source without re-folding the transcript. Deliberately NOT the fold state — the
+/// replayer's open-window internals aren't persistable; a source that grew after hibernation is
+/// re-folded from scratch instead (see [`SharedSession::restore`]).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HibernatedSidecar {
+    epoch: u64,
+    provisional_gen: u64,
+    /// Validity: the source transcript's byte length at hibernation.
+    src_len: u64,
+    /// Validity: the `.blocks` backing's byte length (a truncated/rewritten backing ⇒ refold).
+    backing_len: u64,
+    committed: Vec<crate::engine::tier_b::Deferred>,
+    provisional: Vec<Block>,
+    user_times: Vec<Option<EpochSeconds>>,
+    metrics: Metrics,
+    meta: SessionMeta,
+}
+
+impl SharedSession<crate::engine::tier_b::TierBStore> {
+    /// Persist this session's serving state to `sidecar` (its block content is already in the
+    /// tier-b `.blocks` backing) so an evicted resident can be [`restore`](Self::restore)d without
+    /// re-folding the transcript. Small: locators + the open turn + times/metrics/header +
+    /// counters + the two validity lengths.
+    pub fn hibernate(&self, sidecar: &Path) -> std::io::Result<()> {
+        let g = self.inner.lock().unwrap();
+        let side = match &g.body {
+            Body::Live(f) => {
+                let r = f.stream_read(f.committed_len()); // empty delta: open turn + header only
+                HibernatedSidecar {
+                    epoch: g.epoch,
+                    provisional_gen: g.provisional_gen,
+                    src_len: std::fs::metadata(f.path()).map(|m| m.len()).unwrap_or(0),
+                    backing_len: f.store().len() as u64,
+                    committed: f.committed().to_vec(),
+                    provisional: r.provisional,
+                    user_times: r.user_times,
+                    metrics: r.metrics,
+                    meta: r.meta,
+                }
+            }
+            Body::Hibernated(h) => HibernatedSidecar {
+                epoch: g.epoch,
+                provisional_gen: g.provisional_gen,
+                src_len: h.src_len,
+                backing_len: h.store.len() as u64,
+                committed: h.committed.clone(),
+                provisional: h.provisional.clone(),
+                user_times: h.user_times.clone(),
+                metrics: h.metrics.clone(),
+                meta: h.meta.clone(),
+            },
+        };
+        let json = serde_json::to_vec(&side)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(sidecar, json)
+    }
+
+    /// Reload a [`hibernate`](Self::hibernate)d session — **iff the source is unchanged** (same
+    /// byte length as recorded) and the backing still matches. Returns `None` when either check
+    /// fails, the files are missing, or the sidecar doesn't parse — the caller then materializes a
+    /// fresh live session and re-folds (exactly the pre-C-3 behavior). A restored session serves
+    /// pulls from the reloaded state at its original epoch/gen, so a client that kept its cursor
+    /// across the eviction continues seamlessly.
+    pub fn restore(src: &Path, sidecar: &Path, backing: &Path) -> Option<Self> {
+        let side: HibernatedSidecar = serde_json::from_slice(&std::fs::read(sidecar).ok()?).ok()?;
+        if std::fs::metadata(src).ok()?.len() != side.src_len {
+            return None; // the source moved on — refold instead
+        }
+        let store = crate::engine::tier_b::TierBStore::open(backing).ok()?;
+        if store.len() as u64 != side.backing_len {
+            return None; // backing rewritten/torn — refold instead
+        }
+        Some(Self {
+            inner: Mutex::new(Inner {
+                n_provisional: side.provisional.len(),
+                epoch: side.epoch,
+                provisional_gen: side.provisional_gen,
+                body: Body::Hibernated(Box::new(Hibernated {
+                    store,
+                    committed: side.committed,
+                    provisional: side.provisional,
+                    user_times: side.user_times,
+                    metrics: side.metrics,
+                    meta: side.meta,
+                    src: src.to_path_buf(),
+                    src_len: side.src_len,
+                })),
+            }),
+        })
     }
 }
 
@@ -258,7 +444,7 @@ mod tests {
     /// back-patch bumps it, a commit bumps it, and a truncation bumps `epoch`.
     // Test-only view of the committed count (the state lives behind the Mutex now).
     fn committed_len(ss: &SharedSession) -> usize {
-        ss.inner.lock().unwrap().follower.committed_len()
+        ss.inner.lock().unwrap().body.committed_len()
     }
 
     #[test]
@@ -458,6 +644,89 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&backing);
+    }
+
+    /// The evict→persist→reload cycle: a hibernated-then-restored session (source unchanged)
+    /// serves **identical** wire output to the live session it replaced — the full resync (blocks
+    /// decoded off the reopened backing), a held cursor's idle continuation at the original
+    /// epoch/gen, and the delta read — all without re-folding the transcript. Growth after
+    /// restore flags `hibernation_stale` (the owner then refolds fresh).
+    #[test]
+    fn hibernate_then_restore_serves_identical_pulls_without_refold() {
+        use crate::engine::tier_b::TierBStore;
+        let path = tmp();
+        let backing = path.with_extension("blocks");
+        let sidecar = path.with_extension("state");
+        let live =
+            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+        for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
+            append(&path, chunk);
+        }
+        live.advance().unwrap();
+        let baseline_full = live.pull(Cursor::default());
+        assert!(!baseline_full.committed.is_empty(), "turn 1 committed");
+        let held = baseline_full.next_cursor();
+        let baseline_idle = live.pull(held);
+        assert!(baseline_idle.is_idle());
+        let (e, gen) = (live.epoch(), live.provisional_gen());
+        live.hibernate(&sidecar).unwrap();
+        drop(live);
+
+        let r = SharedSession::restore(&path, &sidecar, &backing).expect("unchanged ⇒ restores");
+        assert!(!r.hibernation_stale());
+        assert!(!r.advance().unwrap(), "a hibernated body never folds");
+        assert_eq!(
+            (r.epoch(), r.provisional_gen()),
+            (e, gen),
+            "counters survive"
+        );
+        assert_eq!(
+            r.pull(Cursor::default()),
+            baseline_full,
+            "full resync identical — committed decoded off the reopened backing"
+        );
+        assert_eq!(
+            r.pull(held),
+            baseline_idle,
+            "held cursor continues seamlessly"
+        );
+        let d = r.pull_delta(e, 0);
+        assert!(!d.reset);
+        assert_eq!(d.n_committed, baseline_full.committed.len());
+        assert_eq!(d.meta.turns, 2, "restored header intact");
+
+        // The source grows after restore ⇒ stale; the owner swaps in a fresh live session.
+        append(&path, TEXT);
+        assert!(r.hibernation_stale(), "grown source flags stale");
+
+        for f in [&path, &backing, &sidecar] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    /// `restore` refuses a source that changed since hibernation (the caller refolds fresh) —
+    /// the unchanged-source-only policy, enforced at reload time.
+    #[test]
+    fn restore_refuses_a_changed_source() {
+        use crate::engine::tier_b::TierBStore;
+        let path = tmp();
+        let backing = path.with_extension("blocks");
+        let sidecar = path.with_extension("state");
+        let live =
+            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+        append(&path, USER1);
+        live.advance().unwrap();
+        live.hibernate(&sidecar).unwrap();
+        drop(live);
+
+        append(&path, USER2); // the source moved on
+        assert!(
+            SharedSession::restore(&path, &sidecar, &backing).is_none(),
+            "changed source ⇒ no restore (refold instead)"
+        );
+        for f in [&path, &backing, &sidecar] {
+            let _ = std::fs::remove_file(f);
+        }
     }
 
     /// The `Arc` sharing the concurrency wrapper exists for: many client threads hold the same

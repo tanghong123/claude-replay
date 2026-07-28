@@ -88,6 +88,25 @@ impl TierBStore {
         })
     }
 
+    /// Re-open an **existing** file backing without truncating — the reload half of a
+    /// persist/restore cycle: locators recorded earlier keep pointing at the same bytes, and any
+    /// later `put` appends after them. The tracked length resumes from the file's current size.
+    pub fn open(path: &Path) -> io::Result<Self> {
+        use std::io::Seek;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let len = file.seek(std::io::SeekFrom::End(0))?;
+        Ok(Self {
+            backing: Backing::File {
+                file,
+                len,
+                path: path.to_path_buf(),
+            },
+        })
+    }
+
     /// Consume the store, returning the append-only backing bytes (pair with a
     /// `Session<Deferred>` in a [`TierBSession`] to read blocks). For a file-backed store this
     /// reads the file back — used by the persist path, not the live hot path.

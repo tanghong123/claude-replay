@@ -195,6 +195,18 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.store.reset();
     }
 
+    /// The committed locator/value slice itself — `&[S::Bv]`, no decode. A persistence layer
+    /// serializes these directly (for tier-b they are tiny `Deferred` locators; the content is
+    /// already in the store's backing).
+    pub fn committed(&self) -> &[S::Bv] {
+        &self.committed
+    }
+
+    /// The storage policy — for reading store-level facts (e.g. a tier-b backing's length).
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     /// `committed[from..]` as owned [`Block`]s — the newly-committed tail past what a live consumer
     /// already rendered. O(delta): it copies only the tail, never the whole committed prefix (the
     /// step off the per-poll O(N) clone). `from` is clamped to the committed length.

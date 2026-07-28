@@ -164,16 +164,33 @@ impl SessionCache {
 
     /// Evict every resident (follower **and** pull-servable) idle for longer than `ttl_ms` back
     /// down to tier (c). Their registry sources remain, so a later `poll`/`shared_session`
-    /// re-materializes them.
-    pub fn reap(&self, ttl_ms: u128) {
+    /// re-materializes them. Returns the **evicted pull residents** so the owner can persist each
+    /// one's serving state (see [`SharedSession::hibernate`]) before the reference drops — the
+    /// cache stays policy-free about where materializations live.
+    pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<TierBStore>>)> {
         self.residents
             .lock()
             .unwrap()
             .retain(|_, (last_seen, _)| last_seen.elapsed().as_millis() < ttl_ms);
+        let mut evicted = Vec::new();
         self.pull_residents
             .lock()
             .unwrap()
-            .retain(|_, (last_seen, _)| last_seen.elapsed().as_millis() < ttl_ms);
+            .retain(|id, (last_seen, ss)| {
+                let keep = last_seen.elapsed().as_millis() < ttl_ms;
+                if !keep {
+                    evicted.push((id.clone(), ss.clone()));
+                }
+                keep
+            });
+        evicted
+    }
+
+    /// Drop one pull resident immediately (regardless of idle time) — used when a restored
+    /// materialization turns out stale ([`SharedSession::hibernation_stale`]) and must be replaced
+    /// by a fresh live session.
+    pub fn remove_pull(&self, id: &str) {
+        self.pull_residents.lock().unwrap().remove(id);
     }
 
     /// The ids currently resident (tier (a)) — the set the caller polls each cycle.
