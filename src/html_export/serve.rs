@@ -9,7 +9,7 @@ use super::{
     block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
     session_id, AgentInfo, ChildRef, POLL_MS,
 };
-use crate::cache::{pull, Cursor, RenderSnapshot};
+use crate::cache::{pull, Cursor, RenderSnapshot, SharedSession};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
@@ -42,6 +42,10 @@ struct Live {
     /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
     prev: Mutex<HashMap<String, Vec<String>>>,
     titles: Mutex<HashMap<String, TitleInfo>>,
+    /// The pull-client path's per-id live state (`/pull`), materialized on first pull and lazily
+    /// TTL-reaped (no background thread — folding happens on the pull request's own thread). Empty
+    /// and untouched unless a client uses `/pull`, so the default `/stream` path is unaffected.
+    shared: Mutex<HashMap<String, (std::time::Instant, std::sync::Arc<SharedSession>)>>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -68,19 +72,15 @@ impl Live {
         }
     }
 
-    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
-    /// and register its children. Cheap on the hot path (an already-materialized id short-
-    /// circuits; the background tailer keeps it current). Returns false for an unknown id.
-    fn ensure_stream(&self, id: &str) -> bool {
-        if self.prev.lock().unwrap().contains_key(id) {
-            return true; // already materialized — the tailer keeps its stream current
-        }
-        // Tier-(c) lookup: the cache registry (populated from spawn events). Fall back to
-        // resolving the source directly — every agent shares the flat `subagents/` dir, so a
-        // valid id resolves even if its parent was never navigated (deep links) — with a plain
-        // title until its parent's spawn supplies the description. The fallback is registered
-        // into the cache so `poll` can locate its source.
-        let (src, title) = if let Some(src) = self.cache.resolve(id) {
+    /// Resolve `id` to its source + title. Tier-(c) lookup first (the cache registry, populated
+    /// from spawn events); else resolve the source directly — every agent shares the flat
+    /// `subagents/` dir, so a valid id resolves even if its parent was never navigated (deep links)
+    /// — with a plain title until its parent's spawn supplies the description, registering the
+    /// fallback into the cache/titles so later lookups find it. `None` for an unknown id. Shared by
+    /// [`ensure_stream`](Self::ensure_stream) (the `/stream` path) and
+    /// [`pull_response`](Self::pull_response) (the `/pull` path).
+    fn resolve_id(&self, id: &str) -> Option<(Transcript, TitleInfo)> {
+        if let Some(src) = self.cache.resolve(id) {
             let t = self
                 .titles
                 .lock()
@@ -88,25 +88,34 @@ impl Live {
                 .get(id)
                 .cloned()
                 .unwrap_or_default();
-            (src, t)
-        } else {
-            let Some(source) = discover::subagent_source(self.agent, &self.root_path, id) else {
-                return false;
-            };
-            if !source.exists() {
-                return false;
-            }
-            let src = Transcript::open(self.agent, source);
-            let t = TitleInfo {
-                title: id.to_string(),
-                ..Default::default() // unknown ancestry/type for an un-navigated deep link
-            };
-            self.cache.register(id, src.clone());
-            self.titles
-                .lock()
-                .unwrap()
-                .insert(id.to_string(), t.clone());
-            (src, t)
+            return Some((src, t));
+        }
+        let source = discover::subagent_source(self.agent, &self.root_path, id)?;
+        if !source.exists() {
+            return None;
+        }
+        let src = Transcript::open(self.agent, source);
+        let t = TitleInfo {
+            title: id.to_string(),
+            ..Default::default() // unknown ancestry/type for an un-navigated deep link
+        };
+        self.cache.register(id, src.clone());
+        self.titles
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), t.clone());
+        Some((src, t))
+    }
+
+    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
+    /// and register its children. Cheap on the hot path (an already-materialized id short-
+    /// circuits; the background tailer keeps it current). Returns false for an unknown id.
+    fn ensure_stream(&self, id: &str) -> bool {
+        if self.prev.lock().unwrap().contains_key(id) {
+            return true; // already materialized — the tailer keeps its stream current
+        }
+        let Some((src, title)) = self.resolve_id(id) else {
+            return false;
         };
         if !src.path().exists() {
             return false;
@@ -141,6 +150,51 @@ impl Live {
             .unwrap()
             .insert(id.to_string(), block_lines(&jsonl));
         true
+    }
+
+    /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. Materialize the
+    /// id's [`SharedSession`] on first pull (lazily TTL-reaped — no background thread, so a session
+    /// nobody is pulling costs nothing), **borrow this request's thread to tail** it (fold any new
+    /// source lines), render the current blocks, and slice by the cursor via [`pull_wire`]. `None`
+    /// for an unknown/unreadable id. Independent of the `/stream` path (its own `shared` map).
+    fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
+        let (src, title) = self.resolve_id(id)?;
+        if !src.path().exists() {
+            return None;
+        }
+        let shared = {
+            let mut map = self.shared.lock().unwrap();
+            // Lazy reap (this path owns no background thread): drop sessions no one has pulled
+            // within the TTL. A later pull re-materializes from the source.
+            map.retain(|_, (t, _)| t.elapsed().as_millis() < TAIL_TTL_MS);
+            let entry = map.entry(id.to_string()).or_insert_with(|| {
+                (
+                    std::time::Instant::now(),
+                    std::sync::Arc::new(SharedSession::open(self.agent, src.path())),
+                )
+            });
+            entry.0 = std::time::Instant::now();
+            entry.1.clone()
+        };
+        // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
+        let _ = shared.advance();
+        let snap = shared.render_snapshot();
+        let info = self.agent_info(id, src.path().to_path_buf(), &title);
+        let (jsonl, children) = render_agent_stream(
+            self.agent,
+            &self.fold,
+            &self.cwd,
+            true,
+            &info,
+            &snap.blocks,
+            &snap.user_times,
+            &snap.metrics,
+            None,
+        );
+        self.register_children(&info, children);
+        let lines = block_lines(&jsonl);
+        let meta = jsonl.lines().next().unwrap_or("{}");
+        Some(pull_wire(&snap, &lines, meta, cursor))
     }
 
     /// Register `parent`'s discovered children so their `?session=` links resolve to a source
@@ -271,7 +325,6 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
 /// the parallel rendered block `lines` (1:1 with the snapshot's blocks) at the resulting `*_from`
 /// indices. `committed` blocks are permanent appends; `provisional` is a truncate-from + append.
 /// The content-blind client applies "truncate to `from`, then extend" per zone (see `export.js`).
-#[allow(dead_code)] // wired by the `/pull` route in the next step
 fn pull_wire(snap: &RenderSnapshot, lines: &[String], meta: &str, cursor: Cursor) -> String {
     // The committed/provisional split in line-space (clamped to the rendered lines defensively;
     // in practice `lines.len() == blocks.len()` — one rendered line per block).
@@ -424,6 +477,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         cache: SessionCache::new(),
         prev: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
+        shared: Mutex::new(HashMap::new()),
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
@@ -594,6 +648,33 @@ fn serve_connection(
         return stream
             .write_all(head.as_bytes())
             .and_then(|_| stream.write_all(&bytes));
+    }
+    // `/pull?session=<id>&cursor=<epoch.committed.gen.index>` — the pull-client feed. Materialize
+    // the id on first pull, borrow this thread to tail it, and return the self-describing PullReply
+    // JSON (committed append + provisional truncate/extend). Costs nothing when no client pulls.
+    if name == "pull" {
+        let Some(live) = live else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"no live server",
+            );
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let cursor = Cursor::from_query(query_get(query, "cursor").unwrap_or(""));
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+        return match live.pull_response(id, cursor) {
+            Some(body) => respond(
+                &mut stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+            ),
+            None => respond(&mut stream, "404 Not Found", "text/plain", b"no such agent"),
+        };
     }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
     // served page can't follow a `file://` link: browsers block http→file navigation).
