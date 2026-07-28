@@ -40,24 +40,36 @@ It supersedes the ad-hoc `TierBSession::persist/load` added in `c9f4175` (see §
 ## 2. The three layers
 
 ```
-claude-replay-core            pure library — mechanism, no policy, no presentation types
+claude-replay-core            pure library — mechanism ONLY: the generic seam, no storage, no cache
   Replayer                    folds Messages → emits Provisional / Commit / Meta / Reset
   SessionAccumulator<S>       ingests Blocks, put: Block→S::Bv per Commit; the RESIDENT unit:
                               committed: Vec<S::Bv> + provisional: Vec<Block> + metadata
-  BlockStore                  InMemoryStore (Bv = L) · DeferredBlockStore (Bv = Deferred, L = Block)
-  BvLog                       append-only, committed-only record file (Bv / Meta) + read-by-offset
+  BlockStore (trait) + get    the store SEAM + InMemoryStore (Bv = Block). NO tier-b type in core.
+  BlockAccess (trait)         content access over a Session<BV>
   model · metrics · follow · SessionIndex::push / push_sub_agent (incremental folders)
 
-present layer  (root crate, top-level, beside present/fold/highlight) — what real apps need
-  cache                       catalog of all sessions; residency of loaded SessionAccumulators;
-                              evict / re-admit; the two residency policies (§7)
+present layer  (root crate, top-level, beside present/fold/highlight) — the DATA LAYER + rendering
+  SessionCache                THE data layer under BOTH frontends: catalog of all sessions,
+                              residency of loaded SessionAccumulators, evict / re-admit, and it
+                              OWNS tier-b — its own DeferredStore (impl BlockStore) + Deferred BV +
+                              the committed-only append-only BvLog file. tier-b is intrinsic to the
+                              cache, not a standalone core store.
   reconcile                   apply Provisional / Commit → append + turn-commit rewind (WIRE-only)
   viewport                    block window + per-block line-height index + render cache;
                               L may be a render record / union
   trait Renderer { type Rendered; fn render(&Block,width)->Rendered; fn height(&Rendered)->u16 }
 
-tui/  ·  html_export/          Renderer impls; the html server streams the cache's render records
+tui/  ·  html_export/          Renderer impls; BOTH obtain sessions from the SessionCache; the html
+                              server streams the cache's render records
 ```
+
+**tier-b lives in the cache, not core.** Core exposes only the `BlockStore` *trait* (+ `InMemoryStore`)
+so a session can be produced over any storage policy; the concrete on-disk store (`DeferredStore`,
+the `Deferred` locator, the `BvLog` record file) is an implementation detail of the `SessionCache`
+in the present layer. The `TierBStore`/persist-load currently sitting in `claude-replay-core`
+(`7c0202c`, `c9f4175`) are a scaffolding step — they **move into the cache** when the present layer
+is built (§11 Phase C). The cache is the single data layer both the TUI and the HTML server sit on
+(today only the HTML server uses it; the TUI parses directly — Phase C unifies them).
 
 Three axes, each owned by exactly one layer:
 
@@ -312,43 +324,44 @@ Inherent to the module boundaries; documented so they are choices, not surprises
 
 ## 11. Execution plan (locked)
 
-Already landed (this redesign, byte-identical, gated): the durability frontier + O(turn) Replayer
-window (`a49467e`, C1); the tier-b *mechanism* `Deferred`/`TierBStore`/`BlockAccess` (`7c0202c`)
-— to be folded into `BvLog`; incremental `SessionIndex::push` / `push_sub_agent` (`43246aa`,
-`9caebc6`) — the replay/rebuild primitive; serde on the `Block` model + `Agent`/`Metrics`/
-`SubAgentMeta`/`Deferred`.
+**Core is essentially DONE.** The memory-model floor is landed, byte-identical and gated:
+the durability frontier + O(turn) Replayer window (`a49467e`, C1); **C2 — the
+`SessionAccumulator` owns `committed`, Replayer → O(turn)** (`b282abe`), with `BlockStore::get`
+the read-back seam; incremental `SessionIndex::push` / `push_sub_agent` (`43246aa`, `9caebc6`);
+serde on the `Block` model + `Agent`/`Metrics`/`SubAgentMeta`. What remains in core is small
+(the `Provisional` emit split, `Session { committed, provisional }`) and folds into Phase C.
 
-**Phase A — C2: accumulator owns `committed` (build now, core, byte-identical).** Move `durable`
-ownership from the Replayer to `SessionAccumulator`: `committed: Vec<S::Bv>` filled by `put` per
-`Commit` drained from the Replayer at each frontier advance; `index`/`sub_agents` maintained via
-the incremental `push` folders; `provisional` = the Replayer's resident open window; the Replayer
-keeps only the open window (content → O(turn)). `snapshot` = `committed ++ finish_turns(provisional)`.
-`InMemoryStore` reproduces today's `Vec<Block>` exactly. Gate: the equivalence oracles, the follow
-tests (blocks + user_times + metrics), the `--dump*` byte-identical gate, a new `Session`-equality
-test. **This is the floor everything else stands on.**
+The `TierBStore`/`Deferred`/persist-load in `claude-replay-core` (`7c0202c`, `c9f4175`) are
+**scaffolding to relocate**: tier-b is intrinsic to the cache (§2), so it **moves into the
+present-layer `SessionCache` in Phase C**, not polished as a standalone core store. There is no
+separate "core `BvLog`" phase — the `BvLog` is built as the cache's storage.
 
-**Phase B — the `BvLog` + `DeferredBlockStore` (build now/next, core).** Append-only, committed-only
-`Bv`/`Meta` log + offset table + read-by-offset; `Meta` carries turn time + metrics delta +
-`source_tell`; `DeferredBlockStore` (`L = Block`); `BlockAccess for Session<Deferred>`; cold-load =
-read committed + re-parse the open turn from `source_tell` (§6). Route **metrics through
-`Emit::Meta`** (decision #1) so the log is self-sufficient. **Refactor `c9f4175`:** remove the core
-`TierBSession::persist/load` + the standalone sidecar json — the `BvLog` *is* the persistence; keep
-the serde derives. Round-trip test: reload-from-log + tail-reparse == parse. In-memory path
-untouched (byte-identical gate).
-
-**Phase C — live emit + present layer (defer; this is most of Stage 4 / #31).** `Provisional` emit
-vocabulary; extract `reconcile` out of `html_export` (delete the snapshot-diff; the open-turn
-rewind becomes wire-only); `Renderer` trait + `viewport`; **move `SessionCache` core→present**; the
-render-record store (`L = JSON`) + stream cached records to the HTML client; windowed TUI as a
-`Renderer`.
+**Phase C — the `SessionCache` as the universal data layer + present layer (the bulk of the
+remaining work).** In dependency order:
+1. **`Session { committed, provisional }` split** (core) — with a `blocks()` compatibility view so
+   the ~15 consumer sites stay byte-identical. Unblocks committed-only storage + the present layer.
+2. **`Provisional`/`Commit` emit vocabulary** (core) — the Replayer emits the open turn for live
+   latency; `Commit` supersedes it. Durable path = `Commit` only (== today's committed drain).
+3. **Move `SessionCache` core→present and give it tier-b** — relocate `SessionCache` (`#21`) out of
+   `core::engine::cache`; fold `TierBStore`/`Deferred`/persist-load into it as its `DeferredStore` +
+   committed-only append-only `BvLog` (`Bv`/`Meta` records, `source_tell`, cold-load = read
+   committed + re-parse the open turn); route metrics through `Emit::Meta` so the log is
+   self-sufficient; remove the standalone core sidecar json.
+4. **`reconcile` + `viewport` + `Renderer`** (present) — extract `reconcile` out of `html_export`
+   (delete the snapshot-diff; the open-turn rewind becomes wire-only); the windowed block/line
+   model; the render cache.
+5. **Both frontends on the cache** — the HTML server obtains sessions from the cache and streams its
+   render records (`L = JSON`); the TUI obtains sessions from the cache (today it parses directly)
+   and renders lazily (`L = Block` + in-memory render cache). Windowed TUI as a `Renderer`.
 
 **Phase D — sidecars (defer, optional).** Position-tagged `metrics`/`index` sidecars for O(1)
-cold-load. (No compaction phase — the log is never rewritten.)
+cold-load. (No compaction — the log is never rewritten.)
 
-Build order rationale: A gives the memory win and unblocks B; B gives durable off-heap content +
-restart reuse in the canonical `Block` form; C/D are the presentation efficiency + polish and are
-where the app-facing cache and rendering live. A and B touch **only** core and are byte-identical;
-C is where new user-visible behavior (live streaming, windowed TUI) lands.
+Build order rationale: core's floor (C1+C2) is done and byte-identical. Phase C is where the
+value lands — one `SessionCache` data layer, owning tier-b, under both frontends — and where the
+new user-visible behavior (live streaming, windowed TUI) appears. It is a mostly-presentation
+refactor with real byte-identical risk, so it proceeds as small gated increments in the order
+above (each keeping the `--dump*`/oracle/follow gates green).
 
 ---
 
