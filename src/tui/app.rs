@@ -146,9 +146,11 @@ struct Frame {
     /// demand by [`ensure_loaded`] (re-parsing from the child's own transcript). The root frame
     /// (index 0) is **pinned** — always `Some`.
     view: Option<View>,
-    /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
-    /// just the newly-appended lines through a persistent `Replayer`. `None` when evicted.
-    follower: Option<crate::follow::FollowParser>,
+    /// This frame's key in the session cache (the root's session id, or a child's agent id).
+    /// Empty when the frame has no followable source (e.g. a spawn with no recorded agent id).
+    /// The live follower itself lives in the [`SessionCache`](crate::SessionCache) — the frame
+    /// keeps only presentation state.
+    id: String,
     agent: Agent,
     path: PathBuf,
     from: crate::model::BlockIndex,
@@ -167,12 +169,15 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     can_go_back: bool,
 ) -> Result<Outcome> {
     let mut tick: u64 = 0;
-    let mut stack: Vec<Frame> = vec![build_frame(args, &path, can_go_back, 0)?];
+    // The session domain (live followers + their residency) lives in the cache; frames keep only
+    // presentation state. `s`-switching to a different session replaces the cache wholesale.
+    let mut cache = crate::SessionCache::new();
+    let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
         // frame); reload it (and any evicted ancestors it needs) on demand.
         let top = stack.len() - 1;
-        ensure_loaded(args, &mut stack, top)?;
+        ensure_loaded(args, &cache, &mut stack, top)?;
         tick += 1;
         stack[top].last_used = tick;
 
@@ -184,7 +189,8 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             args,
             &frame.path,
             frame.view.as_mut().expect("top is loaded"),
-            &mut frame.follower,
+            &cache,
+            &frame.id,
             descended,
         )?;
         match outcome {
@@ -196,6 +202,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                 let (agent, path) = (top.agent, top.path.clone());
                 let built = build_child_frame(
                     args,
+                    &cache,
                     top.view.as_ref().expect("top is loaded"),
                     agent,
                     &path,
@@ -205,7 +212,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                     tick += 1;
                     child.last_used = tick;
                     stack.push(child);
-                    enforce_cap(&mut stack);
+                    enforce_cap(&cache, &mut stack);
                 }
             }
             // Ascend: drop the child `View`, reload the parent if it was evicted, and land its
@@ -213,7 +220,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             Outcome::Ascend if descended => {
                 let popped = stack.pop().expect("descended ⇒ non-root");
                 let ni = stack.len() - 1;
-                ensure_loaded(args, &mut stack, ni)?;
+                ensure_loaded(args, &cache, &mut stack, ni)?;
                 if let Some(parent) = stack.last_mut() {
                     parent
                         .view
@@ -225,7 +232,8 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             Outcome::Ascend => {} // at root: nothing above to ascend to
             // `s`-switch resets the whole stack to the newly chosen session.
             Outcome::Switch(p) => {
-                stack = vec![build_frame(args, &p, can_go_back, 0)?];
+                cache = crate::SessionCache::new();
+                stack = vec![build_frame(args, &cache, &p, can_go_back, 0)?];
             }
             other => return Ok(other), // Quit / Back
         }
@@ -235,12 +243,17 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 /// Ensure `stack[i]` is loaded, re-parsing it (and any evicted ancestors it depends on) on demand.
 /// A hollow sub-agent frame is rebuilt from its parent's loaded view via [`build_child_frame`]; the
 /// recursion bottoms out at the pinned root (always loaded). No-op if already loaded.
-fn ensure_loaded(args: &Args, stack: &mut [Frame], i: usize) -> Result<()> {
+fn ensure_loaded(
+    args: &Args,
+    cache: &crate::SessionCache,
+    stack: &mut [Frame],
+    i: usize,
+) -> Result<()> {
     if stack[i].view.is_some() {
         return Ok(());
     }
     debug_assert!(i > 0, "root frame is pinned — never evicted");
-    ensure_loaded(args, stack, i - 1)?;
+    ensure_loaded(args, cache, stack, i - 1)?;
     let from = stack[i].from;
     let agent = stack[i - 1].agent;
     let path = stack[i - 1].path.clone();
@@ -248,6 +261,7 @@ fn ensure_loaded(args: &Args, stack: &mut [Frame], i: usize) -> Result<()> {
     // `build_child_frame` returns (it owns its `View`), before we write `stack[i]`.
     let rebuilt = build_child_frame(
         args,
+        cache,
         stack[i - 1].view.as_ref().expect("parent loaded"),
         agent,
         &path,
@@ -255,7 +269,6 @@ fn ensure_loaded(args: &Args, stack: &mut [Frame], i: usize) -> Result<()> {
     );
     if let Some(f) = rebuilt {
         stack[i].view = f.view;
-        stack[i].follower = f.follower;
     }
     Ok(())
 }
@@ -263,7 +276,7 @@ fn ensure_loaded(args: &Args, stack: &mut [Frame], i: usize) -> Result<()> {
 /// Evict least-recently-viewed loaded sub-agent frames until at most [`MAX_RESIDENT_SUBAGENTS`]
 /// remain loaded. The root (index 0) is pinned and never counted/evicted; the current top is never
 /// evicted (it's being viewed).
-fn enforce_cap(stack: &mut [Frame]) {
+fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
     let top = stack.len() - 1;
     loop {
         let loaded: Vec<usize> = (1..stack.len())
@@ -278,19 +291,20 @@ fn enforce_cap(stack: &mut [Frame]) {
             .filter(|&i| i != top)
             .min_by_key(|&i| stack[i].last_used);
         match victim {
-            Some(v) => {
-                stack[v].view = None;
-                stack[v].follower = None;
-            }
+            Some(v) => stack[v].view = None,
             None => break, // only the top is loaded — can't evict it
         }
     }
+    // The followers obey the same budget in the cache (the root is pinned there too); an evicted
+    // follower re-materializes from the registry on its next poll.
+    cache.reap_over_budget(MAX_RESIDENT_SUBAGENTS, &stack[0].id);
 }
 
 /// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
 fn build_frame(
     args: &Args,
+    cache: &crate::SessionCache,
     path: &Path,
     can_go_back: bool,
     from: crate::model::BlockIndex,
@@ -304,19 +318,23 @@ fn build_frame(
         .unwrap_or("session")
         .to_string();
     let fold = crate::fold::FoldPolicy::from_args(args);
-    // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
-    // resident) and the tail — its first poll folds the whole current file, matching a
-    // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
+    // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
+    // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
+    // the tail (the event loop's `poll_delta`). Non-live: one plain streaming parse — the cache
+    // is never touched, so no follower exists.
     let transcript = crate::Transcript::open(agent, path);
-    let (blocks, cwd, metrics, follower) = if args.follow {
-        let mut f = transcript.follow();
-        let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
-        (blocks, discover::session_cwd(path), metrics, Some(f))
+    let id = title.clone();
+    let (blocks, cwd, metrics) = if args.follow {
+        cache.register(&id, transcript.clone());
+        match cache.poll(&id) {
+            Some(Ok(s)) => (s.blocks(), s.cwd.clone(), s.metrics.clone()),
+            _ => (Vec::new(), discover::session_cwd(path), Default::default()),
+        }
     } else {
         let s = transcript.parse()?;
-        (s.blocks(), s.cwd, s.metrics, None)
+        (s.blocks(), s.cwd, s.metrics)
     };
-    let mut view = View::new(blocks, title, follower.is_some(), fold);
+    let mut view = View::new(blocks, title, args.follow, fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
     // The blocks hold only attachment locators; give the view the transcript to load them from.
@@ -327,7 +345,7 @@ fn build_frame(
     view.set_descended(false);
     Ok(Frame {
         view: Some(view),
-        follower,
+        id,
         agent,
         path: path.to_path_buf(),
         from,
@@ -343,6 +361,7 @@ fn build_frame(
 /// evicted frame from just its parent's loaded view.
 fn build_child_frame(
     args: &Args,
+    cache: &crate::SessionCache,
     parent_view: &View,
     agent: Agent,
     root_path: &Path,
@@ -378,14 +397,19 @@ fn build_child_frame(
     if blocks.is_empty() {
         return None;
     }
-    // Live-tail an open child through its own incremental follower (M16): its first poll
-    // re-folds the child transcript (== the blocks just loaded), then only deltas.
-    let follower = args
-        .follow
-        .then(|| child_transcript.as_ref().map(|t| t.follow()))
-        .flatten();
+    // Live-tail an open child through the CACHE's follower for its id (registered here, polled
+    // by the event loop): its first poll re-folds the child transcript (== the blocks just
+    // loaded), then only deltas. The residency budget in `enforce_cap` bounds how many child
+    // followers stay materialized.
+    let live = args.follow && child_transcript.is_some() && !agent_id.is_empty();
+    if live {
+        cache.register_new(
+            &agent_id,
+            child_transcript.clone().expect("live ⇒ transcript"),
+        );
+    }
     let fold = crate::fold::FoldPolicy::from_args(args);
-    let mut view = View::new(blocks, title, follower.is_some(), fold);
+    let mut view = View::new(blocks, title, live, fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
@@ -407,7 +431,7 @@ fn build_child_frame(
     view.set_footer_segments(segs);
     Some(Frame {
         view: Some(view),
-        follower,
+        id: if live { agent_id } else { String::new() },
         agent,
         path: root_path.to_path_buf(),
         from: idx,
@@ -429,13 +453,15 @@ enum Outcome {
     Ascend,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn event_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     _agent: Agent,
     args: &Args,
     _path: &Path,
     view: &mut View,
-    follower: &mut Option<crate::follow::FollowParser>,
+    cache: &crate::SessionCache,
+    id: &str,
     descended: bool,
 ) -> Result<Outcome> {
     loop {
@@ -447,8 +473,10 @@ fn event_loop<B: ratatui::backend::Backend>(
         // view preserves fold toggles + render cache for the unchanged prefix without re-scanning
         // the whole block list. `apply_poll` swaps blocks + refreshes the footer in one call.
         if !event::poll(Duration::from_millis(250))? {
-            if let Some(f) = follower.as_mut() {
-                if let Ok(Some((blocks, _times, metrics, changed_from))) = f.poll_delta() {
+            // Only a registered id has a follower (registration happens in `-f` mode only); an
+            // evicted follower silently re-materializes from the registry inside the cache.
+            if !id.is_empty() {
+                if let Some(Ok((blocks, _times, metrics, changed_from))) = cache.poll_delta(id) {
                     view.apply_poll(blocks, &metrics, changed_from);
                 }
             }
@@ -893,7 +921,7 @@ mod tests {
                     false,
                     crate::fold::FoldPolicy::default(),
                 )),
-                follower: None,
+                id: String::new(),
                 agent: Agent::Claude,
                 path: std::path::PathBuf::from("/x"),
                 from: 0,
@@ -904,7 +932,7 @@ mod tests {
         let n = MAX_RESIDENT_SUBAGENTS + 2;
         let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
         let top = stack.len() - 1;
-        enforce_cap(&mut stack);
+        enforce_cap(&crate::SessionCache::new(), &mut stack);
 
         let loaded: Vec<usize> = (1..stack.len())
             .filter(|&i| stack[i].view.is_some())

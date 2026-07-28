@@ -134,6 +134,57 @@ impl SessionCache {
         resident.follower.poll_session().transpose()
     }
 
+    /// Like [`poll`](Self::poll), but through the follower's **delta** surface: additionally
+    /// returns `changed_from` — the first block index that differs from the previous poll — so a
+    /// windowed/render-caching consumer (the TUI) keeps its fold state and rendered lines for the
+    /// unchanged prefix instead of re-scanning the whole block list. Same lifecycle as `poll`:
+    /// materialize on first call, `None` when idle/unregistered, bumps the idle clock.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_delta(
+        &self,
+        id: &str,
+    ) -> Option<
+        std::io::Result<(
+            Vec<crate::model::Block>,
+            Vec<Option<crate::model::EpochSeconds>>,
+            crate::metrics::Metrics,
+            usize,
+        )>,
+    > {
+        let src = self.resolve(id)?;
+        let mut residents = self.residents.lock().unwrap();
+        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
+            (
+                Instant::now(),
+                Resident {
+                    follower: src.follow(),
+                },
+            )
+        });
+        *last_seen = Instant::now();
+        resident.follower.poll_delta().transpose()
+    }
+
+    /// Evict follower residents beyond `budget` — least-recently-touched first — never evicting
+    /// `pinned` (the session the viewer is anchored to, which doesn't count against the budget).
+    /// The navigation-recency residency policy the TUI rides: evicted followers re-materialize
+    /// from the registry on their next poll (a fresh whole-file fold).
+    pub fn reap_over_budget(&self, budget: usize, pinned: &str) {
+        let mut residents = self.residents.lock().unwrap();
+        let mut others: Vec<(String, Instant)> = residents
+            .iter()
+            .filter(|(id, _)| id.as_str() != pinned)
+            .map(|(id, (last_seen, _))| (id.clone(), *last_seen))
+            .collect();
+        if others.len() <= budget {
+            return;
+        }
+        others.sort_by_key(|(_, last_seen)| *last_seen); // oldest first
+        for (id, _) in &others[..others.len() - budget] {
+            residents.remove(id);
+        }
+    }
+
     /// The pull-servable resident for `id`, materializing it via `open` on first use and bumping
     /// its idle clock on every call — the `/pull` handler's one entry point to the session domain.
     /// The returned `Arc` stays valid across a concurrent [`reap`](Self::reap) (the reap drops the
@@ -323,6 +374,59 @@ mod tests {
         });
         assert!(!Arc::ptr_eq(&a, &c), "re-admit re-materializes");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `poll_delta` (the TUI's live surface): first poll folds the whole file with
+    /// `changed_from == 0`; a pure append returns the grown list with the unchanged prefix intact
+    /// (`changed_from` past it); an idle poll is `None`. Same lifecycle as `poll`.
+    #[test]
+    fn poll_delta_forwards_the_follower_delta_surface() {
+        let path = tmp();
+        std::fs::write(&path, CLAUDE_1).unwrap();
+        let cache = SessionCache::new();
+        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
+
+        let (blocks1, _t, _m, cf1) = cache.poll_delta("s").unwrap().unwrap();
+        assert_eq!(cf1, 0, "first poll: everything is new");
+        assert!(!blocks1.is_empty());
+        assert!(cache.poll_delta("s").is_none(), "idle");
+
+        append(&path, CLAUDE_2);
+        let (blocks2, _t, _m, cf2) = cache.poll_delta("s").unwrap().unwrap();
+        assert!(blocks2.len() >= blocks1.len(), "grew");
+        assert_eq!(
+            format!("{:?}", &blocks2[..cf2]),
+            format!("{:?}", &blocks1[..cf2]),
+            "the kept prefix is unchanged"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `reap_over_budget` — the TUI's residency policy: the pinned root never counts or evicts;
+    /// beyond the budget, the least-recently-touched followers go; the registry survives so a
+    /// later poll re-materializes.
+    #[test]
+    fn reap_over_budget_pins_root_and_evicts_lru() {
+        let cache = SessionCache::new();
+        for id in ["root", "a", "b", "c"] {
+            let path = tmp();
+            std::fs::write(&path, CLAUDE_1).unwrap();
+            cache.register(id, Transcript::open(Agent::Claude, path));
+        }
+        // Materialize in a known touch order: root, then a (oldest child), b, c (newest).
+        for id in ["root", "a", "b", "c"] {
+            cache.poll(id);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        cache.reap_over_budget(2, "root");
+        let mut resident = cache.resident_ids();
+        resident.sort();
+        assert_eq!(
+            resident,
+            vec!["b".to_string(), "c".to_string(), "root".to_string()],
+            "root pinned; newest 2 children kept; oldest evicted"
+        );
+        assert!(cache.is_registered("a"), "eviction is residency-only");
     }
 
     /// `register_new` keeps the first descriptor against a later bare fallback.
