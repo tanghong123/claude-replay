@@ -20,7 +20,12 @@
 //! cache can't self-deadlock. The expensive work — rendering — happens in the caller *between*
 //! cache calls; the only work under a cache lock is the brief O(delta) follower read in `poll`.
 
+#[allow(dead_code)]
+// wired into serve.rs when the pull path replaces stream_delta (Phase C step 4/5)
+mod stream;
 mod tier_b;
+#[allow(unused_imports)]
+pub use stream::{Cursor, PullDelta};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
