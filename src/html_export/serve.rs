@@ -42,10 +42,6 @@ struct Live {
     /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
     prev: Mutex<HashMap<String, Vec<String>>>,
     titles: Mutex<HashMap<String, TitleInfo>>,
-    /// The pull-client path's per-id live state (`/pull`), materialized on first pull and lazily
-    /// TTL-reaped (no background thread — folding happens on the pull request's own thread). Empty
-    /// and untouched unless a client uses `/pull`, so the default `/stream` path is unaffected.
-    shared: Mutex<HashMap<String, (std::time::Instant, std::sync::Arc<SharedSession>)>>,
     /// The `/pull` **render-once** cache, keyed by id: committed blocks are rendered exactly once
     /// (as they commit) and their wire records cached here; only the open turn re-renders per poll.
     /// So a poll's render cost is O(open-turn), not O(session). Reset when the session epoch changes.
@@ -140,13 +136,7 @@ impl Live {
     fn derive_title(&self, id: &str) -> TitleInfo {
         let parent_id = self.parents.lock().unwrap().get(id).cloned();
         let derived = parent_id.and_then(|pid| {
-            let pss = self
-                .shared
-                .lock()
-                .unwrap()
-                .get(&pid)
-                .map(|(_, ss)| ss.clone())?;
-            let pmeta = pss.session_meta();
+            let pmeta = self.cache.shared_peek(&pid)?.session_meta();
             let c = pmeta.children.iter().find(|c| c.id == id)?;
             let pt = self
                 .titles
@@ -245,30 +235,21 @@ impl Live {
         true
     }
 
-    /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. Materialize the
-    /// id's [`SharedSession`] on first pull (lazily TTL-reaped — no background thread, so a session
-    /// nobody is pulling costs nothing), **borrow this request's thread to tail** it (fold any new
-    /// source lines), render the current blocks, and slice by the cursor via [`pull_wire`]. `None`
-    /// for an unknown/unreadable id. Independent of the `/stream` path (its own `shared` map).
+    /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. The session
+    /// domain lives in the [`SessionCache`]: it materializes the id's [`SharedSession`] on first
+    /// pull and TTL-reaps idle residents (no background thread — folding rides this request's
+    /// thread, so a session nobody is pulling costs nothing). `None` for an unknown/unreadable id.
     fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
         let (src, title) = self.resolve_id(id)?;
         if !src.path().exists() {
             return None;
         }
-        let shared = {
-            let mut map = self.shared.lock().unwrap();
-            // Lazy reap (this path owns no background thread): drop sessions no one has pulled
-            // within the TTL. A later pull re-materializes from the source.
-            map.retain(|_, (t, _)| t.elapsed().as_millis() < TAIL_TTL_MS);
-            let entry = map.entry(id.to_string()).or_insert_with(|| {
-                (
-                    std::time::Instant::now(),
-                    std::sync::Arc::new(SharedSession::open(self.agent, src.path())),
-                )
-            });
-            entry.0 = std::time::Instant::now();
-            entry.1.clone()
-        };
+        // Lazy reap (this path owns no background thread), then fetch-or-materialize the
+        // pull-servable resident — both owned by the cache (one resident set, one policy).
+        self.cache.reap(TAIL_TTL_MS);
+        let shared = self
+            .cache
+            .shared_session(id, || SharedSession::open(self.agent, src.path()));
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
         let _ = shared.advance();
         // Idle fast-path: decide from the counters alone (no block clone/render) whether this
@@ -689,7 +670,6 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         cache: SessionCache::new(),
         prev: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
-        shared: Mutex::new(HashMap::new()),
         render: Mutex::new(HashMap::new()),
         parents: Mutex::new(HashMap::new()),
     });
@@ -1028,7 +1008,6 @@ mod tests {
             cache: SessionCache::new(),
             prev: Mutex::new(HashMap::new()),
             titles: Mutex::new(HashMap::new()),
-            shared: Mutex::new(HashMap::new()),
             render: Mutex::new(HashMap::new()),
             parents: Mutex::new(HashMap::new()),
         };
@@ -1113,7 +1092,6 @@ mod tests {
             cache: SessionCache::new(),
             prev: Mutex::new(HashMap::new()),
             titles: Mutex::new(HashMap::new()),
-            shared: Mutex::new(HashMap::new()),
             render: Mutex::new(HashMap::new()),
             parents: Mutex::new(HashMap::new()),
         };

@@ -16,7 +16,11 @@
 //!   residents idle past a TTL back down to tier (c); a later `poll` re-materializes from the
 //!   registry (a fresh follower folds the whole current file).
 //!
-//! The two maps are guarded by independent mutexes and never locked simultaneously, so the
+//! - **(a′) pull-resident** — a [`SharedSession`] a `/pull` client is following (see
+//!   [`shared_session`](SessionCache::shared_session)): the same registry + reap policy, serving
+//!   the cursor-pull protocol instead of `poll`.
+//!
+//! The maps are guarded by independent mutexes and never locked simultaneously, so the
 //! cache can't self-deadlock. The expensive work — rendering — happens in the caller *between*
 //! cache calls; the only work under a cache lock is the brief O(delta) follower read in `poll`.
 
@@ -48,13 +52,18 @@ struct Resident {
 }
 
 /// A keyed cache of sessions in two residency tiers (see the module docs). Owns the session
-/// domain — the followers and the materialized [`Session`]s — so its consumer (the live server)
-/// keeps only presentation state.
+/// domain — the followers, the materialized [`Session`]s, and the pull-servable
+/// [`SharedSession`]s — so its consumer (the live server) keeps only presentation state.
 pub struct SessionCache {
     /// Tier (c): every known session → its [`Transcript`] source handle.
     registry: Mutex<HashMap<String, Transcript>>,
     /// Tier (a): the currently-resident subset → (last polled, open follower).
     residents: Mutex<HashMap<String, (Instant, Resident)>>,
+    /// Tier (a′): the **pull-servable** residents — one [`SharedSession`] per id a `/pull` client
+    /// is following (`Arc` so any number of request threads share it). A resident kind of its own
+    /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
+    /// followers, but under the same owner and the same [`reap`](Self::reap) policy.
+    pull_residents: Mutex<HashMap<String, (Instant, std::sync::Arc<SharedSession>)>>,
 }
 
 impl Default for SessionCache {
@@ -62,6 +71,7 @@ impl Default for SessionCache {
         Self {
             registry: Mutex::new(HashMap::new()),
             residents: Mutex::new(HashMap::new()),
+            pull_residents: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -119,10 +129,43 @@ impl SessionCache {
         resident.follower.poll_session().transpose()
     }
 
-    /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their registry
-    /// sources remain, so a later `poll` re-materializes them.
+    /// The pull-servable resident for `id`, materializing it via `open` on first use and bumping
+    /// its idle clock on every call — the `/pull` handler's one entry point to the session domain.
+    /// The returned `Arc` stays valid across a concurrent [`reap`](Self::reap) (the reap drops the
+    /// cache's reference; in-flight requests finish on theirs).
+    pub fn shared_session(
+        &self,
+        id: &str,
+        open: impl FnOnce() -> SharedSession,
+    ) -> std::sync::Arc<SharedSession> {
+        let mut m = self.pull_residents.lock().unwrap();
+        let entry = m
+            .entry(id.to_string())
+            .or_insert_with(|| (Instant::now(), std::sync::Arc::new(open())));
+        entry.0 = Instant::now();
+        entry.1.clone()
+    }
+
+    /// Peek at an already-resident pull session **without** materializing or touching its idle
+    /// clock — for a read that shouldn't keep the session alive (e.g. a child deriving its title
+    /// from its parent's maintained meta iff the parent happens to be resident).
+    pub fn shared_peek(&self, id: &str) -> Option<std::sync::Arc<SharedSession>> {
+        self.pull_residents
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|(_, ss)| ss.clone())
+    }
+
+    /// Evict every resident (follower **and** pull-servable) idle for longer than `ttl_ms` back
+    /// down to tier (c). Their registry sources remain, so a later `poll`/`shared_session`
+    /// re-materializes them.
     pub fn reap(&self, ttl_ms: u128) {
         self.residents
+            .lock()
+            .unwrap()
+            .retain(|_, (last_seen, _)| last_seen.elapsed().as_millis() < ttl_ms);
+        self.pull_residents
             .lock()
             .unwrap()
             .retain(|_, (last_seen, _)| last_seen.elapsed().as_millis() < ttl_ms);
@@ -227,6 +270,32 @@ mod tests {
             format!("{:?}", parse_session_as(Agent::Claude, &path).unwrap())
         );
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The pull-resident lifecycle: `shared_session` materializes once (same `Arc` back on every
+    /// call), `shared_peek` sees it without materializing, `reap` evicts it alongside the follower
+    /// residents, and a later `shared_session` re-materializes fresh.
+    #[test]
+    fn pull_resident_lifecycle_materialize_peek_reap() {
+        use std::sync::Arc;
+        let path = tmp();
+        std::fs::write(&path, CLAUDE_1).unwrap();
+        let cache = SessionCache::new();
+
+        assert!(cache.shared_peek("s").is_none(), "nothing resident yet");
+        let a = cache.shared_session("s", || SharedSession::open(Agent::Claude, &path));
+        let b = cache.shared_session("s", || panic!("must not re-open a resident session"));
+        assert!(Arc::ptr_eq(&a, &b), "materialized once, shared");
+        assert!(
+            cache.shared_peek("s").is_some_and(|p| Arc::ptr_eq(&p, &a)),
+            "peek sees the resident without materializing"
+        );
+
+        cache.reap(0);
+        assert!(cache.shared_peek("s").is_none(), "reaped with the rest");
+        let c = cache.shared_session("s", || SharedSession::open(Agent::Claude, &path));
+        assert!(!Arc::ptr_eq(&a, &c), "re-admit re-materializes");
         let _ = std::fs::remove_file(&path);
     }
 
