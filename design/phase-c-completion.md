@@ -128,8 +128,39 @@ small commits (height index first behind the existing render, then the cutover).
   distinguish "blocked on external" from "stalled" (e.g. repeated identical failure output
   → back off / surface, don't restart-loop).
 
-## Final: think-backwards audit
+## Final: think-backwards audit — RESULT (2026-07-29)
 
-Walk every non-library file (TUI `app.rs`/`view.rs`, `html_export/*`, `jdi/*`) and ask:
-(1) does it need the engine explained? (2) does it do work a shared library should own?
-(3) any pure CPU/memory win left? Fix what fails; write the result into this doc.
+Everything above is **built** (P2, C-1..C-5, bugs #37/#38/#32/#33 — commits a3cf48b,
+005c427, 1a4107d, 90aa6dd, 347495d, a57bc2e, 81da145, 7596861, b5296d6, c2f0575).
+The three questions, asked of every non-library file:
+
+**1. Does any app code need the engine explained to it?** No. The full inventory of
+engine touches outside the shared libraries: `bundle.rs` → `parse_session_as` (one call
+per export); `tui/app.rs` → `parse_session_enriched_as` (dump/descend) + the
+`SessionCache` (register/poll/poll_delta); `jdi` → `parse_session_enriched_as` (status);
+`serve.rs` → the cache (`reap`/`shared_session`/`shared_peek`/`remove_pull`) + the
+`SharedSession` surface (`advance`/`counters`/`pull_delta`/`hibernate`/`restore`/
+`session_meta`). The deepest consumer — the `/pull` handler — reads top-to-bottom as
+the protocol it implements. No app constructs a Replayer/accumulator or re-derives
+engine state.
+
+**2. Does app code do work a shared library should own?** Not anymore — that was most
+of Phase C's content: residency/eviction/persistence moved into the cache (C-1/C-3/C-4);
+committed-content storage into tier-b in core (C-2); the live header into the
+accumulator (the maintained `SessionMeta`); child-title derivation rides the parent's
+maintained meta. The one known remainder is the jdi supervisor's per-agent conditionals
+— queued separately as task #17 (agent-agnostic spine), outside Phase C.
+
+**3. Pure CPU/memory wins left?** None found at the pure-win bar. Landed this phase:
+the 22 MB/poll block clone (gone), the per-poll O(N) index/sub-agent/meta scans (gone —
+maintained state), committed block content off-heap (a 16 MB `.blocks` file for the
+reference session), the reply body (25.2 MB → 2.7 MB via `/records` pointers), eviction
+re-folds (hibernate/restore), and the TUI render model (359 MB → 162 MB RSS measured,
+styled lines now O(window)). The remaining O(N) residents are deliberate, documented
+choices: TUI blocks stay in RAM (`streaming-core-memory.md`'s worked example) and the
+plain-text search index is the explicitly-allowed content-sized index.
+
+**End state vs the two principles.** The engine/cache owns parsing, folding, residency,
+storage tiers, persistence, and the live header; both frontends are thin protocol/
+presentation shells over the same `SessionCache`, and each demonstrates a different
+consumption style (batch entries, delta polls, the pull protocol) in a few calls each.
