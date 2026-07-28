@@ -12,7 +12,10 @@ use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Rendered lines plus a parallel "which block produced this line" vector.
+/// Rendered lines plus a parallel "which block produced this line" vector. Test-only now: the
+/// flat pass survives as the ORACLE the windowed `assemble_one` is proven against; production
+/// renders per block and threads the blank-carry itself.
+#[cfg(test)]
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
     pub block_of: Vec<crate::model::BlockIndex>,
@@ -873,6 +876,8 @@ pub fn block_body(b: &Block, is_collapsed: bool, width: usize) -> Vec<Line<'stat
 /// Assemble per-block bodies (`bodies[i]` = block `i`) into the final tagged line
 /// list: a blank separator after each non-empty block, then collapse runs of ≥2
 /// blank lines into one (markdown spacing + separators otherwise stack up).
+/// Test-only now — the oracle `assemble_one` (the windowed unit) is proven against.
+#[cfg(test)]
 pub fn assemble(bodies: Vec<Vec<Line<'static>>>) -> Rendered {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut block_of: Vec<usize> = Vec::new();
@@ -904,6 +909,31 @@ pub fn assemble(bodies: Vec<Vec<Line<'static>>>) -> Rendered {
     }
 }
 
+/// ONE block's share of [`assemble`]'s output, computed in isolation — the windowed viewer's
+/// unit (render only what's visible, measure the rest). `carry_in` is the one cross-block fact
+/// the flat pass threads: whether the line before this block's first is blank — which, by
+/// `assemble`'s own invariant, is exactly "any earlier block emitted at least one line" (every
+/// non-empty contribution ends with a single blank: either the separator, or the body's own
+/// trailing blank after the ≥2-run collapse). Proven equal to the flat pass block-for-block
+/// (see `assemble_one_equals_flat_assemble`).
+pub fn assemble_one(body: Vec<Line<'static>>, carry_in: bool) -> Vec<Line<'static>> {
+    let mut lines = body;
+    if lines.last().map(|l| l.width() != 0).unwrap_or(false) {
+        lines.push(Line::from(""));
+    }
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    let mut prev_blank = carry_in;
+    for l in lines {
+        let blank = l.width() == 0;
+        if blank && prev_blank {
+            continue;
+        }
+        prev_blank = blank;
+        out.push(l);
+    }
+    out
+}
+
 /// Convenience wrapper (block_body → assemble) used by tests; the viewer drives
 /// `block_body`/`assemble` directly so it can cache bodies across fold toggles.
 #[cfg(test)]
@@ -932,6 +962,54 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    /// The windowing foundation: concatenating [`assemble_one`] over the blocks (threading the
+    /// emitted-anything carry) reproduces the flat [`assemble`] EXACTLY — lines and per-block
+    /// tags — across the tricky shapes: leading blanks, trailing blanks, all-blank bodies, empty
+    /// bodies, and blank runs that straddle a block boundary.
+    #[test]
+    fn assemble_one_equals_flat_assemble() {
+        let l = |s: &str| Line::from(s.to_string());
+        let cases: Vec<Vec<Vec<Line>>> = vec![
+            // Ordinary bodies.
+            vec![vec![l("a")], vec![l("b"), l("c")]],
+            // Leading blank at document start (kept) vs mid-document (dropped).
+            vec![vec![l(""), l("a")], vec![l(""), l("b")]],
+            // Trailing blanks collapse with the separator; runs collapse to one.
+            vec![vec![l("a"), l(""), l("")], vec![l("b")]],
+            // Empty and all-blank bodies emit nothing mid-document.
+            vec![
+                vec![],
+                vec![l("")],
+                vec![l("a")],
+                vec![],
+                vec![l("")],
+                vec![l("b")],
+            ],
+            // All-blank document.
+            vec![vec![l("")], vec![l(""), l("")]],
+            // Blank run straddling a boundary.
+            vec![vec![l("a"), l("")], vec![l(""), l(""), l("b")]],
+        ];
+        for bodies in cases {
+            let flat = assemble(bodies.clone());
+            let mut lines: Vec<Line> = Vec::new();
+            let mut tags: Vec<usize> = Vec::new();
+            let mut carry = false;
+            for (i, body) in bodies.into_iter().enumerate() {
+                let part = assemble_one(body, carry);
+                carry |= !part.is_empty();
+                tags.extend(std::iter::repeat_n(i, part.len()));
+                lines.extend(part);
+            }
+            assert_eq!(
+                texts(&lines),
+                texts(&flat.lines),
+                "lines match the flat pass"
+            );
+            assert_eq!(tags, flat.block_of, "tags match the flat pass");
+        }
     }
 
     /// True if any span on the line carries this background color.
