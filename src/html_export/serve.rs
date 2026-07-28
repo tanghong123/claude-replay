@@ -6,10 +6,10 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::{
-    block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
-    session_id, AgentInfo, ChildRef, POLL_MS,
+    agent_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
+    render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, EmitState, POLL_MS,
 };
-use crate::cache::{pull, pull_indices, Cursor, RenderSnapshot, SharedSession};
+use crate::cache::{pull_indices, Cursor, SharedSession};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
@@ -46,6 +46,20 @@ struct Live {
     /// TTL-reaped (no background thread — folding happens on the pull request's own thread). Empty
     /// and untouched unless a client uses `/pull`, so the default `/stream` path is unaffected.
     shared: Mutex<HashMap<String, (std::time::Instant, std::sync::Arc<SharedSession>)>>,
+    /// The `/pull` **render-once** cache, keyed by id: committed blocks are rendered exactly once
+    /// (as they commit) and their wire records cached here; only the open turn re-renders per poll.
+    /// So a poll's render cost is O(open-turn), not O(session). Reset when the session epoch changes.
+    render: Mutex<HashMap<String, PullRender>>,
+}
+
+/// Per-id render-once state for `/pull`: how far the committed prefix has been rendered (the cached
+/// wire records + the carried [`EmitState`] so the next committed range's anchors follow on), plus
+/// the epoch it belongs to (a change ⇒ the cache is stale ⇒ reset).
+#[derive(Default)]
+struct PullRender {
+    epoch: u64,
+    emit: EmitState,
+    committed_lines: Vec<String>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -198,22 +212,61 @@ impl Live {
             );
         }
         let snap = shared.render_snapshot();
+        let n = snap.n_committed;
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
-        let (jsonl, children) = render_agent_stream(
-            self.agent,
+        // meta (light O(N) counts) + children — rebuilt each poll; the client uses the fresh counts.
+        let (meta, children) =
+            agent_meta(self.agent, &self.cwd, &info, &snap.blocks, &snap.metrics);
+        self.register_children(&info, children);
+        // Attachments load from THIS agent's own transcript.
+        let transcript = crate::Transcript::open(self.agent, info.source.clone());
+
+        // Render-once: advance the committed render cache by the newly-committed blocks only, then
+        // render the open turn from a *clone* of the committed `EmitState` (its ephemeral anchors
+        // never pollute the committed state). A poll renders O(open-turn), not O(session).
+        let mut rmap = self.render.lock().unwrap();
+        let pr = rmap.entry(id.to_string()).or_default();
+        if pr.epoch != snap.epoch {
+            *pr = PullRender {
+                epoch: snap.epoch,
+                ..Default::default()
+            };
+        }
+        let cached = pr.committed_lines.len().min(n);
+        if n > cached {
+            let new_lines = render_blocks(
+                &snap.blocks[cached..n],
+                &snap.user_times,
+                &self.fold,
+                &self.cwd,
+                true,
+                true,
+                None,
+                Some(&transcript),
+                &mut pr.emit,
+            );
+            pr.committed_lines.extend(new_lines);
+        }
+        let mut open_emit = pr.emit.clone();
+        let provisional_lines = render_blocks(
+            &snap.blocks[n..],
+            &snap.user_times,
             &self.fold,
             &self.cwd,
             true,
-            &info,
-            &snap.blocks,
-            &snap.user_times,
-            &snap.metrics,
+            true,
             None,
+            Some(&transcript),
+            &mut open_emit,
         );
-        self.register_children(&info, children);
-        let lines = block_lines(&jsonl);
-        let meta = jsonl.lines().next().unwrap_or("{}");
-        Some(pull_wire(&snap, &lines, meta, cursor))
+        Some(pull_wire_rendered(
+            snap.epoch,
+            snap.provisional_gen,
+            &pr.committed_lines,
+            &provisional_lines,
+            &meta,
+            cursor,
+        ))
     }
 
     /// Register `parent`'s discovered children so their `?session=` links resolve to a source
@@ -338,47 +391,36 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
     Some(out)
 }
 
-/// Build the `/pull` wire reply from a [`RenderSnapshot`] and the client's [`Cursor`] (the
-/// pull-client transport, vs `stream_delta`'s server-diffed byte stream). Runs the **tested**
-/// block-level [`pull`] index math over the snapshot's committed/provisional zones, then slices
-/// the parallel rendered block `lines` (1:1 with the snapshot's blocks) at the resulting `*_from`
-/// indices. `committed` blocks are permanent appends; `provisional` is a truncate-from + append.
-/// The content-blind client applies "truncate to `from`, then extend" per zone (see `export.js`).
-fn pull_wire(snap: &RenderSnapshot, lines: &[String], meta: &str, cursor: Cursor) -> String {
-    // One rendered line per block — the slicing below relies on it. A future renderer that emits a
-    // multi-line record would silently misplace blocks (we clamp rather than panic); fail loudly in
-    // debug so that regression is caught, not shipped.
-    debug_assert_eq!(
-        lines.len(),
-        snap.blocks.len(),
-        "pull_wire expects one rendered line per block"
-    );
-    // The committed/provisional split in line-space (clamped to the rendered lines defensively;
-    // in practice `lines.len() == blocks.len()` — one rendered line per block).
-    let n = snap.n_committed.min(lines.len());
-    let reply = pull(
-        snap.epoch,
-        &snap.blocks[..snap.n_committed],
-        &snap.blocks[snap.n_committed..],
-        snap.provisional_gen,
-        cursor,
-    );
+/// Build the `/pull` wire reply from the **render-once** zones: `committed_lines` are the committed
+/// blocks' wire records (rendered once as they committed, cached per-id), `provisional_lines` are
+/// the open turn re-rendered this poll. Runs the **tested** [`pull_indices`] math to find each
+/// zone's `*_from`, then slices — `committed_lines[cf..]` (permanent appends) + `provisional_lines
+/// [pf..]` (truncate-from + append). The content-blind client applies "truncate to `from`, then
+/// extend" per zone (see `export.js`).
+fn pull_wire_rendered(
+    epoch: u64,
+    provisional_gen: u64,
+    committed_lines: &[String],
+    provisional_lines: &[String],
+    meta: &Value,
+    cursor: Cursor,
+) -> String {
+    let n = committed_lines.len(); // all committed is rendered+cached ⇒ len == n_committed
+    let (cf, pf) = pull_indices(epoch, n, provisional_lines.len(), provisional_gen, cursor);
     let to_vals = |ls: &[String]| -> Vec<Value> {
         ls.iter()
             .map(|l| serde_json::from_str::<Value>(l).unwrap_or(Value::Null))
             .collect()
     };
-    let committed = to_vals(&lines[reply.committed_from.min(n)..n]);
-    let provisional = to_vals(&lines[(n + reply.provisional_from).min(lines.len())..]);
     json!({
         "t": "pull",
-        "epoch": snap.epoch,
-        "committed_from": reply.committed_from,
-        "committed": committed,
-        "provisional_gen": snap.provisional_gen,
-        "provisional_from": reply.provisional_from,
-        "provisional": provisional,
-        "meta": serde_json::from_str::<Value>(meta).unwrap_or(Value::Null),
+        "epoch": epoch,
+        "committed_from": cf,
+        "committed": to_vals(&committed_lines[cf.min(n)..]),
+        "provisional_gen": provisional_gen,
+        "provisional_from": pf,
+        "provisional": to_vals(&provisional_lines[pf.min(provisional_lines.len())..]),
+        "meta": meta.clone(),
     })
     .to_string()
 }
@@ -505,6 +547,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         prev: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
         shared: Mutex::new(HashMap::new()),
+        render: Mutex::new(HashMap::new()),
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
@@ -754,51 +797,49 @@ fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Block;
 
-    fn snap(n_committed: usize, total: usize, epoch: u64, gen: u64) -> RenderSnapshot {
-        RenderSnapshot {
-            epoch,
-            provisional_gen: gen,
-            n_committed,
-            blocks: (0..total)
-                .map(|i| Block::AssistantText(format!("b{i}")))
-                .collect(),
-            user_times: Vec::new(),
-            metrics: Default::default(),
-        }
-    }
     fn lines(total: usize) -> Vec<String> {
         (0..total).map(|i| format!("{{\"i\":{i}}}")).collect()
     }
 
-    /// `pull_wire` maps the block-level pull onto the rendered lines: a fresh cursor resyncs
-    /// (all lines), an up-to-date cursor is idle (empty zones), and a catching-up cursor gets the
-    /// committed slice + a provisional reset.
+    /// `pull_wire_rendered` maps the pull-index math onto the pre-rendered committed/provisional
+    /// line records: a fresh cursor resyncs (all lines), an up-to-date cursor is idle (empty zones),
+    /// and a catching-up / stale-gen cursor gets the committed slice + a provisional reset.
     #[test]
-    fn pull_wire_resync_idle_and_catchup() {
+    fn pull_wire_rendered_resync_idle_and_catchup() {
         // 2 committed + 2 provisional, epoch 5, gen 3.
-        let s = snap(2, 4, 5, 3);
-        let ls = lines(4);
+        let committed = lines(2);
+        let provisional = lines(2);
+        let meta = json!({ "t": "meta" });
+        let wire = |c: Cursor| -> Value {
+            serde_json::from_str(&pull_wire_rendered(
+                5,
+                3,
+                &committed,
+                &provisional,
+                &meta,
+                c,
+            ))
+            .unwrap()
+        };
 
         // Fresh (epoch-0) cursor ⇒ resync: all committed + all provisional.
-        let v: Value = serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::default())).unwrap();
+        let v = wire(Cursor::default());
         assert_eq!(v["epoch"], 5);
         assert_eq!(v["committed_from"], 0);
         assert_eq!(v["committed"].as_array().unwrap().len(), 2);
         assert_eq!(v["provisional_gen"], 3);
         assert_eq!(v["provisional_from"], 0);
         assert_eq!(v["provisional"].as_array().unwrap().len(), 2);
+        assert_eq!(v["meta"]["t"], "meta");
 
         // Up-to-date cursor (epoch 5, committed 2, gen 3, index 2) ⇒ idle.
-        let v: Value =
-            serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::from_query("5.2.3.2"))).unwrap();
+        let v = wire(Cursor::from_query("5.2.3.2"));
         assert_eq!(v["committed"].as_array().unwrap().len(), 0);
         assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
 
         // Catching-up cursor with a stale gen ⇒ committed slice + whole provisional (from 0).
-        let v: Value =
-            serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::from_query("5.0.1.0"))).unwrap();
+        let v = wire(Cursor::from_query("5.0.1.0"));
         assert_eq!(v["committed_from"], 0);
         assert_eq!(v["committed"].as_array().unwrap().len(), 2);
         assert_eq!(v["provisional_from"], 0);
