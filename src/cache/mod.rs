@@ -31,7 +31,8 @@ mod stream;
 // path; the Arc/lock-free concurrency wrapper joins it there (real concurrent clients).
 #[allow(dead_code)]
 mod shared;
-mod tier_b;
+#[allow(unused_imports)]
+pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 #[allow(unused_imports)]
 pub use shared::{PullDelta, SharedSession};
 #[allow(unused_imports)]
@@ -63,8 +64,12 @@ pub struct SessionCache {
     /// is following (`Arc` so any number of request threads share it). A resident kind of its own
     /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
     /// followers, but under the same owner and the same [`reap`](Self::reap) policy.
-    pull_residents: Mutex<HashMap<String, (Instant, std::sync::Arc<SharedSession>)>>,
+    pull_residents: Mutex<HashMap<String, PullResident>>,
 }
+
+/// A pull-servable resident: its idle clock + the shared session. Tier-b-backed — the committed
+/// block content of a followed session lives in the store's on-disk backing, not RAM.
+type PullResident = (Instant, std::sync::Arc<SharedSession<TierBStore>>);
 
 impl Default for SessionCache {
     fn default() -> Self {
@@ -136,8 +141,8 @@ impl SessionCache {
     pub fn shared_session(
         &self,
         id: &str,
-        open: impl FnOnce() -> SharedSession,
-    ) -> std::sync::Arc<SharedSession> {
+        open: impl FnOnce() -> SharedSession<TierBStore>,
+    ) -> std::sync::Arc<SharedSession<TierBStore>> {
         let mut m = self.pull_residents.lock().unwrap();
         let entry = m
             .entry(id.to_string())
@@ -149,7 +154,7 @@ impl SessionCache {
     /// Peek at an already-resident pull session **without** materializing or touching its idle
     /// clock — for a read that shouldn't keep the session alive (e.g. a child deriving its title
     /// from its parent's maintained meta iff the parent happens to be resident).
-    pub fn shared_peek(&self, id: &str) -> Option<std::sync::Arc<SharedSession>> {
+    pub fn shared_peek(&self, id: &str) -> Option<std::sync::Arc<SharedSession<TierBStore>>> {
         self.pull_residents
             .lock()
             .unwrap()
@@ -284,7 +289,9 @@ mod tests {
         let cache = SessionCache::new();
 
         assert!(cache.shared_peek("s").is_none(), "nothing resident yet");
-        let a = cache.shared_session("s", || SharedSession::open(Agent::Claude, &path));
+        let a = cache.shared_session("s", || {
+            SharedSession::with_store(Agent::Claude, &path, TierBStore::new())
+        });
         let b = cache.shared_session("s", || panic!("must not re-open a resident session"));
         assert!(Arc::ptr_eq(&a, &b), "materialized once, shared");
         assert!(
@@ -294,7 +301,9 @@ mod tests {
 
         cache.reap(0);
         assert!(cache.shared_peek("s").is_none(), "reaped with the rest");
-        let c = cache.shared_session("s", || SharedSession::open(Agent::Claude, &path));
+        let c = cache.shared_session("s", || {
+            SharedSession::with_store(Agent::Claude, &path, TierBStore::new())
+        });
         assert!(!Arc::ptr_eq(&a, &c), "re-admit re-materializes");
         let _ = std::fs::remove_file(&path);
     }

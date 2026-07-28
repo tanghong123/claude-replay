@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
-use crate::engine::session::{InMemoryStore, Session};
+use crate::engine::session::{BlockStore, InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
@@ -35,10 +35,15 @@ impl Tick {
 /// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
 /// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
 /// is just the byte-offset reader plus the same incremental fold the batch parse uses.
-pub struct FollowParser {
+///
+/// Generic over the accumulator's [`BlockStore`] `S` (default [`InMemoryStore`] — blocks resident
+/// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
+/// works for any store — a live server follows with a tier-b store so committed content lives on
+/// disk; the `Session`-assembling polls (`poll*`) stay on the in-memory default.
+pub struct FollowParser<S: BlockStore = InMemoryStore> {
     agent: Agent,
     path: PathBuf,
-    builder: SessionAccumulator<InMemoryStore>,
+    builder: SessionAccumulator<S>,
     reader: LineReader,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
@@ -52,14 +57,23 @@ fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-impl FollowParser {
+impl FollowParser<InMemoryStore> {
     /// Follow `path` from the beginning: the first `poll` folds the whole current file, then
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
+        Self::with_store(agent, path, InMemoryStore)
+    }
+}
+
+impl<S: BlockStore> FollowParser<S> {
+    /// [`open`](FollowParser::open) with an explicit [`BlockStore`] — e.g. a
+    /// [`TierBStore`](crate::engine::tier_b::TierBStore) so committed block content lives in the
+    /// store's backing (disk) instead of RAM.
+    pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
         Self {
             agent,
             path: path.to_path_buf(),
-            builder: SessionAccumulator::new(agent),
+            builder: SessionAccumulator::with_store(agent, store),
             reader: LineReader::open_at_start(path),
             prev_committed: 0,
             prev_provisional: Vec::new(),
@@ -140,37 +154,6 @@ impl FollowParser {
         Ok(Some((blocks, times, metrics, changed_from)))
     }
 
-    /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
-    /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
-    /// `transcript` filled from the source path (exactly as
-    /// [`parse_session_as`](crate::parse_session_as) does). Returns `None` when the source hasn't
-    /// grown since the last poll (idle). This is the residency cache's single assembly point — it
-    /// needs no core internals.
-    pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
-        Ok(self.poll_shared()?.map(|(s, _reset, _patch_floor)| s))
-    }
-
-    /// Like [`poll_session`](Self::poll_session), but also returns the streaming signals the
-    /// present-layer pull protocol needs: `reset` (a truncation happened this tick ⇒ bump the
-    /// session epoch) and `patch_floor` (the batch back-patched an already-emitted open-turn block
-    /// ⇒ bump the provisional generation; `None` = append-only). The `Session` carries the
-    /// committed / provisional split the pull serves. Returns `None` on an idle tick.
-    #[allow(clippy::type_complexity)]
-    pub fn poll_shared(&mut self) -> std::io::Result<Option<(Session, bool, Option<usize>)>> {
-        let tick = self.advance_from_source()?;
-        if !tick.advanced {
-            return Ok(None);
-        }
-        let mut s = self.builder.snapshot();
-        s.cwd = crate::discover::session_cwd(&self.path);
-        crate::engine::session::populate_sub_agent_transcripts(
-            self.agent,
-            &self.path,
-            &mut s.sub_agents,
-        );
-        Ok(Some((s, tick.reset, tick.patch_floor)))
-    }
-
     /// The **light** streaming advance (the pull path): fold the delta and report only the two
     /// protocol signals — `(reset, patch_floor)` — **without** assembling a `Session` (no O(N)
     /// `index`/`sub_agents` build, no whole-committed clone). `None` on an idle tick. The caller
@@ -210,6 +193,41 @@ impl FollowParser {
     /// The maintained live header for the current tail (committed meta + open turn) — O(turn).
     pub fn session_meta(&self) -> crate::engine::session::SessionMeta {
         self.builder.session_meta()
+    }
+}
+
+/// The `Session`-assembling polls — only for the in-memory store, whose `Bv` **is** [`Block`]
+/// (a `Session<Deferred>` consumer reads through the light streaming surface instead).
+impl FollowParser<InMemoryStore> {
+    /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
+    /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
+    /// `transcript` filled from the source path (exactly as
+    /// [`parse_session_as`](crate::parse_session_as) does). Returns `None` when the source hasn't
+    /// grown since the last poll (idle). This is the residency cache's single assembly point — it
+    /// needs no core internals.
+    pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
+        Ok(self.poll_shared()?.map(|(s, _reset, _patch_floor)| s))
+    }
+
+    /// Like [`poll_session`](Self::poll_session), but also returns the streaming signals the
+    /// present-layer pull protocol needs: `reset` (a truncation happened this tick ⇒ bump the
+    /// session epoch) and `patch_floor` (the batch back-patched an already-emitted open-turn block
+    /// ⇒ bump the provisional generation; `None` = append-only). The `Session` carries the
+    /// committed / provisional split the pull serves. Returns `None` on an idle tick.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_shared(&mut self) -> std::io::Result<Option<(Session, bool, Option<usize>)>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
+            return Ok(None);
+        }
+        let mut s = self.builder.snapshot();
+        s.cwd = crate::discover::session_cwd(&self.path);
+        crate::engine::session::populate_sub_agent_transcripts(
+            self.agent,
+            &self.path,
+            &mut s.sub_agents,
+        );
+        Ok(Some((s, tick.reset, tick.patch_floor)))
     }
 }
 

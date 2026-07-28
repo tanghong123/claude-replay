@@ -9,7 +9,7 @@ use super::{
     assemble_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
     render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, EmitState, POLL_MS,
 };
-use crate::cache::{pull_indices, Cursor, SharedSession};
+use crate::cache::{pull_indices, Cursor, SharedSession, TierBStore};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
@@ -247,9 +247,14 @@ impl Live {
         // Lazy reap (this path owns no background thread), then fetch-or-materialize the
         // pull-servable resident — both owned by the cache (one resident set, one policy).
         self.cache.reap(TAIL_TTL_MS);
-        let shared = self
-            .cache
-            .shared_session(id, || SharedSession::open(self.agent, src.path()));
+        let shared = self.cache.shared_session(id, || {
+            // Committed block content spills to an on-disk tier-b backing next to the render log
+            // (falls back to an off-heap buffer if the file can't be created) — a followed
+            // session's resident footprint is O(open turn) + locator/offset tables, not O(N).
+            let store = TierBStore::file(&self.dir.join(format!("{id}.blocks")))
+                .unwrap_or_else(|_| TierBStore::new());
+            SharedSession::with_store(self.agent, src.path(), store)
+        });
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
         let _ = shared.advance();
         // Idle fast-path: decide from the counters alone (no block clone/render) whether this

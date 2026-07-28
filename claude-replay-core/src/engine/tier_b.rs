@@ -1,21 +1,15 @@
 //! Tier-b: **on-disk (or off-heap) block storage**. A [`BlockStore`] whose `Bv` is a small
 //! [`Deferred`] locator, so a `Session<Deferred>` holds only the **O(N) offset table** while each
-//! block's *content* lives in an append-only backing buffer. Reading a block is a seek + a
-//! `serde_json` decode ([`TierBSession`] implements [`BlockAccess`] over the backing) — the raw
-//! [`Block`] is re-materialized on demand and dropped after use.
+//! block's *content* lives in an append-only backing — an off-heap byte buffer
+//! ([`TierBStore::new`]) or a real on-disk file ([`TierBStore::file`]). Reading a block is a
+//! positional read + a `serde_json` decode ([`TierBSession`] implements [`BlockAccess`] over the
+//! backing) — the raw [`Block`] is re-materialized on demand and dropped after use.
 //!
-//! Correctness note (put-once): [`SessionAccumulator::snapshot`](crate::engine::SessionAccumulator)
-//! currently maps *every* block through [`BlockStore::put`] on *every* snapshot (identity for the
-//! in-memory default, so harmless there). For an append-only tier-b backing that means a repeated
-//! snapshot would append duplicate copies — so tier-b is correct today only for a **single-snapshot
-//! batch** parse (put each block exactly once). The Stage-3 emit-and-drop rewrite makes `put`
-//! fire once at the durability frontier, which is what unlocks tier-b for the live/repeated-snapshot
-//! path. Until then, drive it via one `advance_reader(..)` + one `snapshot()`.
-//!
-//! **Wiring status:** the store lives in the cache now but is not yet driven by it — the cache
-//! still materializes `Session<Block>` (InMemory). It becomes the cache's `DeferredStore` when the
-//! `SharedSession` + pull path lands (design §9a / §11 Phase C step 4). Hence `allow(dead_code)`.
-#![allow(dead_code)]
+//! Put-once holds by construction: the [`SessionAccumulator`](crate::engine::SessionAccumulator)
+//! `put`s each block exactly once as it crosses the durability frontier (drained per `advance`),
+//! so the append-only backing never sees duplicates — batch, repeated-snapshot, and live paths
+//! are all safe. On a source truncation the accumulator's reset also
+//! [`reset`](BlockStore::reset)s the store, so a rebuilt session starts on a fresh backing.
 
 use crate::engine::SessionIndex;
 use crate::engine::{BlockAccess, BlockStore, Session};
@@ -38,59 +32,162 @@ pub struct Deferred {
     pub size: u32,
 }
 
-/// An append-only tier-b block store backed by an in-memory byte buffer. `put` serializes the block
-/// (`serde_json`, newline-framed — compact enough since this lives off the resident heap / on disk)
-/// and returns its [`Deferred`] locator. Hand the finished [`into_backing`](Self::into_backing) to a
-/// [`TierBSession`] to read blocks back.
-#[derive(Default)]
+/// An append-only tier-b block store. `put` serializes the block (`serde_json`, newline-framed)
+/// into the backing and returns its [`Deferred`] locator. The backing is either an **off-heap
+/// byte buffer** ([`new`](Self::new) — tests / batch) or a real **on-disk file**
+/// ([`file`](Self::file) — the live server's residents, so committed content never sits in RAM).
+/// Hand the finished [`into_backing`](Self::into_backing) to a [`TierBSession`] to read blocks
+/// back, or read them through the store's own [`get`](BlockStore::get).
 pub struct TierBStore {
-    buf: Vec<u8>,
+    backing: Backing,
+}
+
+/// Where the serialized block records live.
+enum Backing {
+    /// An in-memory append-only buffer.
+    Mem(Vec<u8>),
+    /// An on-disk append-only file: the open handle, the current length (the next record's
+    /// offset), and the path (so a reset can recreate it).
+    File {
+        file: std::fs::File,
+        len: u64,
+        path: PathBuf,
+    },
+}
+
+impl Default for TierBStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TierBStore {
-    /// A fresh, empty tier-b store.
+    /// A fresh, empty buffer-backed store.
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self {
+            backing: Backing::Mem(Vec::new()),
+        }
+    }
+
+    /// A fresh **file-backed** store at `path` (created/truncated): committed block content goes
+    /// straight to disk, and [`get`](BlockStore::get) reads it back positionally — nothing
+    /// resident beyond the locators the caller holds.
+    pub fn file(path: &Path) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self {
+            backing: Backing::File {
+                file,
+                len: 0,
+                path: path.to_path_buf(),
+            },
+        })
     }
 
     /// Consume the store, returning the append-only backing bytes (pair with a
-    /// `Session<Deferred>` in a [`TierBSession`] to read blocks).
+    /// `Session<Deferred>` in a [`TierBSession`] to read blocks). For a file-backed store this
+    /// reads the file back — used by the persist path, not the live hot path.
     pub fn into_backing(self) -> Vec<u8> {
-        self.buf
+        match self.backing {
+            Backing::Mem(buf) => buf,
+            Backing::File { path, .. } => std::fs::read(&path).unwrap_or_default(),
+        }
     }
 
     /// The current backing length (next block's offset) — the total bytes written so far.
     pub fn len(&self) -> usize {
-        self.buf.len()
+        match &self.backing {
+            Backing::Mem(buf) => buf.len(),
+            Backing::File { len, .. } => *len as usize,
+        }
     }
 
     /// Whether nothing has been stored yet.
     pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
+        self.len() == 0
+    }
+
+    /// Positional read of `[offset, offset+size)` — `&self`, no seek state (works under the
+    /// accumulator's shared borrows).
+    fn read_at(&self, offset: u64, size: usize) -> Vec<u8> {
+        match &self.backing {
+            Backing::Mem(buf) => {
+                let start = offset as usize;
+                buf[start..start + size].to_vec()
+            }
+            Backing::File { file, .. } => {
+                let mut out = vec![0u8; size];
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileExt;
+                    file.read_exact_at(&mut out, offset)
+                        .expect("tier-b: backing read");
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::FileExt;
+                    let mut done = 0usize;
+                    while done < size {
+                        let n = file
+                            .seek_read(&mut out[done..], offset + done as u64)
+                            .expect("tier-b: backing read");
+                        assert!(n > 0, "tier-b: unexpected EOF");
+                        done += n;
+                    }
+                }
+                out
+            }
+        }
     }
 }
 
 impl BlockStore for TierBStore {
     type Bv = Deferred;
     fn put(&mut self, b: Block, _at: BlockIndex) -> Deferred {
-        let offset = self.buf.len() as ByteOffset;
         // `serde_json` over the `Block` model (see the model's serde derives). Serialization is
         // total for the block vocabulary (only Strings/ints/Options/Vecs/plain enums), so this never
         // fails in practice; a corrupt/older backing surfaces at read time (reset ⇒ rebuild).
-        let json = serde_json::to_vec(&b).expect("tier-b: Block is serializable");
-        self.buf.extend_from_slice(&json);
-        self.buf.push(b'\n');
-        Deferred {
-            offset,
-            size: json.len() as u32,
+        let mut json = serde_json::to_vec(&b).expect("tier-b: Block is serializable");
+        let size = json.len() as u32;
+        json.push(b'\n');
+        match &mut self.backing {
+            Backing::Mem(buf) => {
+                let offset = buf.len() as ByteOffset;
+                buf.extend_from_slice(&json);
+                Deferred { offset, size }
+            }
+            Backing::File { file, len, .. } => {
+                use std::io::Write;
+                let offset = *len;
+                // One write per committed block (framed record). A locator is returned only
+                // after the bytes are down, so `get` on a returned locator always succeeds.
+                file.write_all(&json).expect("tier-b: backing append");
+                *len += json.len() as u64;
+                Deferred { offset, size }
+            }
         }
     }
     fn get<'a>(&'a self, d: &'a Deferred) -> Cow<'a, Block> {
-        let start = d.offset as usize;
-        Cow::Owned(
-            serde_json::from_slice(&self.buf[start..start + d.size as usize])
-                .expect("tier-b: valid block record"),
-        )
+        let bytes = self.read_at(d.offset, d.size as usize);
+        Cow::Owned(serde_json::from_slice(&bytes).expect("tier-b: valid block record"))
+    }
+    fn reset(&mut self) {
+        match &mut self.backing {
+            Backing::Mem(buf) => buf.clear(),
+            Backing::File { file, len, .. } => {
+                use std::io::Seek;
+                // Truncate AND rewind: `set_len` does not move the write cursor, so without the
+                // seek the next append would land at the old position (a hole of zeros before it)
+                // while its locator claims the offset from the fresh `len` counter.
+                let _ = file.set_len(0);
+                let _ = file.seek(std::io::SeekFrom::Start(0));
+                *len = 0;
+            }
+        }
     }
 }
 
@@ -398,6 +495,37 @@ mod tests {
             format!("{:?}", after.session.index),
             "rebuilt index equals the persisted session's"
         );
+    }
+
+    /// The file-backed mode: puts append to a real file, gets read back positionally, `reset`
+    /// truncates (fresh offsets), and the tracked length equals the file's.
+    #[test]
+    fn file_backed_store_round_trips_and_resets() {
+        let path = std::env::temp_dir().join(format!("tierb-file-{}.blocks", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut store = TierBStore::file(&path).unwrap();
+        let blocks = sample_blocks();
+        let locs: Vec<Deferred> = blocks
+            .iter()
+            .enumerate()
+            .map(|(at, b)| store.put(b.clone(), at))
+            .collect();
+        for (d, b) in locs.iter().zip(&blocks) {
+            assert_eq!(&*store.get(d), b, "file round-trip");
+        }
+        assert_eq!(
+            store.len() as u64,
+            std::fs::metadata(&path).unwrap().len(),
+            "tracked length == file length"
+        );
+
+        store.reset();
+        assert!(store.is_empty());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "truncated");
+        let d = store.put(blocks[0].clone(), 0);
+        assert_eq!(d.offset, 0, "offsets restart after reset");
+        assert_eq!(&*store.get(&d), &blocks[0]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

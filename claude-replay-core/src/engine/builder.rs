@@ -190,6 +190,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
+        // An append-only store (tier-b) discards its backing too — the rebuilt session's
+        // locators start from a clean slate instead of accreting dead content.
+        self.store.reset();
     }
 
     /// `committed[from..]` as owned [`Block`]s — the newly-committed tail past what a live consumer

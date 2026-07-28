@@ -34,6 +34,10 @@ pub trait BlockStore {
     /// decode for an on-disk store. Lets the accumulator reconstruct the block stream from the
     /// committed `Vec<Bv>` without re-folding.
     fn get<'a>(&'a self, bv: &'a Self::Bv) -> std::borrow::Cow<'a, Block>;
+    /// Discard everything stored — called when the accumulator rebuilds from scratch (a source
+    /// truncation/rewrite), so an append-only backing doesn't accrete dead content across resets.
+    /// Default no-op (the in-memory identity store has nothing of its own to discard).
+    fn reset(&mut self) {}
 }
 
 /// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put`/`get` are identity,

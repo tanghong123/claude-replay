@@ -30,6 +30,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::stream::{pull_indices, Cursor, PullReply};
+use crate::engine::session::{BlockStore, InMemoryStore};
 use crate::engine::SessionMeta;
 use crate::follow::FollowParser;
 use crate::metrics::Metrics;
@@ -65,8 +66,8 @@ pub struct PullDelta {
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
 /// The block state lives **in the follower's accumulator** (the committed prefix is owned there
 /// and never cloned whole); this adds only the two protocol counters and a cached zone length.
-struct Inner {
-    follower: FollowParser,
+struct Inner<S: BlockStore> {
+    follower: FollowParser<S>,
     /// Session validity token. A client cursor with a stale `epoch` resyncs. Starts at 1 so a
     /// default (`epoch == 0`) cursor from a fresh client mismatches and resyncs on its first pull.
     epoch: u64,
@@ -79,18 +80,30 @@ struct Inner {
 }
 
 /// The live, pull-servable state of one followed session (see the module docs). `Arc`-shareable;
-/// all methods take `&self`.
-pub struct SharedSession {
-    inner: Mutex<Inner>,
+/// all methods take `&self`. Generic over the follower's [`BlockStore`] `S` (default
+/// [`InMemoryStore`]): a live server opens its residents with a tier-b store so committed block
+/// content lives on disk — every method here rides the follower's light streaming surface, which
+/// is store-agnostic.
+pub struct SharedSession<S: BlockStore = InMemoryStore> {
+    inner: Mutex<Inner<S>>,
 }
 
-impl SharedSession {
+impl SharedSession<InMemoryStore> {
     /// Open a shared session following `path` for `agent`. The first [`advance`](Self::advance)
     /// folds the current file; later ones fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
+        Self::with_store(agent, path, InMemoryStore)
+    }
+}
+
+impl<S: BlockStore> SharedSession<S> {
+    /// [`open`](SharedSession::open) with an explicit [`BlockStore`] — e.g.
+    /// [`TierBStore::file`](crate::engine::tier_b::TierBStore::file) so the committed content of a
+    /// followed session never sits in RAM.
+    pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                follower: FollowParser::open(agent, path),
+                follower: FollowParser::with_store(agent, path, store),
                 epoch: 1,
                 provisional_gen: 0,
                 n_provisional: 0,
@@ -398,6 +411,53 @@ mod tests {
         assert_eq!(d3.meta.turns, 1, "meta rebuilt for the new file");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A tier-b-backed `SharedSession` (committed content in the store's on-disk backing, never
+    /// resident) must serve **byte-identical** pull output to the in-memory default — the wire
+    /// reply, the delta blocks (decoded back off disk), and the maintained header — across the
+    /// whole protocol: append, back-patch, commit, and a truncation reset (which also resets the
+    /// backing).
+    #[test]
+    fn tier_b_backed_shared_session_serves_identical_pulls() {
+        use crate::engine::tier_b::TierBStore;
+        let path = tmp();
+        let backing =
+            std::env::temp_dir().join(format!("cr-shared-tb-{}.blocks", std::process::id()));
+        let _ = std::fs::remove_file(&backing);
+        let mem = SharedSession::open(Agent::Claude, &path);
+        let tb = SharedSession::with_store(
+            Agent::Claude,
+            &path,
+            TierBStore::file(&backing).expect("create backing"),
+        );
+
+        let (mut cm, mut ct) = (Cursor::default(), Cursor::default());
+        for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
+            append(&path, chunk);
+            mem.advance().unwrap();
+            tb.advance().unwrap();
+            let (rm, rt) = (mem.pull(cm), tb.pull(ct));
+            assert_eq!(rm, rt, "wire replies identical after {chunk:.20}");
+            cm = rm.next_cursor();
+            ct = rt.next_cursor();
+            let (dm, dt) = (mem.pull_delta(mem.epoch(), 0), tb.pull_delta(tb.epoch(), 0));
+            assert_eq!(
+                format!("{:?}", dm.committed_delta),
+                format!("{:?}", dt.committed_delta),
+                "committed delta decodes off disk identically"
+            );
+            assert_eq!(dm.meta, dt.meta, "maintained header identical");
+        }
+
+        // Truncation: the accumulator resets and the tier-b backing resets with it.
+        std::fs::write(&path, USER1).unwrap();
+        mem.advance().unwrap();
+        tb.advance().unwrap();
+        assert_eq!(mem.pull(cm), tb.pull(ct), "post-reset resync identical");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&backing);
     }
 
     /// The `Arc` sharing the concurrency wrapper exists for: many client threads hold the same
