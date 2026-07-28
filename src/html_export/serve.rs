@@ -471,30 +471,14 @@ pub(super) fn follow_and_append(
             fold,
             reveal,
         );
-        let meta = fresh.lines().next().unwrap_or("{}").to_string();
+        let meta = fresh.lines().next().unwrap_or("{}");
         let blocks = block_lines(&fresh);
-        // First index where the fresh stream diverges from what's on the page.
-        let diff = prev.iter().zip(&blocks).take_while(|(a, b)| a == b).count();
-        let changed = diff < prev.len() || diff < blocks.len();
-        if !changed {
-            continue;
+        // The rewind/tail/meta diff is the SAME as the multi-file tailer's — one shared helper
+        // (finding #5). `None` on a pure no-op cycle; else append the `{reset,from}` + tail + meta.
+        if let Some(delta) = stream_delta(&prev, &blocks, meta) {
+            append_line(companion, delta.trim_end())?;
+            prev = blocks;
         }
-        let mut out = String::new();
-        // Only when an already-rendered block changed/vanished — a pure append
-        // (diff == prev.len()) needs no reset, keeping the common path append-only.
-        if diff < prev.len() {
-            out.push_str(&json!({ "t": "reset", "from": diff }).to_string());
-            out.push('\n');
-        }
-        for line in &blocks[diff..] {
-            out.push_str(line);
-            out.push('\n');
-        }
-        // Refreshed meta so usage / cost / duration / tool counts keep up.
-        out.push_str(&meta);
-        out.push('\n');
-        append_line(companion, out.trim_end())?;
-        prev = blocks;
     }
 }
 
