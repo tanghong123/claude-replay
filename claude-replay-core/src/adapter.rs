@@ -1,11 +1,10 @@
 //! **The per-agent seam** — one trait, one registry.
 //!
 //! Everything that varies by agent lives behind [`TranscriptAdapter`]: the Layer-1
-//! tokenizer + its `Shaping` hooks, the metrics accumulator, transcript detection,
-//! discovery, and relationship-graph construction. The rest of the engine (the
-//! [`Replayer`](crate::engine::replay::Replayer) fold, `Session`, the parse dispatchers,
-//! the live follower) is agent-agnostic and reaches the per-agent behavior only through
-//! [`adapter`]. Adding an agent is therefore one `impl
+//! tokenizer + its `Shaping` hooks, the metrics accumulator, transcript detection, and
+//! discovery. The rest of the engine (the [`Replayer`](crate::engine::replay::Replayer) fold,
+//! `Session`, the parse dispatchers, the live follower) is agent-agnostic and reaches the
+//! per-agent behavior only through [`adapter`]. Adding an agent is therefore one `impl
 //! TranscriptAdapter` + one row in [`adapter`]/[`adapters`] — no `match agent` scattered
 //! across the codebase. (This mirrors `jdi::agent::adapter` on the supervisor side.)
 
@@ -13,11 +12,8 @@ use crate::discover::Candidate;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::Block;
-use crate::{Agent, SessionGraph};
+use crate::Agent;
 use serde_json::Value;
-use std::collections::HashSet;
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// A per-agent token/cost accumulator, folded one transcript line at a time. Object-safe
@@ -25,17 +21,21 @@ use std::path::{Path, PathBuf};
 /// follower can move between threads (the HTML live server tails on a background thread).
 pub(crate) trait MetricsAccumulator: Send {
     /// Fold one raw transcript line's usage into the running total.
+    ///
+    /// This is also the seam for **agent-specific** metrics the shared [`Metrics`] shouldn't
+    /// grow a typed field for: an accumulator folds such a counter into the accumulating
+    /// [`Metrics::extra`] bag here (each impl has a `bump(key, n)` helper), and `finish` emits
+    /// it. No agent populates `extra` yet — the interface is ready for the first one.
     fn push(&mut self, v: &Value);
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;
 }
 
 /// The single agent-specific interface. A new agent implements this once; the engine calls
-/// it via [`adapter`]. The four per-agent hooks (`sniff`/`scan_join_ids`/`decode_line`/
-/// `metrics_acc` + the `shaping` const) drive both the whole-file `parse_path_timed` and the
-/// live follower through one provided path, so batch and live share a seam. Discovery
-/// (`candidates_scoped`/`resolve_id`) and operation-scoped [`SessionGraph`] construction
-/// round it out.
+/// it via [`adapter`]. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
+/// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
+/// which both the whole-file batch parse and the live follower feed, so batch and live share
+/// one seam. Discovery and the operation-scoped relationship graph round it out.
 pub(crate) trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
@@ -43,55 +43,6 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// Does a transcript whose head parses to `head` look like this agent's format?
     /// (Used by [`crate::discover::detect_agent`]; the sniffs are mutually exclusive.)
     fn sniff(&self, head: &Value) -> bool;
-
-    // ── whole-file parse ──
-    /// Blocks + one timestamp per user turn + folded metrics, in one streaming pass — the
-    /// single whole-file parse seam (the flat source; relationship resolution is applied
-    /// afterward by an operation-scoped [`SessionGraph`]). A provided method: pass-1
-    /// [`scan_join_ids`](Self::scan_join_ids), then pass-2 folds each line through
-    /// [`decode_line`](Self::decode_line) + [`shaping`](Self::shaping) with metrics
-    /// accumulated by [`metrics_acc`](Self::metrics_acc). Identical orchestration for every
-    /// agent — no adapter overrides it; a new agent supplies only the four hooks.
-    fn parse_path_timed(
-        &self,
-        path: &Path,
-        times: &mut Vec<Option<f64>>,
-    ) -> io::Result<(Vec<Block>, Metrics)> {
-        let ids = self.scan_join_ids(path)?; // pass 1
-        let mut cwd = String::new();
-        let mut macc = self.metrics_acc();
-        let reader = io::BufReader::new(std::fs::File::open(path)?); // pass 2 (fresh read)
-        let blocks = crate::engine::replay::parse_stream(
-            reader,
-            ids,
-            self.shaping(),
-            |line, out| self.decode_line(line, &mut cwd, out),
-            |v| macc.push(v),
-            times,
-        )?;
-        Ok((blocks, macc.finish()))
-    }
-    /// Pass-1 id pre-scan: the tool-call ids a later result will be joined onto (so a
-    /// forward-referencing result isn't mis-emitted as an orphan). Per-agent because the id
-    /// lives at a different JSON path in each format; the shared line-streaming skeleton is
-    /// [`scan_ids`](crate::engine::replay::scan_ids). Streams the file — no whole-file buffer.
-    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>>;
-    /// Metrics only, from a reader. A provided method: fold every line through a fresh
-    /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
-    #[cfg(test)]
-    fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
-        let mut acc = self.metrics_acc();
-        let mut line = String::new();
-        while {
-            line.clear();
-            matches!(reader.read_line(&mut line), Ok(n) if n > 0)
-        } {
-            if let Ok(v) = serde_json::from_str::<Value>(line.trim_end()) {
-                acc.push(&v);
-            }
-        }
-        acc.finish()
-    }
 
     // ── incremental-follower primitives ──
     /// This agent's L2 shaping hooks (`&'static`, a per-agent const).
@@ -101,18 +52,28 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// A fresh metrics accumulator for this agent.
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator>;
 
+    /// Extract the `index`-th content-bearing attachment's bytes from one raw transcript
+    /// `line` (the line a [`Deferred`](crate::model::AttachmentContent::Deferred) locator points
+    /// at), for [`Transcript::load_attachment`](crate::Transcript::load_attachment). Default
+    /// `None` — an agent whose transcripts embed no attachments (Codex) never produces a
+    /// `Deferred` locator, so this is never called for it.
+    fn load_attachment(
+        &self,
+        _line: &str,
+        _index: usize,
+    ) -> Option<crate::model::LoadedAttachment> {
+        None
+    }
+
     // ── discovery ──
     /// Sessions for `cwd` (or its nearest ancestor with sessions), as picker candidates.
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate>;
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
-    /// Create an operation-scoped relationship resolver anchored at `anchor`.
-    fn session_graph(&self, anchor: &Path) -> SessionGraph;
-    /// Resolve a child through a short-lived operation graph. Presentation paths
-    /// that traverse more than one node share a graph directly instead.
-    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        self.session_graph(root).subagent_source(root, child_id)
-    }
+    /// An operation-scoped relationship resolver anchored at `root`. All agent-specific
+    /// parent/child discovery stays behind the adapter; shared callers only see a
+    /// [`SessionGraph`](crate::SessionGraph).
+    fn session_graph(&self, root: &Path) -> crate::SessionGraph;
 }
 
 /// The adapter for `agent`.
@@ -156,13 +117,6 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn sniff(&self, head: &Value) -> bool {
         head.get("sessionId").is_some() || head.get("message").is_some()
     }
-    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
-        use std::io::BufRead;
-        let f = io::BufReader::new(std::fs::File::open(path)?);
-        Ok(crate::claude_model::scan_join_ids(
-            f.lines().map_while(Result::ok),
-        ))
-    }
     fn shaping(&self) -> &'static Shaping {
         &crate::claude_model::CLAUDE_SHAPING
     }
@@ -172,17 +126,19 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(crate::claude_metrics::MetricsAcc::default())
     }
+    fn load_attachment(&self, line: &str, index: usize) -> Option<crate::model::LoadedAttachment> {
+        crate::claude_model::nth_loaded_attachment(line, index)
+    }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
         crate::claude_discover::candidates_scoped(cwd)
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::claude_discover::transcript_by_id(id)
     }
-    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        crate::claude_model::subagent_file(root, child_id)
-    }
-    fn session_graph(&self, _anchor: &Path) -> SessionGraph {
-        SessionGraph::from_backend(Box::new(crate::claude_discover::ClaudeSessionGraph))
+    fn session_graph(&self, root: &Path) -> crate::SessionGraph {
+        crate::SessionGraph::from_backend(Box::new(
+            crate::claude_discover::ClaudeSessionGraph::open(root),
+        ))
     }
 }
 
@@ -197,13 +153,6 @@ impl TranscriptAdapter for CodexAdapter {
         ty == Some("session_meta")
             || (head.get("payload").is_some()
                 && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
-    }
-    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
-        use std::io::BufRead;
-        let f = io::BufReader::new(std::fs::File::open(path)?);
-        Ok(crate::codex_model::scan_join_ids(
-            f.lines().map_while(Result::ok),
-        ))
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING
@@ -220,9 +169,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::codex_discover::resolve(Some(id), false).ok()
     }
-    fn session_graph(&self, anchor: &Path) -> SessionGraph {
-        SessionGraph::from_backend(Box::new(crate::codex_discover::CodexSessionGraph::open(
-            anchor,
+    fn session_graph(&self, root: &Path) -> crate::SessionGraph {
+        crate::SessionGraph::from_backend(Box::new(crate::codex_discover::CodexSessionGraph::open(
+            root,
         )))
     }
 }

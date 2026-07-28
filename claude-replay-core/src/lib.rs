@@ -3,7 +3,7 @@
 //! This is the L1/L2 half of the three-layer engine: the per-agent tokenizers (Claude +
 //! Codex → a canonical `engine::message` log), the shared stateful `Replayer` fold (in
 //! `engine::replay`), session assembly ([`Session`] / [`SessionIndex`]), transcript discovery,
-//! incremental follow ([`FollowParser`]), and the live `engine::store::SessionStore`. It
+//! incremental follow ([`FollowParser`]). It
 //! carries **no** TUI / HTML / CLI dependencies — only
 //! `serde_json` and `anyhow` — so it can be reused by any frontend. The `claude-replay`
 //! binary crate depends on it and adds the ratatui viewer, the HTML export, and the clap CLI.
@@ -20,13 +20,15 @@ pub(crate) mod claude_model; // internal: L1 tokenizer, reached via the adapter 
 pub mod codex_discover; // pub: jdi's Codex supervisor uses it
 pub(crate) mod codex_metrics; // internal
 pub(crate) mod codex_model; // internal: reached via the adapter registry
+pub mod diff;
 pub mod discover;
 pub mod engine;
 pub mod follow;
 pub mod metrics;
 pub mod model;
+pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail + resume)
 mod session_graph;
-pub(crate) mod tail; // internal: the follower's byte-offset primitive
+pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
 // The intended surface for a library consumer. [`parse_session`] is THE entry point: it
@@ -34,12 +36,16 @@ pub(crate) mod tail; // internal: the follower's byte-offset primitive
 // tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
 // is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
-pub use engine::index::{AgentEntry, AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
+pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
-    parse_session_with_graph, Session, SessionIndex,
+    BlockAccess, BlockStore, InMemoryStore, Session, SessionAccumulator, SessionIndex,
 };
 pub use follow::FollowParser;
 pub use metrics::Metrics;
-pub use model::{AgentStatus, Attachment, AttachmentContent, Block, Hunk, SubAgent};
-pub use session_graph::SessionGraph;
+pub use model::{
+    AgentId, AgentStatus, Attachment, AttachmentContent, Block, Hunk, LoadedAttachment, SubAgent,
+    SubAgentMeta,
+};
+pub(crate) use session_graph::SessionGraph;
+pub use transcript::Transcript;

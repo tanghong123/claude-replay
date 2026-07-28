@@ -2,7 +2,8 @@
 //! fences. Supports headings, paragraphs, bold/italic, inline & fenced code,
 //! bullet/ordered lists, blockquotes, rules, and pipe tables. HTML is flattened.
 
-use crate::{highlight, theme};
+use crate::highlight;
+use crate::tui::theme;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -151,7 +152,7 @@ fn wrap_cell_spans(cell: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static
         return vec![Vec::new()];
     }
     let line = Line::from(cell.to_vec());
-    let wrapped = crate::wrap::wrap_line(&line, width);
+    let wrapped = crate::tui::wrap::wrap_line(&line, width);
     if wrapped.is_empty() {
         return vec![Vec::new()];
     }

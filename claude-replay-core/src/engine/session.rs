@@ -8,31 +8,217 @@
 //! timestamps still ride `user_times` directly (mirrored onto `index.turns`) until consumers
 //! migrate off the field.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
-use crate::model::{Block, EpochSeconds};
+use crate::model::{AgentId, Block, BlockIndex, EpochSeconds, SubAgentMeta};
 use crate::{Agent, SessionGraph};
+
+/// The per-block storage policy — the seam between the fold and where a block's content lives.
+/// `put` receives a finalized [`Block`] at its flat [`BlockIndex`] and returns the value the
+/// session actually stores (`Self::Bv`). The default [`InMemoryStore`] is identity (holds the
+/// `Block` in RAM ⇒ today's behavior); a later on-disk store returns a locator instead. The
+/// [`SessionIndex`]/metrics stay `Bv`-free, so only `Session::blocks`' element type varies.
+pub trait BlockStore {
+    /// The stored block value — `Block` for the in-memory default. `Clone` so the accumulator can
+    /// hand out the committed `Vec<Bv>` in a snapshot (identity `Block` clone in RAM; a cheap
+    /// `Copy` for an on-disk locator).
+    type Bv: Clone;
+    /// Store `b` (finalized, at flat index `at`) and return its `Bv` representation. Called **once**
+    /// per committed block as the accumulator drains it from the replayer.
+    fn put(&mut self, b: Block, at: BlockIndex) -> Self::Bv;
+    /// Read a stored value back to its [`Block`] — identity (a borrow) for the in-memory default, a
+    /// decode for an on-disk store. Lets the accumulator reconstruct the block stream from the
+    /// committed `Vec<Bv>` without re-folding.
+    fn get<'a>(&'a self, bv: &'a Self::Bv) -> std::borrow::Cow<'a, Block>;
+}
+
+/// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put`/`get` are identity,
+/// so `Session<Block>` keeps exactly today's `Vec<Block>` residency and byte-for-byte output.
+#[derive(Default)]
+pub struct InMemoryStore;
+
+impl BlockStore for InMemoryStore {
+    type Bv = Block;
+    fn put(&mut self, b: Block, _at: BlockIndex) -> Block {
+        b
+    }
+    fn get<'a>(&'a self, bv: &'a Block) -> std::borrow::Cow<'a, Block> {
+        std::borrow::Cow::Borrowed(bv)
+    }
+}
+
+/// Content access gated behind a trait, so most code works on the `Bv`-free [`SessionIndex`] and
+/// never names `BV`. Trivial (a borrow) for the in-memory `Session<Block>`; a disk read for a
+/// future on-disk store.
+pub trait BlockAccess {
+    /// The block at flat index `i` — borrowed when it's already resident.
+    fn block(&self, i: BlockIndex) -> std::borrow::Cow<'_, Block>;
+}
+
+impl BlockAccess for Session<Block> {
+    fn block(&self, i: BlockIndex) -> std::borrow::Cow<'_, Block> {
+        let c = self.committed.len();
+        std::borrow::Cow::Borrowed(if i < c {
+            &self.committed[i]
+        } else {
+            &self.provisional[i - c]
+        })
+    }
+}
 
 /// A fully-parsed session — everything a consumer needs to render or analyze a transcript
 /// without touching the presentation layers. Produced by one streaming parse.
+///
+/// **Opinionated about the durability frontier:** the block stream is split into `committed` (past
+/// the frontier — grouped, immutable, `put` through the [`BlockStore`] policy `BV`) and
+/// `provisional` (the still-open turn — finalized for display but not yet committed, so never
+/// stored; always raw [`Block`]s, O(turn)). The full display stream is `committed ++ provisional`
+/// (see [`blocks`](Session::blocks) for `Session<Block>`). Parameterized over `BV` (default `Block`):
+/// `committed`'s element type varies (RAM `Block`, or an on-disk locator); `provisional`, the index,
+/// metrics, and sub-agent map are `BV`-free.
 #[derive(Debug, Clone)]
-pub struct Session {
+pub struct Session<BV = Block> {
     /// Which agent produced the transcript.
     pub agent: Agent,
     /// The session working directory, when the transcript recorded it.
     pub cwd: Option<PathBuf>,
-    /// The ordered block stream (tool results already joined onto their calls).
-    pub blocks: Vec<Block>,
+    /// Durable blocks past the commit frontier — grouped, immutable, `put` through the store `BV`.
+    pub committed: Vec<BV>,
+    /// The open turn: finalized for display but **not committed** (may still change), so never
+    /// stored — always raw [`Block`]s, O(turn). The display stream is `committed ++ provisional`.
+    pub provisional: Vec<Block>,
     /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
     /// a field until consumers migrate off it.
     pub user_times: Vec<Option<EpochSeconds>>,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
-    /// Derived within-session indices — turns / agents / tools / attachments (§7).
+    /// Derived within-session indices — turns / tools / attachments (§7).
     pub index: SessionIndex,
+    /// The per-session sub-agent entity map, keyed by [`AgentId`]: the single lookup-owner of
+    /// each spawned sub-agent's attributes + pointers to its two lifecycle blocks (`spawn_at` /
+    /// `done_at`) and its on-disk artifacts (`transcript` / `output_file`). Built as a post-pass
+    /// over the finished blocks; `transcript` is filled by the path-aware, adapter-backed
+    /// relationship resolver. Replaces the retired `SessionIndex.agents`.
+    pub sub_agents: BTreeMap<AgentId, SubAgentMeta>,
+}
+
+impl<BV> Session<BV> {
+    /// Total block count (`committed + provisional`) — the length of the display stream.
+    pub fn block_count(&self) -> usize {
+        self.committed.len() + self.provisional.len()
+    }
+}
+
+impl Session<Block> {
+    /// The full display stream `committed ++ provisional` as one owned `Vec<Block>` — the
+    /// compatibility view for consumers that want the flat block list (the in-memory `Block` case).
+    pub fn blocks(&self) -> Vec<Block> {
+        let mut v = Vec::with_capacity(self.block_count());
+        v.extend(self.committed.iter().cloned());
+        v.extend(self.provisional.iter().cloned());
+        v
+    }
+}
+
+/// Build the sub-agent entity map as a **post-pass over the finished top-level blocks** (the
+/// fold is untouched): one [`SubAgentMeta`] per spawn [`Block::SubAgent`] with a non-empty
+/// `agent_id`, with `done_at` back-filled from the matching completion [`Block::AgentDone`].
+/// `transcript` is left `None` here — the path-aware parse fills it (see
+/// [`populate_sub_agent_transcripts`]). An unmatched `AgentDone` (no spawn) is ignored, mirroring
+/// the retired `SessionIndex.agents`.
+/// Build the per-session sub-agent index from a block list: one entry per spawn, keyed by
+/// agent id, with status derived from the two durable events (spawn → running/async; a later
+/// `AgentDone` → terminal). The authoritative status source for renderers (they compute this
+/// from their own blocks) — the step off reading a mutated spawn block.
+pub fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
+    let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
+    for (at, b) in blocks.iter().enumerate() {
+        push_sub_agent(&mut map, at, b);
+    }
+    map
+}
+
+/// Fold ONE block (at its flat [`BlockIndex`] `at`) into a sub-agent map — the incremental unit
+/// [`build_sub_agents`] loops over. A spawn `SubAgent` (non-empty id) inserts an entry; a later
+/// `AgentDone` back-fills `done_at` and supersedes the status with the terminal one (two durable
+/// events). Lets the emit-and-drop / tier-b accumulator maintain the map as durable blocks emit,
+/// so the full `Vec<Block>` need never be resident. Proven equal to `build_sub_agents`.
+pub(crate) fn push_sub_agent(map: &mut BTreeMap<AgentId, SubAgentMeta>, at: BlockIndex, b: &Block) {
+    match b {
+        Block::SubAgent(sa) if !sa.agent_id.is_empty() => {
+            map.insert(
+                sa.agent_id.clone(),
+                SubAgentMeta {
+                    agent_type: sa.agent_type.clone(),
+                    status: sa.status,
+                    subtree_cost: sa.subtree_cost,
+                    transcript: None,
+                    output_file: sa.output_file.clone(),
+                    spawn_at: at,
+                    done_at: None,
+                },
+            );
+        }
+        Block::AgentDone {
+            agent_id, status, ..
+        } => {
+            if let Some(m) = map.get_mut(agent_id) {
+                m.done_at = Some(at);
+                // Two-durable-events status derivation: the finish event supersedes the spawn's
+                // launch status with the terminal one. Same value the fold's spawn-block back-patch
+                // produced (both from the one completion notification), so byte-identical — but it
+                // makes the map the authoritative status source, derived from the events rather than
+                // a mutated block (immutable spawn/finish blocks).
+                m.status = *status;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fill each entry's `transcript` with its child transcript file (`subagents/agent-<id>.jsonl`)
+/// via the agent's discovery hook. A no-op for an agent without sub-agents, or where the file is
+/// absent (leaves `None`). Called by the path-aware parse, which alone knows the transcript path.
+pub(crate) fn populate_sub_agent_transcripts(
+    graph: &SessionGraph,
+    path: &Path,
+    map: &mut BTreeMap<AgentId, SubAgentMeta>,
+) {
+    for (id, m) in map.iter_mut() {
+        m.transcript = graph.subagent_source(path, id);
+    }
+}
+
+/// Normalize relationship identifiers through the operation-scoped resolver, then rebuild
+/// every derived view from the resolved immutable spawn and completion events.
+pub(crate) fn resolve_session_relationships(
+    session: &mut Session,
+    graph: &SessionGraph,
+    path: &Path,
+) {
+    let mut blocks = session.blocks();
+    graph.resolve_relationships(path, &mut blocks);
+    replace_session_blocks(session, blocks, graph, path);
+}
+
+/// Replace the complete display stream without moving the committed/provisional frontier.
+pub(crate) fn replace_session_blocks(
+    session: &mut Session,
+    mut blocks: Vec<Block>,
+    graph: &SessionGraph,
+    path: &Path,
+) {
+    let committed_len = session.committed.len();
+    session.provisional = blocks.split_off(committed_len);
+    session.committed = blocks;
+    let display = session.blocks();
+    session.index = SessionIndex::build(&display, &session.user_times);
+    session.sub_agents = build_sub_agents(&display);
+    populate_sub_agent_transcripts(graph, path, &mut session.sub_agents);
 }
 
 /// **The entry point.** Auto-detect the agent from the transcript head, then parse the file
@@ -42,8 +228,8 @@ pub struct Session {
 ///
 /// ```no_run
 /// let session = claude_replay_core::parse_session(std::path::Path::new("session.jsonl"))?;
-/// println!("{} blocks, {} turns", session.blocks.len(), session.index.turns.len());
-/// for block in &session.blocks {
+/// println!("{} blocks, {} turns", session.block_count(), session.index.turns.len());
+/// for block in session.blocks() {
 ///     // render / analyze `block` — see `claude_replay_core::Block`
 /// }
 /// # Ok::<(), std::io::Error>(())
@@ -51,104 +237,29 @@ pub struct Session {
 ///
 /// For a live tail (fold only appended bytes each poll), use [`FollowParser`](crate::FollowParser).
 pub fn parse_session(path: &Path) -> io::Result<Session> {
-    parse_session_as(crate::discover::detect_agent(path), path)
+    crate::Transcript::detect(path).parse()
 }
 
-/// Like [`parse_session`], but also resolves relationship metadata and loads the
-/// **sub-agent tree** — each `SubAgent`'s child transcript recursively into its `blocks`,
-/// so a consumer can descend into spawned agents or roll up subtree cost. `parse_session`
-/// leaves `SubAgent.blocks` empty (cheaper, flat); use this when you need the whole tree.
-/// Top-level transcript content and metrics are unchanged; resolved relationship ids,
-/// the agent index, and nested child content may differ.
+/// Like [`parse_session`], but also loads the **sub-agent tree** — each `SubAgent`'s child
+/// transcript (recursively) into its `blocks`, so a consumer can descend into spawned agents
+/// or roll up subtree cost. `parse_session` leaves `SubAgent.blocks` empty (cheaper, flat);
+/// use this when you need the whole tree. Only the nested `SubAgent.blocks` change — the
+/// top-level `blocks`/`index`/`metrics` are identical to `parse_session`.
 pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
-    parse_session_enriched_as(crate::discover::detect_agent(path), path)
+    crate::Transcript::detect(path).parse_enriched()
 }
 
 /// [`parse_session_enriched`] for a **known** agent (skips detection).
 pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    let graph = SessionGraph::open(agent, path);
-    let mut session = parse_session_with_graph(agent, path, graph.clone())?;
-    let mut seen = std::collections::HashSet::new();
-    enrich_subagent_tree(agent, path, &graph, &mut session.blocks, &mut seen);
-    session.index = SessionIndex::build(&session.blocks, &session.user_times);
-    Ok(session)
+    crate::Transcript::open(agent, path).parse_enriched()
 }
 
 /// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
+///
+/// A thin wrapper over [`Transcript::parse`](crate::Transcript::parse), which holds the real
+/// streaming-fold logic. Kept as a documented, widely-called free-function entry point.
 pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    parse_session_flat(agent, path)
-}
-
-/// Parse a known-agent transcript and resolve its relationship metadata through an
-/// operation graph shared with the surrounding TUI, HTML traversal, or live follower.
-/// Child transcript content remains lazy; use [`parse_session_enriched_as`] for an eager tree.
-pub fn parse_session_with_graph(
-    agent: Agent,
-    path: &Path,
-    graph: SessionGraph,
-) -> io::Result<Session> {
-    let mut session = parse_session_flat(agent, path)?;
-    graph.resolve_relationships(path, &mut session.blocks);
-    session.index = SessionIndex::build(&session.blocks, &session.user_times);
-    Ok(session)
-}
-
-fn parse_session_flat(agent: Agent, path: &Path) -> io::Result<Session> {
-    // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
-    // `Args` — that keeps clap out of the core. Metrics are folded in the SAME streaming
-    // pass (M10) — one file read, no separate `parse_reader_for`.
-    let (blocks, user_times, metrics) = crate::engine::replay::parse_path_timed_for(agent, path)?;
-    let cwd = crate::discover::session_cwd(path);
-    let index = SessionIndex::build(&blocks, &user_times);
-    Ok(Session {
-        agent,
-        cwd,
-        blocks,
-        user_times,
-        metrics,
-        index,
-    })
-}
-
-fn enrich_subagent_tree(
-    agent: Agent,
-    root: &Path,
-    graph: &SessionGraph,
-    blocks: &mut [Block],
-    seen: &mut std::collections::HashSet<String>,
-) {
-    for block in blocks {
-        let Block::SubAgent(subagent) = block else {
-            continue;
-        };
-        if subagent.agent_id.is_empty() || !seen.insert(subagent.agent_id.clone()) {
-            continue;
-        }
-        let Some(source) = graph.subagent_source(root, &subagent.agent_id) else {
-            continue;
-        };
-        let Ok(mut child) = parse_session_with_graph(agent, &source, graph.clone()) else {
-            continue;
-        };
-        enrich_subagent_tree(agent, root, graph, &mut child.blocks, seen);
-        subagent.subtree_cost = subtree_cost(&child.metrics, &child.blocks);
-        subagent.blocks = child.blocks;
-    }
-}
-
-fn subtree_cost(metrics: &Metrics, blocks: &[Block]) -> Option<crate::model::UsdCost> {
-    let descendants: crate::model::UsdCost = blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::SubAgent(subagent) => subagent.subtree_cost,
-            _ => None,
-        })
-        .sum();
-    match metrics.cost_usd {
-        Some(own) => Some(own + descendants),
-        None if descendants > 0.0 => Some(descendants),
-        None => None,
-    }
+    crate::Transcript::open(agent, path).parse()
 }
 
 #[cfg(test)]
@@ -196,7 +307,7 @@ mod tests {
         );
         // `Block` isn't `PartialEq` (like the other equivalence tests, compare via Debug).
         assert_eq!(
-            format!("{:?}", s.blocks),
+            format!("{:?}", s.blocks()),
             format!("{:?}", blocks),
             "blocks match the existing parse"
         );
@@ -215,133 +326,163 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// `build_sub_agents` keys the map by agent id, its `spawn_at`/`done_at` point at the
+    /// `SubAgent` spawn and the `AgentDone` completion, and a spawn without a completion has
+    /// `done_at == None`. An empty-id spawn and an unmatched `AgentDone` produce no entry.
     #[test]
-    fn enriched_claude_session_loads_child_content_separately_from_resolution() {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "cr-session-enriched-claude-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::remove_dir_all(&base).ok();
-        let parent = base.join("project").join("root.jsonl");
-        let child = base
-            .join("project")
-            .join("root")
-            .join("subagents")
-            .join("agent-child.jsonl");
-        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
-        std::fs::write(
-            &parent,
-            concat!(
-                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"spawn","name":"Agent","input":{"subagent_type":"Explore","description":"inspect","prompt":"go"}}]}}"#,
-                "\n",
-                r#"{"type":"user","toolUseResult":{"agentId":"child","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"spawn","content":"done"}]}}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &child,
-            concat!(
-                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"child turn"}]}}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
-
-        let session = parse_session_enriched_as(Agent::Claude, &parent).unwrap();
-        let Some(Block::SubAgent(agent)) = session
-            .blocks
-            .iter()
-            .find(|block| matches!(block, Block::SubAgent(_)))
-        else {
-            panic!("expected Claude sub-agent: {:#?}", session.blocks);
+    fn sub_agents_map_points_at_lifecycle_blocks() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: Vec::new(),
+                subtree_cost: Some(2.5),
+            })
         };
-        assert!(
-            !agent.blocks.is_empty(),
-            "the explicit eager API must load Claude child content"
-        );
+        let done = |id: &str| Block::AgentDone {
+            agent_id: id.into(),
+            agent_type: "gp".into(),
+            description: format!("do {id}"),
+            status: AgentStatus::Completed,
+            result: None,
+        };
+        let blocks = vec![
+            Block::UserText("hi".into()),        // 0
+            spawn("a1", AgentStatus::Completed), // 1
+            spawn("a2", AgentStatus::Running),   // 2 — never completes
+            spawn("", AgentStatus::Running),     // 3 — empty id: skipped
+            done("a1"),                          // 4 — completes a1
+            done("ghost"),                       // 5 — no spawn: ignored
+        ];
+        let map = build_sub_agents(&blocks);
 
-        std::fs::remove_dir_all(base).unwrap();
+        assert_eq!(map.len(), 2, "a1 + a2 only (empty id + ghost dropped)");
+
+        let a1 = &map["a1"];
+        assert_eq!(a1.spawn_at, 1);
+        assert!(matches!(blocks[a1.spawn_at], Block::SubAgent(_)));
+        assert_eq!(a1.done_at, Some(4));
+        assert!(matches!(
+            blocks[a1.done_at.unwrap()],
+            Block::AgentDone { .. }
+        ));
+        assert_eq!(a1.agent_type, "gp");
+        assert_eq!(a1.subtree_cost, Some(2.5));
+
+        let a2 = &map["a2"];
+        assert_eq!(a2.spawn_at, 2);
+        assert_eq!(a2.done_at, None, "a2 never completed");
+        assert_eq!(a2.status, AgentStatus::Running);
+        assert!(
+            a2.transcript.is_none(),
+            "no path-aware parse → no transcript"
+        );
     }
 
+    // The incremental `push_sub_agent` fold must reproduce the batch `build_sub_agents` exactly —
+    // the property the emit-and-drop / tier-b accumulator relies on to maintain the sub-agent map
+    // without the full blocks resident.
     #[test]
-    fn enriched_codex_session_loads_child_tree_recursively() {
-        static N: AtomicUsize = AtomicUsize::new(0);
+    fn incremental_push_sub_agent_equals_batch_build() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: Some(format!("/t/{id}.out")),
+                blocks: Vec::new(),
+                subtree_cost: Some(2.5),
+            })
+        };
+        let done = |id: &str, status| Block::AgentDone {
+            agent_id: id.into(),
+            agent_type: "gp".into(),
+            description: format!("do {id}"),
+            status,
+            result: Some("r".into()),
+        };
+        let blocks = vec![
+            Block::UserText("hi".into()),
+            spawn("a1", AgentStatus::AsyncLaunched),
+            spawn("a2", AgentStatus::Running),
+            spawn("", AgentStatus::Running),
+            done("a1", AgentStatus::Completed),
+            done("ghost", AgentStatus::Failed),
+            spawn("a3", AgentStatus::Running),
+            done("a3", AgentStatus::Killed),
+        ];
+
+        let batch = build_sub_agents(&blocks);
+
+        let mut incr: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
+        for (at, b) in blocks.iter().enumerate() {
+            push_sub_agent(&mut incr, at, b);
+        }
+
+        assert_eq!(batch, incr, "incremental push must equal batch build");
+    }
+
+    /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk
+    /// transcript (`<session>/subagents/agent-<id>.jsonl`).
+    #[test]
+    fn enriched_parse_populates_transcript() {
         let base = std::env::temp_dir().join(format!(
-            "cr-session-enriched-codex-{}-{}",
+            "cr-session-tx-{}-{}",
             std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        std::fs::remove_dir_all(&base).ok();
-        let day = base.join("sessions").join("2026").join("07").join("28");
-        std::fs::create_dir_all(&day).unwrap();
-        let parent = day.join("rollout-parent.jsonl");
-        let child = day.join("rollout-child.jsonl");
-        let grandchild = day.join("rollout-grandchild.jsonl");
-        std::fs::write(
-            &parent,
-            concat!(
-                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-child","arguments":"{\"task_name\":\"review\",\"message\":\"inspect\"}"}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-child","output":"{\"task_name\":\"/root/review\"}"}}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &child,
-            concat!(
-                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Reviewer"}}}}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child turn"}]}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-grandchild","arguments":"{\"task_name\":\"audit\",\"message\":\"audit\"}"}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-grandchild","output":"{\"task_name\":\"/root/review/audit\"}"}}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &grandchild,
-            concat!(
-                r#"{"type":"session_meta","payload":{"id":"grandchild","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"child","agent_path":"/root/review/audit","agent_nickname":"Auditor"}}}}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"grandchild result"}]}}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
-
-        let session = parse_session_enriched_as(Agent::Codex, &parent).unwrap();
-        let Some(Block::SubAgent(child_agent)) = session
-            .blocks
-            .iter()
-            .find(|block| matches!(block, Block::SubAgent(_)))
-        else {
-            panic!("expected Codex child: {:#?}", session.blocks);
-        };
-        assert_eq!(child_agent.agent_id, "child");
-        let Some(Block::SubAgent(grandchild_agent)) = child_agent
-            .blocks
-            .iter()
-            .find(|block| matches!(block, Block::SubAgent(_)))
-        else {
-            panic!(
-                "expected Codex grandchild in child blocks: {:#?}",
-                child_agent.blocks
-            );
-        };
-        assert_eq!(grandchild_agent.agent_id, "grandchild");
-        assert!(
-            !grandchild_agent.blocks.is_empty(),
-            "the explicit eager API must recursively load Codex descendants"
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let parent = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}"#,
+            "\n",
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#,
+            "\n",
         );
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        let child = concat!(
+            r#"{"type":"user","message":{"content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+            "\n",
+        );
+        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
 
-        std::fs::remove_dir_all(base).unwrap();
+        let s = parse_session_enriched_as(Agent::Claude, &sess).unwrap();
+        let meta = s
+            .sub_agents
+            .get("achild01")
+            .expect("achild01 in sub_agents map");
+        assert_eq!(
+            meta.transcript.as_deref(),
+            Some(sadir.join("agent-achild01.jsonl").as_path()),
+            "child transcript path resolved"
+        );
+        assert!(matches!(s.blocks()[meta.spawn_at], Block::SubAgent(_)));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

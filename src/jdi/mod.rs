@@ -1121,7 +1121,7 @@ fn print_live_progress(agent: Agent, path: &Path) {
     let Ok(session) = crate::engine::parse_session_enriched_as(agent, path) else {
         return;
     };
-    let blocks = session.blocks;
+    let blocks = session.blocks();
     let mut tools: Vec<(String, String)> = Vec::new();
     let mut currently: Option<String> = None;
     collect_tool_activity(&blocks, &mut tools, &mut currently);
@@ -2124,7 +2124,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         html: false,
         width: None,
     };
-    crate::app::run(&args, path)
+    crate::tui::app::run(&args, path)
 }
 
 /// Quote args for readable display (single-line preview; not for execution).

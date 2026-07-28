@@ -6,6 +6,9 @@
 //! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
 // ── semantic aliases for otherwise-ambiguous primitives ────────────────────────────────────
 // Transparent type aliases (not distinct types): they make a field's *meaning* — and its unit
 // — readable at the API surface, without the `.0` ergonomics of a newtype. Use them wherever
@@ -26,9 +29,17 @@ pub type EpochSeconds = f64;
 /// A monetary amount in **US dollars** — e.g. an estimated token cost (dollars, not tokens).
 pub type UsdCost = f64;
 
+/// A byte offset into a transcript file (a position, not a length/count).
+pub type ByteOffset = u64;
+
+/// A spawned sub-agent's id — its [`SubAgent::agent_id`] (== the completion event's
+/// `AgentDone::agent_id`), which also names the child transcript file `agent-<id>.jsonl`. The
+/// key of a [`Session`](crate::Session)'s `sub_agents` map ([`SubAgentMeta`]).
+pub type AgentId = String;
+
 /// One hunk of a Claude Code `structuredPatch` — gives the real file line
 /// numbers so an Edit diff can number its rows correctly.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hunk {
     /// 1-based line number of this hunk's first line on the OLD side.
     pub old_start: usize,
@@ -42,7 +53,7 @@ pub struct Hunk {
 /// `blocks` is an ordered `Vec<Block>` with tool results already joined onto their calls and
 /// activity coalesced into thinking turns; each variant carries the content a presenter needs.
 /// Classify a block with [`block_kind`] / [`fold_key`] and test collapsibility with [`foldable`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
@@ -93,7 +104,7 @@ pub enum Block {
     /// prompt, the result, and one selectable row per spawned agent id — activating a
     /// row descends into that agent's transcript (`blocks`). See `SubAgent`.
     SubAgent(SubAgent),
-    /// A sub-agent **completion** event — a later lifecycle notification for a spawned
+    /// A sub-agent **completion** event — the later `<task-notification>` for a spawned
     /// agent, rendered as its OWN message at the point the notification arrived (the
     /// spawn `SubAgent` block stays "launched" up where it was created). Reads
     /// `⏺ Agent(type: description) done · <result>` in the agent hue. See the two-event
@@ -103,11 +114,11 @@ pub enum Block {
         agent_id: String,
         /// The agent kind, copied from the matching spawn (may be empty if unmatched).
         agent_type: String,
-        /// The agent's description, normalized from the completion event.
+        /// The agent's description, from the notification `<summary>` (`Agent "…" …`).
         description: String,
-        /// The terminal state from the completion event.
+        /// The terminal state from the notification `<status>`.
         status: AgentStatus,
-        /// The agent's returned text, if any.
+        /// The agent's returned text, from the notification `<result>` (if any).
         result: Option<String>,
     },
     /// A slash command (e.g. `/compact`) and its local stdout. Rendered like
@@ -125,13 +136,14 @@ pub enum Block {
 }
 
 /// A file / plan / image the transcript carried. The viewer surfaces it so the reader
-/// can act on it: `content.is_some()` ⇒ the bytes are embedded and **downloadable**;
-/// `content.is_none()` ⇒ only a path is known, so the action is **reveal in the file
+/// can act on it: a [`AttachmentContent::Deferred`] locator ⇒ the bytes are embedded in the
+/// transcript and **downloadable** (loaded on demand via [`crate::Transcript::load_attachment`]);
+/// [`AttachmentContent::None`] ⇒ only a path is known, so the action is **reveal in the file
 /// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
 /// What an [`Attachment`] is — the closed set that drives its header label and how it's
 /// surfaced. `File` is an embedded file body; `Plan` a plan-mode document; `Edited` / `Ref`
 /// mark a file the turn edited or merely referenced; `Image` an embedded image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentKind {
     File,
     Plan,
@@ -157,7 +169,7 @@ impl std::fmt::Display for AttachmentKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     /// What kind of attachment this is (drives the header label); see [`AttachmentKind`].
     pub kind: AttachmentKind,
@@ -166,14 +178,32 @@ pub struct Attachment {
     /// Absolute on-disk path, when known — the reveal-in-file-manager target and the
     /// default filename for a download.
     pub path: Option<String>,
-    /// Embedded content, when the transcript carried it (makes it downloadable).
-    pub content: Option<AttachmentContent>,
+    /// A **locator** for the content — never the bytes. See [`AttachmentContent`].
+    pub content: AttachmentContent,
 }
 
-/// Embedded attachment payload. Decoded lazily — the base64 stays a string until a
-/// download actually happens (or HTML inlines it as a `data:` URI).
-#[derive(Debug, Clone, PartialEq)]
+/// A **locator** for an attachment's content — never the bytes. A resident
+/// [`Session`](crate::Session) holds only this per attachment, so a transcript full of
+/// embedded files/images never balloons into memory. Content is loaded on demand — one
+/// attachment at a time — via [`crate::Transcript::load_attachment`] and dropped after use.
+///
+/// "Downloadable" (the old `content.is_some()`) is `matches!(content, AttachmentContent::Deferred { .. })`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttachmentContent {
+    /// Path-only: no embedded content (reveal `path` in the file manager).
+    None,
+    /// Content is embedded in the transcript on the line at this byte offset; load on demand.
+    /// `index` disambiguates several content-bearing attachments on ONE line (e.g. two images
+    /// pasted into one user message) — the 0-based ordinal among that line's loadable
+    /// attachments, in document order. Almost always `0` (one per line).
+    Deferred { at: ByteOffset, index: usize },
+}
+
+/// Attachment content actually loaded into memory (transiently) by
+/// [`crate::Transcript::load_attachment`]. One of these is resident at a time — built,
+/// embedded/written by the caller, then dropped. Never stored on a [`Block`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadedAttachment {
     /// UTF-8 text (a `file` body or a plan) — written verbatim on download.
     Text(String),
     /// Base64 bytes + MIME type (an image) — decoded on download, or inlined as a
@@ -181,12 +211,13 @@ pub enum AttachmentContent {
     Base64 { mime: String, b64: String },
 }
 
-/// A spawned sub-agent, normalized from the source agent's collaboration protocol.
-/// Format-specific call/result fields and parent/child rollout metadata are resolved
-/// behind [`TranscriptAdapter`](crate::adapter::TranscriptAdapter) and its
-/// operation-scoped [`SessionGraph`](crate::SessionGraph). `blocks` is the child transcript
-/// only when the explicit eager session API loaded it; nested `SubAgent`s are grandchildren.
-#[derive(Debug, Clone, PartialEq)]
+/// A spawned sub-agent (`Agent`/`Task` tool). The spawn's `input` gives
+/// `agent_type`/`description`/`prompt`; its `tool_result`'s `toolUseResult` gives
+/// `agent_id`/`status`/`result`/`output_file`; a later `<task-notification>` keyed by
+/// `tool_use_id` (or `agent_id`) supplies the terminal status. `blocks` is the child
+/// transcript (`subagents/agent-<id>.jsonl`), parsed by the same `parse_main` and
+/// filled in by the path-aware wrapper; nested `SubAgent`s inside it are grandchildren.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubAgent {
     /// The child's agent id (== the completion notification's `task-id`; file stem).
     pub agent_id: String,
@@ -202,16 +233,17 @@ pub struct SubAgent {
     pub result: Option<String>,
     /// For an async spawn, the `tasks/agent-<id>.output` path (result lands here).
     pub output_file: Option<String>,
-    /// The child transcript. Empty on flat and live paths; populated only by the explicit
-    /// eager session API (also empty when no child source can be resolved).
+    /// The child transcript, parsed via `parse_main`. Empty until the path-aware
+    /// wrapper resolves `subagents/agent-<id>.jsonl` (absent for a copied `.jsonl`).
     pub blocks: Vec<Block>,
     /// This agent's own cost plus all descendants', rolled up (US dollars); see [`UsdCost`].
     /// `None` if unknown.
     pub subtree_cost: Option<UsdCost>,
 }
 
-/// A sub-agent's normalized lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A sub-agent's lifecycle state. Launched states come from the spawn's
+/// `toolUseResult.status`; terminal states from its completion `<task-notification>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentStatus {
     /// Spawned synchronously and still shown running (no result yet seen).
     Running,
@@ -242,6 +274,40 @@ impl AgentStatus {
             Self::Running | Self::AsyncLaunched => "finished",
         }
     }
+}
+
+/// The single lookup-owner of a spawned sub-agent's intrinsic attributes + the pointers needed
+/// to locate its lifecycle events (in the parent's `blocks`) and its on-disk artifacts.
+/// Replaces the derived `SessionIndex.agents` copy. The blocks remain the source for what they
+/// render; this is the navigation/lookup index. Keyed by [`AgentId`] in a
+/// [`Session`](crate::Session)'s `sub_agents` map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubAgentMeta {
+    /// The sub-agent's **type label from the spawn** (`SubAgent::agent_type`) — a free-form,
+    /// open-set string (e.g. `general-purpose`, `code-reviewer`), **not** the [`Agent`](crate::Agent)
+    /// that produced the transcript. May be empty.
+    pub agent_type: String,
+    /// Terminal-or-running truth — the liveness signal; see [`AgentStatus`]. Mirrors the spawn
+    /// `SubAgent::status`.
+    pub status: AgentStatus,
+    /// Rolled-up **cost in US dollars** of this sub-agent *and* its descendants, from the spawn
+    /// `SubAgent::subtree_cost`. `None` when the child transcript wasn't loaded or cost couldn't
+    /// be derived.
+    pub subtree_cost: Option<UsdCost>,
+    // ── locate the agent's generated artifacts ──
+    /// The child transcript file (`subagents/agent-<id>.jsonl`), resolved by the path-aware
+    /// parse. `None` on a flat/unresolved parse or when the file is absent.
+    pub transcript: Option<PathBuf>,
+    /// The async result sidecar (`tasks/agent-<id>.output`) for a background spawn, from the
+    /// spawn `SubAgent::output_file`. `None` for a synchronous spawn.
+    pub output_file: Option<String>,
+    // ── pointers to the two events in the parent's blocks vector ──
+    /// Index into the parent [`Session`](crate::Session)'s `blocks` of this agent's spawn
+    /// [`Block::SubAgent`] — the jump target; see [`BlockIndex`].
+    pub spawn_at: BlockIndex,
+    /// Index into the parent's `blocks` of the matching completion [`Block::AgentDone`], if it
+    /// arrived; `None` while the agent is still running / its completion never came.
+    pub done_at: Option<BlockIndex>,
 }
 
 /// The fold-policy category for a block. One key per block; `--fold`/`--unfold`

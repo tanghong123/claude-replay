@@ -3,19 +3,18 @@
 //! (`CLAUDE_SHAPING`, `claude_build_tool`, `apply_result`, turn grouping/coalescing), the
 //! streaming parse entry points, sub-agent transcript loading, and the tool/attachment
 //! decode helpers. The agent-neutral engine it feeds — the `Block` data model, the
-//! `Replayer` / `replay` fold, `parse_stream`, and the shared message-handling helpers —
-//! lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
+//! `Replayer` / `replay` fold, the `SessionAccumulator` driver, and the shared message-handling
+//! helpers — lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::engine::path::relativize;
 use crate::engine::replay::*;
 use crate::engine::time::epoch_secs;
 use crate::model::*;
-#[cfg(test)]
-use crate::Agent;
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::collections::HashSet;
 
 /// Parse Claude's `toolUseResult.status` / `<task-notification>` `<status>` string into the
@@ -384,33 +383,12 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
 /// This in-memory batch entry runs the new two-layer engine — Layer 1 [`tokenize`]
 /// (message log) then Layer 2 [`replay`] (the forward fold) — which is asserted
 /// bit-identical to the (now frozen, test-only) `parse_main` — see
-/// `replay_tokenize_matches_parse_main`. The large-file streaming path (the adapter's
-/// `parse_path_timed` → `parse_file` → `parse_stream`) runs the same engine per line (M9), so
-/// production no longer touches `parse_main`.
+/// `replay_tokenize_matches_parse_main`. The large-file streaming path (the shared
+/// `SessionAccumulator`, fed line-by-line by the batch parse and the live follower) runs the same
+/// engine per line (M9), so production no longer touches `parse_main`.
 #[cfg(test)]
 pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
     replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING)
-}
-
-/// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
-/// the adapter's `parse_path_timed` builds on. Kept as a test-only byte-equivalence reference.
-#[cfg(test)]
-fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
-    use std::io::BufRead;
-    let open = || -> std::io::Result<_> { Ok(std::io::BufReader::new(std::fs::File::open(path)?)) };
-    // Pass 1: collect the set of all tool_use ids (small — ids only), so pass 2 can
-    // tell a genuine orphan tool_result from one whose tool_use appears later.
-    let tool_ids = scan_join_ids(open()?.lines().map_while(|r| r.ok()));
-    // Pass 2: stream through the engine, one line resident.
-    let mut cwd = String::new();
-    parse_stream(
-        open()?,
-        tool_ids,
-        &CLAUDE_SHAPING,
-        |line, out| decode_line(line, &mut cwd, out),
-        |_| {}, // blocks only — this path doesn't need metrics
-        &mut Vec::new(),
-    )
 }
 
 /// The on-disk transcript for `agent_id` under the root session at `session_path`
@@ -424,23 +402,6 @@ pub fn subagent_file(session_path: &std::path::Path, agent_id: &str) -> Option<s
         .join("subagents")
         .join(format!("agent-{agent_id}.jsonl"));
     f.is_file().then_some(f)
-}
-
-/// Pass 1: the set of every `tool_use` id in the transcript.
-pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    crate::engine::replay::scan_ids(lines, |v, ids| {
-        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            if let Some(arr) = v.pointer("/message/content").and_then(|c| c.as_array()) {
-                for blk in arr {
-                    if blk.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                        if let Some(id) = blk.get("id").and_then(|s| s.as_str()) {
-                            ids.insert(id.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    })
 }
 
 /// Fill a `tool_use` block's result fields (output / diff line numbers / read
@@ -755,47 +716,41 @@ pub(crate) const CLAUDE_SHAPING: Shaping = Shaping {
     finish_turns: claude_finish,
 };
 
-/// Pass 2: build blocks in order, streaming one line at a time. Nothing is dropped
+/// Build blocks in order, streaming one line at a time. Nothing is dropped
 /// or truncated. A `tool_use` is emitted immediately with an empty result; its
 /// `tool_result` **back-patches** the already-emitted block in place (via
-/// `tool_slot`: id → block index). Transcripts are **not** strictly ordered — a
-/// result can precede its tool_use (compaction / sidechain reordering) — so a
-/// result whose tool_use we haven't emitted yet is held in `pending` and applied
-/// when that tool_use arrives (its id is in `tool_ids`); only a result whose id is
-/// in **no** tool_use is a genuine orphan, emitted inline. This reproduces the old
-/// two-pass semantics exactly while keeping at most one line's `Value` live.
-/// `_args` is unused (fold flags are resolved in `view`).
+/// `tool_slot`: id → block index). A result whose tool_use hasn't been seen yet is a
+/// genuine orphan, emitted inline (forward-references — a result physically before its
+/// own tool_use — do not occur in real transcripts: 0/209 scanned). Keeps at most one
+/// line's `Value` live. `_args` is unused (fold flags are resolved in `view`).
 /// `user_times` is filled with one entry per emitted **user turn** (`UserText` /
 /// `Command`), in order: the epoch-seconds of the event that produced it (`None`
 /// when unparsable). Turn grouping never absorbs or reorders user blocks, so the
 /// Nth user turn of the returned list is `user_times[N]`. Only the HTML export
 /// consumes it; the TUI passes a throwaway vec.
 ///
-/// **Frozen golden reference** (M9): production parses through the streaming engine
-/// (`parse_stream` → `decode_line` + `Replayer`); this pre-engine parser is retained only
+/// **Frozen golden reference** (M9): production parses through the streaming engine (the shared
+/// `SessionAccumulator` → `decode_line` + `Replayer`); this pre-engine parser is retained only
 /// to pin `replay(tokenize(x))` bit-identical in `replay_tokenize_matches_parse_main`.
 #[cfg(test)]
 pub(crate) fn parse_main<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    tool_ids: &HashSet<String>,
-    user_times: &mut Vec<Option<f64>>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     // Timestamp for blocks emitted by the event being processed, plus how far we've
     // stamped. Flushed at the next iteration so an early `continue` can't lose it.
-    let mut pending_ts: Option<f64> = None;
+    let mut pending_ts: Option<EpochSeconds> = None;
     let mut stamped = 0usize;
     // tool_use id -> index of its ToolUse block in `out`, for result back-patching.
-    let mut tool_slot: HashMap<String, usize> = HashMap::new();
-    // Results seen before their tool_use (id is in `tool_ids`), awaiting it.
-    let mut pending: HashMap<String, (String, Value)> = HashMap::new();
+    let mut tool_slot: HashMap<String, BlockIndex> = HashMap::new();
     // The session's cwd (from the transcript) — tool targets are shown relative to
     // it. CC records it on every event, so it's set from the first line, before any
     // tool_use; fall back to "" (absolute paths) if a tool_use somehow precedes it.
     let mut cwd = String::new();
     // Timestamp of the last user/tool-result event — the moment the model's next
     // generation was requested — so a thinking block's duration is `its ts − this`.
-    let mut trigger_ts: Option<f64> = None;
+    let mut trigger_ts: Option<EpochSeconds> = None;
     // Messages the human submits mid-turn are recorded as `queue-operation` events
     // (not `user` events). Their lifecycle: `enqueue` → `remove`/`dequeue` (a FIFO
     // front pop) when the agent picks the prompt up → a `queued_command` **attachment**
@@ -815,16 +770,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // in `suppress` and are filtered out after the loop (safe — `tool_slot` is only
     // used during the loop).
     let mut content_seq = 0usize;
-    let mut suppress: Vec<usize> = Vec::new();
+    let mut suppress: Vec<BlockIndex> = Vec::new();
     // Index of the most recent `Skill` tool_use block. The harness delivers a loaded
     // skill's instruction body as a following injected user message ("Base directory
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
-    let mut last_skill: Option<usize> = None;
-    // Agent-completion `<task-notification>` strings, collected as seen and applied to
-    // their `SubAgent` block after the loop (by `tool-use-id`, else `task-id`==agentId),
-    // before any block removal shifts `tool_slot`'s indices.
-    let mut completions: Vec<String> = Vec::new();
+    let mut last_skill: Option<BlockIndex> = None;
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -933,10 +884,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                             if !id.is_empty() {
                                 tool_slot.insert(id.to_string(), idx);
-                                // A result that arrived before this tool_use? Apply it now.
-                                if let Some((txt, tur)) = pending.remove(id) {
-                                    apply_result(&mut out[idx], &txt, &tur);
-                                }
                             }
                         }
                         _ => {}
@@ -998,11 +945,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 if let Some(&idx) = tool_slot.get(tid) {
                                     // Its tool_use is already emitted — back-patch in place.
                                     apply_result(&mut out[idx], &txt, &tur);
-                                } else if tool_ids.contains(tid) {
-                                    // Its tool_use appears later — hold until then (last wins).
-                                    pending.insert(tid.to_string(), (txt, tur.clone()));
                                 } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
-                                    // No tool_use anywhere — a genuine orphan, shown inline.
+                                    // No tool_use seen yet — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
                                 }
                                 // A tool result may also carry image(s) (e.g. reading a
@@ -1032,8 +976,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     Some("enqueue") => {
                         if let Some(c) = content {
                             if is_agent_notification(c) {
-                                completions.push(c.to_string());
-                                // Also render the completion as its OWN event at this
+                                // Render the completion as its OWN event at this
                                 // position (the spawn stays "launched" up where it was
                                 // created). Type is copied from the matching spawn in a
                                 // post-enrich pass (`stamp_agent_done_types`).
@@ -1130,34 +1073,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
         }
     }
     stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-    // Apply agent-completion notifications to their `SubAgent` block — terminal status
-    // + inline result. MUST run before the `suppress` filter below removes blocks (which
-    // would invalidate `tool_slot`'s indices). Join by `tool-use-id`, else `task-id`.
-    if !completions.is_empty() {
-        let mut agent_slot: HashMap<String, usize> = HashMap::new();
-        for (i, b) in out.iter().enumerate() {
-            if let Block::SubAgent(sa) = b {
-                if !sa.agent_id.is_empty() {
-                    agent_slot.insert(sa.agent_id.clone(), i);
-                }
-            }
-        }
-        for note in &completions {
-            let idx = tag_inner(note, "tool-use-id")
-                .and_then(|t| tool_slot.get(t).copied())
-                .or_else(|| tag_inner(note, "task-id").and_then(|t| agent_slot.get(t).copied()));
-            // Back-patch only the spawn's status (drives active-tracking: a terminal
-            // status drops the agent from `a active N`). The result text renders on the
-            // separate `AgentDone` completion event, not folded back onto the spawn.
-            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = tag_inner(note, "status").and_then(status_from_str) {
-                    sa.status = st;
-                }
-            }
-        }
-        // Give each `AgentDone` event its spawn's `agent_type` (the notification carries
-        // only status/summary/result), resolving its id from the spawn's `tool_use_id`
-        // when the notification keyed by `tool-use-id` rather than `task-id`.
+    // Give each `AgentDone` event its spawn's `agent_type`/`agent_id` (the notification
+    // carries only status/summary/result), resolving its id from the spawn's `tool_use_id`
+    // when the notification keyed by `tool-use-id` rather than `task-id`. NO status
+    // back-patch: the spawn keeps its launch status; the `sub_agents` index derives the
+    // terminal status from the AgentDone event (two durable events). MUST run before the
+    // `suppress` filter below removes blocks. A no-op when there are no `AgentDone` blocks.
+    {
         let mut by_id: HashMap<String, (String, String)> = HashMap::new(); // id/toolid → (agent_id, type)
         for b in out.iter() {
             if let Block::SubAgent(sa) = b {
@@ -1187,7 +1109,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // Drop the `⧗ queued:` markers of prompts picked up immediately (no agent work
     // between submit and pickup) — their `❯` turn alone conveys them. Prompts still
     // queued at the end keep their marker (a live `-f` session's in-flight input).
-    // Safe here: `tool_slot`/`pending` are finished, and this runs before turn grouping
+    // Safe here: `tool_slot` is finished, and this runs before turn grouping
     // so surviving markers keep their positions.
     let _ = queue; // consumed via `suppress` during the loop; nothing to flush
     if !suppress.is_empty() {
@@ -1205,18 +1127,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
 /// Build an [`Attachment`] from a `type:"attachment"` event's inner `attachment`
 /// object, for the types that carry a file/plan worth surfacing. Returns `None` for
 /// harness bookkeeping (listings, reminders, deltas, plan-mode toggles) and for
-/// `queued_command` (rendered as a turn elsewhere). `content: Some` ⇒ downloadable
-/// (embedded bytes); `content: None` ⇒ path-only (reveal in file manager).
+/// `queued_command` (rendered as a turn elsewhere). Content-bearing types (`file`/`plan`) get
+/// a [`Deferred`](AttachmentContent::Deferred) locator — the **bytes are never built here**;
+/// [`load_attachment_from_event`] re-extracts them on demand. Path-only types
+/// (`edited_text_file`/`compact_file_reference`) get [`AttachmentContent::None`] (reveal). The
+/// `at`/`index` in `Deferred` are placeholders (0); `SessionAccumulator::advance_at` stamps the
+/// real byte offset one level up (where it's known).
 fn attachment_from_event(a: &Value) -> Option<Attachment> {
     fn basename(p: &str) -> String {
         p.rsplit('/').next().unwrap_or(p).to_string()
     }
     let s = |k: &str| a.get(k).and_then(|x| x.as_str());
     match a.get("type").and_then(|t| t.as_str())? {
-        // Full attached-file bytes, embedded → downloadable.
+        // Full attached-file bytes, embedded → downloadable (loaded on demand).
         "file" => {
             let f = a.get("content")?.get("file")?;
-            let content = f.get("content").and_then(|c| c.as_str())?;
+            f.get("content").and_then(|c| c.as_str())?; // require content, but never build it
             let path = f
                 .get("filePath")
                 .and_then(|p| p.as_str())
@@ -1228,18 +1154,18 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::File,
                 name,
                 path: path.map(str::to_string),
-                content: Some(AttachmentContent::Text(content.to_string())),
+                content: AttachmentContent::Deferred { at: 0, index: 0 },
             })
         }
         // Full plan markdown, embedded and not shown inline anywhere → downloadable.
         "plan_file_reference" => {
-            let content = s("planContent")?;
+            s("planContent")?; // require plan content, but never build it
             let path = s("planFilePath");
             Some(Attachment {
                 kind: AttachmentKind::Plan,
                 name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
                 path: path.map(str::to_string),
-                content: Some(AttachmentContent::Text(content.to_string())),
+                content: AttachmentContent::Deferred { at: 0, index: 0 },
             })
         }
         // An in-editor file — its inline `snippet` is truncated, so reveal the real file.
@@ -1249,7 +1175,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::Edited,
                 name: basename(path),
                 path: Some(path.to_string()),
-                content: None,
+                content: AttachmentContent::None,
             })
         }
         // A bare pointer to a file that was in context → reveal.
@@ -1262,9 +1188,25 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::Ref,
                 name,
                 path: Some(path.to_string()),
-                content: None,
+                content: AttachmentContent::None,
             })
         }
+        _ => None,
+    }
+}
+
+/// The load-time twin of [`attachment_from_event`]: re-extract the embedded **bytes** for a
+/// content-bearing `attachment` event (`file` / `plan`), as a [`LoadedAttachment`]. Returns
+/// `None` for path-only / bookkeeping types (they carry no bytes). Kept structurally parallel
+/// to [`attachment_from_event`] so the two never diverge on which types are loadable.
+fn load_attachment_from_event(a: &Value) -> Option<LoadedAttachment> {
+    let s = |k: &str| a.get(k).and_then(|x| x.as_str());
+    match a.get("type").and_then(|t| t.as_str())? {
+        "file" => {
+            let content = a.get("content")?.get("file")?.get("content")?.as_str()?;
+            Some(LoadedAttachment::Text(content.to_string()))
+        }
+        "plan_file_reference" => Some(LoadedAttachment::Text(s("planContent")?.to_string())),
         _ => None,
     }
 }
@@ -1274,19 +1216,8 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
 /// `attachment` events — they ride inside message/tool-result content — so this is a
 /// separate path from [`attachment_from_event`]. `None` for non-image / non-base64.
 fn image_attachment(blk: &Value) -> Option<Attachment> {
-    if blk.get("type").and_then(|t| t.as_str()) != Some("image") {
-        return None;
-    }
-    let src = blk.get("source")?;
-    if src.get("type").and_then(|t| t.as_str()) != Some("base64") {
-        return None;
-    }
-    let b64 = src.get("data").and_then(|d| d.as_str())?.to_string();
-    let mime = src
-        .get("media_type")
-        .and_then(|m| m.as_str())
-        .unwrap_or("image/png")
-        .to_string();
+    let src = image_source(blk)?;
+    let mime = image_mime(src);
     let ext = mime
         .rsplit('/')
         .next()
@@ -1296,8 +1227,101 @@ fn image_attachment(blk: &Value) -> Option<Attachment> {
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
-        content: Some(AttachmentContent::Base64 { mime, b64 }),
+        // The base64 bytes are NEVER built here — `load_image_attachment` re-extracts them on
+        // demand. `at`/`index` are placeholders; `advance_at` stamps the real byte offset.
+        content: AttachmentContent::Deferred { at: 0, index: 0 },
     })
+}
+
+/// The `{type:"base64",…}` source of an `image` content block, or `None` if `blk` isn't a
+/// base64 image. The shared shape check for both the metadata ([`image_attachment`]) and the
+/// bytes ([`load_image_attachment`]) paths.
+fn image_source(blk: &Value) -> Option<&Value> {
+    if blk.get("type").and_then(|t| t.as_str()) != Some("image") {
+        return None;
+    }
+    let src = blk.get("source")?;
+    (src.get("type").and_then(|t| t.as_str()) == Some("base64")).then_some(src)
+}
+
+fn image_mime(src: &Value) -> String {
+    src.get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("image/png")
+        .to_string()
+}
+
+/// The load-time twin of [`image_attachment`]: re-extract the embedded base64 **bytes** for an
+/// `image` content block as a [`LoadedAttachment`]. `None` for non-image / non-base64 blocks.
+fn load_image_attachment(blk: &Value) -> Option<LoadedAttachment> {
+    let src = image_source(blk)?;
+    let b64 = src.get("data").and_then(|d| d.as_str())?.to_string();
+    Some(LoadedAttachment::Base64 {
+        mime: image_mime(src),
+        b64,
+    })
+}
+
+/// Load the `index`-th content-bearing attachment embedded on ONE raw transcript `line` — the
+/// on-demand byte-fetch backing [`crate::Transcript::load_attachment`]. Walks the line's JSON
+/// in the SAME order [`decode_line`] emits its attachments (user-message images, then each
+/// tool-result's images; or the sole `attachment`-event file/plan), so `index` lines up with
+/// the ordinal `advance_at` stamped into the `Deferred` locator. Only one [`LoadedAttachment`]
+/// is alive at any instant (each non-matching candidate is built then dropped as we count),
+/// keeping the load O(1) in memory.
+pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAttachment> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    // Count content-bearing attachments in document order; return the `index`-th one. Building
+    // each candidate transiently (then dropping non-matches) keeps a single one resident.
+    let mut seen = 0usize;
+    let mut take = |la: Option<LoadedAttachment>| -> Option<Option<LoadedAttachment>> {
+        // Outer Some ⇒ "stop, this is our answer"; inner Option carries the (matched) content.
+        match la {
+            Some(la) => {
+                if seen == index {
+                    Some(Some(la))
+                } else {
+                    seen += 1;
+                    None // drop this candidate; keep counting
+                }
+            }
+            None => None,
+        }
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("user") => {
+            let content = v.pointer("/message/content").and_then(|c| c.as_array())?;
+            for blk in content {
+                match blk.get("type").and_then(|t| t.as_str()) {
+                    Some("image") => {
+                        if let Some(hit) = take(load_image_attachment(blk)) {
+                            return hit;
+                        }
+                    }
+                    Some("tool_result") => {
+                        if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
+                            for item in items {
+                                if let Some(hit) = take(load_image_attachment(item)) {
+                                    return hit;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        Some("attachment") => v
+            .get("attachment")
+            .and_then(load_attachment_from_event)
+            .filter(|_| index == 0),
+        _ => None,
+    }
 }
 
 fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
@@ -1536,9 +1560,10 @@ mod tests {
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:
-    /// `file`/`plan` carry embedded text (downloadable → `content: Some`), while
+    /// `file`/`plan` carry embedded text (downloadable → a `Deferred` locator), while
     /// `edited_text_file`/`compact_file_reference` are path-only (reveal → `content:
-    /// None`). Bookkeeping attachments (e.g. `skill_listing`) stay dropped.
+    /// None`). Bookkeeping attachments (e.g. `skill_listing`) stay dropped. The bytes are
+    /// never resident — only a locator — so we re-load them via `nth_loaded_attachment`.
     #[test]
     fn attachment_events_surface_with_download_vs_reveal() {
         let jsonl = r##"
@@ -1555,7 +1580,8 @@ mod tests {
                 Block::Attachment(a) => Some((
                     a.kind.as_str(),
                     a.name.as_str(),
-                    a.content.is_some(),
+                    // Downloadable ⇒ a `Deferred` locator; path-only ⇒ `None`.
+                    matches!(a.content, AttachmentContent::Deferred { .. }),
                     a.path.as_deref(),
                 )),
                 _ => None,
@@ -1571,15 +1597,16 @@ mod tests {
             ],
             "{blocks:?}"
         );
-        // The embedded `file` content is the real bytes, ready to download.
-        let file_text = blocks.iter().find_map(|b| match b {
-            Block::Attachment(a) if a.kind == AttachmentKind::File => a.content.as_ref(),
-            _ => None,
-        });
-        assert!(matches!(
-            file_text,
-            Some(AttachmentContent::Text(t)) if t == "# Backlog\nitem"
-        ));
+        // No bytes are held resident — the block carries only a locator. Re-load the `file`
+        // body on demand from its own transcript line (index 0).
+        let file_line = jsonl
+            .lines()
+            .find(|l| l.contains("\"type\":\"file\""))
+            .unwrap();
+        assert_eq!(
+            nth_loaded_attachment(file_line, 0),
+            Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
     }
 
     /// Base64 images surface as downloadable `Block::Attachment`s from both paths: a
@@ -1594,22 +1621,38 @@ mod tests {
 {"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}}]}]}}
 "##;
         let blocks = parse(jsonl);
-        let imgs: Vec<(&str, &str)> = blocks
+        // The blocks carry only locators (name + a `Deferred` marker) — no base64 resident.
+        let imgs: Vec<(&str, bool)> = blocks
             .iter()
             .filter_map(|b| match b {
-                Block::Attachment(a) if a.kind == AttachmentKind::Image => match &a.content {
-                    Some(AttachmentContent::Base64 { mime, .. }) => {
-                        Some((a.name.as_str(), mime.as_str()))
-                    }
-                    _ => None,
-                },
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => Some((
+                    a.name.as_str(),
+                    matches!(a.content, AttachmentContent::Deferred { .. }),
+                )),
                 _ => None,
             })
             .collect();
         assert_eq!(
             imgs,
-            vec![("image.png", "image/png"), ("image.jpeg", "image/jpeg")],
+            vec![("image.png", true), ("image.jpeg", true)],
             "{blocks:?}"
+        );
+        // The mime/bytes are re-loaded on demand from each image's own line (index 0).
+        let prompt_line = jsonl.lines().find(|l| l.contains("look at this")).unwrap();
+        assert_eq!(
+            nth_loaded_attachment(prompt_line, 0),
+            Some(LoadedAttachment::Base64 {
+                mime: "image/png".into(),
+                b64: "Zm9v".into()
+            })
+        );
+        let result_line = jsonl.lines().find(|l| l.contains("tool_result")).unwrap();
+        assert_eq!(
+            nth_loaded_attachment(result_line, 0),
+            Some(LoadedAttachment::Base64 {
+                mime: "image/jpeg".into(),
+                b64: "YmFy".into()
+            })
         );
     }
 
@@ -1742,12 +1785,20 @@ mod tests {
         assert_eq!(sa.prompt, "Review render.rs");
         assert_eq!(
             sa.status,
-            AgentStatus::Completed,
-            "spawn status back-patched for active-tracking"
+            AgentStatus::AsyncLaunched,
+            "spawn keeps its LAUNCH status — no back-patch; the spawn/finish blocks are immutable"
         );
         assert_eq!(
             sa.result, None,
             "result renders on AgentDone, not the spawn"
+        );
+        // The terminal status is DERIVED by the sub_agents index from the AgentDone (finish)
+        // event superseding the spawn — not by mutating the spawn block (two durable events).
+        let map = crate::engine::build_sub_agents(&blocks);
+        assert_eq!(
+            map["aXYZ1234"].status,
+            AgentStatus::Completed,
+            "index derives terminal status from the finish event"
         );
         // The completion is a distinct AgentDone event carrying status + result, with the
         // agent_type resolved back from the spawn.
@@ -1772,9 +1823,9 @@ mod tests {
         assert_eq!(fold_key(&blocks[1]), "agent");
     }
 
-    /// `parse_session_enriched` loads each `SubAgent`'s child transcript from the flat
-    /// `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is **node-scoped**
-    /// (the child's tools, not the parent's), and `subtree_cost` rolls up.
+    /// `enrich_tree` (via `parse_session_enriched`) loads each `SubAgent`'s child transcript
+    /// from the flat `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is
+    /// **node-scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
     #[test]
     fn enrich_loads_child_scoped_and_rolls_up_cost() {
         use std::io::Write;
@@ -1809,9 +1860,10 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let blocks = crate::engine::parse_session_enriched_as(Agent::Claude, &sess)
+        let blocks = crate::Transcript::open(crate::Agent::Claude, &sess)
+            .parse_enriched()
             .unwrap()
-            .blocks;
+            .blocks();
         let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
         else {
             panic!("no SubAgent: {blocks:?}")
@@ -1967,27 +2019,29 @@ mod tests {
         );
     }
 
-    /// Transcripts are NOT strictly ordered: a `tool_result` can appear *before*
-    /// its `tool_use` (compaction / sidechain reordering — seen in real 78/298 MB
-    /// sessions). The streaming parse must still join them (via the tool_use id
-    /// pre-scan + a pending buffer), or the Edit loses its structuredPatch line
-    /// numbers and a Read loses its content.
+    /// A synthetic reversed pair — a `tool_result` physically *before* its own `tool_use` —
+    /// does NOT join under the single-pass fold: forward-references do not occur in real
+    /// transcripts (0/209 scanned), so the not-yet-seen result renders as an inline orphan and
+    /// the later `tool_use` is emitted result-less.
     #[test]
-    fn result_before_tool_use_still_joins() {
+    fn result_before_tool_use_renders_as_orphan() {
         let jsonl = r#"
-{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /x.rs has been updated successfully."}]}}
+{"type":"user","toolUseResult":{"filePath":"/x.rs","structuredPatch":[{"oldStart":10,"newStart":88,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"reversed result text"}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 "#;
         let blocks = parse(jsonl);
-        // The out-of-order result joined its Edit — no stray orphan block.
-        assert_eq!(kinds(&blocks), vec!["edit"], "{blocks:?}");
-        let Block::ToolUse { patch, .. } = &blocks[0] else {
+        // The reversed result renders inline as an orphan; the Edit follows, result-less.
+        assert_eq!(kinds(&blocks), vec!["tool_result", "edit"], "{blocks:?}");
+        let Block::ToolResult(t) = &blocks[0] else {
+            panic!("expected orphan ToolResult");
+        };
+        assert_eq!(t, "reversed result text");
+        let Block::ToolUse { patch, .. } = &blocks[1] else {
             panic!("expected Edit ToolUse");
         };
-        assert_eq!(
-            patch.as_ref().expect("patch joined from earlier result")[0].new_start,
-            88,
-            "structuredPatch line number lost — result-before-use not joined"
+        assert!(
+            patch.is_none(),
+            "reversed pair must not join — the Edit has no patch"
         );
     }
 
@@ -2007,7 +2061,7 @@ mod tests {
         assert_eq!(t, "orphan output");
     }
 
-    /// `parse_file` (streaming file read, two passes) must produce exactly what
+    /// `parse_file` (streaming single-pass file read) must produce exactly what
     /// `parse(&str)` produces for the same content.
     #[test]
     fn parse_file_matches_parse_str() {
@@ -2024,7 +2078,10 @@ mod tests {
         let via_str = parse(jsonl);
         let file = std::env::temp_dir().join("claude-replay-parse-path-test.jsonl");
         std::fs::write(&file, jsonl).unwrap();
-        let via_path = parse_file(&file).unwrap(); // flat streaming parse (no sub-agents here)
+        let via_path = crate::Transcript::open(crate::Agent::Claude, &file)
+            .parse()
+            .unwrap()
+            .blocks();
         std::fs::remove_file(&file).ok();
         assert_eq!(format!("{via_str:?}"), format!("{via_path:?}"));
     }
@@ -2036,9 +2093,8 @@ mod tests {
     #[test]
     fn replay_tokenize_matches_parse_main() {
         fn assert_equiv(jsonl: &str) {
-            let tool_ids = scan_join_ids(jsonl.lines());
             let mut ut_main = Vec::new();
-            let via_main = parse_main(jsonl.lines(), &tool_ids, &mut ut_main);
+            let via_main = parse_main(jsonl.lines(), &mut ut_main);
             let mut ut_engine = Vec::new();
             let via_engine = replay(&tokenize(jsonl.lines()), &mut ut_engine, &CLAUDE_SHAPING);
             assert_eq!(
@@ -2174,26 +2230,17 @@ mod tests {
     /// M8 keystone: folding messages in two pieces (`apply(a); apply(b)`) equals one
     /// `apply(all)` for every split point — same blocks, same `user_times`. This is the
     /// property that makes the streaming (M9) and incremental (M11) paths safe. Covers the
-    /// state that must survive a split: the tool back-patch (`tool_slot`/`pending`), the
+    /// state that must survive a split: the tool back-patch (`tool_slot`), the
     /// queue lifecycle, the thinking clock (`trigger_ts`), and stamping (`pending_ts`).
     #[test]
     fn replayer_split_apply_is_identical() {
-        fn ids(msgs: &[Message]) -> std::collections::HashSet<String> {
-            msgs.iter()
-                .filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                })
-                .collect()
-        }
         fn assert_split(jsonl: &str) {
             let msgs = tokenize(jsonl.lines());
-            let ti = ids(&msgs);
-            let mut whole = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+            let mut whole = Replayer::new(&CLAUDE_SHAPING);
             whole.apply(&msgs);
             let whole = whole.into_blocks();
             for k in 0..=msgs.len() {
-                let mut r = Replayer::new(&CLAUDE_SHAPING, ti.clone());
+                let mut r = Replayer::new(&CLAUDE_SHAPING);
                 r.apply(&msgs[..k]);
                 r.apply(&msgs[k..]);
                 let split = r.into_blocks();
@@ -2243,23 +2290,19 @@ mod tests {
     }
 
     /// M11 keystone: driving the `Replayer` **one line at a time** (a live tail: `decode` the
-    /// line, pre-scan its ids via `extend_tool_ids`, `apply`, `snapshot`) yields byte-identical
-    /// blocks + user_times to a full batch `replay(tokenize(whole))` — at EVERY prefix, not
-    /// just the end. This is the incremental-fold guarantee the live follower (M11 routing)
-    /// stands on; a rewritten tail is handled by the follower rebuilding from scratch (which
-    /// is trivially the full replay of the new content).
+    /// line, `apply`, `snapshot`) yields byte-identical blocks + user_times to a full batch
+    /// `replay(tokenize(whole))` — at EVERY prefix, not just the end. This is the
+    /// incremental-fold guarantee the live follower (M11 routing) stands on; a rewritten tail
+    /// is handled by the follower rebuilding from scratch (which is trivially the full replay
+    /// of the new content).
     #[test]
     fn incremental_line_by_line_matches_full_replay() {
         fn assert_follow(lines: &[&str]) {
             let mut cwd = String::new();
-            let mut r = Replayer::new(&CLAUDE_SHAPING, std::collections::HashSet::new());
+            let mut r = Replayer::new(&CLAUDE_SHAPING);
             for (i, line) in lines.iter().enumerate() {
                 let mut delta = Vec::new();
                 decode_line(line, &mut cwd, &mut delta);
-                r.extend_tool_ids(delta.iter().filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                }));
                 r.apply(&delta);
                 // Snapshot after each line must match a full replay of the lines so far.
                 let (inc_blocks, inc_ut) = r.snapshot();

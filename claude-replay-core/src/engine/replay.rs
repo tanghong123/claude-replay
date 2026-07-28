@@ -1,7 +1,8 @@
 //! **Layer 2 — the shared fold.** The stateful [`Replayer`] folds a stream of canonical
 //! [`Message`]s (produced by any agent's Layer-1 decoder)
-//! into render [`Block`]s, via the per-agent [`Shaping`] seam and the
-//! streaming [`parse_stream`] driver. Agent-agnostic: everything that differs by agent enters
+//! into render [`Block`]s, via the per-agent [`Shaping`] seam. It is driven incrementally by
+//! [`SessionAccumulator`](crate::engine::builder::SessionAccumulator) (batch and live alike).
+//! Agent-agnostic: everything that differs by agent enters
 //! through `Shaping` (a `&'static` const per adapter) plus the `decode` closure. The data
 //! model it produces and block classification live in [`crate::model`]; this module is the
 //! machinery that builds it. Byte-identical to the retired `parse_main`/`parse_lines` oracles
@@ -9,80 +10,40 @@
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::model::*;
+#[cfg(test)]
 use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// **Pass-1 id pre-scan.** Collect the tool-call ids that a later result WILL be joined onto,
-/// so a result whose `tool_use` appears further down the stream is held pending rather than
-/// mis-emitted as an orphan (the streaming fold matches a whole-file batch this way). The
-/// read/trim/parse/skip-non-JSON skeleton is shared; each agent supplies `extract`, which pulls
-/// this line's join ids into the set (Claude reads `assistant`→`tool_use.id`; Codex reads
-/// `response_item`→`call_id`).
-pub(crate) fn scan_ids<S: AsRef<str>>(
-    lines: impl Iterator<Item = S>,
-    extract: impl Fn(&Value, &mut HashSet<String>),
-) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(line.as_ref().trim()) {
-            extract(&v, &mut ids);
-        }
-    }
-    ids
-}
-
-/// **The streaming L2 driver** (M9). Feed a [`Replayer`] one line's messages at a time —
-/// `decode` (the agent's per-line L1, capturing its `cwd`) turns each line into a few
-/// messages that are folded immediately — so no whole-file `Vec<Message>` is built: peak
-/// memory is one line + the block buffer, matching the retired `parse_main`. `tool_ids` is
-/// the pass-1 id pre-scan; `reader` is a fresh pass-2 read. This equals `replay(tokenize(x))`
-/// over the same input (proven by `parse_file_matches_parse_str` + the golden corpus).
-pub(crate) fn parse_stream<R: std::io::BufRead>(
-    reader: R,
-    tool_ids: HashSet<String>,
-    shaping: &Shaping,
-    mut decode: impl FnMut(&str, &mut Vec<Message>),
-    mut fold_metrics: impl FnMut(&Value),
-    user_times: &mut Vec<Option<f64>>,
-) -> std::io::Result<Vec<Block>> {
-    let mut r = Replayer::new(shaping, tool_ids);
-    let mut buf: Vec<Message> = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        buf.clear();
-        decode(&line, &mut buf);
-        // Fold token/cost metrics in the SAME pass (M10) — one read instead of two. The
-        // metrics re-parse of the line matches the retired `parse_reader_for` exactly
-        // (from the raw line, skip on parse error), so the tally is byte-identical.
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            fold_metrics(&v);
-        }
-        r.apply(&buf);
-    }
-    let (blocks, ut) = r.into_blocks();
-    user_times.extend(ut);
-    Ok(blocks)
-}
-
 /// Streaming whole-file parse for `agent`: blocks + one wall-clock timestamp per user turn +
-/// folded metrics, all in a single pass (M9/M10). The one whole-file parse seam — batch
-/// callers ([`parse_session_as`](crate::parse_session_as)) go through here; the live path
-/// folds appended bytes via [`FollowParser`](crate::FollowParser). Flat (sub-agent trees are
-/// loaded separately by [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
+/// folded metrics, all in a single pass (M9/M10). Derived from the incremental fold — feeds a
+/// [`SessionAccumulator`](crate::engine::builder::SessionAccumulator) line-by-line (one line resident,
+/// no whole-file `Vec`), the same driver the live [`FollowParser`](crate::FollowParser) uses.
+/// Flat (sub-agent trees are loaded separately by
+/// [`enrich`](crate::adapter::TranscriptAdapter::enrich)).
+///
+/// Test-only now: production goes straight through `SessionAccumulator`
+/// ([`parse_session_as`](crate::parse_session_as) drives it directly). This wrapper is retained
+/// as the whole-file reference the equivalence gates compare the builder-driven output against.
+#[cfg(test)]
 pub(crate) fn parse_path_timed_for(
     agent: Agent,
     path: &std::path::Path,
-) -> std::io::Result<(Vec<Block>, Vec<Option<f64>>, crate::metrics::Metrics)> {
-    let mut times = Vec::new();
-    let (blocks, metrics) = crate::adapter::adapter(agent).parse_path_timed(path, &mut times)?;
-    Ok((blocks, times, metrics))
+) -> std::io::Result<(
+    Vec<Block>,
+    Vec<Option<EpochSeconds>>,
+    crate::metrics::Metrics,
+)> {
+    let mut b = crate::engine::builder::SessionAccumulator::new(agent);
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    b.advance_reader(&mut reader)?; // one line resident
+    Ok(b.fold())
 }
 
 /// The agent-specific seam of the otherwise-shared L2 fold — one of the
 /// [`TranscriptAdapter`](crate::adapter) hooks, returned by its `shaping()`. Each agent
-/// supplies a `&'static` const (`CLAUDE_SHAPING` / `CODEX_SHAPING`); the `Replayer` /
-/// `parse_stream` fold takes it by reference on every parse (batch and live). Everything else
+/// supplies a `&'static` const (`CLAUDE_SHAPING` / `CODEX_SHAPING`); the `Replayer` fold takes
+/// it by reference on every parse (batch and live). Everything else
 /// in this module is agent-agnostic; these **four** fn-pointer hooks (each documented on its
 /// field below) are the only points Claude and Codex differ: `build_tool` (shape a `tool_use`
 /// into a block), `join_result` (attach its result), `keep_orphan` (keep a resultless
@@ -119,42 +80,72 @@ pub(crate) struct Shaping {
 /// turn `finish`). Variants an agent doesn't produce (e.g. Codex emits no `QueueOp`/
 /// `Completion`/`SkillBody`) simply never reach their arms.
 ///
-/// `tool_ids` is the L1 id pre-scan (so an orphan result is told from a not-yet-seen one);
-/// the caller supplies it — from the whole message log for a batch, or a streaming pre-scan.
+/// Single pass: a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an
+/// orphan (forward-references — a result physically before its own tool_use — do not occur in
+/// real transcripts: 0/209 scanned).
 pub(crate) struct Replayer<'a> {
     shaping: &'a Shaping,
-    tool_ids: HashSet<String>,
+    /// The **resident window** of raw (pre-`finish_turns`) blocks: logical indices `base..`. Blocks
+    /// before `base` are complete turns that have been finalized (grouped) into `durable` and dropped
+    /// from `out` — so content is O(turn), not O(N). Every stored index below (`tool_slot`,
+    /// `suppress`, `last_skill`, `stamped`, `queue[].marker_idx`) is **logical**; subtract `base` to
+    /// index `out`.
     out: Vec<Block>,
-    user_times: Vec<Option<f64>>,
-    pending_ts: Option<f64>,
+    /// Finalized (grouped) blocks of the completed turns, in order — the durable prefix. Appended to
+    /// as turns close; concatenated ahead of `finish_turns(out)` to reproduce the whole session
+    /// (per-turn finalize distributes over user-turn boundaries, so this equals a global finalize).
+    durable: Vec<Block>,
+    /// Count of raw blocks already finalized-and-dropped from the front of `out` — the logical index
+    /// of `out[0]`. Always sits **at a turn boundary** (a `UserText`/`Command`), so the durable /
+    /// open split never cuts a turn.
+    base: usize,
+    user_times: Vec<Option<EpochSeconds>>,
+    pending_ts: Option<EpochSeconds>,
     stamped: usize,
-    tool_slot: HashMap<String, usize>,
-    pending: HashMap<String, (String, Value)>,
-    trigger_ts: Option<f64>,
+    tool_slot: HashMap<String, BlockIndex>,
+    trigger_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     content_seq: usize,
-    suppress: Vec<usize>,
-    last_skill: Option<usize>,
-    completions: Vec<CompletionRec>,
+    suppress: Vec<BlockIndex>,
+    last_skill: Option<BlockIndex>,
+    // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
+    // each `SubAgent` spawn is emitted and refreshed when its result fills `agent_id`. It lets an
+    // `AgentDone` resolve its spawn's id/type at emit-time from O(#agents) state instead of a
+    // finalize-time scan over all blocks — so resolution survives emit-and-drop of the spawn.
+    agent_ids: HashMap<String, (String, String)>,
+}
+
+/// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
+/// `tool_use_id` and, once known, its `agent_id`). No-op for non-`SubAgent` blocks.
+fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
+    if let Block::SubAgent(sa) = b {
+        let v = (sa.agent_id.clone(), sa.agent_type.clone());
+        if !sa.tool_use_id.is_empty() {
+            map.insert(sa.tool_use_id.clone(), v.clone());
+        }
+        if !sa.agent_id.is_empty() {
+            map.insert(sa.agent_id.clone(), v);
+        }
+    }
 }
 
 impl<'a> Replayer<'a> {
-    pub(crate) fn new(shaping: &'a Shaping, tool_ids: HashSet<String>) -> Self {
+    pub(crate) fn new(shaping: &'a Shaping) -> Self {
         Replayer {
             shaping,
-            tool_ids,
             out: Vec::new(),
+            durable: Vec::new(),
+            base: 0,
             user_times: Vec::new(),
             pending_ts: None,
             stamped: 0,
             tool_slot: HashMap::new(),
-            pending: HashMap::new(),
             trigger_ts: None,
             queue: Vec::new(),
             content_seq: 0,
             suppress: Vec::new(),
             last_skill: None,
-            completions: Vec::new(),
+            agent_ids: HashMap::new(),
         }
     }
 
@@ -164,12 +155,10 @@ impl<'a> Replayer<'a> {
         for m in messages {
             match m {
                 Message::LineStart(ts) => {
-                    stamp_user_turns(
-                        &self.out,
-                        &mut self.stamped,
-                        self.pending_ts,
-                        &mut self.user_times,
-                    );
+                    // Stamp over the resident window; `stamped` is logical, so translate by `base`.
+                    let mut ws = self.stamped - self.base;
+                    stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+                    self.stamped = self.base + ws;
                     self.pending_ts = *ts;
                 }
                 Message::Trigger(ts) => {
@@ -202,17 +191,16 @@ impl<'a> Replayer<'a> {
                     self.out
                         .push((self.shaping.build_tool)(id, name, input, cwd));
                     self.content_seq += 1;
-                    let idx = self.out.len() - 1;
-                    if let Block::ToolUse { name, .. } = &self.out[idx] {
+                    let rel = self.out.len() - 1;
+                    let logical = self.base + rel;
+                    if let Block::ToolUse { name, .. } = &self.out[rel] {
                         if name == "Skill" {
-                            self.last_skill = Some(idx);
+                            self.last_skill = Some(logical);
                         }
                     }
+                    record_agent(&mut self.agent_ids, &self.out[rel]);
                     if !id.is_empty() {
-                        self.tool_slot.insert(id.clone(), idx);
-                        if let Some((txt, tur)) = self.pending.remove(id) {
-                            join_result(&mut self.out[idx], &txt, &tur);
-                        }
+                        self.tool_slot.insert(id.clone(), logical);
                     }
                 }
                 Message::ToolResult {
@@ -220,11 +208,11 @@ impl<'a> Replayer<'a> {
                     text,
                     tur,
                 } => {
-                    if let Some(&idx) = self.tool_slot.get(tool_use_id) {
-                        join_result(&mut self.out[idx], text, tur);
-                    } else if self.tool_ids.contains(tool_use_id) {
-                        self.pending
-                            .insert(tool_use_id.clone(), (text.clone(), tur.clone()));
+                    if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                        join_result(&mut self.out[rel], text, tur);
+                        // The result may have filled the spawn's `agent_id`; refresh the map so a
+                        // later `AgentDone` resolves the real id (not just the `tool_use_id`).
+                        record_agent(&mut self.agent_ids, &self.out[rel]);
                     } else if !text.trim().is_empty() && keep_orphan(text) {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
@@ -238,8 +226,11 @@ impl<'a> Replayer<'a> {
                 Message::SkillBody { text, fallback } => {
                     // L1 detected the skill body; the fold only nests it into the most recent
                     // `Skill` block (stateful), falling back to a loose result block.
-                    if !attach_skill_body(&mut self.out, self.last_skill, text)
-                        && !fallback.is_empty()
+                    if !attach_skill_body(
+                        &mut self.out,
+                        self.last_skill.map(|i| i - self.base),
+                        text,
+                    ) && !fallback.is_empty()
                     {
                         self.out.push(Block::ToolResult(fallback.clone()));
                     }
@@ -276,21 +267,25 @@ impl<'a> Replayer<'a> {
                     description,
                     result,
                 } => {
-                    // L1 already parsed the notification; the fold only places the block and
-                    // records the terminal status for the post-loop `SubAgent` back-patch.
-                    self.completions.push(CompletionRec {
-                        tool_use_id: tool_use_id.clone(),
-                        task_id: task_id.clone(),
-                        status: *status,
-                    });
-                    let agent_id = if !task_id.is_empty() {
+                    // L1 already parsed the notification; the fold only places the `AgentDone`
+                    // block. No status back-patch onto the spawn — the terminal status is
+                    // derived by the `sub_agents` index from this finish event (two durable
+                    // events), so the spawn/finish blocks stay immutable. The spawn's real
+                    // id/type are resolved here from the running `agent_ids` map (populated as the
+                    // spawn was emitted), so no finalize-time scan over the — possibly dropped —
+                    // spawn block is needed.
+                    let key = if !task_id.is_empty() {
                         task_id.clone()
                     } else {
                         tool_use_id.clone()
                     };
+                    let (agent_id, agent_type) = match self.agent_ids.get(&key) {
+                        Some((real_id, ty)) => (real_id.clone(), ty.clone()),
+                        None => (key, String::new()),
+                    };
                     self.out.push(Block::AgentDone {
                         agent_id,
-                        agent_type: String::new(),
+                        agent_type,
                         description: description.clone(),
                         status: status.unwrap_or(AgentStatus::Completed),
                         result: result.clone(),
@@ -303,7 +298,7 @@ impl<'a> Replayer<'a> {
                                 self.out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
-                                Some(self.out.len() - 1)
+                                Some(self.base + self.out.len() - 1)
                             } else {
                                 None
                             };
@@ -335,54 +330,153 @@ impl<'a> Replayer<'a> {
                 },
             }
         }
+        self.finalize_completed();
+    }
+
+    /// Drop the completed turns behind the open window: finalize (group + suppress) every turn
+    /// before the **last** user-turn boundary and move the result into `durable`, then discard those
+    /// raw blocks from `out` and advance `base`. Runs only when the prompt queue is **empty** — while
+    /// any prompt is pending, its `⧗ queued:` marker might still be suppressed at dequeue, so we keep
+    /// its turn resident (the queue-marker-pinned frontier). Content stays O(turn); the durable prefix
+    /// grows. A no-op until at least one full turn has closed.
+    fn finalize_completed(&mut self) {
+        if !self.queue.is_empty() {
+            return;
+        }
+        // The open turn starts at the last user-turn boundary in the window; everything before it is
+        // complete. Nothing to drop if there's no boundary, or the only turn is the open one.
+        let Some(mut k) = self
+            .out
+            .iter()
+            .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+        else {
+            return;
+        };
+        // Pin the turn holding `last_skill`: a `SkillBody` can still nest into a `Skill` block from
+        // an earlier turn (the back-reference persists until the next skill), so that block must stay
+        // resident. Cap the drop at the turn boundary at/before it. (The queue-marker back-reference
+        // is already pinned by the `queue.is_empty()` guard above.)
+        if let Some(ls_rel) = self.last_skill.map(|i| i - self.base) {
+            if ls_rel < k {
+                k = self.out[..=ls_rel]
+                    .iter()
+                    .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+                    .unwrap_or(0);
+            }
+        }
+        if k == 0 {
+            return;
+        }
+        // Drain the completed raw blocks [0..k) from the window front.
+        let drained: Vec<Block> = self.out.drain(0..k).collect();
+        // Apply the suppression flagged for this range (logical indices in [base, base+k)), then
+        // finalize (group) and append to the durable prefix.
+        let lo = self.base;
+        let hi = self.base + k;
+        let drop: HashSet<usize> = self
+            .suppress
+            .iter()
+            .copied()
+            .filter(|&i| (lo..hi).contains(&i))
+            .collect();
+        let raw: Vec<Block> = drained
+            .into_iter()
+            .enumerate()
+            .filter(|(off, _)| !drop.contains(&(lo + off)))
+            .map(|(_, b)| b)
+            .collect();
+        let finalized = (self.shaping.finish_turns)(raw);
+        self.durable.extend(finalized);
+        // Advance the frontier and retire indices that pointed into the dropped turns.
+        self.base = hi;
+        self.suppress.retain(|&i| i >= self.base);
+        self.tool_slot.retain(|_, &mut v| v >= self.base);
+        if matches!(self.last_skill, Some(i) if i < self.base) {
+            self.last_skill = None;
+        }
+    }
+
+    /// Assemble the full presentable block list: the finalized `durable` prefix followed by the
+    /// finalized open window (suppression applied window-relative). Because `base` always sits at a
+    /// user-turn boundary and `finish_turns` distributes over such boundaries, this equals a single
+    /// global finalize of the whole raw stream.
+    /// The whole finalized stream (`durable ++ finalize_open(open)`) — the pre-C2 combined view.
+    /// Test-only now: production splits this into [`drain_committed`] + [`open_snapshot`] so the
+    /// replayer never holds the durable prefix. Kept for the equivalence oracles.
+    #[cfg(test)]
+    fn assemble(&self, open: Vec<Block>) -> Vec<Block> {
+        let mut all = self.durable.clone();
+        all.extend(self.finalize_open(open));
+        all
+    }
+
+    /// Finalize just the open window: apply the remaining (window-relative) suppression, then
+    /// `finish_turns` — **without** the `durable` prefix. This is the committed/open split point:
+    /// `assemble` = `durable ++ finalize_open(open)`, and the accumulator combines its own drained
+    /// committed blocks with this.
+    fn finalize_open(&self, mut open: Vec<Block>) -> Vec<Block> {
+        let drop: HashSet<usize> = self
+            .suppress
+            .iter()
+            .filter(|&&i| i >= self.base)
+            .map(|&i| i - self.base)
+            .collect();
+        if !drop.is_empty() {
+            let mut i = 0usize;
+            open.retain(|_| {
+                let keep = !drop.contains(&i);
+                i += 1;
+                keep
+            });
+        }
+        (self.shaping.finish_turns)(open)
+    }
+
+    /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
+    /// crossed the durability frontier), removing them from the replayer — so its resident content
+    /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
+    pub(crate) fn drain_committed(&mut self) -> Vec<Block> {
+        std::mem::take(&mut self.durable)
+    }
+
+    /// The finalized **open** window (the still-provisional tail) + the full per-turn timestamps
+    /// (pending stamps flushed) — the non-consuming complement to [`drain_committed`]. The
+    /// accumulator's snapshot is `committed ++ open_snapshot().0`.
+    pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let open = self.out.clone();
+        let mut user_times = self.user_times.clone();
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
+        (self.finalize_open(open), user_times)
     }
 
     /// Finalize (consuming): final user-turn flush + completions + the agent `finish`.
-    /// Returns the grouped blocks and the per-turn timestamps.
-    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<f64>>) {
-        stamp_user_turns(
-            &self.out,
-            &mut self.stamped,
-            self.pending_ts,
-            &mut self.user_times,
-        );
-        apply_completions_and_suppress(
-            &mut self.out,
-            &self.tool_slot,
-            &self.completions,
-            self.suppress,
-        );
-        let blocks = (self.shaping.finish_turns)(self.out);
+    /// Returns the grouped blocks and the per-turn timestamps. Test-only now — production
+    /// finalizes non-consumingly via [`snapshot`](Self::snapshot) (the `SessionAccumulator` folds
+    /// incrementally and re-snapshots), so this consuming path is exercised only by the
+    /// equivalence oracles.
+    #[cfg(test)]
+    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.stamped = self.base + ws;
+        let open = std::mem::take(&mut self.out);
+        let blocks = self.assemble(open);
         (blocks, self.user_times)
     }
 
-    /// Non-consuming finalize (M11): the current presentable blocks + per-turn times, WITHOUT
-    /// consuming the Replayer — so a live follower can `apply` a delta, `snapshot` to render,
-    /// then keep folding. Same output as `into_blocks`, computed over cloned working state.
-    /// (Proven byte-identical vs a full re-parse — used by the live `FollowParser`, M16.)
-    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<f64>>) {
-        let mut out = self.out.clone();
+    /// Non-consuming finalize: the whole presentable stream + per-turn times over cloned state.
+    /// Test-only now — production drives [`drain_committed`] + [`open_snapshot`] via the
+    /// `SessionAccumulator` (the replayer never materializes the durable prefix). Kept for the
+    /// direct-replayer incremental tests.
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut stamped = self.stamped;
-        stamp_user_turns(&out, &mut stamped, self.pending_ts, &mut user_times);
-        apply_completions_and_suppress(
-            &mut out,
-            &self.tool_slot,
-            &self.completions,
-            self.suppress.clone(),
-        );
-        let blocks = (self.shaping.finish_turns)(out);
+        let mut ws = self.stamped - self.base;
+        stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
+        let blocks = self.assemble(open);
         (blocks, user_times)
-    }
-
-    /// Merge more tool_use join ids into the pre-scan set (M11): a live follower pre-scans
-    /// each *delta* for its ids and extends before applying, so a result whose tool_use is
-    /// later in the SAME delta is held pending (not mis-emitted as an orphan) — exactly as a
-    /// batch pre-scan would. Across polls, earlier deltas' ids are already accumulated; the
-    /// only remaining reorder (a result physically before its tool_use) is a rewritten tail,
-    /// which the follower handles by rebuilding from scratch (a `reset`).
-    pub(crate) fn extend_tool_ids(&mut self, ids: impl IntoIterator<Item = String>) {
-        self.tool_ids.extend(ids);
     }
 }
 
@@ -395,89 +489,11 @@ pub(crate) fn replay(
     user_times: &mut Vec<Option<f64>>,
     shaping: &Shaping,
 ) -> Vec<Block> {
-    let tool_ids: HashSet<String> = messages
-        .iter()
-        .filter_map(|m| match m {
-            Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut r = Replayer::new(shaping, tool_ids);
+    let mut r = Replayer::new(shaping);
     r.apply(messages);
     let (blocks, ut) = r.into_blocks();
     user_times.extend(ut);
     blocks
-}
-
-/// The `parse_main` post-loop: apply agent-completion notifications to their `SubAgent`
-/// / `AgentDone` blocks (by tool-use-id, else task-id), then drop the `⧗ queued:` markers
-/// of prompts picked up immediately. Split out so both `parse_main` and `replay` share
-/// one copy. Runs before turn grouping so surviving markers keep their positions.
-fn apply_completions_and_suppress(
-    out: &mut Vec<Block>,
-    tool_slot: &HashMap<String, usize>,
-    completions: &[CompletionRec],
-    suppress: Vec<usize>,
-) {
-    if !completions.is_empty() {
-        let mut agent_slot: HashMap<String, usize> = HashMap::new();
-        for (i, b) in out.iter().enumerate() {
-            if let Block::SubAgent(sa) = b {
-                if !sa.agent_id.is_empty() {
-                    agent_slot.insert(sa.agent_id.clone(), i);
-                }
-            }
-        }
-        for rec in completions {
-            let idx = (!rec.tool_use_id.is_empty())
-                .then(|| tool_slot.get(&rec.tool_use_id).copied())
-                .flatten()
-                .or_else(|| {
-                    (!rec.task_id.is_empty())
-                        .then(|| agent_slot.get(&rec.task_id).copied())
-                        .flatten()
-                });
-            if let Some(Block::SubAgent(sa)) = idx.and_then(|i| out.get_mut(i)) {
-                if let Some(st) = rec.status {
-                    sa.status = st;
-                }
-            }
-        }
-        let mut by_id: HashMap<String, (String, String)> = HashMap::new();
-        for b in out.iter() {
-            if let Block::SubAgent(sa) = b {
-                let v = (sa.agent_id.clone(), sa.agent_type.clone());
-                if !sa.agent_id.is_empty() {
-                    by_id.insert(sa.agent_id.clone(), v.clone());
-                }
-                if !sa.tool_use_id.is_empty() {
-                    by_id.insert(sa.tool_use_id.clone(), v);
-                }
-            }
-        }
-        for b in out.iter_mut() {
-            if let Block::AgentDone {
-                agent_id,
-                agent_type,
-                ..
-            } = b
-            {
-                if let Some((real_id, ty)) = by_id.get(agent_id.as_str()) {
-                    *agent_type = ty.clone();
-                    *agent_id = real_id.clone();
-                }
-            }
-        }
-    }
-    if !suppress.is_empty() {
-        let drop: HashSet<usize> = suppress.into_iter().collect();
-        let mut i = 0usize;
-        out.retain(|_| {
-            let keep = !drop.contains(&i);
-            i += 1;
-            keep
-        });
-    }
 }
 
 /// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
@@ -486,25 +502,8 @@ fn apply_completions_and_suppress(
 /// happened in between (immediate → suppress the marker).
 pub(crate) struct QueueItem {
     pub(crate) content: String,
-    pub(crate) marker_idx: Option<usize>,
+    pub(crate) marker_idx: Option<BlockIndex>,
     pub(crate) content_at_enqueue: usize,
-}
-
-/// A structured agent/task completion (L1-parsed from the raw notification) — the fold's
-/// record for back-patching a `SubAgent`'s terminal status after the loop. `status` is
-/// `None` when the source carried no explicit status (then the spawn is left untouched).
-pub(crate) struct CompletionRec {
-    /// The spawning `Agent`/`Task` **tool_use id** (from the notification's `<tool-use-id>`) —
-    /// the *primary* key that back-patches this completion onto its `SubAgent` spawn block
-    /// (which stores the same id). Empty when the notification carried no `<tool-use-id>`.
-    pub(crate) tool_use_id: String,
-    /// The notification's `<task-id>`. For an agent completion this **is the agent's id**
-    /// (matched against `SubAgent.agent_id`) — the *fallback* join key, used when the
-    /// notification keyed by task-id rather than tool-use-id. Empty when absent.
-    pub(crate) task_id: String,
-    /// Terminal state from the notification's `<status>`; `None` when it carried none (the
-    /// spawn's status is then left untouched).
-    pub(crate) status: Option<AgentStatus>,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
@@ -514,8 +513,8 @@ pub(crate) struct CompletionRec {
 pub(crate) fn stamp_user_turns(
     out: &[Block],
     stamped: &mut usize,
-    ts: Option<f64>,
-    user_times: &mut Vec<Option<f64>>,
+    ts: Option<EpochSeconds>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) {
     for b in &out[*stamped..] {
         if matches!(b, Block::UserText(_) | Block::Command { .. }) {

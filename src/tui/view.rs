@@ -3,9 +3,10 @@
 
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
-use crate::model::{Attachment, AttachmentContent, Block};
-use crate::picker::Picker;
-use crate::{render, theme, wrap};
+use crate::model::{Attachment, AttachmentContent, Block, LoadedAttachment};
+use crate::tui::picker::Picker;
+use crate::tui::{render, theme, wrap};
+use crate::Transcript;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -216,7 +217,7 @@ pub enum Action {
     /// Reveal this path in the OS file manager (a tool-header path / path-only attachment).
     Reveal(PathBuf),
     /// Descend into the `SubAgent` at this block index (open its child transcript).
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
 }
 
 /// A resolved descend target — the agent to open, plus any pre-loaded child transcript
@@ -225,14 +226,14 @@ pub struct DescendRef {
     pub agent_id: String,
     pub agent_type: String,
     pub blocks: Vec<Block>,
-    pub subtree_cost: Option<f64>,
+    pub subtree_cost: Option<crate::model::UsdCost>,
 }
 
 /// The outcome of a mouse click while the `a` active-sub-agents popup is open.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PopupClick {
     /// Clicked an agent row — descend into the sub-agent at this block index.
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
     /// Clicked elsewhere on the overlay — swallowed, popup stays open (`Esc`/`a` closes).
     Border,
     /// No popup was open.
@@ -241,12 +242,12 @@ pub enum PopupClick {
 
 pub struct View {
     blocks: Vec<Block>,
-    collapsed: Vec<bool>,        // per-block fold state
-    raw: Vec<Line<'static>>,     // unwrapped styled lines (width-aware: tables)
-    raw_tag: Vec<usize>,         // raw[i] belongs to block raw_tag[i]
-    raw_dirty: bool,             // raw needs rebuilding (fold toggle / live update)
-    wrapped: Vec<Line<'static>>, // wrapped to `width`
-    wrapped_tag: Vec<usize>,     // wrapped[i] belongs to block wrapped_tag[i]
+    collapsed: Vec<bool>,                       // per-block fold state
+    raw: Vec<Line<'static>>,                    // unwrapped styled lines (width-aware: tables)
+    raw_tag: Vec<crate::model::BlockIndex>,     // raw[i] belongs to block raw_tag[i]
+    raw_dirty: bool,                            // raw needs rebuilding (fold toggle / live update)
+    wrapped: Vec<Line<'static>>,                // wrapped to `width`
+    wrapped_tag: Vec<crate::model::BlockIndex>, // wrapped[i] belongs to block wrapped_tag[i]
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
     scroll: usize, // top wrapped-line index
@@ -255,20 +256,20 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,                  // current needle (empty = no search)
-    searching: bool,                // in `/` input mode
-    matches: Vec<usize>,            // wrapped-line indices containing the needle
-    match_pos: usize,               // index into `matches`
-    metrics: String,                // footer text (tokens/cost/duration/model) — legacy string
+    query: String,                           // current needle (empty = no search)
+    searching: bool,                         // in `/` input mode
+    matches: Vec<usize>,                     // wrapped-line indices containing the needle
+    match_pos: usize,                        // index into `matches`
+    metrics: String, // footer text (tokens/cost/duration/model) — legacy string
     footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
-    descended: bool,                // this view is a descended sub-agent (footer shows `esc back`)
-    fold: FoldPolicy,               // per-type default fold policy (applied to new content)
-    focus: Option<usize>,           // focused foldable block index ([ / ] / hover)
-    show_help: bool,                // `?` help overlay visible
-    agents_popup: Option<usize>,    // `a` active-sub-agents popup: selected row, when open
-    can_go_back: bool,              // launched via the picker → Esc returns to the session list
-    can_open_picker: bool,          // `s` opens the session switcher overlay (--latest launch)
-    switcher: Option<Picker>,       // session switcher overlay, when open
+    descended: bool, // this view is a descended sub-agent (footer shows `esc back`)
+    fold: FoldPolicy, // per-type default fold policy (applied to new content)
+    focus: Option<crate::model::BlockIndex>, // focused foldable block index ([ / ] / hover)
+    show_help: bool, // `?` help overlay visible
+    agents_popup: Option<usize>, // `a` active-sub-agents popup: selected row, when open
+    can_go_back: bool, // launched via the picker → Esc returns to the session list
+    can_open_picker: bool, // `s` opens the session switcher overlay (--latest launch)
+    switcher: Option<Picker>, // session switcher overlay, when open
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
@@ -278,6 +279,9 @@ pub struct View {
     cache_width: Option<u16>, // width the cache was built at; a change invalidates it
     cwd: Option<PathBuf>,     // session working dir — reverses a header's relativized path
     flash: Option<String>,    // transient status (e.g. "Saved to …"); cleared on next input
+    // The transcript these blocks were parsed from — the source for loading a `Deferred`
+    // attachment's bytes on demand (this view holds only locators, never the content).
+    source: Option<Transcript>,
 }
 
 impl View {
@@ -321,6 +325,7 @@ impl View {
             cache_width: None,
             cwd: None,
             flash: None,
+            source: None,
         }
     }
 
@@ -344,11 +349,18 @@ impl View {
     }
     /// Block indices of THIS node's direct sub-agents that are still running (spawned,
     /// no terminal status) — the `a` popup's rows, node-scoped.
-    fn active_agent_indices(&self) -> Vec<usize> {
+    fn active_agent_indices(&self) -> Vec<crate::model::BlockIndex> {
+        // Terminal-ness from the sub-agent index (derived from the spawn + finish events),
+        // not the spawn block's status — the step off reading a back-patched block. Equivalent:
+        // an empty-id / running spawn has no terminal map entry, so it stays "active".
+        let agents = crate::engine::build_sub_agents(&self.blocks);
         self.blocks
             .iter()
             .enumerate()
-            .filter(|(_, b)| matches!(b, Block::SubAgent(sa) if !sa.status.is_terminal()))
+            .filter(|(_, b)| {
+                matches!(b, Block::SubAgent(sa)
+                    if !agents.get(&sa.agent_id).map(|m| m.status.is_terminal()).unwrap_or(false))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -376,7 +388,7 @@ impl View {
     }
     /// Confirm the popup selection: close it and return the selected active agent's block
     /// index (for the caller to `Descend` into).
-    pub fn agents_popup_confirm(&mut self) -> Option<usize> {
+    pub fn agents_popup_confirm(&mut self) -> Option<crate::model::BlockIndex> {
         let sel = self.agents_popup.take()?;
         self.active_agent_indices().get(sel).copied()
     }
@@ -408,6 +420,11 @@ impl View {
     /// path click still resolves against the real working dir.
     pub fn cwd_ref(&self) -> Option<&PathBuf> {
         self.cwd.as_ref()
+    }
+    /// Record the transcript these blocks came from — the source for loading a `Deferred`
+    /// attachment's bytes on demand when the reader downloads one.
+    pub fn set_source(&mut self, source: Option<Transcript>) {
+        self.source = source;
     }
 
     /// Mark that this viewer was reached through the session picker, so `Esc`
@@ -526,7 +543,7 @@ impl View {
         self.view_h
     }
     #[cfg(test)]
-    pub fn is_collapsed(&self, i: usize) -> bool {
+    pub fn is_collapsed(&self, i: crate::model::BlockIndex) -> bool {
         self.collapsed[i]
     }
     /// The fold-key of every top-level block (for asserting live-tail grouping).
@@ -536,7 +553,7 @@ impl View {
     }
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
-    pub fn block_of_line(&self, line: usize) -> Option<usize> {
+    pub fn block_of_line(&self, line: usize) -> Option<crate::model::BlockIndex> {
         self.wrapped_tag.get(line).copied()
     }
 
@@ -622,7 +639,7 @@ impl View {
 
     // --- fold / expand (P4) ---
     /// Toggle the collapse state of a foldable block by index.
-    pub fn toggle_block(&mut self, i: usize) {
+    pub fn toggle_block(&mut self, i: crate::model::BlockIndex) {
         if self.blocks.get(i).map(render::foldable).unwrap_or(false) {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
@@ -697,7 +714,7 @@ impl View {
 
     /// Is the click at `(idx, col)` on a spawn / completion header's descend-target agent
     /// id? Works for both the `SubAgent` spawn and the `AgentDone` completion (any status).
-    fn agent_id_hit(&self, b: usize, idx: usize, col: usize) -> bool {
+    fn agent_id_hit(&self, b: crate::model::BlockIndex, idx: usize, col: usize) -> bool {
         // Only the header's own first row carries the id.
         if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
             return false;
@@ -719,7 +736,7 @@ impl View {
     /// The KEYBOARD (`Enter`) action for block `b`. A [`Block::SubAgent`] with a loaded
     /// child **descends** directly (Space still folds it); an [`Attachment`] downloads
     /// (flashed) or reveals its path; any other block toggles its fold.
-    fn activate_block(&mut self, b: usize) -> Option<Action> {
+    fn activate_block(&mut self, b: crate::model::BlockIndex) -> Option<Action> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => {
                 if sa.agent_id.is_empty() {
@@ -743,8 +760,8 @@ impl View {
             }
             Some(Block::Attachment(a)) => {
                 let a = a.clone();
-                if a.content.is_some() {
-                    self.flash = Some(match save_attachment(&a) {
+                if matches!(a.content, AttachmentContent::Deferred { .. }) {
+                    self.flash = Some(match save_attachment(&a, self.source.as_ref()) {
                         Ok(p) => format!("Saved {}", pretty_home(&p)),
                         Err(e) => format!("Download failed: {e}"),
                     });
@@ -761,7 +778,7 @@ impl View {
     }
 
     /// The `SubAgent` at block index `b` — the caller descends using its `blocks`.
-    pub fn subagent_at(&self, b: usize) -> Option<&crate::model::SubAgent> {
+    pub fn subagent_at(&self, b: crate::model::BlockIndex) -> Option<&crate::model::SubAgent> {
         match self.blocks.get(b) {
             Some(Block::SubAgent(sa)) => Some(sa),
             _ => None,
@@ -771,7 +788,7 @@ impl View {
     /// The descend target at block index `b` — a `SubAgent` spawn (with any pre-loaded
     /// child `blocks`) OR an `AgentDone` completion (whose child always loads lazily from
     /// its file). `None` for any other block or a missing agent id.
-    pub fn descend_ref_at(&self, b: usize) -> Option<DescendRef> {
+    pub fn descend_ref_at(&self, b: crate::model::BlockIndex) -> Option<DescendRef> {
         match self.blocks.get(b)? {
             Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(DescendRef {
                 agent_id: sa.agent_id.clone(),
@@ -795,7 +812,7 @@ impl View {
 
     /// Land the cursor on block `b` (the spawn we returned from) WITHOUT changing any
     /// fold state — the return-from-descend focus restore (§2.2). Scrolls it into view.
-    pub fn focus_block(&mut self, b: usize) {
+    pub fn focus_block(&mut self, b: crate::model::BlockIndex) {
         if b < self.blocks.len() {
             self.focus = Some(b);
             self.scroll_block_into_view(b);
@@ -806,7 +823,12 @@ impl View {
     /// first (header) row of a tool block and `col` falls within its `(target)`
     /// span — and the resolved path actually exists (so a `Bash(ls)` command or a
     /// `Grep(pattern)` header never masquerades as a file). Else `None`.
-    fn header_path_hit(&self, b: usize, idx: usize, col: usize) -> Option<PathBuf> {
+    fn header_path_hit(
+        &self,
+        b: crate::model::BlockIndex,
+        idx: usize,
+        col: usize,
+    ) -> Option<PathBuf> {
         // Only the header's own first row carries the path.
         if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
             return None;
@@ -846,7 +868,7 @@ impl View {
     // --- expandable-element focus ([ / ] / hover / Enter) ---
     /// Block indices the `[`/`]` keys can focus: foldable blocks plus attachments
     /// (which aren't foldable but are actionable via Enter — download/reveal).
-    fn focusable_blocks(&self) -> Vec<usize> {
+    fn focusable_blocks(&self) -> Vec<crate::model::BlockIndex> {
         (0..self.blocks.len())
             .filter(|&i| {
                 render::foldable(&self.blocks[i]) || matches!(self.blocks[i], Block::Attachment(_))
@@ -876,7 +898,7 @@ impl View {
         self.focus = Some(b);
         self.scroll_block_into_view(b);
     }
-    fn scroll_block_into_view(&mut self, b: usize) {
+    fn scroll_block_into_view(&mut self, b: crate::model::BlockIndex) {
         if let Some(idx) = self.wrapped_tag.iter().position(|&t| t == b) {
             if idx < self.scroll {
                 self.scroll = idx;
@@ -933,7 +955,7 @@ impl View {
         }
     }
     #[cfg(test)]
-    pub fn focused_block(&self) -> Option<usize> {
+    pub fn focused_block(&self) -> Option<crate::model::BlockIndex> {
         self.focus
     }
 
@@ -1355,26 +1377,53 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
 }
 
 /// Save an embedded attachment to the user's Downloads folder, never overwriting (a
-/// numeric suffix is added on collision). Text is written verbatim; base64 (images) is
-/// decoded first. Returns the written path. Synchronous by design — payloads are small
-/// (see `DESIGN.md`).
-fn save_attachment(a: &Attachment) -> std::io::Result<PathBuf> {
-    write_attachment_to(&downloads_dir(), a)
+/// numeric suffix is added on collision). The bytes are loaded on demand from `source` (the
+/// transcript) — one attachment resident at a time — then written and dropped. Text is written
+/// verbatim; base64 (images) is decoded first. Returns the written path. Synchronous by design
+/// — payloads are small (see `DESIGN.md`).
+fn save_attachment(a: &Attachment, source: Option<&Transcript>) -> std::io::Result<PathBuf> {
+    write_attachment_to(&downloads_dir(), a, source)
 }
 
-/// The testable core of [`save_attachment`]: write `a`'s embedded bytes into `dir`.
-fn write_attachment_to(dir: &Path, a: &Attachment) -> std::io::Result<PathBuf> {
+/// The testable core of [`save_attachment`]: load `a`'s embedded bytes from `source` and write
+/// them into `dir`.
+fn write_attachment_to(
+    dir: &Path,
+    a: &Attachment,
+    source: Option<&Transcript>,
+) -> std::io::Result<PathBuf> {
     use std::io::{Error, ErrorKind, Write};
-    let bytes: Vec<u8> = match a.content.as_ref() {
-        Some(AttachmentContent::Text(t)) => t.clone().into_bytes(),
-        Some(AttachmentContent::Base64 { b64, .. }) => crate::clipboard::base64_decode(b64)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
-        None => return Err(Error::new(ErrorKind::InvalidInput, "nothing to download")),
+    let loaded = load_attachment_content(a, source)?;
+    let (bytes, mime): (Vec<u8>, Option<String>) = match loaded {
+        LoadedAttachment::Text(t) => (t.into_bytes(), None),
+        LoadedAttachment::Base64 { b64, mime } => (
+            crate::diff::base64_decode(&b64)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid base64"))?,
+            Some(mime),
+        ),
     };
     std::fs::create_dir_all(dir)?;
-    let path = unique_path(dir, &download_filename(a));
+    let path = unique_path(dir, &download_filename(a, mime.as_deref()));
     std::fs::File::create(&path)?.write_all(&bytes)?;
     Ok(path)
+}
+
+/// Load a `Deferred` attachment's bytes from its transcript `source`, on demand. Errors if the
+/// attachment is path-only (nothing to download), the source is missing, or the locator is
+/// stale (the line no longer holds that content).
+fn load_attachment_content(
+    a: &Attachment,
+    source: Option<&Transcript>,
+) -> std::io::Result<LoadedAttachment> {
+    use std::io::{Error, ErrorKind};
+    let AttachmentContent::Deferred { at, index } = &a.content else {
+        return Err(Error::new(ErrorKind::InvalidInput, "nothing to download"));
+    };
+    let source =
+        source.ok_or_else(|| Error::new(ErrorKind::NotFound, "no transcript to load from"))?;
+    source
+        .load_attachment(*at, *index)?
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "attachment content not found"))
 }
 
 /// `~/Downloads` (via `$HOME`), falling back to the current directory.
@@ -1386,14 +1435,14 @@ fn downloads_dir() -> PathBuf {
 }
 
 /// The download filename for an attachment: the basename of its path/name, with an
-/// image extension appended from the MIME type when the name lacks one.
-fn download_filename(a: &Attachment) -> String {
+/// image extension appended from the loaded content's MIME type when the name lacks one.
+fn download_filename(a: &Attachment, mime: Option<&str>) -> String {
     let base = a.path.as_deref().unwrap_or(&a.name);
     let mut name = base.rsplit('/').next().unwrap_or(base).to_string();
     if name.is_empty() {
         name = "attachment".into();
     }
-    if let Some(AttachmentContent::Base64 { mime, .. }) = &a.content {
+    if let Some(mime) = mime {
         if !name.contains('.') {
             if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
                 name.push('.');
@@ -1463,7 +1512,7 @@ mod tests {
         std::fs::write(&path, jsonl).unwrap();
         let blocks = crate::engine::parse_session_as(crate::Agent::Claude, &path)
             .unwrap()
-            .blocks;
+            .blocks();
         let _ = std::fs::remove_file(&path);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
         let pol = FoldPolicy::from_args(&crate::Args::default());
@@ -1989,7 +2038,7 @@ mod tests {
                 kind: crate::model::AttachmentKind::Ref,
                 name: "src/lib.rs".into(),
                 path: Some("/w/src/lib.rs".into()),
-                content: None,
+                content: AttachmentContent::None,
             }),
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
@@ -2052,7 +2101,7 @@ mod tests {
         let Block::SubAgent(spawn) = &v.blocks[1] else {
             unreachable!()
         };
-        let (ids, ide) = crate::render::agent_id_span(spawn).expect("id span");
+        let (ids, ide) = crate::tui::render::agent_id_span(spawn).expect("id span");
         // Click on the header caret (col 0) toggles the fold, does not descend.
         assert_eq!(v.click_at(row, 0), None, "header click folds, not descends");
         assert!(!v.is_collapsed(1), "header click expanded it");
@@ -2104,7 +2153,7 @@ mod tests {
             unreachable!()
         };
         assert!(
-            crate::render::agent_id_span(spawn).is_some(),
+            crate::tui::render::agent_id_span(spawn).is_some(),
             "running agent shows the ↵ id descend target"
         );
         // It counts as active (footer `a active N` + `a` popup).
@@ -2143,8 +2192,9 @@ mod tests {
         assert!(dref.blocks.is_empty(), "completion child loads lazily");
         // Mouse: clicking the header id descends; clicking the caret (col 0) folds.
         let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
-        let (s, e) = crate::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
-            .expect("done id span");
+        let (s, e) =
+            crate::tui::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
+                .expect("done id span");
         assert_eq!(
             v.click_at(row, ((s + e) / 2) as u16),
             Some(Action::Descend(1)),
@@ -2307,47 +2357,65 @@ mod tests {
         assert!(footer.contains('q'), "hint run survives: {footer:?}");
     }
 
-    /// The download core writes embedded content into a target dir, decoding base64 and
-    /// never overwriting an existing file.
+    /// The download core loads embedded content on demand from the transcript source and writes
+    /// it into a target dir, decoding base64 and never overwriting an existing file. The blocks
+    /// carry only `Deferred` locators — the bytes come from `Transcript::load_attachment`.
     #[test]
     fn write_attachment_saves_text_image_and_avoids_overwrite() {
+        use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cr-attach-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
+        let uniq = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cr-attach-{}-{}", std::process::id(), uniq));
         let _ = std::fs::remove_dir_all(&dir);
 
+        // A real transcript: a `file` attachment on line 0, a base64 image on line 1.
+        let l0 = r#"{"type":"attachment","attachment":{"type":"file","filename":"/w/notes.md","displayPath":"notes.md","content":{"type":"text","file":{"filePath":"/w/notes.md","content":"hello"}}}}"#;
+        let l1 = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}"#;
+        let tpath = std::env::temp_dir().join(format!(
+            "cr-attach-src-{}-{}.jsonl",
+            std::process::id(),
+            uniq
+        ));
+        std::fs::File::create(&tpath)
+            .unwrap()
+            .write_all(format!("{l0}\n{l1}\n").as_bytes())
+            .unwrap();
+        let src = Transcript::open(crate::Agent::Claude, &tpath);
+
+        let off_img = (l0.len() + 1) as u64;
         let text = Attachment {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
-            content: Some(AttachmentContent::Text("hello".into())),
+            content: AttachmentContent::Deferred { at: 0, index: 0 },
         };
-        let p1 = write_attachment_to(&dir, &text).unwrap();
+        let p1 = write_attachment_to(&dir, &text, Some(&src)).unwrap();
         assert_eq!(p1.file_name().unwrap(), "notes.md");
         assert_eq!(std::fs::read_to_string(&p1).unwrap(), "hello");
         // A second save of the same name must not overwrite.
-        let p2 = write_attachment_to(&dir, &text).unwrap();
+        let p2 = write_attachment_to(&dir, &text, Some(&src)).unwrap();
         assert_eq!(p2.file_name().unwrap(), "notes (1).md");
 
-        // A base64 image decodes to bytes; the extension comes from the MIME type.
+        // A base64 image decodes to bytes; the extension comes from the loaded MIME type.
         let img = Attachment {
             kind: crate::model::AttachmentKind::Image,
             name: "shot".into(),
             path: None,
-            content: Some(AttachmentContent::Base64 {
-                mime: "image/png".into(),
-                b64: "Zm9v".into(), // "foo"
-            }),
+            content: AttachmentContent::Deferred {
+                at: off_img,
+                index: 0,
+            },
         };
-        let pi = write_attachment_to(&dir, &img).unwrap();
+        let pi = write_attachment_to(&dir, &img, Some(&src)).unwrap();
         assert_eq!(pi.file_name().unwrap(), "shot.png");
         assert_eq!(std::fs::read(&pi).unwrap(), b"foo");
 
+        // No source → a graceful error, never a panic.
+        assert!(write_attachment_to(&dir, &text, None).is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&tpath);
     }
 
     #[test]

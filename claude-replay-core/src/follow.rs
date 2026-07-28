@@ -6,24 +6,21 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
-use crate::engine::message::Message;
-use crate::engine::replay::Replayer;
+use crate::engine::builder::SessionAccumulator;
+use crate::engine::session::{InMemoryStore, Session};
 use crate::metrics::Metrics;
-use crate::model::Block;
-use crate::tail::TailReader;
+use crate::model::{Block, EpochSeconds};
+use crate::reader::LineReader;
 use crate::{Agent, SessionGraph};
 
-/// Follows a transcript file, folding only newly-appended lines each poll. Everything
-/// agent-specific — the L1 decoder, the L2 `Shaping`, the metrics accumulator — comes from
-/// the agent's `TranscriptAdapter`, so the follower itself is agent-agnostic.
+/// Follows a transcript file, folding only newly-appended lines each poll through a shared
+/// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
+/// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
+/// is just the byte-offset reader plus the same incremental fold the batch parse uses.
 pub struct FollowParser {
-    adapter: &'static dyn TranscriptAdapter,
-    tail: TailReader,
-    replayer: Replayer<'static>,
-    cwd: String,
-    metrics: Box<dyn MetricsAccumulator>,
-    source: PathBuf,
+    path: PathBuf,
+    builder: SessionAccumulator<InMemoryStore>,
+    reader: LineReader,
     graph: SessionGraph,
 }
 
@@ -34,64 +31,83 @@ impl FollowParser {
         Self::open_with_graph(agent, path, SessionGraph::open(agent, path))
     }
 
-    /// Follow with a relationship graph shared by the surrounding operation.
-    pub fn open_with_graph(agent: Agent, path: &Path, graph: SessionGraph) -> Self {
-        let adapter = adapter(agent);
+    /// Follow a related transcript with the operation-scoped relationship resolver shared by
+    /// its owning [`Transcript`](crate::Transcript).
+    pub(crate) fn open_with_graph(agent: Agent, path: &Path, graph: SessionGraph) -> Self {
         Self {
-            adapter,
-            tail: TailReader::open_at_start(path),
-            replayer: Replayer::new(adapter.shaping(), std::collections::HashSet::new()),
-            cwd: String::new(),
-            metrics: adapter.metrics_acc(),
-            source: path.to_path_buf(),
+            path: path.to_path_buf(),
+            builder: SessionAccumulator::new(agent),
+            reader: LineReader::open_at_start(path),
             graph,
         }
     }
 
-    /// Poll: fold any newly-appended lines (or rebuild on a truncation/rewrite) and return
-    /// the current blocks + per-turn times + metrics. Returns `None` when nothing changed
-    /// since the last poll (the common idle tick). O(delta) except on a rewrite.
-    #[allow(clippy::type_complexity)]
-    pub fn poll(&mut self) -> std::io::Result<Option<(Vec<Block>, Vec<Option<f64>>, Metrics)>> {
-        let p = self.tail.poll()?;
+    /// Fold any newly-appended lines (or rebuild on a truncation/rewrite) into the running
+    /// builder. Returns `Ok(true)` when content advanced this tick, `Ok(false)` when nothing
+    /// changed since the last poll (the common idle tick). O(delta) except on a rewrite.
+    fn advance_from_source(&mut self) -> std::io::Result<bool> {
+        let p = self.reader.poll()?;
         if !p.reset && p.lines.is_empty() {
-            return Ok(None); // nothing new this tick
+            return Ok(false); // nothing new this tick
         }
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
-            // TailReader re-read from 0, so `p.lines` is the whole new file.
-            self.replayer = Replayer::new(self.adapter.shaping(), std::collections::HashSet::new());
-            self.cwd.clear();
-            self.metrics = self.adapter.metrics_acc();
+            // LineReader re-read from 0, so `p.lines` is the whole new file.
+            self.builder.reset();
         }
-        let mut delta: Vec<Message> = Vec::new();
-        for line in &p.lines {
-            delta.clear();
-            self.adapter.decode_line(line, &mut self.cwd, &mut delta);
-            // Pre-scan this delta's tool ids so a result whose tool_use is later in the same
-            // delta is held pending, not mis-emitted as an orphan (matches a batch pre-scan).
-            self.replayer
-                .extend_tool_ids(delta.iter().filter_map(|m| match m {
-                    Message::ToolUse { id, .. } if !id.is_empty() => Some(id.clone()),
-                    _ => None,
-                }));
-            self.replayer.apply(&delta);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                self.metrics.push(&v);
-            }
+        // Fold each appended line with its file start offset, so attachment locators in a LIVE
+        // session get correct byte offsets (same as a batch parse).
+        for (offset, line) in p.offsets.iter().zip(&p.lines) {
+            self.builder.advance_at(*offset, line);
         }
-        let (mut blocks, user_times) = self.replayer.snapshot();
-        self.graph.resolve_relationships(&self.source, &mut blocks);
-        Ok(Some((blocks, user_times, self.metrics.finish())))
+        Ok(true)
+    }
+
+    /// Poll: fold any newly-appended lines and return the current blocks + per-turn times +
+    /// metrics. Returns `None` when nothing changed since the last poll (the common idle tick).
+    #[allow(clippy::type_complexity)]
+    pub fn poll(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
+        if !self.advance_from_source()? {
+            return Ok(None);
+        }
+        let session = self.snapshot_session();
+        Ok(Some((
+            session.blocks(),
+            session.user_times,
+            session.metrics,
+        )))
+    }
+
+    /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
+    /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
+    /// `transcript` filled from the source path (exactly as
+    /// [`parse_session_as`](crate::parse_session_as) does). Returns `None` when the source hasn't
+    /// grown since the last poll (idle). This is the residency cache's single assembly point — it
+    /// needs no core internals.
+    pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
+        if !self.advance_from_source()? {
+            return Ok(None);
+        }
+        Ok(Some(self.snapshot_session()))
+    }
+
+    fn snapshot_session(&mut self) -> Session {
+        let mut session = self.builder.snapshot();
+        session.cwd = crate::discover::session_cwd(&self.path);
+        crate::engine::session::resolve_session_relationships(
+            &mut session,
+            &self.graph,
+            &self.path,
+        );
+        session
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::parse_session_with_graph;
-    use crate::SessionGraph;
-    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tmp() -> std::path::PathBuf {
@@ -117,7 +133,7 @@ mod tests {
             let s = crate::engine::parse_session_as(agent, &path).unwrap();
             assert_eq!(
                 format!("{:?}", fblocks),
-                format!("{:?}", s.blocks),
+                format!("{:?}", s.blocks()),
                 "blocks differ after chunk {i} ({agent:?})"
             );
             assert_eq!(ftimes, s.user_times, "user_times differ after chunk {i}");
@@ -133,7 +149,7 @@ mod tests {
         let s = crate::engine::parse_session_as(agent, &path).unwrap();
         assert_eq!(
             format!("{:?}", fblocks),
-            format!("{:?}", s.blocks),
+            format!("{:?}", s.blocks()),
             "blocks differ after rewrite ({agent:?})"
         );
         let _ = std::fs::remove_file(&path);
@@ -169,87 +185,63 @@ mod tests {
     }
 
     #[test]
-    fn follow_matches_full_reparse_codex_subagents() {
+    fn follow_resolves_a_codex_child_created_after_the_spawn_poll() {
+        static N: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "cr-follow-agents-{}-{}",
+            "cr-follow-codex-tree-{}-{}",
             std::process::id(),
-            AtomicUsize::new(0).fetch_add(1, Ordering::Relaxed)
+            N.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::remove_dir_all(&root).ok();
-        let sessions = root.join("sessions");
-        let day = sessions.join("2026/07/27");
-        std::fs::create_dir_all(&day).unwrap();
-        let parent = day.join("rollout-parent.jsonl");
-        let child = day.join("rollout-child.jsonl");
-        let chunks = [
-            r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn","arguments":"{\"task_name\":\"review\",\"message\":\"encrypted\"}"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn","output":"{\"task_name\":\"/root/review\"}"}}"#,
-            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
-        ];
-        std::fs::write(&parent, "").unwrap();
-        let graph = SessionGraph::from_backend(Box::new(
-            crate::codex_discover::CodexSessionGraph::open_in(&sessions, &parent),
-        ));
-        let mut follower = FollowParser::open_with_graph(Agent::Codex, &parent, graph.clone());
+        let sessions = root.join("sessions/2026/07/28");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        let child = sessions.join("rollout-child.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"late\",\"message\":\"hidden\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/late\"}"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let transcript = crate::Transcript::open(Agent::Codex, &parent);
+        let mut follower = transcript.follow();
+        let first = follower.poll_session().unwrap().expect("initial bytes");
+        assert!(first.sub_agents.is_empty(), "child does not exist yet");
 
-        for (index, chunk) in chunks.iter().enumerate() {
-            writeln!(
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&parent)
-                    .unwrap(),
-                "{chunk}"
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/late","agent_nickname":"Late"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"late child"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&parent)
+            .unwrap()
+            .write_all(
+                concat!(
+                    r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"still working"}]}}"#,
+                    "\n"
+                )
+                .as_bytes(),
             )
             .unwrap();
-            if index == 1 {
-                let child_meta = serde_json::json!({
-                    "type": "session_meta",
-                    "payload": {
-                        "id": "child",
-                        "cwd": "/repo",
-                        "source": {
-                            "subagent": {
-                                "thread_spawn": {
-                                    "parent_thread_id": "parent",
-                                    "agent_path": "/root/review",
-                                    "agent_nickname": "Hume"
-                                }
-                            }
-                        },
-                        "agent_path": "/root/review",
-                        "agent_nickname": "Hume"
-                    }
-                });
-                std::fs::write(&child, format!("{child_meta}\n")).unwrap();
-            }
 
-            let (follow_blocks, follow_times, follow_metrics) =
-                follower.poll().unwrap().expect("parent advanced");
-            let batch = parse_session_with_graph(Agent::Codex, &parent, graph.clone()).unwrap();
-            assert_eq!(
-                format!("{follow_blocks:?}"),
-                format!("{:?}", batch.blocks),
-                "blocks differ after chunk {index}"
-            );
-            assert_eq!(follow_times, batch.user_times);
-            assert_eq!(follow_metrics, batch.metrics);
-        }
+        let second = follower.poll_session().unwrap().expect("parent advanced");
+        let meta = second.sub_agents.get("child").expect("late child resolved");
+        assert_eq!(meta.transcript.as_deref(), Some(child.as_path()));
+        assert!(transcript.subagent("child").is_some());
 
-        let final_blocks = parse_session_with_graph(Agent::Codex, &parent, graph.clone())
-            .unwrap()
-            .blocks;
-        assert!(
-            matches!(
-                &final_blocks[0],
-                crate::Block::SubAgent(agent)
-                    if agent.agent_id == "child"
-                        && agent.agent_type == "Hume"
-                        && agent.status == crate::AgentStatus::Completed
-            ),
-            "{final_blocks:#?}"
-        );
-        assert_eq!(graph.subagent_source(&parent, "child"), Some(child));
-        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

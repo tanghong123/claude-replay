@@ -31,7 +31,6 @@ pub(crate) struct CodexSessionGraph {
     anchor_path: PathBuf,
     anchor_id: Option<String>,
     nodes: Vec<CodexGraphNode>,
-    refresh_attempted: HashSet<(String, String)>,
 }
 
 impl CodexSessionGraph {
@@ -56,7 +55,6 @@ impl CodexSessionGraph {
             anchor_path: anchor.to_path_buf(),
             anchor_id,
             nodes,
-            refresh_attempted: HashSet::new(),
         }
     }
 
@@ -184,12 +182,10 @@ impl SessionGraphBackend for CodexSessionGraph {
         if self.anchor_id.is_none() && graph_node_from_path(source).is_some() {
             self.refresh();
         }
-        let unresolved = self.resolve_blocks(source, blocks);
-        let mut refresh = false;
-        for key in unresolved {
-            refresh |= self.refresh_attempted.insert(key);
-        }
-        if refresh {
+        if !self.resolve_blocks(source, blocks).is_empty() {
+            // `resolve` is only called after a batch parse or when FollowParser observes new
+            // source bytes, never on an idle tick. Refreshing here therefore catches a child
+            // rollout created after its spawn without continuously rescanning the store.
             self.refresh();
             self.resolve_blocks(source, blocks);
         }
@@ -903,7 +899,7 @@ mod tests {
         )));
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
 
@@ -912,11 +908,20 @@ mod tests {
         };
         assert_eq!(spawn.agent_id, "c");
         assert_eq!(spawn.agent_type, "Hume");
-        assert_eq!(spawn.status, crate::AgentStatus::Completed);
+        assert_eq!(
+            spawn.status,
+            crate::AgentStatus::Running,
+            "spawn events keep their launch status"
+        );
         assert!(matches!(
             &blocks[1],
             crate::Block::AgentDone { agent_id, .. } if agent_id == "c"
         ));
+        assert_eq!(
+            crate::engine::build_sub_agents(&blocks)["c"].status,
+            crate::AgentStatus::Completed,
+            "the session map derives terminal status from AgentDone"
+        );
         assert_eq!(graph.subagent_source(&parent, "c"), Some(child));
     }
 
@@ -946,7 +951,7 @@ mod tests {
         )));
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
 
@@ -962,7 +967,7 @@ mod tests {
         ));
         let mut missing = crate::engine::parse_session_as(crate::Agent::Codex, &missing_parent)
             .unwrap()
-            .blocks;
+            .blocks();
         missing_graph.resolve_relationships(&missing_parent, &mut missing);
         assert!(matches!(
             &missing[0],
@@ -980,6 +985,9 @@ mod tests {
             &fixture.sessions,
             &parent,
         )));
+        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
+            .unwrap()
+            .blocks();
         let child = fixture.graph_rollout(
             "late",
             &cwd,
@@ -987,10 +995,6 @@ mod tests {
             Some("/root/review/late_child"),
             Some("Late"),
         );
-        let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
-            .unwrap()
-            .blocks;
-
         graph.resolve_relationships(&parent, &mut blocks);
 
         assert!(matches!(
@@ -1043,7 +1047,7 @@ mod tests {
         fs::remove_file(&child).unwrap();
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
 
@@ -1055,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_refreshes_each_unresolved_spawn_only_once() {
+    fn graph_retries_an_unresolved_spawn_after_the_source_advances() {
         let fixture = Fixture::new();
         let cwd = fixture.root.join("repo");
         let parent = fixture.graph_rollout("p", &cwd, None, None, None);
@@ -1066,7 +1070,7 @@ mod tests {
         )));
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
         fixture.graph_rollout(
@@ -1080,7 +1084,7 @@ mod tests {
 
         assert!(matches!(
             &blocks[0],
-            crate::Block::SubAgent(spawn) if spawn.agent_id.is_empty()
+            crate::Block::SubAgent(spawn) if spawn.agent_id == "too-late"
         ));
     }
 
@@ -1097,7 +1101,7 @@ mod tests {
         )));
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
 
@@ -1126,7 +1130,7 @@ mod tests {
         let graph = crate::SessionGraph::open(crate::Agent::Codex, &parent);
         let mut blocks = crate::engine::parse_session_as(crate::Agent::Codex, &parent)
             .unwrap()
-            .blocks;
+            .blocks();
 
         graph.resolve_relationships(&parent, &mut blocks);
 

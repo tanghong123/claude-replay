@@ -4,6 +4,7 @@
 use crate::model::UsdCost;
 #[cfg(test)]
 use crate::Agent;
+use std::collections::BTreeMap;
 
 /// A session's token/cost tally.
 ///
@@ -17,14 +18,15 @@ use crate::Agent;
 /// shared value stays stable.
 ///
 /// For a metric a *single* agent reports that the shared struct shouldn't grow a field for,
-/// the intended mechanism is an **accumulating extension bag** — `extra: BTreeMap<String, u64>`
-/// (namespaced snake_case keys, e.g. `reasoning_tokens`, `web_searches`) that the agent's
-/// accumulator folds like the typed counters. Data-only (the standard `footer` shows the typed
-/// fields), and it makes a brand-new category need *no* struct change — the complement to
-/// `#[non_exhaustive]`. Deferred until the first agent-specific metric exists (task #22).
-/// (If `Metrics` is ever persisted — e.g. a `SessionBuilder` checkpoint — add `serde(default)`
+/// the mechanism is the **accumulating extension bag** [`extra`](Self::extra) below — an
+/// agent's accumulator folds keys into it (via its `bump` helper) exactly like the typed
+/// counters. Data-only (the standard `footer` shows the typed fields), and it makes a brand-new
+/// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
+/// through the [`MetricsAccumulator`](crate::adapter) interface and ready to use; no agent
+/// currently populates it, so `extra` is empty in practice.
+/// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
-#[derive(Debug, Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Metrics {
     /// Genuinely-new input tokens (excludes cached content — see the two cache
@@ -42,6 +44,11 @@ pub struct Metrics {
     /// Best-effort estimated cost in US dollars; see [`UsdCost`]. `None` when the model isn't
     /// priced.
     pub cost_usd: Option<UsdCost>,
+    /// **Agent-specific metrics** an accumulator folded in — namespaced snake_case keys (e.g.
+    /// `reasoning_tokens`, `web_searches`), summed across the session. The accumulating
+    /// extension bag: data-only (not shown by the standard [`footer`](Self::footer)), so a
+    /// brand-new category needs no struct change. Empty for an agent that reports none.
+    pub extra: BTreeMap<String, u64>,
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
@@ -100,7 +107,7 @@ pub(crate) fn estimate_cost(
     cache_creation: u64,
     cache_read: u64,
     output: u64,
-) -> Option<f64> {
+) -> Option<UsdCost> {
     price(model).map(|(pi, po)| {
         (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
             + output as f64 / 1e6 * po
@@ -111,7 +118,17 @@ pub(crate) fn estimate_cost(
 /// (`claude_metrics` / `codex_metrics`); the returned [`Metrics`] shape is shared.
 #[cfg(test)]
 pub(crate) fn parse_reader_for<R: std::io::BufRead>(agent: Agent, mut reader: R) -> Metrics {
-    crate::adapter::adapter(agent).parse_reader(&mut reader)
+    let mut acc = crate::adapter::adapter(agent).metrics_acc();
+    let mut line = String::new();
+    while {
+        line.clear();
+        matches!(reader.read_line(&mut line), Ok(n) if n > 0)
+    } {
+        if let Ok(value) = serde_json::from_str(line.trim_end()) {
+            acc.push(&value);
+        }
+    }
+    acc.finish()
 }
 
 pub(crate) fn human_tokens(n: u64) -> String {

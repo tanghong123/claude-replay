@@ -244,26 +244,28 @@ agent-neutrality is compiler-enforced:
 - **`claude-replay-core/`** — the agent-agnostic engine. Its only dependencies are
   `serde_json` + `anyhow` (no TUI/HTML/CLI), so nothing here can reach into presentation.
   - **Shared engine:** `model.rs` (the `Block` data-model vocabulary + block classification —
-    `block_kind`/`fold_key`) · `engine/` (`replay` = the L2 `Replayer`/`Shaping` fold +
-    `parse_stream` driver that *builds* blocks · `message` · `session` · `index` · `store` ·
-    `path` · `time`) · `metrics.rs` (the `Metrics` value + pricing) · `discover.rs` (the
+    `block_kind`/`fold_key`) · `engine/` (`replay` = the L2 `Replayer`/`Shaping` fold ·
+    `builder` · `message` · `session` · `index` · `path` · `time`) · `transcript.rs`
+    (the canonical source handle) · `reader.rs` · `metrics.rs` (the `Metrics` value + pricing) · `discover.rs` (the
     `Candidate` type, `detect_agent`, `session_cwd`, `session_id`, `subagent_source`,
     `resolve_any`) · `follow.rs` · `session_graph.rs` (the cloneable, operation-scoped
-    relationship resolver) · `tail.rs` · `agent.rs` · `adapter.rs` (the
+    relationship resolver used internally by `Transcript`) · `agent.rs` · `adapter.rs` (the
     `TranscriptAdapter` trait + registry — the single per-agent seam).
   - **Per-agent adapters** (symmetric — each is Layer 1 only, feeding the shared engine):
     `claude_model.rs` / `codex_model.rs` (tokenizer + `Shaping`), `claude_metrics.rs` /
     `codex_metrics.rs` (token/cost folding), `claude_discover.rs` / `codex_discover.rs`
     (that agent's transcript store and `SessionGraph` backend). Both normalize lifecycle
-    events to shared `SubAgent`/`AgentDone` blocks; format-specific parent/child association,
-    source lookup, and status resolution remain inside the adapter. Adding an agent is a new
+    events to shared `SubAgent`/`AgentDone` blocks; format-specific parent/child association
+    and source lookup remain inside the adapter, while `Session.sub_agents` derives status from
+    the shared events. Adding an agent is a new
     `*_model`/`*_metrics`/`*_discover` trio plus one `impl TranscriptAdapter` row in
     `adapter.rs` — the shared engine stays untouched.
 - **`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI, plus the
-  `agent-jdi` binary. `markdown`/`render`/`wrap`/`view`/`app`/`theme`/`highlight`/`picker` ·
+  `agent-jdi` binary. `tui/` · `present.rs` · `highlight.rs` ·
   `html_export/` (`mod`=render core, `bundle`=offline writers, `serve`=live server) ·
-  `jdi/` (see [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md)). TUI and HTML navigation consume
-  the shared graph and blocks without Claude/Codex-specific UX branches.
+  `cache/` (`SessionCache`) · `jdi/` (see [`src/jdi/DESIGN.md`](src/jdi/DESIGN.md)).
+  TUI and HTML navigation consume `Transcript`/`Session` without Claude/Codex-specific UX
+  branches.
 
 The golden visual-parity fixtures **and** the comparison harness live in a separate
 private repo, `claude-replay-eval` (they contain real Claude session content and are

@@ -6,10 +6,16 @@ use std::sync::{Arc, Mutex};
 /// Agent-neutral, operation-scoped view of transcript relationships.
 ///
 /// Clones deliberately share one backend so a batch parse, a live follower, and
-/// an HTML traversal observe the same relationship cache and refresh budget.
+/// an HTML traversal observe the same operation boundary and resolver state.
 #[derive(Clone)]
-pub struct SessionGraph {
+pub(crate) struct SessionGraph {
     backend: Arc<Mutex<Box<dyn SessionGraphBackend>>>,
+}
+
+impl std::fmt::Debug for SessionGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionGraph").finish_non_exhaustive()
+    }
 }
 
 pub(crate) trait SessionGraphBackend: Send {
@@ -18,7 +24,7 @@ pub(crate) trait SessionGraphBackend: Send {
 }
 
 impl SessionGraph {
-    pub fn open(agent: Agent, anchor: &Path) -> Self {
+    pub(crate) fn open(agent: Agent, anchor: &Path) -> Self {
         crate::adapter::adapter(agent).session_graph(anchor)
     }
 
@@ -30,12 +36,11 @@ impl SessionGraph {
 
     /// Resolve agent-specific relationship identifiers and lifecycle state without
     /// loading child transcript content.
-    pub fn resolve_relationships(&self, source: &Path, blocks: &mut [Block]) {
+    pub(crate) fn resolve_relationships(&self, source: &Path, blocks: &mut [Block]) {
         self.with_backend(|backend| backend.resolve(source, blocks));
-        synchronize_terminal_status(blocks);
     }
 
-    pub fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+    pub(crate) fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         self.with_backend(|backend| backend.subagent_source(root, child_id))
     }
 
@@ -45,39 +50,6 @@ impl SessionGraph {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(backend.as_mut())
-    }
-}
-
-fn synchronize_terminal_status(blocks: &mut [Block]) {
-    let terminal: Vec<_> = blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::AgentDone {
-                agent_id,
-                status,
-                result,
-                ..
-            } if !agent_id.is_empty() && status.is_terminal() => {
-                Some((agent_id.clone(), *status, result.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-
-    for block in blocks {
-        let Block::SubAgent(agent) = block else {
-            continue;
-        };
-        if let Some((_, status, result)) = terminal
-            .iter()
-            .rev()
-            .find(|(id, _, _)| id == &agent.agent_id)
-        {
-            agent.status = *status;
-            if agent.result.is_none() {
-                agent.result.clone_from(result);
-            }
-        }
     }
 }
 
@@ -193,41 +165,5 @@ mod tests {
         assert_eq!(graph.subagent_source(&root, "child"), Some(child));
 
         std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn relationship_resolution_synchronizes_terminal_status() {
-        let graph = SessionGraph::from_backend(Box::new(CountingBackend {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }));
-        let mut blocks = vec![
-            Block::SubAgent(SubAgent {
-                agent_id: "child".into(),
-                tool_use_id: "call".into(),
-                agent_type: "agent".into(),
-                description: "review".into(),
-                prompt: String::new(),
-                status: AgentStatus::Running,
-                result: None,
-                output_file: None,
-                blocks: Vec::new(),
-                subtree_cost: None,
-            }),
-            Block::AgentDone {
-                agent_id: "child".into(),
-                agent_type: String::new(),
-                description: String::new(),
-                status: AgentStatus::Completed,
-                result: Some("PASS".into()),
-            },
-        ];
-
-        graph.resolve_relationships(Path::new("root.jsonl"), &mut blocks);
-
-        let Block::SubAgent(spawn) = &blocks[0] else {
-            panic!("expected spawn");
-        };
-        assert_eq!(spawn.status, AgentStatus::Completed);
-        assert_eq!(spawn.result.as_deref(), Some("PASS"));
     }
 }

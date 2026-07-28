@@ -37,6 +37,31 @@ on real 78/298 MB transcripts — results can precede their tool_use (compaction
 sidechain reordering). The design was corrected with a tool_use-id **pre-scan** pass
 + a `pending` buffer; the sections below are updated to match what shipped.
 
+> **CORRECTION (2026-07): the "results precede their tool_use" rationale is not borne
+> out by the data.** A full re-scan of **all 209** transcripts under `~/.claude/projects`
+> (recursive, incl. every sub-agent file, and the two largest at 206 MB / 78 MB) found
+> **0** transcripts with a `tool_result` that precedes *its own* `tool_use`, and **0**
+> with a result before the *first* `tool_use` of its id. The `pending` buffer's
+> forward-reference path is therefore never exercised on any transcript on hand, and the
+> pre-scan's orphan-vs-forward-ref decision never fires.
+>
+> The one "differing" file (the 78 MB `libgen-downloader/c3f74378`, cited above) is a
+> **forked/resumed replay**, not reordering: all 256 duplicate ids are a clean
+> `U R U R` shape — two self-contained `use…result` copies of the same id, ~3,400
+> records apart (same `uuid`+`timestamp`, a re-emitted ~1,900-record span). That means
+> `result₁` sits textually *before* the duplicate `use₂` — which is almost certainly
+> what was mis-read as "a result precedes a use with that id" — but every result is
+> still preceded by *its own* copy's use, so it is a **duplication** signature, not an
+> **ordering** one. It breaks old 0.2.2's global last-wins by id (see "Duplicate ids"),
+> which is the real source of the 1/30 divergence; the current fold's positional
+> `tool_slot` pairs each copy correctly in a single forward pass.
+>
+> **Consequence:** the pre-scan (pass 1) is dead weight for the batch path on all
+> available data. A **one-pass** parse (accumulate unmatched results, join at each
+> `tool_use`, resolve any leftover orphans at finish) is byte-identical here — tracked
+> as a task, gated on the frozen `--dump`/`--dump-html` diffs across both agents. The
+> only genuinely unverifiable risk is the 298 MB file that is no longer on disk.
+
 ## Problem
 
 Opening a transcript peaks at **~7× the file size in RAM**, measured on real
@@ -225,8 +250,12 @@ remove a `Vec<Value>` allocation, add a small hashmap. No double-parse. (The ear
 
 ## Risks & edge cases
 
-- **Ordering.** Real transcripts DO put results before their tool_use — handled by
+- **Ordering.** ~~Real transcripts DO put results before their tool_use~~ — handled by
   the id pre-scan + `pending` (covered by `result_before_tool_use_still_joins`).
+  **See the 2026-07 correction at the top:** no transcript on hand (0/209) actually puts
+  a result before its tool_use; the pre-scan + `pending` are unexercised, and dropping
+  them (one-pass) is a tracked task. `result_before_tool_use_still_joins` remains a
+  valid *synthetic* guard for the reversed-order case, not evidence it occurs in the wild.
 - **Duplicate ids.** Forked/resumed sessions reuse ids; new pairs chronologically
   vs old's global last-wins (see "Duplicate ids"). More correct, always a superset.
 - **`&str` callers.** `parse(&str, …)` (live tail + tests) now does two cheap passes

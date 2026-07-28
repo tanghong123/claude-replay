@@ -8,7 +8,7 @@ use super::{
     render_snapshot, serve, session_id, AgentInfo, AssetSink, ChildRef,
 };
 use crate::fold::FoldPolicy;
-use crate::{discover, Agent, Args};
+use crate::{discover, Args};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -16,20 +16,24 @@ use std::path::Path;
 /// one line per block. Re-run each poll cycle in live mode; the loop appends only
 /// the lines that are new since the previous cycle.
 fn build_stream(
-    agent: Agent,
-    path: &Path,
+    transcript: &crate::Transcript,
     fold: &FoldPolicy,
     reveal: bool,
-    graph: crate::SessionGraph,
 ) -> Result<(String, Vec<(String, String)>)> {
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
-    let s = crate::engine::parse_session_with_graph(agent, path, graph)
-        .with_context(|| format!("read transcript {}", path.display()))?;
-    let cwd = s.cwd.map(|p| p.display().to_string()).unwrap_or_default();
+    let s = transcript
+        .parse()
+        .with_context(|| format!("read transcript {}", transcript.path().display()))?;
+    let cwd = s
+        .cwd
+        .clone()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let blocks = s.blocks();
     Ok(render_snapshot(
-        agent,
-        path,
-        &s.blocks,
+        transcript.agent(),
+        transcript.path(),
+        &blocks,
         &s.user_times,
         &s.metrics,
         &cwd,
@@ -44,8 +48,8 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     let fold = FoldPolicy::from_args(args);
     let reveal = false;
-    let graph = crate::SessionGraph::open(agent, path);
-    let (jsonl, turns) = build_stream(agent, path, &fold, reveal, graph.clone())?;
+    let transcript = crate::Transcript::open(agent, path);
+    let (jsonl, turns) = build_stream(&transcript, &fold, reveal)?;
     // The page title identifies the session in a browser tab; files are named by session id.
     let title = display_title(agent, path);
 
@@ -56,7 +60,7 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
             return Ok(());
         }
         Some(s) => s.to_string(),
-        None => crate::app::deduce_stem(path, None),
+        None => crate::tui::app::deduce_stem(path, None),
     };
 
     // Live: the page renders the inline snapshot immediately, then polls the
@@ -98,13 +102,11 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     eprintln!("wrote {html_path} + {cpath} (live — open it and it follows; Ctrl-C to stop)");
     println!("{stem}");
     serve::follow_and_append(
-        agent,
-        path,
+        transcript,
         &fold,
         Path::new(&cpath),
         block_lines(&jsonl),
         reveal,
-        graph,
     )
 }
 
@@ -115,26 +117,28 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
 /// only the ONE agent being viewed, not the tree. Returns the jsonl + the direct child
 /// refs (to register/queue). `cwd` is the session cwd (shared by every agent).
 fn agent_stream(
-    agent: Agent,
+    operation: &crate::Transcript,
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
     info: &AgentInfo,
     assets: Option<&mut AssetSink>,
-    graph: crate::SessionGraph,
 ) -> Result<(String, Vec<ChildRef>)> {
     // Parse via the canonical `parse_session_as` — the same entry `build_stream` uses, so both
     // HTML paths go through one place. `cwd` stays the caller-supplied session cwd (every agent
     // in a tree shares the root's, which a sub-agent transcript may not itself record).
-    let s = crate::engine::parse_session_with_graph(agent, &info.source, graph)
+    let transcript = operation.related(&info.source);
+    let s = transcript
+        .parse()
         .with_context(|| format!("read transcript {}", info.source.display()))?;
+    let blocks = s.blocks();
     Ok(render_agent_stream(
-        agent,
+        operation.agent(),
         fold,
         cwd,
         reveal,
         info,
-        &s.blocks,
+        &blocks,
         &s.user_times,
         &s.metrics,
         assets,
@@ -151,7 +155,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let fold = FoldPolicy::from_args(args);
     let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
         Some(s) => std::path::PathBuf::from(s),
-        None => std::path::PathBuf::from(crate::app::deduce_stem(path, None)),
+        None => std::path::PathBuf::from(crate::tui::app::deduce_stem(path, None)),
     };
     std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     let cwd = discover::session_cwd(path)
@@ -159,7 +163,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .unwrap_or_default();
     let title = display_title(agent, path);
     let root_id = session_id(path);
-    let graph = crate::SessionGraph::open(agent, path);
+    let operation = crate::Transcript::open(agent, path);
     let mut sink = AssetSink::new(&out_dir).with_context(|| "create assets dir")?;
 
     // BFS over sources from the root; each agent's stream is parsed from its OWN source,
@@ -177,15 +181,8 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         if !seen.insert(info.id.clone()) || !info.source.exists() {
             continue;
         }
-        let (jsonl, children) = agent_stream(
-            agent,
-            &fold,
-            &cwd,
-            false,
-            &info,
-            Some(&mut sink),
-            graph.clone(),
-        )?;
+        let (jsonl, children) =
+            agent_stream(&operation, &fold, &cwd, false, &info, Some(&mut sink))?;
         std::fs::write(
             out_dir.join(format!("{}.jsonl", info.id)),
             format!("{jsonl}\n"),
@@ -193,7 +190,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         .with_context(|| format!("write stream {}", info.id))?;
         count += 1;
         for c in children {
-            if let Some(ci) = child_info(&graph, path, &info, c) {
+            if let Some(ci) = child_info(&operation, &info, c) {
                 queue.push_back(ci);
             }
         }

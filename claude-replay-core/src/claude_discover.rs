@@ -11,14 +11,23 @@ use crate::Agent;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Default)]
-pub(crate) struct ClaudeSessionGraph;
+pub(crate) struct ClaudeSessionGraph {
+    root: PathBuf,
+}
+
+impl ClaudeSessionGraph {
+    pub(crate) fn open(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+}
 
 impl SessionGraphBackend for ClaudeSessionGraph {
     fn resolve(&mut self, _source: &Path, _blocks: &mut [crate::Block]) {}
 
-    fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        crate::claude_model::subagent_file(root, child_id)
+    fn subagent_source(&mut self, _root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::claude_model::subagent_file(&self.root, child_id)
     }
 }
 

@@ -4,18 +4,14 @@
 //! The viewer is **read-only** (scroll, fold, search, live-tail); `agent-jdi` reuses
 //! this crate's transcript discovery/parsing to supervise unattended agent runs.
 
-pub mod app;
-mod clipboard;
+mod cache;
 mod fold;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
-mod markdown;
-mod picker;
-mod render;
-mod theme;
-pub mod view;
-mod wrap;
+mod present;
+pub mod tui;
+pub use cache::SessionCache;
 
 // The agent-agnostic parser/replay engine lives in the sibling `claude-replay-core` crate
 // (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
@@ -27,7 +23,8 @@ mod wrap;
 // the core parses a raw agent format — the viewer reaches blocks only through `engine`'s
 // agent-neutral `parse_session*`.
 pub use claude_replay_core::{
-    claude_discover, codex_discover, discover, engine, follow, metrics, model, Agent, SessionGraph,
+    claude_discover, codex_discover, diff, discover, engine, follow, metrics, model, Agent,
+    Transcript,
 };
 
 use anyhow::Result;
@@ -143,7 +140,7 @@ pub fn run_viewer() -> Result<()> {
         let path = if args.target.is_some() || args.latest {
             discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?
         } else {
-            match app::pick_session(&args)? {
+            match tui::app::pick_session(&args)? {
                 Some(p) => p,
                 None => return Ok(()), // user aborted the picker
             }
@@ -158,7 +155,7 @@ pub fn run_viewer() -> Result<()> {
         && args.dump_html.is_none()
         && args.dump_all_html.is_none()
     {
-        return app::run_interactive(&args);
+        return tui::app::run_interactive(&args);
     }
     // Explicit path / session id / --latest: resolve across agents (honoring the
     // --agent filter). The agent for each opened file is auto-detected downstream.
@@ -168,8 +165,8 @@ pub fn run_viewer() -> Result<()> {
     } else if args.dump_html.is_some() {
         html_export::dump_html(&args, &path)
     } else if args.dump.is_some() {
-        app::dump(&args, &path)
+        tui::app::dump(&args, &path)
     } else {
-        app::run(&args, &path)
+        tui::app::run(&args, &path)
     }
 }

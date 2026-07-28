@@ -1,8 +1,8 @@
 //! Terminal wiring + input loop. All view state/drawing lives in `view::View`
 //! (testable headless via ratatui's TestBackend).
 
-use crate::picker::Picker;
-use crate::view::View;
+use crate::tui::picker::Picker;
+use crate::tui::view::View;
 use crate::{discover, Agent, Args};
 use anyhow::Result;
 use crossterm::{
@@ -140,10 +140,10 @@ struct Frame {
     /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
     /// just the newly-appended lines through a persistent `Replayer`.
     follower: Option<crate::follow::FollowParser>,
-    graph: crate::SessionGraph,
     agent: Agent,
     path: PathBuf,
-    from: usize,
+    transcript: crate::Transcript,
+    from: crate::model::BlockIndex,
 }
 
 /// View a session, staying in the viewer across `s`-switches AND sub-agent descents. A
@@ -198,7 +198,12 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 
 /// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
-fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Result<Frame> {
+fn build_frame(
+    args: &Args,
+    path: &Path,
+    can_go_back: bool,
+    from: crate::model::BlockIndex,
+) -> Result<Frame> {
     // The agent is a property of the file — detect it from the contents so the right
     // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
@@ -208,21 +213,23 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
         .unwrap_or("session")
         .to_string();
     let fold = crate::fold::FoldPolicy::from_args(args);
-    let graph = crate::SessionGraph::open(agent, path);
     // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
     // resident) and the tail — its first poll folds the whole current file, matching a
     // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
+    let transcript = crate::Transcript::open(agent, path);
     let (blocks, cwd, metrics, follower) = if args.follow {
-        let mut f = crate::follow::FollowParser::open_with_graph(agent, path, graph.clone());
+        let mut f = transcript.follow();
         let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
         (blocks, discover::session_cwd(path), metrics, Some(f))
     } else {
-        let s = crate::engine::parse_session_with_graph(agent, path, graph.clone())?;
-        (s.blocks, s.cwd, s.metrics, None)
+        let s = transcript.parse()?;
+        (s.blocks(), s.cwd, s.metrics, None)
     };
     let mut view = View::new(blocks, title, follower.is_some(), fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
+    // The blocks hold only attachment locators; give the view the transcript to load them from.
+    view.set_source(Some(transcript.clone()));
     view.set_can_open_picker(args.latest);
     view.set_metrics(metrics.footer());
     view.set_footer_segments(metrics.footer_segments());
@@ -230,9 +237,9 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
     Ok(Frame {
         view,
         follower,
-        graph,
         agent,
         path: path.to_path_buf(),
+        transcript,
         from,
     })
 }
@@ -241,7 +248,7 @@ fn build_frame(args: &Args, path: &Path, can_go_back: bool, from: usize) -> Resu
 /// completion) at block index `idx` of `parent`'s view. A spawn reuses its already-parsed
 /// child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads the
 /// child transcript from disk. `None` if `idx` isn't a descendable agent block.
-fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
+fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex) -> Option<Frame> {
     let dref = parent.view.descend_ref_at(idx)?;
     // Own the fields we need so the borrow of `parent.view` ends before we touch
     // `parent.path` / build the view.
@@ -256,17 +263,17 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_file = parent.graph.subagent_source(&parent.path, &agent_id);
+    let child_transcript = parent.transcript.subagent(&agent_id);
     // Parse the child once via the library entry point (enriched: its own sub-agent tree),
     // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
     // metrics instead of a second parse. A running agent's child file often appears (or fills
     // in) AFTER the parent was parsed, so we load it fresh at descend time.
-    let child_session = child_file.as_deref().and_then(|f| {
-        crate::engine::parse_session_with_graph(parent.agent, f, parent.graph.clone()).ok()
-    });
+    let child_session = child_transcript
+        .as_ref()
+        .and_then(|t| t.parse_enriched().ok());
     if blocks.is_empty() {
         if let Some(s) = &child_session {
-            blocks = s.blocks.clone();
+            blocks = s.blocks();
         }
     }
     if blocks.is_empty() {
@@ -276,11 +283,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     // re-folds the child transcript (== the blocks just loaded), then only deltas.
     let follower = args
         .follow
-        .then(|| {
-            child_file.as_deref().map(|f| {
-                crate::follow::FollowParser::open_with_graph(parent.agent, f, parent.graph.clone())
-            })
-        })
+        .then(|| child_transcript.as_ref().map(|t| t.follow()))
         .flatten();
     let fold = crate::fold::FoldPolicy::from_args(args);
     let mut view = View::new(blocks, title, follower.is_some(), fold);
@@ -288,6 +291,8 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent.view.cwd_ref().cloned());
+    // A descended child's attachment locators point into the child's own transcript file.
+    view.set_source(child_transcript.clone());
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
     // transcript) plus the rolled-up subtree cost — so the hint row is node-scoped. Reuse the
     // metrics from the parse above (no second read).
@@ -301,12 +306,13 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: usize) -> Option<Frame> {
         segs.push((format!("~${cost:.2}"), 7));
     }
     view.set_footer_segments(segs);
+    let transcript = child_transcript?;
     Some(Frame {
         view,
         follower,
-        graph: parent.graph.clone(),
         agent: parent.agent,
-        path: child_file.unwrap_or_else(|| parent.path.clone()),
+        path: transcript.path().to_path_buf(),
+        transcript,
         from: idx,
     })
 }
@@ -320,7 +326,7 @@ enum Outcome {
     /// Switch to another session (chosen via the `s` switcher overlay).
     Switch(PathBuf),
     /// Descend into the sub-agent at this block index of the current view.
-    Descend(usize),
+    Descend(crate::model::BlockIndex),
     /// Ascend to the parent view (the sub-agent `Esc`/`⌫`), landing on the spawn block.
     Ascend,
 }
@@ -433,8 +439,8 @@ fn event_loop<B: ratatui::backend::Backend>(
                     // Enter activates the focused block: fold toggle, descend a sub-agent,
                     // or download (embedded) / reveal (path-only) an attachment.
                     KeyCode::Enter => match view.activate_focused() {
-                        Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
-                        Some(crate::view::Action::Descend(idx)) => {
+                        Some(crate::tui::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
+                        Some(crate::tui::view::Action::Descend(idx)) => {
                             return Ok(Outcome::Descend(idx))
                         }
                         None => {}
@@ -468,7 +474,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                 MouseEventKind::Down(MouseButton::Left) if view.agents_popup_open() => {}
                 MouseEventKind::Drag(MouseButton::Left) if view.agents_popup_open() => {}
                 MouseEventKind::Up(MouseButton::Left) if view.agents_popup_open() => {
-                    if let crate::view::PopupClick::Descend(idx) = view.agents_popup_click(m.row) {
+                    if let crate::tui::view::PopupClick::Descend(idx) =
+                        view.agents_popup_click(m.row)
+                    {
                         return Ok(Outcome::Descend(idx));
                     }
                 }
@@ -487,7 +495,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                 MouseEventKind::Up(MouseButton::Left) => {
                     if view.dragged() {
                         if let Some(text) = view.take_selection_text() {
-                            crate::clipboard::copy(&text);
+                            crate::tui::clipboard::copy(&text);
                         }
                     } else {
                         view.clear_selection();
@@ -497,8 +505,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                             // A click activates whatever it lands on: descend a sub-agent,
                             // download/reveal an attachment (or a tool-header path), else fold.
                             match view.click_at(m.row, m.column) {
-                                Some(crate::view::Action::Reveal(p)) => reveal_in_file_manager(&p),
-                                Some(crate::view::Action::Descend(idx)) => {
+                                Some(crate::tui::view::Action::Reveal(p)) => {
+                                    reveal_in_file_manager(&p)
+                                }
+                                Some(crate::tui::view::Action::Descend(idx)) => {
                                     return Ok(Outcome::Descend(idx))
                                 }
                                 None => {}
@@ -506,10 +516,12 @@ fn event_loop<B: ratatui::backend::Backend>(
                         } else if row == view.content_rows() {
                             // Footer row: the nav labels are click targets.
                             match view.footer_click(m.column as usize) {
-                                crate::view::FooterHit::EscBack if descended => {
+                                crate::tui::view::FooterHit::EscBack if descended => {
                                     return Ok(Outcome::Ascend)
                                 }
-                                crate::view::FooterHit::ActiveAgents => view.open_agents_popup(),
+                                crate::tui::view::FooterHit::ActiveAgents => {
+                                    view.open_agents_popup()
+                                }
                                 _ => {}
                             }
                         }
@@ -592,7 +604,7 @@ fn dump_width(args: &Args) -> usize {
         .ok()
         .map(|(c, _)| c as usize)
         .filter(|c| *c > 0)
-        .unwrap_or(crate::render::DUMP_WIDTH)
+        .unwrap_or(crate::tui::render::DUMP_WIDTH)
 }
 
 /// `--dump`: render the whole transcript at a chosen width and either print plain
@@ -602,7 +614,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     // Dogfood the library entry point: one `parse_session_enriched_as` yields the full block
     // tree (incl. sub-agents). `--dump` only needs the blocks here.
-    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks;
+    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks();
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.

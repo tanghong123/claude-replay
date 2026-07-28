@@ -19,9 +19,19 @@ pub(crate) struct MetricsAcc {
     output: u64,
     model: String,
     span: TimeSpan,
+    extra: std::collections::BTreeMap<String, u64>,
 }
 
 impl MetricsAcc {
+    /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
+    /// key). The seam for a Claude-only counter (e.g. `reasoning_tokens`): call this from
+    /// [`push`](Self::push) when the relevant JSON key is seen. Nothing calls it yet — the
+    /// interface is ready for the first such metric (task #22).
+    #[allow(dead_code)]
+    pub(crate) fn bump(&mut self, key: &str, n: u64) {
+        *self.extra.entry(key.to_string()).or_default() += n;
+    }
+
     pub(crate) fn push(&mut self, v: &Value) {
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         if let Some(u) = v.pointer("/message/usage") {
@@ -61,6 +71,7 @@ impl MetricsAcc {
             model: self.model,
             duration_secs,
             cost_usd,
+            extra: self.extra,
         }
     }
 }
@@ -74,6 +85,21 @@ mod tests {
     /// default path with Claude's accumulator.
     fn parse_reader(jsonl: &str) -> Metrics {
         parse_reader_for(crate::Agent::Claude, std::io::Cursor::new(jsonl))
+    }
+
+    /// The agent-specific extension seam: `bump` accumulates by key and `finish` emits the bag.
+    /// (No production agent populates `extra` yet; this exercises the interface end-to-end.)
+    #[test]
+    fn bump_accumulates_agent_specific_metrics_into_extra() {
+        let mut acc = MetricsAcc::default();
+        acc.bump("reasoning_tokens", 30);
+        acc.bump("web_searches", 1);
+        acc.bump("reasoning_tokens", 12);
+        let m = acc.finish();
+        assert_eq!(m.extra.get("reasoning_tokens"), Some(&42)); // summed
+        assert_eq!(m.extra.get("web_searches"), Some(&1));
+        // Untouched by the default parse — `extra` stays empty when no agent bumps it.
+        assert!(parse_reader("").extra.is_empty());
     }
 
     #[test]

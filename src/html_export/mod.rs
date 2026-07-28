@@ -13,10 +13,14 @@
 //! fragments. Everything that reaches the page is HTML-escaped here; the renderer
 //! uses `textContent` for all raw text so nothing can inject markup.
 
+use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
-use crate::model::{AttachmentContent, Block};
-use crate::render;
-use crate::{discover, highlight, Agent};
+use crate::highlight;
+use crate::model::{AttachmentContent, Block, LoadedAttachment};
+use crate::present::{
+    display_name, edit_summary, spawn_chip, thinking_summary, write_content, WRITE_PREVIEW,
+};
+use crate::{discover, Agent, Transcript};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -261,7 +265,7 @@ fn numbered_part(content: &str, token: &str, cap: usize) -> Value {
 }
 
 /// Diff rows for an Edit, as `[tag, num|null, text]` triples for the JS renderer. Delegates
-/// the classification + line-numbering to the shared [`render::diff_row_groups`] (the same
+/// the classification + line-numbering to the shared [`diff_row_groups`] (the same
 /// logic the TUI renders), so real-file-line-number (patch) vs local-numbering (fallback)
 /// behavior can't drift between the two presenters. The gutter grouping is a TUI concern —
 /// here the groups are simply flattened.
@@ -271,17 +275,17 @@ fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     };
     let mut rows: Vec<Value> = Vec::new();
     let (mut adds, mut dels) = (0usize, 0usize);
-    for row in render::diff_row_groups(diffs, patch.as_deref())
+    for row in diff_row_groups(diffs, patch.as_deref())
         .into_iter()
         .flat_map(|g| g.rows)
     {
         let tag = match row.kind {
-            render::DiffKind::Ctx => "ctx",
-            render::DiffKind::Add => {
+            DiffKind::Ctx => "ctx",
+            DiffKind::Add => {
                 adds += 1;
                 "add"
             }
-            render::DiffKind::Del => {
+            DiffKind::Del => {
                 dels += 1;
                 "del"
             }
@@ -337,7 +341,12 @@ struct Emitter<'a> {
     /// written file? Set only for the offline `--dump-all-html` bundle (portable + offline
     /// downloadable); `None` for served (`reveal` Blob/data-URI) and single-file exports.
     assets: Option<&'a mut AssetSink>,
-    next_block: usize,
+    /// The transcript these blocks came from — the source for loading a `Deferred` attachment's
+    /// bytes on demand (once, when the block is emitted), instead of holding them resident.
+    /// `None` when no loading is needed (a portable `--dump-html` shows the name only) or in a
+    /// unit test with no backing file.
+    transcript: Option<&'a Transcript>,
+    next_block: crate::model::BlockIndex,
     turn: usize,
     /// `(anchor id, label)` per user turn — becomes the sidebar.
     turns: Vec<(String, String)>,
@@ -347,6 +356,16 @@ impl Emitter<'_> {
     fn block_id(&mut self) -> String {
         self.next_block += 1;
         format!("b{}", self.next_block)
+    }
+
+    /// Load a `Deferred` attachment's bytes from the transcript on demand — returns `None` for a
+    /// path-only (`None`) locator, a missing transcript, or a read/miss. The returned value is
+    /// owned and dropped by the caller after it's embedded, so nothing stays resident.
+    fn load_attachment(&self, content: &AttachmentContent) -> Option<LoadedAttachment> {
+        let AttachmentContent::Deferred { at, index } = content else {
+            return None;
+        };
+        self.transcript?.load_attachment(*at, *index).ok().flatten()
     }
 
     /// One block → its JSON object, recursing into a turn's absorbed tool calls.
@@ -384,7 +403,7 @@ impl Emitter<'_> {
                     "preview".into(),
                     json!(format!("{}: {}", sa.agent_type, sa.description)),
                 );
-                head.insert("chips".into(), json!([chip(crate::render::spawn_chip(sa))]));
+                head.insert("chips".into(), json!([chip(spawn_chip(sa))]));
                 // Cross-agent navigation: link the spawn to the child's own stream.
                 if self.linked && !sa.agent_id.is_empty() {
                     head.insert("child".into(), json!(format!("?session={}", sa.agent_id)));
@@ -450,22 +469,25 @@ impl Emitter<'_> {
             // name shows; the served `--html` page also gets the path/content to act on.
             Block::Attachment(a) => {
                 o.insert("id".into(), json!(self.block_id()));
+                let downloadable = matches!(a.content, AttachmentContent::Deferred { .. });
                 head.insert("att_kind".into(), json!(a.kind.as_str()));
                 head.insert("att_name".into(), json!(a.name.clone()));
-                head.insert("att_dl".into(), json!(a.content.is_some()));
+                head.insert("att_dl".into(), json!(downloadable));
                 // Only a served page (`--html`, `reveal == true`) gets the payload/path
                 // to act on; a portable `--dump-html` export shows the name alone. The
                 // JS downloads embedded content via a Blob (text) or a `data:` URI
                 // (image) — no server endpoint needed — and reveals a path via `/__reveal`.
+                // The bytes are loaded from the transcript here, at emit time (once per
+                // attachment), embedded, and dropped — never held resident.
                 if self.reveal {
                     if let Some(p) = &a.path {
                         head.insert("att_path".into(), json!(p));
                     }
-                    match &a.content {
-                        Some(AttachmentContent::Text(t)) => {
+                    match self.load_attachment(&a.content) {
+                        Some(LoadedAttachment::Text(t)) => {
                             head.insert("att_text".into(), json!(t));
                         }
-                        Some(AttachmentContent::Base64 { mime, b64 }) => {
+                        Some(LoadedAttachment::Base64 { mime, b64 }) => {
                             head.insert(
                                 "att_datauri".into(),
                                 json!(format!("data:{mime};base64,{b64}")),
@@ -473,13 +495,13 @@ impl Emitter<'_> {
                         }
                         None => {}
                     }
-                } else if let (Some(sink), Some(content)) =
-                    (self.assets.as_deref_mut(), a.content.as_ref())
-                {
-                    // Offline bundle: write the embedded bytes into `assets/` and link the
-                    // block to the file (a real offline download), de-conflicting names.
-                    if let Some(href) = sink.materialize(&a.name, a.path.as_deref(), content) {
-                        head.insert("att_href".into(), json!(href));
+                } else if let Some(loaded) = self.load_attachment(&a.content) {
+                    if let Some(sink) = self.assets.as_deref_mut() {
+                        // Offline bundle: write the embedded bytes into `assets/` and link the
+                        // block to the file (a real offline download), de-conflicting names.
+                        if let Some(href) = sink.materialize(&a.name, a.path.as_deref(), &loaded) {
+                            head.insert("att_href".into(), json!(href));
+                        }
                     }
                 }
             }
@@ -516,7 +538,7 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(self.block_id()));
                 // The exact collapsed summary the TUI renders — one shared source so the two
                 // can't drift; HTML prepends the `✻` glyph.
-                let summary = render::thinking_summary(text, *duration_secs, tools);
+                let summary = thinking_summary(text, *duration_secs, tools);
                 head.insert("summary".into(), json!(format!("✻ {summary}")));
                 if !tools.is_empty() {
                     let items: Vec<Value> = tools.iter().map(|t| self.block(t, None)).collect();
@@ -544,8 +566,8 @@ impl Emitter<'_> {
                 // The tool's display name (same as the fold header) drives the
                 // client-side "filter by tool use" dropdown — one `data-tool` per
                 // tool fold, counted and grouped in the browser.
-                o.insert("tool".into(), json!(render::display_name(name)));
-                head.insert("name".into(), json!(render::display_name(name)));
+                o.insert("tool".into(), json!(display_name(name)));
+                head.insert("name".into(), json!(display_name(name)));
                 head.insert("target".into(), json!(target));
                 head.insert(
                     "dot".into(),
@@ -573,16 +595,14 @@ impl Emitter<'_> {
                                 chips.push(chip_class("del", format!("−{dels}")));
                             }
                             head.insert("chips".into(), json!(chips));
-                            body.push(
-                                json!({ "p": "note", "x": render::edit_summary(adds, dels) }),
-                            );
+                            body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
                             body.push(part);
                         } else if let Some(out) = output {
                             body.push(pre_part(out));
                         }
                     }
                     "write" => {
-                        let content = render::write_content(diffs);
+                        let content = write_content(diffs);
                         let n = content.lines().count();
                         head.insert(
                             "chips".into(),
@@ -592,14 +612,14 @@ impl Emitter<'_> {
                             "p": "note",
                             "x": format!("Wrote {n} lines to {target}"),
                         }));
-                        body.push(numbered_part(content, token, render::WRITE_PREVIEW));
+                        body.push(numbered_part(content, token, WRITE_PREVIEW));
                     }
                     "read" => {
                         if let Some(n) = read_lines {
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
                         }
                         if let Some(out) = output {
-                            body.push(numbered_part(out, token, render::WRITE_PREVIEW));
+                            body.push(numbered_part(out, token, WRITE_PREVIEW));
                         }
                     }
                     _ => {
@@ -626,7 +646,10 @@ impl Emitter<'_> {
 
 // ── document assembly ────────────────────────────────────────────────────
 
-/// Build the append-only JSONL stream: one `meta` line, then one line per block.
+/// Build the append-only JSONL stream: one `meta` line, then one line per block. `transcript`
+/// is the source for loading `Deferred` attachment bytes on demand (`None` when no loading is
+/// needed — a portable export shows the name only).
+#[allow(clippy::too_many_arguments)]
 fn build_jsonl(
     blocks: &[Block],
     user_times: &[Option<f64>],
@@ -634,9 +657,12 @@ fn build_jsonl(
     cwd: &str,
     reveal: bool,
     linked: bool,
+    transcript: Option<&Transcript>,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
-    build_jsonl_inner(blocks, user_times, fold, cwd, reveal, linked, None, meta)
+    build_jsonl_inner(
+        blocks, user_times, fold, cwd, reveal, linked, None, transcript, meta,
+    )
 }
 
 /// [`build_jsonl`] with an optional [`AssetSink`] — the offline bundle threads one through
@@ -650,6 +676,7 @@ fn build_jsonl_inner(
     reveal: bool,
     linked: bool,
     assets: Option<&mut AssetSink>,
+    transcript: Option<&Transcript>,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
     let mut em = Emitter {
@@ -658,6 +685,7 @@ fn build_jsonl_inner(
         reveal,
         linked,
         assets,
+        transcript,
         next_block: 0,
         turn: 0,
         turns: Vec::new(),
@@ -870,9 +898,17 @@ pub(super) fn render_snapshot(
             "model": m.model,
         },
     });
+    // The blocks hold only attachment locators; the served/bundle paths load their bytes on
+    // demand from this transcript. (A portable `--dump-html` never loads — it shows the name.)
+    let transcript = Transcript::open(agent, path);
     build_jsonl(
-        blocks, user_times, fold, cwd, reveal,
+        blocks,
+        user_times,
+        fold,
+        cwd,
+        reveal,
         false, // single-file snapshot: no cross-agent links
+        Some(&transcript),
         meta,
     )
 }
@@ -965,6 +1001,10 @@ pub(super) struct ChildRef {
 /// The direct sub-agents spawned in this source (its own `SubAgent` blocks). Drives lazy
 /// stream generation — parsing ONE source reveals only its direct children.
 fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
+    // Terminal-ness from the sub-agent index (derived from spawn + finish events), not the
+    // spawn block's status — the step off reading a back-patched block. Byte-identical: every
+    // non-empty-id spawn is in the map, with the same terminal value the back-patch produced.
+    let agents = crate::engine::build_sub_agents(blocks);
     blocks
         .iter()
         .filter_map(|b| match b {
@@ -972,7 +1012,10 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
                 id: sa.agent_id.clone(),
                 description: sa.description.clone(),
                 agent_type: sa.agent_type.clone(),
-                terminal: sa.status.is_terminal(),
+                terminal: agents
+                    .get(&sa.agent_id)
+                    .map(|m| m.status.is_terminal())
+                    .unwrap_or(false),
             }),
             _ => None,
         })
@@ -1037,19 +1080,30 @@ pub(super) fn render_agent_stream(
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
     });
-    let (jsonl, _) = build_jsonl_inner(blocks, user_times, fold, cwd, reveal, true, assets, meta);
+    // Each agent's attachment locators point into its OWN source transcript; load from there.
+    let transcript = Transcript::open(agent, &info.source);
+    let (jsonl, _) = build_jsonl_inner(
+        blocks,
+        user_times,
+        fold,
+        cwd,
+        reveal,
+        true,
+        assets,
+        Some(&transcript),
+        meta,
+    );
     (jsonl, child_refs)
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
 /// description (else its type), and its ancestry is the parent's ancestry + the parent.
 pub(super) fn child_info(
-    graph: &crate::SessionGraph,
-    root_path: &Path,
+    operation: &Transcript,
     parent: &AgentInfo,
     c: ChildRef,
 ) -> Option<AgentInfo> {
-    let source = graph.subagent_source(root_path, &c.id)?;
+    let source = operation.subagent(&c.id)?.path().to_path_buf();
     let title = if c.description.is_empty() {
         c.agent_type.clone()
     } else {
@@ -1092,11 +1146,11 @@ impl AssetSink {
         &mut self,
         name: &str,
         path: Option<&str>,
-        content: &AttachmentContent,
+        content: &LoadedAttachment,
     ) -> Option<String> {
         let bytes: Vec<u8> = match content {
-            AttachmentContent::Text(t) => t.clone().into_bytes(),
-            AttachmentContent::Base64 { b64, .. } => crate::clipboard::base64_decode(b64)?,
+            LoadedAttachment::Text(t) => t.clone().into_bytes(),
+            LoadedAttachment::Base64 { b64, .. } => crate::diff::base64_decode(b64)?,
         };
         // Basename only (no traversal); ensure an extension for images.
         let raw = path.unwrap_or(name);
@@ -1108,7 +1162,7 @@ impl AssetSink {
         if base.is_empty() {
             base = "attachment".into();
         }
-        if let AttachmentContent::Base64 { mime, .. } = content {
+        if let LoadedAttachment::Base64 { mime, .. } = content {
             if !base.contains('.') {
                 if let Some(ext) = mime.rsplit('/').next().filter(|e| !e.is_empty()) {
                     base = format!("{base}.{ext}");
@@ -1141,6 +1195,16 @@ mod tests {
     /// given fold policy and no timestamps — the shape the tests assert on. Uses
     /// `reveal = true` (served-mode shape, where file tools carry a `path`).
     fn stream(blocks: &[Block], fold: &FoldPolicy) -> Vec<Value> {
+        stream_from(blocks, fold, None)
+    }
+
+    /// [`stream`] with an explicit transcript source, for tests whose blocks carry `Deferred`
+    /// attachment locators that must be loaded (embedded) at emit time.
+    fn stream_from(
+        blocks: &[Block],
+        fold: &FoldPolicy,
+        transcript: Option<&Transcript>,
+    ) -> Vec<Value> {
         let times: Vec<Option<f64>> = Vec::new();
         let (jsonl, _turns) = build_jsonl(
             blocks,
@@ -1149,6 +1213,7 @@ mod tests {
             "/repo",
             true,
             false,
+            transcript,
             json!({ "t": "meta" }),
         );
         jsonl
@@ -1156,6 +1221,24 @@ mod tests {
             .skip(1) // meta line
             .map(|l| serde_json::from_str::<Value>(l).expect("valid JSON block line"))
             .collect()
+    }
+
+    /// Write a one-line transcript to a temp file so an attachment `Deferred { at: 0 }` locator
+    /// can be loaded from it. Returns the path (the caller removes it).
+    fn att_transcript(line: &str) -> std::path::PathBuf {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "cr-html-att-{}-{}.jsonl",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(format!("{line}\n").as_bytes())
+            .unwrap();
+        p
     }
 
     fn bash(cmd: &str, out: &str) -> Block {
@@ -1208,6 +1291,7 @@ mod tests {
             "/r",
             false,
             true,
+            None,
             json!({ "t": "meta" }),
         );
         for line in j.lines().skip(1) {
@@ -1223,6 +1307,7 @@ mod tests {
             "/r",
             false,
             false,
+            None,
             json!({ "t": "meta" }),
         );
         for line in j2.lines().skip(1) {
@@ -1251,7 +1336,7 @@ mod tests {
     /// base64, and de-conflicts colliding names with a `-N` suffix.
     #[test]
     fn asset_sink_writes_and_deconflicts() {
-        use crate::model::AttachmentContent;
+        use crate::model::LoadedAttachment;
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
         let base = std::env::temp_dir().join(format!(
@@ -1264,7 +1349,7 @@ mod tests {
         let mut sink = AssetSink::new(&base).unwrap();
         // Text attachment → written verbatim.
         let h1 = sink
-            .materialize("notes.md", None, &AttachmentContent::Text("hi".into()))
+            .materialize("notes.md", None, &LoadedAttachment::Text("hi".into()))
             .unwrap();
         assert_eq!(h1, "assets/notes.md");
         assert_eq!(
@@ -1273,7 +1358,7 @@ mod tests {
         );
         // Same name again → de-conflicted.
         let h2 = sink
-            .materialize("notes.md", None, &AttachmentContent::Text("bye".into()))
+            .materialize("notes.md", None, &LoadedAttachment::Text("bye".into()))
             .unwrap();
         assert_eq!(h2, "assets/notes-1.md");
         // Base64 image → decoded; extension derived from the mime when missing.
@@ -1281,7 +1366,7 @@ mod tests {
             .materialize(
                 "shot",
                 None,
-                &AttachmentContent::Base64 {
+                &LoadedAttachment::Base64 {
                     mime: "image/png".into(),
                     b64: "aGk=".into(), // "hi"
                 },
@@ -1711,14 +1796,18 @@ mod tests {
     /// (`reveal == false`) only the name is emitted.
     #[test]
     fn attachment_streams_payload_only_when_served() {
+        // A real transcript carrying the `file` body; the block holds only a `Deferred` locator.
+        let line = r#"{"type":"attachment","attachment":{"type":"file","filename":"/w/notes.md","displayPath":"notes.md","content":{"type":"text","file":{"filePath":"/w/notes.md","content":"hello"}}}}"#;
+        let tpath = att_transcript(line);
+        let src = Transcript::open(crate::Agent::Claude, &tpath);
         let file = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
-            content: Some(AttachmentContent::Text("hello".into())),
+            content: AttachmentContent::Deferred { at: 0, index: 0 },
         });
-        // Served (reveal = true): name + downloadable flag + inline text + path.
-        let served = stream(std::slice::from_ref(&file), &FoldPolicy::none());
+        // Served (reveal = true): name + downloadable flag + inline text (loaded) + path.
+        let served = stream_from(std::slice::from_ref(&file), &FoldPolicy::none(), Some(&src));
         assert_eq!(served[0]["kind"], "attachment");
         assert!(served[0].get("fold").is_none(), "attachment is not a fold");
         let h = &served[0]["head"];
@@ -1736,6 +1825,7 @@ mod tests {
             "/w",
             false,
             false,
+            None,
             json!({ "t": "meta" }),
         );
         let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
@@ -1748,6 +1838,7 @@ mod tests {
             rec["head"].get("att_path").is_none(),
             "no path when exported"
         );
+        let _ = std::fs::remove_file(&tpath);
     }
 
     /// Regression: in an offline bundle an image attachment must materialize to `assets/`
@@ -1764,14 +1855,15 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
+        // A real transcript carrying the base64 image; the block holds only a locator.
+        let line = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}}"#;
+        let tpath = att_transcript(line);
+        let src = Transcript::open(crate::Agent::Claude, &tpath);
         let img = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
             path: None,
-            content: Some(AttachmentContent::Base64 {
-                mime: "image/png".into(),
-                b64: "aGk=".into(),
-            }),
+            content: AttachmentContent::Deferred { at: 0, index: 0 },
         });
         let mut sink = AssetSink::new(&base).unwrap();
         let (jsonl, _) = build_jsonl_inner(
@@ -1782,6 +1874,7 @@ mod tests {
             false, // exported/bundle (not served)
             false,
             Some(&mut sink),
+            Some(&src),
             json!({ "t": "meta" }),
         );
         let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
@@ -1793,6 +1886,7 @@ mod tests {
         );
         assert!(h.get("att_datauri").is_none(), "no data URI in a bundle");
         let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_file(&tpath);
     }
 
     #[test]
@@ -1825,7 +1919,7 @@ mod tests {
         let rows = diff["rows"].as_array().unwrap();
         // Context advances both sides (to old/new line 11), so the deletion is
         // old-line 11 and the insertions are new-lines 11 and 12 — the shared
-        // `render::diff_row_groups` numbering the TUI renders too.
+        // `diff_row_groups` numbering the TUI renders too.
         assert_eq!(rows[0], json!(["ctx", 10, "context"]));
         assert_eq!(rows[1], json!(["del", 11, "gone"]));
         assert_eq!(rows[2], json!(["add", 11, "added one"]));
@@ -1875,6 +1969,7 @@ mod tests {
             "/repo",
             true,
             false,
+            None,
             json!({ "t": "meta" }),
         );
         let objs: Vec<Value> = jsonl
@@ -1916,7 +2011,7 @@ mod tests {
             30,
             "all 30 rows emitted, not truncated"
         );
-        assert_eq!(num["cap"], json!(render::WRITE_PREVIEW));
+        assert_eq!(num["cap"], json!(WRITE_PREVIEW));
     }
 
     #[test]
@@ -1962,6 +2057,7 @@ mod tests {
             "/repo",
             true,
             false,
+            None,
             json!({ "t": "meta" }),
         );
         // The stream is meta + 2 blocks; block_lines keeps just the 2 block records.
@@ -2011,6 +2107,7 @@ mod tests {
             "/repo",
             false,
             false,
+            None,
             json!({ "t": "meta" }),
         );
         let obj: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();

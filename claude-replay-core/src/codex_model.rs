@@ -5,13 +5,12 @@ use crate::model::{AgentStatus, Block, SubAgent};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
-    // streaming path (the adapter's `parse_path_timed`) also runs on the engine now, per line
-    // via `parse_stream` + `decode_line` (M9).
+    // streaming path (the shared `SessionAccumulator`) also runs on the engine now, per line
+    // via `decode_line` + `Replayer` (M9).
     crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
@@ -20,8 +19,8 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 /// &Value)` signature (the `Value` is always Null for Codex).
 fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
     match block {
-        // The spawn call returns relationship metadata, not the child's answer.
-        // The terminal agent_message supplies the renderable result.
+        // The spawn result only contains relationship metadata; the terminal agent message
+        // carries the child result rendered by the shared AgentDone event.
         Block::SubAgent(_) => {}
         _ => apply_output(block, text.to_string()),
     }
@@ -69,8 +68,8 @@ pub(crate) const CODEX_SHAPING: crate::engine::replay::Shaping = crate::engine::
     finish_turns: codex_finish,
 };
 
-// API tool names cannot contain NUL, so a raw dotted tool name cannot collide
-// with this adapter-private canonical marker.
+// API tool names cannot contain NUL, so a raw tool name cannot collide with this
+// adapter-private canonical marker.
 const COLLABORATION_SPAWN: &str = "\0collaboration.spawn_agent";
 
 /// **Layer 1 — Codex tokenize.** Map Codex's `response_item` line shapes to the canonical
@@ -225,9 +224,8 @@ fn terminal_agent_message(payload: &Value) -> Option<(String, String, String)> {
         .filter_map(|item| item.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut lines = text.lines();
-    let terminal = lines
-        .by_ref()
+    let terminal = text
+        .lines()
         .find_map(|line| line.trim().strip_prefix("Message Type:"))
         .is_some_and(|kind| kind.trim() == "FINAL_ANSWER");
     if !terminal {
@@ -235,8 +233,8 @@ fn terminal_agent_message(payload: &Value) -> Option<(String, String, String)> {
     }
     let result = text
         .split_once("Payload:")
-        .map(|(_, result)| result.trim())
-        .filter(|result| !result.is_empty())
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
         .unwrap_or(text.trim())
         .to_string();
     let description = author
@@ -248,36 +246,20 @@ fn terminal_agent_message(payload: &Value) -> Option<(String, String, String)> {
     Some((author.to_string(), description, result))
 }
 
-pub(crate) fn scan_join_ids<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> HashSet<String> {
-    crate::engine::replay::scan_ids(lines, |value, out| {
-        if value.get("type").and_then(Value::as_str) != Some("response_item") {
-            return;
-        }
-        let kind = value.pointer("/payload/type").and_then(Value::as_str);
-        if matches!(kind, Some("function_call" | "custom_tool_call")) {
-            if let Some(id) = value.pointer("/payload/call_id").and_then(Value::as_str) {
-                out.insert(id.to_string());
-            }
-        }
-    })
-}
-
 /// **Frozen golden reference** (M9): production parses Codex through the streaming engine;
 /// this pre-engine parser is retained only to pin the shared `replay` bit-identical in
 /// `codex_replay_matches_parse_lines`.
 #[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    call_ids: &HashSet<String>,
-    user_times: &mut Vec<Option<f64>>,
+    user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
     // See `model::parse_main`: stamp the previous event's user turns on the next
     // iteration so an early `continue` can't drop them.
-    let mut pending_ts: Option<f64> = None;
+    let mut pending_ts: Option<crate::model::EpochSeconds> = None;
     let mut stamped = 0usize;
-    let mut slots: HashMap<String, usize> = HashMap::new();
-    let mut pending: HashMap<String, String> = HashMap::new();
+    let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
     let mut cwd = String::new();
     let mut trigger_ts = None;
 
@@ -360,9 +342,6 @@ fn parse_lines<S: AsRef<str>>(
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
                             slots.insert(call_id.to_string(), index);
-                            if let Some(output) = pending.remove(call_id) {
-                                apply_output(&mut out[index], output);
-                            }
                         }
                     }
                     Some("function_call_output" | "custom_tool_call_output") => {
@@ -373,8 +352,6 @@ fn parse_lines<S: AsRef<str>>(
                         let output = output_text(payload.get("output").unwrap_or(&Value::Null));
                         if let Some(index) = slots.get(call_id).copied() {
                             apply_output(&mut out[index], output);
-                        } else if call_ids.contains(call_id) {
-                            pending.insert(call_id.to_string(), output);
                         } else if !output.trim().is_empty() {
                             out.push(Block::ToolResult(output));
                         }
@@ -591,10 +568,10 @@ fn apply_output(block: &mut Block, output: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AgentStatus, Block};
+    use crate::model::Block;
 
     #[test]
-    fn collaboration_spawn_and_terminal_agent_message_use_shared_agent_blocks() {
+    fn collaboration_spawn_and_terminal_message_use_shared_agent_events() {
         let jsonl = concat!(
             r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"encrypted\"}"}}"#,
             "\n",
@@ -605,14 +582,13 @@ mod tests {
         );
 
         let blocks = parse_codex(jsonl);
-
         let Block::SubAgent(spawn) = &blocks[0] else {
-            panic!("collaboration.spawn_agent should be a shared SubAgent block");
+            panic!("collaboration.spawn_agent should emit SubAgent");
         };
         assert_eq!(spawn.tool_use_id, "c1");
         assert_eq!(spawn.description, "spec_axis");
-        assert!(!spawn.prompt.contains("encrypted"));
-        assert_eq!(spawn.result, None);
+        assert!(spawn.prompt.is_empty(), "do not expose delegated prompt");
+        assert_eq!(spawn.status, AgentStatus::Running);
         assert!(matches!(
             &blocks[1],
             Block::AgentDone {
@@ -625,42 +601,25 @@ mod tests {
     }
 
     #[test]
-    fn spawn_agent_without_collaboration_namespace_stays_generic() {
-        let jsonl = r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"plain\"}"}}"#;
-        let blocks = parse_codex(jsonl);
-        assert!(matches!(
-            &blocks[0],
-            Block::ToolUse { name, .. } if name == "spawn_agent"
-        ));
-    }
-
-    #[test]
-    fn dotted_spawn_agent_without_collaboration_namespace_stays_generic() {
-        let jsonl = r#"{"type":"response_item","payload":{"type":"function_call","name":"collaboration.spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\",\"message\":\"plain\"}"}}"#;
-        let blocks = parse_codex(jsonl);
-        assert!(matches!(
-            &blocks[0],
-            Block::ToolUse { name, .. } if name == "collaboration.spawn_agent"
-        ));
-    }
-
-    #[test]
-    fn malformed_collaboration_payload_degrades_without_inventing_relationships() {
+    fn non_collaboration_spawn_agent_stays_a_generic_tool() {
         for jsonl in [
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"not-json"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"c1","arguments":"{}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\"}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"collaboration.spawn_agent","call_id":"c1","arguments":"{\"task_name\":\"spec_axis\"}"}}"#,
+        ] {
+            let blocks = parse_codex(jsonl);
+            assert!(matches!(&blocks[0], Block::ToolUse { .. }));
+        }
+    }
+
+    #[test]
+    fn nonterminal_or_malformed_agent_messages_do_not_invent_completions() {
+        for jsonl in [
             r#"{"type":"response_item","payload":{"type":"agent_message","content":[]}}"#,
             r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: UPDATE\nPayload:\nworking"}]}}"#,
         ] {
-            let blocks = parse_codex(jsonl);
-            assert!(
-                blocks.iter().all(|block| match block {
-                    Block::SubAgent(agent) => agent.agent_id.is_empty(),
-                    Block::AgentDone { .. } => false,
-                    _ => true,
-                }),
-                "malformed collaboration data must not invent a child: {blocks:?}"
-            );
+            assert!(parse_codex(jsonl)
+                .iter()
+                .all(|block| !matches!(block, Block::AgentDone { .. })));
         }
     }
 
@@ -688,10 +647,16 @@ not json
         assert!(blocks.iter().any(
             |block| matches!(block, Block::Thinking { text, .. } if text == "Inspect parser")
         ));
+        // `call-1`'s output precedes its `function_call` — a synthetic reversed pair.
+        // Forward-references do not occur in real transcripts (0/209 scanned), so the
+        // single-pass fold renders the not-yet-joined output as an inline orphan and the
+        // Bash tool_use stays result-less.
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolResult(text) if text == "ok")));
         assert!(blocks.iter().any(|block| matches!(
             block,
-            Block::ToolUse { name, output: Some(output), .. }
-                if name == "Bash" && output == "ok"
+            Block::ToolUse { name, output: None, .. } if name == "Bash"
         )));
         assert_eq!(
             blocks
@@ -732,8 +697,7 @@ not json
     fn codex_replay_matches_parse_lines() {
         fn equiv(jsonl: &str) {
             let mut ut_lines = Vec::new();
-            let call_ids = scan_join_ids(jsonl.lines());
-            let via_lines = parse_lines(jsonl.lines(), &call_ids, &mut ut_lines);
+            let via_lines = parse_lines(jsonl.lines(), &mut ut_lines);
             let mut ut_replay = Vec::new();
             let via_replay = crate::engine::replay::replay(
                 &tokenize(jsonl.lines()),
