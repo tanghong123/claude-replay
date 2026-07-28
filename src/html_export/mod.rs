@@ -1094,6 +1094,34 @@ pub(super) fn render_agent_stream(
     m: &crate::metrics::Metrics,
     assets: Option<&mut AssetSink>,
 ) -> (String, Vec<ChildRef>) {
+    let (meta, child_refs) = agent_meta(agent, cwd, info, blocks, m);
+    // Each agent's attachment locators point into its OWN source transcript; load from there.
+    let transcript = Transcript::open(agent, &info.source);
+    let (jsonl, _) = build_jsonl_inner(
+        blocks,
+        user_times,
+        fold,
+        cwd,
+        reveal,
+        true,
+        assets,
+        Some(&transcript),
+        meta,
+    );
+    (jsonl, child_refs)
+}
+
+/// Build a session's `meta` wire record (title / agent / cwd / turn+tool counts / usage / ancestry
+/// / children) and its [`ChildRef`]s from the current blocks. This is the cheap O(N)-**count** part
+/// of a stream render, separated from the O(N)-**render** of the blocks — so the render-once live
+/// path (`/pull`) can rebuild meta each poll (light) while rendering only the changed block tail.
+pub(super) fn agent_meta(
+    agent: Agent,
+    cwd: &str,
+    info: &AgentInfo,
+    blocks: &[Block],
+    m: &crate::metrics::Metrics,
+) -> (Value, Vec<ChildRef>) {
     let usage = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
         "cache_read": human_tokens(m.cache_read_tokens),
@@ -1135,20 +1163,7 @@ pub(super) fn render_agent_stream(
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
     });
-    // Each agent's attachment locators point into its OWN source transcript; load from there.
-    let transcript = Transcript::open(agent, &info.source);
-    let (jsonl, _) = build_jsonl_inner(
-        blocks,
-        user_times,
-        fold,
-        cwd,
-        reveal,
-        true,
-        assets,
-        Some(&transcript),
-        meta,
-    );
-    (jsonl, child_refs)
+    (meta, child_refs)
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
