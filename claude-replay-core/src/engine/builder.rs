@@ -74,7 +74,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// demand), `apply` the messages to the replayer, and push the raw line's usage into metrics.
     /// The single per-line unit shared by the batch parse ([`advance_reader`](Self::advance_reader))
     /// and the live follower.
-    pub fn advance_at(&mut self, offset: ByteOffset, line: &str) {
+    ///
+    /// Returns the replayer's back-patch signal (see [`Replayer::apply`]): the min raw-logical index
+    /// of any already-emitted provisional block this line mutated in place, or `None` if it only
+    /// appended. The streaming layer's pull (§9a) bumps the provisional generation when it is `Some`;
+    /// batch callers ([`advance_reader`](Self::advance_reader)) ignore it. (A coincident commit — the
+    /// drain below — makes it moot, since a grown committed prefix resets the provisional regardless;
+    /// the caller reconciles.)
+    pub fn advance_at(&mut self, offset: ByteOffset, line: &str) -> Option<usize> {
         let mut delta: Vec<Message> = Vec::new();
         self.adapter.decode_line(line, &mut self.cwd, &mut delta);
         // Stamp `offset` (and a per-line ordinal) onto every content-bearing attachment this
@@ -90,7 +97,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 }
             }
         }
-        self.replayer.apply(&delta);
+        let patched = self.replayer.apply(&delta);
         // Drain the turns that just crossed the durability frontier and `put` each once — the
         // replayer drops them, keeping its content O(turn); we own the committed prefix.
         for b in self.replayer.drain_committed() {
@@ -101,6 +108,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             self.metrics.push(&v);
         }
+        patched
     }
 
     /// Fold a whole transcript `reader` line-by-line, tracking each line's start byte offset so

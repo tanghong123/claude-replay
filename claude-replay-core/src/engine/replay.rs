@@ -129,6 +129,19 @@ fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
     }
 }
 
+/// Record an in-place patch of the block at raw-logical index `logical`: fold it into `floor` (the
+/// running minimum) **iff** it sits below `frontier` — the count of blocks already emitted *before*
+/// this fold batch. A patch at/above `frontier` touched a block appended within this same batch,
+/// which no client has seen yet (it arrives as a plain append), so it is not a back-patch and is not
+/// recorded. `floor` is thus the lowest already-emitted index this batch mutated: `None` ⇒ append-
+/// only. See [`Replayer::apply`] for how the streaming layer turns it into a provisional-generation
+/// bump (and, later, the `provisional_gen_prefix`).
+fn note_patch(floor: &mut Option<usize>, logical: usize, frontier: usize) {
+    if logical < frontier {
+        *floor = Some(floor.map_or(logical, |p| p.min(logical)));
+    }
+}
+
 impl<'a> Replayer<'a> {
     pub(crate) fn new(shaping: &'a Shaping) -> Self {
         Replayer {
@@ -150,8 +163,17 @@ impl<'a> Replayer<'a> {
     }
 
     /// Fold a batch of messages into the running state (append, back-patch, stamp).
-    pub(crate) fn apply(&mut self, messages: &[Message]) {
+    ///
+    /// Returns the **min raw-logical index of any already-emitted block this batch back-patched**
+    /// (`None` if it only appended) — the streaming layer's provisional-generation signal (§9a).
+    /// `emitted_frontier` is captured at entry (blocks emitted *before* this batch); a mutation
+    /// below it changed a block a prior poll may have served ⇒ a gen bump, whereas a mutation to a
+    /// block appended *within* this batch is invisible to clients and doesn't count. The fold's
+    /// effect on `out` is unchanged — this is a pure observation (keeps `--dump` byte-identical).
+    pub(crate) fn apply(&mut self, messages: &[Message]) -> Option<usize> {
         let (join_result, keep_orphan) = (self.shaping.join_result, self.shaping.keep_orphan);
+        let emitted_frontier = self.base + self.out.len();
+        let mut patch_floor: Option<usize> = None;
         for m in messages {
             match m {
                 Message::LineStart(ts) => {
@@ -210,6 +232,7 @@ impl<'a> Replayer<'a> {
                 } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
                         join_result(&mut self.out[rel], text, tur);
+                        note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         // The result may have filled the spawn's `agent_id`; refresh the map so a
                         // later `AgentDone` resolves the real id (not just the `tool_use_id`).
                         record_agent(&mut self.agent_ids, &self.out[rel]);
@@ -226,12 +249,13 @@ impl<'a> Replayer<'a> {
                 Message::SkillBody { text, fallback } => {
                     // L1 detected the skill body; the fold only nests it into the most recent
                     // `Skill` block (stateful), falling back to a loose result block.
-                    if !attach_skill_body(
-                        &mut self.out,
-                        self.last_skill.map(|i| i - self.base),
-                        text,
-                    ) && !fallback.is_empty()
-                    {
+                    let target = self.last_skill.map(|i| i - self.base);
+                    if attach_skill_body(&mut self.out, target, text) {
+                        // Nested into the existing `Skill` block — a back-patch of that block.
+                        if let Some(ls) = self.last_skill {
+                            note_patch(&mut patch_floor, ls, emitted_frontier);
+                        }
+                    } else if !fallback.is_empty() {
                         self.out.push(Block::ToolResult(fallback.clone()));
                     }
                 }
@@ -244,8 +268,12 @@ impl<'a> Replayer<'a> {
                 }
                 Message::CommandStdout { text } => {
                     // Attach to the command it follows, else show it command-less.
+                    let last_logical = (self.base + self.out.len()).checked_sub(1);
                     if let Some(Block::Command { output, .. }) = self.out.last_mut() {
                         output.push(text.clone());
+                        if let Some(logical) = last_logical {
+                            note_patch(&mut patch_floor, logical, emitted_frontier);
+                        }
                     } else {
                         self.out.push(Block::Command {
                             name: String::new(),
@@ -331,6 +359,7 @@ impl<'a> Replayer<'a> {
             }
         }
         self.finalize_completed();
+        patch_floor
     }
 
     /// Drop the completed turns behind the open window: finalize (group + suppress) every turn

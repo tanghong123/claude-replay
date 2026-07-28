@@ -2362,6 +2362,49 @@ mod tests {
         ));
     }
 
+    /// `apply`'s back-patch signal (§9a): it reports the min raw-logical index of an **already-
+    /// emitted** block the batch mutated in place, or `None` for an append-only batch. This is the
+    /// signal the streaming layer turns into a provisional-generation bump; the fold's blocks are
+    /// unaffected (covered byte-identical elsewhere).
+    #[test]
+    fn apply_reports_backpatch_of_already_emitted_blocks() {
+        let user =
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}"#;
+        let tool = r#"{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let result = r#"{"type":"user","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#;
+        let text = r#"{"type":"assistant","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":[{"type":"text","text":"done"}]}}"#;
+
+        // Back-patch ACROSS batches: the tool_use is emitted in batch 1, its result lands in batch 2
+        // and fills the already-emitted `ToolUse.output` ⇒ `Some(index of that ToolUse)`.
+        let mut r = Replayer::new(&CLAUDE_SHAPING);
+        assert_eq!(
+            r.apply(&tokenize([user, tool].into_iter())),
+            None,
+            "appends only"
+        );
+        // The open turn is [UserText(0), ToolUse(1)]; the result back-patches index 1.
+        assert_eq!(
+            r.apply(&tokenize([result].into_iter())),
+            Some(1),
+            "result back-patches the already-emitted ToolUse at logical index 1"
+        );
+        // A pure-append batch afterward ⇒ None again.
+        assert_eq!(
+            r.apply(&tokenize([text].into_iter())),
+            None,
+            "append-only after"
+        );
+
+        // Same-batch tool_use + result: the block is appended AND patched within one batch, so the
+        // patched index is >= the entry frontier ⇒ invisible to clients ⇒ `None`.
+        let mut r2 = Replayer::new(&CLAUDE_SHAPING);
+        assert_eq!(
+            r2.apply(&tokenize([user, tool, result].into_iter())),
+            None,
+            "a tool whose result arrives in the same batch is a fresh append, not a back-patch"
+        );
+    }
+
     /// M11 keystone: driving the `Replayer` **one line at a time** (a live tail: `decode` the
     /// line, `apply`, `snapshot`) yields byte-identical blocks + user_times to a full batch
     /// `replay(tokenize(whole))` — at EVERY prefix, not just the end. This is the
