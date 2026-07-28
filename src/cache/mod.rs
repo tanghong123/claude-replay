@@ -29,7 +29,7 @@ mod stream;
 mod shared;
 mod tier_b;
 #[allow(unused_imports)]
-pub use shared::{RenderSnapshot, SharedSession};
+pub use shared::{PullDelta, SharedSession};
 #[allow(unused_imports)]
 pub use stream::{pull, pull_indices, Cursor, PullReply};
 

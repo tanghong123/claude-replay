@@ -6,7 +6,7 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::{
-    agent_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
+    assemble_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
     render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, EmitState, POLL_MS,
 };
 use crate::cache::{pull_indices, Cursor, SharedSession};
@@ -217,13 +217,7 @@ impl Live {
                 .to_string(),
             );
         }
-        let snap = shared.render_snapshot();
-        let n = snap.n_committed;
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
-        // meta (light O(N) counts) + children — rebuilt each poll; the client uses the fresh counts.
-        let (meta, children) =
-            agent_meta(self.agent, &self.cwd, &info, &snap.blocks, &snap.metrics);
-        self.register_children(&info, children);
         // Attachments load from THIS agent's own transcript.
         let transcript = crate::Transcript::open(self.agent, info.source.clone());
 
@@ -231,21 +225,27 @@ impl Live {
         // never re-render and never sit in RAM), carrying EmitState so anchors follow on. The open
         // turn renders from a *clone* of that state each poll (ephemeral anchors don't pollute it).
         // A poll renders O(open-turn) and reads only the committed byte range the cursor needs.
+        //
+        // `pull_delta` is the delta-sized read: it takes OUR render-cache state (epoch + how many
+        // committed blocks are already in the log) and returns only `committed[rendered..]`, the
+        // open turn, and the accumulator-MAINTAINED header — never a whole-session block clone or
+        // scan. Called under the render lock so the slice matches `pr` (lock order: render ⊃
+        // shared; nothing takes the reverse).
         let log_path = self.dir.join(format!("{id}.records"));
         let mut rmap = self.render.lock().unwrap();
         let pr = rmap.entry(id.to_string()).or_default();
-        if pr.epoch != snap.epoch {
+        let d = shared.pull_delta(pr.epoch, pr.offsets.len());
+        if d.reset {
             *pr = PullRender {
-                epoch: snap.epoch,
+                epoch: d.epoch,
                 ..Default::default()
             };
             let _ = std::fs::remove_file(&log_path); // discard the stale log
         }
-        let cached = pr.offsets.len().min(n);
-        if n > cached {
+        if !d.committed_delta.is_empty() {
             let new_lines = render_blocks(
-                &snap.blocks[cached..n],
-                &snap.user_times,
+                &d.committed_delta,
+                &d.user_times,
                 &self.fold,
                 &self.cwd,
                 true,
@@ -258,8 +258,8 @@ impl Live {
         }
         let mut open_emit = pr.emit.clone();
         let provisional_lines = render_blocks(
-            &snap.blocks[n..],
-            &snap.user_times,
+            &d.provisional,
+            &d.user_times,
             &self.fold,
             &self.cwd,
             true,
@@ -271,10 +271,10 @@ impl Live {
         // Slice each zone at the cursor (via the tested pull_indices), then read the committed
         // records straight off the on-disk log — never materializing all committed in RAM.
         let (cf, pf) = pull_indices(
-            snap.epoch,
+            d.epoch,
             pr.offsets.len(),
             provisional_lines.len(),
-            snap.provisional_gen,
+            d.provisional_gen,
             cursor,
         );
         let committed_bytes = read_range(
@@ -283,6 +283,21 @@ impl Live {
             pr.len,
         );
         drop(rmap);
+        // The meta wire record from the maintained header (no block scan) + this agent's
+        // presentation info; children registered so their `?session=` links resolve.
+        let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics);
+        let children = d
+            .meta
+            .children
+            .iter()
+            .map(|c| ChildRef {
+                id: c.id.clone(),
+                description: c.description.clone(),
+                agent_type: c.agent_type.clone(),
+                terminal: false, // registration ignores it (`child_info` drops terminal)
+            })
+            .collect();
+        self.register_children(&info, children);
         let committed_records: Vec<&str> = std::str::from_utf8(&committed_bytes)
             .unwrap_or("")
             .lines()
@@ -293,8 +308,8 @@ impl Live {
             .map(String::as_str)
             .collect();
         Some(pull_reply_json(
-            snap.epoch,
-            snap.provisional_gen,
+            d.epoch,
+            d.provisional_gen,
             cf,
             &committed_records,
             pf,

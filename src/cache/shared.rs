@@ -29,29 +29,42 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use super::stream::{pull, Cursor, PullReply};
-use crate::engine::Session;
+use super::stream::{pull_indices, Cursor, PullReply};
+use crate::engine::SessionMeta;
 use crate::follow::FollowParser;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::Agent;
 
-/// A consistent, lock-free-after-return snapshot of everything the `/pull` handler needs to render
-/// and slice: the protocol counters, the full block list (committed ++ provisional, in order) with
-/// the committed/provisional split point `n_committed`, and the render inputs (`user_times`,
-/// `metrics`). Taken under a single lock so the counters match the blocks.
-pub struct RenderSnapshot {
+/// A consistent, delta-sized read of everything one `/pull` render needs, taken under a single
+/// lock so the counters match the blocks — **without** the whole-session block clone the retired
+/// `render_snapshot` paid per poll. `committed_delta` is only `committed[from..]` (the blocks past
+/// what the caller already rendered — `from` comes from the caller's render-cache state, see
+/// [`pull_delta`](SharedSession::pull_delta)); `provisional` is the open turn (O(turn)); `meta` is
+/// the accumulator-**maintained** live header (never rescanned). So the returned object's size is
+/// O(tail delta), not O(session).
+pub struct PullDelta {
     pub epoch: u64,
     pub provisional_gen: u64,
-    /// Index in `blocks` where the provisional (open-turn) zone begins; `blocks[..n_committed]` is
-    /// the committed prefix.
+    /// Whether the session epoch moved past the caller's (`prev_epoch`): its render cache is stale
+    /// — discard it; `committed_delta` then restarts from 0.
+    pub reset: bool,
+    /// Current committed count (`committed_delta` ends here).
     pub n_committed: usize,
-    pub blocks: Vec<Block>,
+    /// `committed[from..]` — `from` = 0 on `reset`, else the caller's already-rendered count.
+    pub committed_delta: Vec<Block>,
+    /// The finalized open turn — O(turn).
+    pub provisional: Vec<Block>,
+    /// The WHOLE session's per-turn timestamps (the renderer indexes into them by turn).
     pub user_times: Vec<Option<EpochSeconds>>,
     pub metrics: Metrics,
+    /// The maintained live header (turns / tools / children) — matches `committed ++ provisional`.
+    pub meta: SessionMeta,
 }
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
+/// The block state lives **in the follower's accumulator** (the committed prefix is owned there
+/// and never cloned whole); this adds only the two protocol counters and a cached zone length.
 struct Inner {
     follower: FollowParser,
     /// Session validity token. A client cursor with a stale `epoch` resyncs. Starts at 1 so a
@@ -59,14 +72,11 @@ struct Inner {
     epoch: u64,
     /// The current open-turn generation — see the module docs / `super::stream`.
     provisional_gen: u64,
-    /// The latest fully-assembled session (`None` before the first advance). Its `committed` /
-    /// `provisional` fields are the two zones `pull` serves; its `user_times` / `metrics` are what
-    /// the `/pull` handler needs to *render* the pulled blocks. Kept whole so the renderer has the
-    /// same inputs a batch parse would.
-    last: Option<Session>,
+    /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`]
+    /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
+    /// the open window on every quiet poll.
+    n_provisional: usize,
 }
-
-const EMPTY: &[Block] = &[];
 
 /// The live, pull-servable state of one followed session (see the module docs). `Arc`-shareable;
 /// all methods take `&self`.
@@ -83,87 +93,100 @@ impl SharedSession {
                 follower: FollowParser::open(agent, path),
                 epoch: 1,
                 provisional_gen: 0,
-                last: None,
+                n_provisional: 0,
             }),
         }
     }
 
-    /// Borrow the caller's thread to tail the source: fold any newly-appended lines, refresh the
-    /// committed / provisional zones, and advance `epoch` / `provisional_gen` per §9a (see the
-    /// module docs). Returns `true` when content advanced, `false` on an idle tick.
+    /// Borrow the caller's thread to tail the source: fold any newly-appended lines and advance
+    /// `epoch` / `provisional_gen` per §9a (see the module docs). Returns `true` when content
+    /// advanced, `false` on an idle tick. Uses the follower's **light** streaming advance — no
+    /// `Session` assembly (no O(N) index/sub-agent build, no whole-committed clone); the zones
+    /// stay owned by the accumulator and are read delta-sized at pull time.
     pub fn advance(&self) -> std::io::Result<bool> {
         let mut g = self.inner.lock().unwrap();
-        let Some((session, reset, patch_floor)) = g.follower.poll_shared()? else {
+        // A commit is visible as growth of the append-only committed prefix (compare BEFORE the
+        // fold). Reset takes priority (it also invalidates committed).
+        let prev_committed = g.follower.committed_len();
+        let Some((reset, patch_floor)) = g.follower.advance_stream()? else {
             return Ok(false);
         };
-        // A commit is visible as growth of the append-only committed prefix (compare BEFORE we
-        // adopt the new session). Reset takes priority (it also invalidates committed).
-        let prev_committed = g.last.as_ref().map_or(0, |s| s.committed.len());
-        let committed_grew = session.committed.len() > prev_committed;
+        let committed_grew = g.follower.committed_len() > prev_committed;
         if reset {
             g.epoch += 1;
             g.provisional_gen += 1;
         } else if committed_grew || patch_floor.is_some() {
             g.provisional_gen += 1;
         }
-        g.last = Some(session);
+        g.n_provisional = g.follower.provisional_len();
         Ok(true)
     }
 
-    /// Serve a client's [`Cursor`] against the current state — see [`pull`]. Does **not** advance;
-    /// a client that wants the freshest tail calls [`advance`](Self::advance) first (the `/pull`
-    /// handler does).
+    /// Serve a client's [`Cursor`] against the current state — the same reply the free
+    /// [`pull`](super::stream::pull) computes, built from the accumulator's zones without cloning
+    /// the whole committed prefix (only `committed[committed_from..]` is copied). Does **not**
+    /// advance; a client that wants the freshest tail calls [`advance`](Self::advance) first (the
+    /// `/pull` handler does).
     pub fn pull(&self, cursor: Cursor) -> PullReply {
         let g = self.inner.lock().unwrap();
-        let (committed, provisional) = g
-            .last
-            .as_ref()
-            .map_or((EMPTY, EMPTY), |s| (s.committed.as_slice(), &s.provisional));
-        pull(g.epoch, committed, provisional, g.provisional_gen, cursor)
-    }
-
-    /// A consistent [`RenderSnapshot`] — the counters plus the full block list and render inputs,
-    /// taken under one lock so the `/pull` handler can render + slice against a coherent state.
-    /// (First cut: clones the blocks under the lock — O(N). An `Arc`-shared committed volume would
-    /// avoid the copy; deferred with the lock-free-committed optimization.)
-    pub fn render_snapshot(&self) -> RenderSnapshot {
-        let g = self.inner.lock().unwrap();
-        match &g.last {
-            Some(s) => {
-                let mut blocks = s.committed.clone();
-                let n_committed = blocks.len();
-                blocks.extend(s.provisional.iter().cloned());
-                RenderSnapshot {
-                    epoch: g.epoch,
-                    provisional_gen: g.provisional_gen,
-                    n_committed,
-                    blocks,
-                    user_times: s.user_times.clone(),
-                    metrics: s.metrics.clone(),
-                }
-            }
-            None => RenderSnapshot {
-                epoch: g.epoch,
-                provisional_gen: g.provisional_gen,
-                n_committed: 0,
-                blocks: Vec::new(),
-                user_times: Vec::new(),
-                metrics: Metrics::default(),
-            },
+        let (provisional, _times) = g.follower.open_finalized();
+        let (committed_from, provisional_from) = pull_indices(
+            g.epoch,
+            g.follower.committed_len(),
+            provisional.len(),
+            g.provisional_gen,
+            cursor,
+        );
+        PullReply {
+            epoch: g.epoch,
+            committed_from,
+            committed: g.follower.committed_tail(committed_from),
+            provisional_gen: g.provisional_gen,
+            provisional_from,
+            provisional: provisional[provisional_from..].to_vec(),
         }
     }
 
-    /// The protocol counters only — `(epoch, provisional_gen, n_committed, n_provisional)` — a
-    /// cheap read (no block clone) so the `/pull` handler can decide idleness via
-    /// [`pull_indices`](super::stream::pull_indices) before paying [`render_snapshot`](Self::render_snapshot)'s
-    /// O(N) clone + render.
+    /// A consistent, delta-sized [`PullDelta`] for one `/pull` render, under one lock so the
+    /// counters match the blocks. `prev_epoch` / `rendered_committed` are the **caller's**
+    /// render-cache state (its recorded epoch and how many committed blocks it has already
+    /// rendered), so the method decides the committed slice and the reset flag together with the
+    /// counters — no torn state. Lock order: a caller holding its own render lock may call this
+    /// (render ⊃ shared); nothing takes them in the reverse order.
+    pub fn pull_delta(&self, prev_epoch: u64, rendered_committed: usize) -> PullDelta {
+        let g = self.inner.lock().unwrap();
+        let reset = prev_epoch != g.epoch;
+        let from = if reset {
+            0 // stale render cache: every committed block re-renders
+        } else {
+            rendered_committed.min(g.follower.committed_len())
+        };
+        let r = g.follower.stream_read(from);
+        PullDelta {
+            epoch: g.epoch,
+            provisional_gen: g.provisional_gen,
+            reset,
+            n_committed: r.n_committed,
+            committed_delta: r.committed_delta,
+            provisional: r.provisional,
+            user_times: r.user_times,
+            metrics: r.metrics,
+            meta: r.meta,
+        }
+    }
+
+    /// The protocol counters only — `(epoch, provisional_gen, n_committed, n_provisional)` — an
+    /// O(1) read (no block clone, no open-window finalize) so the `/pull` handler can decide
+    /// idleness via [`pull_indices`](super::stream::pull_indices) before paying
+    /// [`pull_delta`](Self::pull_delta)'s delta read + render.
     pub fn counters(&self) -> (u64, u64, usize, usize) {
         let g = self.inner.lock().unwrap();
-        let (nc, np) = g
-            .last
-            .as_ref()
-            .map_or((0, 0), |s| (s.committed.len(), s.provisional.len()));
-        (g.epoch, g.provisional_gen, nc, np)
+        (
+            g.epoch,
+            g.provisional_gen,
+            g.follower.committed_len(),
+            g.n_provisional,
+        )
     }
 
     /// The current session epoch (bumped on reset).
@@ -214,12 +237,7 @@ mod tests {
     /// back-patch bumps it, a commit bumps it, and a truncation bumps `epoch`.
     // Test-only view of the committed count (the state lives behind the Mutex now).
     fn committed_len(ss: &SharedSession) -> usize {
-        ss.inner
-            .lock()
-            .unwrap()
-            .last
-            .as_ref()
-            .map_or(0, |s| s.committed.len())
+        ss.inner.lock().unwrap().follower.committed_len()
     }
 
     #[test]
@@ -310,6 +328,66 @@ mod tests {
         assert!(!r.committed.is_empty(), "turn 1 delivered as committed");
         assert_eq!(r.committed_from, 0, "client had no committed yet");
         assert_eq!(r.provisional_from, 0, "provisional reset on commit");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `pull_delta` returns delta-sized render inputs: after a commit, `committed_delta` is
+    /// exactly `committed[rendered..]` (not the whole prefix); `reset` fires iff the caller's
+    /// epoch is stale; `user_times` stays whole-session; and the maintained `meta` matches the
+    /// full tail (a provisional tool call counts immediately).
+    #[test]
+    fn pull_delta_returns_the_unrendered_tail_and_maintained_meta() {
+        let path = tmp();
+        let ss = SharedSession::open(Agent::Claude, &path);
+        append(&path, USER1);
+        append(&path, TOOL);
+        ss.advance().unwrap();
+
+        // Open turn only: nothing committed, provisional carries the turn, meta counts the
+        // in-flight tool call immediately (the header matches the tail, not just committed).
+        let d = ss.pull_delta(ss.epoch(), 0);
+        assert!(!d.reset, "same epoch");
+        assert_eq!(d.n_committed, 0);
+        assert!(d.committed_delta.is_empty());
+        assert!(!d.provisional.is_empty());
+        assert_eq!(d.meta.turns, 1);
+        assert_eq!(d.meta.tools, 1, "provisional ToolUse counts in the header");
+
+        // Commit turn 1 (a second user turn): the caller has rendered 0 committed blocks, so the
+        // delta is the whole (small) committed prefix; a caller that already rendered k gets
+        // committed[k..] only.
+        append(&path, RESULT);
+        append(&path, TEXT);
+        append(&path, USER2);
+        ss.advance().unwrap();
+        let d = ss.pull_delta(ss.epoch(), 0);
+        let n = d.n_committed;
+        assert!(n > 0, "turn 1 committed");
+        assert_eq!(d.committed_delta.len(), n);
+        assert_eq!(d.meta.turns, 2);
+        let d2 = ss.pull_delta(ss.epoch(), n);
+        assert!(
+            d2.committed_delta.is_empty(),
+            "already-rendered prefix is not re-read"
+        );
+        assert_eq!(
+            d2.user_times.len(),
+            2,
+            "user_times stays whole-session (the renderer indexes it by turn)"
+        );
+
+        // Stale epoch (e.g. after a truncation): reset + the full committed range.
+        std::fs::write(&path, USER1).unwrap();
+        ss.advance().unwrap();
+        let d3 = ss.pull_delta(1, n);
+        assert!(d3.reset, "epoch moved past the caller's");
+        assert_eq!(
+            d3.committed_delta.len(),
+            d3.n_committed,
+            "reset serves committed from 0"
+        );
+        assert_eq!(d3.meta.turns, 1, "meta rebuilt for the new file");
 
         let _ = std::fs::remove_file(&path);
     }

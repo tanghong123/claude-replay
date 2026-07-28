@@ -1166,6 +1166,50 @@ pub(super) fn agent_meta(
     (meta, child_refs)
 }
 
+/// Assemble the `/pull` meta wire record from the engine's **maintained** [`SessionMeta`]
+/// (turn/tool counts + children, kept current by the accumulator as the tail advances) +
+/// presentation info (title / ancestry / agent label) + metrics — the trivial transform from
+/// engine facts to the html client's shape. Produces the same JSON [`agent_meta`] derives by
+/// scanning the blocks (the oracle test proves it), without any per-poll block scan; `agent_meta`
+/// stays as the block-scan assembler for the `/stream`/bundle paths (and as the oracle).
+pub(super) fn assemble_meta(
+    agent: Agent,
+    cwd: &str,
+    info: &AgentInfo,
+    sm: &crate::engine::SessionMeta,
+    m: &crate::metrics::Metrics,
+) -> Value {
+    let usage = json!({
+        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+        "cache_read": human_tokens(m.cache_read_tokens),
+        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+        "duration_secs": m.duration_secs,
+    });
+    let children: Vec<Value> = sm
+        .children
+        .iter()
+        .map(|c| {
+            let title = if c.description.is_empty() {
+                &c.agent_type
+            } else {
+                &c.description
+            };
+            json!({ "id": c.id, "title": title, "type": c.agent_type, "running": c.running })
+        })
+        .collect();
+    let ancestors: Vec<Value> = info
+        .ancestors
+        .iter()
+        .map(|(id, title)| json!({ "id": id, "title": title }))
+        .collect();
+    json!({
+        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
+        "cwd": cwd, "turns": sm.turns, "tools": sm.tools,
+        "agent_type": &info.agent_type, "usage": usage,
+        "ancestors": ancestors, "children": children,
+    })
+}
+
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
 /// description (else its type), and its ancestry is the parent's ancestry + the parent.
 pub(super) fn child_info(
@@ -1337,6 +1381,94 @@ mod tests {
             .skip(1) // meta line
             .map(|l| serde_json::from_str::<Value>(l).expect("valid JSON block line"))
             .collect()
+    }
+
+    /// ORACLE for the `/pull` meta (the byte-identity gate never drives `/pull`, so this test is
+    /// the equivalence proof): the meta assembled from the engine's **maintained** `SessionMeta`
+    /// must equal, as JSON, the one [`agent_meta`] derives by scanning the blocks — covering the
+    /// thinking-absorbed tool count, the spawn-is-a-child-not-a-tool rule, child launch order, and
+    /// `running` from both completion signals (a terminal spawn status / a later `AgentDone`).
+    #[test]
+    fn assemble_meta_equals_agent_meta_oracle() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: Vec::new(),
+                subtree_cost: None,
+            })
+        };
+        let tool = || Block::ToolUse {
+            name: "Bash".into(),
+            target: "ls".into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![
+            Block::UserText("first".into()),
+            tool(), // 1 top-level tool
+            Block::Thinking {
+                text: "hm".into(),
+                duration_secs: Some(2),
+                tools: vec![tool(), tool()], // +2 absorbed ⇒ tools == 3
+            },
+            spawn("a1", AgentStatus::Running), // async child, completed by AgentDone below
+            spawn("a2", AgentStatus::Completed), // sync child, terminal on the spawn itself
+            Block::AgentDone {
+                agent_id: "a1".into(),
+                agent_type: "gp".into(),
+                description: "do a1".into(),
+                status: AgentStatus::Completed,
+                result: None,
+            },
+            Block::UserText("second".into()),
+        ];
+        let info = AgentInfo {
+            id: "agent-x".into(),
+            source: std::path::PathBuf::from("/tmp/x.jsonl"),
+            title: "child agent".into(),
+            agent_type: "general-purpose".into(),
+            ancestors: vec![("root".into(), "root title".into())],
+        };
+        let mut m = crate::metrics::Metrics::default();
+        m.input_tokens = 1234;
+        m.output_tokens = 56789;
+        m.cache_read_tokens = 42;
+        m.cost_usd = Some(1.234);
+        m.model = "claude-x".into();
+        m.duration_secs = 5;
+
+        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m);
+        let maintained = crate::engine::SessionMeta::build(&blocks);
+        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m);
+        assert_eq!(
+            got, oracle,
+            "assemble_meta(SessionMeta) == agent_meta(blocks)"
+        );
+        // Guard the fixture's coverage: the counts exercised the nested/spawn rules.
+        assert_eq!(oracle["turns"], 2);
+        assert_eq!(
+            oracle["tools"], 3,
+            "spawns excluded, absorbed tools included"
+        );
+        assert_eq!(oracle["children"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            oracle["children"][0]["running"], false,
+            "AgentDone cleared a1"
+        );
+        assert_eq!(
+            oracle["children"][1]["running"], false,
+            "a2 terminal on spawn"
+        );
     }
 
     /// Write a one-line transcript to a temp file so an attachment `Deferred { at: 0 }` locator

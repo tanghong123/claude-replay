@@ -196,6 +196,21 @@ impl FollowParser {
     pub fn stream_read(&self, from: usize) -> StreamRead {
         self.builder.stream_read(from)
     }
+
+    /// `committed[from..]` as owned blocks — O(delta), never the whole committed prefix.
+    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+        self.builder.committed_tail(from)
+    }
+
+    /// The finalized open turn + the whole session's per-turn timestamps — O(turn).
+    pub fn open_finalized(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        self.builder.open_finalized()
+    }
+
+    /// The maintained live header for the current tail (committed meta + open turn) — O(turn).
+    pub fn session_meta(&self) -> crate::engine::session::SessionMeta {
+        self.builder.session_meta()
+    }
 }
 
 #[cfg(test)]

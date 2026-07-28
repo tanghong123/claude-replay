@@ -208,6 +208,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.replayer.open_snapshot().0.len()
     }
 
+    /// The finalized open turn (the provisional zone) + the WHOLE session's per-turn timestamps —
+    /// O(turn), no committed clone. The block-level complement to
+    /// [`committed_tail`](Self::committed_tail): a consumer serving the two zones separately reads
+    /// `committed_tail(from)` for the settled prefix and this for the open tail.
+    pub fn open_finalized(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        self.replayer.open_snapshot()
+    }
+
     /// The live header for the current tail: the maintained **committed** meta with the finalized
     /// **open** turn folded on top — so it equals `SessionMeta::build(committed ++ provisional)`
     /// (a poll's header) without rescanning the committed prefix. O(turn).
