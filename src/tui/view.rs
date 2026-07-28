@@ -244,9 +244,7 @@ pub enum PopupClick {
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>,                       // per-block fold state
-    raw: Vec<Line<'static>>,                    // unwrapped styled lines (width-aware: tables)
-    raw_tag: Vec<crate::model::BlockIndex>,     // raw[i] belongs to block raw_tag[i]
-    raw_dirty: bool,                            // raw needs rebuilding (fold toggle / live update)
+    raw_dirty: bool,                            // wrapped needs rebuilding (fold toggle / live update)
     wrapped: Vec<Line<'static>>,                // wrapped to `width`
     wrapped_tag: Vec<crate::model::BlockIndex>, // wrapped[i] belongs to block wrapped_tag[i]
     width: u16,
@@ -294,8 +292,6 @@ impl View {
         Self {
             blocks,
             collapsed,
-            raw: Vec::new(),
-            raw_tag: Vec::new(),
             raw_dirty: true,
             wrapped: Vec::new(),
             wrapped_tag: Vec::new(),
@@ -490,7 +486,7 @@ impl View {
     /// is O(one block) of syntax-highlighting instead of the whole document. A width
     /// change invalidates the cache (bodies are width-aware for tables). Appended
     /// blocks (live tail) render fresh; the rest of the cache is preserved.
-    fn render_raw(&mut self) {
+    fn render_raw(&mut self) -> (Vec<Line<'static>>, Vec<crate::model::BlockIndex>) {
         if self.cache_width != Some(self.width) {
             self.body_cache.clear();
             self.cache_width = Some(self.width);
@@ -511,9 +507,10 @@ impl View {
             };
             bodies.push(body);
         }
+        // The assembled unwrapped lines are a transient intermediate — wrapped immediately by the
+        // caller and never stored (the resident render structures are `body_cache` + `wrapped`).
         let r = render::assemble(bodies);
-        self.raw = r.lines;
-        self.raw_tag = r.block_of;
+        (r.lines, r.block_of)
     }
 
     /// Mark raw stale so the next `layout` rebuilds and re-wraps it.
@@ -582,9 +579,9 @@ impl View {
         // Rebuild raw on a width change (width-aware tables) or stale content,
         // then re-wrap. `width == 0` is the wrap-invalidation sentinel.
         if width_changed || self.raw_dirty {
-            self.render_raw();
+            let (raw, raw_tag) = self.render_raw();
             self.raw_dirty = false;
-            let (w, t) = wrap::wrap_all_tagged(&self.raw, &self.raw_tag, width as usize);
+            let (w, t) = wrap::wrap_all_tagged(&raw, &raw_tag, width as usize);
             self.wrapped = w;
             self.wrapped_tag = t;
             // Match indices are into `wrapped`, so only recompute when it was rebuilt.
