@@ -180,6 +180,74 @@ pub(crate) fn push_sub_agent(map: &mut BTreeMap<AgentId, SubAgentMeta>, at: Bloc
     }
 }
 
+/// Live-header facts maintained by the accumulator as the tail advances: turn / tool counts +
+/// the spawned children (in launch order, each flagged running). The map-free complement to
+/// [`SessionIndex`] / [`build_sub_agents`] — a cheap, always-current header a live consumer
+/// reads without rescanning the session. Counts match `count_turns` / `count_tools` over the
+/// display stream; `children` matches a block walk (order + duplicates), with `running` derived
+/// from the same two lifecycle events the sub-agent map uses.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct SessionMeta {
+    /// User turns — `#(UserText | Command)`.
+    pub turns: usize,
+    /// Tool invocations — `#ToolUse + Σ Thinking.tools.len()` (a spawn's `tool_use` is a child,
+    /// **not** a tool). Invariant under activity coalescing.
+    pub tools: usize,
+    /// Spawned sub-agents in launch (block) order, each flagged `running`.
+    pub children: Vec<ChildMeta>,
+}
+
+/// One spawned sub-agent in a [`SessionMeta`] — the header/menu view of a child.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChildMeta {
+    pub id: AgentId,
+    pub description: String,
+    pub agent_type: String,
+    /// `!spawn_status.is_terminal()`, cleared when a matching [`Block::AgentDone`] folds.
+    pub running: bool,
+}
+
+impl SessionMeta {
+    /// Fold ONE finalized block into the running meta — the incremental unit the accumulator
+    /// applies as each committed block drains and as the open turn is re-folded. Counting
+    /// **finalized blocks** (not raw messages) is what makes it exact and byte-identical to the
+    /// block-scan presenters: a spawn's `tool_use` is a [`Block::SubAgent`] (a child, scored 0 by
+    /// `count_tools`), an activity-grouped run is one `Thinking{tools}` (its nested count), and a
+    /// `tool_result`-bearing user message is a back-patch, not a turn. Proven equal to
+    /// `count_turns` / `count_tools` / `collect_child_refs` over the same blocks (see the tests).
+    pub fn push(&mut self, b: &Block) {
+        match b {
+            Block::UserText(_) | Block::Command { .. } => self.turns += 1,
+            Block::ToolUse { .. } => self.tools += 1,
+            Block::Thinking { tools, .. } => self.tools += tools.len(),
+            Block::SubAgent(sa) if !sa.agent_id.is_empty() => self.children.push(ChildMeta {
+                id: sa.agent_id.clone(),
+                description: sa.description.clone(),
+                agent_type: sa.agent_type.clone(),
+                running: !sa.status.is_terminal(),
+            }),
+            Block::AgentDone { agent_id, .. } if !agent_id.is_empty() => {
+                // Linear scan (children are few) so a duplicate id keeps today's block-walk
+                // behavior; a map lookup would collapse duplicates.
+                for c in self.children.iter_mut().filter(|c| &c.id == agent_id) {
+                    c.running = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build over a whole block list — one [`push`](Self::push) per block. The batch/oracle path
+    /// (the accumulator maintains it incrementally instead; this proves the two equal).
+    pub fn build(blocks: &[Block]) -> Self {
+        let mut m = SessionMeta::default();
+        for b in blocks {
+            m.push(b);
+        }
+        m
+    }
+}
+
 /// Fill each entry's `transcript` with its child transcript file (`subagents/agent-<id>.jsonl`)
 /// via the agent's discovery hook. A no-op for an agent without sub-agents, or where the file is
 /// absent (leaves `None`). Called by the path-aware parse, which alone knows the transcript path.
@@ -404,6 +472,76 @@ mod tests {
         }
 
         assert_eq!(batch, incr, "incremental push must equal batch build");
+    }
+
+    /// `SessionMeta::build` counts exactly as the presenters' `count_turns` / `count_tools` /
+    /// `collect_child_refs` do: a tool absorbed into a `Thinking` still counts, a spawn's
+    /// `tool_use` is a child (not a tool), children keep block order, and `running` clears on a
+    /// terminal spawn status or a matching `AgentDone`.
+    #[test]
+    fn session_meta_counts_turns_tools_children() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: Vec::new(),
+                subtree_cost: None,
+            })
+        };
+        let tool = || Block::ToolUse {
+            name: "Bash".into(),
+            target: "ls".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![
+            Block::UserText("hi".into()), // turn 1
+            tool(),                       // tool 1
+            Block::Thinking {
+                text: String::new(),
+                duration_secs: None,
+                tools: vec![tool(), tool()],
+            }, // +2 nested tools ⇒ 3
+            spawn("a1", AgentStatus::Running), // child a1, running
+            spawn("a2", AgentStatus::Completed), // child a2, terminal spawn ⇒ not running
+            spawn("", AgentStatus::Running), // empty id ⇒ skipped
+            Block::AgentDone {
+                agent_id: "a1".into(),
+                agent_type: "gp".into(),
+                description: "do a1".into(),
+                status: AgentStatus::Completed,
+                result: None,
+            }, // completes a1 ⇒ not running
+            Block::Command {
+                name: "/clear".into(),
+                args: String::new(),
+                output: vec![],
+            }, // turn 2
+        ];
+        let m = SessionMeta::build(&blocks);
+        assert_eq!(m.turns, 2);
+        assert_eq!(m.tools, 3, "1 ToolUse + 2 Thinking-absorbed");
+        assert_eq!(m.children.len(), 2, "a1 + a2 (empty id skipped)");
+        assert_eq!(m.children[0].id, "a1");
+        assert!(!m.children[0].running, "a1 completed via AgentDone");
+        assert_eq!(m.children[1].id, "a2");
+        assert!(!m.children[1].running, "a2 spawned terminal");
+
+        // Incremental push, block by block, equals the batch build.
+        let mut incr = SessionMeta::default();
+        for b in &blocks {
+            incr.push(b);
+        }
+        assert_eq!(incr, m, "incremental push == batch build");
     }
 
     /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk

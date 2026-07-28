@@ -14,7 +14,7 @@
 use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
-use crate::engine::session::{BlockStore, InMemoryStore, Session};
+use crate::engine::session::{BlockStore, InMemoryStore, Session, SessionMeta};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::{AttachmentContent, Block, ByteOffset, EpochSeconds};
@@ -42,6 +42,30 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// open window, so its resident content is O(turn); this owns the O(N) committed prefix (which
     /// for a deferred store is a tiny locator table, content on disk).
     committed: Vec<S::Bv>,
+    /// The live-header facts of the **committed** prefix, folded once per committed block on drain
+    /// (never rescanned). The full header for a poll is this + the open turn re-folded on top (see
+    /// [`session_meta`](Self::session_meta)) — so a live consumer reads it without an O(N) scan.
+    committed_meta: SessionMeta,
+}
+
+/// The delta-sized read a live streaming consumer (the pull protocol) needs each poll — WITHOUT
+/// the O(N) `index`/`sub_agents` build or a whole-committed clone. `committed_delta` is only
+/// `committed[from..]` (the blocks past what the caller already rendered); everything else is
+/// O(turn). Produced by [`SessionAccumulator::stream_read`].
+pub struct StreamRead {
+    /// `committed[from..]` — the newly-committed blocks the caller hasn't rendered yet.
+    pub committed_delta: Vec<Block>,
+    /// The finalized open turn (provisional zone) — O(turn).
+    pub provisional: Vec<Block>,
+    /// The whole session's per-turn timestamps (the renderer indexes into it by turn).
+    pub user_times: Vec<Option<EpochSeconds>>,
+    /// The current folded metrics.
+    pub metrics: Metrics,
+    /// The full live header — committed meta + the open turn folded on top (matches the tail).
+    pub meta: SessionMeta,
+    /// The current committed count (== the split point between `committed_delta`'s base and the
+    /// provisional zone).
+    pub n_committed: usize,
 }
 
 impl SessionAccumulator<InMemoryStore> {
@@ -65,6 +89,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             metrics: adapter.metrics_acc(),
             store,
             committed: Vec::new(),
+            committed_meta: SessionMeta::default(),
         }
     }
 
@@ -99,8 +124,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
         }
         let patched = self.replayer.apply(&delta);
         // Drain the turns that just crossed the durability frontier and `put` each once — the
-        // replayer drops them, keeping its content O(turn); we own the committed prefix.
+        // replayer drops them, keeping its content O(turn); we own the committed prefix. Fold each
+        // finalized committed block into the maintained header **once**, before it's stored, so a
+        // live poll reads the header without rescanning the committed prefix.
         for b in self.replayer.drain_committed() {
+            self.committed_meta.push(&b);
             let at = self.committed.len();
             let bv = self.store.put(b, at);
             self.committed.push(bv);
@@ -161,6 +189,54 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.cwd.clear();
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
+        self.committed_meta = SessionMeta::default();
+    }
+
+    /// `committed[from..]` as owned [`Block`]s — the newly-committed tail past what a live consumer
+    /// already rendered. O(delta): it copies only the tail, never the whole committed prefix (the
+    /// step off the per-poll O(N) clone). `from` is clamped to the committed length.
+    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+        self.committed[from.min(self.committed.len())..]
+            .iter()
+            .map(|bv| self.store.get(bv).into_owned())
+            .collect()
+    }
+
+    /// The finalized open turn's block count — the provisional zone length a live consumer's cursor
+    /// addresses. O(turn) (finalizes the open window).
+    pub fn provisional_len(&self) -> usize {
+        self.replayer.open_snapshot().0.len()
+    }
+
+    /// The live header for the current tail: the maintained **committed** meta with the finalized
+    /// **open** turn folded on top — so it equals `SessionMeta::build(committed ++ provisional)`
+    /// (a poll's header) without rescanning the committed prefix. O(turn).
+    pub fn session_meta(&self) -> SessionMeta {
+        let mut m = self.committed_meta.clone();
+        for b in &self.replayer.open_snapshot().0 {
+            m.push(b);
+        }
+        m
+    }
+
+    /// The full delta-sized read for one streaming poll (see [`StreamRead`]) — one `open_snapshot`
+    /// so provisional, `user_times`, and the header all come from a single finalize. Copies only
+    /// `committed[from..]`; never the whole committed prefix.
+    pub fn stream_read(&self, from: usize) -> StreamRead {
+        let committed_delta = self.committed_tail(from);
+        let (provisional, user_times) = self.replayer.open_snapshot();
+        let mut meta = self.committed_meta.clone();
+        for b in &provisional {
+            meta.push(b);
+        }
+        StreamRead {
+            committed_delta,
+            provisional,
+            user_times,
+            metrics: self.metrics.finish(),
+            meta,
+            n_committed: self.committed.len(),
+        }
     }
 
     /// The current presentable blocks + per-turn times + folded metrics, WITHOUT consuming the
@@ -207,5 +283,83 @@ impl<S: BlockStore> SessionAccumulator<S> {
             index,
             sub_agents,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn tmp(body: &str) -> std::path::PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "cr-builder-meta-{}-{}.jsonl",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        p
+    }
+
+    /// The maintained [`SessionMeta`] (committed folded on drain + the open turn folded on top)
+    /// must equal a batch `SessionMeta::build` over the whole current block stream — at **every**
+    /// step of an incremental fold, including mid-open-turn, across a sub-agent spawn, and across a
+    /// commit. This is what lets a live poll read the header without rescanning the session.
+    #[test]
+    fn maintained_meta_equals_batch_build_at_every_step() {
+        // A turn that spawns a sub-agent (Agent tool → SubAgent block), then a second user turn
+        // that commits the first.
+        let lines = [
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#,
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]},"timestamp":"2026-07-26T10:00:04Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:05Z"}"#,
+        ];
+        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut off: crate::model::ByteOffset = 0;
+        for line in lines {
+            acc.advance_at(off, line);
+            off += line.len() as u64 + 1;
+            // The maintained header == a batch build over the whole current block stream.
+            let blocks = acc.snapshot().blocks();
+            assert_eq!(
+                acc.session_meta(),
+                SessionMeta::build(&blocks),
+                "maintained meta diverged from batch build"
+            );
+        }
+        // Final shape: 2 user turns, 2 tool calls (Bash + Task counts as... Task is a spawn ⇒ NOT
+        // a tool), one child.
+        let meta = acc.session_meta();
+        assert_eq!(meta.turns, 2, "two user turns");
+        assert_eq!(
+            meta.tools, 1,
+            "Bash is a tool; the Task spawn is a child, not a tool"
+        );
+        assert_eq!(meta.children.len(), 1);
+        assert_eq!(meta.children[0].id, "achild01");
+    }
+
+    /// A truncation/rewrite resets the maintained committed meta (no stale carry-over).
+    #[test]
+    fn reset_clears_committed_meta() {
+        let a = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"a"}]},"timestamp":"2026-07-26T10:00:00Z"}"#;
+        let b = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"b"}]},"timestamp":"2026-07-26T10:00:01Z"}"#;
+        let path = tmp(&format!("{a}\n{b}\n"));
+        let mut fp = crate::FollowParser::open(Agent::Claude, &path);
+        fp.advance_stream().unwrap();
+        assert_eq!(fp.stream_read(0).meta.turns, 2);
+        // Rewrite to a single turn → reset → meta rebuilt from scratch.
+        std::fs::write(&path, format!("{a}\n")).unwrap();
+        fp.advance_stream().unwrap();
+        assert_eq!(fp.stream_read(0).meta.turns, 1, "reset rebuilt the header");
+        let _ = std::fs::remove_file(&path);
     }
 }

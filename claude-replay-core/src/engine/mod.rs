@@ -14,9 +14,10 @@ pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)
 pub mod session;
 pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metrics
 
-pub use builder::SessionAccumulator;
+pub use builder::{SessionAccumulator, StreamRead};
 pub use index::SessionIndex;
 pub use session::{
     build_sub_agents, parse_session, parse_session_as, parse_session_enriched,
-    parse_session_enriched_as, BlockAccess, BlockStore, InMemoryStore, Session,
+    parse_session_enriched_as, BlockAccess, BlockStore, ChildMeta, InMemoryStore, Session,
+    SessionMeta,
 };

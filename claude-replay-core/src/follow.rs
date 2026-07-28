@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::engine::builder::SessionAccumulator;
+use crate::engine::builder::{SessionAccumulator, StreamRead};
 use crate::engine::session::{InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
@@ -169,6 +169,32 @@ impl FollowParser {
             &mut s.sub_agents,
         );
         Ok(Some((s, tick.reset, tick.patch_floor)))
+    }
+
+    /// The **light** streaming advance (the pull path): fold the delta and report only the two
+    /// protocol signals — `(reset, patch_floor)` — **without** assembling a `Session` (no O(N)
+    /// `index`/`sub_agents` build, no whole-committed clone). `None` on an idle tick. The caller
+    /// reads the delta-sized state afterward via [`stream_read`](Self::stream_read) /
+    /// [`committed_len`](Self::committed_len) / [`provisional_len`](Self::provisional_len).
+    pub fn advance_stream(&mut self) -> std::io::Result<Option<(bool, Option<usize>)>> {
+        let tick = self.advance_from_source()?;
+        Ok(tick.advanced.then_some((tick.reset, tick.patch_floor)))
+    }
+
+    /// Committed count (the append-only prefix length) — O(1).
+    pub fn committed_len(&self) -> usize {
+        self.builder.committed_len()
+    }
+
+    /// Finalized open-turn (provisional) length — O(turn).
+    pub fn provisional_len(&self) -> usize {
+        self.builder.provisional_len()
+    }
+
+    /// The delta-sized read for one pull (see [`StreamRead`]): `committed[from..]` + the open turn +
+    /// times + metrics + the live header, from a single finalize. Copies only the committed tail.
+    pub fn stream_read(&self, from: usize) -> StreamRead {
+        self.builder.stream_read(from)
     }
 }
 

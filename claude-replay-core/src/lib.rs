@@ -38,7 +38,8 @@ pub use agent::Agent;
 pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
-    BlockAccess, BlockStore, InMemoryStore, Session, SessionAccumulator, SessionIndex,
+    BlockAccess, BlockStore, ChildMeta, InMemoryStore, Session, SessionAccumulator, SessionIndex,
+    SessionMeta,
 };
 pub use follow::FollowParser;
 pub use metrics::Metrics;
