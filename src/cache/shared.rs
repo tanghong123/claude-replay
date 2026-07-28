@@ -32,8 +32,24 @@ use std::sync::Mutex;
 use super::stream::{pull, Cursor, PullReply};
 use crate::engine::Session;
 use crate::follow::FollowParser;
-use crate::model::Block;
+use crate::metrics::Metrics;
+use crate::model::{Block, EpochSeconds};
 use crate::Agent;
+
+/// A consistent, lock-free-after-return snapshot of everything the `/pull` handler needs to render
+/// and slice: the protocol counters, the full block list (committed ++ provisional, in order) with
+/// the committed/provisional split point `n_committed`, and the render inputs (`user_times`,
+/// `metrics`). Taken under a single lock so the counters match the blocks.
+pub struct RenderSnapshot {
+    pub epoch: u64,
+    pub provisional_gen: u64,
+    /// Index in `blocks` where the provisional (open-turn) zone begins; `blocks[..n_committed]` is
+    /// the committed prefix.
+    pub n_committed: usize,
+    pub blocks: Vec<Block>,
+    pub user_times: Vec<Option<EpochSeconds>>,
+    pub metrics: Metrics,
+}
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
 struct Inner {
@@ -104,6 +120,37 @@ impl SharedSession {
             .as_ref()
             .map_or((EMPTY, EMPTY), |s| (s.committed.as_slice(), &s.provisional));
         pull(g.epoch, committed, provisional, g.provisional_gen, cursor)
+    }
+
+    /// A consistent [`RenderSnapshot`] — the counters plus the full block list and render inputs,
+    /// taken under one lock so the `/pull` handler can render + slice against a coherent state.
+    /// (First cut: clones the blocks under the lock — O(N). An `Arc`-shared committed volume would
+    /// avoid the copy; deferred with the lock-free-committed optimization.)
+    pub fn render_snapshot(&self) -> RenderSnapshot {
+        let g = self.inner.lock().unwrap();
+        match &g.last {
+            Some(s) => {
+                let mut blocks = s.committed.clone();
+                let n_committed = blocks.len();
+                blocks.extend(s.provisional.iter().cloned());
+                RenderSnapshot {
+                    epoch: g.epoch,
+                    provisional_gen: g.provisional_gen,
+                    n_committed,
+                    blocks,
+                    user_times: s.user_times.clone(),
+                    metrics: s.metrics.clone(),
+                }
+            }
+            None => RenderSnapshot {
+                epoch: g.epoch,
+                provisional_gen: g.provisional_gen,
+                n_committed: 0,
+                blocks: Vec::new(),
+                user_times: Vec::new(),
+                metrics: Metrics::default(),
+            },
+        }
     }
 
     /// The current session epoch (bumped on reset).

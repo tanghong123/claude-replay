@@ -29,9 +29,9 @@ mod stream;
 mod shared;
 mod tier_b;
 #[allow(unused_imports)]
-pub use shared::SharedSession;
+pub use shared::{RenderSnapshot, SharedSession};
 #[allow(unused_imports)]
-pub use stream::{Cursor, PullReply};
+pub use stream::{pull, Cursor, PullReply};
 
 use std::collections::HashMap;
 use std::sync::Mutex;

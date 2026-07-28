@@ -84,6 +84,36 @@ pub struct PullReply {
     pub provisional: Vec<Block>,
 }
 
+impl Cursor {
+    /// Encode as a compact query value: `epoch.committed_id.provisional_gen.provisional_index`.
+    /// Round-trips with [`from_query`](Self::from_query); the four fields are the whole cursor.
+    pub fn to_query(self) -> String {
+        format!(
+            "{}.{}.{}.{}",
+            self.epoch, self.committed_id, self.provisional_gen, self.provisional_index
+        )
+    }
+
+    /// Parse [`to_query`](Self::to_query)'s form. Any malformed input yields the default cursor
+    /// (`epoch == 0`), which the server treats as a resync — so a missing/garbled cursor is safe.
+    pub fn from_query(s: &str) -> Cursor {
+        let p: Vec<&str> = s.split('.').collect();
+        if p.len() == 4 {
+            if let (Ok(epoch), Ok(committed_id), Ok(provisional_gen), Ok(provisional_index)) =
+                (p[0].parse(), p[1].parse(), p[2].parse(), p[3].parse())
+            {
+                return Cursor {
+                    epoch,
+                    committed_id,
+                    provisional_gen,
+                    provisional_index,
+                };
+            }
+        }
+        Cursor::default()
+    }
+}
+
 impl PullReply {
     /// Whether this reply carries no blocks (a pure idle tick).
     pub fn is_idle(&self) -> bool {
@@ -219,6 +249,18 @@ mod tests {
         );
         assert_eq!(r.provisional, vec![b("new-open")]);
         assert_eq!(r.next_cursor(), cur(1, 4, 5, 1));
+    }
+
+    #[test]
+    fn cursor_query_round_trips_and_tolerates_garbage() {
+        let c = cur(3, 12, 7, 4);
+        assert_eq!(c.to_query(), "3.12.7.4");
+        assert_eq!(Cursor::from_query("3.12.7.4"), c);
+        // Malformed ⇒ default (epoch 0 ⇒ resync), never a panic.
+        assert_eq!(Cursor::from_query(""), Cursor::default());
+        assert_eq!(Cursor::from_query("1.2.3"), Cursor::default());
+        assert_eq!(Cursor::from_query("a.b.c.d"), Cursor::default());
+        assert_eq!(Cursor::from_query("1.2.3.4.5"), Cursor::default());
     }
 
     #[test]

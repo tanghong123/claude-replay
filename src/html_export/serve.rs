@@ -9,10 +9,11 @@ use super::{
     block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
     session_id, AgentInfo, ChildRef, POLL_MS,
 };
+use crate::cache::{pull, Cursor, RenderSnapshot};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -262,6 +263,44 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
     out.push_str(meta);
     out.push('\n');
     Some(out)
+}
+
+/// Build the `/pull` wire reply from a [`RenderSnapshot`] and the client's [`Cursor`] (the
+/// pull-client transport, vs `stream_delta`'s server-diffed byte stream). Runs the **tested**
+/// block-level [`pull`] index math over the snapshot's committed/provisional zones, then slices
+/// the parallel rendered block `lines` (1:1 with the snapshot's blocks) at the resulting `*_from`
+/// indices. `committed` blocks are permanent appends; `provisional` is a truncate-from + append.
+/// The content-blind client applies "truncate to `from`, then extend" per zone (see `export.js`).
+#[allow(dead_code)] // wired by the `/pull` route in the next step
+fn pull_wire(snap: &RenderSnapshot, lines: &[String], meta: &str, cursor: Cursor) -> String {
+    // The committed/provisional split in line-space (clamped to the rendered lines defensively;
+    // in practice `lines.len() == blocks.len()` — one rendered line per block).
+    let n = snap.n_committed.min(lines.len());
+    let reply = pull(
+        snap.epoch,
+        &snap.blocks[..snap.n_committed],
+        &snap.blocks[snap.n_committed..],
+        snap.provisional_gen,
+        cursor,
+    );
+    let to_vals = |ls: &[String]| -> Vec<Value> {
+        ls.iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap_or(Value::Null))
+            .collect()
+    };
+    let committed = to_vals(&lines[reply.committed_from.min(n)..n]);
+    let provisional = to_vals(&lines[(n + reply.provisional_from).min(lines.len())..]);
+    json!({
+        "t": "pull",
+        "epoch": snap.epoch,
+        "committed_from": reply.committed_from,
+        "committed": committed,
+        "provisional_gen": snap.provisional_gen,
+        "provisional_from": reply.provisional_from,
+        "provisional": provisional,
+        "meta": serde_json::from_str::<Value>(meta).unwrap_or(Value::Null),
+    })
+    .to_string()
 }
 
 /// Poll the transcript forever, streaming changes to `companion`. Shared by
@@ -592,5 +631,60 @@ fn serve_connection(
             respond(&mut stream, "200 OK", ct, &bytes)
         }
         Err(_) => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Block;
+
+    fn snap(n_committed: usize, total: usize, epoch: u64, gen: u64) -> RenderSnapshot {
+        RenderSnapshot {
+            epoch,
+            provisional_gen: gen,
+            n_committed,
+            blocks: (0..total)
+                .map(|i| Block::AssistantText(format!("b{i}")))
+                .collect(),
+            user_times: Vec::new(),
+            metrics: Default::default(),
+        }
+    }
+    fn lines(total: usize) -> Vec<String> {
+        (0..total).map(|i| format!("{{\"i\":{i}}}")).collect()
+    }
+
+    /// `pull_wire` maps the block-level pull onto the rendered lines: a fresh cursor resyncs
+    /// (all lines), an up-to-date cursor is idle (empty zones), and a catching-up cursor gets the
+    /// committed slice + a provisional reset.
+    #[test]
+    fn pull_wire_resync_idle_and_catchup() {
+        // 2 committed + 2 provisional, epoch 5, gen 3.
+        let s = snap(2, 4, 5, 3);
+        let ls = lines(4);
+
+        // Fresh (epoch-0) cursor ⇒ resync: all committed + all provisional.
+        let v: Value = serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::default())).unwrap();
+        assert_eq!(v["epoch"], 5);
+        assert_eq!(v["committed_from"], 0);
+        assert_eq!(v["committed"].as_array().unwrap().len(), 2);
+        assert_eq!(v["provisional_gen"], 3);
+        assert_eq!(v["provisional_from"], 0);
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 2);
+
+        // Up-to-date cursor (epoch 5, committed 2, gen 3, index 2) ⇒ idle.
+        let v: Value =
+            serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::from_query("5.2.3.2"))).unwrap();
+        assert_eq!(v["committed"].as_array().unwrap().len(), 0);
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
+
+        // Catching-up cursor with a stale gen ⇒ committed slice + whole provisional (from 0).
+        let v: Value =
+            serde_json::from_str(&pull_wire(&s, &ls, "{}", Cursor::from_query("5.0.1.0"))).unwrap();
+        assert_eq!(v["committed_from"], 0);
+        assert_eq!(v["committed"].as_array().unwrap().len(), 2);
+        assert_eq!(v["provisional_from"], 0);
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 2);
     }
 }
