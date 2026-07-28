@@ -25,7 +25,7 @@
 mod stream;
 mod tier_b;
 #[allow(unused_imports)]
-pub use stream::{Cursor, PullDelta};
+pub use stream::{Cursor, PullReply};
 
 use std::collections::HashMap;
 use std::sync::Mutex;

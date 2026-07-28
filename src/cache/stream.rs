@@ -1,185 +1,167 @@
-//! The pull-based streaming protocol (design §9a).
+//! The pull-based streaming protocol (design §9a) — **append-only**.
 //!
-//! A client holds a serializable [`Cursor`] and pulls [`PullDelta`]s; the server serves either new
-//! **committed** blocks (append-only — never a rewind) or the refreshed **provisional** (open) turn.
-//! This replaces the server-side snapshot diff (`html_export::serve::stream_delta`): the *client*
-//! tracks its own position, so the server keeps no per-client baseline, and a remote process can
-//! hold the cursor and decide what to read next.
+//! Both zones are append-only, so a client's position is just **three indices**:
+//! `Cursor { epoch, committed_id, provisional_index }`. The server never mutates a provisional block
+//! in place — a status update (a tool's output arriving) is *appended* as another provisional block,
+//! and the client **replays** the provisional stream to render. Grouping and result-joining are
+//! deferred to **commit**: when the open turn closes, the server folds its provisional blocks (join
+//! + `finish_turns`) into committed blocks and resets the provisional stream. So:
 //!
-//! ## Why the second number is a *generation*, not a block index
-//! The design sketched `Cursor(committed_id, provisional_index)`. Building it surfaced that the open
-//! turn is **not append-only**: a tool block in the current turn back-patches — its output fills in
-//! when the `tool_result` arrives — **without adding a block**. A raw `provisional_index` (a count)
-//! can't see that same-length content change, so a client would show a stale, output-less tool
-//! call. So the second coordinate is a **`provisional_gen`**: a version the server bumps on *any*
-//! open-turn change (append, back-patch, or regroup). It's still two positions + an epoch; only the
-//! second position's meaning changed from "index" to "generation." (Committed stays a true index —
-//! it's append-only, so it can't have this problem.)
+//! - **committed** is append-only across the whole session (a block, once committed, never changes);
+//! - **provisional** is append-only *within* the current open turn, and **resets** at each commit.
+//!
+//! A pull is therefore trivial: serve `committed[committed_id..]` and `provisional[provisional_index..]`.
+//! The reply is **self-describing** — it carries the actual first index of each zone (`*_from`), which
+//! differs from the request only on a **resync** (`epoch` changed ⇒ both `0`) or a **commit** (the old
+//! provisional became committed ⇒ `provisional_from = 0`). The client applies one rule per zone:
+//! *"truncate to `from`, then append."* No divergence to compute, no O(N²) re-send.
+//!
+//! (This replaces the server-side snapshot diff in `html_export::serve::stream_delta`: the client
+//! tracks its own position, so the server keeps no per-client baseline, and a remote process can hold
+//! the cursor and interpret the reply itself. Live view is intentionally *rawer* than a `--dump` —
+//! it shows ungrouped, un-joined blocks that coalesce at commit; `--dump` commits/folds the last turn,
+//! so it stays byte-identical.)
 
 use crate::model::Block;
 use serde::{Deserialize, Serialize};
 
-/// A client's serializable read position. `committed_id` is a durable, monotonic anchor into the
-/// append-only committed log (safe for a remote / across restart). `provisional_gen` is the version
-/// of the open turn last seen (see the module note). `epoch` is the session validity token — a
-/// mismatch means the source was truncated/reset and the client must resync from 0.
+/// A client's serializable read position — three append indices. `committed_id` is durable and
+/// monotonic (committed is append-only for the whole session); `provisional_index` is monotonic
+/// *within* the current open turn and resets at each commit; `epoch` is session validity (a mismatch
+/// ⇒ resync).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {
-    /// Session validity; a mismatch vs. the live session ⇒ resync.
     pub epoch: u64,
-    /// Committed blocks already consumed (append-only ⇒ monotonic, never rewinds).
     pub committed_id: usize,
-    /// The open-turn version last seen (bumps on any provisional change).
-    pub provisional_gen: u64,
+    pub provisional_index: usize,
 }
 
-/// The result of a pull — what the client applies to its rendered stream.
+/// A pull result. `*_from` is the index of the first block in each zone — authoritative for
+/// placement; the client does `zone.truncate(from); zone.extend(blocks)`, then replays the
+/// provisional to render. An idle tick carries empty `committed`/`provisional`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PullDelta {
-    /// Nothing changed since the cursor.
-    Idle,
-    /// **Append** `committed` (new committed blocks since the cursor — may be empty when only the
-    /// open turn changed) and **replace** the provisional tail with `provisional`. Committed is
-    /// append-only, so `committed` is always a pure append, never a rewind.
-    Update {
-        committed: Vec<Block>,
-        provisional: Vec<Block>,
-    },
-    /// The session reset (epoch mismatch / source truncation): discard everything and render fresh.
-    Resync {
-        committed: Vec<Block>,
-        provisional: Vec<Block>,
-    },
+pub struct PullReply {
+    /// Current session epoch. If it differs from the request cursor's, this is a full resync.
+    pub epoch: u64,
+    /// Index of the first block in `committed` (== the request `committed_id`, or 0 on resync).
+    pub committed_from: usize,
+    /// New committed blocks — always a pure append after `committed_from`.
+    pub committed: Vec<Block>,
+    /// Index of the first block in `provisional` (== the request `provisional_index`; 0 on a commit
+    /// — the old provisional became committed — or on resync).
+    pub provisional_from: usize,
+    /// New provisional (open-turn) blocks — append-only within the current turn.
+    pub provisional: Vec<Block>,
 }
 
-/// Compute the delta for `cursor` against the current shared state: the session `epoch`, the
-/// `committed` block slice (append-only), the current `provisional` (open turn), and its `gen`.
-/// Returns the delta and the client's **next** cursor. Committed progress takes priority — a pull
-/// never serves stale provisional deltas from before a commit; it serves the new committed range
-/// and a fresh provisional together.
-pub fn pull(
-    epoch: u64,
-    committed: &[Block],
-    provisional: &[Block],
-    gen: u64,
-    cursor: Cursor,
-) -> (PullDelta, Cursor) {
-    let next = Cursor {
-        epoch,
-        committed_id: committed.len(),
-        provisional_gen: gen,
-    };
+impl PullReply {
+    /// Whether this reply carries no blocks (a pure idle tick).
+    pub fn is_idle(&self) -> bool {
+        self.committed.is_empty() && self.provisional.is_empty()
+    }
+
+    /// The cursor a client holds after applying this reply.
+    pub fn next_cursor(&self) -> Cursor {
+        Cursor {
+            epoch: self.epoch,
+            committed_id: self.committed_from + self.committed.len(),
+            provisional_index: self.provisional_from + self.provisional.len(),
+        }
+    }
+}
+
+/// Compute the reply for `cursor` against the live shared state (`epoch`, the append-only `committed`
+/// slice, and the current open-turn `provisional`). Committed progress takes priority: when committed
+/// grew, the old provisional the client held *became* that committed range, so the provisional resets
+/// (`provisional_from = 0`).
+pub fn pull(epoch: u64, committed: &[Block], provisional: &[Block], cursor: Cursor) -> PullReply {
     if cursor.epoch != epoch {
-        return (
-            PullDelta::Resync {
-                committed: committed.to_vec(),
-                provisional: provisional.to_vec(),
-            },
-            next,
-        );
-    }
-    let committed_grew = committed.len() > cursor.committed_id;
-    let provisional_changed = gen != cursor.provisional_gen;
-    if !committed_grew && !provisional_changed {
-        return (PullDelta::Idle, cursor);
-    }
-    // Serve the new committed range (empty if only the open turn changed) + the full current
-    // provisional (replace). On a commit (`committed_grew`), the old provisional the client held
-    // *became* part of this committed range, so replacing it is exactly the discard.
-    (
-        PullDelta::Update {
-            committed: committed[cursor.committed_id..].to_vec(),
+        // Resync: everything from 0.
+        return PullReply {
+            epoch,
+            committed_from: 0,
+            committed: committed.to_vec(),
+            provisional_from: 0,
             provisional: provisional.to_vec(),
-        },
-        next,
-    )
+        };
+    }
+    let committed_from = cursor.committed_id.min(committed.len());
+    let committed_grew = committed.len() > committed_from;
+    // A commit ⇒ the client's provisional became committed ⇒ discard it (replace from 0). Otherwise
+    // the provisional is append-only within the turn ⇒ serve the new suffix.
+    let provisional_from = if committed_grew {
+        0
+    } else {
+        cursor.provisional_index.min(provisional.len())
+    };
+    PullReply {
+        epoch,
+        committed_from,
+        committed: committed[committed_from..].to_vec(),
+        provisional_from,
+        provisional: provisional[provisional_from..].to_vec(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn t(s: &str) -> Block {
+    fn b(s: &str) -> Block {
         Block::AssistantText(s.into())
     }
 
-    #[test]
-    fn idle_when_nothing_changed() {
-        let committed = vec![t("a"), t("b")];
-        let prov = vec![t("open")];
-        let cursor = Cursor {
-            epoch: 1,
-            committed_id: 2,
-            provisional_gen: 5,
-        };
-        let (delta, next) = pull(1, &committed, &prov, 5, cursor);
-        assert_eq!(delta, PullDelta::Idle);
-        assert_eq!(next, cursor, "cursor unchanged on idle");
+    fn cur(epoch: u64, committed_id: usize, provisional_index: usize) -> Cursor {
+        Cursor {
+            epoch,
+            committed_id,
+            provisional_index,
+        }
     }
 
     #[test]
-    fn committed_advance_appends_and_replaces_provisional() {
-        // Client saw committed[..2] + an old provisional; two turns committed since.
-        let committed = vec![t("a"), t("b"), t("c"), t("d")];
-        let prov = vec![t("new-open")];
-        let cursor = Cursor {
-            epoch: 1,
-            committed_id: 2,
-            provisional_gen: 5,
-        };
-        let (delta, next) = pull(1, &committed, &prov, 9, cursor);
-        assert_eq!(
-            delta,
-            PullDelta::Update {
-                committed: vec![t("c"), t("d")],  // only the new committed range
-                provisional: vec![t("new-open")], // fresh provisional (old one discarded)
-            }
-        );
-        assert_eq!(next.committed_id, 4);
-        assert_eq!(next.provisional_gen, 9);
+    fn idle_returns_empty_zones_at_the_current_ends() {
+        let r = pull(1, &[b("a"), b("b")], &[b("p0")], cur(1, 2, 1));
+        assert!(r.is_idle());
+        assert_eq!(r.committed_from, 2);
+        assert_eq!(r.provisional_from, 1);
+        assert_eq!(r.next_cursor(), cur(1, 2, 1));
     }
 
     #[test]
-    fn provisional_change_without_commit_replaces_only_the_open_turn() {
-        // A back-patch: same committed, same provisional length, but the gen bumped (tool output
-        // filled in). Committed range is empty; the provisional is replaced.
-        let committed = vec![t("a"), t("b")];
-        let prov = vec![t("tool: (now with output)")];
-        let cursor = Cursor {
-            epoch: 1,
-            committed_id: 2,
-            provisional_gen: 5,
-        };
-        let (delta, next) = pull(1, &committed, &prov, 6, cursor);
+    fn provisional_append_serves_only_the_new_suffix() {
+        // Open turn grew 1 → 3 (a new tool_use + its appended result). No commit.
+        let prov = vec![b("p0"), b("p1"), b("p2")];
+        let r = pull(1, &[b("a")], &prov, cur(1, 1, 1));
+        assert_eq!(r.committed, Vec::<Block>::new());
+        assert_eq!(r.provisional_from, 1);
+        assert_eq!(r.provisional, vec![b("p1"), b("p2")]);
+        assert_eq!(r.next_cursor(), cur(1, 1, 3));
+    }
+
+    #[test]
+    fn commit_appends_committed_and_resets_provisional() {
+        // Two turns committed since committed_id=2; the old provisional became committed.
+        let committed = vec![b("a"), b("b"), b("c"), b("d")];
+        let prov = vec![b("new-open")];
+        let r = pull(1, &committed, &prov, cur(1, 2, 4));
+        assert_eq!(r.committed_from, 2);
+        assert_eq!(r.committed, vec![b("c"), b("d")]);
         assert_eq!(
-            delta,
-            PullDelta::Update {
-                committed: vec![],
-                provisional: prov.clone(),
-            }
+            r.provisional_from, 0,
+            "old provisional became committed ⇒ reset"
         );
-        assert_eq!(next.committed_id, 2);
-        assert_eq!(next.provisional_gen, 6);
+        assert_eq!(r.provisional, vec![b("new-open")]);
+        assert_eq!(r.next_cursor(), cur(1, 4, 1));
     }
 
     #[test]
     fn epoch_mismatch_resyncs_from_zero() {
-        let committed = vec![t("a")];
-        let prov = vec![t("open")];
-        let stale = Cursor {
-            epoch: 1,
-            committed_id: 7,
-            provisional_gen: 3,
-        };
-        let (delta, next) = pull(2, &committed, &prov, 1, stale);
-        assert_eq!(
-            delta,
-            PullDelta::Resync {
-                committed: vec![t("a")],
-                provisional: vec![t("open")],
-            }
-        );
-        assert_eq!(next.epoch, 2);
-        assert_eq!(next.committed_id, 1);
+        let r = pull(2, &[b("a")], &[b("open")], cur(1, 7, 3));
+        assert_eq!(r.epoch, 2);
+        assert_eq!(r.committed_from, 0, "resync, not the stale committed_id");
+        assert_eq!(r.committed, vec![b("a")]);
+        assert_eq!(r.provisional_from, 0);
+        assert_eq!(r.next_cursor(), cur(2, 1, 1));
     }
 }
