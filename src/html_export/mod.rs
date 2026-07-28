@@ -668,6 +668,68 @@ fn build_jsonl(
 /// [`build_jsonl`] with an optional [`AssetSink`] — the offline bundle threads one through
 /// so each stream materializes its attachments into a shared, de-conflicted `assets/` dir.
 #[allow(clippy::too_many_arguments)]
+/// The `Emitter`'s cross-block state, exposed so a consumer can render a block **range** continuing
+/// from a prior render — render the committed prefix once, then the open turn from the carried-
+/// forward state — instead of re-rendering the whole session every poll. Carrying it keeps the
+/// settled anchors (`#bN`), turn numbers, and sidebar entries stable across ranges. `Default` is the
+/// from-scratch start, so a single whole-session render is byte-identical to before.
+#[derive(Default, Clone)]
+pub(super) struct EmitState {
+    next_block: crate::model::BlockIndex,
+    turn: usize,
+    /// How many user turns have been consumed from `user_times` so far (indexes into it).
+    seen_turns: usize,
+    /// `(anchor id, label)` per user turn — the sidebar, accumulated across ranges.
+    turns: Vec<(String, String)>,
+}
+
+/// Render `blocks` to one JSON wire record per block, **continuing** the `Emitter` state in `st`
+/// (so a later range's anchors/turns follow on). `user_times` is the WHOLE session's per-turn
+/// timestamps; `st.seen_turns` indexes into it. This is the resumable core the render-once path
+/// (§9) rides: committed blocks pass through once as they commit; the open turn re-renders each poll
+/// from a *clone* of the committed state (its ephemeral anchors never pollute the committed state).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_blocks(
+    blocks: &[Block],
+    user_times: &[Option<f64>],
+    fold: &FoldPolicy,
+    cwd: &str,
+    reveal: bool,
+    linked: bool,
+    assets: Option<&mut AssetSink>,
+    transcript: Option<&Transcript>,
+    st: &mut EmitState,
+) -> Vec<String> {
+    let mut em = Emitter {
+        fold,
+        cwd,
+        reveal,
+        linked,
+        assets,
+        transcript,
+        next_block: st.next_block,
+        turn: st.turn,
+        turns: std::mem::take(&mut st.turns),
+    };
+    let mut lines = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
+        let ts = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+            let t = user_times.get(st.seen_turns).copied().flatten();
+            st.seen_turns += 1;
+            t
+        } else {
+            None
+        };
+        lines.push(em.block(b, ts).to_string());
+    }
+    st.next_block = em.next_block;
+    st.turn = em.turn;
+    st.turns = em.turns;
+    lines
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_jsonl_inner(
     blocks: &[Block],
     user_times: &[Option<f64>],
@@ -679,31 +741,14 @@ fn build_jsonl_inner(
     transcript: Option<&Transcript>,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
-    let mut em = Emitter {
-        fold,
-        cwd,
-        reveal,
-        linked,
-        assets,
-        transcript,
-        next_block: 0,
-        turn: 0,
-        turns: Vec::new(),
-    };
-    let mut lines = vec![meta.to_string()];
-    // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
-    let mut seen_turns = 0usize;
-    for b in blocks {
-        let ts = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
-            let t = user_times.get(seen_turns).copied().flatten();
-            seen_turns += 1;
-            t
-        } else {
-            None
-        };
-        lines.push(em.block(b, ts).to_string());
-    }
-    (lines.join("\n"), em.turns)
+    let mut st = EmitState::default();
+    let lines = render_blocks(
+        blocks, user_times, fold, cwd, reveal, linked, assets, transcript, &mut st,
+    );
+    let mut out = Vec::with_capacity(lines.len() + 1);
+    out.push(meta.to_string());
+    out.extend(lines);
+    (out.join("\n"), st.turns)
 }
 
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
@@ -1201,6 +1246,51 @@ mod tests {
     use super::serve::{line_aligned_tail, percent_decode, query_get, stream_delta};
     use super::*;
     use crate::model::Hunk;
+
+    /// The resumable-render property (render-once foundation, §9): rendering a block list in two
+    /// ranges while carrying `EmitState` produces the EXACT same wire records — and the same sidebar
+    /// turns — as rendering it whole. This is what lets the live server render committed blocks once
+    /// and the open turn from the carried state, instead of re-rendering everything each poll.
+    #[test]
+    fn render_blocks_split_equals_whole() {
+        let blocks = vec![
+            Block::UserText("first question".into()),
+            Block::AssistantText("thinking out loud".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "ls".into(),
+                diffs: vec![],
+                output: Some("a\nb".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::UserText("second question".into()),
+            Block::AssistantText("done".into()),
+        ];
+        let times = vec![Some(1.0), Some(2.0)];
+        let fold = FoldPolicy::default();
+        let r = |bs: &[Block], st: &mut EmitState| {
+            render_blocks(bs, &times, &fold, "", false, false, None, None, st)
+        };
+
+        let mut whole_st = EmitState::default();
+        let whole = r(&blocks, &mut whole_st);
+
+        // Split after the first turn (as a commit boundary would), carrying state across.
+        let k = 3;
+        let mut st = EmitState::default();
+        let mut split = r(&blocks[..k], &mut st);
+        split.extend(r(&blocks[k..], &mut st));
+
+        assert_eq!(
+            whole, split,
+            "resumable render: split == whole (stable anchors/turns)"
+        );
+        assert_eq!(
+            whole_st.turns, st.turns,
+            "sidebar turns identical across the split"
+        );
+    }
 
     /// Emit `blocks` to the block-stream JSON (skipping the meta line) with the
     /// given fold policy and no timestamps — the shape the tests assert on. Uses
