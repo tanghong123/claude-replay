@@ -296,6 +296,80 @@ once. The TUI gets the identical shape with `Rendered = Vec<Line<'static>>`, cac
 
 ---
 
+## 9a. Concurrency: one shared session, lock-free committed reads, a serializable pull cursor
+
+The cache **owns no threads**. Multiple clients share **one session per id** (an `Arc`, never a
+copy); each keeps its **own read cursor**; a client that reads past the end **borrows its own
+thread** to advance. This is the two-level model — the cache holds the tailer state, the client
+drives the tail on demand.
+
+### SharedSession
+
+```
+SharedSession {
+  committed:  append-only log (BvLog / immutable prefix), byte-offset addressable, length M
+              published release-atomic — reads are LOCK-FREE (content at [..M] never moves)
+  tail: Mutex<{ provisional{ after, blocks }, follower, source_tell }>   // advance + open turn
+  epoch: u64  // bumped on a truncation/Reset; invalidates outstanding cursors
+}
+```
+
+- The **committed volume needs no lock**: append-only ⇒ existing offsets never move, so N clients
+  read `committed[..M]` concurrently; only `M` is an atomic (release on append, acquire on read).
+- The **only** locked region is the `tail`: a client whose cursor hits the end takes it, advances
+  the transcript + folds on **its own thread** (append committed + update `provisional`), releases,
+  reads on. No background thread; readers of committed are never blocked by a tail.
+
+### The commit-transition race → `provisional.after` (lock-free versioning)
+
+A commit mints the new committed block(s) while the provisional set that *became* them may not be
+cleared yet — a reader could momentarily see a block twice. Fix: tag the provisional with
+**`after` = the committed length it follows** (a seqlock over the append-only log):
+
+- Writer: while the open turn is live, `provisional.after == M`; on commit, append the grouped
+  block(s) (`M → M'`), then set `provisional.after = M'`.
+- Reader: load `M` (acquire), read `committed[..M]`, load `provisional`; the snapshot is
+  `committed[..M] ++ provisional` **iff `provisional.after == M`**; else a commit raced → discard
+  the provisional, serve `committed[..M]` only, retry. Every inconsistent interleaving is detectable
+  by `after != M` (both directions), so the transition needs **no lock**.
+
+### The serializable pull cursor
+
+```
+Cursor( committed_id, provisional_index )    // + the server validates against SharedSession.epoch
+```
+
+- **`committed_id`** — monotonic, **rewind-free, durable**: committed is append-only, so this only
+  advances and its target never changes. The serializable anchor — safe to hand a remote process or
+  keep across a restart. Representation: a committed **`BvLog` byte offset** (a remote seeks the log
+  directly — no shared state, no offset table needed).
+- **`provisional_index`** — **ephemeral**: a position into the *current* provisional (the open turn
+  following `committed_id`). Advances on pure append; **resets to 0** on the two non-appending
+  mutations — a **commit** or an **open-turn regroup** (thinking absorbs the activity run / a run
+  coalesces before the turn commits).
+- **`epoch`** — a session validity token the server checks each pull; a mismatch (truncation/Reset)
+  tells a returning remote to re-sync from 0. Kept **outside** the two-number cursor so the common
+  path stays exactly two numbers.
+
+### The pull protocol
+
+Given `Cursor(committed_id, provisional_index)`, load `M` + `provisional{after}`:
+
+- **`M > committed_id`** (a commit happened — possibly several turns, several blocks) → serve
+  `committed[committed_id..M]`; the client **discards its whole provisional** (it became that
+  committed range) and reads the fresh open turn from provisional index 0. **Committed progress takes
+  priority** — a pull never also serves stale provisional deltas from the old epoch.
+- **`M == committed_id`** → serve `provisional[provisional_index..]` (open-turn append), or a
+  provisional rewind + `provisional[0..]` if it regrouped.
+- Return `Cursor(M, len(provisional))`.
+
+The client's render maps 1:1 to the two cases — **append committed rows** (permanent) or **replace
+the provisional tail** (transient). That is exactly the `append` / `reset-from` the HTML feed does
+today by server-side snapshot-diff (§9), now a principled **pull** with a serializable, remote-
+friendly cursor and no server-held per-client diff baseline.
+
+---
+
 ## 10. Layering consequences worth naming
 
 Inherent to the module boundaries; documented so they are choices, not surprises.
@@ -338,21 +412,27 @@ separate "core `BvLog`" phase — the `BvLog` is built as the cache's storage.
 
 **Phase C — the `SessionCache` as the universal data layer + present layer (the bulk of the
 remaining work).** In dependency order:
-1. **`Session { committed, provisional }` split** (core) — with a `blocks()` compatibility view so
-   the ~15 consumer sites stay byte-identical. Unblocks committed-only storage + the present layer.
+1. **`Session { committed, provisional }` split** (core) — **DONE** (`b8d5f6f`), byte-identical, with
+   a `blocks()` compatibility view. The accumulator's `snapshot` no longer puts the open tail through
+   the store, so any store is now committed-only. + `FollowParser::poll_session` returns a fully-
+   assembled session (`ead0560`), so the cache needs no core internals.
 2. **`Provisional`/`Commit` emit vocabulary** (core) — the Replayer emits the open turn for live
-   latency; `Commit` supersedes it. Durable path = `Commit` only (== today's committed drain).
-3. **Move `SessionCache` core→present and give it tier-b** — relocate `SessionCache` (`#21`) out of
-   `core::engine::cache`; fold `TierBStore`/`Deferred`/persist-load into it as its `DeferredStore` +
-   committed-only append-only `BvLog` (`Bv`/`Meta` records, `source_tell`, cold-load = read
-   committed + re-parse the open turn); route metrics through `Emit::Meta` so the log is
-   self-sufficient; remove the standalone core sidecar json.
-4. **`reconcile` + `viewport` + `Renderer`** (present) — extract `reconcile` out of `html_export`
-   (delete the snapshot-diff; the open-turn rewind becomes wire-only); the windowed block/line
-   model; the render cache.
-5. **Both frontends on the cache** — the HTML server obtains sessions from the cache and streams its
-   render records (`L = JSON`); the TUI obtains sessions from the cache (today it parses directly)
-   and renders lazily (`L = Block` + in-memory render cache). Windowed TUI as a `Renderer`.
+   latency; `Commit` supersedes it. Durable path = `Commit` only (== today's committed drain). Add
+   `provisional.after` (the committed length it follows — §9a) at this step.
+3. **Move `SessionCache` core→present and give it tier-b** — (3a) **DONE** (`17d6737`): the cache is
+   in the present layer, uses only public core API. (3b remaining) fold `TierBStore`/`Deferred`/
+   persist-load into it as its `DeferredStore` + committed-only append-only `BvLog` (`Bv`/`Meta`
+   records, `source_tell`, cold-load = read committed + re-parse the open turn); route metrics
+   through `Emit::Meta`; remove the standalone core sidecar json.
+4. **`SharedSession` + `reconcile` + `viewport` + `Renderer`** (present) — the `Arc<SharedSession>`
+   (lock-free committed reads + tail `Mutex` + `epoch`, §9a); the serializable `Cursor(committed_id,
+   provisional_index)` pull protocol; extract `reconcile` out of `html_export` (delete the snapshot-
+   diff; the open-turn rewind becomes the wire form of the cursor's discard); the windowed block/line
+   model + render cache.
+5. **Both frontends on the cache** — the HTML server holds an `Arc<SharedSession>` + a `Cursor` per
+   client and streams via the pull protocol (`L = JSON` render records); the TUI obtains sessions from
+   the cache (today it parses directly) and renders lazily (`L = Block` + in-memory render cache).
+   Windowed TUI as a `Renderer`.
 
 **Phase D — sidecars (defer, optional).** Position-tagged `metrics`/`index` sidecars for O(1)
 cold-load. (No compaction — the log is never rewritten.)
