@@ -13,6 +13,24 @@ use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
 use crate::Agent;
 
+/// The outcome of one advance-from-source: whether content moved, whether it was a reset
+/// (truncation/rewrite), and the batch's back-patch signal (`patch_floor`).
+struct Tick {
+    advanced: bool,
+    reset: bool,
+    patch_floor: Option<usize>,
+}
+
+impl Tick {
+    fn idle() -> Self {
+        Tick {
+            advanced: false,
+            reset: false,
+            patch_floor: None,
+        }
+    }
+}
+
 /// Follows a transcript file, folding only newly-appended lines each poll through a shared
 /// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
 /// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
@@ -37,12 +55,14 @@ impl FollowParser {
     }
 
     /// Fold any newly-appended lines (or rebuild on a truncation/rewrite) into the running
-    /// builder. Returns `Ok(true)` when content advanced this tick, `Ok(false)` when nothing
-    /// changed since the last poll (the common idle tick). O(delta) except on a rewrite.
-    fn advance_from_source(&mut self) -> std::io::Result<bool> {
+    /// builder. Returns a [`Tick`]: whether content advanced, whether it was a reset (truncation),
+    /// and the batch's back-patch signal (the min already-emitted index any line mutated in place,
+    /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
+    /// O(delta) except on a rewrite.
+    fn advance_from_source(&mut self) -> std::io::Result<Tick> {
         let p = self.reader.poll()?;
         if !p.reset && p.lines.is_empty() {
-            return Ok(false); // nothing new this tick
+            return Ok(Tick::idle()); // nothing new this tick
         }
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
@@ -50,11 +70,19 @@ impl FollowParser {
             self.builder.reset();
         }
         // Fold each appended line with its file start offset, so attachment locators in a LIVE
-        // session get correct byte offsets (same as a batch parse).
+        // session get correct byte offsets (same as a batch parse). OR-reduce the per-line
+        // back-patch reports into the batch's min (the streaming layer's provisional-gen signal).
+        let mut patch_floor: Option<usize> = None;
         for (offset, line) in p.offsets.iter().zip(&p.lines) {
-            self.builder.advance_at(*offset, line);
+            if let Some(i) = self.builder.advance_at(*offset, line) {
+                patch_floor = Some(patch_floor.map_or(i, |cur| cur.min(i)));
+            }
         }
-        Ok(true)
+        Ok(Tick {
+            advanced: true,
+            reset: p.reset,
+            patch_floor,
+        })
     }
 
     /// Poll: fold any newly-appended lines and return the current blocks + per-turn times +
@@ -63,7 +91,10 @@ impl FollowParser {
     pub fn poll(
         &mut self,
     ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
-        Ok(self.advance_from_source()?.then(|| self.builder.fold()))
+        Ok(self
+            .advance_from_source()?
+            .advanced
+            .then(|| self.builder.fold()))
     }
 
     /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
@@ -73,7 +104,18 @@ impl FollowParser {
     /// grown since the last poll (idle). This is the residency cache's single assembly point — it
     /// needs no core internals.
     pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
-        if !self.advance_from_source()? {
+        Ok(self.poll_shared()?.map(|(s, _reset, _patch_floor)| s))
+    }
+
+    /// Like [`poll_session`](Self::poll_session), but also returns the streaming signals the
+    /// present-layer pull protocol needs: `reset` (a truncation happened this tick ⇒ bump the
+    /// session epoch) and `patch_floor` (the batch back-patched an already-emitted open-turn block
+    /// ⇒ bump the provisional generation; `None` = append-only). The `Session` carries the
+    /// committed / provisional split the pull serves. Returns `None` on an idle tick.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_shared(&mut self) -> std::io::Result<Option<(Session, bool, Option<usize>)>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
             return Ok(None);
         }
         let mut s = self.builder.snapshot();
@@ -83,7 +125,7 @@ impl FollowParser {
             &self.path,
             &mut s.sub_agents,
         );
-        Ok(Some(s))
+        Ok(Some((s, tick.reset, tick.patch_floor)))
     }
 }
 

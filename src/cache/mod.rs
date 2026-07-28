@@ -23,7 +23,13 @@
 #[allow(dead_code)]
 // wired into serve.rs when the pull path replaces stream_delta (Phase C step 4/5)
 mod stream;
+// SharedSession: the pull-servable live state (present-layer). Wired into serve.rs with the pull
+// path; the Arc/lock-free concurrency wrapper joins it there (real concurrent clients).
+#[allow(dead_code)]
+mod shared;
 mod tier_b;
+#[allow(unused_imports)]
+pub use shared::SharedSession;
 #[allow(unused_imports)]
 pub use stream::{Cursor, PullReply};
 
