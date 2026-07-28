@@ -1,6 +1,10 @@
 # `/pull` — maintained meta + delta-sized reply (no per-poll clone, no scan)
 
-**Status:** planned → implementing. Increment of Phase C (see `streaming-core-memory.md` §9a).
+**Status: BUILT** — landed as `c4090d8` (Inc 1: maintained `SessionMeta`), `35682ea`
+(Inc 2+3: `pull_delta` + `assemble_meta`, `render_snapshot` deleted), `1db693f` (Inc 4:
+child-nav inversion). Verified: oracle + unit tests, BYTE-IDENTICAL gate, and a live
+old-vs-new `/pull` wire diff on an 11k-block session (byte-identical, 25 MB catch-up +
+idle tick). Increment of Phase C (see `streaming-core-memory.md` §9a).
 **Baseline commit:** `50fb1a7`.
 **Gates (every increment):** `cargo fmt --check`, `cargo clippy --all-targets` (no new
 warnings), `cargo test`, `/tmp/sc-gate/gate.sh` → `BYTE-IDENTICAL: PASS`, **plus** a new
