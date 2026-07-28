@@ -716,8 +716,8 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
 /// inline snapshot and an empty sidebar (the JS fetches `?session=<id>`.jsonl, defaulting
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
-pub(super) fn build_shell(title: &str, root_id: &str, live: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live)))
+pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
+    build_page(title, "", &[], None, Some((root_id, live, pull)))
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
@@ -728,7 +728,7 @@ fn build_page(
     jsonl: &str,
     turns: &[(String, String)],
     live: Option<&str>,
-    multi: Option<(&str, bool)>,
+    multi: Option<(&str, bool, bool)>,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -743,13 +743,23 @@ fn build_page(
     let live_attrs = match (live, multi) {
         // A multi-file shell: `data-multi`/`data-root`, plus `data-poll` when served live
         // (navigation between agents is a full page load carrying `?session=<id>`).
-        (_, Some((root, live_multi))) => {
+        (_, Some((root, live_multi, pull))) => {
             let poll = if live_multi {
                 format!(" data-poll=\"{POLL_MS}\"")
             } else {
                 String::new()
             };
-            format!(" data-multi=\"1\" data-root=\"{}\"{poll}", esc(root))
+            // `data-pull` selects the pull-client transport (poll `/pull?cursor=`) over the
+            // default `/stream` byte-diff; only meaningful when served live.
+            let pull_attr = if live_multi && pull {
+                " data-pull=\"1\""
+            } else {
+                ""
+            };
+            format!(
+                " data-multi=\"1\" data-root=\"{}\"{poll}{pull_attr}",
+                esc(root)
+            )
         }
         (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
         (None, None) => String::new(),
@@ -1433,13 +1443,23 @@ mod tests {
     /// `live` adds `data-poll` (served `--html -f`), static omits it.
     #[test]
     fn build_shell_is_multi_file_without_inline() {
-        let html = build_shell("My session", "root-9f3d", false);
+        let html = build_shell("My session", "root-9f3d", false, false);
         assert!(html.contains("data-multi=\"1\""), "multi flag");
         assert!(html.contains("data-root=\"root-9f3d\""));
         assert!(!html.contains("data-poll"), "static bundle does not poll");
         // Live served shell polls its stream.
-        let live = build_shell("My session", "root-9f3d", true);
+        let live = build_shell("My session", "root-9f3d", true, false);
         assert!(live.contains("data-poll"), "live shell polls: {live:.0}");
+        assert!(
+            !live.contains("data-pull=\"1\""),
+            "stream transport: no data-pull body attr"
+        );
+        // Live served shell in pull mode carries data-pull (the pull-client transport).
+        let pull = build_shell("My session", "root-9f3d", true, true);
+        assert!(
+            pull.contains("data-pull=\"1\""),
+            "pull transport flag: {pull:.0}"
+        );
         // The inline session-data script is present but EMPTY (no block stream baked in).
         let inline = html
             .split("id=\"session-data\"")

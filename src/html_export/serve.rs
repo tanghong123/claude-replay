@@ -515,13 +515,21 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
             ..Default::default()
         },
     );
-    // The shell + the root stream up-front so the first page load is instant.
+    // Transport: the pull-client feed (`/pull`) is the DEFAULT for a live server — it costs nothing
+    // when no browser is attached (no background tailer; folding rides each client request). Setting
+    // `CR_STREAM=1` reverts to the baseline `/stream` byte-diff + `run_tailer` (kept for comparison).
+    let pull_mode = args.follow && std::env::var_os("CR_STREAM").is_none();
+
+    // The shell up-front so the first page load is instant. In pull mode the page carries
+    // `data-pull` and drives `/pull`; the baseline pre-materializes the root `/stream` file.
     std::fs::write(
         dir.join("index.html"),
-        build_shell(&title, &sid, args.follow),
+        build_shell(&title, &sid, args.follow, pull_mode),
     )
     .with_context(|| "write index.html")?;
-    live.ensure_stream(&sid);
+    if !pull_mode {
+        live.ensure_stream(&sid); // baseline: pre-render the root stream (the tailer keeps it current)
+    }
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
     let url = format!("http://127.0.0.1:{port}/index.html?session={sid}");
@@ -534,12 +542,13 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     open_in_browser(&url);
     println!("{url}");
 
-    if args.follow {
-        live.run_tailer(); // background-tail the requested agents; runs until Ctrl-C
+    if args.follow && !pull_mode {
+        live.run_tailer(); // baseline `/stream`: background-tail the requested agents until Ctrl-C
         Ok(())
     } else {
-        // Static: no tailing, but keep serving so navigation + reveal keep working. Streams
-        // are still generated lazily on first request (children on demand).
+        // Pull mode (client-driven — no background tailer, zero cost when idle) OR static: keep
+        // serving so navigation + reveal keep working. Streams are folded on demand (per `/pull`
+        // request, or lazily on first `/stream` request for a static bundle).
         loop {
             std::thread::park();
         }

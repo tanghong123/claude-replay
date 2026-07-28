@@ -746,8 +746,11 @@
     // Navigation between agents is a full page load carrying a new `?session=`.
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
+    // Transport: the server sets data-pull when it serves the pull feed by default; `?transport=`
+    // overrides it either way (pull|stream) for side-by-side comparison.
     var transport = new URLSearchParams(location.search).get("transport");
-    if (pollMs > 0 && transport === "pull") {
+    var usePull = transport === "pull" || (document.body.dataset.pull === "1" && transport !== "stream");
+    if (pollMs > 0 && usePull) {
       // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
       // drives the tail (the server folds on our request), so an idle page costs the server nothing.
       var inflightP = false;
