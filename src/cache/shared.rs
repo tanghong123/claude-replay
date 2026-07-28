@@ -30,6 +30,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::stream::{pull, Cursor, PullReply};
+use crate::engine::Session;
 use crate::follow::FollowParser;
 use crate::model::Block;
 use crate::Agent;
@@ -42,11 +43,14 @@ struct Inner {
     epoch: u64,
     /// The current open-turn generation — see the module docs / `super::stream`.
     provisional_gen: u64,
-    /// The finalized committed prefix (append-only across the session).
-    committed: Vec<Block>,
-    /// The finalized open turn (replaced wholesale each advance).
-    provisional: Vec<Block>,
+    /// The latest fully-assembled session (`None` before the first advance). Its `committed` /
+    /// `provisional` fields are the two zones `pull` serves; its `user_times` / `metrics` are what
+    /// the `/pull` handler needs to *render* the pulled blocks. Kept whole so the renderer has the
+    /// same inputs a batch parse would.
+    last: Option<Session>,
 }
+
+const EMPTY: &[Block] = &[];
 
 /// The live, pull-servable state of one followed session (see the module docs). `Arc`-shareable;
 /// all methods take `&self`.
@@ -63,8 +67,7 @@ impl SharedSession {
                 follower: FollowParser::open(agent, path),
                 epoch: 1,
                 provisional_gen: 0,
-                committed: Vec::new(),
-                provisional: Vec::new(),
+                last: None,
             }),
         }
     }
@@ -78,16 +81,16 @@ impl SharedSession {
             return Ok(false);
         };
         // A commit is visible as growth of the append-only committed prefix (compare BEFORE we
-        // adopt the new zones). Reset takes priority (it also invalidates committed).
-        let committed_grew = session.committed.len() > g.committed.len();
+        // adopt the new session). Reset takes priority (it also invalidates committed).
+        let prev_committed = g.last.as_ref().map_or(0, |s| s.committed.len());
+        let committed_grew = session.committed.len() > prev_committed;
         if reset {
             g.epoch += 1;
             g.provisional_gen += 1;
         } else if committed_grew || patch_floor.is_some() {
             g.provisional_gen += 1;
         }
-        g.committed = session.committed;
-        g.provisional = session.provisional;
+        g.last = Some(session);
         Ok(true)
     }
 
@@ -96,13 +99,11 @@ impl SharedSession {
     /// handler does).
     pub fn pull(&self, cursor: Cursor) -> PullReply {
         let g = self.inner.lock().unwrap();
-        pull(
-            g.epoch,
-            &g.committed,
-            &g.provisional,
-            g.provisional_gen,
-            cursor,
-        )
+        let (committed, provisional) = g
+            .last
+            .as_ref()
+            .map_or((EMPTY, EMPTY), |s| (s.committed.as_slice(), &s.provisional));
+        pull(g.epoch, committed, provisional, g.provisional_gen, cursor)
     }
 
     /// The current session epoch (bumped on reset).
@@ -151,9 +152,14 @@ mod tests {
 
     /// The gen/epoch transitions §9a prescribes: append leaves `gen` unchanged, an in-place
     /// back-patch bumps it, a commit bumps it, and a truncation bumps `epoch`.
-    // Test-only view of the committed count (the field lives behind the Mutex now).
+    // Test-only view of the committed count (the state lives behind the Mutex now).
     fn committed_len(ss: &SharedSession) -> usize {
-        ss.inner.lock().unwrap().committed.len()
+        ss.inner
+            .lock()
+            .unwrap()
+            .last
+            .as_ref()
+            .map_or(0, |s| s.committed.len())
     }
 
     #[test]
