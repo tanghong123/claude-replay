@@ -145,6 +145,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.store
     }
 
+    /// How many blocks have crossed the durability frontier into `committed` — i.e. the split point
+    /// between the append-only committed prefix and the open provisional turn in [`fold`](Self::fold)'s
+    /// block list. Lets a live consumer locate the settled/in-flight boundary in O(1) instead of
+    /// re-deriving it by scanning blocks.
+    pub fn committed_len(&self) -> usize {
+        self.committed.len()
+    }
+
     /// Rebuild from scratch — recreate the replayer, clear the cwd, and take a fresh metrics
     /// accumulator. The live follower calls this on a truncation/compaction (the reader re-read
     /// from 0, so the next `advance` folds the whole new file).

@@ -3,6 +3,7 @@
 
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
+use crate::metrics::Metrics;
 use crate::model::{Attachment, AttachmentContent, Block, LoadedAttachment};
 use crate::tui::picker::Picker;
 use crate::tui::{render, theme, wrap};
@@ -1035,13 +1036,35 @@ impl View {
     /// fully regrouped (thinking absorbs its tools, immediate-pickup markers suppressed) by the
     /// shared `Replayer`, so the view just diffs and swaps — no view-level re-grouping.
     pub fn update(&mut self, new_blocks: Vec<Block>) {
-        // Longest unchanged prefix — keep its fold state and render cache.
+        // Longest unchanged prefix — keep its fold state and render cache. (Batch/test entry: it
+        // re-derives the boundary by scan. The live loop uses `apply_poll`, where the engine hands
+        // the boundary in O(turn) — no scan.)
         let d = self
             .blocks
             .iter()
             .zip(&new_blocks)
             .take_while(|(a, b)| a == b)
             .count();
+        self.apply_from(new_blocks, d);
+    }
+
+    /// The **single** live-update entry the event loop calls (finding #7): the engine
+    /// ([`FollowParser::poll_delta`](crate::FollowParser)) hands the new blocks, the metrics, and the
+    /// exact `changed_from` boundary — so this needs **no** O(N) prefix scan (finding #4) — and it
+    /// refreshes the footer in the same call, so a block update can never drift out of sync with the
+    /// cost/token footer.
+    pub fn apply_poll(&mut self, new_blocks: Vec<Block>, metrics: &Metrics, changed_from: usize) {
+        self.apply_from(new_blocks, changed_from);
+        self.metrics = metrics.footer();
+        self.footer_segs = metrics.footer_segments();
+    }
+
+    /// Swap in `new_blocks`, preserving fold toggles + the render cache for `[0..d]` (`d` = the first
+    /// changed block) and recomputing only the tail. Shared by the batch `update` and live
+    /// `apply_poll`. The snapshot is already fully regrouped by the shared `Replayer`, so this just
+    /// diffs and swaps — no view-level re-grouping.
+    fn apply_from(&mut self, new_blocks: Vec<Block>, d: usize) {
+        let d = d.min(self.blocks.len()).min(new_blocks.len());
         // Live "▼ N new — G to jump" badge: while scrolled back (not following), accumulate
         // the net growth so the reader sees how much arrived below. Follow mode stays pinned
         // to the bottom, so it shows no badge. (A back-patch that doesn't grow bumps nothing.)
@@ -1493,6 +1516,34 @@ mod tests {
         (0..n)
             .map(|i| Block::AssistantText(format!("line {i}")))
             .collect()
+    }
+
+    /// The live-delta `apply_poll` (engine-provided `changed_from`) yields the exact same view
+    /// state as the scan-based `update` for the same new blocks — same rendered lines, same
+    /// per-block fold state, and a preserved fold toggle on the unchanged prefix. Proves the
+    /// O(turn)-boundary path is behaviorally identical to the O(N)-scan path.
+    #[test]
+    fn apply_poll_delta_equals_update_scan() {
+        let a = blocks(10);
+        let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        // Toggle a fold on the unchanged prefix; both paths must preserve it.
+        v1.collapsed[2] = true;
+        v2.collapsed[2] = true;
+        let b = blocks(13); // grew by 3 (a pure append ⇒ changed_from == 10)
+        let d = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        v1.update(b.clone());
+        v2.apply_poll(b.clone(), &Metrics::default(), d);
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");
+        assert_eq!(v1.block_kinds(), v2.block_kinds(), "same blocks");
+        assert!(
+            v1.is_collapsed(2) && v2.is_collapsed(2),
+            "fold toggle on the unchanged prefix survived both paths"
+        );
     }
 
     /// The default fold policy (no `--unfold`) collapses `Agent`/`Task` spawn blocks —

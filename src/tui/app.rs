@@ -441,16 +441,15 @@ fn event_loop<B: ratatui::backend::Backend>(
     loop {
         term.draw(|f| view.draw(f))?;
 
-        // No input this tick → pump the live tail incrementally (M16). One path for both
-        // agents: fold only the newly-appended lines through the persistent `Replayer`
-        // (which back-patches a cross-poll tool result without a full re-parse), then update
-        // the view preserving fold toggles + scroll, and refresh the folded footer metrics.
+        // No input this tick → pump the live tail incrementally (M16). `poll_delta` folds only the
+        // newly-appended lines through the persistent `Replayer` (back-patching a cross-poll tool
+        // result without a full re-parse) AND hands back the exact `changed_from` boundary, so the
+        // view preserves fold toggles + render cache for the unchanged prefix without re-scanning
+        // the whole block list. `apply_poll` swaps blocks + refreshes the footer in one call.
         if !event::poll(Duration::from_millis(250))? {
             if let Some(f) = follower.as_mut() {
-                if let Ok(Some((blocks, _times, metrics))) = f.poll() {
-                    view.update(blocks);
-                    view.set_metrics(metrics.footer());
-                    view.set_footer_segments(metrics.footer_segments());
+                if let Ok(Some((blocks, _times, metrics, changed_from))) = f.poll_delta() {
+                    view.apply_poll(blocks, &metrics, changed_from);
                 }
             }
             continue;

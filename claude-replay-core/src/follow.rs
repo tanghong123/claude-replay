@@ -40,6 +40,16 @@ pub struct FollowParser {
     path: PathBuf,
     builder: SessionAccumulator<InMemoryStore>,
     reader: LineReader,
+    /// Previous poll's committed length + open-turn blocks — the O(turn) state
+    /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
+    /// `poll_delta`.
+    prev_committed: usize,
+    prev_provisional: Vec<Block>,
+}
+
+/// Length of the shared prefix of two block slices — O(min(len)) block-equality.
+fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
 impl FollowParser {
@@ -51,6 +61,8 @@ impl FollowParser {
             path: path.to_path_buf(),
             builder: SessionAccumulator::new(agent),
             reader: LineReader::open_at_start(path),
+            prev_committed: 0,
+            prev_provisional: Vec::new(),
         }
     }
 
@@ -97,6 +109,37 @@ impl FollowParser {
             .then(|| self.builder.fold()))
     }
 
+    /// Like [`poll`](Self::poll), but also returns **`changed_from`** — the first block index that
+    /// differs from the previous poll, so a windowed/cached consumer keeps its fold-state and render
+    /// cache for `[0..changed_from]` and rebuilds only the rest. The engine computes it in **O(turn)**
+    /// from its own committed/provisional structure (committed is append-only ⇒ unchanged below the
+    /// prior committed length; only the open turn is re-derived), instead of the consumer re-scanning
+    /// the whole block list for the common prefix. `None` on an idle tick.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_delta(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics, usize)>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
+            return Ok(None);
+        }
+        let (blocks, times, metrics) = self.builder.fold();
+        let n_committed = self.builder.committed_len();
+        let changed_from = if tick.reset {
+            0 // truncation/rewrite ⇒ everything changed
+        } else {
+            // Committed is append-only, so blocks below the *prior* committed length are unchanged.
+            // The exact common prefix beyond it — whether the open turn appended, back-patched, or
+            // committed (its blocks finalized/grouped into the new committed tail) — is one
+            // `common_prefix` over the small open-turn region: O(turn), not O(N).
+            self.prev_committed
+                + common_prefix_len(&self.prev_provisional, &blocks[self.prev_committed..])
+        };
+        self.prev_committed = n_committed;
+        self.prev_provisional = blocks[n_committed..].to_vec();
+        Ok(Some((blocks, times, metrics, changed_from)))
+    }
+
     /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
     /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
     /// `transcript` filled from the source path (exactly as
@@ -141,6 +184,49 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    /// `poll_delta`'s `changed_from` must be a **safe unchanged prefix**: `blocks[..changed_from]`
+    /// is byte-identical to the previous poll's, across append / back-patch / commit / reset — and
+    /// it must equal the whole-list common prefix a consumer would otherwise scan for (so it is
+    /// exact, not merely conservative, on the append/back-patch path). Drives one follower through a
+    /// turn with a tool back-patch, a text append, a commit (second user turn), and a truncation.
+    #[test]
+    fn poll_delta_changed_from_is_a_safe_unchanged_prefix() {
+        const USER1: &str = "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n";
+        const TOOL: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"timestamp\":\"2026-07-26T10:00:01Z\"}\n";
+        const RESULT: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b1\",\"content\":\"out\"}]},\"timestamp\":\"2026-07-26T10:00:02Z\"}\n";
+        const TEXT: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n";
+        const USER2: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"next\"}]},\"timestamp\":\"2026-07-26T10:00:04Z\"}\n";
+
+        let path = tmp();
+        let mut fp = FollowParser::open(Agent::Claude, &path);
+        let mut prev: Vec<Block> = Vec::new();
+        let mut written = String::new();
+        for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
+            written.push_str(chunk);
+            std::fs::write(&path, written.as_bytes()).unwrap();
+            let (blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("advanced");
+            assert!(changed_from <= prev.len() && changed_from <= blocks.len());
+            // Safety: the prefix kept by a consumer is genuinely unchanged.
+            assert_eq!(
+                &prev[..changed_from],
+                &blocks[..changed_from],
+                "kept prefix must be unchanged"
+            );
+            // Exactness on this (non-reset) path: it equals the common prefix a scan would find.
+            assert_eq!(
+                changed_from,
+                common_prefix_len(&prev, &blocks),
+                "changed_from == whole-list common prefix"
+            );
+            prev = blocks;
+        }
+        // Truncation ⇒ reset ⇒ changed_from == 0 (everything rebuilt).
+        std::fs::write(&path, USER1.as_bytes()).unwrap();
+        let (_blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("reset advances");
+        assert_eq!(changed_from, 0, "reset rebuilds from 0");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The follower's `poll` must return byte-identical blocks + metrics to a full
