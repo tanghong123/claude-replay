@@ -4,12 +4,14 @@
 //! The viewer is **read-only** (scroll, fold, search, live-tail); `agent-jdi` reuses
 //! this crate's transcript discovery/parsing to supervise unattended agent runs.
 
+mod cache;
 mod fold;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
 mod present;
 pub mod tui;
+pub use cache::SessionCache;
 
 // The agent-agnostic parser/replay engine lives in the sibling `claude-replay-core` crate
 // (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
@@ -22,7 +24,7 @@ pub mod tui;
 // agent-neutral `parse_session*`.
 pub use claude_replay_core::{
     claude_discover, codex_discover, diff, discover, engine, follow, metrics, model, Agent,
-    SessionCache, Transcript,
+    Transcript,
 };
 
 use anyhow::Result;

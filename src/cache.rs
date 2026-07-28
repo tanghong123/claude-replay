@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::engine::session::Session;
+use crate::engine::Session;
 use crate::follow::FollowParser;
 use crate::Transcript;
 
@@ -124,7 +124,8 @@ impl SessionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_session_as, Agent};
+    use crate::engine::parse_session_as;
+    use crate::Agent;
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
