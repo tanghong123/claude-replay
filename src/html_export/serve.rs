@@ -50,6 +50,11 @@ struct Live {
     /// (as they commit) and their wire records cached here; only the open turn re-renders per poll.
     /// So a poll's render cost is O(open-turn), not O(session). Reset when the session epoch changes.
     render: Mutex<HashMap<String, PullRender>>,
+    /// child id → **parent session id**, recorded once when the parent's pull registers the
+    /// child's source. The child derives its own title/breadcrumb from the parent's maintained
+    /// meta on ITS first resolve ([`derive_title`](Self::derive_title)) — the pull path's
+    /// inversion of `register_children`'s per-pull cross-session title writes.
+    parents: Mutex<HashMap<String, String>>,
 }
 
 /// Per-id render-once state for `/pull`. Committed blocks are rendered **once** (as they commit)
@@ -101,13 +106,11 @@ impl Live {
     /// [`pull_response`](Self::pull_response) (the `/pull` path).
     fn resolve_id(&self, id: &str) -> Option<(Transcript, TitleInfo)> {
         if let Some(src) = self.cache.resolve(id) {
-            let t = self
-                .titles
-                .lock()
-                .unwrap()
-                .get(id)
-                .cloned()
-                .unwrap_or_default();
+            // A registered id with no title yet was registered source-only by its parent's pull
+            // (`register_child_sources`): derive its title/breadcrumb ONCE from the parent's
+            // maintained meta, now that this session is actually being retrieved.
+            let cached = self.titles.lock().unwrap().get(id).cloned();
+            let t = cached.unwrap_or_else(|| self.derive_title(id));
             return Some((src, t));
         }
         let source = discover::subagent_source(self.agent, &self.root_path, id)?;
@@ -125,6 +128,76 @@ impl Live {
             .unwrap()
             .insert(id.to_string(), t.clone());
         Some((src, t))
+    }
+
+    /// Derive (and cache) a child session's title/breadcrumb ONCE, on its first resolve, from
+    /// its **parent's maintained meta** — the child-side half of the pull path's nav inversion.
+    /// Follows the parent pointer recorded at registration; reads the child's description off the
+    /// parent's [`SessionMeta`](crate::engine::SessionMeta) and chains the parent's own ancestry.
+    /// Falls back to the bare id when the parent isn't resident (a deep link before the parent
+    /// was ever pulled, or the parent's live state was TTL-reaped) — matching the pre-existing
+    /// deep-link fallback; whichever value is derived is cached one-time, as before.
+    fn derive_title(&self, id: &str) -> TitleInfo {
+        let parent_id = self.parents.lock().unwrap().get(id).cloned();
+        let derived = parent_id.and_then(|pid| {
+            let pss = self
+                .shared
+                .lock()
+                .unwrap()
+                .get(&pid)
+                .map(|(_, ss)| ss.clone())?;
+            let pmeta = pss.session_meta();
+            let c = pmeta.children.iter().find(|c| c.id == id)?;
+            let pt = self
+                .titles
+                .lock()
+                .unwrap()
+                .get(&pid)
+                .cloned()
+                .unwrap_or_default();
+            let mut ancestors = pt.ancestors;
+            ancestors.push((pid, pt.title));
+            Some(TitleInfo {
+                title: if c.description.is_empty() {
+                    c.agent_type.clone()
+                } else {
+                    c.description.clone()
+                },
+                agent_type: c.agent_type.clone(),
+                ancestors,
+            })
+        });
+        let t = derived.unwrap_or_else(|| TitleInfo {
+            title: id.to_string(),
+            ..Default::default()
+        });
+        self.titles
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(t)
+            .clone()
+    }
+
+    /// Record `parent_id`'s children in the id→source registry — a pure path derivation, one
+    /// time per child (already-registered ids are skipped) — plus the parent pointer
+    /// [`derive_title`](Self::derive_title) follows later. **No title writes**: the pull path's
+    /// per-poll cross-session `register_children` is inverted into this one-time source note +
+    /// the child's own lazy, one-time title derivation on its first pull.
+    fn register_child_sources(&self, parent_id: &str, children: &[crate::engine::ChildMeta]) {
+        for c in children {
+            if self.cache.is_registered(&c.id) {
+                continue;
+            }
+            if let Some(source) = discover::subagent_source(self.agent, &self.root_path, &c.id) {
+                self.cache
+                    .register_new(&c.id, Transcript::open(self.agent, source));
+                self.parents
+                    .lock()
+                    .unwrap()
+                    .insert(c.id.clone(), parent_id.to_string());
+            }
+        }
     }
 
     /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
@@ -284,20 +357,11 @@ impl Live {
         );
         drop(rmap);
         // The meta wire record from the maintained header (no block scan) + this agent's
-        // presentation info; children registered so their `?session=` links resolve.
+        // presentation info. Children get a one-time source+parent-pointer note so their
+        // `?session=` links resolve; their titles derive lazily on THEIR first pull
+        // (`derive_title`) — this pull touches no other session's presentation state.
         let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics);
-        let children = d
-            .meta
-            .children
-            .iter()
-            .map(|c| ChildRef {
-                id: c.id.clone(),
-                description: c.description.clone(),
-                agent_type: c.agent_type.clone(),
-                terminal: false, // registration ignores it (`child_info` drops terminal)
-            })
-            .collect();
-        self.register_children(&info, children);
+        self.register_child_sources(id, &d.meta.children);
         let committed_records: Vec<&str> = std::str::from_utf8(&committed_bytes)
             .unwrap_or("")
             .lines()
@@ -612,6 +676,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         titles: Mutex::new(HashMap::new()),
         shared: Mutex::new(HashMap::new()),
         render: Mutex::new(HashMap::new()),
+        parents: Mutex::new(HashMap::new()),
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
@@ -891,6 +956,94 @@ mod tests {
         let v: Value = serde_json::from_str(&pull_reply_json(1, 0, 0, &[], 0, &[], &meta)).unwrap();
         assert_eq!(v["committed"].as_array().unwrap().len(), 0);
         assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
+    }
+
+    /// The child-nav inversion end-to-end (no HTTP): a parent's pull registers its child's
+    /// SOURCE + a parent pointer only (no title write — the parent's pull touches no other
+    /// session's presentation state); the child then derives its title/breadcrumb ONCE from the
+    /// parent's maintained meta on ITS first resolve, and the result is cached.
+    #[test]
+    fn pull_registers_child_source_only_and_child_derives_title_lazily() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-serve-inv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&sadir).unwrap();
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"review the auth module","prompt":"go"}}]}}"#, "\n",
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#, "\n",
+        )).unwrap();
+        std::fs::write(
+            sadir.join("agent-achild01.jsonl"),
+            concat!(r#"{"type":"user","message":{"content":"go"}}"#, "\n"),
+        )
+        .unwrap();
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::Claude,
+            fold: FoldPolicy::default(),
+            root_path: sess.clone(),
+            cwd: "/r".into(),
+            cache: SessionCache::new(),
+            prev: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            shared: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+        live.titles.lock().unwrap().insert(
+            "sid".into(),
+            TitleInfo {
+                title: "root title".into(),
+                ..Default::default()
+            },
+        );
+
+        // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
+        // registration + the parent pointer — no title write for the child.
+        let reply = live
+            .pull_response("sid", Cursor::default())
+            .expect("parent reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["meta"]["children"][0]["id"], "achild01");
+        assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
+        assert!(live.cache.is_registered("achild01"), "source registered");
+        assert_eq!(
+            live.parents
+                .lock()
+                .unwrap()
+                .get("achild01")
+                .map(String::as_str),
+            Some("sid"),
+            "parent pointer recorded"
+        );
+        assert!(
+            !live.titles.lock().unwrap().contains_key("achild01"),
+            "no cross-session title write from the parent's pull"
+        );
+
+        // Child's first resolve: title/breadcrumb derived once from the parent's maintained meta.
+        let (_src, t) = live.resolve_id("achild01").expect("child resolves");
+        assert_eq!(t.title, "review the auth module");
+        assert_eq!(t.agent_type, "general-purpose");
+        assert_eq!(
+            t.ancestors,
+            vec![("sid".to_string(), "root title".to_string())]
+        );
+        assert!(
+            live.titles.lock().unwrap().contains_key("achild01"),
+            "derived once, then cached"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// append_records → read_range round-trips: records land on disk in order, and reading from a

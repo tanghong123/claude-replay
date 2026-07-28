@@ -189,6 +189,14 @@ impl SharedSession {
         )
     }
 
+    /// The maintained live header (turns / tools / children) for the current tail — O(turn) to
+    /// read (committed side maintained, open turn folded on top), no block scan. This is what a
+    /// *child* session's first resolve reads off its **parent** to derive its title/breadcrumb
+    /// once (the child-nav inversion) — no per-pull cross-session writes.
+    pub fn session_meta(&self) -> SessionMeta {
+        self.inner.lock().unwrap().follower.session_meta()
+    }
+
     /// The current session epoch (bumped on reset).
     pub fn epoch(&self) -> u64 {
         self.inner.lock().unwrap().epoch
