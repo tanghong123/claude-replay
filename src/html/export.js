@@ -656,6 +656,18 @@
     }
     filter = sel;
     if (!sel) {
+      // Re-anchor to CONTENT, not to the absolute scroll offset: while filtered most blocks
+      // are hidden, so the document is much shorter and scrollY means something different.
+      // Whatever the user navigated/scrolled to while filtered — the topmost block visible in
+      // the viewport — must stay put when the hidden blocks reflow back in; a raw offset would
+      // land back at the pre-filter position instead.
+      var anchor = null, anchorTop = 0;
+      var blocks = all(".blk");
+      for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i].offsetParent === null) continue; // hidden by the filter
+        var r = blocks[i].getBoundingClientRect();
+        if (r.bottom > 0) { anchor = blocks[i]; anchorTop = r.top; break; }
+      }
       all(".blk").forEach(function (b) {
         b.classList.remove("filter-dim", "filter-hidden");
       });
@@ -664,6 +676,9 @@
         all(".fold[id]").forEach(function (f) {
           if (savedFolds[f.id] !== undefined) setFold(f, savedFolds[f.id] === "1");
         });
+      }
+      if (anchor) {
+        window.scrollTo({ top: anchor.getBoundingClientRect().top + window.scrollY - anchorTop });
       }
     } else {
       applyFilter(sel);
