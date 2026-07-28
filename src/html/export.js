@@ -544,6 +544,43 @@
     }
   }
 
+  // ── pull-client transport (`/pull?session=&cursor=`) ───────────────────
+  // The pull version of the live feed (vs the `/stream` byte-diff). The server returns a
+  // self-describing PullReply with TWO zones — `committed` (permanent, append-only) and
+  // `provisional` (the open turn: truncate-from + append) — keyed by a 4-number cursor
+  // {epoch, committed_id, provisional_gen, provisional_index}. We are a CONTENT-BLIND client:
+  // we apply committed appends and the provisional truncate/extend by position, never inspecting
+  // a block. `pc` is our cursor; epoch 0 ⇒ the first pull resyncs. See `cache::stream` / serve.rs.
+  var pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+  function cursorStr() {
+    return pc.epoch + "." + pc.committed + "." + pc.gen + "." + pc.index;
+  }
+  function putBlock(b) {
+    stream.appendChild(renderBlock(b));
+    if (b.turn != null) addTurn(b);
+  }
+  function consumePull(r) {
+    // Idle tick (same epoch, both zones empty): nothing to do.
+    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return;
+    if (r.epoch !== pc.epoch) { resetFrom(0); pc.committed = 0; } // resync
+    if (r.meta) renderMeta(r.meta);
+    // A commit (or resync): committed grew — drop everything at/after committed_from, then append
+    // the new permanent blocks. `committed_from <= pc.committed` always.
+    if (r.committed.length) {
+      resetFrom(r.committed_from);
+      pc.committed = r.committed_from;
+      for (var i = 0; i < r.committed.length; i++) { putBlock(r.committed[i]); pc.committed++; }
+    }
+    // Provisional: truncate to the committed prefix + provisional_from, then append the suffix
+    // (a same-gen append keeps the prefix; a gen bump/commit sends provisional_from = 0 ⇒ replace).
+    resetFrom(pc.committed + r.provisional_from);
+    for (var j = 0; j < r.provisional.length; j++) putBlock(r.provisional[j]);
+    pc.epoch = r.epoch;
+    pc.gen = r.provisional_gen;
+    pc.index = r.provisional_from + r.provisional.length;
+    postRender();
+  }
+
   // ── type / tool filter ────────────────────────────────────────────────
   // Populate the dropdown with the distinct message types present: each tool by its
   // NAME (Read, Bash, Update, …) AND each non-tool fold kind (Agent, Thinking, Activity,
@@ -709,7 +746,33 @@
     // Navigation between agents is a full page load carrying a new `?session=`.
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
-    if (pollMs > 0) {
+    var transport = new URLSearchParams(location.search).get("transport");
+    if (pollMs > 0 && transport === "pull") {
+      // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
+      // drives the tail (the server folds on our request), so an idle page costs the server nothing.
+      var inflightP = false;
+      var pullTick = function () {
+        if (inflightP) return;
+        inflightP = true;
+        fetch("pull?session=" + encodeURIComponent(sess) + "&cursor=" + cursorStr(), { cache: "no-store" })
+          .then(function (r) { return r.json(); })
+          .then(function (reply) {
+            var wasAtBottom = atBottom();
+            var before = stream.childElementCount;
+            consumePull(reply);
+            var added = stream.childElementCount - before;
+            if (added > 0) {
+              if (wasAtBottom) { toBottom(false); clearNew(); }
+              else showNew(added);
+              spy();
+            }
+          })
+          .catch(function () { /* server gone / mid-write — retry next tick */ })
+          .finally(function () { inflightP = false; });
+      };
+      pullTick();
+      setInterval(pullTick, pollMs);
+    } else if (pollMs > 0) {
       // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
       // the bytes past the cursor (the new delta), never the whole transcript. We keep the
       // accumulated text and hand it to `consume`, which dedups records + applies resets.
