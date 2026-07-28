@@ -3,7 +3,7 @@
 //! mechanism (a keyed registry + a TTL-reaped resident set behind two independent mutexes) as
 //! concrete types, and additionally **owns the session domain**: each resident holds an open
 //! incremental [`FollowParser`], and [`poll`](SessionCache::poll) returns an OWNED, current
-//! [`Session`] equal to a full [`parse_session_as`](crate::parse_session_as) of the source's
+//! [`Session`] equal to a full [`parse_session_as`](crate::engine::parse_session_as) of the source's
 //! current bytes. The caller (the server) keeps only presentation state (diff baselines,
 //! titles) — the follower and the `Session` live here.
 //!
@@ -98,7 +98,7 @@ impl SessionCache {
 
     /// Materialize on the first call (open a [`FollowParser`] on the source and fold its current
     /// bytes), tail on later calls (fold only appended bytes), and return an OWNED current
-    /// [`Session`] equal to a full [`parse_session_as`](crate::parse_session_as) of the current
+    /// [`Session`] equal to a full [`parse_session_as`](crate::engine::parse_session_as) of the current
     /// file. Returns `None` when the source hasn't grown since the last poll (idle) or when `id`
     /// is unregistered; `Some(Err)` when the source is unreadable. Bumps the resident's idle
     /// clock.
