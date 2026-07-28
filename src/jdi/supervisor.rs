@@ -113,6 +113,13 @@ fn run_loop_body(session: &Session) -> Result<()> {
     let mut draining = mode == Mode::BacklogDump || mode == Mode::BacklogExecute;
     let mut drain_cycles: u32 = 0;
     const MAX_DRAIN_CYCLES: u32 = 25;
+    // Externally-blocked detection (#33): a turn blocked on something OUTSIDE the session (a
+    // push that keeps failing, an expired credential) fails the SAME way every attempt — and a
+    // restart can't help, so an unlimited-attempt run would relaunch forever. Track a normalized
+    // signature of each failed turn; this many consecutive identical failures ⇒ stop + surface.
+    const MAX_IDENTICAL_FAILURES: u32 = 3;
+    let mut identical_failures: u32 = 0;
+    let mut last_failure = String::new();
     // Entered directly in a backlog mode (`agent-jdi backlog --drain`, or a relaunch
     // that died mid-drain): claim the items up front so the first turn sees them.
     if draining {
@@ -223,10 +230,12 @@ fn run_loop_body(session: &Session) -> Result<()> {
             TurnOutcome::AdvanceMode(next) => {
                 mode = next;
                 attempt = attempt.saturating_sub(1); // the transition turn doesn't count
+                identical_failures = 0; // progress — not stuck
                 continue;
             }
             TurnOutcome::RecreateSession => {
                 session_created = false;
+                identical_failures = 0; // a different remedy is in play
                 continue;
             }
             TurnOutcome::Stopped(code) => {
@@ -249,11 +258,50 @@ fn run_loop_body(session: &Session) -> Result<()> {
                     session.meta_set("exit_code", &rc.to_string()).ok();
                     return Ok(());
                 }
+                let sig = failure_signature(rc, &capture);
+                if sig == last_failure {
+                    identical_failures += 1;
+                } else {
+                    identical_failures = 1;
+                    last_failure = sig;
+                }
+                if identical_failures >= MAX_IDENTICAL_FAILURES {
+                    log(
+                        session,
+                        &format!(
+                            "{MAX_IDENTICAL_FAILURES} consecutive identical failures — likely                              blocked on an external step a restart can't fix; stopping                              (resume with `agent-jdi resume` once unblocked)"
+                        ),
+                    );
+                    session.meta_set("state", "blocked").ok();
+                    session.meta_set("exit_code", &rc.to_string()).ok();
+                    session
+                        .meta_set(
+                            "last_reason",
+                            "repeated identical failure — blocked on an external step",
+                        )
+                        .ok();
+                    return Ok(());
+                }
                 session.meta_set("state", "retrying").ok();
                 std::thread::sleep(Duration::from_secs(interval));
             }
         }
     }
+}
+
+/// A normalized fingerprint of a failed turn — the exit code + the capture's tail with
+/// digits stripped (timestamps, counters, request ids vary run-to-run without meaning
+/// the failure changed). Two turns with the same signature made the same non-progress.
+fn failure_signature(rc: i32, capture: &str) -> String {
+    let tail: String = capture
+        .chars()
+        .filter(|c| !c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .take(600)
+        .collect();
+    format!("{rc}:{tail}")
 }
 
 /// Run one agent turn: combined stdout+stderr → a capture file (read back for
@@ -479,6 +527,42 @@ mod tests {
         let (state, root) = drive("echo boom >&2; exit 1", 1);
         assert_eq!(state, state::RunState::GaveUp);
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// The externally-blocked back-off (#33): an UNLIMITED-attempt run whose turns fail the
+    /// SAME way every time (e.g. blocked on a push that cannot succeed) must stop as
+    /// `blocked` after the identical-failure cap instead of relaunching forever.
+    #[test]
+    fn identical_failures_stop_as_blocked_instead_of_looping() {
+        let (state, root) = drive("echo cannot push: network unreachable >&2; exit 1", 0);
+        assert_eq!(state, state::RunState::Blocked);
+        let s = Session::new(&root.join("home"), "sess");
+        assert_eq!(
+            s.meta_get("attempts").as_deref(),
+            Some("3"),
+            "stopped at the cap"
+        );
+        assert!(s
+            .meta_get("last_reason")
+            .is_some_and(|r| r.contains("external")));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The failure signature ignores run-to-run noise (digits: timestamps, ids, counters)
+    /// but distinguishes genuinely different failures — so a *changing* failure keeps
+    /// retrying while a repeated one trips the blocked stop.
+    #[test]
+    fn failure_signature_normalizes_noise_but_keeps_distinct_failures_apart() {
+        let a = failure_signature(1, "push failed at 10:32:07 (attempt 12)");
+        let b = failure_signature(1, "push failed at 11:45:59 (attempt 99)");
+        let c = failure_signature(1, "test suite failed: 3 assertions");
+        assert_eq!(a, b, "digit-only differences are the same failure");
+        assert_ne!(a, c, "different text is a different failure");
+        assert_ne!(
+            failure_signature(1, "x"),
+            failure_signature(2, "x"),
+            "exit code is part of the signature"
+        );
     }
 
     /// A Codex `start` runs a fresh `codex exec` (no id), then recovers the id Codex
