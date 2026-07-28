@@ -132,17 +132,28 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
     }
 }
 
-/// One level of the sub-agent navigation stack: a live `View` plus its tail reader,
-/// agent, path, and the parent block index it was descended *from* (so ascending lands
-/// the cursor back on that spawn). The root's `from` is unused.
+/// Cap on **resident sub-agent Views**. The main session (stack root) is always resident and is
+/// not counted; beyond this many loaded sub-agent frames, the least-recently-viewed one is evicted
+/// (`view: None`) and re-parsed from its own transcript on re-visit — a custom LRU cache policy
+/// that bounds TUI memory by navigation recency, not by the agent tree's size.
+const MAX_RESIDENT_SUBAGENTS: usize = 4;
+
+/// One level of the sub-agent navigation stack: a `View` (or `None` when evicted) plus its tail
+/// reader, agent, path, and the parent block index it was descended *from* (so ascending lands the
+/// cursor back on that spawn). The root's `from` is unused.
 struct Frame {
-    view: View,
+    /// The loaded viewer, or `None` when this sub-agent frame has been LRU-evicted. Reloaded on
+    /// demand by [`ensure_loaded`] (re-parsing from the child's own transcript). The root frame
+    /// (index 0) is **pinned** — always `Some`.
+    view: Option<View>,
     /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
-    /// just the newly-appended lines through a persistent `Replayer`.
+    /// just the newly-appended lines through a persistent `Replayer`. `None` when evicted.
     follower: Option<crate::follow::FollowParser>,
     agent: Agent,
     path: PathBuf,
     from: crate::model::BlockIndex,
+    /// Monotonic focus tick, bumped when this frame becomes the current view — the LRU key.
+    last_used: u64,
 }
 
 /// View a session, staying in the viewer across `s`-switches AND sub-agent descents. A
@@ -155,8 +166,16 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     path: PathBuf,
     can_go_back: bool,
 ) -> Result<Outcome> {
+    let mut tick: u64 = 0;
     let mut stack: Vec<Frame> = vec![build_frame(args, &path, can_go_back, 0)?];
     loop {
+        // The current top must be loaded to view it (an ascent may have landed on an evicted
+        // frame); reload it (and any evicted ancestors it needs) on demand.
+        let top = stack.len() - 1;
+        ensure_loaded(args, &mut stack, top)?;
+        tick += 1;
+        stack[top].last_used = tick;
+
         let descended = stack.len() > 1;
         let frame = stack.last_mut().expect("stack never empty");
         let outcome = event_loop(
@@ -164,25 +183,43 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             frame.agent,
             args,
             &frame.path,
-            &mut frame.view,
+            frame.view.as_mut().expect("top is loaded"),
             &mut frame.follower,
             descended,
         )?;
         match outcome {
             // Descend into a sub-agent: build a child `View` from its (already-parsed)
-            // transcript and push it, keeping the parent alive underneath.
+            // transcript and push it, keeping the parent alive underneath — then evict the
+            // least-recently-viewed sub-agent if we're over the resident cap.
             Outcome::Descend(idx) => {
                 let top = stack.last().expect("stack never empty");
-                if let Some(child) = build_child_frame(args, top, idx) {
+                let (agent, path) = (top.agent, top.path.clone());
+                let built = build_child_frame(
+                    args,
+                    top.view.as_ref().expect("top is loaded"),
+                    agent,
+                    &path,
+                    idx,
+                );
+                if let Some(mut child) = built {
+                    tick += 1;
+                    child.last_used = tick;
                     stack.push(child);
+                    enforce_cap(&mut stack);
                 }
             }
-            // Ascend: drop the child `View`, and land the parent's cursor on the spawn
-            // block we came from — without touching its fold state (§2.2).
+            // Ascend: drop the child `View`, reload the parent if it was evicted, and land its
+            // cursor on the spawn block we came from — without touching its fold state (§2.2).
             Outcome::Ascend if descended => {
                 let popped = stack.pop().expect("descended ⇒ non-root");
+                let ni = stack.len() - 1;
+                ensure_loaded(args, &mut stack, ni)?;
                 if let Some(parent) = stack.last_mut() {
-                    parent.view.focus_block(popped.from);
+                    parent
+                        .view
+                        .as_mut()
+                        .expect("reloaded")
+                        .focus_block(popped.from);
                 }
             }
             Outcome::Ascend => {} // at root: nothing above to ascend to
@@ -191,6 +228,61 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                 stack = vec![build_frame(args, &p, can_go_back, 0)?];
             }
             other => return Ok(other), // Quit / Back
+        }
+    }
+}
+
+/// Ensure `stack[i]` is loaded, re-parsing it (and any evicted ancestors it depends on) on demand.
+/// A hollow sub-agent frame is rebuilt from its parent's loaded view via [`build_child_frame`]; the
+/// recursion bottoms out at the pinned root (always loaded). No-op if already loaded.
+fn ensure_loaded(args: &Args, stack: &mut [Frame], i: usize) -> Result<()> {
+    if stack[i].view.is_some() {
+        return Ok(());
+    }
+    debug_assert!(i > 0, "root frame is pinned — never evicted");
+    ensure_loaded(args, stack, i - 1)?;
+    let from = stack[i].from;
+    let agent = stack[i - 1].agent;
+    let path = stack[i - 1].path.clone();
+    // Rebuild from the (now-loaded) parent; the immutable borrow of `stack[i-1]` ends when
+    // `build_child_frame` returns (it owns its `View`), before we write `stack[i]`.
+    let rebuilt = build_child_frame(
+        args,
+        stack[i - 1].view.as_ref().expect("parent loaded"),
+        agent,
+        &path,
+        from,
+    );
+    if let Some(f) = rebuilt {
+        stack[i].view = f.view;
+        stack[i].follower = f.follower;
+    }
+    Ok(())
+}
+
+/// Evict least-recently-viewed loaded sub-agent frames until at most [`MAX_RESIDENT_SUBAGENTS`]
+/// remain loaded. The root (index 0) is pinned and never counted/evicted; the current top is never
+/// evicted (it's being viewed).
+fn enforce_cap(stack: &mut [Frame]) {
+    let top = stack.len() - 1;
+    loop {
+        let loaded: Vec<usize> = (1..stack.len())
+            .filter(|&i| stack[i].view.is_some())
+            .collect();
+        if loaded.len() <= MAX_RESIDENT_SUBAGENTS {
+            break;
+        }
+        // The least-recently-used loaded sub-agent, excluding the top.
+        let victim = loaded
+            .into_iter()
+            .filter(|&i| i != top)
+            .min_by_key(|&i| stack[i].last_used);
+        match victim {
+            Some(v) => {
+                stack[v].view = None;
+                stack[v].follower = None;
+            }
+            None => break, // only the top is loaded — can't evict it
         }
     }
 }
@@ -234,22 +326,30 @@ fn build_frame(
     view.set_footer_segments(metrics.footer_segments());
     view.set_descended(false);
     Ok(Frame {
-        view,
+        view: Some(view),
         follower,
         agent,
         path: path.to_path_buf(),
         from,
+        last_used: 0,
     })
 }
 
 /// Build a child frame from the descend target (a `SubAgent` spawn OR an `AgentDone`
-/// completion) at block index `idx` of `parent`'s view. A spawn reuses its already-parsed
-/// child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads the
-/// child transcript from disk. `None` if `idx` isn't a descendable agent block.
-fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex) -> Option<Frame> {
-    let dref = parent.view.descend_ref_at(idx)?;
-    // Own the fields we need so the borrow of `parent.view` ends before we touch
-    // `parent.path` / build the view.
+/// completion) at block index `idx` of the parent's `parent_view`. A spawn reuses its
+/// already-parsed child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads
+/// the child transcript from disk. `None` if `idx` isn't a descendable agent block. Takes the
+/// parent's view + `agent`/`root_path` (not the whole `Frame`) so [`ensure_loaded`] can rebuild an
+/// evicted frame from just its parent's loaded view.
+fn build_child_frame(
+    args: &Args,
+    parent_view: &View,
+    agent: Agent,
+    root_path: &Path,
+    idx: crate::model::BlockIndex,
+) -> Option<Frame> {
+    let dref = parent_view.descend_ref_at(idx)?;
+    // Own the fields we need so the borrow of `parent_view` ends before we build the view.
     let mut blocks = dref.blocks;
     let agent_type = dref.agent_type;
     let subtree_cost = dref.subtree_cost;
@@ -261,8 +361,8 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     };
     // Live-tail an open child from its own file (Stage 6): when following, tail
     // `subagents/agent-<id>.jsonl`; the child grows independently of the parent.
-    let child_transcript = discover::subagent_source(parent.agent, &parent.path, &agent_id)
-        .map(|f| crate::Transcript::open(parent.agent, f));
+    let child_transcript = discover::subagent_source(agent, root_path, &agent_id)
+        .map(|f| crate::Transcript::open(agent, f));
     // Parse the child once via the library entry point (enriched: its own sub-agent tree),
     // giving BOTH its blocks and its own metrics in one read — the footer below reuses the
     // metrics instead of a second parse. A running agent's child file often appears (or fills
@@ -289,7 +389,7 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
-    view.set_cwd(parent.view.cwd_ref().cloned());
+    view.set_cwd(parent_view.cwd_ref().cloned());
     // A descended child's attachment locators point into the child's own transcript file.
     view.set_source(child_transcript);
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
@@ -306,11 +406,12 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     }
     view.set_footer_segments(segs);
     Some(Frame {
-        view,
+        view: Some(view),
         follower,
-        agent: parent.agent,
-        path: parent.path.clone(),
+        agent,
+        path: root_path.to_path_buf(),
         from: idx,
+        last_used: 0,
     })
 }
 
@@ -779,6 +880,49 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    /// The sub-agent LRU policy (#36): [`enforce_cap`] keeps at most `MAX_RESIDENT_SUBAGENTS`
+    /// loaded sub-agent frames, evicting the least-recently-viewed first, while pinning the root
+    /// (index 0) and never evicting the current top (it's on screen).
+    #[test]
+    fn lru_caps_subagents_pinning_root_and_top() {
+        fn frame(last_used: u64) -> Frame {
+            Frame {
+                view: Some(View::new(
+                    Vec::new(),
+                    "t",
+                    false,
+                    crate::fold::FoldPolicy::default(),
+                )),
+                follower: None,
+                agent: Agent::Claude,
+                path: std::path::PathBuf::from("/x"),
+                from: 0,
+                last_used,
+            }
+        }
+        // root + (MAX+2) sub-agents, all loaded; last_used == index, so the shallow ones are LRU.
+        let n = MAX_RESIDENT_SUBAGENTS + 2;
+        let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
+        let top = stack.len() - 1;
+        enforce_cap(&mut stack);
+
+        let loaded: Vec<usize> = (1..stack.len())
+            .filter(|&i| stack[i].view.is_some())
+            .collect();
+        assert_eq!(loaded.len(), MAX_RESIDENT_SUBAGENTS, "capped to the max");
+        assert!(stack[0].view.is_some(), "root is pinned");
+        assert!(
+            stack[top].view.is_some(),
+            "the current top is never evicted"
+        );
+        // The two least-recently-used sub-agents (indices 1,2) are the ones dropped.
+        assert!(
+            stack[1].view.is_none() && stack[2].view.is_none(),
+            "LRU evicted first"
+        );
+        assert!(stack[3].view.is_some(), "more-recent sub-agents kept");
+    }
 
     /// Strip `ESC[..m` SGR sequences (char-wise so multibyte content survives).
     fn strip_sgr(s: &str) -> String {
