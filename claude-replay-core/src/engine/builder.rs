@@ -415,6 +415,98 @@ mod tests {
         );
     }
 
+    /// The queued-marker lifecycle (#52): a `⧗ queued:` marker lives only while its prompt is
+    /// PENDING — it collapses on ANY pop, matching Claude Code's "only the one message":
+    /// (a) immediate enqueue → dequeue → delivery; (b) TYPE-AHEAD (agent content between enqueue
+    /// and dequeue — previously kept the marker, the #52 duplicate); (c) a `remove` op (the user
+    /// withdrew it); (d) an OP-LESS delivery — a user message whose text matches the pending
+    /// content (a jdi restart re-delivers without writing the dequeue), which must also DRAIN
+    /// the queue so the durability frontier un-pins and turns keep committing.
+    #[test]
+    fn queued_marker_collapses_on_every_pop_and_opless_delivery() {
+        use crate::model::Block;
+        let user = |t: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:00Z"}}"#
+            )
+        };
+        let asst = |t: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:01Z"}}"#
+            )
+        };
+        let enq = |t: &str| {
+            format!(r#"{{"type":"queue-operation","operation":"enqueue","content":"{t}"}}"#)
+        };
+        let markers = |acc: &mut SessionAccumulator| {
+            acc.snapshot()
+                .blocks()
+                .iter()
+                .filter(|b| matches!(b, Block::QueueEvent { .. }))
+                .count()
+        };
+        let drive = |lines: &[String]| {
+            let mut acc = SessionAccumulator::new(Agent::Claude);
+            let mut off: crate::model::ByteOffset = 0;
+            for l in lines {
+                acc.advance_at(off, l);
+                off += l.len() as u64 + 1;
+            }
+            acc
+        };
+
+        // (a) immediate pickup ⇒ collapsed.
+        let mut a = drive(&[
+            user("go"),
+            asst("working"),
+            enq("next thing"),
+            r#"{"type":"queue-operation","operation":"dequeue"}"#.into(),
+            user("next thing"),
+        ]);
+        assert_eq!(markers(&mut a), 0, "immediate pickup collapses");
+
+        // (b) TYPE-AHEAD: agent content between enqueue and dequeue ⇒ STILL collapsed (the fix).
+        let mut b = drive(&[
+            user("go"),
+            enq("typed ahead"),
+            asst("kept working"),
+            asst("more work"),
+            r#"{"type":"queue-operation","operation":"dequeue"}"#.into(),
+            user("typed ahead"),
+        ]);
+        assert_eq!(
+            markers(&mut b),
+            0,
+            "type-ahead delivery collapses too (CC parity)"
+        );
+
+        // (c) remove ⇒ collapsed (the prompt was withdrawn; CC drops the bubble).
+        let mut c = drive(&[
+            user("go"),
+            enq("changed my mind"),
+            asst("working"),
+            r#"{"type":"queue-operation","operation":"remove","content":"changed my mind"}"#.into(),
+        ]);
+        assert_eq!(markers(&mut c), 0, "removed prompt leaves no marker");
+
+        // (d) op-less delivery: the matching user message pops the item, collapses the marker,
+        // and DRAINS the queue — so later turns commit (the frontier un-pins).
+        let mut d = drive(&[
+            user("go"),
+            enq("restart prompt"),
+            asst("killed here"),
+            user("restart prompt"),
+            asst("resumed"),
+            user("later turn"),
+            asst("done"),
+        ]);
+        assert_eq!(markers(&mut d), 0, "op-less delivery collapses the marker");
+        assert!(
+            d.committed_len() > 0,
+            "queue drained ⇒ the durability frontier advanced past the delivered turns"
+        );
+    }
+
     /// A truncation/rewrite resets the maintained committed meta (no stale carry-over).
     #[test]
     fn reset_clears_committed_meta() {

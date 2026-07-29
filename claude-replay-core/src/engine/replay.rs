@@ -105,7 +105,6 @@ pub(crate) struct Replayer<'a> {
     tool_slot: HashMap<String, BlockIndex>,
     trigger_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
-    content_seq: usize,
     suppress: Vec<BlockIndex>,
     last_skill: Option<BlockIndex>,
     // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
@@ -155,7 +154,6 @@ impl<'a> Replayer<'a> {
             tool_slot: HashMap::new(),
             trigger_ts: None,
             queue: Vec::new(),
-            content_seq: 0,
             suppress: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
@@ -190,7 +188,6 @@ impl<'a> Replayer<'a> {
                 }
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
-                    self.content_seq += 1;
                 }
                 Message::Thinking { text, ts } => {
                     let duration_secs = match (ts, self.trigger_ts) {
@@ -202,7 +199,6 @@ impl<'a> Replayer<'a> {
                         duration_secs,
                         tools: Vec::new(),
                     });
-                    self.content_seq += 1;
                 }
                 Message::ToolUse {
                     id,
@@ -212,7 +208,6 @@ impl<'a> Replayer<'a> {
                 } => {
                     self.out
                         .push((self.shaping.build_tool)(id, name, input, cwd));
-                    self.content_seq += 1;
                     let rel = self.out.len() - 1;
                     let logical = self.base + rel;
                     if let Block::ToolUse { name, .. } = &self.out[rel] {
@@ -241,6 +236,18 @@ impl<'a> Replayer<'a> {
                     }
                 }
                 Message::UserText { text } => {
+                    // Content-matched delivery (#52): a user message whose text equals a PENDING
+                    // queued prompt IS that prompt arriving — pop it and suppress its marker,
+                    // whether or not a dequeue op was recorded. (A jdi restart re-delivers queued
+                    // prompts in a fresh process without ever writing the dequeue; those stale
+                    // items used to sit in the queue forever, breaking FIFO for every later pop
+                    // AND pinning the durability frontier for the rest of the session.)
+                    if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
+                        let item = self.queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            self.suppress.push(mi);
+                        }
+                    }
                     self.out.push(Block::UserText(text.clone()));
                 }
                 Message::SystemNote { text } => {
@@ -333,7 +340,6 @@ impl<'a> Replayer<'a> {
                             self.queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
-                                content_at_enqueue: self.content_seq,
                             });
                         }
                     }
@@ -347,11 +353,14 @@ impl<'a> Replayer<'a> {
                             None if !self.queue.is_empty() => Some(self.queue.remove(0)),
                             None => None,
                         };
+                        // A popped prompt's marker ALWAYS collapses (#52): dequeue means the
+                        // prompt is delivered as a real user message (Claude Code shows only that
+                        // one message — even for type-ahead with agent work in between); remove
+                        // means the user withdrew it (Claude Code drops the bubble). Either way
+                        // the pending marker has nothing left to mark.
                         if let Some(item) = popped {
                             if let Some(mi) = item.marker_idx {
-                                if self.content_seq == item.content_at_enqueue {
-                                    self.suppress.push(mi);
-                                }
+                                self.suppress.push(mi);
                             }
                         }
                     }
@@ -550,17 +559,17 @@ pub(crate) fn replay(
 }
 
 /// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
-/// prompt's `⧗ queued:` marker in the block list (prose only); `content_at_enqueue`
-/// snapshots `content_seq` at submit so a later pop can tell whether any agent work
-/// happened in between (immediate → suppress the marker).
+/// prompt's `⧗ queued:` marker in the block list (prose only). A marker lives only while its
+/// prompt is PENDING: any pop — a dequeue/remove op, or a user message whose text matches the
+/// pending content (an op-less delivery, e.g. a jdi restart) — suppresses it, so the delivered
+/// message renders exactly once, matching Claude Code (#52).
 pub(crate) struct QueueItem {
     pub(crate) content: String,
     pub(crate) marker_idx: Option<BlockIndex>,
-    pub(crate) content_at_enqueue: usize,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
-// arm — it needs the block list, `content_seq`, and `suppress`.)
+// arm — it needs the block list, the pending queue, and `suppress`.)
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
 pub(crate) fn stamp_user_turns(

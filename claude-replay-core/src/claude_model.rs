@@ -155,9 +155,15 @@ fn push_injected(s: &str, out: &mut Vec<Block>) {
 /// Turn one plain-string `user` message into block(s) — a slash command becomes a
 /// `Command`, a task-notification collapses to its summary, caveat noise is dropped, and
 /// the rest is `UserText`. Used by the frozen reference parser [`parse_main`]; the streaming
-/// path uses [`classify_user_string`].
+/// path uses [`classify_user_string`]. `queue`/`suppress` mirror the engine's #52 op-less
+/// delivery: prose matching a PENDING queued prompt pops it and collapses its marker.
 #[cfg(test)]
-fn push_user_string(s: &str, out: &mut Vec<Block>) {
+fn push_user_string(
+    s: &str,
+    out: &mut Vec<Block>,
+    queue: &mut Vec<QueueItem>,
+    suppress: &mut Vec<BlockIndex>,
+) {
     if tag_inner(s, "task-notification").is_some() {
         if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
             let line = line.trim();
@@ -209,6 +215,12 @@ fn push_user_string(s: &str, out: &mut Vec<Block>) {
         if is_skill_body(&cleaned) {
             out.push(Block::ToolResult(cleaned));
         } else {
+            // #52 op-less delivery, plain-string form (see the array-text arm).
+            if let Some(pos) = queue.iter().position(|q| q.content == cleaned.trim()) {
+                if let Some(mi) = queue.remove(pos).marker_idx {
+                    suppress.push(mi);
+                }
+            }
             out.push(Block::UserText(cleaned));
         }
     }
@@ -988,7 +1000,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     } else if injected {
                         push_injected(s, &mut out);
                     } else {
-                        push_user_string(s, &mut out);
+                        push_user_string(s, &mut out, &mut queue, &mut suppress);
                     }
                 } else if let Some(arr) = content.as_array() {
                     for blk in arr {
@@ -1003,6 +1015,15 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                         } else if injected || is_skill_body(t) {
                                             out.push(Block::ToolResult(t.to_string()));
                                         } else {
+                                            // #52 op-less delivery: a user message matching a
+                                            // PENDING queued prompt is that prompt arriving.
+                                            if let Some(pos) =
+                                                queue.iter().position(|q| q.content == t.trim())
+                                            {
+                                                if let Some(mi) = queue.remove(pos).marker_idx {
+                                                    suppress.push(mi);
+                                                }
+                                            }
                                             out.push(Block::UserText(t.to_string()));
                                         }
                                     }
@@ -1092,7 +1113,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
-                                content_at_enqueue: content_seq,
                             });
                         }
                     }
@@ -1105,13 +1125,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             None if !queue.is_empty() => Some(queue.remove(0)), // FIFO front pop
                             None => None,
                         };
-                        // Picked up with no agent work since enqueue → the marker is
-                        // redundant with the turn; drop it.
+                        // #52: a popped prompt's marker ALWAYS collapses — delivered (dequeue)
+                        // or withdrawn (remove), Claude Code shows only the one message.
                         if let Some(item) = popped {
                             if let Some(mi) = item.marker_idx {
-                                if content_seq == item.content_at_enqueue {
-                                    suppress.push(mi);
-                                }
+                                suppress.push(mi);
                             }
                         }
                     }
@@ -1136,6 +1154,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 if is_prompt {
                     if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                         if !p.trim().is_empty() {
+                            // #52 op-less delivery, attachment form (see above).
+                            if let Some(pos) = queue.iter().position(|q| q.content == p.trim()) {
+                                if let Some(mi) = queue.remove(pos).marker_idx {
+                                    suppress.push(mi);
+                                }
+                            }
                             out.push(Block::UserText(p.to_string()));
                         }
                     }
@@ -1558,15 +1582,17 @@ mod tests {
         );
     }
 
-    /// The two-tier queue model: a prose `enqueue` emits a `⧗ queued:` marker
-    /// (`QueueEvent`); when it's later picked up (a content-less FIFO front pop or a
-    /// content-named remove) the marker is dropped **only if no agent work happened in
-    /// between** (immediate pickup — the `❯` turn alone conveys it). A prompt still
-    /// queued at the end keeps its marker (live in-flight input). The interleaved
-    /// background `<task-notification>` is tracked (no marker) so a front pop lands on
-    /// it, not on a real prompt.
+    /// The two-tier queue model (#52): a prose `enqueue` emits a `⧗ queued:` marker
+    /// (`QueueEvent`) that lives only while its prompt is PENDING. ANY pop — a
+    /// content-less FIFO front pop (`dequeue`), a content-named `remove`, or an
+    /// op-less delivery (a user message whose text matches the pending content) —
+    /// collapses it: Claude Code shows only the one delivered message, even for
+    /// type-ahead with agent work in between. A prompt still queued at the end keeps
+    /// its marker (live in-flight input). The interleaved background
+    /// `<task-notification>` is tracked (no marker) so a front pop lands on it, not
+    /// on a real prompt.
     #[test]
-    fn queue_markers_suppress_on_immediate_pickup_but_survive_a_gap() {
+    fn queue_markers_collapse_on_any_pop_and_survive_only_while_pending() {
         let jsonl = r##"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
 {"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up immediately"}
@@ -1575,11 +1601,16 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-30T03:00:04.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:05.000Z","content":"<task-notification>\nbg\n</task-notification>"}
 {"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:06.000Z"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"still waiting"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"delivered sans op"}
+{"type":"user","timestamp":"2026-06-30T03:00:08.000Z","message":{"content":"delivered sans op"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:09.000Z","content":"still waiting"}
 "##;
         let blocks = parse(jsonl);
-        // "picked up immediately": enqueue→dequeue with no agent work → marker dropped.
-        // "picked up after a gap": a Bash ran between enqueue and its front pop → marker kept.
+        // "picked up immediately": enqueue→dequeue → marker dropped.
+        // "picked up after a gap": popped by the second dequeue despite the Bash in
+        //   between (type-ahead) → marker dropped too — the #52 fix.
+        // "delivered sans op": no dequeue was ever written; the matching user message
+        //   IS the delivery → marker dropped, one user turn.
         // "still waiting": never popped → marker kept. The task-notification: no marker.
         let markers: Vec<&str> = blocks
             .iter()
@@ -1588,12 +1619,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            markers,
-            vec!["picked up after a gap", "still waiting"],
-            "{blocks:?}"
-        );
-        // The one real user turn is unaffected; markers are not turns.
+        assert_eq!(markers, vec!["still waiting"], "{blocks:?}");
+        // Real user turns are unaffected; the op-less delivery renders exactly once.
         let users: Vec<&str> = blocks
             .iter()
             .filter_map(|b| match b {
@@ -1601,7 +1628,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(users, vec!["real turn"], "{blocks:?}");
+        assert_eq!(users, vec!["real turn", "delivered sans op"], "{blocks:?}");
     }
 
     /// A mid-turn prompt is usually recorded ONLY as a `queued_command` attachment at
@@ -2186,7 +2213,8 @@ mod tests {
 {"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued…"}}
 {"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}
 "##,
-            // Queue markers: immediate pickup vs a gap; interleaved task-notification.
+            // Queue markers: immediate pickup, type-ahead pop, op-less delivery (both the
+            // plain-string and array-text user shapes); interleaved task-notification.
             r##"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
 {"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"picked up immediately"}
@@ -2195,7 +2223,11 @@ mod tests {
 {"type":"assistant","timestamp":"2026-06-30T03:00:04.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:05.000Z","content":"<task-notification>\nbg\n</task-notification>"}
 {"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:06.000Z"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"still waiting"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:07.000Z","content":"delivered sans op"}
+{"type":"user","timestamp":"2026-06-30T03:00:08.000Z","message":{"content":"delivered sans op"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:09.000Z","content":"delivered sans op as array"}
+{"type":"user","timestamp":"2026-06-30T03:00:10.000Z","message":{"content":[{"type":"text","text":"delivered sans op as array"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:11.000Z","content":"still waiting"}
 "##,
             // Queued-command attachment renders as a turn in order; task-notification skipped.
             r##"
