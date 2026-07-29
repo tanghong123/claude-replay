@@ -636,6 +636,34 @@
     return f;
   }
 
+  // ── #53 synthesized Back for ⧉ new-tab children ──────────────────────
+  // A child opened in a NEW tab starts with empty history: Back is dead, and the
+  // way home is scrolling to the breadcrumb. When this page is a fresh-history tab
+  // in a multi-agent bundle AND knows its parent (the meta's ancestors), rewrite
+  // the lone history entry to the parent's URL and push the child back on — so
+  // Back IS the breadcrumb. Real same-tab history is left untouched (no doubled
+  // Back stop); a deep-linked child with no ancestry keeps its dead Back.
+  var renderedSession = null; // the ?session this document rendered (multi only)
+  var historySynth = false;
+  function synthesizeBack(ancestors) {
+    if (historySynth || !multi || history.length > 1) return;
+    if (!ancestors || !ancestors.length) return;
+    var parent = ancestors[ancestors.length - 1];
+    try {
+      var childUrl = location.href;
+      history.replaceState(null, "", "?session=" + encodeURIComponent(parent.id));
+      history.pushState(null, "", childUrl);
+      historySynth = true;
+    } catch (e) { /* sandboxed / file:// — leave Back as-is */ }
+  }
+  window.addEventListener("popstate", function () {
+    // Back/Forward across the synthesized entries: agent switches are full page
+    // loads in this viewer, so reload whenever the URL's session differs from the
+    // one this document rendered.
+    var cur = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
+    if (renderedSession != null && cur !== renderedSession) location.reload();
+  });
+
   function renderMeta(m) {
     if (m.title) {
       document.title = m.title;
@@ -672,6 +700,7 @@
     if (u.cost) row("est. cost", u.cost, "total");
 
     renderCrumbs(m.ancestors);
+    synthesizeBack(m.ancestors);
     // In a multi-agent tree (this session has children, or is itself a sub-agent) the box
     // is always shown — grayed on a childless leaf. A standalone session hides it entirely.
     var inTree = (m.children && m.children.length) || (m.ancestors && m.ancestors.length);
@@ -1116,6 +1145,7 @@
     // Navigation between agents is a full page load carrying a new `?session=`.
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
+    renderedSession = sess;
     // Transport: the server sets data-pull when it serves the pull feed by default; `?transport=`
     // overrides it either way (pull|stream) for side-by-side comparison.
     var transport = new URLSearchParams(location.search).get("transport");
