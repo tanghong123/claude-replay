@@ -692,7 +692,7 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     use std::sync::Arc;
     let agent = discover::detect_agent(path);
-    let fold = FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     let sid = session_id(path);
     let cwd = discover::session_cwd(path)
         .map(|p| p.display().to_string())

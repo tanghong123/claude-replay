@@ -1994,7 +1994,7 @@ mod tests {
             .blocks();
         let _ = std::fs::remove_file(&path);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
-        let pol = FoldPolicy::from_args(&crate::Args::default());
+        let pol = crate::Args::default().fold_policy();
         assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");
     }
 
@@ -3068,7 +3068,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, false)),
+            args_with(None, None, false).fold_policy(),
         );
         assert!(v.is_collapsed(0), "read should be folded by default");
         assert!(v.is_collapsed(1), "tool_result should be folded by default");
@@ -3082,7 +3082,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, Some("read,tool_result"), false)),
+            args_with(None, Some("read,tool_result"), false).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "read unfolded");
         assert!(!v.is_collapsed(1), "tool_result unfolded");
@@ -3095,7 +3095,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(Some("edit"), Some("read"), false)),
+            args_with(Some("edit"), Some("read"), false).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "read unfolded (--unfold)");
         assert!(v.is_collapsed(1), "tool_result still default-folded");
@@ -3220,7 +3220,7 @@ mod tests {
             }],
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, true)),
+            args_with(None, None, true).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "--full should expand thinking");
     }
@@ -3231,7 +3231,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, true)),
+            args_with(None, None, true).fold_policy(),
         );
         assert!(!v.is_collapsed(0) && !v.is_collapsed(1) && !v.is_collapsed(2));
     }

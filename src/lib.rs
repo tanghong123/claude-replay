@@ -5,7 +5,6 @@
 //! this crate's transcript discovery/parsing to supervise unattended agent runs.
 
 mod cache;
-mod fold;
 mod highlight;
 pub mod html_export;
 pub mod jdi;
@@ -23,7 +22,7 @@ pub use cache::SessionCache;
 // the core parses a raw agent format — the viewer reaches blocks only through `engine`'s
 // agent-neutral `parse_session*`.
 pub use claude_replay_core::{
-    claude_discover, codex_discover, diff, discover, engine, follow, metrics, model, summary,
+    claude_discover, codex_discover, diff, discover, engine, fold, follow, metrics, model, summary,
     Agent, Transcript,
 };
 
@@ -128,6 +127,14 @@ pub struct Args {
     /// the page also follows the session live. Honors --fold/--unfold/--full.
     #[arg(long, conflicts_with_all = ["dump", "dump_html"])]
     pub html: bool,
+}
+
+impl Args {
+    /// The fold policy these flags select (`--full`/`--fold`/`--unfold`) — the clap-side
+    /// bridge to the core's [`fold::FoldPolicy::from_flags`].
+    pub fn fold_policy(&self) -> fold::FoldPolicy {
+        fold::FoldPolicy::from_flags(self.full, self.fold.as_deref(), self.unfold.as_deref())
+    }
 }
 
 /// Entry point for the `claude-replay` viewer binary.

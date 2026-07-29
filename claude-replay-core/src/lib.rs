@@ -23,6 +23,7 @@ pub(crate) mod codex_model; // internal: reached via the adapter registry
 pub mod diff;
 pub mod discover;
 pub mod engine;
+pub mod fold; // display fold POLICY keyed on `model::fold_key` (#71 — core, beside its vocabulary)
 pub mod follow;
 pub mod metrics;
 pub mod model;

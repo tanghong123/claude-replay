@@ -317,7 +317,7 @@ fn build_frame(
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
     // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
     // the tail (the event loop's `poll_delta`). Non-live: one plain streaming parse — the cache
@@ -424,7 +424,7 @@ fn build_child_frame(
             child_transcript.clone().expect("live ⇒ transcript"),
         );
     }
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     let mut view = View::new(blocks, title, live, fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
@@ -794,7 +794,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.
     // Fold with the same policy as the TUI (default-folded thinking/reads/tools…),
     // so the dump reflects what the viewer actually shows; `--full` expands it all.
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     let mut view = View::new(blocks, "dump", false, fold);
     let lines = view.rendered_lines(width as u16);
 
