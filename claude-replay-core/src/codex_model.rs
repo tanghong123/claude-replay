@@ -123,7 +123,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(epoch_secs);
-    msgs.push(Message::LineStart(ts));
+    // Codex writes event_msg mirrors immediately before their canonical response_item
+    // records, often at the exact same timestamp. Only canonical timeline records may
+    // advance the replay clock; otherwise every reasoning duration is measured from its
+    // duplicate agent_reasoning event and rounds down to 0s.
+    if is_timeline_event(&value) {
+        msgs.push(Message::LineStart(ts));
+    }
     match value.get("type").and_then(Value::as_str) {
         Some("session_meta") => {
             if cwd.is_empty() {
@@ -228,6 +234,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
     }
 }
 
+fn is_timeline_event(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("session_meta" | "response_item")
+    )
+}
+
 pub(crate) fn enrich_tree(path: &Path, blocks: &mut [Block]) {
     let mut seen = HashSet::new();
     seen.insert(normalized_path(path));
@@ -283,14 +296,14 @@ fn parse_lines<S: AsRef<str>>(
     user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
-    // See `model::parse_main`: stamp the previous event's user turns on the next
-    // iteration so an early `continue` can't drop them.
+    // Stamp the previous canonical event's user turns on the next canonical event
+    // so an ignored event_msg mirror cannot move the replay timeline.
     let mut pending_ts: Option<crate::model::EpochSeconds> = None;
     let mut stamped = 0usize;
     let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
     let mut cwd = String::new();
-    // The previous line's ts — CC's thinking clock (#57): a thinking's duration is
-    // `its ts − this` (mirrors the engine's `prev_ts`).
+    // The previous canonical event's ts: a thinking's duration is `its ts − this`
+    // (mirrors the engine's `prev_ts` after `decode_line` filters LineStart events).
     let mut prev_ts = None;
 
     for line in lines {
@@ -301,11 +314,13 @@ fn parse_lines<S: AsRef<str>>(
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
-        crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-        if pending_ts.is_some() {
-            prev_ts = pending_ts;
+        if is_timeline_event(&value) {
+            crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+            if pending_ts.is_some() {
+                prev_ts = pending_ts;
+            }
+            pending_ts = timestamp;
         }
-        pending_ts = timestamp;
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 if cwd.is_empty() {
@@ -718,6 +733,30 @@ not json
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn ignored_event_messages_do_not_zero_reasoning_duration() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-07-18T01:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix it"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fix it"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:05.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"Inspect parser"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:05.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect parser"}]}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Thinking {
+                text,
+                duration_secs: Some(5),
+                ..
+            } if text == "Inspect parser"
+        )));
     }
 
     #[test]
