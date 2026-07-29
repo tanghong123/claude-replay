@@ -13,9 +13,10 @@
 //! provisional_index }`.
 //! - `committed_id` — append index into the session-wide committed log (append-only ⇒ sent once).
 //! - `provisional_gen` — the identity of the current provisional *generation*. It bumps whenever
-//!   an **in-place patch** touches an existing provisional block (a pure append does **not** bump
-//!   it). Within a generation the provisional is append-only, so the client's `provisional_index`
-//!   stays a valid suffix pointer.
+//!   the **finalized** provisional stops being append-only from the client's perspective — an
+//!   in-place patch, or a finalization reshape (grouping/absorption) rewriting the prefix (#54).
+//!   Within a generation the served provisional is append-only, so the client's
+//!   `provisional_index` stays a valid suffix pointer.
 //! - `provisional_index` — append position within the current generation.
 //! - `epoch` — session validity (a mismatch ⇒ resync).
 //!

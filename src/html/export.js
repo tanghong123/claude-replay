@@ -796,7 +796,17 @@
           .then(function (reply) {
             var wasAtBottom = atBottom();
             var before = stream.childElementCount;
-            consumePull(reply);
+            try {
+              consumePull(reply);
+            } catch (err) {
+              // Self-heal (#54): a torn apply must never leave the page desynced — drop all
+              // local state and cursor; the next tick resyncs from the server's canonical
+              // state, exactly what a manual reload does.
+              console.error("pull apply failed; resyncing", err);
+              resetFrom(0);
+              pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+              return;
+            }
             var added = stream.childElementCount - before;
             if (added > 0) {
               if (wasAtBottom) { toBottom(false); clearNew(); }

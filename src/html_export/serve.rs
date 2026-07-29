@@ -1004,6 +1004,188 @@ mod tests {
         assert!(v["committed_ext"].is_null(), "zero-length ⇒ null pointer");
     }
 
+    /// A FAITHFUL port of the browser client's `consumePull` (src/html/export.js) — every rule,
+    /// in the same order: the idle early-return, the epoch resync, the committed
+    /// truncate-then-append, the provisional truncate-then-extend, and the cursor adoption.
+    /// `dom` stands in for the `#stream` children (one entry per rendered block record).
+    /// Drift between this port and the JS is itself a bug — keep them in lockstep.
+    #[derive(Default)]
+    struct SimClient {
+        epoch: u64,
+        committed: usize,
+        gen: u64,
+        index: usize,
+        dom: Vec<Value>,
+    }
+
+    impl SimClient {
+        fn cursor(&self) -> Cursor {
+            Cursor {
+                epoch: self.epoch,
+                committed_id: self.committed,
+                provisional_gen: self.gen,
+                provisional_index: self.index,
+            }
+        }
+        /// Apply one reply (`committed` already materialized from the `/records` range read,
+        /// exactly as the browser driver does before calling consumePull).
+        fn consume(&mut self, r: &Value, committed: &[Value]) {
+            let provisional = r["provisional"].as_array().expect("provisional array");
+            let repoch = r["epoch"].as_u64().expect("epoch");
+            if repoch == self.epoch && committed.is_empty() && provisional.is_empty() {
+                return; // idle tick
+            }
+            if repoch != self.epoch {
+                self.dom.clear(); // resetFrom(0)
+                self.committed = 0;
+            }
+            if !committed.is_empty() {
+                let cf = r["committed_from"].as_u64().expect("committed_from") as usize;
+                self.dom.truncate(cf);
+                self.committed = cf;
+                for b in committed {
+                    self.dom.push(b.clone());
+                    self.committed += 1;
+                }
+            }
+            let pf = r["provisional_from"].as_u64().expect("provisional_from") as usize;
+            self.dom.truncate(self.committed + pf);
+            for b in provisional {
+                self.dom.push(b.clone());
+            }
+            self.epoch = repoch;
+            self.gen = r["provisional_gen"].as_u64().expect("gen");
+            self.index = pf + provisional.len();
+        }
+        /// One full client poll against the live server: pull, then (phase two) range-read the
+        /// committed pointer; a failed/stale range read drops the whole reply, like the browser.
+        fn poll(&mut self, live: &Live, id: &str) {
+            let reply = live.pull_response(id, self.cursor()).expect("pull reply");
+            let r: Value = serde_json::from_str(&reply).expect("valid reply JSON");
+            let committed: Vec<Value> = match &r["committed_ext"] {
+                Value::Null => Vec::new(),
+                ext => {
+                    let (from, len, epoch) = (
+                        ext["offset"].as_u64().unwrap(),
+                        ext["len"].as_u64().unwrap(),
+                        r["epoch"].as_u64().unwrap(),
+                    );
+                    match live.records_bytes(id, from, len, epoch) {
+                        Err(()) => return, // 409: drop the reply whole; re-pull next tick
+                        Ok(bytes) => std::str::from_utf8(&bytes)
+                            .expect("utf8 records")
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| serde_json::from_str(l).expect("valid record"))
+                            .collect(),
+                    }
+                }
+            };
+            self.consume(&r, &committed);
+        }
+    }
+
+    /// THE live-client invariant (#54): a long-lived incremental client's DOM must equal, after
+    /// EVERY poll, the DOM a freshly-attached client (a page reload) builds from the same server
+    /// — the user's "reloading fixes the duplicate" observation, promoted to the oracle. Drives
+    /// the real pull_response/records_bytes through appends, a back-patch, activity grouping, a
+    /// sub-agent spawn + async completion (queue-op), commits, plus a lagging second client
+    /// (missed ticks) and an interleaved third client (a second tab).
+    #[test]
+    fn incremental_client_always_equals_a_fresh_reload() {
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-sim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, "").unwrap();
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::Claude,
+            fold: FoldPolicy::default(),
+            root_path: sess.clone(),
+            cwd: "/r".into(),
+            cache: SessionCache::new(),
+            prev: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+
+        // A live session's growth, one appended chunk per tick: turns that commit, a tool call
+        // whose result back-patches, activity runs that regroup, a spawn whose async completion
+        // arrives via a queue-op notification, and a queued prompt that dequeues immediately.
+        let chunks: Vec<String> = vec![
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b2","name":"Grep","input":{"pattern":"x"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"done part 1"}]},"timestamp":"2026-07-26T10:00:04Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"spawn one"}]},"timestamp":"2026-07-26T10:00:05Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"gp","description":"child","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:06Z"}"#.into(),
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"async_launched","outputFile":"/t/a.out"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]},"timestamp":"2026-07-26T10:00:07Z"}"#.into(),
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>achild01</task-id>\\n<tool-use-id>toolu_A</tool-use-id>\\n<status>completed</status>\\n<summary>done</summary>\\n<result>ok</result>\\n</task-notification>\"}".into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next question"}]},"timestamp":"2026-07-26T10:00:08Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"timestamp":"2026-07-26T10:00:09Z"}"#.into(),
+            r#"{"type":"queue-operation","operation":"enqueue","content":"typed ahead"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"typed ahead"}]},"timestamp":"2026-07-26T10:00:10Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final"}]},"timestamp":"2026-07-26T10:00:11Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"one more"}]},"timestamp":"2026-07-26T10:00:12Z"}"#.into(),
+        ];
+
+        let mut steady = SimClient::default(); // polls every tick
+        let mut lagging = SimClient::default(); // polls every 3rd tick (missed intervals)
+        let mut other_tab = SimClient::default(); // interleaved second client
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&sess)
+            .unwrap();
+        for (i, chunk) in chunks.iter().enumerate() {
+            use std::io::Write;
+            writeln!(file, "{chunk}").unwrap();
+            file.flush().unwrap();
+
+            steady.poll(&live, "sid");
+            if i % 2 == 0 {
+                other_tab.poll(&live, "sid"); // a second tab pulling on its own rhythm
+            }
+            if i % 3 == 2 {
+                lagging.poll(&live, "sid");
+            }
+
+            // THE ORACLE: a fresh client (a reload) built from the same server state right now.
+            let mut fresh = SimClient::default();
+            fresh.poll(&live, "sid");
+            assert_eq!(
+                steady.dom, fresh.dom,
+                "tick {i}: steady client diverged from a fresh reload"
+            );
+            if i % 2 == 0 {
+                assert_eq!(
+                    other_tab.dom, fresh.dom,
+                    "tick {i}: second-tab client diverged from a fresh reload"
+                );
+            }
+            if i % 3 == 2 {
+                assert_eq!(
+                    lagging.dom, fresh.dom,
+                    "tick {i}: lagging client diverged from a fresh reload"
+                );
+            }
+            // And no duplicates by construction: consecutive user turns must have distinct ids.
+            let ids: Vec<&str> = steady.dom.iter().filter_map(|b| b["id"].as_str()).collect();
+            let mut seen = std::collections::HashSet::new();
+            for id in &ids {
+                assert!(seen.insert(*id), "tick {i}: duplicate block id {id} in DOM");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Part 2 end-to-end (no HTTP): a pull whose reply carries a `committed_ext` pointer, the
     /// `/records` range read materializing exactly the committed records, the applied cursor
     /// round-tripping to an idle re-pull, and the stale-epoch 409 path.

@@ -7,9 +7,12 @@
 //! per design §9a:
 //!
 //! - **`epoch`** bumps on a **reset** (truncation/rewrite) — outstanding cursors then resync.
-//! - **`provisional_gen`** bumps on a **commit** (the committed prefix grew — the old provisional
-//!   became committed) or an **in-place back-patch** (the follower's `patch_floor` signal, from
-//!   [`Replayer::apply`](crate::engine) via `advance_at`), and **never on a pure append**.
+//! - **`provisional_gen`** bumps whenever the **finalized** provisional the client received is
+//!   no longer a prefix of the current one: a **commit** (the committed prefix grew), an
+//!   **in-place back-patch** (the follower's `patch_floor` signal), or a **finalization
+//!   reshape** (activity grouping / thinking absorption rewriting the prefix on what was a
+//!   raw-level pure append — detected by diffing against the previous tick's finalized view,
+//!   #54). A pure append that leaves the finalized prefix intact never bumps it.
 //!
 //! [`pull`](SharedSession::pull) then answers any client [`Cursor`] against the current zones.
 //!
@@ -78,6 +81,13 @@ struct Inner<S: BlockStore> {
     /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
     /// the open window on every quiet poll.
     n_provisional: usize,
+    /// The previous tick's FINALIZED provisional — the reference for the reshape check in
+    /// [`advance`](SharedSession::advance). The raw `patch_floor` signal alone is not enough:
+    /// finalization (activity grouping, thinking absorption, run coalescing) can change the
+    /// served provisional's PREFIX on a raw-level pure append, and the protocol's "append-only
+    /// within a generation" promise is about what the client actually received — the finalized
+    /// view. O(turn), same class as the follower's own `poll_delta` state.
+    prev_provisional: Vec<Block>,
 }
 
 /// Where a session's state comes from: a **live** follower folding the source, or a
@@ -179,6 +189,7 @@ impl<S: BlockStore> SharedSession<S> {
                 epoch: 1,
                 provisional_gen: 0,
                 n_provisional: 0,
+                prev_provisional: Vec::new(),
             }),
         }
     }
@@ -203,14 +214,25 @@ impl<S: BlockStore> SharedSession<S> {
             return Ok(false);
         };
         let committed_grew = follower.committed_len() > prev_committed;
-        let n_provisional = follower.provisional_len();
+        // The reshape check (#54): the gen's append-only promise is about the FINALIZED
+        // provisional the client received. Finalization can rewrite the prefix on a raw-level
+        // pure append (a new tool joins an activity group and absorbs earlier blocks), which
+        // `patch_floor` — a raw-buffer signal — never sees. So diff the finalized view against
+        // last tick's: any changed/shrunk prefix forces a gen bump (whole-provisional resend).
+        let (provisional, _times) = follower.open_finalized();
+        let prefix_intact = g.prev_provisional.len() <= provisional.len()
+            && g.prev_provisional
+                .iter()
+                .zip(&provisional)
+                .all(|(a, b)| a == b);
         if reset {
             g.epoch += 1;
             g.provisional_gen += 1;
-        } else if committed_grew || patch_floor.is_some() {
+        } else if committed_grew || patch_floor.is_some() || !prefix_intact {
             g.provisional_gen += 1;
         }
-        g.n_provisional = n_provisional;
+        g.n_provisional = provisional.len();
+        g.prev_provisional = provisional;
         Ok(true)
     }
 
@@ -390,6 +412,7 @@ impl SharedSession<crate::engine::tier_b::TierBStore> {
         Some(Self {
             inner: Mutex::new(Inner {
                 n_provisional: side.provisional.len(),
+                prev_provisional: Vec::new(), // a hibernated body never advances
                 epoch: side.epoch,
                 provisional_gen: side.provisional_gen,
                 body: Body::Hibernated(Box::new(Hibernated {
