@@ -939,26 +939,17 @@ pub(super) fn render_snapshot(
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
     let display = repo_name(cwd).unwrap_or_else(|| session_id.clone());
-    let meta = json!({
-        "t": "meta",
-        "title": display,
-        "agent": agent.label(),
-        "sid": session_id,
-        "path": path.display().to_string(),
-        "cwd": cwd,
-        "turns": count_turns(blocks),
-        "tools": count_tools(blocks),
-        "duration_secs": m.duration_secs,
-        "usage": {
-            "input": human_tokens(m.input_tokens),
-            "output": human_tokens(m.output_tokens),
-            "cache_read": human_tokens(m.cache_read_tokens),
-            "cost": m.cost_usd.map(|c| format!("${c:.2}")),
-            "model": m.model,
-        },
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    });
+    let meta = meta_json(
+        agent,
+        &display,
+        &session_id,
+        cwd,
+        count_turns(blocks),
+        count_tools(blocks),
+        usage_json(m, false),
+        tasks,
+        json!({ "path": path.display().to_string(), "duration_secs": m.duration_secs }),
+    );
     // The blocks hold only attachment locators; the served/bundle paths load their bytes on
     // demand from this transcript. (A portable `--dump-html` never loads — it shows the name.)
     let transcript = Transcript::open(agent, path);
@@ -1008,7 +999,15 @@ pub(super) fn display_title(agent: Agent, path: &Path) -> String {
     } else {
         stem // a file the user named → the stem is the meaningful name
     };
-    format!("{name} · {}", agent.label())
+    // #66: a merely-compatible detection — no in-band owner marker AND not in any
+    // known store (e.g. an unknown Claude-format-derived agent's file handed in by
+    // path) — is badged honestly rather than passed off as the parsing agent.
+    let owned = discover::detection_owned(agent, path);
+    if owned {
+        format!("{name} · {}", agent.label())
+    } else {
+        format!("{name} · compatible ({})", agent.label())
+    }
 }
 
 /// Does a transcript's file stem look machine-generated (a session UUID or a Codex
@@ -1118,6 +1117,54 @@ pub(super) fn render_agent_stream(
     (jsonl, child_refs)
 }
 
+/// The ONE place a meta wire record is assembled (#65) — every field shared by the
+/// three call shapes (stream/pull/snapshot) is inserted here exactly once, so a new
+/// meta field (like #15's `tasks` or #55's `version`, which previously had to be
+/// added in three places and once wasn't) cannot drift between paths. The
+/// differently-sourced parts arrive as arguments; the per-shape extras via `extra`
+/// (serde_json's map is ordered alphabetically on serialize, so key parity is what
+/// matters, not insertion order).
+#[allow(clippy::too_many_arguments)]
+fn meta_json(
+    agent: Agent,
+    title: &str,
+    sid: &str,
+    cwd: &str,
+    turns: usize,
+    tools: usize,
+    usage: Value,
+    m_tasks: &crate::engine::TaskList,
+    extra: Value,
+) -> Value {
+    let mut o = json!({
+        "t": "meta", "title": title, "agent": agent.label(), "sid": sid,
+        "cwd": cwd, "turns": turns, "tools": tools,
+        "usage": usage,
+        "version": env!("CARGO_PKG_VERSION"),
+        "tasks": m_tasks.items,
+    });
+    if let (Value::Object(dst), Value::Object(src)) = (&mut o, extra) {
+        for (k, v) in src {
+            dst.insert(k, v);
+        }
+    }
+    o
+}
+
+/// The shared usage sub-object; `with_duration` matches the stream/pull shape
+/// (duration inside usage) vs the snapshot shape (top-level duration).
+fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
+    let mut u = json!({
+        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+        "cache_read": human_tokens(m.cache_read_tokens),
+        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+    });
+    if with_duration {
+        u["duration_secs"] = json!(m.duration_secs);
+    }
+    u
+}
+
 /// Build a session's `meta` wire record (title / agent / cwd / turn+tool counts / usage / ancestry
 /// / children) and its [`ChildRef`]s from the current blocks. This is the cheap O(N)-**count** part
 /// of a stream render, separated from the O(N)-**render** of the blocks — so the render-once live
@@ -1130,12 +1177,6 @@ pub(super) fn agent_meta(
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
 ) -> (Value, Vec<ChildRef>) {
-    let usage = json!({
-        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-        "cache_read": human_tokens(m.cache_read_tokens),
-        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-        "duration_secs": m.duration_secs,
-    });
     // This agent's spawned children, in launch order, each flagged running (a spawn with
     // no matching completion yet) vs done — drives the "Agents ▾" menu (active first).
     let done: std::collections::HashSet<&str> = blocks
@@ -1165,14 +1206,17 @@ pub(super) fn agent_meta(
         .iter()
         .map(|(id, title)| json!({ "id": id, "title": title }))
         .collect();
-    let meta = json!({
-        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
-        "cwd": cwd, "turns": count_turns(blocks), "tools": count_tools(blocks),
-        "agent_type": &info.agent_type, "usage": usage,
-        "ancestors": ancestors, "children": children,
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    });
+    let meta = meta_json(
+        agent,
+        &info.title,
+        &info.id,
+        cwd,
+        count_turns(blocks),
+        count_tools(blocks),
+        usage_json(m, true),
+        tasks,
+        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+    );
     (meta, child_refs)
 }
 
@@ -1190,12 +1234,6 @@ pub(super) fn assemble_meta(
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
 ) -> Value {
-    let usage = json!({
-        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-        "cache_read": human_tokens(m.cache_read_tokens),
-        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-        "duration_secs": m.duration_secs,
-    });
     let children: Vec<Value> = sm
         .children
         .iter()
@@ -1213,14 +1251,17 @@ pub(super) fn assemble_meta(
         .iter()
         .map(|(id, title)| json!({ "id": id, "title": title }))
         .collect();
-    json!({
-        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
-        "cwd": cwd, "turns": sm.turns, "tools": sm.tools,
-        "agent_type": &info.agent_type, "usage": usage,
-        "ancestors": ancestors, "children": children,
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    })
+    meta_json(
+        agent,
+        &info.title,
+        &info.id,
+        cwd,
+        sm.turns,
+        sm.tools,
+        usage_json(m, true),
+        tasks,
+        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+    )
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
@@ -1734,6 +1775,79 @@ mod tests {
         );
     }
 
+    /// #64 the bundle completeness contract: EVERY embedded, non-inline-rendered
+    /// object in a transcript — prompt images, tool-result images, `file`
+    /// attachments, `plan_file_reference` plans, ExitPlanMode plans — materializes
+    /// into the offline bundle's assets/ with a working `att_href` link. (Path-only
+    /// attachments like `edited_text_file` carry no embedded bytes — nothing to
+    /// dump, by design; portable single-file `--dump-html` stays name-only.)
+    #[test]
+    fn bundle_materializes_every_embedded_object() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("cr-bundle-complete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sess = base.join("one-of-each.jsonl");
+        // Zm9v / YmFy = "foo"/"bar" — tiny valid base64 payloads.
+        let jsonl = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"Zm9v\"}}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"r1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/w/shot.png\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"r1\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"YmFy\"}}]}]}}\n",
+            "{\"type\":\"attachment\",\"attachment\":{\"type\":\"file\",\"filename\":\"/w/notes.md\",\"displayPath\":\"notes.md\",\"content\":{\"type\":\"text\",\"file\":{\"filePath\":\"/w/notes.md\",\"content\":\"# notes body\"}}}}\n",
+            "{\"type\":\"attachment\",\"attachment\":{\"type\":\"plan_file_reference\",\"planFilePath\":\"/p/big-plan.md\",\"planContent\":\"# the referenced plan\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"ep1\",\"name\":\"ExitPlanMode\",\"input\":{\"plan\":\"# the exit plan\"}}]}}\n"
+        );
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(jsonl.as_bytes())
+            .unwrap();
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            sess.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &sess).unwrap();
+        // Every embedded object landed in assets/.
+        let assets: Vec<String> = std::fs::read_dir(out.join("assets"))
+            .expect("assets dir exists")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        for expect in ["notes.md", "big-plan.md", "plan.md"] {
+            assert!(
+                assets
+                    .iter()
+                    .any(|a| a.contains(expect.trim_end_matches(".md")) || a == expect),
+                "missing {expect} in assets: {assets:?}"
+            );
+        }
+        let images = assets
+            .iter()
+            .filter(|a| a.ends_with(".png") || a.ends_with(".jpg") || a.ends_with(".jpeg"))
+            .count();
+        assert!(
+            images >= 2,
+            "prompt + tool-result images materialized: {assets:?}"
+        );
+        // And each attachment record links its asset.
+        let stream_file = std::fs::read_dir(&out)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .expect("agent stream present");
+        let stream = std::fs::read_to_string(stream_file).unwrap();
+        let hrefs = stream.matches("\"att_href\":\"assets/").count();
+        assert!(
+            hrefs >= 5,
+            "all five embedded objects linked (got {hrefs}):\n{stream}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// End-to-end: `dump_all_html` writes `index.html` + one `<id>.jsonl` per agent, with
     /// the root's agent blocks carrying `child:` nav links and each child stream holding
     /// its own transcript.
@@ -1814,7 +1928,7 @@ mod tests {
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
         assert_eq!(
             recs[0]["ancestors"],
-            json!([{ "id": "sess", "title": "sess · claude" }]),
+            json!([{ "id": "sess", "title": "sess · compatible (claude)" }]),
             "child breadcrumb points at the root (titled by session name + agent)"
         );
         // The lone Read folds into an activity-span record (#57); its tool block
@@ -2484,7 +2598,11 @@ mod tests {
             "{\"type\":\"user\",\"cwd\":\"/Users/me/code/knack\",\"message\":{\"content\":\"hi\"}}\n",
         )
         .unwrap();
-        assert_eq!(display_title(Agent::Claude, &uuid), "knack · claude");
+        // Temp-dir files sit outside every store → honestly badged (#66).
+        assert_eq!(
+            display_title(Agent::Claude, &uuid),
+            "knack · compatible (claude)"
+        );
 
         // A transcript the user named and pointed at directly keeps its file stem.
         let named = base.join("my-session.jsonl");
@@ -2493,7 +2611,10 @@ mod tests {
             "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
         )
         .unwrap();
-        assert_eq!(display_title(Agent::Claude, &named), "my-session · claude");
+        assert_eq!(
+            display_title(Agent::Claude, &named),
+            "my-session · compatible (claude)"
+        );
 
         // The UUID shape is recognized regardless of case; a non-UUID/non-store stem is kept.
         assert!(looks_like_session_id(

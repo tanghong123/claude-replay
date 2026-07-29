@@ -275,6 +275,16 @@ pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
     if let Some(v) = input.get("command").and_then(|v| v.as_str()) {
         return v.to_string();
     }
+    // Task tools (#62): TaskUpdate/TaskGet name the task id (`TaskUpdate(#52)`, not
+    // the bare `TaskUpdate()`); TaskCreate shows its SUBJECT — checked before the
+    // generic `description` key, whose task-tool value is long prose that would
+    // swamp the one-line header.
+    if let Some(tid) = input.get("taskId").and_then(|v| v.as_str()) {
+        return format!("#{tid}");
+    }
+    if let Some(s) = input.get("subject").and_then(|v| v.as_str()) {
+        return s.replace('\n', " ");
+    }
     // Descriptions/patterns/skill-names are kept in full (no truncation), but their
     // newlines are flattened so these one-line headers stay one line.
     for k in ["description", "pattern", "skill"] {

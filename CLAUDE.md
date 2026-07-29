@@ -21,7 +21,10 @@ never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Gate every change on
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
-(the default suite is deterministic — no terminal needed; the tmux e2e is opt-in).
+(runs BOTH crates via workspace default-members; deterministic — no terminal needed;
+the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PASS`
+(fixture data lives in `$SC_GATE_DIR`, default `/tmp/sc-gate`; intentional output
+changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
 ## Layout
 A Cargo **workspace** with two crates. The viewer refers to core modules by their original

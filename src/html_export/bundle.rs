@@ -159,7 +159,17 @@ fn agent_stream(
 
 /// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html` shell
 /// plus one `<id>.jsonl` per agent reachable from the root, cross-linked via `child:` so
-/// the whole tree is navigable offline. Serve the dir with any static file server. Unlike
+/// the whole tree is navigable offline. Serve the dir with any static file server.
+///
+/// **Completeness contract (#64):** every EMBEDDED, non-inline-rendered object in the
+/// transcripts — prompt images, tool-result images, `file` attachments,
+/// `plan_file_reference` plans, ExitPlanMode plans (any `AttachmentContent::Deferred`)
+/// — materializes into `assets/` with an `att_href` link on its record (pinned by
+/// `bundle_materializes_every_embedded_object`). Path-only attachments (e.g.
+/// `edited_text_file`) carry no embedded bytes — nothing to dump. The portable
+/// single-file `--dump-html` deliberately stays name-only (no embedded objects).
+///
+/// Unlike
 /// the lazy served path, this walks EVERY reachable agent eagerly (blocking is fine for a
 /// one-shot export) and materializes embedded attachments into `assets/`.
 pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {

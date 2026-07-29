@@ -25,7 +25,6 @@
   var root = document.documentElement;
   var stream = document.getElementById("stream");
   var turnlist = document.getElementById("turnlist");
-  var mIdx = -1;
   var curTurn = null;
   var raf = null;
   var moreSeq = 0;
@@ -251,7 +250,15 @@
   function postMat(e) {
     buildStripsIn(e);
     applyWrapIn(e);
-    if (searchNeedle) markHits(e, searchNeedle, searchNeedle.length);
+    if (searchNeedle) {
+      markHits(e, searchNeedle, searchNeedle.length);
+      // The current hit survives rematerialization (#66) — same id-keyed idea as
+      // the filter's `.filter-cur`.
+      if (curHit && +e.dataset.idx === curHit.rec) {
+        var ms = e.querySelectorAll("mark.hl");
+        if (ms[curHit.mark]) ms[curHit.mark].classList.add("cur");
+      }
+    }
   }
   var CLAMP_LINES = 12; // long user turns clamp to this many lines + expander
   function clampBatch(els) {
@@ -366,17 +373,31 @@
   // under the viewport so height-measurement drift never visibly jumps the page.
   function updateView() {
     if (!records.length) return;
-    var st = streamTop();
-    var y0 = window.scrollY - st;
-    var lo = idxAt(y0 - MARGIN_PX);
-    var hi = idxAt(y0 + window.innerHeight + MARGIN_PX) + 1;
-    // Anchor: the first materialized element still on screen (or the window start).
+    // Prefer INDEX-anchored windowing (#66): when a materialized element is visible,
+    // extend the window around ITS record index by walking effective heights — immune
+    // to prefix-estimate drift, which otherwise makes a post-jump updateView compute
+    // a window that EXCLUDES the very block just navigated to (scrollY maps through
+    // stale estimates to different indices than the real rects on screen).
     var anchorEl = null, anchorTop = 0;
     matEls().some(function (e) {
       var r = e.getBoundingClientRect();
-      if (r.bottom > 0) { anchorEl = e; anchorTop = r.top; return true; }
+      if (r.bottom > 0 && r.top < window.innerHeight) { anchorEl = e; anchorTop = r.top; return true; }
       return false;
     });
+    var lo, hi;
+    if (anchorEl) {
+      var ai = +anchorEl.dataset.idx;
+      lo = ai;
+      var px = anchorTop + MARGIN_PX; // content to keep above the viewport top
+      while (lo > 0 && px > 0) { lo--; px -= effH(lo); }
+      hi = ai;
+      px = window.innerHeight - anchorTop + MARGIN_PX;
+      while (hi < records.length && px > 0) { px -= effH(hi); hi++; }
+    } else {
+      var y0 = window.scrollY - streamTop();
+      lo = idxAt(y0 - MARGIN_PX);
+      hi = idxAt(y0 + window.innerHeight + MARGIN_PX) + 1;
+    }
     setWindow(lo, hi);
     if (anchorEl && anchorEl.isConnected) {
       var d = anchorEl.getBoundingClientRect().top - anchorTop;
@@ -1783,7 +1804,9 @@
   function search(v) {
     var qc = $("qcount");
     clearHl();
-    mIdx = -1;
+    navPos = -1;
+    navMark = -1;
+    curHit = null;
     hitRecs = [];
     totalHits = 0;
     var needle = v.trim();
@@ -1797,16 +1820,8 @@
     matEls().forEach(function (e) { markHits(e, lc, lc.length); });
     qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s");
   }
-  function gotoHit(gi) {
-    all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
-    var hr = null;
-    for (var i = 0; i < hitRecs.length; i++) {
-      if (gi >= hitRecs[i].start && gi < hitRecs[i].start + hitRecs[i].count) { hr = hitRecs[i]; break; }
-    }
-    if (!hr) return;
-    // Materialize the hit's region, then land on its k-th mark (the record text is
-    // extracted in tree order, so occurrence order ≈ DOM mark order).
-    var ti = hr.rec;
+  // Materialize record `ti`'s region and return its element (shared by hit nav).
+  function matRecord(ti) {
     var y = P()[ti];
     setWindow(idxAt(y - MARGIN_PX), idxAt(y + window.innerHeight + MARGIN_PX) + 1);
     var target = null;
@@ -1814,23 +1829,48 @@
       if (+e.dataset.idx === ti) { target = e; return true; }
       return false;
     });
-    $("qcount").textContent = (gi + 1) + "/" + totalHits;
-    if (!target) {
-      window.scrollTo({ top: streamTop() + y - GOTO_Y });
-      return;
+    return target;
+  }
+  // #66: navigation steps through each hit block's ACTUAL DOM marks (exact within a
+  // block), advancing to the next/previous hit record when a block's marks are
+  // exhausted — the record-text totals stay approximate counts, but the stepping
+  // can no longer land on the wrong occurrence inside a block. State: the position
+  // in `hitRecs` + the mark index within that block's DOM.
+  var navPos = -1, navMark = -1;
+  var curHit = null; // {rec, mark} — re-applied on rematerialization (postMat)
+  function stepHit(dir) {
+    if (!hitRecs.length) return;
+    if (navPos < 0) {
+      navPos = dir > 0 ? 0 : hitRecs.length - 1;
+      navMark = dir > 0 ? -1 : Infinity;
     }
-    var marks = target.querySelectorAll("mark.hl");
-    var m = marks[gi - hr.start] || marks[0];
-    if (m) { m.classList.add("cur"); goTo(m, true); }
-    else goTo(target, true);
-    updateView();
-    spy();
+    var tries = 0;
+    while (tries++ <= hitRecs.length) {
+      var hr = hitRecs[navPos];
+      var el = matRecord(hr.rec);
+      var marks = el ? el.querySelectorAll("mark.hl") : [];
+      if (navMark === Infinity) navMark = marks.length; // entered stepping backward
+      var next = navMark + dir;
+      if (next >= 0 && next < marks.length) {
+        navMark = next;
+        curHit = { rec: hr.rec, mark: next };
+        all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
+        var m = marks[next];
+        m.classList.add("cur");
+        var flat = hr.start + Math.min(next, hr.count - 1) + 1;
+        $("qcount").textContent = flat + "/" + totalHits;
+        goTo(m, true);
+        spy();
+        return;
+      }
+      navPos = (navPos + dir + hitRecs.length) % hitRecs.length; // wraps
+      navMark = dir > 0 ? -1 : Infinity;
+    }
   }
   q.addEventListener("input", function () { search(q.value); });
   q.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && totalHits) {
-      mIdx = (mIdx + (e.shiftKey ? totalHits - 1 : 1)) % totalHits;
-      gotoHit(mIdx);
+      stepHit(e.shiftKey ? -1 : 1);
     }
     if (e.key === "Escape") q.blur();
     e.stopPropagation();
