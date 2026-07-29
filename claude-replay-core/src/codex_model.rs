@@ -5,6 +5,8 @@ use crate::model::{AgentStatus, Block, SubAgent};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
 
@@ -224,6 +226,52 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
         }
         _ => {}
     }
+}
+
+pub(crate) fn enrich_tree(path: &Path, blocks: &mut [Block]) {
+    let mut seen = HashSet::new();
+    seen.insert(normalized_path(path));
+    enrich_descendants(path, blocks, &mut seen);
+}
+
+fn enrich_descendants(root: &Path, blocks: &mut [Block], seen: &mut HashSet<PathBuf>) {
+    for block in blocks {
+        let Block::SubAgent(agent) = block else {
+            continue;
+        };
+        let Some(child_path) = crate::codex_discover::subagent_source(root, &agent.agent_id) else {
+            continue;
+        };
+        if !seen.insert(normalized_path(&child_path)) {
+            continue;
+        }
+        let Ok(session) = crate::engine::parse_session_as(crate::Agent::Codex, &child_path) else {
+            continue;
+        };
+        let mut child_blocks = session.blocks();
+        enrich_descendants(&child_path, &mut child_blocks, seen);
+        agent.subtree_cost = subtree_cost(&session.metrics, &child_blocks);
+        agent.blocks = child_blocks;
+    }
+}
+
+fn subtree_cost(metrics: &crate::Metrics, blocks: &[Block]) -> Option<crate::model::UsdCost> {
+    let descendants: crate::model::UsdCost = blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::SubAgent(agent) => agent.subtree_cost,
+            _ => None,
+        })
+        .sum();
+    match metrics.cost_usd {
+        Some(own) => Some(own + descendants),
+        None if descendants > 0.0 => Some(descendants),
+        None => None,
+    }
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// **Frozen golden reference** (M9): production parses Codex through the streaming engine;

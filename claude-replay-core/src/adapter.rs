@@ -230,6 +230,9 @@ impl TranscriptAdapter for CodexAdapter {
             SniffClaim::No
         }
     }
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        crate::codex_model::enrich_tree(path, blocks)
+    }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING
     }
