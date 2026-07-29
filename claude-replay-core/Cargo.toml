@@ -8,6 +8,11 @@ repository = "https://github.com/tanghong123/claude-replay"
 keywords = ["claude", "codex", "transcript", "parser"]
 categories = ["parser-implementations"]
 
+[features]
+# Cross-crate bridge used only by the workspace's presentation/cache crate. The default
+# reusable-core API stays at Transcript::{parse, follow, subagent}.
+presenter-internals = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

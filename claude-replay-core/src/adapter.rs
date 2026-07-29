@@ -72,8 +72,11 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
     /// An operation-scoped relationship resolver anchored at `root`. All agent-specific
     /// parent/child discovery stays behind the adapter; shared callers only see a
-    /// [`SessionGraph`](crate::SessionGraph).
-    fn session_graph(&self, root: &Path) -> crate::SessionGraph;
+    /// [`SessionGraph`](crate::SessionGraph). Agents without cross-transcript relationships
+    /// inherit an empty resolver.
+    fn session_graph(&self, _root: &Path) -> crate::SessionGraph {
+        crate::SessionGraph::empty()
+    }
 }
 
 /// The adapter for `agent`.
@@ -216,5 +219,57 @@ impl TranscriptAdapter for QoderWorkAdapter {
         crate::SessionGraph::from_backend(Box::new(
             crate::claude_discover::ClaudeSessionGraph::open(root),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tree-less adapter must not have to know about relationship topology. If
+    /// `TranscriptAdapter::session_graph` loses its no-op default, this fixture no longer
+    /// compiles and adding a simple agent once again requires SessionGraph boilerplate.
+    struct TreeLessAdapter;
+
+    impl TranscriptAdapter for TreeLessAdapter {
+        fn agent(&self) -> Agent {
+            Agent::Claude
+        }
+
+        fn sniff(&self, _head: &Value) -> bool {
+            false
+        }
+
+        fn shaping(&self) -> &'static Shaping {
+            &crate::claude_model::CLAUDE_SHAPING
+        }
+
+        fn decode_line(&self, _line: &str, _cwd: &mut String, _out: &mut Vec<Message>) {}
+
+        fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
+            Box::new(crate::claude_metrics::MetricsAcc::default())
+        }
+
+        fn candidates_scoped(&self, _cwd: &Path) -> Vec<Candidate> {
+            Vec::new()
+        }
+
+        fn resolve_id(&self, _id: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[test]
+    fn tree_less_adapter_inherits_noop_relationships() {
+        let graph = TreeLessAdapter.session_graph(Path::new("session.jsonl"));
+        let mut blocks = Vec::new();
+
+        graph.resolve_relationships(Path::new("session.jsonl"), &mut blocks);
+
+        assert!(blocks.is_empty());
+        assert_eq!(
+            graph.subagent_source(Path::new("session.jsonl"), "child"),
+            None
+        );
     }
 }

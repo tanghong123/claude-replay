@@ -139,7 +139,7 @@ impl<S: BlockStore> Body<S> {
                     .iter()
                     .map(|bv| h.store.get(bv).into_owned())
                     .collect();
-                h.source.resolve_relationships(&mut blocks);
+                h.source.resolve_persisted_blocks(&mut blocks);
                 blocks
             }
         }

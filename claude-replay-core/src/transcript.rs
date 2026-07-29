@@ -134,14 +134,12 @@ impl Transcript {
         FollowParser::with_store_and_graph(self.agent, &self.path, store, self.graph.clone())
     }
 
-    /// Normalize relationship-bearing blocks for this source without loading child content.
-    pub fn resolve_relationships(&self, blocks: &mut [Block]) {
+    /// Re-apply relationship normalization to blocks restored from the workspace presenter's
+    /// persisted cache. Normal parse/follow consumers receive normalized blocks directly.
+    #[cfg(feature = "presenter-internals")]
+    #[doc(hidden)]
+    pub fn resolve_persisted_blocks(&self, blocks: &mut [Block]) {
         self.graph.resolve_relationships(&self.path, blocks);
-    }
-
-    /// Normalize the lightweight live header through this source's operation resolver.
-    pub fn resolve_meta(&self, meta: &mut crate::engine::SessionMeta) {
-        self.graph.resolve_meta(&self.path, meta);
     }
 
     /// Load the content embedded at byte offset `at`, `index`-th content-bearing attachment on

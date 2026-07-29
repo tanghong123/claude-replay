@@ -24,7 +24,8 @@ slash commands. It is **read-only** and **fully testable headless** — no TTY r
 
 The design goal that shapes everything below: **the transcript engine is agent-agnostic and
 presentation-agnostic**, so (a) any frontend can reuse it, and (b) adding a new agent is one
-small adapter, touching no shared code.
+small adapter. An agent without cross-transcript relationships needs no graph code; one with
+sub-agents supplies an operation-scoped relationship backend behind that same adapter.
 
 ## 2. The workspace: two crates, one boundary
 
@@ -43,8 +44,9 @@ as if the split weren't there.
 
 ## 3. The three-layer engine
 
-Parsing is a pipeline. Each layer has one job, and the agent-specific knowledge is confined
-to Layer 1.
+Parsing is a pipeline. Each layer has one job. Raw event knowledge is confined to Layer 1;
+agent-specific store layout and parent/child topology are confined to the adapter's discovery
+backend.
 
 ```mermaid
 flowchart LR
@@ -87,9 +89,12 @@ The presenter-facing vocabulary lives in `model.rs` and is the stable public API
   `ToolResult`, `Attachment`, `SubAgent`, `AgentDone`, `Command`, `QueueEvent`. Tool results
   are already joined onto their calls; nothing is dropped or truncated (what shows collapsed
   is a *view* decision, not a parse decision).
-- **[`Session`]** — the whole parse: `{ agent, cwd, blocks, user_times, metrics, index }`.
-- **[`SessionIndex`]** — derived within-session rollups (turns, sub-agents, tool counts,
-  attachments) computed in one scan, so presenters don't re-walk the blocks.
+- **[`Session`]** — one flat transcript parse: `{ agent, cwd, committed, provisional,
+  user_times, metrics, index, sub_agents }`. Child content stays lazy unless the caller asks
+  for an enriched tree.
+- **[`SessionIndex`]** — derived within-session rollups (turns, tool counts, attachments)
+  computed in one scan. `Session.sub_agents` is the stable-id entity map for child lifecycle
+  and source navigation.
 - **[`Metrics`]** — token/cost tally + a formatted footer.
 - **Classification** — `block_kind(&Block) -> BlockKind`, projected to a coarse `fold_key`
   (TUI/filter grouping) and a fine `BlockKind::html` (styling). One classifier, two
@@ -111,21 +116,20 @@ The trait's hooks (with defaults where an agent may not need them):
 |------|------|---------|
 | `agent()` | which `Agent` | — |
 | `sniff(head)` | does this transcript look like mine? (drives `detect_agent`) | — |
-| `scan_join_ids(path)` | pass-1: the tool-call ids a later result joins onto | — |
 | `decode_line(line, cwd, out)` | **L1**: raw line → 0+ canonical `Message`s | — |
 | `shaping()` | the L2 `Shaping` const (4 fn-pointers) | — |
 | `metrics_acc()` | a fresh token/cost accumulator | — |
+| `load_attachment(line, index)` | materialize an embedded attachment on demand | **None** |
 | `candidates_scoped(cwd)` | discovery: sessions for a cwd | — |
 | `resolve_id(id)` | discovery: id → transcript path | — |
-| `parse_path_timed(path, times)` | whole-file parse | **provided** (built from the hooks) |
-| `parse_reader(reader)` | metrics-only fold | **provided** |
-| `enrich(path, blocks)` | load the sub-agent tree | **no-op** |
-| `subagent_source(root, id)` | a child transcript's path | **None** |
+| `session_graph(root)` | operation-scoped child identity/source resolver | **empty graph** |
 
-The last two default to "this agent has no sub-agent tree", so a tree-less agent (Codex)
-implements nothing for them. The whole-file parse is a **provided** method: it composes
-`scan_join_ids` → `parse_stream(decode_line, shaping, metrics_acc)`, so a new agent supplies
-only the small per-agent hooks and gets batch + live parsing for free.
+`session_graph` defaults to "this agent has no cross-transcript relationships", so a
+tree-less agent implements nothing for it. Claude overrides it with its deterministic
+`subagents/` layout; Codex overrides it with an anchored rollout graph correlating
+`parent_thread_id` + `agent_path` to a stable child session id. The shared
+[`Transcript`] handle owns the graph for one operation and is the public route for
+`parse`/`follow`/`subagent`; presenters never call the graph directly.
 
 Everything agent-neutral reaches the per-agent behavior *only* through `adapter(agent)` /
 `adapters()`. There is no `match agent` scattered across the engine — `detect_agent`,
@@ -137,35 +141,39 @@ Everything agent-neutral reaches the per-agent behavior *only* through `adapter(
 
 ## 6. Streaming parse & the live follower
 
-Transcripts can be large, so parsing **streams**: one line resident at a time, in two passes
-(a cheap pass-1 id pre-scan, then the pass-2 fold), never building a whole-file `Vec<Value>`
-or `String`. `engine::replay::parse_stream` is the driver; `parse_session_as` is the public
-one-shot entry.
+Transcripts can be large, so parsing **streams in one pass**: one line resident at a time,
+never building a whole-file `Vec<Value>` or `String`. A `SessionAccumulator` feeds each
+decoded line through the shared fold while maintaining blocks, metrics, times, and live
+metadata together. `Transcript::parse` is the canonical one-shot implementation;
+`parse_session_as` is its compatibility free-function entry.
 
 The **live follower** ([`FollowParser`]) is the same fold made incremental: it holds a
 persistent `Replayer` and, each `poll()`, folds only the newly-appended bytes (via a
-byte-offset `TailReader`) — O(delta) work, no re-read. Its output is proven byte-identical to
+byte-offset `LineReader`) — O(delta) work, no re-read. Its output is proven byte-identical to
 a full re-parse at every append; a truncation/rewrite (compaction) resets and rebuilds. This
 powers `-f`/`--follow` in the viewer and the `--html` live server.
 
-**Two public entry points, that's the whole surface a consumer needs:**
+**The source handle is the public relationship boundary:**
 
 ```rust
-let session = claude_replay_core::parse_session(path)?;        // one-shot
-let mut f   = claude_replay_core::FollowParser::open(agent, path);  // live tail
+let transcript = claude_replay_core::Transcript::detect(path);
+let session = transcript.parse()?;                  // one-shot
+let mut f = transcript.follow();                    // live tail
+let child = transcript.subagent("child-session");  // same operation graph
 while let Some((blocks, times, metrics)) = f.poll()? { /* … */ }
 ```
 
-`parse_session` auto-detects the agent; `parse_session_as` skips detection; the `_enriched`
-variants also load the sub-agent tree.
+The free functions remain convenient wrappers: `parse_session` auto-detects the agent;
+`parse_session_as` skips detection; the `_enriched` variants also load the sub-agent tree.
 
 ## 7. Discovery
 
-`discover.rs` is the agent-neutral front door for *finding* transcripts:
+`discover.rs` is the agent-neutral front door for *finding* root transcripts:
 `detect_agent(path)` (sniff the head), `session_cwd`/`session_id` (read the head), 
 `candidates_all(only)` (the cross-agent picker list), `resolve_any(only, target, latest)`
-(id/path/latest → a path), and `subagent_source(agent, root, id)` (a child transcript). Each
-dispatches to the adapter registry, so discovery is agent-agnostic too.
+(id/path/latest → a path). `Transcript::subagent` is the canonical child-navigation API;
+the `subagent_source` free function is a compatibility wrapper that opens a one-operation
+resolver. Each dispatches to the adapter registry, so discovery is agent-agnostic too.
 
 ## 8. Presenters (Layer 3, root crate)
 
@@ -192,7 +200,13 @@ numbering, the collapsed-thinking summary, etc. can't drift between the TUI and 
   `parse_main`/`parse_lines` oracles (`#[cfg(test)]`), and every refactor is checked with
   `--dump`/`--dump-html` diffs on frozen Claude + Codex transcripts.
 - **One classifier / one fold** — block classification and the L2 fold exist once and are
-  shared; per-agent differences live only in `decode_line` + `Shaping`.
+  shared; raw-format differences live in `decode_line` + `Shaping`, while store/topology
+  differences live in the adapter's discovery/relationship backend.
+- **Operation-scoped relationships** — graph state belongs to a `Transcript` operation,
+  never to the process-global adapter singleton. The default graph is empty.
+- **Public API boundary** — consumers navigate through `Transcript::{parse, follow,
+  subagent}`. The graph/backend types remain crate-private; the workspace-only persisted-cache
+  bridge is feature-gated and hidden from the reusable core's default API docs.
 
 ## 10. Where things live
 
@@ -205,7 +219,8 @@ numbering, the collapsed-thinking summary, etc. can't drift between the TUI and 
 | `claude-replay-core/src/{claude,codex}_model.rs` | L1 tokenizers + `Shaping` |
 | `claude-replay-core/src/{claude,codex}_metrics.rs` | token/cost folding |
 | `claude-replay-core/src/{claude,codex}_discover.rs` | per-agent transcript stores |
-| `claude-replay-core/src/{discover,metrics,follow,tail,agent}.rs` | discovery facade · metrics · live follower · byte-offset tail · `Agent` enum |
+| `claude-replay-core/src/{discover,metrics,follow,reader,agent}.rs` | discovery facade · metrics · live follower · byte-offset reader · `Agent` enum |
+| `claude-replay-core/src/{transcript,session_graph}.rs` | public source handle · internal operation-scoped relationship resolver |
 | `src/{view,app,render,markdown,wrap,highlight,theme,fold,picker,clipboard}.rs` | the viewer |
 | `src/html_export/{mod,bundle,serve}.rs` | HTML export + live server |
 | `src/jdi/` | the `agent-jdi` supervisor (see `src/jdi/DESIGN.md`) |

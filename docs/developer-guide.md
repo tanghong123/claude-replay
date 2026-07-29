@@ -133,9 +133,6 @@ This is the only place that knows Gemini's raw line format. Provide:
   [`Message`](../claude-replay-core/src/engine/message.rs)s (`UserText`, `AssistantText`,
   `Thinking`, `ToolUse`, `ToolResult`, …). This is where Gemini's field names get mapped onto
   the shared vocabulary. Thread `cwd` across lines if the format carries it in a header.
-- **`scan_join_ids(lines)`** — the pass-1 pre-scan: collect the tool-call ids a later result
-  will join onto. Reuse the shared skeleton: `engine::replay::scan_ids(lines, |v, ids| { …pull
-  Gemini's call ids… })`.
 - **`GEMINI_SHAPING: Shaping`** — the four L2 hooks: `build_tool` (raw tool fields → a `Block`,
   incl. any agent-specific tool-name normalization), `join_result` (attach a result onto its
   `ToolUse`), `keep_orphan` (keep a resultless output?), `finish_turns` (final grouping, or
@@ -154,7 +151,13 @@ token usage, `finish()` into [`Metrics`]). Reuse `metrics::TimeSpan` for the dur
 
 Where Gemini keeps its transcripts on disk. Provide `candidates_scoped(cwd)` (sessions for a
 directory, scoped to the nearest ancestor that has any — reuse `discover::ancestors_of`) and
-`resolve_id(id)` (id → path). If Gemini has sub-agents, also a `subagent_source`.
+`resolve_id(id)` (id → path).
+
+If Gemini has child transcripts, implement a crate-private `SessionGraphBackend` here. It
+must normalize Gemini-specific spawn/completion identifiers into the shared
+`Block::SubAgent`/`Block::AgentDone` semantics and resolve a stable child id to its source,
+anchored to one root operation. Keep all parent/child metadata and store-layout knowledge in
+this backend. A tree-less Gemini needs no graph implementation.
 
 ### Step 5 — wire it up (`adapter.rs`)
 
@@ -166,9 +169,6 @@ pub(crate) struct GeminiAdapter;
 impl TranscriptAdapter for GeminiAdapter {
     fn agent(&self) -> Agent { Agent::Gemini }
     fn sniff(&self, head: &Value) -> bool { /* recognize a Gemini head */ }
-    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
-        // open + stream lines to gemini_model::scan_join_ids
-    }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         crate::gemini_model::decode_line(line, cwd, out)
     }
@@ -176,7 +176,8 @@ impl TranscriptAdapter for GeminiAdapter {
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> { Box::new(GeminiMetricsAcc::default()) }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> { crate::gemini_discover::candidates_scoped(cwd) }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> { crate::gemini_discover::resolve_id(id) }
-    // enrich / subagent_source / parse_path_timed / parse_reader: inherit the defaults
+    // session_graph inherits the empty default for a tree-less agent.
+    // With child transcripts, override it to construct GeminiSessionGraph::open(root).
 }
 ```
 
@@ -201,13 +202,17 @@ You wrote three small per-agent files + one adapter impl. You did **not** touch:
 (`engine::replay`), the `Block` model, `Session`/`SessionIndex`, discovery's facade
 (`detect_agent`/`resolve_any` pick up the new `sniff`/registry automatically), the live
 follower, or any presenter. `sniff` makes `detect_agent` recognize the format; the registry
-row makes it reachable everywhere.
+row makes it reachable everywhere. If the agent has child sessions, the only additional
+shared-facing hook is its adapter-created, operation-scoped relationship backend.
 
 ### Step 7 — test it
 
 - Add an equivalence gate in `gemini_model` (a frozen fixture: assert
   `replay(tokenize(x))` matches a hand-checked expected block list), mirroring the
   `replay_tokenize_matches_*` tests.
+- Add a black-box integration test under `claude-replay-core/tests/` that uses only
+  `Transcript::{parse, follow, subagent}`. Do not import or expose `SessionGraph`; the test
+  should keep passing if the relationship implementation is replaced.
 - Add a `FollowParser` round-trip: the follower's incremental output must equal a full
   `parse_session_as` at each append (see `follow.rs`'s `assert_follow`).
 - Run the full gate (`fmt` / `clippy` / `test`).

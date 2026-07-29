@@ -337,26 +337,27 @@
         <tbody>
           <tr><td><code>sniff</code></td><td class="role">Does this transcript look like mine? (drives auto-detect)</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>decode_line</code></td><td class="role"><b>L1</b>: one raw line → 0+ canonical messages</td><td><span class="badge">required</span></td></tr>
-          <tr><td><code>scan_join_ids</code></td><td class="role">Pass-1 pre-scan: the tool-call ids a later result joins onto</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>shaping</code></td><td class="role">The four L2 fn-pointers (build tool · join result · keep-orphan · finish)</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>metrics_acc</code></td><td class="role">A fresh token/cost accumulator</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>load_attachment</code></td><td class="role">Materialize one embedded attachment on demand</td><td><span class="badge def">None</span></td></tr>
           <tr><td><code>candidates_scoped</code> · <code>resolve_id</code></td><td class="role">Discovery: sessions for a cwd · id → path</td><td><span class="badge">required</span></td></tr>
-          <tr><td><code>parse_path_timed</code> · <code>parse_reader</code></td><td class="role">Whole-file parse · metrics-only fold</td><td><span class="badge def">provided</span></td></tr>
-          <tr><td><code>enrich</code> · <code>subagent_source</code></td><td class="role">The sub-agent tree (Claude has one; Codex doesn't)</td><td><span class="badge def">no-op / None</span></td></tr>
+          <tr><td><code>session_graph</code></td><td class="role">Operation-scoped stable child identity + source resolution</td><td><span class="badge def">empty graph</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p style="margin-top:18px">The whole-file parse is a <b>provided</b> method: it composes
-      <code>scan_join_ids</code> → the streaming fold → the metrics accumulator. So a new agent supplies
-      only the small per-agent hooks and gets batch <em>and</em> live parsing for free. The
-      <code>agent-jdi</code> supervisor mirrors this exactly with its own adapter trait + registry.</p>
+    <p style="margin-top:18px">A tree-less agent inherits an empty relationship graph. Claude
+      overrides it for its deterministic <code>subagents/</code> layout; Codex overrides it with
+      an anchored rollout graph. The public <code>Transcript</code> handle owns this resolver for
+      one operation, so presenters use only <code>parse</code>, <code>follow</code>, and
+      <code>subagent</code>. The <code>agent-jdi</code> supervisor mirrors the adapter + registry
+      shape.</p>
   </section>
 
   <section id="streaming">
     <div class="eyebrow">Scale &amp; liveness</div>
     <h2>Streaming parse, incremental follow</h2>
-    <p class="kicker">Transcripts can reach hundreds of megabytes, so parsing streams — one line
-      resident, two passes, never a whole-file <code>Vec&lt;Value&gt;</code>.</p>
+    <p class="kicker">Transcripts can reach hundreds of megabytes, so parsing streams in one pass
+      — one line resident, never a whole-file <code>Vec&lt;Value&gt;</code>.</p>
     <ul class="clean">
       <li><b>One-shot</b> — <code>parse_session(path)</code> auto-detects the agent and returns a whole
         <code>Session</code>. <code>parse_session_as</code> skips detection; the <code>_enriched</code>
@@ -366,9 +367,11 @@
         re-read — and is proven byte-identical to a full re-parse at every append. A
         truncation/rewrite (compaction) resets and rebuilds.</li>
     </ul>
-    <pre><span class="c">// the entire surface a library consumer needs</span>
-<span class="k">let</span> session = claude_replay_core::parse_session(path)?;      <span class="c">// one-shot</span>
-<span class="k">let mut</span> f = claude_replay_core::FollowParser::open(agent, path); <span class="c">// live</span>
+    <pre><span class="c">// the agent-neutral public relationship boundary</span>
+<span class="k">let</span> transcript = claude_replay_core::Transcript::detect(path);
+<span class="k">let</span> session = transcript.parse()?;              <span class="c">// one-shot</span>
+<span class="k">let mut</span> f = transcript.follow();                <span class="c">// live</span>
+<span class="k">let</span> child = transcript.subagent(<span class="s">"child-session"</span>);
 <span class="k">while let</span> Some((blocks, times, metrics)) = f.poll()? { <span class="c">/* re-render */</span> }</pre>
   </section>
 
@@ -380,10 +383,10 @@
       <code>impl&nbsp;TranscriptAdapter</code> row. The shared engine is never touched.</p>
     <ol class="steps">
       <li><b>Register</b> <span class="d">— add the <code>Agent::Gemini</code> variant + label.</span></li>
-      <li><b>gemini_model.rs</b> <span class="d">— the L1 decoder: <code>decode_line</code>, <code>scan_join_ids</code>, and a <code>GEMINI_SHAPING</code> const. The only place that knows Gemini's raw format.</span></li>
+      <li><b>gemini_model.rs</b> <span class="d">— the L1 decoder: <code>decode_line</code> and a <code>GEMINI_SHAPING</code> const. The only place that knows Gemini's raw format.</span></li>
       <li><b>gemini_metrics.rs</b> <span class="d">— a small token/cost accumulator (reuse <code>TimeSpan</code> + <code>estimate_cost</code>).</span></li>
-      <li><b>gemini_discover.rs</b> <span class="d">— where Gemini keeps transcripts: <code>candidates_scoped</code> + <code>resolve_id</code>.</span></li>
-      <li><b>impl TranscriptAdapter</b> <span class="d">— a unit struct delegating to the three modules; inherit the provided/defaulted hooks.</span></li>
+      <li><b>gemini_discover.rs</b> <span class="d">— where Gemini keeps transcripts: <code>candidates_scoped</code> + <code>resolve_id</code>; add a relationship backend only if it has child transcripts.</span></li>
+      <li><b>impl TranscriptAdapter</b> <span class="d">— a unit struct delegating to the three modules; tree-less agents inherit the empty graph.</span></li>
       <li><b>Register the row</b> <span class="d">— one arm in <code>adapter()</code> and one entry in <code>adapters()</code>.</span></li>
       <li><b>Test it</b> <span class="d">— an L1 equivalence gate + a <code>FollowParser</code> round-trip; then the usual fmt / clippy / test.</span></li>
     </ol>

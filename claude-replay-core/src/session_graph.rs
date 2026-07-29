@@ -25,7 +25,21 @@ pub(crate) trait SessionGraphBackend: Send {
     fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf>;
 }
 
+struct EmptySessionGraph;
+
+impl SessionGraphBackend for EmptySessionGraph {
+    fn resolve(&mut self, _source: &Path, _blocks: &mut [Block]) {}
+
+    fn subagent_source(&mut self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
+        None
+    }
+}
+
 impl SessionGraph {
+    pub(crate) fn empty() -> Self {
+        Self::from_backend(Box::new(EmptySessionGraph))
+    }
+
     pub(crate) fn open(agent: Agent, anchor: &Path) -> Self {
         crate::adapter::adapter(agent).session_graph(anchor)
     }
