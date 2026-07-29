@@ -9,6 +9,9 @@
 pub enum Agent {
     Claude,
     Codex,
+    /// QoderWork — a Claude-Code-format client with its own store (`~/.qoderwork/projects/`)
+    /// and a `runtime-config` head line. Parsing delegates to the Claude implementations.
+    QoderWork,
 }
 
 impl Agent {
@@ -17,6 +20,7 @@ impl Agent {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::QoderWork => "qoderwork",
         }
     }
 
@@ -25,6 +29,7 @@ impl Agent {
         match s {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "qoderwork" => Some(Self::QoderWork),
             _ => None,
         }
     }

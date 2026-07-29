@@ -108,13 +108,14 @@ pub(crate) fn adapter(agent: Agent) -> &'static dyn TranscriptAdapter {
     match agent {
         Agent::Claude => &ClaudeAdapter,
         Agent::Codex => &CodexAdapter,
+        Agent::QoderWork => &QoderWorkAdapter,
     }
 }
 
 /// Every registered adapter, in a stable order (drives `detect_agent` iteration and the
 /// cross-agent picker order). A new agent adds one entry here and one arm in [`adapter`].
 pub(crate) fn adapters() -> &'static [&'static dyn TranscriptAdapter] {
-    &[&ClaudeAdapter, &CodexAdapter]
+    &[&ClaudeAdapter, &CodexAdapter, &QoderWorkAdapter]
 }
 
 // ── MetricsAccumulator impls (the two accumulators are structurally identical) ──
@@ -142,7 +143,10 @@ impl TranscriptAdapter for ClaudeAdapter {
         Agent::Claude
     }
     fn sniff(&self, head: &Value) -> bool {
-        head.get("sessionId").is_some() || head.get("message").is_some()
+        // A QoderWork transcript's head (`runtime-config`) also carries `sessionId`; exclude it
+        // so the sniffs stay mutually exclusive and detection is order-independent.
+        head.get("type").and_then(Value::as_str) != Some("runtime-config")
+            && (head.get("sessionId").is_some() || head.get("message").is_some())
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         crate::claude_model::enrich_tree(path, blocks)
@@ -196,5 +200,45 @@ impl TranscriptAdapter for CodexAdapter {
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::codex_discover::resolve(Some(id), false).ok()
+    }
+}
+
+/// QoderWork adapter — a Claude-Code-format client with its own store and a `runtime-config`
+/// head line. Everything format-level DELEGATES to the Claude implementations (tokenizer,
+/// shaping, metrics, enrichment, attachments, sub-agent layout — the transcripts are
+/// Claude-shaped, and the foreign `runtime-config`/unknown lines fall through the Claude
+/// decoder as no-ops); only detection and the store root differ. Note: QoderWork records no
+/// per-line token usage, so metrics honestly fold to zero tokens/cost.
+pub(crate) struct QoderWorkAdapter;
+impl TranscriptAdapter for QoderWorkAdapter {
+    fn agent(&self) -> Agent {
+        Agent::QoderWork
+    }
+    fn sniff(&self, head: &Value) -> bool {
+        head.get("type").and_then(Value::as_str) == Some("runtime-config")
+    }
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        crate::claude_model::enrich_tree(path, blocks)
+    }
+    fn shaping(&self) -> &'static Shaping {
+        &crate::claude_model::CLAUDE_SHAPING
+    }
+    fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
+        crate::claude_model::decode_line(line, cwd, out)
+    }
+    fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
+        Box::new(crate::claude_metrics::MetricsAcc::default())
+    }
+    fn load_attachment(&self, line: &str, index: usize) -> Option<crate::model::LoadedAttachment> {
+        crate::claude_model::nth_loaded_attachment(line, index)
+    }
+    fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
+        crate::qoderwork_discover::candidates_scoped(cwd)
+    }
+    fn resolve_id(&self, id: &str) -> Option<PathBuf> {
+        crate::qoderwork_discover::transcript_by_id(id)
+    }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::claude_model::subagent_file(root, child_id)
     }
 }

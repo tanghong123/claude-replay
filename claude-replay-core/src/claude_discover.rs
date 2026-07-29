@@ -19,11 +19,11 @@ pub(crate) fn projects_dir() -> PathBuf {
     Path::new(&home).join(".claude").join("projects")
 }
 
-/// All transcript files under the projects dir, newest first (by mtime).
-pub(crate) fn all_transcripts() -> Vec<PathBuf> {
+/// All transcript files under a store root — shared with the QoderWork store, whose
+/// on-disk layout (`<root>/<slug>/<id>.jsonl`) is identical to Claude Code's.
+pub(crate) fn all_transcripts_in(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<(SystemTime, PathBuf)> = Vec::new();
-    let root = projects_dir();
-    let Ok(projects) = std::fs::read_dir(&root) else {
+    let Ok(projects) = std::fs::read_dir(root) else {
         return Vec::new();
     };
     for proj in projects.flatten() {
@@ -50,10 +50,10 @@ fn slug_for(dir: &Path) -> String {
     dir.to_string_lossy().replace(['/', '.'], "-")
 }
 
-/// Transcript files inside one project dir (`projects_dir()/slug`), with mtimes.
-fn transcripts_in_project(slug: &str) -> Vec<(SystemTime, PathBuf)> {
+/// Transcript files inside one project dir (`<root>/slug`), with mtimes.
+fn transcripts_in_project(root: &Path, slug: &str) -> Vec<(SystemTime, PathBuf)> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(projects_dir().join(slug)) else {
+    let Ok(entries) = std::fs::read_dir(root.join(slug)) else {
         return out;
     };
     for e in entries.flatten() {
@@ -73,10 +73,10 @@ fn transcripts_in_project(slug: &str) -> Vec<(SystemTime, PathBuf)> {
 /// chain) that owns any — the "no global fallback" scoping both scoped Claude lookups share
 /// (a directory with no session history up its chain yields nothing, so unrelated projects
 /// never leak in). Mirrors `codex_discover::nearest_ancestor_sessions`.
-fn nearest_project_transcripts(cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
+fn nearest_project_transcripts(root: &Path, cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
     ancestors_of(cwd)
         .into_iter()
-        .map(|dir| transcripts_in_project(&slug_for(&dir)))
+        .map(|dir| transcripts_in_project(root, &slug_for(&dir)))
         .find(|t| !t.is_empty())
         .unwrap_or_default()
 }
@@ -84,8 +84,14 @@ fn nearest_project_transcripts(cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
 /// Claude sessions scoped strictly to `cwd` or its nearest ancestor that has sessions — no
 /// global fallback (see `nearest_project_transcripts`).
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+    candidates_scoped_in(&projects_dir(), Agent::Claude, cwd)
+}
+
+/// [`candidates_scoped`] over an arbitrary Claude-layout store root, tagging candidates with
+/// `agent` — shared with the QoderWork store.
+pub(crate) fn candidates_scoped_in(root: &Path, agent: Agent, cwd: &Path) -> Vec<Candidate> {
     let cwd_slug = slug_for(cwd);
-    let mut scoped = nearest_project_transcripts(cwd);
+    let mut scoped = nearest_project_transcripts(root, cwd);
     scoped.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     scoped
         .into_iter()
@@ -106,7 +112,7 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
                 project,
                 snippet: first_user_snippet(&path),
                 cwd_affinity: proj_slug == cwd_slug,
-                agent: Agent::Claude,
+                agent,
             }
         })
         .collect()
@@ -137,7 +143,7 @@ fn first_user_snippet(path: &Path) -> String {
 /// target, so `resume` in a directory with no history fails cleanly rather than
 /// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    let mut ts = nearest_project_transcripts(cwd);
+    let mut ts = nearest_project_transcripts(&projects_dir(), cwd);
     ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     ts.into_iter().next().map(|(m, p)| {
         let id = p
@@ -162,8 +168,13 @@ pub fn transcript_path(cwd: &Path, id: &str) -> PathBuf {
 /// dir. This is Claude's half of `discover::resolve_any`'s id lookup (mirroring
 /// `codex_discover::resolve`).
 pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
+    transcript_by_id_in(&projects_dir(), id)
+}
+
+/// [`transcript_by_id`] over an arbitrary Claude-layout store root.
+pub(crate) fn transcript_by_id_in(root: &Path, id: &str) -> Option<PathBuf> {
     let needle = format!("{id}.jsonl");
-    all_transcripts()
+    all_transcripts_in(root)
         .into_iter()
         .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(needle.as_str()))
 }

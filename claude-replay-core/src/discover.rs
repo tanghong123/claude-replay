@@ -257,13 +257,24 @@ mod tests {
         )
         .unwrap();
 
+        // QoderWork: Claude-format lines under a `runtime-config` head — the head also carries
+        // `sessionId`, so this doubles as the sniff-exclusivity check (Claude must NOT claim it).
+        let qoderwork = dir.join(format!("detect-qw-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &qoderwork,
+            "{\"type\":\"runtime-config\",\"sessionId\":\"abc\",\"model\":\"qwork-ultimate\",\"timestamp\":1785068132048}\n",
+        )
+        .unwrap();
+
         assert_eq!(detect_agent(&codex), Agent::Codex);
         assert_eq!(detect_agent(&claude), Agent::Claude);
+        assert_eq!(detect_agent(&qoderwork), Agent::QoderWork);
         // A missing/empty file falls back to Claude.
         assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::Claude);
 
         std::fs::remove_file(&codex).ok();
         std::fs::remove_file(&claude).ok();
+        std::fs::remove_file(&qoderwork).ok();
     }
 
     #[test]

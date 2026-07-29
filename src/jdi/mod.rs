@@ -2087,7 +2087,8 @@ fn session_id_from_argv(_pid: u32, _agent: Agent) -> Option<String> {
 fn session_id_in_cmdline(cmdline: &str, agent: Agent) -> Option<String> {
     let toks: Vec<&str> = cmdline.split_whitespace().collect();
     let flags: &[&str] = match agent {
-        Agent::Claude => &["--resume", "--session-id"],
+        // QoderWork is a Claude-Code fork; its CLI carries the same resume flags.
+        Agent::Claude | Agent::QoderWork => &["--resume", "--session-id"],
         Agent::Codex => &["resume"],
     };
     let looks_like_id =

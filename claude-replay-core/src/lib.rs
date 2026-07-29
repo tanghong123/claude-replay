@@ -26,6 +26,7 @@ pub mod engine;
 pub mod follow;
 pub mod metrics;
 pub mod model;
+pub mod qoderwork_discover;
 pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail + resume)
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
