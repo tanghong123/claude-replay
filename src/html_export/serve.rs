@@ -6,13 +6,14 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::{
-    block_lines, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
-    session_id, AgentInfo, ChildRef, POLL_MS,
+    assemble_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
+    render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, EmitState, POLL_MS,
 };
+use crate::cache::{pull_indices, Cursor, SharedSession, TierBStore};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -32,6 +33,8 @@ struct Live {
     dir: std::path::PathBuf,
     agent: Agent,
     fold: FoldPolicy,
+    /// Root operation handle. Related child handles share its agent-specific relationship
+    /// resolver; the server itself remains agent-neutral.
     operation: Transcript,
     cwd: String,
     /// The session domain: id→source registry + resident followers + TTL reaping.
@@ -41,6 +44,31 @@ struct Live {
     /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
     prev: Mutex<HashMap<String, Vec<String>>>,
     titles: Mutex<HashMap<String, TitleInfo>>,
+    /// The `/pull` **render-once** cache, keyed by id: committed blocks are rendered exactly once
+    /// (as they commit) and their wire records cached here; only the open turn re-renders per poll.
+    /// So a poll's render cost is O(open-turn), not O(session). Reset when the session epoch changes.
+    render: Mutex<HashMap<String, PullRender>>,
+    /// child id → **parent session id**, recorded once when the parent's pull registers the
+    /// child's source. The child derives its own title/breadcrumb from the parent's maintained
+    /// meta on ITS first resolve ([`derive_title`](Self::derive_title)) — the pull path's
+    /// inversion of `register_children`'s per-pull cross-session title writes.
+    parents: Mutex<HashMap<String, String>>,
+}
+
+/// Per-id render-once state for `/pull`. Committed blocks are rendered **once** (as they commit)
+/// into an on-disk append-only log `<id>.records`; the rendered JSON records live on **disk**, never
+/// resident. Only this is in RAM: the carried [`EmitState`] (so the next committed range's anchors
+/// follow on), the per-record **offset table**, and the log length. A poll reads the committed byte
+/// range it needs straight off the log. Reset (new file) when the session epoch changes.
+#[derive(Default)]
+struct PullRender {
+    epoch: u64,
+    emit: EmitState,
+    /// Byte offset where each committed record starts in the on-disk log; `offsets.len()` is the
+    /// number of committed blocks rendered so far (8 bytes/block resident — not the record itself).
+    offsets: Vec<u64>,
+    /// Current log length (EOF), so the next record's offset is O(1).
+    len: u64,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -67,44 +95,114 @@ impl Live {
         }
     }
 
+    /// Resolve `id` to its source + title. Tier-(c) lookup first (the cache registry, populated
+    /// from spawn events); else resolve the source directly — every agent shares the flat
+    /// `subagents/` dir, so a valid id resolves even if its parent was never navigated (deep links)
+    /// — with a plain title until its parent's spawn supplies the description, registering the
+    /// fallback into the cache/titles so later lookups find it. `None` for an unknown id. Shared by
+    /// [`ensure_stream`](Self::ensure_stream) (the `/stream` path) and
+    /// [`pull_response`](Self::pull_response) (the `/pull` path).
+    fn resolve_id(&self, id: &str) -> Option<(Transcript, TitleInfo)> {
+        if let Some(src) = self.cache.resolve(id) {
+            // A registered id with no title yet was registered source-only by its parent's pull
+            // (`register_child_sources`): derive its title/breadcrumb ONCE from the parent's
+            // maintained meta, now that this session is actually being retrieved.
+            let cached = crate::cache::lock_recover(&self.titles).get(id).cloned();
+            let t = cached.unwrap_or_else(|| self.derive_title(id));
+            return Some((src, t));
+        }
+        let src = self.operation.subagent(id)?;
+        if !src.path().exists() {
+            return None;
+        }
+        let t = TitleInfo {
+            title: id.to_string(),
+            ..Default::default() // unknown ancestry/type for an un-navigated deep link
+        };
+        self.cache.register(id, src.clone());
+        self.titles
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), t.clone());
+        Some((src, t))
+    }
+
+    /// Derive (and cache) a child session's title/breadcrumb ONCE, on its first resolve, from
+    /// its **parent's maintained meta** — the child-side half of the pull path's nav inversion.
+    /// Follows the parent pointer recorded at registration; reads the child's description off the
+    /// parent's [`SessionMeta`](crate::engine::SessionMeta) and chains the parent's own ancestry.
+    /// Falls back to the bare id when the parent isn't resident (a deep link before the parent
+    /// was ever pulled, or the parent's live state was TTL-reaped) — matching the pre-existing
+    /// deep-link fallback; whichever value is derived is cached one-time, as before.
+    fn derive_title(&self, id: &str) -> TitleInfo {
+        let parent_id = crate::cache::lock_recover(&self.parents).get(id).cloned();
+        let derived = parent_id.and_then(|pid| {
+            let pmeta = self.cache.shared_peek(&pid)?.session_meta();
+            let c = pmeta.children.iter().find(|c| c.id == id)?;
+            let pt = self
+                .titles
+                .lock()
+                .unwrap()
+                .get(&pid)
+                .cloned()
+                .unwrap_or_default();
+            let mut ancestors = pt.ancestors;
+            ancestors.push((pid, pt.title));
+            Some(TitleInfo {
+                title: if c.description.is_empty() {
+                    c.agent_type.clone()
+                } else {
+                    c.description.clone()
+                },
+                agent_type: c.agent_type.clone(),
+                ancestors,
+            })
+        });
+        let t = derived.unwrap_or_else(|| TitleInfo {
+            title: id.to_string(),
+            ..Default::default()
+        });
+        self.titles
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(t)
+            .clone()
+    }
+
+    /// Record `parent_id`'s children in the id→source registry — a pure path derivation, one
+    /// time per child (already-registered ids are skipped) — plus the parent pointer
+    /// [`derive_title`](Self::derive_title) follows later. **No title writes**: the pull path's
+    /// per-poll cross-session `register_children` is inverted into this one-time source note +
+    /// the child's own lazy, one-time title derivation on its first pull.
+    fn register_child_sources(&self, parent_id: &str, children: &[crate::engine::ChildMeta]) {
+        for c in children {
+            if self.cache.is_registered(&c.id) {
+                continue;
+            }
+            let parent = self
+                .cache
+                .resolve(parent_id)
+                .unwrap_or_else(|| self.operation.clone());
+            if let Some(source) = parent.subagent(&c.id) {
+                self.cache.register_new(&c.id, source);
+                self.parents
+                    .lock()
+                    .unwrap()
+                    .insert(c.id.clone(), parent_id.to_string());
+            }
+        }
+    }
+
     /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
     /// and register its children. Cheap on the hot path (an already-materialized id short-
     /// circuits; the background tailer keeps it current). Returns false for an unknown id.
     fn ensure_stream(&self, id: &str) -> bool {
-        if self.prev.lock().unwrap().contains_key(id) {
+        if crate::cache::lock_recover(&self.prev).contains_key(id) {
             return true; // already materialized — the tailer keeps its stream current
         }
-        // Tier-(c) lookup: the cache registry (populated from spawn events). Fall back to
-        // resolving the source directly — every agent shares the flat `subagents/` dir, so a
-        // valid id resolves even if its parent was never navigated (deep links) — with a plain
-        // title until its parent's spawn supplies the description. The fallback is registered
-        // into the cache so `poll` can locate its source.
-        let (src, title) = if let Some(src) = self.cache.resolve(id) {
-            let t = self
-                .titles
-                .lock()
-                .unwrap()
-                .get(id)
-                .cloned()
-                .unwrap_or_default();
-            (src, t)
-        } else {
-            let Some(src) = self.operation.subagent(id) else {
-                return false;
-            };
-            if !src.path().exists() {
-                return false;
-            }
-            let t = TitleInfo {
-                title: id.to_string(),
-                ..Default::default() // unknown ancestry/type for an un-navigated deep link
-            };
-            self.cache.register(id, src.clone());
-            self.titles
-                .lock()
-                .unwrap()
-                .insert(id.to_string(), t.clone());
-            (src, t)
+        let Some((src, title)) = self.resolve_id(id) else {
+            return false;
         };
         if !src.path().exists() {
             return false;
@@ -141,6 +239,169 @@ impl Live {
         true
     }
 
+    /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. The session
+    /// domain lives in the [`SessionCache`]: it materializes the id's [`SharedSession`] on first
+    /// pull and TTL-reaps idle residents (no background thread — folding rides this request's
+    /// thread, so a session nobody is pulling costs nothing). `None` for an unknown/unreadable id.
+    fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
+        let (src, title) = self.resolve_id(id)?;
+        if !src.path().exists() {
+            return None;
+        }
+        // Lazy reap (this path owns no background thread), then fetch-or-materialize the
+        // pull-servable resident — both owned by the cache (one resident set, one policy).
+        // Each evicted resident hibernates its serving state to a sidecar beside its backing, so
+        // revisiting an UNCHANGED session reloads instead of re-folding the whole transcript.
+        for (rid, ss) in self.cache.reap(TAIL_TTL_MS) {
+            let _ = ss.hibernate(&self.dir.join(format!("{rid}.state")));
+        }
+        let blocks_path = self.dir.join(format!("{id}.blocks"));
+        let state_path = self.dir.join(format!("{id}.state"));
+        let open_fresh = || {
+            // Committed block content spills to an on-disk tier-b backing next to the render log
+            // (falls back to an off-heap buffer if the file can't be created) — a followed
+            // session's resident footprint is O(open turn) + locator/offset tables, not O(N).
+            let store = TierBStore::file(&blocks_path).unwrap_or_else(|_| TierBStore::new());
+            SharedSession::from_transcript_with_store(src.clone(), store)
+        };
+        let mut shared = self.cache.shared_session(id, || {
+            // Restore-from-materialization first (valid only while the source is unchanged);
+            // else fold fresh. A restored session keeps its epoch/gen, so a client that held its
+            // cursor across the eviction continues seamlessly.
+            SharedSession::restore(src.path(), &state_path, &blocks_path)
+                .unwrap_or_else(&open_fresh)
+        });
+        if shared.hibernation_stale() || shared.poisoned() {
+            // Two reasons to distrust this state: the source changed after a restore, or a panic
+            // poisoned it mid-update (#56 — its state may be torn). Either way: drop it and
+            // refold fresh; the new epoch resyncs clients. Never serve torn state, never brick.
+            self.cache.remove_pull(id);
+            shared = self.cache.shared_session(id, open_fresh);
+        }
+        // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
+        let _ = shared.advance();
+        // Idle fast-path: decide from the counters alone (no block clone/render) whether this
+        // cursor has anything to receive. The baseline `/stream` tailer skips all work on an idle
+        // session; without this, an attached client polling a large quiet session would pay an
+        // O(N) clone + render every tick — the opposite of the pull version's whole point.
+        let (epoch, gen, nc, np) = shared.counters();
+        let (cf, pf) = pull_indices(epoch, nc, np, gen, cursor);
+        if cursor.epoch == epoch && cf == nc && pf == np {
+            // Nothing to send: empty zones, no `meta` (the client ignores an idle reply's meta).
+            return Some(
+                json!({
+                    "t": "pull", "epoch": epoch,
+                    "committed_from": cf, "committed_ext": Value::Null,
+                    "provisional_gen": gen,
+                    "provisional_from": pf, "provisional": [],
+                    "meta": Value::Null,
+                })
+                .to_string(),
+            );
+        }
+        let info = self.agent_info(id, src.path().to_path_buf(), &title);
+        // Attachments load from THIS agent's own transcript.
+        let transcript = src.clone();
+
+        // Render-once TO DISK: append the newly-committed blocks' records to `<id>.records` (they
+        // never re-render and never sit in RAM), carrying EmitState so anchors follow on. The open
+        // turn renders from a *clone* of that state each poll (ephemeral anchors don't pollute it).
+        // A poll renders O(open-turn) and reads only the committed byte range the cursor needs.
+        //
+        // `pull_delta` is the delta-sized read: it takes OUR render-cache state (epoch + how many
+        // committed blocks are already in the log) and returns only `committed[rendered..]`, the
+        // open turn, and the accumulator-MAINTAINED header — never a whole-session block clone or
+        // scan. Called under the render lock so the slice matches `pr` (lock order: render ⊃
+        // shared; nothing takes the reverse).
+        let log_path = self.dir.join(format!("{id}.records"));
+        let mut rmap = crate::cache::lock_recover(&self.render);
+        let pr = rmap.entry(id.to_string()).or_default();
+        let d = shared.pull_delta(pr.epoch, pr.offsets.len());
+        if d.reset {
+            *pr = PullRender {
+                epoch: d.epoch,
+                ..Default::default()
+            };
+            let _ = std::fs::remove_file(&log_path); // discard the stale log
+        }
+        if !d.committed_delta.is_empty() {
+            let new_lines = render_blocks(
+                &d.committed_delta,
+                &d.user_times,
+                &self.fold,
+                &self.cwd,
+                true,
+                true,
+                None,
+                Some(&transcript),
+                &mut pr.emit,
+            );
+            append_records(&log_path, &new_lines, &mut pr.offsets, &mut pr.len);
+        }
+        let mut open_emit = pr.emit.clone();
+        let provisional_lines = render_blocks(
+            &d.provisional,
+            &d.user_times,
+            &self.fold,
+            &self.cwd,
+            true,
+            true,
+            None,
+            Some(&transcript),
+            &mut open_emit,
+        );
+        // Slice each zone at the cursor (via the tested pull_indices). The committed zone is
+        // returned as a POINTER `{offset, len}` into the on-disk `<id>.records` log — the client
+        // range-reads it via `/records` (Part 2 of the pull design): the reply never carries the
+        // committed bytes, so the server buffers none of them.
+        let (cf, pf) = pull_indices(
+            d.epoch,
+            pr.offsets.len(),
+            provisional_lines.len(),
+            d.provisional_gen,
+            cursor,
+        );
+        let start = pr.offsets.get(cf).copied().unwrap_or(pr.len);
+        let committed_ext = (pr.len > start).then_some((start, pr.len - start));
+        drop(rmap);
+        // The meta wire record from the maintained header (no block scan) + this agent's
+        // presentation info. Children get a one-time source+parent-pointer note so their
+        // `?session=` links resolve; their titles derive lazily on THEIR first pull
+        // (`derive_title`) — this pull touches no other session's presentation state.
+        let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics);
+        self.register_child_sources(id, &d.meta.children);
+        let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        Some(pull_reply_json(
+            d.epoch,
+            d.provisional_gen,
+            cf,
+            committed_ext,
+            pf,
+            &provisional_records,
+            &meta,
+        ))
+    }
+
+    /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
+    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(())` → **409**
+    /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
+    /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
+    /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the render lock
+    /// so a concurrent reset can't swap the log mid-read.
+    fn records_bytes(&self, id: &str, from: u64, len: u64, epoch: u64) -> Result<Vec<u8>, ()> {
+        let rmap = crate::cache::lock_recover(&self.render);
+        let pr = rmap.get(id).ok_or(())?;
+        if pr.epoch != epoch {
+            return Err(());
+        }
+        let end = from.saturating_add(len).min(pr.len);
+        let log_path = self.dir.join(format!("{id}.records"));
+        Ok(read_range(&log_path, from.min(end), end))
+    }
+
     /// Register `parent`'s discovered children so their `?session=` links resolve to a source
     /// later — carrying the ancestry (parent's + parent) for their breadcrumb. Splits each
     /// child's `AgentInfo` into a cache source + a `titles` entry.
@@ -158,7 +419,9 @@ impl Live {
                     ancestors: ci.ancestors,
                 };
                 self.cache.register_new(&id, src);
-                self.titles.lock().unwrap().entry(id).or_insert(t);
+                crate::cache::lock_recover(&self.titles)
+                    .entry(id)
+                    .or_insert(t);
             }
         }
     }
@@ -229,7 +492,7 @@ impl Live {
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                let mut prev = self.prev.lock().unwrap();
+                let mut prev = crate::cache::lock_recover(&self.prev);
                 let baseline = prev.get(&id).map(Vec::as_slice).unwrap_or(&[]);
                 if let Some(delta) = stream_delta(baseline, &fresh, meta) {
                     let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
@@ -263,6 +526,75 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
     Some(out)
 }
 
+/// Append rendered records to the on-disk log (one per line), updating the resident offset table +
+/// length. Best-effort: a record whose write fails is simply not counted (the next poll re-tries).
+fn append_records(path: &Path, records: &[String], offsets: &mut Vec<u64>, len: &mut u64) {
+    if records.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        for r in records {
+            if f.write_all(r.as_bytes())
+                .and_then(|_| f.write_all(b"\n"))
+                .is_ok()
+            {
+                offsets.push(*len);
+                *len += r.len() as u64 + 1;
+            }
+        }
+    }
+}
+
+/// Read `[start, end)` bytes off the log (the committed records the cursor needs). Empty on any I/O
+/// error or an empty range — the committed zone is then simply absent from this reply.
+fn read_range(path: &Path, start: u64, end: u64) -> Vec<u8> {
+    if end <= start {
+        return Vec::new();
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    match std::fs::File::open(path) {
+        Ok(mut f) => {
+            let mut buf = vec![0u8; (end - start) as usize];
+            if f.seek(SeekFrom::Start(start)).is_ok() && f.read_exact(&mut buf).is_ok() {
+                buf
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Build the `/pull` wire reply string. The **provisional** records are spliced inline (already
+/// JSON objects, so `[rec1,rec2,…]` is a valid array — no per-record parse); the **committed**
+/// zone is a pointer `committed_ext: {offset, len}` into `<id>.records` that the client
+/// range-reads via `/records` (`null` when there is nothing new). The content-blind client
+/// materializes the committed records from the range read, then applies "truncate to `from`,
+/// then extend" per zone (see `export.js`).
+fn pull_reply_json(
+    epoch: u64,
+    provisional_gen: u64,
+    committed_from: usize,
+    committed_ext: Option<(u64, u64)>,
+    provisional_from: usize,
+    provisional_records: &[&str],
+    meta: &Value,
+) -> String {
+    let provisional = format!("[{}]", provisional_records.join(","));
+    let ext = match committed_ext {
+        Some((offset, len)) if len > 0 => format!("{{\"offset\":{offset},\"len\":{len}}}"),
+        _ => "null".into(),
+    };
+    format!(
+        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed_ext\":{ext},\"provisional_gen\":{provisional_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
+    )
+}
+
 /// Poll the transcript forever, streaming changes to `companion`. Shared by
 /// `--dump-html -f` and `--html -f`; returns only on error (the caller runs until
 /// Ctrl-C). `prev` is the block lines already on the page (excluding the meta).
@@ -285,8 +617,6 @@ pub(super) fn follow_and_append(
     // Incremental follower (M16): fold only the newly-appended lines each poll instead of
     // re-parsing the whole file. `open` starts at byte 0, so the first poll folds the file
     // to the current state (== the initial export → no diff), then only deltas thereafter.
-    let agent = transcript.agent();
-    let path = transcript.path().to_path_buf();
     let mut follower = transcript.follow();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
@@ -297,12 +627,12 @@ pub(super) fn follow_and_append(
         let Some((snap_blocks, times, metrics)) = polled else {
             continue; // nothing new this cycle
         };
-        let cwd = crate::discover::session_cwd(&path)
+        let cwd = crate::discover::session_cwd(transcript.path())
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let (fresh, _) = render_snapshot(
-            agent,
-            &path,
+            transcript.agent(),
+            transcript.path(),
             &snap_blocks,
             &times,
             &metrics,
@@ -310,30 +640,14 @@ pub(super) fn follow_and_append(
             fold,
             reveal,
         );
-        let meta = fresh.lines().next().unwrap_or("{}").to_string();
+        let meta = fresh.lines().next().unwrap_or("{}");
         let blocks = block_lines(&fresh);
-        // First index where the fresh stream diverges from what's on the page.
-        let diff = prev.iter().zip(&blocks).take_while(|(a, b)| a == b).count();
-        let changed = diff < prev.len() || diff < blocks.len();
-        if !changed {
-            continue;
+        // The rewind/tail/meta diff is the SAME as the multi-file tailer's — one shared helper
+        // (finding #5). `None` on a pure no-op cycle; else append the `{reset,from}` + tail + meta.
+        if let Some(delta) = stream_delta(&prev, &blocks, meta) {
+            append_line(companion, delta.trim_end())?;
+            prev = blocks;
         }
-        let mut out = String::new();
-        // Only when an already-rendered block changed/vanished — a pure append
-        // (diff == prev.len()) needs no reset, keeping the common path append-only.
-        if diff < prev.len() {
-            out.push_str(&json!({ "t": "reset", "from": diff }).to_string());
-            out.push('\n');
-        }
-        for line in &blocks[diff..] {
-            out.push_str(line);
-            out.push('\n');
-        }
-        // Refreshed meta so usage / cost / duration / tool counts keep up.
-        out.push_str(&meta);
-        out.push('\n');
-        append_line(companion, out.trim_end())?;
-        prev = blocks;
     }
 }
 
@@ -386,22 +700,32 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         cache: SessionCache::new(),
         prev: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
+        render: Mutex::new(HashMap::new()),
+        parents: Mutex::new(HashMap::new()),
     });
     live.cache.register(&sid, operation);
-    live.titles.lock().unwrap().insert(
+    crate::cache::lock_recover(&live.titles).insert(
         sid.clone(),
         TitleInfo {
             title: title.clone(),
             ..Default::default()
         },
     );
-    // The shell + the root stream up-front so the first page load is instant.
+    // Transport: the pull-client feed (`/pull`) is the DEFAULT for a live server — it costs nothing
+    // when no browser is attached (no background tailer; folding rides each client request). Setting
+    // `CR_STREAM=1` reverts to the baseline `/stream` byte-diff + `run_tailer` (kept for comparison).
+    let pull_mode = args.follow && std::env::var_os("CR_STREAM").is_none();
+
+    // The shell up-front so the first page load is instant. In pull mode the page carries
+    // `data-pull` and drives `/pull`; the baseline pre-materializes the root `/stream` file.
     std::fs::write(
         dir.join("index.html"),
-        build_shell(&title, &sid, args.follow),
+        build_shell(&title, &sid, args.follow, pull_mode),
     )
     .with_context(|| "write index.html")?;
-    live.ensure_stream(&sid);
+    if !pull_mode {
+        live.ensure_stream(&sid); // baseline: pre-render the root stream (the tailer keeps it current)
+    }
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
     let url = format!("http://127.0.0.1:{port}/index.html?session={sid}");
@@ -414,12 +738,13 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     open_in_browser(&url);
     println!("{url}");
 
-    if args.follow {
-        live.run_tailer(); // background-tail the requested agents; runs until Ctrl-C
+    if args.follow && !pull_mode {
+        live.run_tailer(); // baseline `/stream`: background-tail the requested agents until Ctrl-C
         Ok(())
     } else {
-        // Static: no tailing, but keep serving so navigation + reveal keep working. Streams
-        // are still generated lazily on first request (children on demand).
+        // Pull mode (client-driven — no background tailer, zero cost when idle) OR static: keep
+        // serving so navigation + reveal keep working. Streams are folded on demand (per `/pull`
+        // request, or lazily on first `/stream` request for a static bundle).
         loop {
             std::thread::park();
         }
@@ -556,6 +881,64 @@ fn serve_connection(
             .write_all(head.as_bytes())
             .and_then(|_| stream.write_all(&bytes));
     }
+    // `/pull?session=<id>&cursor=<epoch.committed.gen.index>` — the pull-client feed. Materialize
+    // the id on first pull, borrow this thread to tail it, and return the self-describing PullReply
+    // JSON (committed append + provisional truncate/extend). Costs nothing when no client pulls.
+    if name == "pull" {
+        let Some(live) = live else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"no live server",
+            );
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let cursor = Cursor::from_query(query_get(query, "cursor").unwrap_or(""));
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+        return match live.pull_response(id, cursor) {
+            Some(body) => respond(
+                &mut stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+            ),
+            None => respond(&mut stream, "404 Not Found", "text/plain", b"no such agent"),
+        };
+    }
+    // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
+    // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
+    // reset since the pointer was issued) — the client drops the reply and re-pulls.
+    if name == "records" {
+        let Some(live) = live else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"no live server",
+            );
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let num = |k| {
+            query_get(query, k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+        }
+        return match live.records_bytes(id, num("from"), num("len"), num("epoch")) {
+            Ok(bytes) => respond(
+                &mut stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &bytes,
+            ),
+            Err(()) => respond(&mut stream, "409 Conflict", "text/plain", b"stale epoch"),
+        };
+    }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
     // served page can't follow a `file://` link: browsers block http→file navigation).
     if name == "__reveal" {
@@ -568,13 +951,6 @@ fn serve_connection(
             }
         }
         return respond(&mut stream, "404 Not Found", "text/plain", b"no such path");
-    }
-    // The static served shell fetches `<id>.jsonl` directly. Materialize a registered child on
-    // that first request just as `/stream` does, so navigation works without `--follow`.
-    if let (Some(live), Some(id)) = (live, name.strip_suffix(".jsonl")) {
-        if id.is_empty() || id.contains('/') || id.contains("..") || !live.ensure_stream(id) {
-            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
-        }
     }
     // Static files: the shell, per-agent `<id>.jsonl` (static bundle), and `assets/<file>`.
     // Allow a single `assets/` subdir; block any other traversal.
@@ -605,158 +981,405 @@ fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn http_get(port: u16, path: &str) -> String {
-        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+    /// `pull_reply_json` splices the provisional records inline (no re-parse) and carries the
+    /// committed zone as a `{offset, len}` pointer into the on-disk record log (`null` when
+    /// empty) — the Part-2 wire the client range-reads via `/records`.
+    #[test]
+    fn pull_reply_json_carries_pointer_and_spliced_provisional() {
+        let meta = json!({ "t": "meta" });
+        let s = pull_reply_json(5, 3, 2, Some((128, 4096)), 1, &[r#"{"id":"p"}"#], &meta);
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["epoch"], 5);
+        assert_eq!(v["committed_from"], 2);
+        assert_eq!(v["committed_ext"]["offset"], 128);
+        assert_eq!(v["committed_ext"]["len"], 4096);
+        assert_eq!(v["provisional_gen"], 3);
+        assert_eq!(v["provisional_from"], 1);
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 1);
+        assert_eq!(v["provisional"][0]["id"], "p");
+        assert_eq!(v["meta"]["t"], "meta");
+
+        // No committed delta (None or zero-length) ⇒ a null pointer, valid empty provisional.
+        let v: Value =
+            serde_json::from_str(&pull_reply_json(1, 0, 0, None, 0, &[], &meta)).unwrap();
+        assert!(v["committed_ext"].is_null());
+        assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
+        let v: Value =
+            serde_json::from_str(&pull_reply_json(1, 0, 3, Some((9, 0)), 0, &[], &meta)).unwrap();
+        assert!(v["committed_ext"].is_null(), "zero-length ⇒ null pointer");
     }
 
-    #[test]
-    fn static_jsonl_route_materializes_a_registered_claude_child() {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "cr-claude-static-route-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let streams = base.join("streams");
-        let parent = base.join("root.jsonl");
-        let child = base.join("root/subagents/agent-child.jsonl");
-        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(&streams).unwrap();
-        std::fs::write(&parent, "").unwrap();
-        std::fs::write(
-            &child,
-            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"served static child\"}]}}\n",
-        )
-        .unwrap();
+    /// A FAITHFUL port of the browser client's `consumePull` (src/html/export.js) — every rule,
+    /// in the same order: the idle early-return, the epoch resync, the committed
+    /// truncate-then-append, the provisional truncate-then-extend, and the cursor adoption.
+    /// `dom` stands in for the `#stream` children (one entry per rendered block record).
+    /// Drift between this port and the JS is itself a bug — keep them in lockstep.
+    #[derive(Default)]
+    struct SimClient {
+        epoch: u64,
+        committed: usize,
+        gen: u64,
+        index: usize,
+        dom: Vec<Value>,
+    }
 
-        let operation = Transcript::open(Agent::Claude, &parent);
-        let live = std::sync::Arc::new(Live {
-            dir: streams.clone(),
+    impl SimClient {
+        fn cursor(&self) -> Cursor {
+            Cursor {
+                epoch: self.epoch,
+                committed_id: self.committed,
+                provisional_gen: self.gen,
+                provisional_index: self.index,
+            }
+        }
+        /// Apply one reply (`committed` already materialized from the `/records` range read,
+        /// exactly as the browser driver does before calling consumePull).
+        fn consume(&mut self, r: &Value, committed: &[Value]) {
+            let provisional = r["provisional"].as_array().expect("provisional array");
+            let repoch = r["epoch"].as_u64().expect("epoch");
+            if repoch == self.epoch && committed.is_empty() && provisional.is_empty() {
+                return; // idle tick
+            }
+            if repoch != self.epoch {
+                self.dom.clear(); // resetFrom(0)
+                self.committed = 0;
+            }
+            if !committed.is_empty() {
+                let cf = r["committed_from"].as_u64().expect("committed_from") as usize;
+                self.dom.truncate(cf);
+                self.committed = cf;
+                for b in committed {
+                    self.dom.push(b.clone());
+                    self.committed += 1;
+                }
+            }
+            let pf = r["provisional_from"].as_u64().expect("provisional_from") as usize;
+            self.dom.truncate(self.committed + pf);
+            for b in provisional {
+                self.dom.push(b.clone());
+            }
+            self.epoch = repoch;
+            self.gen = r["provisional_gen"].as_u64().expect("gen");
+            self.index = pf + provisional.len();
+        }
+        /// One full client poll against the live server: pull, then (phase two) range-read the
+        /// committed pointer; a failed/stale range read drops the whole reply, like the browser.
+        fn poll(&mut self, live: &Live, id: &str) {
+            let reply = live.pull_response(id, self.cursor()).expect("pull reply");
+            let r: Value = serde_json::from_str(&reply).expect("valid reply JSON");
+            let committed: Vec<Value> = match &r["committed_ext"] {
+                Value::Null => Vec::new(),
+                ext => {
+                    let (from, len, epoch) = (
+                        ext["offset"].as_u64().unwrap(),
+                        ext["len"].as_u64().unwrap(),
+                        r["epoch"].as_u64().unwrap(),
+                    );
+                    match live.records_bytes(id, from, len, epoch) {
+                        Err(()) => return, // 409: drop the reply whole; re-pull next tick
+                        Ok(bytes) => std::str::from_utf8(&bytes)
+                            .expect("utf8 records")
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| serde_json::from_str(l).expect("valid record"))
+                            .collect(),
+                    }
+                }
+            };
+            self.consume(&r, &committed);
+        }
+    }
+
+    /// THE live-client invariant (#54): a long-lived incremental client's DOM must equal, after
+    /// EVERY poll, the DOM a freshly-attached client (a page reload) builds from the same server
+    /// — the user's "reloading fixes the duplicate" observation, promoted to the oracle. Drives
+    /// the real pull_response/records_bytes through appends, a back-patch, activity grouping, a
+    /// sub-agent spawn + async completion (queue-op), commits, plus a lagging second client
+    /// (missed ticks) and an interleaved third client (a second tab).
+    #[test]
+    fn incremental_client_always_equals_a_fresh_reload() {
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-sim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, "").unwrap();
+
+        let live = Live {
+            dir: bundle,
             agent: Agent::Claude,
             fold: FoldPolicy::default(),
-            operation: operation.clone(),
-            cwd: "/repo".into(),
+            operation: Transcript::open(Agent::Claude, sess.clone()),
+            cwd: "/r".into(),
             cache: SessionCache::new(),
             prev: Mutex::new(HashMap::new()),
             titles: Mutex::new(HashMap::new()),
-        });
-        live.cache.register("child", operation.related(&child));
-        live.titles.lock().unwrap().insert(
-            "child".into(),
-            TitleInfo {
-                title: "child".into(),
-                agent_type: "Explore".into(),
-                ancestors: vec![("root".into(), "root".into())],
-            },
-        );
-
-        let Ok(port) = spawn_http_server(streams.clone(), Some(live)) else {
-            // Some restricted test sandboxes disallow loopback binds. `ensure_stream` and the
-            // route are exercised when networking is available; do not make that environment
-            // limitation fail the otherwise filesystem-only suite.
-            std::fs::remove_dir_all(base).ok();
-            return;
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
         };
-        let response = http_get(port, "/child.jsonl");
-        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
-        assert!(response.contains("served static child"), "{response}");
-        assert!(streams.join("child.jsonl").is_file());
-        std::fs::remove_dir_all(base).ok();
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+
+        // A live session's growth, one appended chunk per tick: turns that commit, a tool call
+        // whose result back-patches, activity runs that regroup, a spawn whose async completion
+        // arrives via a queue-op notification, and a queued prompt that dequeues immediately.
+        let chunks: Vec<String> = vec![
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b2","name":"Grep","input":{"pattern":"x"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"done part 1"}]},"timestamp":"2026-07-26T10:00:04Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"spawn one"}]},"timestamp":"2026-07-26T10:00:05Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"gp","description":"child","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:06Z"}"#.into(),
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"async_launched","outputFile":"/t/a.out"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]},"timestamp":"2026-07-26T10:00:07Z"}"#.into(),
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>achild01</task-id>\\n<tool-use-id>toolu_A</tool-use-id>\\n<status>completed</status>\\n<summary>done</summary>\\n<result>ok</result>\\n</task-notification>\"}".into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next question"}]},"timestamp":"2026-07-26T10:00:08Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"timestamp":"2026-07-26T10:00:09Z"}"#.into(),
+            r#"{"type":"queue-operation","operation":"enqueue","content":"typed ahead"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"typed ahead"}]},"timestamp":"2026-07-26T10:00:10Z"}"#.into(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final"}]},"timestamp":"2026-07-26T10:00:11Z"}"#.into(),
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"one more"}]},"timestamp":"2026-07-26T10:00:12Z"}"#.into(),
+        ];
+
+        let mut steady = SimClient::default(); // polls every tick
+        let mut lagging = SimClient::default(); // polls every 3rd tick (missed intervals)
+        let mut other_tab = SimClient::default(); // interleaved second client
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&sess)
+            .unwrap();
+        for (i, chunk) in chunks.iter().enumerate() {
+            use std::io::Write;
+            writeln!(file, "{chunk}").unwrap();
+            file.flush().unwrap();
+
+            steady.poll(&live, "sid");
+            if i % 2 == 0 {
+                other_tab.poll(&live, "sid"); // a second tab pulling on its own rhythm
+            }
+            if i % 3 == 2 {
+                lagging.poll(&live, "sid");
+            }
+
+            // THE ORACLE: a fresh client (a reload) built from the same server state right now.
+            let mut fresh = SimClient::default();
+            fresh.poll(&live, "sid");
+            assert_eq!(
+                steady.dom, fresh.dom,
+                "tick {i}: steady client diverged from a fresh reload"
+            );
+            if i % 2 == 0 {
+                assert_eq!(
+                    other_tab.dom, fresh.dom,
+                    "tick {i}: second-tab client diverged from a fresh reload"
+                );
+            }
+            if i % 3 == 2 {
+                assert_eq!(
+                    lagging.dom, fresh.dom,
+                    "tick {i}: lagging client diverged from a fresh reload"
+                );
+            }
+            // And no duplicates by construction: consecutive user turns must have distinct ids.
+            let ids: Vec<&str> = steady.dom.iter().filter_map(|b| b["id"].as_str()).collect();
+            let mut seen = std::collections::HashSet::new();
+            for id in &ids {
+                assert!(seen.insert(*id), "tick {i}: duplicate block id {id} in DOM");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Part 2 end-to-end (no HTTP): a pull whose reply carries a `committed_ext` pointer, the
+    /// `/records` range read materializing exactly the committed records, the applied cursor
+    /// round-tripping to an idle re-pull, and the stale-epoch 409 path.
     #[test]
-    fn codex_served_session_materializes_only_children_in_the_operation_tree() {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "cr-codex-live-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let day = base.join("sessions/2026/07/28");
-        let streams = base.join("streams");
-        std::fs::create_dir_all(&day).unwrap();
-        std::fs::create_dir_all(&streams).unwrap();
-        let parent = day.join("p.jsonl");
-        let child = day.join("c.jsonl");
-        let unrelated = day.join("unrelated.jsonl");
-        let mut parent_file = std::fs::File::create(&parent).unwrap();
-        writeln!(
-            parent_file,
-            r#"{{"type":"session_meta","payload":{{"id":"p","cwd":"/repo","source":"cli"}}}}"#
-        )
-        .unwrap();
-        writeln!(
-            parent_file,
-            r#"{{"type":"response_item","payload":{{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn","arguments":"{{\"task_name\":\"review\",\"message\":\"hidden\"}}"}}}}"#
-        )
-        .unwrap();
-        let child_meta = json!({
-            "type": "session_meta",
-            "payload": {
-                "id": "c",
-                "cwd": "/repo",
-                "source": {"subagent": {"thread_spawn": {
-                    "parent_thread_id": "p",
-                    "agent_path": "/root/review",
-                    "agent_nickname": "Hume"
-                }}}
-            }
-        });
-        let child_message = json!({
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "served child body"}]
-            }
-        });
-        std::fs::write(&child, format!("{child_meta}\n{child_message}\n")).unwrap();
-        std::fs::write(
-            &unrelated,
-            r#"{"type":"session_meta","payload":{"id":"unrelated","cwd":"/repo","source":"cli"}}"#,
-        )
-        .unwrap();
+    fn pull_committed_pointer_round_trips_via_records() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-serve-p2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]},"timestamp":"2026-07-26T10:00:01Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:02Z"}"#, "\n",
+        )).unwrap();
 
-        let operation = Transcript::open(Agent::Codex, &parent);
         let live = Live {
-            dir: streams.clone(),
-            agent: Agent::Codex,
+            dir: bundle,
+            agent: Agent::Claude,
             fold: FoldPolicy::default(),
-            operation: operation.clone(),
-            cwd: "/repo".into(),
+            operation: Transcript::open(Agent::Claude, sess.clone()),
+            cwd: "/r".into(),
             cache: SessionCache::new(),
             prev: Mutex::new(HashMap::new()),
             titles: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
         };
-        live.cache.register("p", operation);
-        live.titles.lock().unwrap().insert(
-            "p".into(),
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+
+        // Fresh cursor: turn 1 committed (the second user turn opened turn 2) ⇒ the reply carries
+        // a pointer, not inline committed records.
+        let reply = live.pull_response("sid", Cursor::default()).expect("reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        let ext = &v["committed_ext"];
+        assert!(!ext.is_null(), "committed delta ⇒ pointer present");
+        let (from, len) = (
+            ext["offset"].as_u64().unwrap(),
+            ext["len"].as_u64().unwrap(),
+        );
+        let epoch = v["epoch"].as_u64().unwrap();
+
+        // Phase two: the range read materializes exactly the committed records, in order.
+        let bytes = live
+            .records_bytes("sid", from, len, epoch)
+            .expect("current epoch serves");
+        let recs: Vec<Value> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(!recs.is_empty(), "committed turn 1 delivered");
+        assert_eq!(recs[0]["id"], "t1", "first committed record is user turn 1");
+
+        // The cursor a client derives from the materialized records + reply counts round-trips
+        // to an idle re-pull (null pointer, empty provisional).
+        let next = Cursor {
+            epoch,
+            committed_id: v["committed_from"].as_u64().unwrap() as usize + recs.len(),
+            provisional_gen: v["provisional_gen"].as_u64().unwrap(),
+            provisional_index: v["provisional_from"].as_u64().unwrap() as usize
+                + v["provisional"].as_array().unwrap().len(),
+        };
+        let idle: Value = serde_json::from_str(&live.pull_response("sid", next).unwrap()).unwrap();
+        assert!(idle["committed_ext"].is_null(), "idle ⇒ null pointer");
+        assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
+
+        // A pointer issued before a reset must not read a recreated log: stale epoch ⇒ Err (409).
+        assert!(live.records_bytes("sid", from, len, epoch + 1).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The child-nav inversion end-to-end (no HTTP): a parent's pull registers its child's
+    /// SOURCE + a parent pointer only (no title write — the parent's pull touches no other
+    /// session's presentation state); the child then derives its title/breadcrumb ONCE from the
+    /// parent's maintained meta on ITS first resolve, and the result is cached.
+    #[test]
+    fn pull_registers_child_source_only_and_child_derives_title_lazily() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-serve-inv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&sadir).unwrap();
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(&sess, concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"review the auth module","prompt":"go"}}]}}"#, "\n",
+            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#, "\n",
+        )).unwrap();
+        std::fs::write(
+            sadir.join("agent-achild01.jsonl"),
+            concat!(r#"{"type":"user","message":{"content":"go"}}"#, "\n"),
+        )
+        .unwrap();
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::Claude,
+            fold: FoldPolicy::default(),
+            operation: Transcript::open(Agent::Claude, sess.clone()),
+            cwd: "/r".into(),
+            cache: SessionCache::new(),
+            prev: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+        crate::cache::lock_recover(&live.titles).insert(
+            "sid".into(),
             TitleInfo {
-                title: "repo".into(),
+                title: "root title".into(),
                 ..Default::default()
             },
         );
 
-        assert!(live.ensure_stream("p"));
-        assert_eq!(live.cache.resolve("c").unwrap().path(), child.as_path());
-        assert!(live.ensure_stream("c"));
-        assert!(std::fs::read_to_string(streams.join("c.jsonl"))
+        // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
+        // registration + the parent pointer — no title write for the child.
+        let reply = live
+            .pull_response("sid", Cursor::default())
+            .expect("parent reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["meta"]["children"][0]["id"], "achild01");
+        assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
+        assert!(live.cache.is_registered("achild01"), "source registered");
+        assert_eq!(
+            live.parents
+                .lock()
+                .unwrap()
+                .get("achild01")
+                .map(String::as_str),
+            Some("sid"),
+            "parent pointer recorded"
+        );
+        assert!(
+            !crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            "no cross-session title write from the parent's pull"
+        );
+
+        // Child's first resolve: title/breadcrumb derived once from the parent's maintained meta.
+        let (_src, t) = live.resolve_id("achild01").expect("child resolves");
+        assert_eq!(t.title, "review the auth module");
+        assert_eq!(t.agent_type, "general-purpose");
+        assert_eq!(
+            t.ancestors,
+            vec![("sid".to_string(), "root title".to_string())]
+        );
+        assert!(
+            crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            "derived once, then cached"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// append_records → read_range round-trips: records land on disk in order, and reading from a
+    /// given committed offset returns exactly the records from there on (the render-once serve path).
+    #[test]
+    fn append_then_read_range_round_trips() {
+        let dir = std::env::temp_dir().join(format!("cr-records-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("t.records");
+        let _ = std::fs::remove_file(&path);
+        let mut offsets = Vec::new();
+        let mut len = 0u64;
+        let recs = vec![
+            r#"{"i":0}"#.to_string(),
+            r#"{"i":1}"#.to_string(),
+            r#"{"i":2}"#.to_string(),
+        ];
+        append_records(&path, &recs, &mut offsets, &mut len);
+        assert_eq!(offsets.len(), 3);
+        // Read from record 1 to EOF → records 1 and 2 only.
+        let bytes = read_range(&path, offsets[1], len);
+        let got: Vec<&str> = std::str::from_utf8(&bytes)
             .unwrap()
-            .contains("served child body"));
-        assert!(!live.ensure_stream("unrelated"));
-        assert!(!streams.join("unrelated.jsonl").exists());
-        std::fs::remove_dir_all(base).ok();
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(got, vec![r#"{"i":1}"#, r#"{"i":2}"#]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -275,6 +275,54 @@ pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
     match agent {
         Agent::Claude => Box::new(super::claude::ClaudeAdapter),
         Agent::Codex => Box::new(super::codex::CodexAdapter),
+        // The VIEWER supports QoderWork transcripts; the supervisor does not drive its CLI yet
+        // (resume/flag shape unverified). Detection never yields it (`agents()` lists only the
+        // driveable two); an explicit `--agent qoderwork` reaches the stub below, which fails
+        // cleanly at preflight instead of resuming the wrong binary.
+        Agent::QoderWork => Box::new(UnsupportedAdapter {
+            agent: Agent::QoderWork,
+        }),
+    }
+}
+
+/// A stub for agents the viewer parses but the supervisor can't drive: every entry point that
+/// would launch or resume fails at `resolve_binary` with a clear message.
+struct UnsupportedAdapter {
+    agent: Agent,
+}
+impl AgentAdapter for UnsupportedAdapter {
+    fn id(&self) -> Agent {
+        self.agent
+    }
+    fn initial_mode(&self, _trigger: Trigger) -> Mode {
+        Mode::Execute
+    }
+    fn resolve_binary(&self) -> anyhow::Result<std::path::PathBuf> {
+        anyhow::bail!(
+            "agent-jdi does not support driving '{}' sessions yet (the viewer can replay them;              supervision needs its CLI resume shape verified)",
+            self.agent.label()
+        )
+    }
+    fn build_invocation(&self, _ctx: &TurnContext) -> Invocation {
+        Invocation {
+            program: std::path::PathBuf::from(self.agent.label()),
+            args: Vec::new(),
+        }
+    }
+    fn classify(&self, rc: i32, _capture: &str, _ctx: &TurnContext) -> TurnOutcome {
+        TurnOutcome::Failed(rc)
+    }
+    fn discover_resumable(&self, _cwd: &std::path::Path) -> anyhow::Result<ResumableSession> {
+        anyhow::bail!(
+            "agent-jdi does not support '{}' sessions yet",
+            self.agent.label()
+        )
+    }
+    fn transcript_path(&self, _id: &str, _cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn prompt_for(&self, _mode: Mode, _brief: &Brief, _session_id: &str) -> String {
+        String::new()
     }
 }
 

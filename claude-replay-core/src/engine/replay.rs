@@ -105,7 +105,6 @@ pub(crate) struct Replayer<'a> {
     tool_slot: HashMap<String, BlockIndex>,
     trigger_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
-    content_seq: usize,
     suppress: Vec<BlockIndex>,
     last_skill: Option<BlockIndex>,
     // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
@@ -129,6 +128,19 @@ fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
     }
 }
 
+/// Record an in-place patch of the block at raw-logical index `logical`: fold it into `floor` (the
+/// running minimum) **iff** it sits below `frontier` — the count of blocks already emitted *before*
+/// this fold batch. A patch at/above `frontier` touched a block appended within this same batch,
+/// which no client has seen yet (it arrives as a plain append), so it is not a back-patch and is not
+/// recorded. `floor` is thus the lowest already-emitted index this batch mutated: `None` ⇒ append-
+/// only. See [`Replayer::apply`] for how the streaming layer turns it into a provisional-generation
+/// bump (and, later, the `provisional_gen_prefix`).
+fn note_patch(floor: &mut Option<usize>, logical: usize, frontier: usize) {
+    if logical < frontier {
+        *floor = Some(floor.map_or(logical, |p| p.min(logical)));
+    }
+}
+
 impl<'a> Replayer<'a> {
     pub(crate) fn new(shaping: &'a Shaping) -> Self {
         Replayer {
@@ -142,7 +154,6 @@ impl<'a> Replayer<'a> {
             tool_slot: HashMap::new(),
             trigger_ts: None,
             queue: Vec::new(),
-            content_seq: 0,
             suppress: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
@@ -150,13 +161,22 @@ impl<'a> Replayer<'a> {
     }
 
     /// Fold a batch of messages into the running state (append, back-patch, stamp).
-    pub(crate) fn apply(&mut self, messages: &[Message]) {
+    ///
+    /// Returns the **min raw-logical index of any already-emitted block this batch back-patched**
+    /// (`None` if it only appended) — the streaming layer's provisional-generation signal (§9a).
+    /// `emitted_frontier` is captured at entry (blocks emitted *before* this batch); a mutation
+    /// below it changed a block a prior poll may have served ⇒ a gen bump, whereas a mutation to a
+    /// block appended *within* this batch is invisible to clients and doesn't count. The fold's
+    /// effect on `out` is unchanged — this is a pure observation (keeps `--dump` byte-identical).
+    pub(crate) fn apply(&mut self, messages: &[Message]) -> Option<usize> {
         let (join_result, keep_orphan) = (self.shaping.join_result, self.shaping.keep_orphan);
+        let emitted_frontier = self.base + self.out.len();
+        let mut patch_floor: Option<usize> = None;
         for m in messages {
             match m {
                 Message::LineStart(ts) => {
                     // Stamp over the resident window; `stamped` is logical, so translate by `base`.
-                    let mut ws = self.stamped - self.base;
+                    let mut ws = self.window_stamped();
                     stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
                     self.stamped = self.base + ws;
                     self.pending_ts = *ts;
@@ -168,7 +188,6 @@ impl<'a> Replayer<'a> {
                 }
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
-                    self.content_seq += 1;
                 }
                 Message::Thinking { text, ts } => {
                     let duration_secs = match (ts, self.trigger_ts) {
@@ -180,7 +199,6 @@ impl<'a> Replayer<'a> {
                         duration_secs,
                         tools: Vec::new(),
                     });
-                    self.content_seq += 1;
                 }
                 Message::ToolUse {
                     id,
@@ -190,7 +208,6 @@ impl<'a> Replayer<'a> {
                 } => {
                     self.out
                         .push((self.shaping.build_tool)(id, name, input, cwd));
-                    self.content_seq += 1;
                     let rel = self.out.len() - 1;
                     let logical = self.base + rel;
                     if let Block::ToolUse { name, .. } = &self.out[rel] {
@@ -210,6 +227,7 @@ impl<'a> Replayer<'a> {
                 } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
                         join_result(&mut self.out[rel], text, tur);
+                        note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         // The result may have filled the spawn's `agent_id`; refresh the map so a
                         // later `AgentDone` resolves the real id (not just the `tool_use_id`).
                         record_agent(&mut self.agent_ids, &self.out[rel]);
@@ -218,6 +236,18 @@ impl<'a> Replayer<'a> {
                     }
                 }
                 Message::UserText { text } => {
+                    // Content-matched delivery (#52): a user message whose text equals a PENDING
+                    // queued prompt IS that prompt arriving — pop it and suppress its marker,
+                    // whether or not a dequeue op was recorded. (A jdi restart re-delivers queued
+                    // prompts in a fresh process without ever writing the dequeue; those stale
+                    // items used to sit in the queue forever, breaking FIFO for every later pop
+                    // AND pinning the durability frontier for the rest of the session.)
+                    if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
+                        let item = self.queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            self.suppress.push(mi);
+                        }
+                    }
                     self.out.push(Block::UserText(text.clone()));
                 }
                 Message::SystemNote { text } => {
@@ -226,12 +256,13 @@ impl<'a> Replayer<'a> {
                 Message::SkillBody { text, fallback } => {
                     // L1 detected the skill body; the fold only nests it into the most recent
                     // `Skill` block (stateful), falling back to a loose result block.
-                    if !attach_skill_body(
-                        &mut self.out,
-                        self.last_skill.map(|i| i - self.base),
-                        text,
-                    ) && !fallback.is_empty()
-                    {
+                    let target = self.last_skill.map(|i| i - self.base);
+                    if attach_skill_body(&mut self.out, target, text) {
+                        // Nested into the existing `Skill` block — a back-patch of that block.
+                        if let Some(ls) = self.last_skill {
+                            note_patch(&mut patch_floor, ls, emitted_frontier);
+                        }
+                    } else if !fallback.is_empty() {
                         self.out.push(Block::ToolResult(fallback.clone()));
                     }
                 }
@@ -244,8 +275,12 @@ impl<'a> Replayer<'a> {
                 }
                 Message::CommandStdout { text } => {
                     // Attach to the command it follows, else show it command-less.
+                    let last_logical = (self.base + self.out.len()).checked_sub(1);
                     if let Some(Block::Command { output, .. }) = self.out.last_mut() {
                         output.push(text.clone());
+                        if let Some(logical) = last_logical {
+                            note_patch(&mut patch_floor, logical, emitted_frontier);
+                        }
                     } else {
                         self.out.push(Block::Command {
                             name: String::new(),
@@ -305,7 +340,6 @@ impl<'a> Replayer<'a> {
                             self.queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
-                                content_at_enqueue: self.content_seq,
                             });
                         }
                     }
@@ -319,11 +353,14 @@ impl<'a> Replayer<'a> {
                             None if !self.queue.is_empty() => Some(self.queue.remove(0)),
                             None => None,
                         };
+                        // A popped prompt's marker ALWAYS collapses (#52): dequeue means the
+                        // prompt is delivered as a real user message (Claude Code shows only that
+                        // one message — even for type-ahead with agent work in between); remove
+                        // means the user withdrew it (Claude Code drops the bubble). Either way
+                        // the pending marker has nothing left to mark.
                         if let Some(item) = popped {
                             if let Some(mi) = item.marker_idx {
-                                if self.content_seq == item.content_at_enqueue {
-                                    self.suppress.push(mi);
-                                }
+                                self.suppress.push(mi);
                             }
                         }
                     }
@@ -331,6 +368,7 @@ impl<'a> Replayer<'a> {
             }
         }
         self.finalize_completed();
+        patch_floor
     }
 
     /// Drop the completed turns behind the open window: finalize (group + suppress) every turn
@@ -367,6 +405,16 @@ impl<'a> Replayer<'a> {
         if k == 0 {
             return;
         }
+        // Stamp any not-yet-stamped user turns BEFORE the frontier advances past them. Normally a
+        // turn is stamped by its own line's `LineStart` long before it commits (the commit needs
+        // the NEXT user line, whose LineStart stamps first) — but ONE line can carry several user
+        // text items, so the second turn closes the first *within the same batch*, ahead of any
+        // later LineStart. Without this, that turn would drain unstamped: its timestamp lost and
+        // `stamped` left BEHIND `base`, wrapping the `stamped - base` window math (the QoderWork
+        // panic, #56). Uses `pending_ts` — exactly the value the next LineStart would stamp with.
+        let mut ws = self.window_stamped();
+        stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.stamped = self.base + ws;
         // Drain the completed raw blocks [0..k) from the window front.
         let drained: Vec<Block> = self.out.drain(0..k).collect();
         // Apply the suppression flagged for this range (logical indices in [base, base+k)), then
@@ -432,6 +480,20 @@ impl<'a> Replayer<'a> {
         (self.shaping.finish_turns)(open)
     }
 
+    /// `stamped` translated into the resident window — with the invariant `stamped >= base`
+    /// asserted in debug and SATURATED in release: even if a future fold path lets a turn commit
+    /// unstamped again (#56), the window math degrades (re-stamps from the window start) instead
+    /// of wrapping to `usize::MAX` and panicking the viewer on a foreign transcript.
+    fn window_stamped(&self) -> usize {
+        debug_assert!(
+            self.stamped >= self.base,
+            "stamped ({}) fell behind base ({}) — a turn committed unstamped",
+            self.stamped,
+            self.base
+        );
+        self.stamped.saturating_sub(self.base)
+    }
+
     /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
     /// crossed the durability frontier), removing them from the replayer — so its resident content
     /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
@@ -445,7 +507,7 @@ impl<'a> Replayer<'a> {
     pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
         (self.finalize_open(open), user_times)
     }
@@ -457,7 +519,7 @@ impl<'a> Replayer<'a> {
     /// equivalence oracles.
     #[cfg(test)]
     pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
         self.stamped = self.base + ws;
         let open = std::mem::take(&mut self.out);
@@ -473,7 +535,7 @@ impl<'a> Replayer<'a> {
     pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
         let blocks = self.assemble(open);
         (blocks, user_times)
@@ -497,17 +559,17 @@ pub(crate) fn replay(
 }
 
 /// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
-/// prompt's `⧗ queued:` marker in the block list (prose only); `content_at_enqueue`
-/// snapshots `content_seq` at submit so a later pop can tell whether any agent work
-/// happened in between (immediate → suppress the marker).
+/// prompt's `⧗ queued:` marker in the block list (prose only). A marker lives only while its
+/// prompt is PENDING: any pop — a dequeue/remove op, or a user message whose text matches the
+/// pending content (an op-less delivery, e.g. a jdi restart) — suppresses it, so the delivered
+/// message renders exactly once, matching Claude Code (#52).
 pub(crate) struct QueueItem {
     pub(crate) content: String,
     pub(crate) marker_idx: Option<BlockIndex>,
-    pub(crate) content_at_enqueue: usize,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
-// arm — it needs the block list, `content_seq`, and `suppress`.)
+// arm — it needs the block list, the pending queue, and `suppress`.)
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
 pub(crate) fn stamp_user_turns(

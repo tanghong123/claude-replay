@@ -132,18 +132,31 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
     }
 }
 
-/// One level of the sub-agent navigation stack: a live `View` plus its tail reader,
-/// agent, path, and the parent block index it was descended *from* (so ascending lands
-/// the cursor back on that spawn). The root's `from` is unused.
+/// Cap on **resident sub-agent Views**. The main session (stack root) is always resident and is
+/// not counted; beyond this many loaded sub-agent frames, the least-recently-viewed one is evicted
+/// (`view: None`) and re-parsed from its own transcript on re-visit — a custom LRU cache policy
+/// that bounds TUI memory by navigation recency, not by the agent tree's size.
+const MAX_RESIDENT_SUBAGENTS: usize = 4;
+
+/// One level of the sub-agent navigation stack: a `View` (or `None` when evicted) plus its tail
+/// reader, agent, path, and the parent block index it was descended *from* (so ascending lands the
+/// cursor back on that spawn). The root's `from` is unused.
 struct Frame {
-    view: View,
-    /// Live incremental follower (M16) — `Some` only in `--follow` mode. Each poll folds
-    /// just the newly-appended lines through a persistent `Replayer`.
-    follower: Option<crate::follow::FollowParser>,
+    /// The loaded viewer, or `None` when this sub-agent frame has been LRU-evicted. Reloaded on
+    /// demand by [`ensure_loaded`] (re-parsing from the child's own transcript). The root frame
+    /// (index 0) is **pinned** — always `Some`.
+    view: Option<View>,
+    /// This frame's key in the session cache (the root's session id, or a child's agent id).
+    /// Empty when the frame has no followable source (e.g. a spawn with no recorded agent id).
+    /// The live follower itself lives in the [`SessionCache`](crate::SessionCache) — the frame
+    /// keeps only presentation state.
+    id: String,
     agent: Agent,
     path: PathBuf,
     transcript: crate::Transcript,
     from: crate::model::BlockIndex,
+    /// Monotonic focus tick, bumped when this frame becomes the current view — the LRU key.
+    last_used: u64,
 }
 
 /// View a session, staying in the viewer across `s`-switches AND sub-agent descents. A
@@ -156,8 +169,19 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     path: PathBuf,
     can_go_back: bool,
 ) -> Result<Outcome> {
-    let mut stack: Vec<Frame> = vec![build_frame(args, &path, can_go_back, 0)?];
+    let mut tick: u64 = 0;
+    // The session domain (live followers + their residency) lives in the cache; frames keep only
+    // presentation state. `s`-switching to a different session replaces the cache wholesale.
+    let mut cache = crate::SessionCache::new();
+    let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
+        // The current top must be loaded to view it (an ascent may have landed on an evicted
+        // frame); reload it (and any evicted ancestors it needs) on demand.
+        let top = stack.len() - 1;
+        ensure_loaded(args, &cache, &mut stack, top)?;
+        tick += 1;
+        stack[top].last_used = tick;
+
         let descended = stack.len() > 1;
         let frame = stack.last_mut().expect("stack never empty");
         let outcome = event_loop(
@@ -165,41 +189,106 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             frame.agent,
             args,
             &frame.path,
-            &mut frame.view,
-            &mut frame.follower,
+            frame.view.as_mut().expect("top is loaded"),
+            &cache,
+            &frame.id,
             descended,
         )?;
         match outcome {
             // Descend into a sub-agent: build a child `View` from its (already-parsed)
-            // transcript and push it, keeping the parent alive underneath.
+            // transcript and push it, keeping the parent alive underneath — then evict the
+            // least-recently-viewed sub-agent if we're over the resident cap.
             Outcome::Descend(idx) => {
                 let top = stack.last().expect("stack never empty");
-                if let Some(child) = build_child_frame(args, top, idx) {
+                let built = build_child_frame(args, &cache, top, idx);
+                if let Some(mut child) = built {
+                    tick += 1;
+                    child.last_used = tick;
                     stack.push(child);
+                    enforce_cap(&cache, &mut stack);
                 }
             }
-            // Ascend: drop the child `View`, and land the parent's cursor on the spawn
-            // block we came from — without touching its fold state (§2.2).
+            // Ascend: drop the child `View`, reload the parent if it was evicted, and land its
+            // cursor on the spawn block we came from — without touching its fold state (§2.2).
             Outcome::Ascend if descended => {
                 let popped = stack.pop().expect("descended ⇒ non-root");
+                let ni = stack.len() - 1;
+                ensure_loaded(args, &cache, &mut stack, ni)?;
                 if let Some(parent) = stack.last_mut() {
-                    parent.view.focus_block(popped.from);
+                    parent
+                        .view
+                        .as_mut()
+                        .expect("reloaded")
+                        .focus_block(popped.from);
                 }
             }
             Outcome::Ascend => {} // at root: nothing above to ascend to
             // `s`-switch resets the whole stack to the newly chosen session.
             Outcome::Switch(p) => {
-                stack = vec![build_frame(args, &p, can_go_back, 0)?];
+                cache = crate::SessionCache::new();
+                stack = vec![build_frame(args, &cache, &p, can_go_back, 0)?];
             }
             other => return Ok(other), // Quit / Back
         }
     }
 }
 
+/// Ensure `stack[i]` is loaded, re-parsing it (and any evicted ancestors it depends on) on demand.
+/// A hollow sub-agent frame is rebuilt from its parent's loaded view via [`build_child_frame`]; the
+/// recursion bottoms out at the pinned root (always loaded). No-op if already loaded.
+fn ensure_loaded(
+    args: &Args,
+    cache: &crate::SessionCache,
+    stack: &mut [Frame],
+    i: usize,
+) -> Result<()> {
+    if stack[i].view.is_some() {
+        return Ok(());
+    }
+    debug_assert!(i > 0, "root frame is pinned — never evicted");
+    ensure_loaded(args, cache, stack, i - 1)?;
+    let from = stack[i].from;
+    // Rebuild from the (now-loaded) parent; the immutable borrow of `stack[i-1]` ends when
+    // `build_child_frame` returns (it owns its `View`), before we write `stack[i]`.
+    let rebuilt = build_child_frame(args, cache, &stack[i - 1], from);
+    if let Some(f) = rebuilt {
+        stack[i].view = f.view;
+    }
+    Ok(())
+}
+
+/// Evict least-recently-viewed loaded sub-agent frames until at most [`MAX_RESIDENT_SUBAGENTS`]
+/// remain loaded. The root (index 0) is pinned and never counted/evicted; the current top is never
+/// evicted (it's being viewed).
+fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
+    let top = stack.len() - 1;
+    loop {
+        let loaded: Vec<usize> = (1..stack.len())
+            .filter(|&i| stack[i].view.is_some())
+            .collect();
+        if loaded.len() <= MAX_RESIDENT_SUBAGENTS {
+            break;
+        }
+        // The least-recently-used loaded sub-agent, excluding the top.
+        let victim = loaded
+            .into_iter()
+            .filter(|&i| i != top)
+            .min_by_key(|&i| stack[i].last_used);
+        match victim {
+            Some(v) => stack[v].view = None,
+            None => break, // only the top is loaded — can't evict it
+        }
+    }
+    // The followers obey the same budget in the cache (the root is pinned there too); an evicted
+    // follower re-materializes from the registry on its next poll.
+    cache.reap_over_budget(MAX_RESIDENT_SUBAGENTS, &stack[0].id);
+}
+
 /// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
 fn build_frame(
     args: &Args,
+    cache: &crate::SessionCache,
     path: &Path,
     can_go_back: bool,
     from: crate::model::BlockIndex,
@@ -213,19 +302,23 @@ fn build_frame(
         .unwrap_or("session")
         .to_string();
     let fold = crate::fold::FoldPolicy::from_args(args);
-    // Live (`-f`): the incremental `FollowParser` owns BOTH the initial fold (one line
-    // resident) and the tail — its first poll folds the whole current file, matching a
-    // one-shot `parse_session_as`. Non-live: one plain streaming parse (M16 / §3.3).
+    // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
+    // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
+    // the tail (the event loop's `poll_delta`). Non-live: one plain streaming parse — the cache
+    // is never touched, so no follower exists.
     let transcript = crate::Transcript::open(agent, path);
-    let (blocks, cwd, metrics, follower) = if args.follow {
-        let mut f = transcript.follow();
-        let (blocks, _times, metrics) = f.poll()?.unwrap_or_default();
-        (blocks, discover::session_cwd(path), metrics, Some(f))
+    let id = title.clone();
+    let (blocks, cwd, metrics) = if args.follow {
+        cache.register(&id, transcript.clone());
+        match cache.poll(&id) {
+            Some(Ok(s)) => (s.blocks(), s.cwd.clone(), s.metrics.clone()),
+            _ => (Vec::new(), discover::session_cwd(path), Default::default()),
+        }
     } else {
         let s = transcript.parse()?;
-        (s.blocks(), s.cwd, s.metrics, None)
+        (s.blocks(), s.cwd, s.metrics)
     };
-    let mut view = View::new(blocks, title, follower.is_some(), fold);
+    let mut view = View::new(blocks, title, args.follow, fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
     // The blocks hold only attachment locators; give the view the transcript to load them from.
@@ -235,23 +328,30 @@ fn build_frame(
     view.set_footer_segments(metrics.footer_segments());
     view.set_descended(false);
     Ok(Frame {
-        view,
-        follower,
+        view: Some(view),
+        id,
         agent,
         path: path.to_path_buf(),
         transcript,
         from,
+        last_used: 0,
     })
 }
 
 /// Build a child frame from the descend target (a `SubAgent` spawn OR an `AgentDone`
-/// completion) at block index `idx` of `parent`'s view. A spawn reuses its already-parsed
-/// child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads the
-/// child transcript from disk. `None` if `idx` isn't a descendable agent block.
-fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex) -> Option<Frame> {
-    let dref = parent.view.descend_ref_at(idx)?;
-    // Own the fields we need so the borrow of `parent.view` ends before we touch
-    // `parent.path` / build the view.
+/// completion) at block index `idx` of the parent's `parent_view`. A spawn reuses its
+/// already-parsed child `blocks`; a completion (and any agent whose child wasn't pre-loaded) loads
+/// the child transcript from disk. `None` if `idx` isn't a descendable agent block. Takes the
+/// parent's frame so child discovery shares the operation-scoped transcript resolver.
+fn build_child_frame(
+    args: &Args,
+    cache: &crate::SessionCache,
+    parent: &Frame,
+    idx: crate::model::BlockIndex,
+) -> Option<Frame> {
+    let parent_view = parent.view.as_ref()?;
+    let dref = parent_view.descend_ref_at(idx)?;
+    // Own the fields we need so the borrow of `parent_view` ends before we build the view.
     let mut blocks = dref.blocks;
     let agent_type = dref.agent_type;
     let subtree_cost = dref.subtree_cost;
@@ -279,18 +379,23 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     if blocks.is_empty() {
         return None;
     }
-    // Live-tail an open child through its own incremental follower (M16): its first poll
-    // re-folds the child transcript (== the blocks just loaded), then only deltas.
-    let follower = args
-        .follow
-        .then(|| child_transcript.as_ref().map(|t| t.follow()))
-        .flatten();
+    // Live-tail an open child through the CACHE's follower for its id (registered here, polled
+    // by the event loop): its first poll re-folds the child transcript (== the blocks just
+    // loaded), then only deltas. The residency budget in `enforce_cap` bounds how many child
+    // followers stay materialized.
+    let live = args.follow && child_transcript.is_some() && !agent_id.is_empty();
+    if live {
+        cache.register_new(
+            &agent_id,
+            child_transcript.clone().expect("live ⇒ transcript"),
+        );
+    }
     let fold = crate::fold::FoldPolicy::from_args(args);
-    let mut view = View::new(blocks, title, follower.is_some(), fold);
+    let mut view = View::new(blocks, title, live, fold);
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
-    view.set_cwd(parent.view.cwd_ref().cloned());
+    view.set_cwd(parent_view.cwd_ref().cloned());
     // A descended child's attachment locators point into the child's own transcript file.
     view.set_source(child_transcript.clone());
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child
@@ -308,12 +413,13 @@ fn build_child_frame(args: &Args, parent: &Frame, idx: crate::model::BlockIndex)
     view.set_footer_segments(segs);
     let transcript = child_transcript?;
     Some(Frame {
-        view,
-        follower,
+        view: Some(view),
+        id: if live { agent_id } else { String::new() },
         agent: parent.agent,
         path: transcript.path().to_path_buf(),
         transcript,
         from: idx,
+        last_used: 0,
     })
 }
 
@@ -331,28 +437,31 @@ enum Outcome {
     Ascend,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn event_loop<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     _agent: Agent,
     args: &Args,
     _path: &Path,
     view: &mut View,
-    follower: &mut Option<crate::follow::FollowParser>,
+    cache: &crate::SessionCache,
+    id: &str,
     descended: bool,
 ) -> Result<Outcome> {
     loop {
         term.draw(|f| view.draw(f))?;
 
-        // No input this tick → pump the live tail incrementally (M16). One path for both
-        // agents: fold only the newly-appended lines through the persistent `Replayer`
-        // (which back-patches a cross-poll tool result without a full re-parse), then update
-        // the view preserving fold toggles + scroll, and refresh the folded footer metrics.
+        // No input this tick → pump the live tail incrementally (M16). `poll_delta` folds only the
+        // newly-appended lines through the persistent `Replayer` (back-patching a cross-poll tool
+        // result without a full re-parse) AND hands back the exact `changed_from` boundary, so the
+        // view preserves fold toggles + render cache for the unchanged prefix without re-scanning
+        // the whole block list. `apply_poll` swaps blocks + refreshes the footer in one call.
         if !event::poll(Duration::from_millis(250))? {
-            if let Some(f) = follower.as_mut() {
-                if let Ok(Some((blocks, _times, metrics))) = f.poll() {
-                    view.update(blocks);
-                    view.set_metrics(metrics.footer());
-                    view.set_footer_segments(metrics.footer_segments());
+            // Only a registered id has a follower (registration happens in `-f` mode only); an
+            // evicted follower silently re-materializes from the registry inside the cache.
+            if !id.is_empty() {
+                if let Some(Ok((blocks, _times, metrics, changed_from))) = cache.poll_delta(id) {
+                    view.apply_poll(blocks, &metrics, changed_from);
                 }
             }
             continue;
@@ -782,6 +891,50 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    /// The sub-agent LRU policy (#36): [`enforce_cap`] keeps at most `MAX_RESIDENT_SUBAGENTS`
+    /// loaded sub-agent frames, evicting the least-recently-viewed first, while pinning the root
+    /// (index 0) and never evicting the current top (it's on screen).
+    #[test]
+    fn lru_caps_subagents_pinning_root_and_top() {
+        fn frame(last_used: u64) -> Frame {
+            Frame {
+                view: Some(View::new(
+                    Vec::new(),
+                    "t",
+                    false,
+                    crate::fold::FoldPolicy::default(),
+                )),
+                id: String::new(),
+                agent: Agent::Claude,
+                path: std::path::PathBuf::from("/x"),
+                transcript: crate::Transcript::open(Agent::Claude, "/x"),
+                from: 0,
+                last_used,
+            }
+        }
+        // root + (MAX+2) sub-agents, all loaded; last_used == index, so the shallow ones are LRU.
+        let n = MAX_RESIDENT_SUBAGENTS + 2;
+        let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
+        let top = stack.len() - 1;
+        enforce_cap(&crate::SessionCache::new(), &mut stack);
+
+        let loaded: Vec<usize> = (1..stack.len())
+            .filter(|&i| stack[i].view.is_some())
+            .collect();
+        assert_eq!(loaded.len(), MAX_RESIDENT_SUBAGENTS, "capped to the max");
+        assert!(stack[0].view.is_some(), "root is pinned");
+        assert!(
+            stack[top].view.is_some(),
+            "the current top is never evicted"
+        );
+        // The two least-recently-used sub-agents (indices 1,2) are the ones dropped.
+        assert!(
+            stack[1].view.is_none() && stack[2].view.is_none(),
+            "LRU evicted first"
+        );
+        assert!(stack[3].view.is_some(), "more-recent sub-agents kept");
+    }
 
     /// Strip `ESC[..m` SGR sequences (char-wise so multibyte content survives).
     fn strip_sgr(s: &str) -> String {

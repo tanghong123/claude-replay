@@ -18,6 +18,10 @@ pub enum RunState {
     Done,
     Failed,
     GaveUp,
+    /// Retries kept failing the SAME way — almost certainly blocked on an external step a
+    /// restart can't fix (a failing push, an expired credential). The supervisor stops
+    /// relaunching and waits for a human (`agent-jdi resume` once unblocked).
+    Blocked,
 }
 
 impl RunState {
@@ -30,6 +34,7 @@ impl RunState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::GaveUp => "gaveup",
+            Self::Blocked => "blocked",
         }
     }
 
@@ -42,6 +47,7 @@ impl RunState {
             "done" => Self::Done,
             "failed" => Self::Failed,
             "gaveup" => Self::GaveUp,
+            "blocked" => Self::Blocked,
             _ => return None,
         })
     }

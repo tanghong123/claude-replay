@@ -6,25 +6,58 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::engine::builder::SessionAccumulator;
-use crate::engine::session::{InMemoryStore, Session};
+use crate::engine::builder::{SessionAccumulator, StreamRead};
+use crate::engine::session::{BlockStore, InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
 use crate::{Agent, SessionGraph};
 
+/// The outcome of one advance-from-source: whether content moved, whether it was a reset
+/// (truncation/rewrite), and the batch's back-patch signal (`patch_floor`).
+struct Tick {
+    advanced: bool,
+    reset: bool,
+    patch_floor: Option<usize>,
+}
+
+impl Tick {
+    fn idle() -> Self {
+        Tick {
+            advanced: false,
+            reset: false,
+            patch_floor: None,
+        }
+    }
+}
+
 /// Follows a transcript file, folding only newly-appended lines each poll through a shared
 /// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
 /// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
 /// is just the byte-offset reader plus the same incremental fold the batch parse uses.
-pub struct FollowParser {
+///
+/// Generic over the accumulator's [`BlockStore`] `S` (default [`InMemoryStore`] — blocks resident
+/// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
+/// works for any store — a live server follows with a tier-b store so committed content lives on
+/// disk; the `Session`-assembling polls (`poll*`) stay on the in-memory default.
+pub struct FollowParser<S: BlockStore = InMemoryStore> {
     path: PathBuf,
-    builder: SessionAccumulator<InMemoryStore>,
+    builder: SessionAccumulator<S>,
     reader: LineReader,
     graph: SessionGraph,
+    /// Previous poll's committed length + open-turn blocks — the O(turn) state
+    /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
+    /// `poll_delta`.
+    prev_committed: usize,
+    prev_provisional: Vec<Block>,
 }
 
-impl FollowParser {
+/// Length of the shared prefix of two block slices — O(min(len)) block-equality.
+fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+impl FollowParser<InMemoryStore> {
     /// Follow `path` from the beginning: the first `poll` folds the whole current file, then
     /// subsequent polls fold only appends.
     pub fn open(agent: Agent, path: &Path) -> Self {
@@ -34,21 +67,43 @@ impl FollowParser {
     /// Follow a related transcript with the operation-scoped relationship resolver shared by
     /// its owning [`Transcript`](crate::Transcript).
     pub(crate) fn open_with_graph(agent: Agent, path: &Path, graph: SessionGraph) -> Self {
+        Self::with_store_and_graph(agent, path, InMemoryStore, graph)
+    }
+}
+
+impl<S: BlockStore> FollowParser<S> {
+    /// [`open`](FollowParser::open) with an explicit [`BlockStore`] — e.g. a
+    /// [`TierBStore`](crate::engine::tier_b::TierBStore) so committed block content lives in the
+    /// store's backing (disk) instead of RAM.
+    pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
+        Self::with_store_and_graph(agent, path, store, SessionGraph::open(agent, path))
+    }
+
+    pub(crate) fn with_store_and_graph(
+        agent: Agent,
+        path: &Path,
+        store: S,
+        graph: SessionGraph,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
-            builder: SessionAccumulator::new(agent),
+            builder: SessionAccumulator::with_store(agent, store),
             reader: LineReader::open_at_start(path),
             graph,
+            prev_committed: 0,
+            prev_provisional: Vec::new(),
         }
     }
 
     /// Fold any newly-appended lines (or rebuild on a truncation/rewrite) into the running
-    /// builder. Returns `Ok(true)` when content advanced this tick, `Ok(false)` when nothing
-    /// changed since the last poll (the common idle tick). O(delta) except on a rewrite.
-    fn advance_from_source(&mut self) -> std::io::Result<bool> {
+    /// builder. Returns a [`Tick`]: whether content advanced, whether it was a reset (truncation),
+    /// and the batch's back-patch signal (the min already-emitted index any line mutated in place,
+    /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
+    /// O(delta) except on a rewrite.
+    fn advance_from_source(&mut self) -> std::io::Result<Tick> {
         let p = self.reader.poll()?;
         if !p.reset && p.lines.is_empty() {
-            return Ok(false); // nothing new this tick
+            return Ok(Tick::idle()); // nothing new this tick
         }
         if p.reset {
             // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
@@ -56,11 +111,19 @@ impl FollowParser {
             self.builder.reset();
         }
         // Fold each appended line with its file start offset, so attachment locators in a LIVE
-        // session get correct byte offsets (same as a batch parse).
+        // session get correct byte offsets (same as a batch parse). OR-reduce the per-line
+        // back-patch reports into the batch's min (the streaming layer's provisional-gen signal).
+        let mut patch_floor: Option<usize> = None;
         for (offset, line) in p.offsets.iter().zip(&p.lines) {
-            self.builder.advance_at(*offset, line);
+            if let Some(i) = self.builder.advance_at(*offset, line) {
+                patch_floor = Some(patch_floor.map_or(i, |cur| cur.min(i)));
+            }
         }
-        Ok(true)
+        Ok(Tick {
+            advanced: true,
+            reset: p.reset,
+            patch_floor,
+        })
     }
 
     /// Poll: fold any newly-appended lines and return the current blocks + per-turn times +
@@ -69,17 +132,119 @@ impl FollowParser {
     pub fn poll(
         &mut self,
     ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
-        if !self.advance_from_source()? {
+        if !self.advance_from_source()?.advanced {
             return Ok(None);
         }
-        let session = self.snapshot_session();
-        Ok(Some((
-            session.blocks(),
-            session.user_times,
-            session.metrics,
-        )))
+        let (mut blocks, times, metrics) = self.builder.fold();
+        self.graph.resolve_relationships(&self.path, &mut blocks);
+        Ok(Some((blocks, times, metrics)))
     }
 
+    /// Like [`poll`](Self::poll), but also returns **`changed_from`** — the first block index that
+    /// differs from the previous poll, so a windowed/cached consumer keeps its fold-state and render
+    /// cache for `[0..changed_from]` and rebuilds only the rest. The engine computes it in **O(turn)**
+    /// from its own committed/provisional structure (committed is append-only ⇒ unchanged below the
+    /// prior committed length; only the open turn is re-derived), instead of the consumer re-scanning
+    /// the whole block list for the common prefix. `None` on an idle tick.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_delta(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics, usize)>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
+            return Ok(None);
+        }
+        let (mut blocks, times, metrics) = self.builder.fold();
+        self.graph.resolve_relationships(&self.path, &mut blocks);
+        let n_committed = self.builder.committed_len();
+        let changed_from = if tick.reset {
+            0 // truncation/rewrite ⇒ everything changed
+        } else {
+            // Committed is append-only, so blocks below the *prior* committed length are unchanged.
+            // The exact common prefix beyond it — whether the open turn appended, back-patched, or
+            // committed (its blocks finalized/grouped into the new committed tail) — is one
+            // `common_prefix` over the small open-turn region: O(turn), not O(N).
+            self.prev_committed
+                + common_prefix_len(&self.prev_provisional, &blocks[self.prev_committed..])
+        };
+        self.prev_committed = n_committed;
+        self.prev_provisional = blocks[n_committed..].to_vec();
+        Ok(Some((blocks, times, metrics, changed_from)))
+    }
+
+    /// The **light** streaming advance (the pull path): fold the delta and report only the two
+    /// protocol signals — `(reset, patch_floor)` — **without** assembling a `Session` (no O(N)
+    /// `index`/`sub_agents` build, no whole-committed clone). `None` on an idle tick. The caller
+    /// reads the delta-sized state afterward via [`stream_read`](Self::stream_read) /
+    /// [`committed_len`](Self::committed_len) / [`provisional_len`](Self::provisional_len).
+    pub fn advance_stream(&mut self) -> std::io::Result<Option<(bool, Option<usize>)>> {
+        let tick = self.advance_from_source()?;
+        Ok(tick.advanced.then_some((tick.reset, tick.patch_floor)))
+    }
+
+    /// Committed count (the append-only prefix length) — O(1).
+    pub fn committed_len(&self) -> usize {
+        self.builder.committed_len()
+    }
+
+    /// Finalized open-turn (provisional) length — O(turn).
+    pub fn provisional_len(&self) -> usize {
+        self.builder.provisional_len()
+    }
+
+    /// The delta-sized read for one pull (see [`StreamRead`]): `committed[from..]` + the open turn +
+    /// times + metrics + the live header, from a single finalize. Copies only the committed tail.
+    pub fn stream_read(&self, from: usize) -> StreamRead {
+        let mut read = self.builder.stream_read(from);
+        self.graph
+            .resolve_relationships(&self.path, &mut read.committed_delta);
+        self.graph
+            .resolve_relationships(&self.path, &mut read.provisional);
+        self.graph.resolve_meta(&self.path, &mut read.meta);
+        read
+    }
+
+    /// `committed[from..]` as owned blocks — O(delta), never the whole committed prefix.
+    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+        let mut blocks = self.builder.committed_tail(from);
+        self.graph.resolve_relationships(&self.path, &mut blocks);
+        blocks
+    }
+
+    /// The finalized open turn + the whole session's per-turn timestamps — O(turn).
+    pub fn open_finalized(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let (mut blocks, times) = self.builder.open_finalized();
+        self.graph.resolve_relationships(&self.path, &mut blocks);
+        (blocks, times)
+    }
+
+    /// The maintained live header for the current tail (committed meta + open turn) — O(turn).
+    pub fn session_meta(&self) -> crate::engine::session::SessionMeta {
+        let mut meta = self.builder.session_meta();
+        self.graph.resolve_meta(&self.path, &mut meta);
+        meta
+    }
+
+    /// The committed locator/value slice (`&[S::Bv]`, no decode) — see
+    /// [`SessionAccumulator::committed`](crate::engine::SessionAccumulator::committed).
+    pub fn committed(&self) -> &[S::Bv] {
+        self.builder.committed()
+    }
+
+    /// The follower's storage policy (store-level facts, e.g. a tier-b backing's length).
+    pub fn store(&self) -> &S {
+        self.builder.store()
+    }
+
+    /// The transcript path this follower tails.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// The `Session`-assembling polls — only for the in-memory store, whose `Bv` **is** [`Block`]
+/// (a `Session<Deferred>` consumer reads through the light streaming surface instead).
+impl FollowParser<InMemoryStore> {
     /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
     /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
     /// `transcript` filled from the source path (exactly as
@@ -87,10 +252,25 @@ impl FollowParser {
     /// grown since the last poll (idle). This is the residency cache's single assembly point — it
     /// needs no core internals.
     pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
-        if !self.advance_from_source()? {
+        Ok(self.poll_shared()?.map(|(s, _reset, _patch_floor)| s))
+    }
+
+    /// Like [`poll_session`](Self::poll_session), but also returns the streaming signals the
+    /// present-layer pull protocol needs: `reset` (a truncation happened this tick ⇒ bump the
+    /// session epoch) and `patch_floor` (the batch back-patched an already-emitted open-turn block
+    /// ⇒ bump the provisional generation; `None` = append-only). The `Session` carries the
+    /// committed / provisional split the pull serves. Returns `None` on an idle tick.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_shared(&mut self) -> std::io::Result<Option<(Session, bool, Option<usize>)>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
             return Ok(None);
         }
-        Ok(Some(self.snapshot_session()))
+        Ok(Some((
+            self.snapshot_session(),
+            tick.reset,
+            tick.patch_floor,
+        )))
     }
 
     fn snapshot_session(&mut self) -> Session {
@@ -117,6 +297,49 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    /// `poll_delta`'s `changed_from` must be a **safe unchanged prefix**: `blocks[..changed_from]`
+    /// is byte-identical to the previous poll's, across append / back-patch / commit / reset — and
+    /// it must equal the whole-list common prefix a consumer would otherwise scan for (so it is
+    /// exact, not merely conservative, on the append/back-patch path). Drives one follower through a
+    /// turn with a tool back-patch, a text append, a commit (second user turn), and a truncation.
+    #[test]
+    fn poll_delta_changed_from_is_a_safe_unchanged_prefix() {
+        const USER1: &str = "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n";
+        const TOOL: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"timestamp\":\"2026-07-26T10:00:01Z\"}\n";
+        const RESULT: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b1\",\"content\":\"out\"}]},\"timestamp\":\"2026-07-26T10:00:02Z\"}\n";
+        const TEXT: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n";
+        const USER2: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"next\"}]},\"timestamp\":\"2026-07-26T10:00:04Z\"}\n";
+
+        let path = tmp();
+        let mut fp = FollowParser::open(Agent::Claude, &path);
+        let mut prev: Vec<Block> = Vec::new();
+        let mut written = String::new();
+        for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
+            written.push_str(chunk);
+            std::fs::write(&path, written.as_bytes()).unwrap();
+            let (blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("advanced");
+            assert!(changed_from <= prev.len() && changed_from <= blocks.len());
+            // Safety: the prefix kept by a consumer is genuinely unchanged.
+            assert_eq!(
+                &prev[..changed_from],
+                &blocks[..changed_from],
+                "kept prefix must be unchanged"
+            );
+            // Exactness on this (non-reset) path: it equals the common prefix a scan would find.
+            assert_eq!(
+                changed_from,
+                common_prefix_len(&prev, &blocks),
+                "changed_from == whole-list common prefix"
+            );
+            prev = blocks;
+        }
+        // Truncation ⇒ reset ⇒ changed_from == 0 (everything rebuilt).
+        std::fs::write(&path, USER1.as_bytes()).unwrap();
+        let (_blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("reset advances");
+        assert_eq!(changed_from, 0, "reset rebuilds from 0");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The follower's `poll` must return byte-identical blocks + metrics to a full

@@ -1,3 +1,4 @@
+use crate::engine::session::SessionMeta;
 use crate::model::Block;
 use crate::Agent;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ impl std::fmt::Debug for SessionGraph {
 
 pub(crate) trait SessionGraphBackend: Send {
     fn resolve(&mut self, source: &Path, blocks: &mut [Block]);
+    fn resolve_meta(&mut self, _source: &Path, _meta: &mut SessionMeta) {}
     fn subagent_source(&mut self, root: &Path, child_id: &str) -> Option<PathBuf>;
 }
 
@@ -38,6 +40,11 @@ impl SessionGraph {
     /// loading child transcript content.
     pub(crate) fn resolve_relationships(&self, source: &Path, blocks: &mut [Block]) {
         self.with_backend(|backend| backend.resolve(source, blocks));
+    }
+
+    /// Normalize the lightweight live header through the same operation resolver as blocks.
+    pub(crate) fn resolve_meta(&self, source: &Path, meta: &mut SessionMeta) {
+        self.with_backend(|backend| backend.resolve_meta(source, meta));
     }
 
     pub(crate) fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {

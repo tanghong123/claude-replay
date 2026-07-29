@@ -121,11 +121,29 @@ impl CodexSessionGraph {
 
         for block in blocks.iter_mut() {
             match block {
-                crate::Block::SubAgent(agent) if agent.agent_id.is_empty() => {
+                crate::Block::SubAgent(agent) => {
+                    if let Some(child) = children
+                        .iter()
+                        .copied()
+                        .find(|node| node.id == agent.agent_id)
+                    {
+                        agent.agent_type = child
+                            .agent_nickname
+                            .clone()
+                            .unwrap_or_else(|| "agent".to_string());
+                        continue;
+                    }
                     let matches: Vec<_> = children
                         .iter()
                         .copied()
-                        .filter(|node| child_matches_description(node, &agent.description))
+                        .filter(|node| {
+                            if agent.agent_id.is_empty() {
+                                child_matches_description(node, &agent.description)
+                            } else {
+                                node.agent_path.as_deref() == Some(agent.agent_id.as_str())
+                                    || child_matches_description(node, &agent.description)
+                            }
+                        })
                         .collect();
                     if let [child] = matches.as_slice() {
                         agent.agent_id.clone_from(&child.id);
@@ -160,14 +178,18 @@ impl CodexSessionGraph {
         blocks
             .iter()
             .filter_map(|block| match block {
-                crate::Block::SubAgent(agent) if agent.agent_id.is_empty() => Some((
-                    source_id.clone(),
-                    if agent.tool_use_id.is_empty() {
-                        agent.description.clone()
-                    } else {
-                        agent.tool_use_id.clone()
-                    },
-                )),
+                crate::Block::SubAgent(agent)
+                    if !children.iter().any(|node| node.id == agent.agent_id) =>
+                {
+                    Some((
+                        source_id.clone(),
+                        if agent.tool_use_id.is_empty() {
+                            agent.description.clone()
+                        } else {
+                            agent.tool_use_id.clone()
+                        },
+                    ))
+                }
                 _ => None,
             })
             .collect()
@@ -187,8 +209,67 @@ impl SessionGraphBackend for CodexSessionGraph {
             // source bytes, never on an idle tick. Refreshing here therefore catches a child
             // rollout created after its spawn without continuously rescanning the store.
             self.refresh();
-            self.resolve_blocks(source, blocks);
+            if !self.resolve_blocks(source, blocks).is_empty() {
+                // The tool output's task path is only a provisional correlation key. Do not
+                // expose it as a navigable child id unless a rollout in this operation resolves
+                // it to a stable UUID; the accumulator retains the raw key and retries next tick.
+                for block in blocks {
+                    if let crate::Block::SubAgent(agent) = block {
+                        if !self.nodes.iter().any(|node| node.id == agent.agent_id) {
+                            agent.agent_id.clear();
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    fn resolve_meta(&mut self, source: &Path, meta: &mut crate::engine::session::SessionMeta) {
+        let resolve = |this: &Self, meta: &mut crate::engine::session::SessionMeta| {
+            let Some(source_id) = this.source_id(source) else {
+                return false;
+            };
+            let children: Vec<_> = this
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.parent_thread_id.as_deref() == Some(source_id.as_str())
+                        && node.path.is_file()
+                })
+                .collect();
+            let mut unresolved = false;
+            for child in &mut meta.children {
+                let matches: Vec<_> = children
+                    .iter()
+                    .copied()
+                    .filter(|node| {
+                        if child.id.is_empty() {
+                            child_matches_description(node, &child.description)
+                        } else {
+                            node.agent_path.as_deref() == Some(child.id.as_str())
+                                || node.id == child.id
+                        }
+                    })
+                    .collect();
+                if let [node] = matches.as_slice() {
+                    child.id.clone_from(&node.id);
+                    child.agent_type = node
+                        .agent_nickname
+                        .clone()
+                        .unwrap_or_else(|| "agent".to_string());
+                } else {
+                    unresolved = true;
+                }
+            }
+            unresolved
+        };
+
+        if resolve(self, meta) {
+            self.refresh();
+            resolve(self, meta);
+        }
+        meta.children
+            .retain(|child| self.nodes.iter().any(|node| node.id == child.id));
     }
 
     fn subagent_source(&mut self, _root: &Path, child_id: &str) -> Option<PathBuf> {

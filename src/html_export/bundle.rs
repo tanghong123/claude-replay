@@ -197,7 +197,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     }
     std::fs::write(
         out_dir.join("index.html"),
-        build_shell(&title, &root_id, false),
+        build_shell(&title, &root_id, false, false),
     )
     .with_context(|| "write index.html")?;
 

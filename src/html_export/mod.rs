@@ -668,6 +668,68 @@ fn build_jsonl(
 /// [`build_jsonl`] with an optional [`AssetSink`] — the offline bundle threads one through
 /// so each stream materializes its attachments into a shared, de-conflicted `assets/` dir.
 #[allow(clippy::too_many_arguments)]
+/// The `Emitter`'s cross-block state, exposed so a consumer can render a block **range** continuing
+/// from a prior render — render the committed prefix once, then the open turn from the carried-
+/// forward state — instead of re-rendering the whole session every poll. Carrying it keeps the
+/// settled anchors (`#bN`), turn numbers, and sidebar entries stable across ranges. `Default` is the
+/// from-scratch start, so a single whole-session render is byte-identical to before.
+#[derive(Default, Clone)]
+pub(super) struct EmitState {
+    next_block: crate::model::BlockIndex,
+    turn: usize,
+    /// How many user turns have been consumed from `user_times` so far (indexes into it).
+    seen_turns: usize,
+    /// `(anchor id, label)` per user turn — the sidebar, accumulated across ranges.
+    turns: Vec<(String, String)>,
+}
+
+/// Render `blocks` to one JSON wire record per block, **continuing** the `Emitter` state in `st`
+/// (so a later range's anchors/turns follow on). `user_times` is the WHOLE session's per-turn
+/// timestamps; `st.seen_turns` indexes into it. This is the resumable core the render-once path
+/// (§9) rides: committed blocks pass through once as they commit; the open turn re-renders each poll
+/// from a *clone* of the committed state (its ephemeral anchors never pollute the committed state).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_blocks(
+    blocks: &[Block],
+    user_times: &[Option<f64>],
+    fold: &FoldPolicy,
+    cwd: &str,
+    reveal: bool,
+    linked: bool,
+    assets: Option<&mut AssetSink>,
+    transcript: Option<&Transcript>,
+    st: &mut EmitState,
+) -> Vec<String> {
+    let mut em = Emitter {
+        fold,
+        cwd,
+        reveal,
+        linked,
+        assets,
+        transcript,
+        next_block: st.next_block,
+        turn: st.turn,
+        turns: std::mem::take(&mut st.turns),
+    };
+    let mut lines = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
+        let ts = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+            let t = user_times.get(st.seen_turns).copied().flatten();
+            st.seen_turns += 1;
+            t
+        } else {
+            None
+        };
+        lines.push(em.block(b, ts).to_string());
+    }
+    st.next_block = em.next_block;
+    st.turn = em.turn;
+    st.turns = em.turns;
+    lines
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_jsonl_inner(
     blocks: &[Block],
     user_times: &[Option<f64>],
@@ -679,31 +741,14 @@ fn build_jsonl_inner(
     transcript: Option<&Transcript>,
     meta: Value,
 ) -> (String, Vec<(String, String)>) {
-    let mut em = Emitter {
-        fold,
-        cwd,
-        reveal,
-        linked,
-        assets,
-        transcript,
-        next_block: 0,
-        turn: 0,
-        turns: Vec::new(),
-    };
-    let mut lines = vec![meta.to_string()];
-    // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
-    let mut seen_turns = 0usize;
-    for b in blocks {
-        let ts = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
-            let t = user_times.get(seen_turns).copied().flatten();
-            seen_turns += 1;
-            t
-        } else {
-            None
-        };
-        lines.push(em.block(b, ts).to_string());
-    }
-    (lines.join("\n"), em.turns)
+    let mut st = EmitState::default();
+    let lines = render_blocks(
+        blocks, user_times, fold, cwd, reveal, linked, assets, transcript, &mut st,
+    );
+    let mut out = Vec::with_capacity(lines.len() + 1);
+    out.push(meta.to_string());
+    out.extend(lines);
+    (out.join("\n"), st.turns)
 }
 
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
@@ -716,8 +761,8 @@ fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option
 /// inline snapshot and an empty sidebar (the JS fetches `?session=<id>`.jsonl, defaulting
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
-pub(super) fn build_shell(title: &str, root_id: &str, live: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live)))
+pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
+    build_page(title, "", &[], None, Some((root_id, live, pull)))
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
@@ -728,7 +773,7 @@ fn build_page(
     jsonl: &str,
     turns: &[(String, String)],
     live: Option<&str>,
-    multi: Option<(&str, bool)>,
+    multi: Option<(&str, bool, bool)>,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -743,13 +788,23 @@ fn build_page(
     let live_attrs = match (live, multi) {
         // A multi-file shell: `data-multi`/`data-root`, plus `data-poll` when served live
         // (navigation between agents is a full page load carrying `?session=<id>`).
-        (_, Some((root, live_multi))) => {
+        (_, Some((root, live_multi, pull))) => {
             let poll = if live_multi {
                 format!(" data-poll=\"{POLL_MS}\"")
             } else {
                 String::new()
             };
-            format!(" data-multi=\"1\" data-root=\"{}\"{poll}", esc(root))
+            // `data-pull` selects the pull-client transport (poll `/pull?cursor=`) over the
+            // default `/stream` byte-diff; only meaningful when served live.
+            let pull_attr = if live_multi && pull {
+                " data-pull=\"1\""
+            } else {
+                ""
+            };
+            format!(
+                " data-multi=\"1\" data-root=\"{}\"{poll}{pull_attr}",
+                esc(root)
+            )
         }
         (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
         (None, None) => String::new(),
@@ -1039,6 +1094,34 @@ pub(super) fn render_agent_stream(
     m: &crate::metrics::Metrics,
     assets: Option<&mut AssetSink>,
 ) -> (String, Vec<ChildRef>) {
+    let (meta, child_refs) = agent_meta(agent, cwd, info, blocks, m);
+    // Each agent's attachment locators point into its OWN source transcript; load from there.
+    let transcript = Transcript::open(agent, &info.source);
+    let (jsonl, _) = build_jsonl_inner(
+        blocks,
+        user_times,
+        fold,
+        cwd,
+        reveal,
+        true,
+        assets,
+        Some(&transcript),
+        meta,
+    );
+    (jsonl, child_refs)
+}
+
+/// Build a session's `meta` wire record (title / agent / cwd / turn+tool counts / usage / ancestry
+/// / children) and its [`ChildRef`]s from the current blocks. This is the cheap O(N)-**count** part
+/// of a stream render, separated from the O(N)-**render** of the blocks — so the render-once live
+/// path (`/pull`) can rebuild meta each poll (light) while rendering only the changed block tail.
+pub(super) fn agent_meta(
+    agent: Agent,
+    cwd: &str,
+    info: &AgentInfo,
+    blocks: &[Block],
+    m: &crate::metrics::Metrics,
+) -> (Value, Vec<ChildRef>) {
     let usage = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
         "cache_read": human_tokens(m.cache_read_tokens),
@@ -1080,20 +1163,51 @@ pub(super) fn render_agent_stream(
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
     });
-    // Each agent's attachment locators point into its OWN source transcript; load from there.
-    let transcript = Transcript::open(agent, &info.source);
-    let (jsonl, _) = build_jsonl_inner(
-        blocks,
-        user_times,
-        fold,
-        cwd,
-        reveal,
-        true,
-        assets,
-        Some(&transcript),
-        meta,
-    );
-    (jsonl, child_refs)
+    (meta, child_refs)
+}
+
+/// Assemble the `/pull` meta wire record from the engine's **maintained** [`SessionMeta`]
+/// (turn/tool counts + children, kept current by the accumulator as the tail advances) +
+/// presentation info (title / ancestry / agent label) + metrics — the trivial transform from
+/// engine facts to the html client's shape. Produces the same JSON [`agent_meta`] derives by
+/// scanning the blocks (the oracle test proves it), without any per-poll block scan; `agent_meta`
+/// stays as the block-scan assembler for the `/stream`/bundle paths (and as the oracle).
+pub(super) fn assemble_meta(
+    agent: Agent,
+    cwd: &str,
+    info: &AgentInfo,
+    sm: &crate::engine::SessionMeta,
+    m: &crate::metrics::Metrics,
+) -> Value {
+    let usage = json!({
+        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+        "cache_read": human_tokens(m.cache_read_tokens),
+        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+        "duration_secs": m.duration_secs,
+    });
+    let children: Vec<Value> = sm
+        .children
+        .iter()
+        .map(|c| {
+            let title = if c.description.is_empty() {
+                &c.agent_type
+            } else {
+                &c.description
+            };
+            json!({ "id": c.id, "title": title, "type": c.agent_type, "running": c.running })
+        })
+        .collect();
+    let ancestors: Vec<Value> = info
+        .ancestors
+        .iter()
+        .map(|(id, title)| json!({ "id": id, "title": title }))
+        .collect();
+    json!({
+        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
+        "cwd": cwd, "turns": sm.turns, "tools": sm.tools,
+        "agent_type": &info.agent_type, "usage": usage,
+        "ancestors": ancestors, "children": children,
+    })
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
@@ -1191,6 +1305,51 @@ mod tests {
     use super::*;
     use crate::model::Hunk;
 
+    /// The resumable-render property (render-once foundation, §9): rendering a block list in two
+    /// ranges while carrying `EmitState` produces the EXACT same wire records — and the same sidebar
+    /// turns — as rendering it whole. This is what lets the live server render committed blocks once
+    /// and the open turn from the carried state, instead of re-rendering everything each poll.
+    #[test]
+    fn render_blocks_split_equals_whole() {
+        let blocks = vec![
+            Block::UserText("first question".into()),
+            Block::AssistantText("thinking out loud".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "ls".into(),
+                diffs: vec![],
+                output: Some("a\nb".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::UserText("second question".into()),
+            Block::AssistantText("done".into()),
+        ];
+        let times = vec![Some(1.0), Some(2.0)];
+        let fold = FoldPolicy::default();
+        let r = |bs: &[Block], st: &mut EmitState| {
+            render_blocks(bs, &times, &fold, "", false, false, None, None, st)
+        };
+
+        let mut whole_st = EmitState::default();
+        let whole = r(&blocks, &mut whole_st);
+
+        // Split after the first turn (as a commit boundary would), carrying state across.
+        let k = 3;
+        let mut st = EmitState::default();
+        let mut split = r(&blocks[..k], &mut st);
+        split.extend(r(&blocks[k..], &mut st));
+
+        assert_eq!(
+            whole, split,
+            "resumable render: split == whole (stable anchors/turns)"
+        );
+        assert_eq!(
+            whole_st.turns, st.turns,
+            "sidebar turns identical across the split"
+        );
+    }
+
     /// Emit `blocks` to the block-stream JSON (skipping the meta line) with the
     /// given fold policy and no timestamps — the shape the tests assert on. Uses
     /// `reveal = true` (served-mode shape, where file tools carry a `path`).
@@ -1221,6 +1380,94 @@ mod tests {
             .skip(1) // meta line
             .map(|l| serde_json::from_str::<Value>(l).expect("valid JSON block line"))
             .collect()
+    }
+
+    /// ORACLE for the `/pull` meta (the byte-identity gate never drives `/pull`, so this test is
+    /// the equivalence proof): the meta assembled from the engine's **maintained** `SessionMeta`
+    /// must equal, as JSON, the one [`agent_meta`] derives by scanning the blocks — covering the
+    /// thinking-absorbed tool count, the spawn-is-a-child-not-a-tool rule, child launch order, and
+    /// `running` from both completion signals (a terminal spawn status / a later `AgentDone`).
+    #[test]
+    fn assemble_meta_equals_agent_meta_oracle() {
+        use crate::model::{AgentStatus, SubAgent};
+        let spawn = |id: &str, status| {
+            Block::SubAgent(SubAgent {
+                agent_id: id.into(),
+                tool_use_id: format!("t_{id}"),
+                agent_type: "gp".into(),
+                description: format!("do {id}"),
+                prompt: "go".into(),
+                status,
+                result: None,
+                output_file: None,
+                blocks: Vec::new(),
+                subtree_cost: None,
+            })
+        };
+        let tool = || Block::ToolUse {
+            name: "Bash".into(),
+            target: "ls".into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![
+            Block::UserText("first".into()),
+            tool(), // 1 top-level tool
+            Block::Thinking {
+                text: "hm".into(),
+                duration_secs: Some(2),
+                tools: vec![tool(), tool()], // +2 absorbed ⇒ tools == 3
+            },
+            spawn("a1", AgentStatus::Running), // async child, completed by AgentDone below
+            spawn("a2", AgentStatus::Completed), // sync child, terminal on the spawn itself
+            Block::AgentDone {
+                agent_id: "a1".into(),
+                agent_type: "gp".into(),
+                description: "do a1".into(),
+                status: AgentStatus::Completed,
+                result: None,
+            },
+            Block::UserText("second".into()),
+        ];
+        let info = AgentInfo {
+            id: "agent-x".into(),
+            source: std::path::PathBuf::from("/tmp/x.jsonl"),
+            title: "child agent".into(),
+            agent_type: "general-purpose".into(),
+            ancestors: vec![("root".into(), "root title".into())],
+        };
+        let mut m = crate::metrics::Metrics::default();
+        m.input_tokens = 1234;
+        m.output_tokens = 56789;
+        m.cache_read_tokens = 42;
+        m.cost_usd = Some(1.234);
+        m.model = "claude-x".into();
+        m.duration_secs = 5;
+
+        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m);
+        let maintained = crate::engine::SessionMeta::build(&blocks);
+        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m);
+        assert_eq!(
+            got, oracle,
+            "assemble_meta(SessionMeta) == agent_meta(blocks)"
+        );
+        // Guard the fixture's coverage: the counts exercised the nested/spawn rules.
+        assert_eq!(oracle["turns"], 2);
+        assert_eq!(
+            oracle["tools"], 3,
+            "spawns excluded, absorbed tools included"
+        );
+        assert_eq!(oracle["children"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            oracle["children"][0]["running"], false,
+            "AgentDone cleared a1"
+        );
+        assert_eq!(
+            oracle["children"][1]["running"], false,
+            "a2 terminal on spawn"
+        );
     }
 
     /// Write a one-line transcript to a temp file so an attachment `Deferred { at: 0 }` locator
@@ -1432,13 +1679,23 @@ mod tests {
     /// `live` adds `data-poll` (served `--html -f`), static omits it.
     #[test]
     fn build_shell_is_multi_file_without_inline() {
-        let html = build_shell("My session", "root-9f3d", false);
+        let html = build_shell("My session", "root-9f3d", false, false);
         assert!(html.contains("data-multi=\"1\""), "multi flag");
         assert!(html.contains("data-root=\"root-9f3d\""));
         assert!(!html.contains("data-poll"), "static bundle does not poll");
         // Live served shell polls its stream.
-        let live = build_shell("My session", "root-9f3d", true);
+        let live = build_shell("My session", "root-9f3d", true, false);
         assert!(live.contains("data-poll"), "live shell polls: {live:.0}");
+        assert!(
+            !live.contains("data-pull=\"1\""),
+            "stream transport: no data-pull body attr"
+        );
+        // Live served shell in pull mode carries data-pull (the pull-client transport).
+        let pull = build_shell("My session", "root-9f3d", true, true);
+        assert!(
+            pull.contains("data-pull=\"1\""),
+            "pull transport flag: {pull:.0}"
+        );
         // The inline session-data script is present but EMPTY (no block stream baked in).
         let inline = html
             .split("id=\"session-data\"")

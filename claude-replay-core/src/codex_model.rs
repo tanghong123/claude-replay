@@ -21,7 +21,14 @@ fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
     match block {
         // The spawn result only contains relationship metadata; the terminal agent message
         // carries the child result rendered by the shared AgentDone event.
-        Block::SubAgent(_) => {}
+        Block::SubAgent(agent) => {
+            if let Some(task_name) = serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|v| v.get("task_name")?.as_str().map(str::to_string))
+            {
+                agent.agent_id = task_name;
+            }
+        }
         _ => apply_output(block, text.to_string()),
     }
 }
@@ -587,6 +594,7 @@ mod tests {
         };
         assert_eq!(spawn.tool_use_id, "c1");
         assert_eq!(spawn.description, "spec_axis");
+        assert_eq!(spawn.agent_id, "/root/review/spec_axis");
         assert!(spawn.prompt.is_empty(), "do not expose delegated prompt");
         assert_eq!(spawn.status, AgentStatus::Running);
         assert!(matches!(

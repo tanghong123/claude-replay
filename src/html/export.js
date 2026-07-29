@@ -544,6 +544,43 @@
     }
   }
 
+  // ── pull-client transport (`/pull?session=&cursor=`) ───────────────────
+  // The pull version of the live feed (vs the `/stream` byte-diff). The server returns a
+  // self-describing PullReply with TWO zones — `committed` (permanent, append-only) and
+  // `provisional` (the open turn: truncate-from + append) — keyed by a 4-number cursor
+  // {epoch, committed_id, provisional_gen, provisional_index}. We are a CONTENT-BLIND client:
+  // we apply committed appends and the provisional truncate/extend by position, never inspecting
+  // a block. `pc` is our cursor; epoch 0 ⇒ the first pull resyncs. See `cache::stream` / serve.rs.
+  var pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+  function cursorStr() {
+    return pc.epoch + "." + pc.committed + "." + pc.gen + "." + pc.index;
+  }
+  function putBlock(b) {
+    stream.appendChild(renderBlock(b));
+    if (b.turn != null) addTurn(b);
+  }
+  function consumePull(r) {
+    // Idle tick (same epoch, both zones empty): nothing to do.
+    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return;
+    if (r.epoch !== pc.epoch) { resetFrom(0); pc.committed = 0; } // resync
+    if (r.meta) renderMeta(r.meta);
+    // A commit (or resync): committed grew — drop everything at/after committed_from, then append
+    // the new permanent blocks. `committed_from <= pc.committed` always.
+    if (r.committed.length) {
+      resetFrom(r.committed_from);
+      pc.committed = r.committed_from;
+      for (var i = 0; i < r.committed.length; i++) { putBlock(r.committed[i]); pc.committed++; }
+    }
+    // Provisional: truncate to the committed prefix + provisional_from, then append the suffix
+    // (a same-gen append keeps the prefix; a gen bump/commit sends provisional_from = 0 ⇒ replace).
+    resetFrom(pc.committed + r.provisional_from);
+    for (var j = 0; j < r.provisional.length; j++) putBlock(r.provisional[j]);
+    pc.epoch = r.epoch;
+    pc.gen = r.provisional_gen;
+    pc.index = r.provisional_from + r.provisional.length;
+    postRender();
+  }
+
   // ── type / tool filter ────────────────────────────────────────────────
   // Populate the dropdown with the distinct message types present: each tool by its
   // NAME (Read, Bash, Update, …) AND each non-tool fold kind (Agent, Thinking, Activity,
@@ -619,6 +656,18 @@
     }
     filter = sel;
     if (!sel) {
+      // Re-anchor to CONTENT, not to the absolute scroll offset: while filtered most blocks
+      // are hidden, so the document is much shorter and scrollY means something different.
+      // Whatever the user navigated/scrolled to while filtered — the topmost block visible in
+      // the viewport — must stay put when the hidden blocks reflow back in; a raw offset would
+      // land back at the pre-filter position instead.
+      var anchor = null, anchorTop = 0;
+      var blocks = all(".blk");
+      for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i].offsetParent === null) continue; // hidden by the filter
+        var r = blocks[i].getBoundingClientRect();
+        if (r.bottom > 0) { anchor = blocks[i]; anchorTop = r.top; break; }
+      }
       all(".blk").forEach(function (b) {
         b.classList.remove("filter-dim", "filter-hidden");
       });
@@ -627,6 +676,9 @@
         all(".fold[id]").forEach(function (f) {
           if (savedFolds[f.id] !== undefined) setFold(f, savedFolds[f.id] === "1");
         });
+      }
+      if (anchor) {
+        window.scrollTo({ top: anchor.getBoundingClientRect().top + window.scrollY - anchorTop });
       }
     } else {
       applyFilter(sel);
@@ -709,7 +761,65 @@
     // Navigation between agents is a full page load carrying a new `?session=`.
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
-    if (pollMs > 0) {
+    // Transport: the server sets data-pull when it serves the pull feed by default; `?transport=`
+    // overrides it either way (pull|stream) for side-by-side comparison.
+    var transport = new URLSearchParams(location.search).get("transport");
+    var usePull = transport === "pull" || (document.body.dataset.pull === "1" && transport !== "stream");
+    if (pollMs > 0 && usePull) {
+      // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
+      // drives the tail (the server folds on our request), so an idle page costs the server nothing.
+      // Committed arrives as a POINTER (`committed_ext: {offset, len}`) into the server's on-disk
+      // record log; we range-read it via `/records` (phase two), then apply both zones atomically.
+      // The inflight guard spans both fetches and the cursor advances only after both succeed; a
+      // failed or 409 (stale-epoch after a reset) range read drops the whole reply — the next tick
+      // re-pulls with the old cursor and the protocol resyncs us.
+      var inflightP = false;
+      var pullTick = function () {
+        if (inflightP) return;
+        inflightP = true;
+        fetch("pull?session=" + encodeURIComponent(sess) + "&cursor=" + cursorStr(), { cache: "no-store" })
+          .then(function (r) { return r.json(); })
+          .then(function (reply) {
+            var ext = reply.committed_ext;
+            if (!ext || !ext.len) { reply.committed = []; return reply; }
+            return fetch("records?session=" + encodeURIComponent(sess) + "&from=" + ext.offset +
+                         "&len=" + ext.len + "&epoch=" + reply.epoch, { cache: "no-store" })
+              .then(function (rr) {
+                if (!rr.ok) throw new Error("stale records"); // 409 ⇒ drop the reply, re-pull
+                return rr.text();
+              })
+              .then(function (text) {
+                reply.committed = text.split("\n").filter(function (l) { return l.trim(); }).map(JSON.parse);
+                return reply;
+              });
+          })
+          .then(function (reply) {
+            var wasAtBottom = atBottom();
+            var before = stream.childElementCount;
+            try {
+              consumePull(reply);
+            } catch (err) {
+              // Self-heal (#54): a torn apply must never leave the page desynced — drop all
+              // local state and cursor; the next tick resyncs from the server's canonical
+              // state, exactly what a manual reload does.
+              console.error("pull apply failed; resyncing", err);
+              resetFrom(0);
+              pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+              return;
+            }
+            var added = stream.childElementCount - before;
+            if (added > 0) {
+              if (wasAtBottom) { toBottom(false); clearNew(); }
+              else showNew(added);
+              spy();
+            }
+          })
+          .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
+          .finally(function () { inflightP = false; });
+      };
+      pullTick();
+      setInterval(pullTick, pollMs);
+    } else if (pollMs > 0) {
       // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
       // the bytes past the cursor (the new delta), never the whole transcript. We keep the
       // accumulated text and hand it to `consume`, which dedups records + applies resets.

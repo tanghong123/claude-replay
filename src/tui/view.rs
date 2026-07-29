@@ -3,6 +3,7 @@
 
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
+use crate::metrics::Metrics;
 use crate::model::{Attachment, AttachmentContent, Block, LoadedAttachment};
 use crate::tui::picker::Picker;
 use crate::tui::{render, theme, wrap};
@@ -242,12 +243,22 @@ pub enum PopupClick {
 
 pub struct View {
     blocks: Vec<Block>,
-    collapsed: Vec<bool>,                       // per-block fold state
-    raw: Vec<Line<'static>>,                    // unwrapped styled lines (width-aware: tables)
-    raw_tag: Vec<crate::model::BlockIndex>,     // raw[i] belongs to block raw_tag[i]
-    raw_dirty: bool,                            // raw needs rebuilding (fold toggle / live update)
-    wrapped: Vec<Line<'static>>,                // wrapped to `width`
-    wrapped_tag: Vec<crate::model::BlockIndex>, // wrapped[i] belongs to block wrapped_tag[i]
+    collapsed: Vec<bool>, // per-block fold state
+    /// First block whose display geometry is stale (fold toggle / live update); `layout`
+    /// re-measures from here. `None` = geometry current.
+    dirty_from: Option<usize>,
+    /// Wrapped display height of each block at (`width`, fold state) — the scroll-math index.
+    /// Rendered lines are NOT retained per block; only the visible window is (see `hot`).
+    heights: Vec<usize>,
+    /// Prefix sums over `heights`: `prefix[b]` = first wrapped line of block `b`;
+    /// `prefix[len]` = the total wrapped-line count. Line ↔ block mapping is a binary search.
+    prefix: Vec<usize>,
+    /// Bounded cache of rendered+wrapped lines for the blocks near the viewport — the ONLY
+    /// styled-line residency (O(window), not O(session)). Evicted by distance when it grows.
+    hot: std::collections::HashMap<crate::model::BlockIndex, Vec<Line<'static>>>,
+    /// Plain text of every wrapped line — the search index (content-sized, no styling; the
+    /// design allows an O(N) text index while styled lines stay windowed).
+    search_text: Vec<String>,
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
     scroll: usize, // top wrapped-line index
@@ -273,12 +284,8 @@ pub struct View {
     // mouse text selection (wrapped-line coords, so it survives scrolling):
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
-    // Per-block rendered-body cache (keyed by collapsed state), so a fold toggle
-    // re-renders only the toggled block instead of re-highlighting the whole doc.
-    body_cache: Vec<Option<(bool, Vec<Line<'static>>)>>,
-    cache_width: Option<u16>, // width the cache was built at; a change invalidates it
-    cwd: Option<PathBuf>,     // session working dir — reverses a header's relativized path
-    flash: Option<String>,    // transient status (e.g. "Saved to …"); cleared on next input
+    cwd: Option<PathBuf>, // session working dir — reverses a header's relativized path
+    flash: Option<String>, // transient status (e.g. "Saved to …"); cleared on next input
     // The transcript these blocks were parsed from — the source for loading a `Deferred`
     // attachment's bytes on demand (this view holds only locators, never the content).
     source: Option<Transcript>,
@@ -293,11 +300,11 @@ impl View {
         Self {
             blocks,
             collapsed,
-            raw: Vec::new(),
-            raw_tag: Vec::new(),
-            raw_dirty: true,
-            wrapped: Vec::new(),
-            wrapped_tag: Vec::new(),
+            dirty_from: Some(0),
+            heights: Vec::new(),
+            prefix: vec![0],
+            hot: std::collections::HashMap::new(),
+            search_text: Vec::new(),
             width: 0,
             view_h: 0,
             scroll: 0,
@@ -321,8 +328,6 @@ impl View {
             switcher: None,
             sel_anchor: None,
             sel_cursor: None,
-            body_cache: Vec::new(),
-            cache_width: None,
             cwd: None,
             flash: None,
             source: None,
@@ -483,41 +488,133 @@ impl View {
         path
     }
 
-    /// Re-render the raw (unwrapped) lines at the current width. Each block's body
-    /// is cached (keyed by its collapsed state); a fold toggle only re-renders the
-    /// block(s) whose state flipped, reusing every other cached body — so a toggle
-    /// is O(one block) of syntax-highlighting instead of the whole document. A width
-    /// change invalidates the cache (bodies are width-aware for tables). Appended
-    /// blocks (live tail) render fresh; the rest of the cache is preserved.
-    fn render_raw(&mut self) {
-        if self.cache_width != Some(self.width) {
-            self.body_cache.clear();
-            self.cache_width = Some(self.width);
-        }
-        self.body_cache.resize(self.blocks.len(), None);
-        let width = self.width as usize;
-        let mut bodies: Vec<Vec<Line<'static>>> = Vec::with_capacity(self.blocks.len());
-        for (i, b) in self.blocks.iter().enumerate() {
-            let is_collapsed =
-                self.collapsed.get(i).copied().unwrap_or(false) && render::foldable(b);
-            let body = match &self.body_cache[i] {
-                Some((cached, body)) if *cached == is_collapsed => body.clone(),
-                _ => {
-                    let body = render::block_body(b, is_collapsed, width);
-                    self.body_cache[i] = Some((is_collapsed, body.clone()));
-                    body
-                }
-            };
-            bodies.push(body);
-        }
-        let r = render::assemble(bodies);
-        self.raw = r.lines;
-        self.raw_tag = r.block_of;
+    /// Render + wrap ONE block's display lines in isolation — the windowed viewer's unit.
+    /// `carry_in` is `assemble`'s one cross-block fact (has any earlier block emitted a line);
+    /// see [`render::assemble_one`]. Transient: the caller decides whether to retain the result
+    /// (the `hot` window cache) or just measure it (heights).
+    fn wrapped_block_lines(&self, b: usize, carry_in: bool) -> Vec<Line<'static>> {
+        let is_collapsed =
+            self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]);
+        let body = render::block_body(&self.blocks[b], is_collapsed, self.width as usize);
+        let assembled = render::assemble_one(body, carry_in);
+        let tags = vec![0usize; assembled.len()];
+        wrap::wrap_all_tagged(&assembled, &tags, self.width as usize).0
     }
 
-    /// Mark raw stale so the next `layout` rebuilds and re-wraps it.
+    /// Re-measure display geometry from block `d` on: render each block once, record its wrapped
+    /// height + plain text (the search index), and DROP the styled lines — the resident geometry
+    /// is O(#blocks) integers + content-sized text, never O(session) styled lines. `[0..d]` keeps
+    /// its heights/prefix/text (the live-tail unchanged prefix).
+    fn measure_from(&mut self, d: usize) {
+        let d = d.min(self.blocks.len()).min(self.heights.len());
+        self.heights.truncate(d);
+        self.prefix.truncate(d + 1);
+        self.search_text.truncate(self.prefix[d]);
+        self.hot.retain(|&b, _| b < d);
+        let mut total = self.prefix[d];
+        let mut carry = self.prefix[d] > 0;
+        for b in d..self.blocks.len() {
+            let wrapped = self.wrapped_block_lines(b, carry);
+            carry |= !wrapped.is_empty();
+            self.heights.push(wrapped.len());
+            total += wrapped.len();
+            self.prefix.push(total);
+            for l in &wrapped {
+                self.search_text
+                    .push(l.spans.iter().map(|s| s.content.as_ref()).collect());
+            }
+        }
+    }
+
+    /// Total wrapped display lines (the scroll range) — O(1) off the prefix sums.
+    fn total_wrapped(&self) -> usize {
+        self.prefix.last().copied().unwrap_or(0)
+    }
+
+    /// The block owning wrapped line `line` — a binary search over the prefix sums (replaces the
+    /// retired O(N) `wrapped_tag` vector).
+    fn tag_of(&self, line: usize) -> Option<crate::model::BlockIndex> {
+        (line < self.total_wrapped()).then(|| self.prefix.partition_point(|&p| p <= line) - 1)
+    }
+
+    /// The first wrapped line of block `b`, if it renders any lines at the current fold state.
+    fn block_start(&self, b: crate::model::BlockIndex) -> Option<usize> {
+        (self.heights.get(b).copied().unwrap_or(0) > 0).then(|| self.prefix[b])
+    }
+
+    /// Wrapped line `i`, rendered on demand through the bounded `hot` window cache.
+    fn line_at(&mut self, i: usize) -> Option<Line<'static>> {
+        let b = self.tag_of(i)?;
+        let off = i - self.prefix[b];
+        if !self.hot.contains_key(&b) {
+            let lines = self.wrapped_block_lines(b, self.prefix[b] > 0);
+            self.evict_hot();
+            self.hot.insert(b, lines);
+        }
+        self.hot.get(&b).and_then(|ls| ls.get(off)).cloned()
+    }
+
+    /// Bound the window cache: past the cap, keep only blocks near the viewport (visible ±
+    /// margin). Called before an insert, so the cache stays O(window).
+    fn evict_hot(&mut self) {
+        const HOT_CAP: usize = 96;
+        const MARGIN: usize = 8;
+        if self.hot.len() < HOT_CAP {
+            return;
+        }
+        let total = self.total_wrapped();
+        let lo = self
+            .tag_of(self.scroll.min(total.saturating_sub(1)))
+            .unwrap_or(0)
+            .saturating_sub(MARGIN);
+        let hi = self
+            .tag_of((self.scroll + self.view_h).min(total.saturating_sub(1)))
+            .unwrap_or(usize::MAX)
+            .saturating_add(MARGIN);
+        self.hot.retain(|&b, _| b >= lo && b <= hi);
+    }
+
+    /// Re-measure ONE toggled block in place: its height changes, every later block's prefix
+    /// shifts by the delta (integer adds), and only its own lines re-render — O(one block) of
+    /// syntax-highlighting per fold toggle. Falls back to a full re-measure when the block's
+    /// emptiness flips (its blank-carry could affect a later block's leading blank).
+    fn remeasure_block(&mut self, b: usize) {
+        if b >= self.heights.len() {
+            self.dirty_from = Some(self.dirty_from.map_or(b, |d| d.min(b)));
+            return;
+        }
+        let old_h = self.heights[b];
+        let wrapped = self.wrapped_block_lines(b, self.prefix[b] > 0);
+        let new_h = wrapped.len();
+        if (old_h == 0) != (new_h == 0) {
+            self.measure_from(b); // emptiness flip can ripple the blank-carry
+            return;
+        }
+        let start = self.prefix[b];
+        self.search_text.splice(
+            start..start + old_h,
+            wrapped.iter().map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            }),
+        );
+        self.hot.insert(b, wrapped);
+        self.heights[b] = new_h;
+        if new_h != old_h {
+            let delta = new_h as isize - old_h as isize;
+            for p in &mut self.prefix[b + 1..] {
+                *p = (*p as isize + delta) as usize;
+            }
+        }
+        self.recompute_matches();
+    }
+
+    /// Mark display geometry stale from block 0 (fold-all / policy changes); the next `layout`
+    /// re-measures.
     fn rebuild_raw(&mut self) {
-        self.raw_dirty = true;
+        self.dirty_from = Some(0);
         self.invalidate_wrap();
     }
 
@@ -536,7 +633,7 @@ impl View {
     }
     #[cfg(test)]
     pub fn total_lines(&self) -> usize {
-        self.wrapped.len()
+        self.total_wrapped()
     }
     #[cfg(test)]
     pub fn view_h(&self) -> usize {
@@ -554,11 +651,11 @@ impl View {
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
     pub fn block_of_line(&self, line: usize) -> Option<crate::model::BlockIndex> {
-        self.wrapped_tag.get(line).copied()
+        self.tag_of(line)
     }
 
     fn max_scroll(&self) -> usize {
-        self.wrapped.len().saturating_sub(self.view_h)
+        self.total_wrapped().saturating_sub(self.view_h)
     }
 
     /// Content rows (excludes the status row) — for mouse-click hit-testing.
@@ -578,17 +675,20 @@ impl View {
         if width_changed {
             self.width = width;
         }
-        // Rebuild raw on a width change (width-aware tables) or stale content,
-        // then re-wrap. `width == 0` is the wrap-invalidation sentinel.
-        if width_changed || self.raw_dirty {
-            self.render_raw();
-            self.raw_dirty = false;
-            let (w, t) = wrap::wrap_all_tagged(&self.raw, &self.raw_tag, width as usize);
-            self.wrapped = w;
-            self.wrapped_tag = t;
-            // Match indices are into `wrapped`, so only recompute when it was rebuilt.
-            // A query change recomputes directly (search_input/backspace); a plain
-            // scroll rebuilds nothing, so it no longer rescans every line.
+        // Re-measure geometry on a width change (width-aware wraps) or stale content.
+        // `width == 0` is the invalidation sentinel. A plain scroll re-measures nothing.
+        let dirty = if width_changed {
+            Some(0)
+        } else {
+            self.dirty_from.take()
+        };
+        if let Some(d) = dirty {
+            self.dirty_from = None;
+            if width_changed {
+                self.hot.clear(); // widths baked into every cached line
+            }
+            self.measure_from(if width_changed { 0 } else { d });
+            // Match indices are wrapped-line positions — recompute only on a geometry rebuild.
             self.recompute_matches();
         }
         let max = self.max_scroll();
@@ -644,7 +744,9 @@ impl View {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
             }
-            self.rebuild_raw();
+            // O(one block): re-render/measure only the toggled block; later blocks shift by
+            // an integer delta in the prefix sums.
+            self.remeasure_block(i);
         }
     }
     /// Toggle the block at the top of the viewport (the `t` key).
@@ -659,12 +761,17 @@ impl View {
             self.toggle_block(f);
             return;
         }
-        let end = (self.scroll + self.view_h.max(1)).min(self.wrapped_tag.len());
-        if let Some(&b) = self.wrapped_tag[self.scroll.min(self.wrapped_tag.len())..end]
-            .iter()
-            .find(|&&b| self.blocks.get(b).map(render::foldable).unwrap_or(false))
-        {
-            self.toggle_block(b);
+        let total = self.total_wrapped();
+        let end = (self.scroll + self.view_h.max(1)).min(total);
+        let Some(mut b) = self.tag_of(self.scroll.min(total.saturating_sub(1))) else {
+            return;
+        };
+        while b < self.blocks.len() && self.prefix[b] < end {
+            if self.blocks.get(b).map(render::foldable).unwrap_or(false) {
+                self.toggle_block(b);
+                return;
+            }
+            b += 1;
         }
     }
     /// Collapse all foldable blocks, or expand all if any are already collapsed
@@ -689,7 +796,7 @@ impl View {
     /// returns `None`.
     pub fn click_at(&mut self, row: u16, col: u16) -> Option<Action> {
         let idx = self.scroll + row as usize;
-        let &b = self.wrapped_tag.get(idx)?;
+        let b = self.tag_of(idx)?;
         self.focus = Some(b);
         // A control inside a header owns its click and must NOT also fold the block (a
         // branch already run can't be undone by `stopPropagation`): a tool-header path
@@ -716,7 +823,7 @@ impl View {
     /// id? Works for both the `SubAgent` spawn and the `AgentDone` completion (any status).
     fn agent_id_hit(&self, b: crate::model::BlockIndex, idx: usize, col: usize) -> bool {
         // Only the header's own first row carries the id.
-        if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
+        if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return false;
         }
         let span = match self.blocks.get(b) {
@@ -830,7 +937,7 @@ impl View {
         col: usize,
     ) -> Option<PathBuf> {
         // Only the header's own first row carries the path.
-        if idx != 0 && self.wrapped_tag.get(idx - 1) == Some(&b) {
+        if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return None;
         }
         let Block::ToolUse { name, target, .. } = self.blocks.get(b)? else {
@@ -899,7 +1006,7 @@ impl View {
         self.scroll_block_into_view(b);
     }
     fn scroll_block_into_view(&mut self, b: crate::model::BlockIndex) {
-        if let Some(idx) = self.wrapped_tag.iter().position(|&t| t == b) {
+        if let Some(idx) = self.block_start(b) {
             if idx < self.scroll {
                 self.scroll = idx;
                 self.follow = false;
@@ -948,7 +1055,7 @@ impl View {
     /// Hover: focus the foldable block under a content row (mouse move).
     pub fn hover_row(&mut self, row: u16) {
         let idx = self.scroll + row as usize;
-        if let Some(&b) = self.wrapped_tag.get(idx) {
+        if let Some(b) = self.tag_of(idx) {
             if render::foldable(&self.blocks[b]) {
                 self.focus = Some(b);
             }
@@ -969,8 +1076,7 @@ impl View {
             return;
         }
         let q = self.query.to_lowercase();
-        for (i, l) in self.wrapped.iter().enumerate() {
-            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        for (i, text) in self.search_text.iter().enumerate() {
             if text.to_lowercase().contains(&q) {
                 self.matches.push(i);
             }
@@ -1035,13 +1141,35 @@ impl View {
     /// fully regrouped (thinking absorbs its tools, immediate-pickup markers suppressed) by the
     /// shared `Replayer`, so the view just diffs and swaps — no view-level re-grouping.
     pub fn update(&mut self, new_blocks: Vec<Block>) {
-        // Longest unchanged prefix — keep its fold state and render cache.
+        // Longest unchanged prefix — keep its fold state and render cache. (Batch/test entry: it
+        // re-derives the boundary by scan. The live loop uses `apply_poll`, where the engine hands
+        // the boundary in O(turn) — no scan.)
         let d = self
             .blocks
             .iter()
             .zip(&new_blocks)
             .take_while(|(a, b)| a == b)
             .count();
+        self.apply_from(new_blocks, d);
+    }
+
+    /// The **single** live-update entry the event loop calls (finding #7): the engine
+    /// ([`FollowParser::poll_delta`](crate::FollowParser)) hands the new blocks, the metrics, and the
+    /// exact `changed_from` boundary — so this needs **no** O(N) prefix scan (finding #4) — and it
+    /// refreshes the footer in the same call, so a block update can never drift out of sync with the
+    /// cost/token footer.
+    pub fn apply_poll(&mut self, new_blocks: Vec<Block>, metrics: &Metrics, changed_from: usize) {
+        self.apply_from(new_blocks, changed_from);
+        self.metrics = metrics.footer();
+        self.footer_segs = metrics.footer_segments();
+    }
+
+    /// Swap in `new_blocks`, preserving fold toggles + the render cache for `[0..d]` (`d` = the first
+    /// changed block) and recomputing only the tail. Shared by the batch `update` and live
+    /// `apply_poll`. The snapshot is already fully regrouped by the shared `Replayer`, so this just
+    /// diffs and swaps — no view-level re-grouping.
+    fn apply_from(&mut self, new_blocks: Vec<Block>, d: usize) {
+        let d = d.min(self.blocks.len()).min(new_blocks.len());
         // Live "▼ N new — G to jump" badge: while scrolled back (not following), accumulate
         // the net growth so the reader sees how much arrived below. Follow mode stays pinned
         // to the bottom, so it shows no badge. (A back-patch that doesn't grow bumps nothing.)
@@ -1051,9 +1179,11 @@ impl View {
         let tail = self.fold.collapsed_for(&new_blocks[d..]);
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
-        self.body_cache.truncate(d);
         self.blocks = new_blocks;
-        self.rebuild_raw();
+        // Geometry for the unchanged prefix [0..d] survives; the next layout re-measures only
+        // the changed tail (heights + text index), keeping a live poll O(tail), not O(session).
+        self.dirty_from = Some(self.dirty_from.map_or(d, |cur| cur.min(d)));
+        self.invalidate_wrap();
     }
 
     fn status_line(&self) -> Line<'static> {
@@ -1092,8 +1222,8 @@ impl View {
         let max = self.max_scroll();
         let pct = (self.scroll * 100).checked_div(max).unwrap_or(100);
         let mark = if self.follow { "[bottom]" } else { "[scroll]" };
-        let pos = (self.scroll + 1).min(self.wrapped.len().max(1));
-        let total = self.wrapped.len().max(1);
+        let pos = (self.scroll + 1).min(self.total_wrapped().max(1));
+        let total = self.total_wrapped().max(1);
         // Build the LEFT run in order, each segment with a shed priority (0 = never
         // drop: the nav labels, live-state, position; LOC_PRIO = the id, truncate last).
         let mut segs: Vec<(String, u8)> = Vec::new();
@@ -1152,11 +1282,22 @@ impl View {
     /// painting a frame. Used by `--dump` so its output matches the on-screen
     /// render exactly (diff `+`/`-` rows get their `INSET`, backgrounds fill).
     pub fn rendered_lines(&mut self, width: u16) -> Vec<Line<'static>> {
-        self.layout(width, u16::MAX);
-        self.wrapped
-            .iter()
-            .map(|line| fill_bg(line.clone(), width as usize, is_diff_line(line)))
-            .collect()
+        // One streaming pass: render each block, emit, drop — `--dump` never retains the
+        // document's styled lines (same windowed principle, degenerate window). Threads the
+        // blank-carry exactly as `layout`'s measure does, so output == the interactive render.
+        self.width = width;
+        self.dirty_from = Some(0); // a later interactive layout re-measures from scratch
+        let mut out = Vec::new();
+        let mut carry = false;
+        for b in 0..self.blocks.len() {
+            let wrapped = self.wrapped_block_lines(b, carry);
+            carry |= !wrapped.is_empty();
+            for line in wrapped {
+                let inset = is_diff_line(&line);
+                out.push(fill_bg(line, width as usize, inset));
+            }
+        }
+        out
     }
 
     // --- mouse text selection ---
@@ -1168,7 +1309,7 @@ impl View {
     /// Extend the in-progress selection to viewport (row, col) — a drag.
     pub fn sel_extend(&mut self, row: u16, col: u16) {
         if self.sel_anchor.is_some() {
-            let line = (self.scroll + row as usize).min(self.wrapped.len().saturating_sub(1));
+            let line = (self.scroll + row as usize).min(self.total_wrapped().saturating_sub(1));
             self.sel_cursor = Some((line, col as usize));
         }
     }
@@ -1200,15 +1341,17 @@ impl View {
         let c1 = if ai == e.0 { e.1 } else { usize::MAX };
         (c0 < c1).then_some((c0, c1))
     }
-    /// Extract the selected text across wrapped lines, joined by newlines.
-    fn selection_text(&self) -> Option<String> {
+    /// Extract the selected text across wrapped lines, joined by newlines. Renders the selected
+    /// range on demand through the window cache (a selection is viewport-sized in practice).
+    fn selection_text(&mut self) -> Option<String> {
         let (s, e) = self.sel_bounds()?;
-        let last = self.wrapped.len().saturating_sub(1);
+        let last = self.total_wrapped().saturating_sub(1);
         let mut lines = Vec::new();
         for ai in s.0..=e.0.min(last) {
             let c0 = if ai == s.0 { s.1 } else { 0 };
             let c1 = if ai == e.0 { e.1 } else { usize::MAX };
-            lines.push(cols_of_line(&self.wrapped[ai], c0, c1));
+            let line = self.line_at(ai)?;
+            lines.push(cols_of_line(&line, c0, c1));
         }
         let text = lines.join("\n");
         (!text.trim().is_empty()).then_some(text)
@@ -1217,24 +1360,23 @@ impl View {
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         self.layout(area.width, area.height);
-        let end = (self.scroll + self.view_h).min(self.wrapped.len());
+        let end = (self.scroll + self.view_h).min(self.total_wrapped());
         let cur = self.matches.get(self.match_pos).copied();
         let mut view: Vec<Line> = Vec::new();
         for ai in self.scroll..end {
-            let line = &self.wrapped[ai];
+            let Some(line) = self.line_at(ai) else { break };
             // Detect the diff-inset need from the original line, before search
             // highlighting overwrites the bg (else the matched row shifts left).
-            let inset = is_diff_line(line);
+            let inset = is_diff_line(&line);
             let styled = if !self.query.is_empty() && self.matches.binary_search(&ai).is_ok() {
-                highlight_bg(line, Some(ai) == cur)
+                highlight_bg(&line, Some(ai) == cur)
             } else {
-                line.clone()
+                line
             };
-            let focused = self.focus.is_some() && self.wrapped_tag.get(ai).copied() == self.focus;
+            let focused = self.focus.is_some() && self.tag_of(ai) == self.focus;
             // The header row is the first wrapped line of the focused block (its
             // predecessor belongs to a different block) — only it gets the focus bar.
-            let is_header =
-                focused && (ai == 0 || self.wrapped_tag.get(ai - 1).copied() != self.focus);
+            let is_header = focused && (ai == 0 || self.tag_of(ai - 1) != self.focus);
             let styled = focus_recolor(styled, focused, is_header);
             let filled = fill_bg(styled, area.width as usize, inset);
             // Mouse selection overlays everything else (drawn last).
@@ -1495,6 +1637,34 @@ mod tests {
             .collect()
     }
 
+    /// The live-delta `apply_poll` (engine-provided `changed_from`) yields the exact same view
+    /// state as the scan-based `update` for the same new blocks — same rendered lines, same
+    /// per-block fold state, and a preserved fold toggle on the unchanged prefix. Proves the
+    /// O(turn)-boundary path is behaviorally identical to the O(N)-scan path.
+    #[test]
+    fn apply_poll_delta_equals_update_scan() {
+        let a = blocks(10);
+        let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        // Toggle a fold on the unchanged prefix; both paths must preserve it.
+        v1.collapsed[2] = true;
+        v2.collapsed[2] = true;
+        let b = blocks(13); // grew by 3 (a pure append ⇒ changed_from == 10)
+        let d = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        v1.update(b.clone());
+        v2.apply_poll(b.clone(), &Metrics::default(), d);
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");
+        assert_eq!(v1.block_kinds(), v2.block_kinds(), "same blocks");
+        assert!(
+            v1.is_collapsed(2) && v2.is_collapsed(2),
+            "fold toggle on the unchanged prefix survived both paths"
+        );
+    }
+
     /// The default fold policy (no `--unfold`) collapses `Agent`/`Task` spawn blocks —
     /// they classify under the "agent" fold key. (This assertion lived in `model`'s block
     /// tests until the parser core was split into `claude-replay-core`, which has no view
@@ -1640,7 +1810,7 @@ mod tests {
         let _ = draw(&mut v, 200, 40); // wide → no header wraps
 
         for (idx, col, name) in [(0usize, 9u16, "Write"), (1, 10, "Update"), (2, 8, "Read")] {
-            let row = v.wrapped_tag.iter().position(|&t| t == idx).unwrap() as u16;
+            let row = v.block_start(idx).unwrap() as u16;
             assert_eq!(
                 v.click_at(row, col),
                 Some(Action::Reveal(file.clone())),
@@ -1650,7 +1820,7 @@ mod tests {
         // The `⏺` marker (col 0) of the first block is outside any path span.
         assert!(v.click_at(0, 0).is_none(), "marker click should not reveal");
         // A command header never masquerades as a file path.
-        let bash_row = v.wrapped_tag.iter().position(|&t| t == 3).unwrap() as u16;
+        let bash_row = v.block_start(3).unwrap() as u16;
         assert!(
             v.click_at(bash_row, 8).is_none(),
             "a command header must not reveal"
@@ -2097,7 +2267,7 @@ mod tests {
 
         // Mouse: a click on the header (not the id) FOLDS/expands; a click on the agent
         // id descends. Locate the spawn's header row + the id column span.
-        let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        let row = v.block_start(1).unwrap() as u16;
         let Block::SubAgent(spawn) = &v.blocks[1] else {
             unreachable!()
         };
@@ -2191,7 +2361,7 @@ mod tests {
         assert_eq!(dref.agent_id, "aDONE");
         assert!(dref.blocks.is_empty(), "completion child loads lazily");
         // Mouse: clicking the header id descends; clicking the caret (col 0) folds.
-        let row = v.wrapped_tag.iter().position(|&t| t == 1).unwrap() as u16;
+        let row = v.block_start(1).unwrap() as u16;
         let (s, e) =
             crate::tui::render::agent_done_id_span("gp", "d", AgentStatus::Failed, "aDONE")
                 .expect("done id span");

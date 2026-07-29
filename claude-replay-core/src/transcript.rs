@@ -24,7 +24,9 @@
 use std::io::{self, BufRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::engine::session::{replace_session_blocks, resolve_session_relationships, Session};
+use crate::engine::session::{
+    replace_session_blocks, resolve_session_relationships, BlockStore, Session,
+};
 use crate::follow::FollowParser;
 use crate::model::{Block, ByteOffset, LoadedAttachment, UsdCost};
 use crate::{Agent, SessionGraph};
@@ -124,6 +126,22 @@ impl Transcript {
     /// entry point.
     pub fn follow(&self) -> FollowParser {
         FollowParser::open_with_graph(self.agent, &self.path, self.graph.clone())
+    }
+
+    /// Follow this operation source using an explicit committed-block storage policy while
+    /// preserving the operation-scoped relationship resolver.
+    pub fn follow_with_store<S: BlockStore>(&self, store: S) -> FollowParser<S> {
+        FollowParser::with_store_and_graph(self.agent, &self.path, store, self.graph.clone())
+    }
+
+    /// Normalize relationship-bearing blocks for this source without loading child content.
+    pub fn resolve_relationships(&self, blocks: &mut [Block]) {
+        self.graph.resolve_relationships(&self.path, blocks);
+    }
+
+    /// Normalize the lightweight live header through this source's operation resolver.
+    pub fn resolve_meta(&self, meta: &mut crate::engine::SessionMeta) {
+        self.graph.resolve_meta(&self.path, meta);
     }
 
     /// Load the content embedded at byte offset `at`, `index`-th content-bearing attachment on
