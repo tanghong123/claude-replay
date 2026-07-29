@@ -119,7 +119,10 @@ impl<S: BlockStore> FollowParser<S> {
     #[allow(clippy::type_complexity)]
     pub fn poll(
         &mut self,
-    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         Ok(self
             .advance_from_source()?
             .advanced
@@ -139,7 +142,10 @@ impl<S: BlockStore> FollowParser<S> {
         self.builder.tasks().clone()
     }
 
-    pub fn poll_delta(&mut self) -> std::io::Result<Option<PollDelta>> {
+    pub fn poll_delta(&mut self) -> std::io::Result<Option<PollDelta>>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         let tick = self.advance_from_source()?;
         if !tick.advanced {
             return Ok(None);
@@ -183,12 +189,24 @@ impl<S: BlockStore> FollowParser<S> {
 
     /// The delta-sized read for one pull (see [`StreamRead`]): `committed[from..]` + the open turn +
     /// times + metrics + the live header, from a single finalize. Copies only the committed tail.
-    pub fn stream_read(&self, from: usize) -> StreamRead {
+    pub fn stream_read(&self, from: usize) -> StreamRead
+    where
+        S: crate::engine::session::BlockRead,
+    {
         self.builder.stream_read(from)
     }
 
+    /// [`stream_read`](Self::stream_read) without the committed content — O(turn) and
+    /// store-agnostic (a projection-store session serves committed from its own form, #74).
+    pub fn open_read(&self) -> StreamRead {
+        self.builder.open_read()
+    }
+
     /// `committed[from..]` as owned blocks — O(delta), never the whole committed prefix.
-    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+    pub fn committed_tail(&self, from: usize) -> Vec<Block>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         self.builder.committed_tail(from)
     }
 

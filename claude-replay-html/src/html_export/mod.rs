@@ -30,6 +30,7 @@ use std::path::Path;
 // server in `serve`. All three public entries are re-exported so `html_export::{dump_html,
 // dump_all_html, serve}` stays the crate's surface.
 mod bundle;
+mod record_store;
 mod serve;
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::serve;
@@ -673,7 +674,7 @@ fn build_jsonl(
 /// forward state — instead of re-rendering the whole session every poll. Carrying it keeps the
 /// settled anchors (`#bN`), turn numbers, and sidebar entries stable across ranges. `Default` is the
 /// from-scratch start, so a single whole-session render is byte-identical to before.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct EmitState {
     next_block: crate::model::BlockIndex,
     turn: usize,

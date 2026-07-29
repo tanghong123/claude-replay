@@ -14,7 +14,7 @@
 use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
-use crate::engine::session::{BlockStore, InMemoryStore, Session, SessionMeta};
+use crate::engine::session::{BlockRead, BlockStore, InMemoryStore, Session, SessionMeta};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::{AttachmentContent, Block, ByteOffset, EpochSeconds};
@@ -147,11 +147,15 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // replayer drops them, keeping its content O(turn); we own the committed prefix. Fold each
         // finalized committed block into the maintained header **once**, before it's stored, so a
         // live poll reads the header without rescanning the committed prefix.
-        for b in self.replayer.drain_committed() {
-            self.committed_meta.push(&b);
-            let at = self.committed.len();
-            let bv = self.store.put(b, at);
-            self.committed.push(bv);
+        let drained: Vec<Block> = self.replayer.drain_committed();
+        if !drained.is_empty() {
+            let times = self.replayer.user_times();
+            for b in drained {
+                self.committed_meta.push(&b);
+                let at = self.committed.len();
+                let bv = self.store.put(b, at, times);
+                self.committed.push(bv);
+            }
         }
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             self.metrics.push(&v);
@@ -230,8 +234,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
 
     /// `committed[from..]` as owned [`Block`]s — the newly-committed tail past what a live consumer
     /// already rendered. O(delta): it copies only the tail, never the whole committed prefix (the
-    /// step off the per-poll O(N) clone). `from` is clamped to the committed length.
-    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+    /// step off the per-poll O(N) clone). `from` is clamped to the committed length. Requires a
+    /// lossless store ([`BlockRead`]); a projection store serves its committed zone from its own
+    /// representation instead (#74).
+    pub fn committed_tail(&self, from: usize) -> Vec<Block>
+    where
+        S: BlockRead,
+    {
         self.committed[from.min(self.committed.len())..]
             .iter()
             .map(|bv| self.store.get(bv).into_owned())
@@ -266,15 +275,27 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// The full delta-sized read for one streaming poll (see [`StreamRead`]) — one `open_snapshot`
     /// so provisional, `user_times`, and the header all come from a single finalize. Copies only
     /// `committed[from..]`; never the whole committed prefix.
-    pub fn stream_read(&self, from: usize) -> StreamRead {
-        let committed_delta = self.committed_tail(from);
+    pub fn stream_read(&self, from: usize) -> StreamRead
+    where
+        S: BlockRead,
+    {
+        let mut r = self.open_read();
+        r.committed_delta = self.committed_tail(from);
+        r
+    }
+
+    /// [`stream_read`](Self::stream_read) WITHOUT the committed content — everything a live
+    /// consumer needs that is O(turn): the finalized open turn, times, metrics, header, counters.
+    /// Store-agnostic (no [`BlockRead`] bound), so a projection-store session (#74) reads its open
+    /// zone through this while serving committed from its own representation.
+    pub fn open_read(&self) -> StreamRead {
         let (provisional, user_times) = self.replayer.open_snapshot();
         let mut meta = self.committed_meta.clone();
         for b in &provisional {
             meta.push(b);
         }
         StreamRead {
-            committed_delta,
+            committed_delta: Vec::new(),
             provisional,
             user_times,
             metrics: self.metrics.finish(),
@@ -287,7 +308,10 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// The current presentable blocks + per-turn times + folded metrics, WITHOUT consuming the
     /// builder (so the follower can `advance` a delta, `fold` to render, then keep folding).
     /// Same output as a full whole-file parse.
-    pub(crate) fn fold(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics) {
+    pub(crate) fn fold(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)
+    where
+        S: BlockRead,
+    {
         let (open, times) = self.replayer.open_snapshot();
         // Reconstruct the block stream: committed (read back from the store) ++ the open tail.
         let mut blocks: Vec<Block> = self
@@ -312,7 +336,10 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.task_fold.snapshot()
     }
 
-    pub fn snapshot(&mut self) -> Session<S::Bv> {
+    pub fn snapshot(&mut self) -> Session<S::Bv>
+    where
+        S: BlockRead,
+    {
         let (blocks, user_times, metrics) = self.fold();
         let index = SessionIndex::build(&blocks, &user_times);
         // Post-pass over the finished blocks (the fold is untouched): the sub-agent entity map.

@@ -18,6 +18,11 @@ use crate::model::{AgentId, Block, BlockIndex, EpochSeconds, SubAgentMeta};
 use crate::Agent;
 
 /// The per-block storage policy — the seam between the fold and where a block's content lives.
+/// **The presentation layer decides what `Bv` is**: the `Block` itself, auxiliary in-memory
+/// per-block state the presentation needs, an explicit pointer into a file the presentation
+/// maintains (the HTML wire-record log), a deferred `Block` locator (tier-b), or any
+/// combination — the `Session` then captures the whole session in the form its consumer uses
+/// most efficiently.
 /// `put` receives a finalized [`Block`] at its flat [`BlockIndex`] and returns the value the
 /// session actually stores (`Self::Bv`). The default [`InMemoryStore`] is identity (holds the
 /// `Block` in RAM ⇒ today's behavior); a later on-disk store returns a locator instead. The
@@ -28,16 +33,30 @@ pub trait BlockStore {
     /// `Copy` for an on-disk locator).
     type Bv: Clone;
     /// Store `b` (finalized, at flat index `at`) and return its `Bv` representation. Called **once**
-    /// per committed block as the accumulator drains it from the replayer.
-    fn put(&mut self, b: Block, at: BlockIndex) -> Self::Bv;
-    /// Read a stored value back to its [`Block`] — identity (a borrow) for the in-memory default, a
-    /// decode for an on-disk store. Lets the accumulator reconstruct the block stream from the
-    /// committed `Vec<Bv>` without re-folding.
-    fn get<'a>(&'a self, bv: &'a Self::Bv) -> std::borrow::Cow<'a, Block>;
+    /// per committed block as the accumulator drains it from the replayer. `user_times` is the
+    /// session's per-turn timestamps so far (one per user turn, committed turns final) — a
+    /// PROJECTION store rendering its presentation form at put time (#74) indexes into it; the
+    /// lossless stores ignore it.
+    fn put(
+        &mut self,
+        b: Block,
+        at: BlockIndex,
+        user_times: &[Option<crate::model::EpochSeconds>],
+    ) -> Self::Bv;
     /// Discard everything stored — called when the accumulator rebuilds from scratch (a source
     /// truncation/rewrite), so an append-only backing doesn't accrete dead content across resets.
     /// Default no-op (the in-memory identity store has nothing of its own to discard).
     fn reset(&mut self) {}
+}
+
+/// Read a stored value back to its [`Block`] — the capability split out of [`BlockStore`] (#74):
+/// LOSSLESS stores implement it (identity for the in-memory default, a serde decode for tier-b);
+/// a one-way projection store (e.g. the HTML wire-record store, whose `Bv` locates rendered JSON)
+/// deliberately cannot, and the methods that reconstruct `Block`s bound on this instead.
+pub trait BlockRead: BlockStore {
+    /// Materialize `bv` back to its [`Block`] — a borrow for RAM, a positional read + decode for
+    /// an on-disk backing.
+    fn get<'a>(&'a self, bv: &'a Self::Bv) -> std::borrow::Cow<'a, Block>;
 }
 
 /// The default, zero-footprint [`BlockStore`]: hold the [`Block`] in RAM. `put`/`get` are identity,
@@ -47,9 +66,17 @@ pub struct InMemoryStore;
 
 impl BlockStore for InMemoryStore {
     type Bv = Block;
-    fn put(&mut self, b: Block, _at: BlockIndex) -> Block {
+    fn put(
+        &mut self,
+        b: Block,
+        _at: BlockIndex,
+        _user_times: &[Option<crate::model::EpochSeconds>],
+    ) -> Block {
         b
     }
+}
+
+impl BlockRead for InMemoryStore {
     fn get<'a>(&'a self, bv: &'a Block) -> std::borrow::Cow<'a, Block> {
         std::borrow::Cow::Borrowed(bv)
     }

@@ -189,40 +189,38 @@ The presenter-facing vocabulary lives in `model.rs` and is the stable public API
 
 ### Showcase: `Session<BV>` in the live HTML server
 
-The server composes the storage abstraction into **two parallel append-only logs**, one per
-level of representation — the payoff of making `Session` generic over its block value:
+**The presentation layer decides what lives in `BV`** — the block itself, auxiliary per-block
+state the presentation needs, a pointer into a file the presentation maintains, a deferred
+block locator, or any combination. The live server is the full expression of that principle
+(#74): its `BlockStore` is the HTML crate's own `RecordStore`, whose `put` renders each
+committed block to its **wire-format JSON record** exactly once — as it crosses the
+durability frontier — appends it to `<id>.records`, and returns the locator. The `Session`'s
+committed table *is* the wire projection:
 
 ```
-SharedSession (present)                          render-once cache (html serve)
-  Session<Deferred>                                offsets: Vec<u64> per committed block
-    committed: Vec<Deferred{offset,size}> ──┐        │
-                                            ▼        ▼
-                                     <id>.blocks   <id>.records
-                                     (core Block   (wire-format JSON,
-                                      serde bytes)  one record per line)
+SharedSession<RecordStore>  (present, parameterized by the html crate)
+  Session<RecordLocator>
+    committed: Vec<RecordLocator{offset,len}> ──▶  <id>.records
+                                                   (rendered wire JSON, one record per line —
+                                                    the ONLY committed storage)
 ```
 
-- **`<id>.blocks` — the core's log.** `TierBStore` implements [`BlockStore`]: `put(block)`
-  serializes the *core* `Block` append-only **as a side effect and returns the pointer** —
-  the 12-byte `Deferred { offset, size }` that `Session<Deferred>` holds instead of content.
-  This log is the lossless source: hibernation/restore re-reads it, and any server-side
-  consumer can materialize a block through [`BlockAccess`] without knowing where it lives.
-- **`<id>.records` — the presentation's log.** As blocks cross the durability frontier, the
-  serve layer renders each **exactly once** into its wire-format JSON record and appends it
-  here (carrying `EmitState` so anchors follow on). RAM keeps only a per-record offset table;
-  the rendered JSON never sits resident.
-
-The division of labor is deliberate: pointing the `Session`'s `BV` at the wire JSON would
-weld the HTML record format into the core — instead the core log stays presentation-agnostic
-and the projection lives beside it, indexed by the same committed sequence (valid precisely
-*because* committed is append-only).
-
-The CPU consequence (§8): a `/pull` reply renders **only the open turn**; everything
-committed is answered with a pointer — `committed_ext: {offset, len}` — and the client
-range-reads the wire JSON straight off `<id>.records` via `/records`. The main serving
-function never re-renders, re-serializes, or even copies committed content; a session with a
-thousand committed blocks and a three-block open turn costs a poll three blocks of render
-and one `pread`.
+- **One storage, one serialization.** Nothing is stored twice: there is no separate block
+  backing and no parallel render cache — the store and the session are one object, so they
+  cannot desync. Read-back is deliberately impossible (`RecordStore` implements `BlockStore`
+  but not `BlockRead` — a wire record is a one-way projection), and the type system keeps
+  every committed consumer on the pointer path. The TUI/batch side instantiates the same
+  parameter with `BV = Block` (`InMemoryStore`); a lossless spill store (`TierBStore`,
+  `BV = Deferred`) remains available to any consumer that needs `Block`s back.
+- **Clients read the projection directly; the serving path burns no CPU on it.** A `/pull`
+  reply renders **only the open turn**; the committed zone is answered with a pointer —
+  `committed_ext: {offset, len}` — and the client range-reads the wire JSON straight off
+  `<id>.records` via `/records`. The main serving function never re-renders, re-serializes,
+  or even copies committed content: a session with a thousand committed blocks and a
+  three-block open turn costs a poll three blocks of render and the client one `pread`.
+- **Hibernation carries the projection.** An evicted resident's sidecar stores the locator
+  table plus the store's render continuation (`EmitState`); restore reopens the log
+  read-only — no re-render, no re-fold, and outstanding client cursors stay valid.
 
 ## 6. The per-agent seam
 

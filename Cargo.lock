@@ -225,6 +225,7 @@ dependencies = [
  "claude-replay-present",
  "pulldown-cmark",
  "ratatui",
+ "serde",
  "serde_json",
 ]
 
