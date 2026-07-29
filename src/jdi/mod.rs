@@ -31,7 +31,7 @@ use std::time::Duration;
 )]
 struct Cli {
     /// Force a specific agent instead of auto-detecting from the directory.
-    #[arg(long, value_parser = crate::parse_agent, global = true)]
+    #[arg(long, value_parser = claude_replay_present::args::parse_agent, global = true)]
     agent: Option<Agent>,
 
     /// Print what a command would do and exit — no spawn, kill, or state change.
@@ -163,7 +163,7 @@ enum Command {
         interval: Option<u64>,
         #[arg(long)]
         max_attempts: Option<u32>,
-        #[arg(long, value_parser = crate::parse_agent)]
+        #[arg(long, value_parser = claude_replay_present::args::parse_agent)]
         agent: Option<Agent>,
         /// The session was sent SIGTERM — escalate to SIGKILL if it ignores it.
         #[arg(long)]

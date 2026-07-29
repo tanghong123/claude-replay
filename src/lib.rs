@@ -1,141 +1,25 @@
-//! claude-replay library — shared modules for the `claude-replay` viewer and the
+//! claude-replay library — the thin assembly crate for the `claude-replay` viewer and the
 //! `agent-jdi` supervisor binaries.
 //!
-//! The viewer is **read-only** (scroll, fold, search, live-tail); `agent-jdi` reuses
-//! this crate's transcript discovery/parsing to supervise unattended agent runs.
+//! The layers live in sibling crates (#71): `claude-replay-core` (parser/replay engine),
+//! `claude-replay-present` (cache + shared presentation helpers + `Args`),
+//! `claude-replay-tui` and `claude-replay-html` (the two frontends). This crate re-exports
+//! them under their long-standing module paths (so `claude_replay::model`,
+//! `claude_replay::tui::app`, … keep working), owns the CLI entry point, and hosts `jdi`.
 
-mod cache;
-mod highlight;
-pub mod html_export;
 pub mod jdi;
-mod present;
-pub mod tui;
-pub use cache::SessionCache;
 
-// The agent-agnostic parser/replay engine lives in the sibling `claude-replay-core` crate
-// (no TUI/HTML/clap deps). Re-export its modules under their original crate-root paths so
-// the viewer keeps referring to `crate::model`, `crate::engine`, `crate::discover`, … and
-// `crate::Agent` unchanged.
-// `claude_discover`/`codex_discover` are re-exported because the `jdi` per-agent adapters
-// (`jdi::claude`/`jdi::codex`) legitimately reuse that agent's transcript store. The L1
-// tokenizers (`claude_model`/`codex_model`) are deliberately NOT re-exported: nothing outside
-// the core parses a raw agent format — the viewer reaches blocks only through `engine`'s
-// agent-neutral `parse_session*`.
+pub use claude_replay_html::html_export;
+pub use claude_replay_tui as tui;
+
 pub use claude_replay_core::{
     claude_discover, codex_discover, diff, discover, engine, fold, follow, metrics, model, summary,
     Agent, Transcript,
 };
+pub use claude_replay_present::{cache, highlight, present, sys, Args, SessionCache};
 
 use anyhow::Result;
 use clap::Parser;
-
-/// clap `value_parser` for `--agent`: parse a `claude`/`codex` label into [`Agent`]. Keeps
-/// the `ValueEnum` derive (and thus clap) out of the core `Agent` type.
-pub(crate) fn parse_agent(s: &str) -> std::result::Result<Agent, String> {
-    Agent::from_label(s)
-        .ok_or_else(|| format!("unknown agent '{s}' (expected: claude, codex, qoderwork)"))
-}
-
-/// View flags. Defaults mirror the bash `claude-peek`: thinking + user turns +
-/// code-modifying actions shown; non-modifying ops, tool output hidden.
-#[derive(Parser, Debug, Clone, Default)]
-#[command(
-    name = "claude-replay",
-    version,
-    about = "Read an AI agent session transcript like a screen (read-only)."
-)]
-pub struct Args {
-    /// Session id, or a path to a .jsonl transcript.
-    pub target: Option<String>,
-
-    /// Only show sessions from this agent (claude or codex). Default: all agents.
-    #[arg(long, value_parser = parse_agent)]
-    pub agent: Option<Agent>,
-
-    /// Open the most-recently-active transcript for this directory (or its
-    /// nearest ancestor that has sessions) — not the global newest.
-    #[arg(long)]
-    pub latest: bool,
-
-    /// Follow the file and show new events live (tail -f).
-    #[arg(short = 'f', long)]
-    pub follow: bool,
-
-    /// Hide ✻ thinking summaries (shown by default).
-    #[arg(long)]
-    pub no_thinking: bool,
-
-    /// Include non-modifying ops (Read/grep/ls/test) — hidden by default.
-    #[arg(long)]
-    pub reads: bool,
-
-    /// Include tool output / results — hidden by default.
-    #[arg(long)]
-    pub results: bool,
-
-    /// Hide user turns.
-    #[arg(long)]
-    pub no_user: bool,
-
-    /// Show everything expanded (unfold every block type).
-    #[arg(short = 'v', long)]
-    pub full: bool,
-
-    /// Start these block types collapsed (comma-separated): user, assistant,
-    /// thinking, read, bash, edit, write, tool, skill, agent, tool_result, command.
-    #[arg(long, value_name = "TYPES")]
-    pub fold: Option<String>,
-
-    /// Start these block types expanded (comma-separated). Wins over --fold and
-    /// the defaults. Same type keys as --fold.
-    #[arg(long, value_name = "TYPES")]
-    pub unfold: Option<String>,
-
-    /// Also show Read calls whose file path contains this substring.
-    #[arg(long)]
-    pub read_match: Option<String>,
-
-    /// Render the whole transcript (no TUI) and exit. With no value, write
-    /// `<stem>.txt` + `<stem>.ansi` using a deduced stem; `--dump <stem>` writes to
-    /// that stem; `--dump -` prints plain text to stdout (for pipes / tests).
-    #[arg(long, num_args(0..=1), value_name = "STEM")]
-    pub dump: Option<Option<String>>,
-    /// Width for `--dump` (columns). Defaults to the terminal width, else 100.
-    #[arg(long, value_name = "N")]
-    pub width: Option<usize>,
-
-    /// Export a single self-contained `.html` (no TUI). With no value, write
-    /// `<stem>.html` using a deduced stem; `--dump-html <stem>` writes to that
-    /// stem; `--dump-html -` prints the page to stdout. Honors --fold/--unfold/
-    /// --full. Add `-f`/`--follow` to also write an append-only `<stem>.jsonl`
-    /// companion the page polls, so the export keeps up with a live session.
-    #[arg(long, num_args(0..=1), value_name = "STEM", conflicts_with = "dump")]
-    pub dump_html: Option<Option<String>>,
-
-    /// Export an offline **directory bundle** (no TUI): a shared `index.html` plus one
-    /// `<id>.jsonl` per sub-agent reachable from the root, cross-linked so the whole
-    /// agent tree is navigable offline. With no value, write to a deduced `<stem>/`
-    /// directory; `--dump-all-html <dir>` writes there. Serve it with any static file
-    /// server (`python3 -m http.server`). Unlike `--dump-html` (a single flat file),
-    /// this preserves sub-agent drill-down. Honors --fold/--unfold/--full.
-    #[arg(long, num_args(0..=1), value_name = "DIR", conflicts_with_all = ["dump", "dump_html"])]
-    pub dump_all_html: Option<Option<String>>,
-
-    /// Open the transcript as an HTML page in your browser instead of the TUI.
-    /// Serves over a loopback HTTP server (so a tool-path click can reveal the
-    /// file in Finder) and prints the URL; Ctrl-C stops it. With `-f`/`--follow`
-    /// the page also follows the session live. Honors --fold/--unfold/--full.
-    #[arg(long, conflicts_with_all = ["dump", "dump_html"])]
-    pub html: bool,
-}
-
-impl Args {
-    /// The fold policy these flags select (`--full`/`--fold`/`--unfold`) — the clap-side
-    /// bridge to the core's [`fold::FoldPolicy::from_flags`].
-    pub fn fold_policy(&self) -> fold::FoldPolicy {
-        fold::FoldPolicy::from_flags(self.full, self.fold.as_deref(), self.unfold.as_deref())
-    }
-}
 
 /// Entry point for the `claude-replay` viewer binary.
 pub fn run_viewer() -> Result<()> {

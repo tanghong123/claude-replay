@@ -48,7 +48,7 @@ use std::time::Instant;
 /// (#56's cascade). The state these mutexes guard is either per-entry (a torn entry self-heals
 /// through the pull protocol's epoch/resync) or rebuilt by the owner via
 /// [`SharedSession::poisoned`], so recovering the guard is strictly better than the brick.
-pub(crate) fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 

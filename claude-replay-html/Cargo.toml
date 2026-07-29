@@ -1,0 +1,21 @@
+[package]
+name = "claude-replay-html"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The HTML frontend of claude-replay: self-contained exports, offline directory bundles, and the live loopback server. No terminal dependencies."
+
+[dependencies]
+claude-replay-core = { path = "../claude-replay-core" }
+claude-replay-present = { path = "../claude-replay-present" }
+anyhow = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
+# Types only — the exporter adapts the highlighter's ratatui `Span`s to HTML.
+ratatui = { version = "0.29", default-features = false }
+serde_json = "1"
+
+[dev-dependencies]
+# Tests drive the exporters through the real CLI surface (`Args::parse_from`).
+claude-replay-present = { path = "../claude-replay-present", features = ["cli"] }
+clap = { version = "4", features = ["derive"] }

@@ -61,7 +61,7 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
             return Ok(());
         }
         Some(s) => s.to_string(),
-        None => crate::tui::app::deduce_stem(path, None),
+        None => crate::sys::deduce_stem(path, None),
     };
 
     // Live: the page renders the inline snapshot immediately, then polls the
@@ -172,7 +172,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let fold = args.fold_policy();
     let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
         Some(s) => std::path::PathBuf::from(s),
-        None => std::path::PathBuf::from(crate::tui::app::deduce_stem(path, None)),
+        None => std::path::PathBuf::from(crate::sys::deduce_stem(path, None)),
     };
     std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     let cwd = discover::session_cwd(path)

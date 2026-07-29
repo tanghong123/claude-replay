@@ -6,7 +6,7 @@ use crate::model::{Block, SubAgent};
 
 /// Direct tool calls in a sub-agent's child transcript (activity tools absorbed into a
 /// `Thinking` turn are counted too, since grouping folds Bash/Read/… into it).
-pub(crate) fn tool_count(sa: &SubAgent) -> usize {
+pub fn tool_count(sa: &SubAgent) -> usize {
     sa.blocks
         .iter()
         .map(|b| match b {
@@ -20,7 +20,7 @@ pub(crate) fn tool_count(sa: &SubAgent) -> usize {
 /// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). The spawn is
 /// the *launch* event and always reads "launched" — the terminal status shows on the
 /// separate `AgentDone` completion event, not here.
-pub(crate) fn spawn_chip(sa: &SubAgent) -> String {
+pub fn spawn_chip(sa: &SubAgent) -> String {
     let tools = tool_count(sa);
     if tools > 0 {
         format!(
@@ -34,11 +34,11 @@ pub(crate) fn spawn_chip(sa: &SubAgent) -> String {
 
 /// Claude Code shows only the first `WRITE_PREVIEW` lines of a file write, then a
 /// `… +N lines` marker (the full content isn't dumped into the transcript view).
-pub(crate) const WRITE_PREVIEW: usize = 10;
+pub const WRITE_PREVIEW: usize = 10;
 
 /// `Added N lines[, removed M lines]` (singular/plural; "removed" omitted at 0) —
 /// the Edit/MultiEdit result summary, matching Claude Code.
-pub(crate) fn edit_summary(adds: usize, dels: usize) -> String {
+pub fn edit_summary(adds: usize, dels: usize) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let a = format!("Added {adds} line{}", plural(adds));
     if dels == 0 {
@@ -50,7 +50,7 @@ pub(crate) fn edit_summary(adds: usize, dels: usize) -> String {
 
 /// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
 /// `Update`; everything else keeps its tool name.
-pub(crate) fn display_name(name: &str) -> &str {
+pub fn display_name(name: &str) -> &str {
     match name {
         "Edit" | "MultiEdit" => "Update",
         other => other,
@@ -60,12 +60,12 @@ pub(crate) fn display_name(name: &str) -> &str {
 // The span-summarization vocabulary lives in the CORE since #68 (see the #58 study:
 // `design/fold-coalesce-summarize-extensibility.md`) — re-exported here so both
 // frontends keep importing one place.
-pub(crate) use crate::summary::{thinking_summary, turn_summary};
+pub use crate::summary::{thinking_summary, turn_summary};
 
 /// A Write/NotebookEdit's body: the first non-empty *new-side* text across its diffs (the
 /// transcript records a Write as a diff whose new side is the whole file). Shared so the TUI
 /// and HTML agree on which diff supplies the content.
-pub(crate) fn write_content(diffs: &[(String, String)]) -> &str {
+pub fn write_content(diffs: &[(String, String)]) -> &str {
     diffs
         .iter()
         .map(|(_, n)| n.as_str())
