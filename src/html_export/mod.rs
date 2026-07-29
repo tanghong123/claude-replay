@@ -1782,12 +1782,20 @@ mod tests {
             .collect();
         for expect in ["notes.md", "big-plan.md", "plan.md"] {
             assert!(
-                assets.iter().any(|a| a.contains(expect.trim_end_matches(".md")) || a == expect),
+                assets
+                    .iter()
+                    .any(|a| a.contains(expect.trim_end_matches(".md")) || a == expect),
                 "missing {expect} in assets: {assets:?}"
             );
         }
-        let images = assets.iter().filter(|a| a.ends_with(".png") || a.ends_with(".jpg") || a.ends_with(".jpeg")).count();
-        assert!(images >= 2, "prompt + tool-result images materialized: {assets:?}");
+        let images = assets
+            .iter()
+            .filter(|a| a.ends_with(".png") || a.ends_with(".jpg") || a.ends_with(".jpeg"))
+            .count();
+        assert!(
+            images >= 2,
+            "prompt + tool-result images materialized: {assets:?}"
+        );
         // And each attachment record links its asset.
         let stream_file = std::fs::read_dir(&out)
             .unwrap()
@@ -1797,7 +1805,10 @@ mod tests {
             .expect("agent stream present");
         let stream = std::fs::read_to_string(stream_file).unwrap();
         let hrefs = stream.matches("\"att_href\":\"assets/").count();
-        assert!(hrefs >= 5, "all five embedded objects linked (got {hrefs}):\n{stream}");
+        assert!(
+            hrefs >= 5,
+            "all five embedded objects linked (got {hrefs}):\n{stream}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
