@@ -1510,10 +1510,16 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area.y + area.height.saturating_sub(h) / 2;
     let rect = Rect::new(x, y, w, h);
+    // The version identifies WHICH build is running (#55 — brew-installed vs
+    // target/release is otherwise invisible in the UI).
     let block = WBlock::default()
         .borders(Borders::ALL)
         .border_style(theme::table_border())
-        .title(" Hotkeys — ? or Esc to close ");
+        .title(concat!(
+            " claude-replay v",
+            env!("CARGO_PKG_VERSION"),
+            " — ? or Esc to close "
+        ));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
@@ -1945,6 +1951,11 @@ mod tests {
         assert!(
             t1.contains("toggle fold") && t1.contains("search"),
             "help lists bindings:\n{t1}"
+        );
+        // The overlay title identifies WHICH build is running (#55).
+        assert!(
+            t1.contains(concat!("claude-replay v", env!("CARGO_PKG_VERSION"))),
+            "help title names the version:\n{t1}"
         );
         v.toggle_help();
         let b2 = draw(&mut v, 80, 20);

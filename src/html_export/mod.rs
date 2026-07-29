@@ -822,7 +822,7 @@ fn build_page(
 </head>
 <body{live_attrs}>
 <div id="topbar">
-  <div class="brand">claude-replay <span class="brand-sub">· session export</span></div>
+  <div class="brand">claude-replay <span class="brand-sub">v{version}</span></div>
   <div class="toolfilter">
     <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
@@ -882,6 +882,8 @@ fn build_page(
 </html>
 "#,
         title_esc = esc(title),
+        // Which build wrote this page (#55) — a dumped file identifies its producer.
+        version = env!("CARGO_PKG_VERSION"),
         // `</script>` inside the payload would close the tag early.
         jsonl_esc = jsonl.replace("</", "<\\/"),
     )
@@ -1162,6 +1164,7 @@ pub(super) fn agent_meta(
         "cwd": cwd, "turns": count_turns(blocks), "tools": count_tools(blocks),
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
+        "version": env!("CARGO_PKG_VERSION"),
     });
     (meta, child_refs)
 }
@@ -1207,6 +1210,7 @@ pub(super) fn assemble_meta(
         "cwd": cwd, "turns": sm.turns, "tools": sm.tools,
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
+        "version": env!("CARGO_PKG_VERSION"),
     })
 }
 
