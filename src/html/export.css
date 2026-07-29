@@ -118,6 +118,10 @@ input::placeholder { color: var(--faint); }
 .tf-x { display: none; margin-left: 8px; padding: 0 2px; opacity: 0.8; }
 #btn-tools.active .tf-x { display: inline; }
 .tf-x:hover { opacity: 1; }
+/* #49 prev/next through filtered hits — shown only while a filter is active. */
+.tf-prev, .tf-next { display: none; margin-left: 6px; padding: 0 3px; opacity: 0.8; }
+#btn-tools.active .tf-prev, #btn-tools.active .tf-next { display: inline; }
+.tf-prev:hover, .tf-next:hover { opacity: 1; }
 #btn-agents.active { color: var(--kw); border-color: var(--kw); }
 #toolmenu, #agentmenu {
   display: none; position: absolute; top: 34px; left: 0; min-width: 190px; z-index: 40;
@@ -197,6 +201,11 @@ a.crumb:hover { text-decoration: underline; }
 .fold[data-kind="act"] > .fold-h { box-shadow: inset 2px 0 0 var(--faint); }
 .fold[data-kind="command"] > .fold-h { box-shadow: none; }
 .fold-h.filter-hit { box-shadow: inset 3px 0 0 var(--tool) !important; }
+/* #49 the CURRENT filtered hit — a stronger accent, like search's `.cur` match. */
+.fold-h.filter-cur {
+  box-shadow: inset 3px 0 0 var(--tool), inset 0 0 0 1px var(--tool) !important;
+  background: var(--hover);
+}
 /* User-turn cards stay as dimmed context landmarks while filtering. */
 .blk.filter-dim { opacity: 0.5; }
 .blk.filter-hidden { display: none; }

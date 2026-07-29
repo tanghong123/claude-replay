@@ -824,7 +824,7 @@ fn build_page(
 <div id="topbar">
   <div class="brand">claude-replay <span class="brand-sub">v{version}</span></div>
   <div class="toolfilter">
-    <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-x" title="Clear filter">✕</span></button>
+    <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-prev" title="Previous match (N)">‹</span><span class="tf-next" title="Next match (n)">›</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
       <div class="menu-head">Filter by type / tool</div>
       <div id="toolitems"></div>

@@ -233,7 +233,13 @@
     e.dataset.idx = i;
     if (filter) {
       if (isTurnKind(b)) e.classList.add("filter-dim");
-      else if (recHit[i]) markFilterHit(e);
+      else if (recHit[i]) {
+        markFilterHit(e);
+        if (b.id === filterCurId) {
+          var fh = e.querySelector(":scope > .fold-h");
+          if (fh) fh.classList.add("filter-cur");
+        }
+      }
     }
     return e;
   }
@@ -962,6 +968,55 @@
     });
   }
 
+  // #49 prev/next through the filtered hits. `filterCurId` is the current hit's
+  // record id — id-keyed so the emphasis survives rematerialization (matBlock
+  // re-applies it); navigation wraps like search's.
+  var filterCurId = null;
+  function filterHitIdxs() {
+    var out = [];
+    for (var i = 0; i < records.length; i++) if (recHit[i]) out.push(i);
+    return out;
+  }
+  function setFilterCur(id) {
+    filterCurId = id;
+    all(".fold-h.filter-cur").forEach(function (h) { h.classList.remove("filter-cur"); });
+    if (!id) return;
+    var e = document.getElementById(id);
+    if (e) {
+      var h = e.querySelector(":scope > .fold-h");
+      if (h) h.classList.add("filter-cur");
+    }
+  }
+  // The hit nearest the current viewport top (record math — hits may be
+  // unmaterialized), used for the jump-on-apply and as the nav starting point.
+  function nearestHitIdx() {
+    var hits = filterHitIdxs();
+    if (!hits.length) return -1;
+    var p = P(), y = window.scrollY - streamTop();
+    var best = 0, bestD = Infinity;
+    for (var k = 0; k < hits.length; k++) {
+      var d = Math.abs(p[hits[k]] - y);
+      if (d < bestD) { bestD = d; best = k; }
+    }
+    return best;
+  }
+  function filterNav(dir) {
+    var hits = filterHitIdxs();
+    if (!hits.length) return;
+    var pos;
+    if (filterCurId != null && idIndex[filterCurId] != null) {
+      var cur = idIndex[filterCurId];
+      pos = 0;
+      for (var k = 0; k < hits.length; k++) if (hits[k] === cur) { pos = k; break; }
+      pos = (pos + dir + hits.length) % hits.length; // wraps
+    } else {
+      pos = nearestHitIdx();
+    }
+    var id = records[hits[pos]].id;
+    goToId(id);
+    setFilterCur(id);
+  }
+
   // Enter/leave/toggle the filter. `sel` is a selector; re-selecting the active one clears.
   function setFilter(sel, label) {
     if (sel === filter) sel = null;
@@ -972,6 +1027,7 @@
     }
     filter = sel;
     if (!sel) {
+      setFilterCur(null);
       // Re-anchor to CONTENT, not the absolute offset: while filtered most records are
       // hidden, so the document is much shorter and scrollY means something different.
       var anchorId = null, anchorTop = 0;
@@ -998,6 +1054,10 @@
       prefix = null;
       refreshWindow();
       updateView();
+      // #49: land on the nearest hit so the filter visibly did something (the
+      // viewport could otherwise sit amid dimmed/hidden content with no hit).
+      filterCurId = null;
+      filterNav(0);
     }
     all(".tool-item").forEach(function (ti2) {
       ti2.classList.toggle("active", ti2.dataset.sel === filter);
@@ -1413,6 +1473,8 @@
     // ── type/tool filter controls ──
     var ti = e.target.closest(".tool-item");
     if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
+    if (e.target.closest(".tf-prev")) { filterNav(-1); return; } // ‹ previous hit (#49)
+    if (e.target.closest(".tf-next")) { filterNav(1); return; }  // › next hit (#49)
     if (e.target.closest(".tf-x")) { setFilter(null); toolMenu(false); return; } // ✕ clears
     if (e.target.closest("#btn-tools")) { toolMenu(!$("toolmenu").classList.contains("on")); return; } // label opens menu
     // ── breadcrumb "↑ parent" ── if this view was opened in a new tab (so it has an
@@ -1690,6 +1752,11 @@
       toolMenu(false);
       if (filter) { setFilter(null); return; }
       if (document.activeElement) document.activeElement.blur();
+      return;
+    }
+    if ((e.key === "n" || e.key === "N") && filter) {
+      e.preventDefault();
+      filterNav(e.key === "n" ? 1 : -1); // #49 next/prev filtered hit
       return;
     }
     if (e.key === "j" || e.key === "k") {
