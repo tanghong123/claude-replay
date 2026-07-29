@@ -1,10 +1,34 @@
 use crate::engine::message::Message;
 use crate::engine::path::relativize;
 use crate::engine::time::epoch_secs;
-use crate::model::Block;
+use crate::model::{AgentStatus, Block, SubAgent};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+
+const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
+
+pub(crate) fn encode_agent_path(path: &str) -> String {
+    let encoded = path
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{AGENT_PATH_KEY_PREFIX}{encoded}")
+}
+
+pub(crate) fn decode_agent_path(key: &str) -> Option<String> {
+    let encoded = key.strip_prefix(AGENT_PATH_KEY_PREFIX)?;
+    if encoded.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..encoded.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&encoded[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
 
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
@@ -27,10 +51,31 @@ fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
     blocks // identity — Codex does no turn grouping
 }
 
-/// Codex's `build_tool`: normalize the tool name and shape the target/diffs via
-/// `call_details` (Codex has no `SubAgent` spawns, so `id` is unused). The raw `input` was
-/// already extracted by `call_input` in the tokenizer. (Lifted to L2 in M14.)
-fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+/// Codex's `build_tool`: collaboration spawns use the shared sub-agent block; every
+/// other call follows the ordinary Codex tool shaping.
+fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+    if raw_name == "spawn_agent" {
+        let field = |name| {
+            input
+                .get(name)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let description = field("task_name");
+        return Block::SubAgent(SubAgent {
+            agent_id: String::new(),
+            tool_use_id: id.to_string(),
+            agent_type: "agent".to_string(),
+            description,
+            prompt: field("message"),
+            status: AgentStatus::Running,
+            result: None,
+            output_file: None,
+            blocks: Vec::new(),
+            subtree_cost: None,
+        });
+    }
     let (name, target, diffs) = call_details(raw_name, input, cwd);
     Block::ToolUse {
         name,
@@ -162,6 +207,17 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         text: output,
                         tur: Value::Null,
                     });
+                }
+                Some("agent_message") => {
+                    if let Some((author, result)) = final_agent_message(payload) {
+                        msgs.push(Message::Completion {
+                            tool_use_id: String::new(),
+                            task_id: encode_agent_path(author),
+                            status: Some(AgentStatus::Completed),
+                            description: author.rsplit('/').next().unwrap_or(author).to_string(),
+                            result,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -475,14 +531,45 @@ fn output_text(value: &Value) -> String {
     }
 }
 
+fn final_agent_message(payload: &Value) -> Option<(&str, Option<String>)> {
+    let author = payload.get("author").and_then(Value::as_str)?;
+    let text = payload
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|item| item.get("text").and_then(Value::as_str))?;
+    let body = text.strip_prefix("Message Type: FINAL_ANSWER")?;
+    let result = body
+        .split_once("Payload:\n")
+        .map(|(_, payload)| payload.trim())
+        .filter(|payload| !payload.is_empty())
+        .map(str::to_string);
+    Some((author, result))
+}
+
 fn apply_output(block: &mut Block, output: String) {
-    if let Block::ToolUse {
-        name, output: slot, ..
-    } = block
-    {
-        if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() {
-            *slot = Some(output);
+    match block {
+        Block::SubAgent(agent) => {
+            if let Some(task_name) = serde_json::from_str::<Value>(&output)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("task_name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+            {
+                agent.agent_id = encode_agent_path(&task_name);
+            }
         }
+        Block::ToolUse {
+            name, output: slot, ..
+        } => {
+            if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() {
+                *slot = Some(output);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -490,6 +577,58 @@ fn apply_output(block: &mut Block, output: String) {
 mod tests {
     use super::*;
     use crate::model::Block;
+
+    #[test]
+    fn agent_path_key_is_safe_and_reversible() {
+        let path = "/root/spec_review/standards_axis";
+        let key = encode_agent_path(path);
+
+        assert_eq!(
+            key,
+            "codex-agent-2f726f6f742f737065635f7265766965772f7374616e64617264735f61786973"
+        );
+        assert!(!key.contains('/'));
+        assert_eq!(decode_agent_path(&key).as_deref(), Some(path));
+        assert_eq!(decode_agent_path("other-2f726f6f74"), None);
+        assert_eq!(decode_agent_path("codex-agent-f"), None);
+        assert_eq!(decode_agent_path("codex-agent-zz"), None);
+        assert_eq!(decode_agent_path("codex-agent-ff"), None);
+    }
+
+    #[test]
+    fn spawn_and_final_message_use_shared_lifecycle_blocks() {
+        let jsonl = concat!(
+            r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"spec_review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/spec_review\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/spec_review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        let expected_id = "codex-agent-2f726f6f742f737065635f726576696577";
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::SubAgent(agent)
+                if agent.agent_id == expected_id
+                    && agent.tool_use_id == "spawn-1"
+                    && agent.description == "spec_review"
+                    && agent.prompt == "review it"
+                    && agent.status == crate::AgentStatus::Running
+        )));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::AgentDone {
+                agent_id,
+                status: crate::AgentStatus::Completed,
+                result: Some(result),
+                ..
+            } if agent_id == expected_id && result == "PASS"
+        )));
+    }
 
     #[test]
     fn parses_canonical_response_items_without_event_duplicates() {
