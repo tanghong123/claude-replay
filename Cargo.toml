@@ -13,6 +13,9 @@ categories = ["command-line-utilities"]
 
 [workspace]
 members = ["claude-replay-core"]
+# `cargo test` from the repo root must run BOTH crates (#63) — without this it
+# silently tested only the root crate, skipping the core's suite.
+default-members = [".", "claude-replay-core"]
 
 [lib]
 name = "claude_replay"
