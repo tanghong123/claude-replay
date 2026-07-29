@@ -2,6 +2,7 @@ use crate::discover::Candidate;
 use crate::Agent;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -95,6 +96,90 @@ fn sessions_in(root: &Path) -> Vec<CodexSession> {
         .collect();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.mtime));
     sessions
+}
+
+#[derive(Debug)]
+struct CodexRelationship {
+    id: String,
+    path: PathBuf,
+    parent_thread_id: Option<String>,
+    agent_path: Option<String>,
+}
+
+fn relationship_from_path(path: &Path) -> Option<CodexRelationship> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok).take(100) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let payload = value.get("payload")?;
+        let id = payload
+            .get("id")
+            .or_else(|| payload.get("session_id"))?
+            .as_str()?
+            .to_string();
+        let parent_thread_id = payload
+            .pointer("/source/subagent/thread_spawn/parent_thread_id")
+            .or_else(|| payload.get("parent_thread_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let agent_path = payload
+            .pointer("/source/subagent/thread_spawn/agent_path")
+            .or_else(|| payload.get("agent_path"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        return Some(CodexRelationship {
+            id,
+            path: path.to_path_buf(),
+            parent_thread_id,
+            agent_path,
+        });
+    }
+    None
+}
+
+fn containing_sessions_dir(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("sessions"))
+        .map(Path::to_path_buf)
+}
+
+pub(crate) fn subagent_source(root: &Path, child_id: &str) -> Option<PathBuf> {
+    let agent_path = crate::codex_model::decode_agent_path(child_id)?;
+    let root_id = relationship_from_path(root)?.id;
+    let sessions = containing_sessions_dir(root)?;
+    let nodes: Vec<_> = jsonl_files(&sessions)
+        .into_iter()
+        .filter_map(|path| relationship_from_path(&path))
+        .collect();
+    let reaches_root = |candidate: &CodexRelationship| {
+        let mut current = candidate.parent_thread_id.as_deref();
+        let mut seen = HashSet::new();
+        while let Some(id) = current {
+            if id == root_id {
+                return true;
+            }
+            if !seen.insert(id) {
+                return false;
+            }
+            current = nodes
+                .iter()
+                .find(|node| node.id == id)
+                .and_then(|node| node.parent_thread_id.as_deref());
+        }
+        false
+    };
+    let mut matches = nodes
+        .iter()
+        .filter(|node| {
+            node.agent_path.as_deref() == Some(agent_path.as_str()) && reaches_root(node)
+        })
+        .map(|node| node.path.clone());
+    let matched = matches.next()?;
+    matches.next().is_none().then_some(matched)
 }
 
 fn normalized(path: &Path) -> PathBuf {
@@ -379,6 +464,16 @@ mod tests {
         }
 
         fn subagent_rollout(&self, id: &str, cwd: &Path, agent_path: &str) -> PathBuf {
+            self.related_rollout(id, cwd, "parent-session", agent_path)
+        }
+
+        fn related_rollout(
+            &self,
+            id: &str,
+            cwd: &Path,
+            parent_thread_id: &str,
+            agent_path: &str,
+        ) -> PathBuf {
             let path = self.rollout("2026/07/18", id, cwd, "codex-tui");
             let meta = serde_json::json!({
                 "timestamp": "2026-07-18T01:00:00Z",
@@ -390,7 +485,7 @@ mod tests {
                     "source": {
                         "subagent": {
                             "thread_spawn": {
-                                "parent_thread_id": "parent-session",
+                                "parent_thread_id": parent_thread_id,
                                 "depth": 1,
                                 "agent_path": agent_path,
                                 "agent_nickname": "Nash"
@@ -430,6 +525,71 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.root).ok();
         }
+    }
+
+    #[test]
+    fn subagent_source_is_scoped_to_root_operation() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root_a = fixture.rollout("2026/07/18", "root-a", &cwd, "codex-tui");
+        fixture.rollout("2026/07/18", "root-b", &cwd, "codex-tui");
+        let child_a = fixture.related_rollout("child-a", &cwd, "root-a", "/root/spec_review");
+        fixture.related_rollout("child-b", &cwd, "root-b", "/root/spec_review");
+
+        let child_id = crate::codex_model::encode_agent_path("/root/spec_review");
+        assert_eq!(
+            subagent_source(&root_a, &child_id).as_deref(),
+            Some(child_a.as_path())
+        );
+        assert_eq!(subagent_source(&root_a, "not-a-codex-child-key"), None);
+    }
+
+    #[test]
+    fn codex_adapter_exposes_subagent_source() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root = fixture.rollout("2026/07/18", "root", &cwd, "codex-tui");
+        let child = fixture.related_rollout("child", &cwd, "root", "/root/review");
+        let child_id = crate::codex_model::encode_agent_path("/root/review");
+
+        assert_eq!(
+            crate::discover::subagent_source(Agent::Codex, &root, &child_id).as_deref(),
+            Some(child.as_path())
+        );
+    }
+
+    #[test]
+    fn subagent_source_accepts_only_reachable_descendants() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root = fixture.rollout("2026/07/18", "root", &cwd, "codex-tui");
+        fixture.related_rollout("child", &cwd, "root", "/root/spec_review");
+        let grandchild = fixture.related_rollout(
+            "grandchild",
+            &cwd,
+            "child",
+            "/root/spec_review/standards_axis",
+        );
+        fixture.related_rollout("broken", &cwd, "missing", "/root/broken");
+        fixture.related_rollout("cycle-a", &cwd, "cycle-b", "/root/cycle");
+        fixture.related_rollout("cycle-b", &cwd, "cycle-a", "/root/cycle-parent");
+
+        let nested_id = crate::codex_model::encode_agent_path("/root/spec_review/standards_axis");
+        assert_eq!(
+            subagent_source(&root, &nested_id).as_deref(),
+            Some(grandchild.as_path())
+        );
+        assert_eq!(
+            subagent_source(
+                &root,
+                &crate::codex_model::encode_agent_path("/root/broken")
+            ),
+            None
+        );
+        assert_eq!(
+            subagent_source(&root, &crate::codex_model::encode_agent_path("/root/cycle")),
+            None
+        );
     }
 
     #[test]

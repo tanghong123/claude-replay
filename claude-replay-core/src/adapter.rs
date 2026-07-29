@@ -245,6 +245,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::codex_discover::resolve(Some(id), false).ok()
     }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::codex_discover::subagent_source(root, child_id)
+    }
 }
 
 /// QoderWork adapter — a Claude-Code-format client with its own store and a `runtime-config`
