@@ -939,26 +939,17 @@ pub(super) fn render_snapshot(
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
     let display = repo_name(cwd).unwrap_or_else(|| session_id.clone());
-    let meta = json!({
-        "t": "meta",
-        "title": display,
-        "agent": agent.label(),
-        "sid": session_id,
-        "path": path.display().to_string(),
-        "cwd": cwd,
-        "turns": count_turns(blocks),
-        "tools": count_tools(blocks),
-        "duration_secs": m.duration_secs,
-        "usage": {
-            "input": human_tokens(m.input_tokens),
-            "output": human_tokens(m.output_tokens),
-            "cache_read": human_tokens(m.cache_read_tokens),
-            "cost": m.cost_usd.map(|c| format!("${c:.2}")),
-            "model": m.model,
-        },
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    });
+    let meta = meta_json(
+        agent,
+        &display,
+        &session_id,
+        cwd,
+        count_turns(blocks),
+        count_tools(blocks),
+        usage_json(m, false),
+        tasks,
+        json!({ "path": path.display().to_string(), "duration_secs": m.duration_secs }),
+    );
     // The blocks hold only attachment locators; the served/bundle paths load their bytes on
     // demand from this transcript. (A portable `--dump-html` never loads — it shows the name.)
     let transcript = Transcript::open(agent, path);
@@ -1118,6 +1109,54 @@ pub(super) fn render_agent_stream(
     (jsonl, child_refs)
 }
 
+/// The ONE place a meta wire record is assembled (#65) — every field shared by the
+/// three call shapes (stream/pull/snapshot) is inserted here exactly once, so a new
+/// meta field (like #15's `tasks` or #55's `version`, which previously had to be
+/// added in three places and once wasn't) cannot drift between paths. The
+/// differently-sourced parts arrive as arguments; the per-shape extras via `extra`
+/// (serde_json's map is ordered alphabetically on serialize, so key parity is what
+/// matters, not insertion order).
+#[allow(clippy::too_many_arguments)]
+fn meta_json(
+    agent: Agent,
+    title: &str,
+    sid: &str,
+    cwd: &str,
+    turns: usize,
+    tools: usize,
+    usage: Value,
+    m_tasks: &crate::engine::TaskList,
+    extra: Value,
+) -> Value {
+    let mut o = json!({
+        "t": "meta", "title": title, "agent": agent.label(), "sid": sid,
+        "cwd": cwd, "turns": turns, "tools": tools,
+        "usage": usage,
+        "version": env!("CARGO_PKG_VERSION"),
+        "tasks": m_tasks.items,
+    });
+    if let (Value::Object(dst), Value::Object(src)) = (&mut o, extra) {
+        for (k, v) in src {
+            dst.insert(k, v);
+        }
+    }
+    o
+}
+
+/// The shared usage sub-object; `with_duration` matches the stream/pull shape
+/// (duration inside usage) vs the snapshot shape (top-level duration).
+fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
+    let mut u = json!({
+        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
+        "cache_read": human_tokens(m.cache_read_tokens),
+        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+    });
+    if with_duration {
+        u["duration_secs"] = json!(m.duration_secs);
+    }
+    u
+}
+
 /// Build a session's `meta` wire record (title / agent / cwd / turn+tool counts / usage / ancestry
 /// / children) and its [`ChildRef`]s from the current blocks. This is the cheap O(N)-**count** part
 /// of a stream render, separated from the O(N)-**render** of the blocks — so the render-once live
@@ -1130,12 +1169,6 @@ pub(super) fn agent_meta(
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
 ) -> (Value, Vec<ChildRef>) {
-    let usage = json!({
-        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-        "cache_read": human_tokens(m.cache_read_tokens),
-        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-        "duration_secs": m.duration_secs,
-    });
     // This agent's spawned children, in launch order, each flagged running (a spawn with
     // no matching completion yet) vs done — drives the "Agents ▾" menu (active first).
     let done: std::collections::HashSet<&str> = blocks
@@ -1165,14 +1198,17 @@ pub(super) fn agent_meta(
         .iter()
         .map(|(id, title)| json!({ "id": id, "title": title }))
         .collect();
-    let meta = json!({
-        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
-        "cwd": cwd, "turns": count_turns(blocks), "tools": count_tools(blocks),
-        "agent_type": &info.agent_type, "usage": usage,
-        "ancestors": ancestors, "children": children,
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    });
+    let meta = meta_json(
+        agent,
+        &info.title,
+        &info.id,
+        cwd,
+        count_turns(blocks),
+        count_tools(blocks),
+        usage_json(m, true),
+        tasks,
+        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+    );
     (meta, child_refs)
 }
 
@@ -1190,12 +1226,6 @@ pub(super) fn assemble_meta(
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
 ) -> Value {
-    let usage = json!({
-        "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
-        "cache_read": human_tokens(m.cache_read_tokens),
-        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
-        "duration_secs": m.duration_secs,
-    });
     let children: Vec<Value> = sm
         .children
         .iter()
@@ -1213,14 +1243,17 @@ pub(super) fn assemble_meta(
         .iter()
         .map(|(id, title)| json!({ "id": id, "title": title }))
         .collect();
-    json!({
-        "t": "meta", "title": &info.title, "agent": agent.label(), "sid": &info.id,
-        "cwd": cwd, "turns": sm.turns, "tools": sm.tools,
-        "agent_type": &info.agent_type, "usage": usage,
-        "ancestors": ancestors, "children": children,
-        "version": env!("CARGO_PKG_VERSION"),
-        "tasks": tasks.items,
-    })
+    meta_json(
+        agent,
+        &info.title,
+        &info.id,
+        cwd,
+        sm.turns,
+        sm.tools,
+        usage_json(m, true),
+        tasks,
+        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+    )
 }
 
 /// The `AgentInfo` for a child `c` discovered in `parent`'s source: its title is its
@@ -1735,10 +1768,6 @@ mod tests {
         );
     }
 
-    /// End-to-end: `dump_all_html` writes `index.html` + one `<id>.jsonl` per agent, with
-    /// the root's agent blocks carrying `child:` nav links and each child stream holding
-    /// its own transcript.
-    #[test]
     /// #64 the bundle completeness contract: EVERY embedded, non-inline-rendered
     /// object in a transcript — prompt images, tool-result images, `file`
     /// attachments, `plan_file_reference` plans, ExitPlanMode plans — materializes
@@ -1812,6 +1841,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// End-to-end: `dump_all_html` writes `index.html` + one `<id>.jsonl` per agent, with
+    /// the root's agent blocks carrying `child:` nav links and each child stream holding
+    /// its own transcript.
+    #[test]
     fn dump_all_html_writes_navigable_bundle() {
         use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
