@@ -187,6 +187,43 @@ The presenter-facing vocabulary lives in `model.rs` and is the stable public API
   (styling). One classifier, two projections — the TUI and HTML can't disagree on what a
   block *is*.
 
+### Showcase: `Session<BV>` in the live HTML server
+
+The server composes the storage abstraction into **two parallel append-only logs**, one per
+level of representation — the payoff of making `Session` generic over its block value:
+
+```
+SharedSession (present)                          render-once cache (html serve)
+  Session<Deferred>                                offsets: Vec<u64> per committed block
+    committed: Vec<Deferred{offset,size}> ──┐        │
+                                            ▼        ▼
+                                     <id>.blocks   <id>.records
+                                     (core Block   (wire-format JSON,
+                                      serde bytes)  one record per line)
+```
+
+- **`<id>.blocks` — the core's log.** `TierBStore` implements [`BlockStore`]: `put(block)`
+  serializes the *core* `Block` append-only **as a side effect and returns the pointer** —
+  the 12-byte `Deferred { offset, size }` that `Session<Deferred>` holds instead of content.
+  This log is the lossless source: hibernation/restore re-reads it, and any server-side
+  consumer can materialize a block through [`BlockAccess`] without knowing where it lives.
+- **`<id>.records` — the presentation's log.** As blocks cross the durability frontier, the
+  serve layer renders each **exactly once** into its wire-format JSON record and appends it
+  here (carrying `EmitState` so anchors follow on). RAM keeps only a per-record offset table;
+  the rendered JSON never sits resident.
+
+The division of labor is deliberate: pointing the `Session`'s `BV` at the wire JSON would
+weld the HTML record format into the core — instead the core log stays presentation-agnostic
+and the projection lives beside it, indexed by the same committed sequence (valid precisely
+*because* committed is append-only).
+
+The CPU consequence (§8): a `/pull` reply renders **only the open turn**; everything
+committed is answered with a pointer — `committed_ext: {offset, len}` — and the client
+range-reads the wire JSON straight off `<id>.records` via `/records`. The main serving
+function never re-renders, re-serializes, or even copies committed content; a session with a
+thousand committed blocks and a three-block open turn costs a poll three blocks of render
+and one `pread`.
+
 ## 6. The per-agent seam
 
 Everything that varies by agent is behind **one trait**, `TranscriptAdapter` (`adapter.rs`),
