@@ -200,7 +200,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// `Session` assembly (no O(N) index/sub-agent build, no whole-committed clone); the zones
     /// stay owned by the accumulator and are read delta-sized at pull time.
     pub fn advance(&self) -> std::io::Result<bool> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = super::lock_recover(&self.inner);
         // A hibernated body never folds: its source was unchanged when restored. If the source
         // later changes, `hibernation_stale` reports it and the owner swaps in a fresh live
         // session (whose new epoch resyncs clients).
@@ -242,7 +242,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// advance; a client that wants the freshest tail calls [`advance`](Self::advance) first (the
     /// `/pull` handler does).
     pub fn pull(&self, cursor: Cursor) -> PullReply {
-        let g = self.inner.lock().unwrap();
+        let g = super::lock_recover(&self.inner);
         let (provisional, _times) = g.body.open_finalized();
         let (committed_from, provisional_from) = pull_indices(
             g.epoch,
@@ -268,7 +268,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// counters — no torn state. Lock order: a caller holding its own render lock may call this
     /// (render ⊃ shared); nothing takes them in the reverse order.
     pub fn pull_delta(&self, prev_epoch: u64, rendered_committed: usize) -> PullDelta {
-        let g = self.inner.lock().unwrap();
+        let g = super::lock_recover(&self.inner);
         let reset = prev_epoch != g.epoch;
         let from = if reset {
             0 // stale render cache: every committed block re-renders
@@ -294,7 +294,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// idleness via [`pull_indices`](super::stream::pull_indices) before paying
     /// [`pull_delta`](Self::pull_delta)'s delta read + render.
     pub fn counters(&self) -> (u64, u64, usize, usize) {
-        let g = self.inner.lock().unwrap();
+        let g = super::lock_recover(&self.inner);
         (
             g.epoch,
             g.provisional_gen,
@@ -308,17 +308,26 @@ impl<S: BlockStore> SharedSession<S> {
     /// *child* session's first resolve reads off its **parent** to derive its title/breadcrumb
     /// once (the child-nav inversion) — no per-pull cross-session writes.
     pub fn session_meta(&self) -> SessionMeta {
-        self.inner.lock().unwrap().body.session_meta()
+        super::lock_recover(&self.inner).body.session_meta()
     }
 
     /// The current session epoch (bumped on reset).
     pub fn epoch(&self) -> u64 {
-        self.inner.lock().unwrap().epoch
+        super::lock_recover(&self.inner).epoch
     }
 
     /// The current provisional generation (bumped on commit or back-patch).
     pub fn provisional_gen(&self) -> u64 {
-        self.inner.lock().unwrap().provisional_gen
+        super::lock_recover(&self.inner).provisional_gen
+    }
+
+    /// Whether a panic has poisoned this session's inner lock — its state may be torn mid-
+    /// update, so the owner should DROP it and materialize a fresh session (the new epoch
+    /// resyncs clients), exactly like the stale-hibernation swap. Every accessor here already
+    /// recovers the guard (no PoisonError cascade); this signal is how the state itself gets
+    /// replaced rather than served torn.
+    pub fn poisoned(&self) -> bool {
+        self.inner.is_poisoned()
     }
 
     /// Whether this is a **hibernated** session whose source has changed since it was persisted —
@@ -326,7 +335,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// a fresh live session (the new epoch resyncs clients; same effect as today's
     /// discard-and-refold after an eviction). Always `false` for a live body.
     pub fn hibernation_stale(&self) -> bool {
-        let g = self.inner.lock().unwrap();
+        let g = super::lock_recover(&self.inner);
         match &g.body {
             Body::Live(_) => false,
             Body::Hibernated(h) => {
@@ -361,7 +370,7 @@ impl SharedSession<crate::engine::tier_b::TierBStore> {
     /// re-folding the transcript. Small: locators + the open turn + times/metrics/header +
     /// counters + the two validity lengths.
     pub fn hibernate(&self, sidecar: &Path) -> std::io::Result<()> {
-        let g = self.inner.lock().unwrap();
+        let g = super::lock_recover(&self.inner);
         let side = match &g.body {
             Body::Live(f) => {
                 let r = f.stream_read(f.committed_len()); // empty delta: open turn + header only
@@ -467,7 +476,7 @@ mod tests {
     /// back-patch bumps it, a commit bumps it, and a truncation bumps `epoch`.
     // Test-only view of the committed count (the state lives behind the Mutex now).
     fn committed_len(ss: &SharedSession) -> usize {
-        ss.inner.lock().unwrap().body.committed_len()
+        crate::cache::lock_recover(&ss.inner).body.committed_len()
     }
 
     #[test]
@@ -750,6 +759,39 @@ mod tests {
         for f in [&path, &backing, &sidecar] {
             let _ = std::fs::remove_file(f);
         }
+    }
+
+    /// Poison resilience (#56): a panic on one request thread while holding the inner lock must
+    /// not brick the session — every accessor recovers the guard (no PoisonError cascade), and
+    /// `poisoned()` reports the state as suspect so the owner swaps in a fresh session (the
+    /// server's stale/poison branch).
+    #[test]
+    fn poisoned_session_keeps_answering_and_reports_itself() {
+        use std::sync::Arc;
+        let path = tmp();
+        append(&path, USER1);
+        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        ss.advance().unwrap();
+        assert!(!ss.poisoned());
+
+        // Poison the inner lock: a scoped thread panics while holding it.
+        let poisoner = {
+            let ss = Arc::clone(&ss);
+            std::thread::spawn(move || {
+                let _g = crate::cache::lock_recover(&ss.inner);
+                panic!("simulated fold panic");
+            })
+        };
+        assert!(poisoner.join().is_err(), "the panic happened");
+        assert!(ss.poisoned(), "lock reports poisoned");
+
+        // Every accessor still answers instead of cascading PoisonError panics.
+        let _ = ss.counters();
+        let _ = ss.epoch();
+        let r = ss.pull(Cursor::default());
+        assert_eq!(r.epoch, 1, "still serving (state pre-panic was consistent)");
+        let _ = ss.pull_delta(1, 0);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The `Arc` sharing the concurrency wrapper exists for: many client threads hold the same

@@ -105,7 +105,7 @@ impl Live {
             // A registered id with no title yet was registered source-only by its parent's pull
             // (`register_child_sources`): derive its title/breadcrumb ONCE from the parent's
             // maintained meta, now that this session is actually being retrieved.
-            let cached = self.titles.lock().unwrap().get(id).cloned();
+            let cached = crate::cache::lock_recover(&self.titles).get(id).cloned();
             let t = cached.unwrap_or_else(|| self.derive_title(id));
             return Some((src, t));
         }
@@ -134,7 +134,7 @@ impl Live {
     /// was ever pulled, or the parent's live state was TTL-reaped) — matching the pre-existing
     /// deep-link fallback; whichever value is derived is cached one-time, as before.
     fn derive_title(&self, id: &str) -> TitleInfo {
-        let parent_id = self.parents.lock().unwrap().get(id).cloned();
+        let parent_id = crate::cache::lock_recover(&self.parents).get(id).cloned();
         let derived = parent_id.and_then(|pid| {
             let pmeta = self.cache.shared_peek(&pid)?.session_meta();
             let c = pmeta.children.iter().find(|c| c.id == id)?;
@@ -194,7 +194,7 @@ impl Live {
     /// and register its children. Cheap on the hot path (an already-materialized id short-
     /// circuits; the background tailer keeps it current). Returns false for an unknown id.
     fn ensure_stream(&self, id: &str) -> bool {
-        if self.prev.lock().unwrap().contains_key(id) {
+        if crate::cache::lock_recover(&self.prev).contains_key(id) {
             return true; // already materialized — the tailer keeps its stream current
         }
         let Some((src, title)) = self.resolve_id(id) else {
@@ -267,9 +267,10 @@ impl Live {
             SharedSession::restore(src.path(), &state_path, &blocks_path)
                 .unwrap_or_else(&open_fresh)
         });
-        if shared.hibernation_stale() {
-            // The source changed after restore: drop the materialization and refold from scratch
-            // (the fresh epoch resyncs clients) — the pre-hibernation eviction behavior.
+        if shared.hibernation_stale() || shared.poisoned() {
+            // Two reasons to distrust this state: the source changed after a restore, or a panic
+            // poisoned it mid-update (#56 — its state may be torn). Either way: drop it and
+            // refold fresh; the new epoch resyncs clients. Never serve torn state, never brick.
             self.cache.remove_pull(id);
             shared = self.cache.shared_session(id, open_fresh);
         }
@@ -309,7 +310,7 @@ impl Live {
         // scan. Called under the render lock so the slice matches `pr` (lock order: render ⊃
         // shared; nothing takes the reverse).
         let log_path = self.dir.join(format!("{id}.records"));
-        let mut rmap = self.render.lock().unwrap();
+        let mut rmap = crate::cache::lock_recover(&self.render);
         let pr = rmap.entry(id.to_string()).or_default();
         let d = shared.pull_delta(pr.epoch, pr.offsets.len());
         if d.reset {
@@ -387,7 +388,7 @@ impl Live {
     /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the render lock
     /// so a concurrent reset can't swap the log mid-read.
     fn records_bytes(&self, id: &str, from: u64, len: u64, epoch: u64) -> Result<Vec<u8>, ()> {
-        let rmap = self.render.lock().unwrap();
+        let rmap = crate::cache::lock_recover(&self.render);
         let pr = rmap.get(id).ok_or(())?;
         if pr.epoch != epoch {
             return Err(());
@@ -414,7 +415,9 @@ impl Live {
                     ancestors: ci.ancestors,
                 };
                 self.cache.register_new(&id, src);
-                self.titles.lock().unwrap().entry(id).or_insert(t);
+                crate::cache::lock_recover(&self.titles)
+                    .entry(id)
+                    .or_insert(t);
             }
         }
     }
@@ -485,7 +488,7 @@ impl Live {
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                let mut prev = self.prev.lock().unwrap();
+                let mut prev = crate::cache::lock_recover(&self.prev);
                 let baseline = prev.get(&id).map(Vec::as_slice).unwrap_or(&[]);
                 if let Some(delta) = stream_delta(baseline, &fresh, meta) {
                     let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
@@ -698,7 +701,7 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
-    live.titles.lock().unwrap().insert(
+    crate::cache::lock_recover(&live.titles).insert(
         sid.clone(),
         TitleInfo {
             title: title.clone(),
@@ -1302,7 +1305,7 @@ mod tests {
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
-        live.titles.lock().unwrap().insert(
+        crate::cache::lock_recover(&live.titles).insert(
             "sid".into(),
             TitleInfo {
                 title: "root title".into(),
@@ -1329,7 +1332,7 @@ mod tests {
             "parent pointer recorded"
         );
         assert!(
-            !live.titles.lock().unwrap().contains_key("achild01"),
+            !crate::cache::lock_recover(&live.titles).contains_key("achild01"),
             "no cross-session title write from the parent's pull"
         );
 
@@ -1342,7 +1345,7 @@ mod tests {
             vec![("sid".to_string(), "root title".to_string())]
         );
         assert!(
-            live.titles.lock().unwrap().contains_key("achild01"),
+            crate::cache::lock_recover(&live.titles).contains_key("achild01"),
             "derived once, then cached"
         );
 

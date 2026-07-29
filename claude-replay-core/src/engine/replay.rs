@@ -178,7 +178,7 @@ impl<'a> Replayer<'a> {
             match m {
                 Message::LineStart(ts) => {
                     // Stamp over the resident window; `stamped` is logical, so translate by `base`.
-                    let mut ws = self.stamped - self.base;
+                    let mut ws = self.window_stamped();
                     stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
                     self.stamped = self.base + ws;
                     self.pending_ts = *ts;
@@ -396,6 +396,16 @@ impl<'a> Replayer<'a> {
         if k == 0 {
             return;
         }
+        // Stamp any not-yet-stamped user turns BEFORE the frontier advances past them. Normally a
+        // turn is stamped by its own line's `LineStart` long before it commits (the commit needs
+        // the NEXT user line, whose LineStart stamps first) — but ONE line can carry several user
+        // text items, so the second turn closes the first *within the same batch*, ahead of any
+        // later LineStart. Without this, that turn would drain unstamped: its timestamp lost and
+        // `stamped` left BEHIND `base`, wrapping the `stamped - base` window math (the QoderWork
+        // panic, #56). Uses `pending_ts` — exactly the value the next LineStart would stamp with.
+        let mut ws = self.window_stamped();
+        stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.stamped = self.base + ws;
         // Drain the completed raw blocks [0..k) from the window front.
         let drained: Vec<Block> = self.out.drain(0..k).collect();
         // Apply the suppression flagged for this range (logical indices in [base, base+k)), then
@@ -461,6 +471,20 @@ impl<'a> Replayer<'a> {
         (self.shaping.finish_turns)(open)
     }
 
+    /// `stamped` translated into the resident window — with the invariant `stamped >= base`
+    /// asserted in debug and SATURATED in release: even if a future fold path lets a turn commit
+    /// unstamped again (#56), the window math degrades (re-stamps from the window start) instead
+    /// of wrapping to `usize::MAX` and panicking the viewer on a foreign transcript.
+    fn window_stamped(&self) -> usize {
+        debug_assert!(
+            self.stamped >= self.base,
+            "stamped ({}) fell behind base ({}) — a turn committed unstamped",
+            self.stamped,
+            self.base
+        );
+        self.stamped.saturating_sub(self.base)
+    }
+
     /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
     /// crossed the durability frontier), removing them from the replayer — so its resident content
     /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
@@ -474,7 +498,7 @@ impl<'a> Replayer<'a> {
     pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
         (self.finalize_open(open), user_times)
     }
@@ -486,7 +510,7 @@ impl<'a> Replayer<'a> {
     /// equivalence oracles.
     #[cfg(test)]
     pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
         self.stamped = self.base + ws;
         let open = std::mem::take(&mut self.out);
@@ -502,7 +526,7 @@ impl<'a> Replayer<'a> {
     pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
-        let mut ws = self.stamped - self.base;
+        let mut ws = self.window_stamped();
         stamp_user_turns(&open, &mut ws, self.pending_ts, &mut user_times);
         let blocks = self.assemble(open);
         (blocks, user_times)

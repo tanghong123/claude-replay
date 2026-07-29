@@ -370,6 +370,51 @@ mod tests {
         assert_eq!(meta.children[0].id, "achild01");
     }
 
+    /// #56 regression (the QoderWork panic): ONE transcript line can carry SEVERAL user text
+    /// items — the second turn then closes the first within the same fold batch, committing it
+    /// before any later `LineStart` stamps its timestamp. The drain must stamp first: no lost
+    /// per-turn timestamp, `stamped` never falls behind `base`, and no window-math wrap — with a
+    /// foreign head line (`runtime-config`) and an unknown mid-stream type thrown in, since a
+    /// parser fed arbitrary JSONL must degrade, never panic.
+    #[test]
+    fn multi_text_user_line_commits_stamped_and_never_panics() {
+        use crate::model::Block;
+        let lines = [
+            r#"{"type":"runtime-config","sessionId":"s","model":"qwork-ultimate","timestamp":1785068132048}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>env</system-reminder>"},{"type":"text","text":"the real prompt"}]},"timestamp":"2026-07-26T12:15:33.904Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},"timestamp":"2026-07-26T12:15:40Z"}"#,
+            r#"{"type":"totally-unknown","x":1}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T12:16:00Z"}"#,
+        ];
+        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut off: crate::model::ByteOffset = 0;
+        for line in lines {
+            acc.advance_at(off, line);
+            off += line.len() as u64 + 1;
+            let _ = acc.snapshot(); // the panic site was the snapshot's window math
+        }
+        let s = acc.snapshot();
+        let users = s
+            .blocks()
+            .iter()
+            .filter(|b| matches!(b, Block::UserText(_)))
+            .count();
+        assert_eq!(
+            users, 3,
+            "two turns from the multi-text line + the follow-up"
+        );
+        assert_eq!(s.user_times.len(), 3, "one timestamp per user turn");
+        assert!(
+            s.user_times.iter().all(|t| t.is_some()),
+            "no turn lost its stamp to an early commit: {:?}",
+            s.user_times
+        );
+        assert_eq!(
+            s.user_times[0], s.user_times[1],
+            "both turns from the one line carry its timestamp"
+        );
+    }
+
     /// A truncation/rewrite resets the maintained committed meta (no stale carry-over).
     #[test]
     fn reset_clears_committed_meta() {

@@ -39,8 +39,18 @@ pub use shared::{PullDelta, SharedSession};
 pub use stream::{pull, pull_indices, Cursor, PullReply};
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
+
+/// Lock `m`, RECOVERING from poisoning instead of propagating the panic. A panic on one request
+/// thread (e.g. a fold hitting a malformed transcript) used to poison the mutex and turn every
+/// later request into a `PoisonError` panic — one bad line permanently bricking the session
+/// (#56's cascade). The state these mutexes guard is either per-entry (a torn entry self-heals
+/// through the pull protocol's epoch/resync) or rebuilt by the owner via
+/// [`SharedSession::poisoned`], so recovering the guard is strictly better than the brick.
+pub(crate) fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 use crate::engine::Session;
 use crate::follow::FollowParser;
@@ -88,27 +98,25 @@ impl SessionCache {
 
     /// Register (or overwrite) a session's tier-(c) source.
     pub fn register(&self, id: &str, src: Transcript) {
-        self.registry.lock().unwrap().insert(id.to_string(), src);
+        lock_recover(&self.registry).insert(id.to_string(), src);
     }
 
     /// Register a session only if not already known — preserves the first (richest,
     /// ancestry-bearing) descriptor against a later bare fallback.
     pub fn register_new(&self, id: &str, src: Transcript) {
-        self.registry
-            .lock()
-            .unwrap()
+        lock_recover(&self.registry)
             .entry(id.to_string())
             .or_insert(src);
     }
 
     /// Whether `id` has a tier-(c) source.
     pub fn is_registered(&self, id: &str) -> bool {
-        self.registry.lock().unwrap().contains_key(id)
+        lock_recover(&self.registry).contains_key(id)
     }
 
     /// The tier-(c) source for `id`, if known.
     pub fn resolve(&self, id: &str) -> Option<Transcript> {
-        self.registry.lock().unwrap().get(id).cloned()
+        lock_recover(&self.registry).get(id).cloned()
     }
 
     /// Materialize on the first call (open a [`FollowParser`] on the source and fold its current
@@ -119,7 +127,7 @@ impl SessionCache {
     /// clock.
     pub fn poll(&self, id: &str) -> Option<std::io::Result<Session>> {
         let src = self.resolve(id)?;
-        let mut residents = self.residents.lock().unwrap();
+        let mut residents = lock_recover(&self.residents);
         let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
             (
                 Instant::now(),
@@ -152,7 +160,7 @@ impl SessionCache {
         )>,
     > {
         let src = self.resolve(id)?;
-        let mut residents = self.residents.lock().unwrap();
+        let mut residents = lock_recover(&self.residents);
         let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
             (
                 Instant::now(),
@@ -170,7 +178,7 @@ impl SessionCache {
     /// The navigation-recency residency policy the TUI rides: evicted followers re-materialize
     /// from the registry on their next poll (a fresh whole-file fold).
     pub fn reap_over_budget(&self, budget: usize, pinned: &str) {
-        let mut residents = self.residents.lock().unwrap();
+        let mut residents = lock_recover(&self.residents);
         let mut others: Vec<(String, Instant)> = residents
             .iter()
             .filter(|(id, _)| id.as_str() != pinned)
@@ -194,7 +202,7 @@ impl SessionCache {
         id: &str,
         open: impl FnOnce() -> SharedSession<TierBStore>,
     ) -> std::sync::Arc<SharedSession<TierBStore>> {
-        let mut m = self.pull_residents.lock().unwrap();
+        let mut m = lock_recover(&self.pull_residents);
         let entry = m
             .entry(id.to_string())
             .or_insert_with(|| (Instant::now(), std::sync::Arc::new(open())));
@@ -241,12 +249,12 @@ impl SessionCache {
     /// materialization turns out stale ([`SharedSession::hibernation_stale`]) and must be replaced
     /// by a fresh live session.
     pub fn remove_pull(&self, id: &str) {
-        self.pull_residents.lock().unwrap().remove(id);
+        lock_recover(&self.pull_residents).remove(id);
     }
 
     /// The ids currently resident (tier (a)) — the set the caller polls each cycle.
     pub fn resident_ids(&self) -> Vec<String> {
-        self.residents.lock().unwrap().keys().cloned().collect()
+        lock_recover(&self.residents).keys().cloned().collect()
     }
 }
 
