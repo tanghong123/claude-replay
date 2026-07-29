@@ -2418,10 +2418,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_shell_whose_argv_mentions_claude_is_not_the_agent() {
-        // A shell whose command line contains "claude" — like the tool shell.
+        // A shell whose command line contains "claude" — like the tool shell. The
+        // trailing `; :` makes it a compound, so sh can't exec-optimize into plain
+        // `sleep` (which would drop "claude" from argv and flake the assert below).
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg("sleep 5 # /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh")
+            .arg("sleep 5; : /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

@@ -201,8 +201,11 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
 ///   current directory (or its nearest ancestor that has sessions; cwd-matches first, no global
 ///   fallback) instead of erroring.
 ///
-/// Precedence: `target` (as a path, then as a session id) → else `latest` → else an `Err`
-/// asking for one of them.
+/// Precedence: `target` (as a path, then as a session id) → else `latest` → else: when the
+/// cwd-scoped session set has exactly ONE candidate it is auto-selected (#51 — selection is
+/// only demanded on genuine ambiguity; the non-interactive `--dump*` paths land here, while
+/// the interactive default opens the picker and never reaches this branch), several
+/// candidates `Err` listing them, zero `Err` with the no-session message.
 pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     if let Some(t) = target {
         let as_path = PathBuf::from(t);
@@ -221,25 +224,101 @@ pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> R
             "no transcript found for '{t}' (not a file, and no session id match)"
         ));
     }
+    // Scoped to the cwd or its nearest ancestor that has sessions — NOT the
+    // global newest. `candidates_all` sorts cwd-matches first, then most-recent,
+    // with no global fallback, so an unrelated directory's session never wins.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut cands = candidates_all(only);
     if latest {
-        // Scoped to the cwd or its nearest ancestor that has sessions — NOT the
-        // global newest. `candidates_all` sorts cwd-matches first, then most-recent,
-        // with no global fallback, so an unrelated directory's session never wins.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        return candidates_all(only)
+        return cands
             .into_iter()
             .next()
             .map(|c| c.path)
             .ok_or_else(|| anyhow!("no session found for {} or its ancestors", cwd.display()));
     }
-    Err(anyhow!(
-        "give a session id or a path, or use --latest (no session picker yet)"
-    ))
+    resolve_lone(&mut cands, &cwd)
+}
+
+/// The no-target-no-`--latest` fallback (#51): exactly one cwd-scoped candidate is
+/// unambiguous — use it; several demand a selection (the error names them, newest
+/// first); zero keeps the no-session message. Split from [`resolve_any`] so the
+/// three-way rule is unit-testable without a real store.
+fn resolve_lone(cands: &mut Vec<Candidate>, cwd: &Path) -> Result<PathBuf> {
+    match cands.len() {
+        1 => Ok(cands.remove(0).path),
+        0 => Err(anyhow!(
+            "no session found for {} or its ancestors — give a session id or a path",
+            cwd.display()
+        )),
+        n => {
+            let mut msg =
+                format!("{n} sessions match this directory — give a session id or use --latest:");
+            for c in cands.iter().take(10) {
+                let id = c
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("<unnamed>");
+                let age = match c.mtime.elapsed() {
+                    Ok(d) if d.as_secs() < 3600 => format!("{}m ago", d.as_secs() / 60),
+                    Ok(d) if d.as_secs() < 86_400 => format!("{}h ago", d.as_secs() / 3600),
+                    Ok(d) => format!("{}d ago", d.as_secs() / 86_400),
+                    Err(_) => String::new(),
+                };
+                let snippet: String = c.snippet.chars().take(60).collect();
+                msg.push_str(&format!("\n  {id}  [{}] {age}  {snippet}", c.agent.label()));
+            }
+            if n > 10 {
+                msg.push_str(&format!("\n  … and {} more", n - 10));
+            }
+            Err(anyhow!(msg))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The no-target-no-`--latest` rule (#51): one cwd-scoped candidate is
+    /// unambiguous and auto-selects; several error NAMING each (id, agent, snippet)
+    /// so the user can pick; zero keeps the no-session error.
+    #[test]
+    fn lone_candidate_auto_selects_and_ambiguity_names_the_choices() {
+        let cand = |stem: &str, snippet: &str| Candidate {
+            path: PathBuf::from(format!("/store/{stem}.jsonl")),
+            mtime: SystemTime::now(),
+            project: "proj".into(),
+            snippet: snippet.into(),
+            cwd_affinity: true,
+            agent: Agent::Claude,
+        };
+        let cwd = PathBuf::from("/w/proj");
+        // Exactly one → auto-selected.
+        let mut one = vec![cand("aaaa-1111", "fix the parser")];
+        assert_eq!(
+            resolve_lone(&mut one, &cwd).unwrap(),
+            PathBuf::from("/store/aaaa-1111.jsonl")
+        );
+        // Two → error names both ids and the snippets.
+        let mut two = vec![
+            cand("aaaa-1111", "fix the parser"),
+            cand("bbbb-2222", "add the exporter"),
+        ];
+        let err = resolve_lone(&mut two, &cwd).unwrap_err().to_string();
+        assert!(err.contains("2 sessions match"), "{err}");
+        assert!(
+            err.contains("aaaa-1111") && err.contains("bbbb-2222"),
+            "{err}"
+        );
+        assert!(
+            err.contains("fix the parser") && err.contains("--latest"),
+            "{err}"
+        );
+        // Zero → the no-session error.
+        let err = resolve_lone(&mut Vec::new(), &cwd).unwrap_err().to_string();
+        assert!(err.contains("no session found"), "{err}");
+    }
 
     #[test]
     fn detect_agent_sniffs_transcript_shape() {
