@@ -375,4 +375,70 @@ mod tests {
             ],
         );
     }
+
+    #[test]
+    fn codex_follow_tracks_spawn_source_and_completion() {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-codex-follow-tree-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let sessions = base.join("sessions/2026/07/29");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        let child = sessions.join("rollout-child.jsonl");
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Nash"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let mut written = concat!(
+            r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+        )
+        .to_string();
+        std::fs::write(&parent, written.as_bytes()).unwrap();
+        let mut follow = FollowParser::open(Agent::Codex, &parent);
+        follow.poll_session().unwrap().expect("spawn poll");
+
+        written.push_str(concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
+            "\n",
+        ));
+        std::fs::write(&parent, written.as_bytes()).unwrap();
+        let running = follow.poll_session().unwrap().expect("spawn output poll");
+        let child_id = "codex-agent-2f726f6f742f726576696577";
+        let meta = running.sub_agents.get(child_id).expect("running child");
+        assert_eq!(meta.transcript.as_deref(), Some(child.as_path()));
+        assert_eq!(meta.status, crate::AgentStatus::Running);
+
+        written.push_str(concat!(
+            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+            "\n",
+        ));
+        std::fs::write(&parent, written.as_bytes()).unwrap();
+        let completed = follow.poll_session().unwrap().expect("completion poll");
+        let meta = completed.sub_agents.get(child_id).expect("completed child");
+        assert_eq!(meta.status, crate::AgentStatus::Completed);
+        assert!(completed.blocks().iter().any(|block| matches!(
+            block,
+            Block::AgentDone {
+                agent_id,
+                status: crate::AgentStatus::Completed,
+                result: Some(result),
+                ..
+            } if agent_id == child_id && result == "PASS"
+        )));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }
