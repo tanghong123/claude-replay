@@ -266,6 +266,15 @@ a.crumb:hover { text-decoration: underline; }
 .task-item.open .task-subj { white-space: normal; }
 .task-deps { color: var(--faint); padding-bottom: 3px; }
 .task-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+/* #16 inline plan body on a ▤ plan attachment card. */
+.planview { margin-left: 10px; }
+.plan-body {
+  display: none; flex-basis: 100%; margin: 6px 0 2px 22px; padding: 8px 10px;
+  font: var(--ms)/1.5 var(--mono); color: var(--fg); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto;
+}
+.plan-body.shown { display: block; }
 .urow { display: flex; justify-content: space-between; gap: 8px; }
 .urow span:first-child { color: var(--faint); }
 .urow.total { padding-top: 4px; border-top: 1px dashed var(--border); color: var(--fg); }

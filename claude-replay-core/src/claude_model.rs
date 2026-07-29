@@ -615,6 +615,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             input,
                             cwd: cwd.to_string(),
                         });
+                        // #16: ExitPlanMode's input.plan is the FULL plan markdown — the
+                        // only record of it for source-A plans. Surface it as a plan
+                        // attachment (the same shape as `plan_file_reference`), content
+                        // deferred and re-loaded from this line on demand.
+                        if let Some(a) = exit_plan_attachment(blk) {
+                            msgs.push(Message::Attachment(a));
+                        }
                     }
                     _ => {}
                 }
@@ -956,6 +963,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                             if !id.is_empty() {
                                 tool_slot.insert(id.to_string(), idx);
+                            }
+                            // #16 mirror: ExitPlanMode's inline plan surfaces as a
+                            // plan attachment right after the call block.
+                            if let Some(a) = exit_plan_attachment(blk) {
+                                out.push(Block::Attachment(a));
                             }
                         }
                         _ => {}
@@ -1400,8 +1412,43 @@ pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAt
             .get("attachment")
             .and_then(load_attachment_from_event)
             .filter(|_| index == 0),
+        // #16: an assistant line's ExitPlanMode call carries the plan body inline.
+        Some("assistant") => {
+            let content = v.pointer("/message/content").and_then(|c| c.as_array())?;
+            for blk in content {
+                if blk.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                    && exit_plan_attachment(blk).is_some()
+                {
+                    let plan = blk.pointer("/input/plan").and_then(|p| p.as_str())?;
+                    if let Some(hit) = take(Some(LoadedAttachment::Text(plan.to_string()))) {
+                        return hit;
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     }
+}
+
+/// The plan [`Attachment`] for an `ExitPlanMode` tool_use content item carrying a
+/// non-empty `input.plan` (#16) — `None` otherwise. Shared by the L1 emission, the
+/// frozen `parse_main` mirror, and the deferred loader's counting walk (so their
+/// ordinals agree).
+fn exit_plan_attachment(blk: &Value) -> Option<Attachment> {
+    if blk.get("name").and_then(|n| n.as_str()) != Some("ExitPlanMode") {
+        return None;
+    }
+    let plan = blk.pointer("/input/plan").and_then(|p| p.as_str())?;
+    if plan.trim().is_empty() {
+        return None;
+    }
+    Some(Attachment {
+        kind: AttachmentKind::Plan,
+        name: "plan.md".to_string(),
+        path: None,
+        content: AttachmentContent::Deferred { at: 0, index: 0 },
+    })
 }
 
 fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
@@ -1558,6 +1605,33 @@ mod tests {
             2,
             "only the two human messages are turns"
         );
+    }
+
+    /// #16: an `ExitPlanMode` call's `input.plan` — the only record of a source-A
+    /// plan — surfaces as a plan attachment right after the call block, and its body
+    /// re-loads from the line on demand (the Deferred locator's ordinal 0).
+    #[test]
+    fn exit_plan_mode_plan_becomes_a_loadable_attachment() {
+        let line = r##"{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"tool_use","id":"ep1","name":"ExitPlanMode","input":{"plan":"# The plan\n1. do the thing"}}]}}"##;
+        let blocks = parse(line);
+        assert_eq!(kinds(&blocks), vec!["tool", "attachment"], "{blocks:?}");
+        let Block::Attachment(a) = &blocks[1] else {
+            panic!("expected the plan attachment: {blocks:?}");
+        };
+        assert_eq!(a.kind, crate::model::AttachmentKind::Plan);
+        assert_eq!(a.name, "plan.md");
+        // The body loads back from the raw line (what the builder's stamped locator does).
+        match nth_loaded_attachment(line, 0) {
+            Some(crate::model::LoadedAttachment::Text(t)) => {
+                assert_eq!(t, "# The plan\n1. do the thing");
+            }
+            other => panic!("plan body did not load: {other:?}"),
+        }
+        // An empty plan emits no attachment.
+        let none = parse(
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"ep2","name":"ExitPlanMode","input":{"plan":"  "}}]}}"##,
+        );
+        assert_eq!(kinds(&none), vec!["tool"], "{none:?}");
     }
 
     /// The two-tier queue model (#52): a prose `enqueue` emits a `⧗ queued:` marker
@@ -2302,6 +2376,12 @@ mod tests {
 {"type":"attachment","timestamp":"2026-06-30T03:00:02.000Z","attachment":{"type":"edited_text_file","filename":"/w/src/main.rs","snippet":"1\tfn main(){}"}}
 {"type":"attachment","timestamp":"2026-06-30T03:00:03.000Z","attachment":{"type":"compact_file_reference","filename":"/w/src/lib.rs","displayPath":"src/lib.rs"}}
 {"type":"attachment","timestamp":"2026-06-30T03:00:04.000Z","attachment":{"type":"skill_listing","content":"noise"}}
+"##,
+            // ExitPlanMode carries the full plan inline (#16) — call + plan attachment.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"plan something"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"tool_use","id":"ep1","name":"ExitPlanMode","input":{"plan":"# The plan\n1. do the thing"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"ep1","content":"User has approved your plan."}]}}
 "##,
             // Base64 images from a prompt and a tool result.
             r##"

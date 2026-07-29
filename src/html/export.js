@@ -512,6 +512,28 @@
             an.onclick = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
         }
         ac.appendChild(an);
+        // #16: a PLAN's body renders inline, expandable — served pages embed the text
+        // (att_text); an offline bundle fetches its materialized assets/ file on first
+        // toggle. A portable single-file export stays name-only by design.
+        if (h.att_kind === "plan" && (text != null || href != null)) {
+            var pv = el("button", "morebtn planview", "\u25b8 view plan");
+            var pb = el("pre", "plan-body");
+            if (text != null) pb.textContent = text;
+            var fetched = text != null;
+            pv.onclick = function (ev) {
+                ev.stopPropagation();
+                if (!fetched) {
+                    fetched = true;
+                    fetch(href).then(function (r) { return r.text(); })
+                        .then(function (t) { pb.textContent = t; })
+                        .catch(function () { pb.textContent = "(could not load " + href + ")"; });
+                }
+                var openNow = pb.classList.toggle("shown");
+                pv.textContent = openNow ? "\u25be hide plan" : "\u25b8 view plan";
+            };
+            ac.appendChild(pv);
+            ac.appendChild(pb);
+        }
         // Show images inline. A served/exported page carries the bytes as a data: URI; an
         // offline bundle materializes them to assets/<file> and links via `att_href` — both
         // are valid <img> sources, so the bundle shows the image too (not just a download).
