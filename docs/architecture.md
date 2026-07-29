@@ -76,22 +76,36 @@ if the split weren't there. One workspace version, bumped in one place.
 ## 3. The three-layer engine (core)
 
 Parsing is a pipeline. Each layer has one job, and the agent-specific knowledge is confined
-to Layer 1.
+to Layer 1. These *pipeline* layers are orthogonal to the §2 *crate* layers, so the diagram
+names both: Layers 1 and 2 are internal structure **of the `claude-replay-core` crate** —
+the `Block` stream between L2 and L3 is exactly the core crate's public output — and Layer 3
+is the frontend crates, leaning on `claude-replay-present` for the shared support (cache,
+formatters, highlighting) that isn't part of the pipeline itself.
 
 ```mermaid
 flowchart LR
-  subgraph L1["Layer 1 — per agent (claude_model / codex_model)"]
-    RAW["raw JSONL line"] -->|decode_line| MSG["canonical Message"]
+  subgraph CORE["crate: claude-replay-core"]
+    direction LR
+    subgraph L1["Layer 1 — per agent (claude_model / codex_model)"]
+      RAW["raw JSONL line"] -->|decode_line| MSG["canonical Message"]
+    end
+    subgraph L2["Layer 2 — shared (engine::replay)"]
+      MSG -->|"Replayer fold + Shaping"| BLK["Block stream"]
+    end
   end
-  subgraph L2["Layer 2 — shared (engine::replay)"]
-    MSG -->|"Replayer fold + Shaping"| BLK["Block stream"]
+  subgraph L3["Layer 3 — presenter crates (supported by claude-replay-present)"]
+    TUI["crate: claude-replay-tui&nbsp;&nbsp;(ratatui view · --dump text/ansi)"]
+    HTML["crate: claude-replay-html&nbsp;&nbsp;(export / bundle / live server)"]
   end
-  subgraph L3["Layer 3 — presenters"]
-    BLK --> TUI["ratatui view"]
-    BLK --> HTML["HTML export / live server"]
-    BLK --> DUMP["--dump text/ansi"]
-  end
+  BLK --> TUI
+  BLK --> HTML
 ```
+
+| pipeline layer | lives in | role |
+|---|---|---|
+| L1 decode | `claude-replay-core` (`*_model` modules) | raw agent format → canonical `Message` |
+| L2 fold | `claude-replay-core` (`engine::replay`) | `Message` stream → `Block` stream |
+| L3 present | `claude-replay-tui` / `claude-replay-html` | `Block` stream → pixels/HTML, via `claude-replay-present`'s shared cache + formatters |
 
 - **Layer 1 — decode (agent-specific).** `claude_model` / `codex_model` map that agent's raw
   line shapes onto a single **canonical [`Message`] vocabulary** (`engine::message`):
