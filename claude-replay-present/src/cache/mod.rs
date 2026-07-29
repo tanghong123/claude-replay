@@ -36,7 +36,7 @@ pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 #[allow(unused_imports)]
 pub use shared::{PullDelta, SharedSession};
 #[allow(unused_imports)]
-pub use stream::{pull, pull_indices, Cursor, PullReply};
+pub use stream::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};

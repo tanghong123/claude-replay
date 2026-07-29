@@ -317,6 +317,20 @@ impl<S: BlockStore> SharedSession<S> {
         super::lock_recover(&self.inner).body.session_meta()
     }
 
+    /// The cursor a fully caught-up client of this session would hold — the current epoch/gen
+    /// with both zone lengths as the positions. By definition `pull(end_cursor())` is idle; a
+    /// same-process consumer bootstrapping a [`PullClient`](super::stream::PullClient) tail
+    /// (skipping the initial snapshot it obtained elsewhere) starts here.
+    pub fn end_cursor(&self) -> super::stream::Cursor {
+        let (epoch, provisional_gen, committed_id, provisional_index) = self.counters();
+        super::stream::Cursor {
+            epoch,
+            committed_id,
+            provisional_gen,
+            provisional_index,
+        }
+    }
+
     /// The current session epoch (bumped on reset).
     pub fn epoch(&self) -> u64 {
         super::lock_recover(&self.inner).epoch
@@ -671,6 +685,9 @@ mod tests {
             assert_eq!(rm, rt, "wire replies identical after {chunk:.20}");
             cm = rm.next_cursor();
             ct = rt.next_cursor();
+            // A caught-up cursor equals the session's end_cursor, whose pull is idle.
+            assert_eq!(cm, mem.end_cursor());
+            assert!(mem.pull(mem.end_cursor()).is_idle());
             let (dm, dt) = (mem.pull_delta(mem.epoch(), 0), tb.pull_delta(tb.epoch(), 0));
             assert_eq!(
                 format!("{:?}", dm.committed_delta),

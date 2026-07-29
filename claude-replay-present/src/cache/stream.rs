@@ -1,5 +1,9 @@
 //! The pull-based streaming protocol (design §9a) — **server-side auto-patch**.
 //!
+//! Both halves live here: [`pull`] (the server's reply computation) and [`PullClient`] (the
+//! client's apply state machine — the executable specification any detached consumer follows;
+//! the JS client in `html/export.js` mirrors it transition for transition).
+//!
 //! The cache holds the *joined* view: `committed` (append-only for the whole session) and
 //! `provisional` (the open turn), which the server **patches in place** as the Replayer folds
 //! messages — a tool's output lands on its `ToolUse` block, a sub-agent flips `Running →
@@ -121,6 +125,18 @@ impl PullReply {
         self.committed.is_empty() && self.provisional.is_empty()
     }
 
+    /// The cursor addressing this reply's FIRST blocks — where the client applies it: the
+    /// zone start positions under the reply's epoch/gen. [`next_cursor`](Self::next_cursor)
+    /// is the same cursor advanced past the payload.
+    pub fn start_cursor(&self) -> Cursor {
+        Cursor {
+            epoch: self.epoch,
+            committed_id: self.committed_from,
+            provisional_gen: self.provisional_gen,
+            provisional_index: self.provisional_from,
+        }
+    }
+
     /// The cursor a client holds after applying this reply.
     pub fn next_cursor(&self) -> Cursor {
         Cursor {
@@ -128,6 +144,111 @@ impl PullReply {
             committed_id: self.committed_from + self.committed.len(),
             provisional_gen: self.provisional_gen,
             provisional_index: self.provisional_from + self.provisional.len(),
+        }
+    }
+}
+
+/// What one [`PullClient::apply`] did to the client's joined view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied {
+    /// Index (in the joined `committed ++ provisional` view) of the first block the consumer
+    /// must consider changed — `None` on an idle tick. Conservative on a commit: the blocks
+    /// that crossed from provisional to committed may finalize content-identical, but they are
+    /// still reported (mirroring the wire, which resends them as committed). Feed this to a
+    /// `View::apply_from`-style renderer.
+    pub first_changed: Option<usize>,
+    /// The reply's epoch differed from ours — the whole view was rebuilt from scratch.
+    pub resync: bool,
+}
+
+/// The **client half** of the pull protocol — the executable specification of the cursor
+/// semantics. The server half is [`pull`]; the JS client in `html/export.js` necessarily
+/// reimplements this logic (it runs in the browser) and must match it transition for
+/// transition — the tests on this type are the reference the JS mirrors.
+///
+/// Content-blind and protocol-aware, exactly like the JS client: it holds the two tracked
+/// zones and applies one rule per zone — *truncate to `*_from`, then extend* — plus the
+/// epoch-resync rule. A decoupled TUI (worker thread or remote process) drives its `View`
+/// with the [`Applied::first_changed`] this returns, the same way the in-process viewer
+/// consumes `FollowParser::poll_delta`'s `changed_from`.
+#[derive(Debug, Default, Clone)]
+pub struct PullClient {
+    cursor: Cursor,
+    committed: Vec<Block>,
+    provisional: Vec<Block>,
+}
+
+impl PullClient {
+    /// A fresh client. The default cursor (`epoch == 0`) makes the first pull a full resync —
+    /// real epochs start at 1, so no handshake is needed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The cursor to send with the next pull request.
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    /// The committed zone (append-only from the client's perspective).
+    pub fn committed(&self) -> &[Block] {
+        &self.committed
+    }
+
+    /// The provisional zone (the open turn — replaced or extended per reply).
+    pub fn provisional(&self) -> &[Block] {
+        &self.provisional
+    }
+
+    /// The joined view: `committed ++ provisional` — what a renderer displays.
+    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.committed.iter().chain(self.provisional.iter())
+    }
+
+    /// Total blocks in the joined view.
+    pub fn len(&self) -> usize {
+        self.committed.len() + self.provisional.len()
+    }
+
+    /// Whether the joined view is empty.
+    pub fn is_empty(&self) -> bool {
+        self.committed.is_empty() && self.provisional.is_empty()
+    }
+
+    /// Apply one reply: per zone *truncate to `*_from`, then extend*; on an epoch change,
+    /// rebuild from scratch. Adopts the reply's cursor ([`PullReply::next_cursor`]) so the
+    /// next request continues from here.
+    pub fn apply(&mut self, r: &PullReply) -> Applied {
+        let resync = r.epoch != self.cursor.epoch;
+        // Idle tick (same epoch, both zones empty): nothing to do, cursor unchanged.
+        if !resync && r.is_idle() {
+            return Applied {
+                first_changed: None,
+                resync: false,
+            };
+        }
+        let mut first = usize::MAX;
+        // Committed zone. On a resync `committed_from == 0`, so the truncate clears it.
+        if resync || !r.committed.is_empty() {
+            first = first.min(r.committed_from);
+            self.committed.truncate(r.committed_from);
+            self.committed.extend(r.committed.iter().cloned());
+        }
+        // Provisional zone. Anything we held at/after `provisional_from` is stale (a commit
+        // moved it into committed; a gen bump resent it patched) — mirror the wire even when
+        // the new suffix is empty.
+        let stale = self.provisional.len() > r.provisional_from;
+        if stale || !r.provisional.is_empty() {
+            first = first.min(self.committed.len() + r.provisional_from);
+            self.provisional.truncate(r.provisional_from);
+            self.provisional.extend(r.provisional.iter().cloned());
+        }
+        self.cursor = r.next_cursor();
+        debug_assert_eq!(self.cursor.committed_id, self.committed.len());
+        debug_assert_eq!(self.cursor.provisional_index, self.provisional.len());
+        Applied {
+            first_changed: (first != usize::MAX).then_some(first),
+            resync,
         }
     }
 }
@@ -207,6 +328,118 @@ mod tests {
             provisional_gen,
             provisional_index,
         }
+    }
+
+    /// The **client-side specification**: a `PullClient` driven through every protocol
+    /// transition against a simulated server, asserting after each step that (a) the joined
+    /// view equals the server's, (b) the cursor is caught up (the next pull is idle), and
+    /// (c) `first_changed` points at the first joined index a renderer must re-draw. The JS
+    /// client (`html/export.js`) mirrors these transitions one for one.
+    #[test]
+    fn pull_client_walks_every_transition_like_the_js_client() {
+        // A simulated server: (epoch, committed, provisional, gen).
+        let mut committed = vec![b("c0")];
+        let mut prov = vec![b("p0")];
+        let (mut epoch, mut gen) = (1u64, 3u64);
+        let mut client = PullClient::new();
+        let joined = |c: &PullClient| c.blocks().cloned().collect::<Vec<_>>();
+        let server = |committed: &[Block], prov: &[Block]| {
+            committed
+                .iter()
+                .chain(prov.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        // 1) First contact: default cursor (epoch 0) ⇒ full resync snapshot.
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a,
+            Applied {
+                first_changed: Some(0),
+                resync: true
+            }
+        );
+        assert_eq!(joined(&client), server(&committed, &prov));
+        assert!(pull(epoch, &committed, &prov, gen, client.cursor()).is_idle());
+
+        // 2) Idle tick: nothing changes, cursor unchanged.
+        let before = client.cursor();
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a,
+            Applied {
+                first_changed: None,
+                resync: false
+            }
+        );
+        assert_eq!(client.cursor(), before);
+
+        // 3) Same-gen provisional append: only the new suffix re-renders.
+        prov.push(b("p1"));
+        prov.push(b("p2"));
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a.first_changed,
+            Some(2),
+            "append starts after committed(1) + prov(1)"
+        );
+        assert!(!a.resync);
+        assert_eq!(joined(&client), server(&committed, &prov));
+
+        // 4) Gen bump (in-place back-patch): the whole provisional re-renders, committed intact.
+        prov[0] = b("p0-patched");
+        gen += 1;
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a.first_changed,
+            Some(1),
+            "provisional zone starts after committed(1)"
+        );
+        assert_eq!(joined(&client), server(&committed, &prov));
+
+        // 5) Commit: the open turn (possibly reshaped) becomes committed; a new turn opens.
+        committed.push(b("p0-final"));
+        committed.push(b("p1+p2-coalesced"));
+        prov = vec![b("q0")];
+        gen += 1;
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a.first_changed,
+            Some(1),
+            "re-render from the old committed frontier (conservative: finalized blocks resend)"
+        );
+        assert!(!a.resync);
+        assert_eq!(joined(&client), server(&committed, &prov));
+
+        // 6) Epoch bump (source truncated / session reset): full resync.
+        committed = vec![b("new0")];
+        prov = vec![];
+        epoch += 1;
+        gen = 1;
+        let a = client.apply(&pull(epoch, &committed, &prov, gen, client.cursor()));
+        assert_eq!(
+            a,
+            Applied {
+                first_changed: Some(0),
+                resync: true
+            }
+        );
+        assert_eq!(joined(&client), server(&committed, &prov));
+        assert!(pull(epoch, &committed, &prov, gen, client.cursor()).is_idle());
+    }
+
+    /// `start_cursor` addresses the reply's first blocks (where it applies);
+    /// `next_cursor` is the same cursor advanced past the payload.
+    #[test]
+    fn start_cursor_addresses_the_replys_first_blocks() {
+        let prov = vec![b("p0"), b("p1")];
+        let r = pull(1, &[b("a")], &prov, 3, cur(1, 1, 3, 1));
+        assert_eq!(r.start_cursor(), cur(1, 1, 3, 1));
+        assert_eq!(r.next_cursor(), cur(1, 1, 3, 2));
+        // On a resync both zones address 0.
+        let r = pull(2, &[b("a")], &prov, 3, cur(1, 1, 3, 1));
+        assert_eq!(r.start_cursor(), cur(2, 0, 3, 0));
     }
 
     #[test]
