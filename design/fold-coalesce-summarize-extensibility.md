@@ -12,7 +12,7 @@ that can't normalize. A migration sketch for that day is at the end.
 | layer | what it decides | where it lives | per-agent seam today |
 |---|---|---|---|
 | **Coalescing** | span structure: what folds into a `Thinking` span, what breaks it | `core::model::coalesce_spans` (agent-neutral walk over `Block`s) | `Shaping::finish_turns` — Claude wires `coalesce_spans`, Codex wires `identity` |
-| **Summarization** | the span line's phrasing: bash semantic classes, git output phrases, clause vocabulary/order | `src/present.rs` (`activities`/`turn_summary`/`thinking_summary`, `classify_bash`) | none — one source for both frontends |
+| **Summarization** | the span line's phrasing: bash semantic classes, git output phrases, clause vocabulary/order | `core::summary` (moved from `src/present.rs` in #68, per this study's migration step 2 — relocation only, no per-agent hook) | none — one source for both frontends |
 | **Folding** | what renders expanded vs collapsed by default | `src/fold.rs` `FoldPolicy`, keyed by `model::fold_key` | none — agent-blind, driven by block classification |
 
 ## Why staying put is right
@@ -74,9 +74,8 @@ Small and mechanical, in dependency order:
    new agent's span function beside `coalesce_spans` (core or its adapter file);
    the distributivity invariant must hold (document + reuse the split-apply test
    pattern).
-2. **Summarization** — move `activities`/`turn_summary`/`thinking_summary` +
-   `classify_bash` from `src/present.rs` into the core (they are pure over
-   `Block`s; the HTML/TUI already just call them), then widen `Shaping` with
+2. **Summarization** — DONE (#68): moved into `core::summary`. The remaining
+   step, only on a trigger: widen `Shaping` with
    `summarize: fn(duration, &[Block]) -> String` defaulting to the CC
    implementation. Frontends call through the session's agent shaping instead of
    the free function — a rename-level change at ~6 call sites.
