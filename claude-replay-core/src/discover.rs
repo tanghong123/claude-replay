@@ -44,37 +44,52 @@ pub struct Candidate {
     pub agent: Agent,
 }
 
-/// Directories from `cwd` up to (and including) `$HOME` — the ancestors we probe
-/// for a matching project, nearest first. Never climbs above `$HOME`; for a cwd
-/// OUTSIDE `$HOME` the climb stops before the filesystem root — `/`'s slug (`-`)
-/// can collide with a real store dir for sessions recorded at `/`, which made a
-/// brand-new scratch dir under `/private/tmp` match four unrelated QoderWork
-/// sessions (#62). The bare root is only probed when it IS the cwd. Agent-neutral;
-/// each adapter maps these to its own store layout.
-pub(crate) fn ancestors_of(cwd: &Path) -> Vec<PathBuf> {
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
-    let root = Path::new("/");
+/// Directories from `cwd` up to (but **never including**) `home`, nearest first —
+/// the ancestors we probe for a matching project. Cwd-based auto-discovery is
+/// scoped to the user's home directory (#69): a cwd that is not strictly inside
+/// `home` — including `home` itself, `/tmp`, a missing `$HOME` — yields NOTHING,
+/// and the probe never reaches `home`'s own slug. Both halves exist because
+/// misbehaving agents record sessions against directories a probe must never
+/// match: QoderWork writes some sessions' project dir as `$HOME` itself (its store
+/// grows a `-Users-<name>` dir) and others as `/` (the `-` dir, #62); scoping the
+/// climb strictly below home makes both unreachable. Explicit paths/ids are
+/// unaffected — only cwd inference is scoped. Agent-neutral; each adapter maps
+/// these to its own store layout.
+pub(crate) fn ancestors_below(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    if home.as_os_str().is_empty() || cwd == home || !cwd.starts_with(home) {
+        return Vec::new();
+    }
     let mut dirs = vec![cwd.to_path_buf()];
     let mut cur = cwd.parent();
     while let Some(d) = cur {
-        if d == root {
-            break; // never a CLIMBED ancestor (slug collision with `/`-cwd sessions)
+        if d == home {
+            break; // probe strict subdirectories only — never home's own slug
         }
         dirs.push(d.to_path_buf());
-        if home.as_deref() == Some(d) {
-            break;
-        }
         cur = d.parent();
     }
     dirs
 }
 
-/// [`ancestors_of`] the current working directory. (Test-only since the scoped-discovery
-/// callers all pass an explicit cwd; kept for the cwd-ancestor-chain test.)
+/// The process's `$HOME`, if set and non-empty — the home every public scoped
+/// lookup passes to [`ancestors_below`].
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// [`ancestors_below`] the current working directory under `$HOME`. (Test-only since
+/// the scoped-discovery callers all pass an explicit cwd; kept for the
+/// cwd-ancestor-chain test.)
 #[cfg(test)]
 pub(crate) fn ancestor_dirs() -> Vec<PathBuf> {
     match std::env::current_dir() {
-        Ok(cwd) => ancestors_of(&cwd),
+        Ok(cwd) => ancestors_below(&cwd, home_dir().as_deref()),
         Err(_) => Vec::new(),
     }
 }
@@ -417,25 +432,31 @@ mod tests {
     }
 
     #[test]
-    fn ancestors_start_at_cwd_are_parent_chain_and_stop_at_home() {
+    fn ancestors_start_at_cwd_are_parent_chain_and_stop_before_home() {
         let dirs = ancestor_dirs();
+        let cwd = std::env::current_dir().unwrap();
+        let home = home_dir();
+        // #69: outside $HOME (or at it, or with no $HOME) there is NO auto-discovery.
+        let inside_home = home
+            .as_deref()
+            .is_some_and(|h| cwd != h && cwd.starts_with(h));
+        if !inside_home {
+            assert!(
+                dirs.is_empty(),
+                "cwd outside $HOME must not probe: {dirs:?}"
+            );
+            return;
+        }
         assert!(!dirs.is_empty(), "should include at least the cwd");
-        assert_eq!(
-            dirs[0],
-            std::env::current_dir().unwrap(),
-            "nearest first = cwd"
-        );
+        assert_eq!(dirs[0], cwd, "nearest first = cwd");
         // Each entry is the parent of the previous.
         for w in dirs.windows(2) {
             assert_eq!(w[1], w[0].parent().unwrap(), "not a parent chain: {w:?}");
         }
-        // If $HOME is on the chain, it is the last entry (we don't climb above it).
-        if let Ok(home) = std::env::var("HOME") {
-            let home = PathBuf::from(home);
-            if dirs.contains(&home) {
-                assert_eq!(*dirs.last().unwrap(), home, "should stop at $HOME");
-            }
-        }
+        // $HOME itself is never probed; the chain's last entry sits directly under it.
+        let home = home.unwrap();
+        assert!(!dirs.contains(&home), "must stop BEFORE $HOME: {dirs:?}");
+        assert_eq!(dirs.last().unwrap().parent().unwrap(), home);
     }
 
     /// #66: ownership is sniff-marker OR store-provenance. An arbitrary-path
@@ -485,20 +506,37 @@ mod tests {
         std::fs::remove_file(&codex).ok();
     }
 
-    /// #62: for a cwd OUTSIDE `$HOME`, the climb stops BEFORE the filesystem root —
-    /// `/`'s slug (`-`) collides with store dirs for sessions recorded at `/`,
-    /// which leaked unrelated sessions into a scratch dir's candidate set. The bare
-    /// root is only probed when it IS the cwd.
+    /// #69 (supersedes #62's bare-root guard): auto-discovery is scoped strictly
+    /// inside the home directory. A cwd outside `$HOME`, at `$HOME` itself, or
+    /// with no `$HOME` probes NOTHING — and a probed chain never includes `$HOME`,
+    /// so a store dir recorded AT home (QoderWork's `-Users-<name>`) or at `/`
+    /// (its `-` dir, #62) can never match.
     #[test]
-    fn ancestors_outside_home_never_reach_the_bare_root() {
-        let dirs = ancestors_of(Path::new("/private/tmp/some/scratch"));
-        assert_eq!(dirs[0], Path::new("/private/tmp/some/scratch"));
-        assert!(
-            !dirs.iter().any(|d| d == Path::new("/")),
-            "climbed to the bare root: {dirs:?}"
+    fn ancestors_are_scoped_strictly_inside_home() {
+        let home = Some(Path::new("/Users/hong"));
+        // Outside home → nothing (this cwd used to leak `/`-recorded sessions, #62).
+        assert_eq!(
+            ancestors_below(Path::new("/private/tmp/some/scratch"), home),
+            Vec::<PathBuf>::new()
         );
-        assert_eq!(*dirs.last().unwrap(), Path::new("/private"), "{dirs:?}");
-        // Degenerate: the root as the STARTING cwd still probes itself.
-        assert_eq!(ancestors_of(Path::new("/")), vec![PathBuf::from("/")]);
+        // Home itself → nothing (QoderWork records some sessions' project dir AS home).
+        assert_eq!(
+            ancestors_below(Path::new("/Users/hong"), home),
+            Vec::<PathBuf>::new()
+        );
+        // The bare root and no-home are equally barren.
+        assert_eq!(ancestors_below(Path::new("/"), home), Vec::<PathBuf>::new());
+        assert_eq!(
+            ancestors_below(Path::new("/Users/hong/w/repo"), None),
+            Vec::<PathBuf>::new()
+        );
+        // Inside home → cwd up to (never including) home, nearest first.
+        assert_eq!(
+            ancestors_below(Path::new("/Users/hong/w/repo"), home),
+            vec![
+                PathBuf::from("/Users/hong/w/repo"),
+                PathBuf::from("/Users/hong/w")
+            ]
+        );
     }
 }

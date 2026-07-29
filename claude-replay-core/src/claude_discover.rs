@@ -1,11 +1,11 @@
 //! **Claude's transcript discovery** — the Claude half of the shared `discover` interface
 //! (mirrors `codex_discover`). Locates Claude Code's per-project transcripts under
 //! `~/.claude/projects/<slug>/<id>.jsonl`, scoped to the cwd or its nearest ancestor with
-//! sessions. The agent-neutral pieces — the [`Candidate`] type, `ancestors_of`/`ancestor_dirs`,
+//! sessions. The agent-neutral pieces — the [`Candidate`] type, `ancestors_below`,
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in [`crate::discover`].
 
-use crate::discover::{ancestors_of, Candidate};
+use crate::discover::Candidate;
 use crate::Agent;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -70,11 +70,16 @@ fn transcripts_in_project(root: &Path, slug: &str) -> Vec<(SystemTime, PathBuf)>
 }
 
 /// The `(mtime, path)` transcripts of the **nearest ancestor of `cwd`** (up the directory
-/// chain) that owns any — the "no global fallback" scoping both scoped Claude lookups share
-/// (a directory with no session history up its chain yields nothing, so unrelated projects
-/// never leak in). Mirrors `codex_discover::nearest_ancestor_sessions`.
-fn nearest_project_transcripts(root: &Path, cwd: &Path) -> Vec<(SystemTime, PathBuf)> {
-    ancestors_of(cwd)
+/// chain, strictly inside `home` — #69) that owns any — the "no global fallback" scoping both
+/// scoped Claude lookups share (a directory with no session history up its chain yields
+/// nothing, so unrelated projects never leak in). Mirrors
+/// `codex_discover::nearest_ancestor_sessions`.
+fn nearest_project_transcripts(
+    root: &Path,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Vec<(SystemTime, PathBuf)> {
+    crate::discover::ancestors_below(cwd, home)
         .into_iter()
         .map(|dir| transcripts_in_project(root, &slug_for(&dir)))
         .find(|t| !t.is_empty())
@@ -84,14 +89,24 @@ fn nearest_project_transcripts(root: &Path, cwd: &Path) -> Vec<(SystemTime, Path
 /// Claude sessions scoped strictly to `cwd` or its nearest ancestor that has sessions — no
 /// global fallback (see `nearest_project_transcripts`).
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    candidates_scoped_in(&projects_dir(), Agent::Claude, cwd)
+    candidates_scoped_in(
+        &projects_dir(),
+        Agent::Claude,
+        cwd,
+        crate::discover::home_dir().as_deref(),
+    )
 }
 
 /// [`candidates_scoped`] over an arbitrary Claude-layout store root, tagging candidates with
-/// `agent` — shared with the QoderWork store.
-pub(crate) fn candidates_scoped_in(root: &Path, agent: Agent, cwd: &Path) -> Vec<Candidate> {
+/// `agent` — shared with the QoderWork store. `home` bounds the ancestor probe (#69).
+pub(crate) fn candidates_scoped_in(
+    root: &Path,
+    agent: Agent,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Vec<Candidate> {
     let cwd_slug = slug_for(cwd);
-    let mut scoped = nearest_project_transcripts(root, cwd);
+    let mut scoped = nearest_project_transcripts(root, cwd, home);
     scoped.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     scoped
         .into_iter()
@@ -143,7 +158,8 @@ fn first_user_snippet(path: &Path) -> String {
 /// target, so `resume` in a directory with no history fails cleanly rather than
 /// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    let mut ts = nearest_project_transcripts(&projects_dir(), cwd);
+    let mut ts =
+        nearest_project_transcripts(&projects_dir(), cwd, crate::discover::home_dir().as_deref());
     ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     ts.into_iter().next().map(|(m, p)| {
         let id = p
@@ -236,5 +252,38 @@ mod tests {
     fn slug_matches_claude_code_convention() {
         let p = Path::new("/Users/dev/projects/claude-toolbox");
         assert_eq!(slug_for(p), "-Users-dev-projects-claude-toolbox");
+    }
+
+    /// #69: a store dir recorded AT the home directory (QoderWork writes some
+    /// sessions' project cwd as `$HOME`, growing a `-Users-<name>` dir) must never
+    /// match — the ancestor probe stops strictly below home, so a cwd inside home
+    /// with no session history of its own finds NOTHING rather than home's sessions.
+    #[test]
+    fn sessions_recorded_at_home_never_match_a_subdir_cwd() {
+        let root = std::env::temp_dir().join(format!("cr-home-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = Path::new("/Users/dev");
+        let cwd = home.join("w").join("repo");
+        let line = r#"{"sessionId":"h1","type":"user","message":{"role":"user","content":"hi"}}"#;
+        // The misbehaving store: ONLY a project dir for home itself (and one for `/`, #62).
+        for slug in [slug_for(home), "-".to_string()] {
+            std::fs::create_dir_all(root.join(&slug)).unwrap();
+            std::fs::write(root.join(&slug).join("h1.jsonl"), format!("{line}\n")).unwrap();
+        }
+        assert!(
+            candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home)).is_empty(),
+            "home-recorded sessions leaked into a subdir cwd"
+        );
+        // Sanity: the same store WITH a real project dir for the cwd still discovers it.
+        std::fs::create_dir_all(root.join(slug_for(&cwd))).unwrap();
+        std::fs::write(
+            root.join(slug_for(&cwd)).join("h2.jsonl"),
+            format!("{line}\n"),
+        )
+        .unwrap();
+        let cands = candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home));
+        assert_eq!(cands.len(), 1);
+        assert!(cands[0].cwd_affinity);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
