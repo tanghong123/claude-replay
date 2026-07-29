@@ -39,13 +39,10 @@ pub enum Message {
     /// line's turns with the running `pending_ts`, then adopts this line's ts — exactly
     /// `parse_main`'s `pending_ts` / `stamped` dance, so `user_times` come out identical.
     LineStart(Option<EpochSeconds>),
-    /// A `user`-type line occurred — the trigger that resets the thinking-duration clock.
-    /// Emitted right after this line's `LineStart`, before its content messages.
-    Trigger(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
     /// Assistant thinking content item + this line's ts (the fold computes the duration
-    /// as `ts − trigger_ts`).
+    /// as `ts − the previous line's ts` — CC's thinking clock, #57).
     Thinking {
         text: String,
         ts: Option<EpochSeconds>,

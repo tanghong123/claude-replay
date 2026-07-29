@@ -1792,8 +1792,10 @@ mod tests {
             json!([{ "id": "sess", "title": "sess · claude" }]),
             "child breadcrumb points at the root (titled by session name + agent)"
         );
+        // The lone Read folds into an activity-span record (#57); its tool block
+        // rides nested inside the span's body.
         assert!(
-            recs.iter().any(|o| o["head"]["name"] == json!("Read")),
+            cj.contains(r#""tool":"Read""#),
             "child transcript rendered: {recs:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
@@ -2294,7 +2296,7 @@ mod tests {
         assert_eq!(out[0]["kind"], "act");
         let summary = out[0]["head"]["summary"].as_str().unwrap();
         assert!(
-            summary.starts_with("✻ Ran 1 shell command (ls)"),
+            summary.starts_with("✻ Thought for 5s, listed 1 directory"),
             "{summary}"
         );
         // The absorbed Bash rides along as a nested block part.

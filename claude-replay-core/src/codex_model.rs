@@ -94,9 +94,6 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             match payload.get("type").and_then(Value::as_str) {
                 Some("message") => {
                     let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
-                    if role == "user" {
-                        msgs.push(Message::Trigger(ts));
-                    }
                     if matches!(role, "user" | "assistant") {
                         let wanted = if role == "user" {
                             "input_text"
@@ -158,7 +155,6 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     });
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
-                    msgs.push(Message::Trigger(ts));
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
                     let output = output_text(payload.get("output").unwrap_or(&Value::Null));
                     msgs.push(Message::ToolResult {
@@ -189,7 +185,9 @@ fn parse_lines<S: AsRef<str>>(
     let mut stamped = 0usize;
     let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
     let mut cwd = String::new();
-    let mut trigger_ts = None;
+    // The previous line's ts — CC's thinking clock (#57): a thinking's duration is
+    // `its ts − this` (mirrors the engine's `prev_ts`).
+    let mut prev_ts = None;
 
     for line in lines {
         let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
@@ -200,6 +198,9 @@ fn parse_lines<S: AsRef<str>>(
             .and_then(Value::as_str)
             .and_then(epoch_secs);
         crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        if pending_ts.is_some() {
+            prev_ts = pending_ts;
+        }
         pending_ts = timestamp;
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
@@ -217,11 +218,6 @@ fn parse_lines<S: AsRef<str>>(
                 };
                 match payload.get("type").and_then(Value::as_str) {
                     Some("message") => {
-                        if payload.get("role").and_then(Value::as_str) == Some("user") {
-                            if let Some(ts) = timestamp {
-                                trigger_ts = Some(ts);
-                            }
-                        }
                         push_message(payload, &mut out);
                     }
                     Some("reasoning") => {
@@ -238,7 +234,7 @@ fn parse_lines<S: AsRef<str>>(
                             .collect::<Vec<_>>()
                             .join("\n");
                         if !text.is_empty() {
-                            let duration_secs = match (timestamp, trigger_ts) {
+                            let duration_secs = match (timestamp, prev_ts) {
                                 (Some(end), Some(start)) if end >= start => {
                                     Some((end - start) as u64)
                                 }
@@ -273,9 +269,6 @@ fn parse_lines<S: AsRef<str>>(
                         }
                     }
                     Some("function_call_output" | "custom_tool_call_output") => {
-                        if let Some(ts) = timestamp {
-                            trigger_ts = Some(ts);
-                        }
                         let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
                         let output = output_text(payload.get("output").unwrap_or(&Value::Null));
                         if let Some(index) = slots.get(call_id).copied() {

@@ -247,69 +247,10 @@ pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
     String::new()
 }
 
-/// Fold each `Thinking` block together with the contiguous run of *activity* tool
-/// calls that immediately precede it (whose results it processed), matching Claude
-/// Code's `Thought for Xs, <activities>` turn summary. Edit/Write and other tools
-/// (and any tool not directly before a thinking) are left expanded.
-fn group_turns(blocks: Vec<Block>) -> Vec<Block> {
-    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
-    for b in blocks {
-        if let Block::Thinking {
-            text,
-            duration_secs,
-            ..
-        } = b
-        {
-            let mut tools = Vec::new();
-            while matches!(out.last(), Some(Block::ToolUse { name, .. }) if is_activity_tool(name))
-            {
-                tools.push(out.pop().unwrap());
-            }
-            tools.reverse();
-            out.push(Block::Thinking {
-                text,
-                duration_secs,
-                tools,
-            });
-        } else {
-            out.push(b);
-        }
-    }
-    out
-}
-
-/// Coalesce a contiguous run (≥2) of *activity* tool calls that isn't part of a
-/// thinking turn into one `<activities>` summary block — matching Claude Code, which
-/// shows e.g. "Searched for 1 pattern, ran 9 shell commands" rather than nine
-/// separate lines. A lone activity tool keeps its own detailed summary; Edit/Write
-/// and other non-activity tools break a run and stay expanded. (A tools-only
-/// `Thinking` — empty text, no duration — is how such a run is represented; `render`
-/// shows it as the activities line without a "thought".)
-fn coalesce_activity_runs(blocks: Vec<Block>) -> Vec<Block> {
-    fn flush(run: &mut Vec<Block>, out: &mut Vec<Block>) {
-        if run.len() >= 2 {
-            out.push(Block::Thinking {
-                text: String::new(),
-                duration_secs: None,
-                tools: std::mem::take(run),
-            });
-        } else {
-            out.append(run);
-        }
-    }
-    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
-    let mut run: Vec<Block> = Vec::new();
-    for b in blocks {
-        if matches!(&b, Block::ToolUse { name, .. } if is_activity_tool(name)) {
-            run.push(b);
-        } else {
-            flush(&mut run, &mut out);
-            out.push(b);
-        }
-    }
-    flush(&mut run, &mut out);
-    out
-}
+// (Turn grouping is the shared, agent-neutral span coalescer now — see
+// `crate::model::coalesce_spans` and `design/cc-activity-coalescing.md` (#57). The
+// former per-assistant-message `group_turns`/`coalesce_activity_runs` pair rendered
+// far more summary lines than Claude Code and was subsumed by it.)
 
 fn result_text(content: &Value) -> String {
     match content {
@@ -636,7 +577,6 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             }
         }
         Some("user") => {
-            msgs.push(Message::Trigger(ev_ts));
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
             let injected = is_injected_event(&v);
             let Some(content) = v.pointer("/message/content") else {
@@ -751,7 +691,7 @@ fn claude_keep_orphan(t: &str) -> bool {
     !is_boilerplate(t)
 }
 fn claude_finish(blocks: Vec<Block>) -> Vec<Block> {
-    coalesce_activity_runs(group_turns(blocks))
+    crate::model::coalesce_spans(blocks)
 }
 
 /// Claude's `build_tool`: an `Agent`/`Task` spawn becomes a launched `SubAgent` block;
@@ -838,9 +778,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // it. CC records it on every event, so it's set from the first line, before any
     // tool_use; fall back to "" (absolute paths) if a tool_use somehow precedes it.
     let mut cwd = String::new();
-    // Timestamp of the last user/tool-result event — the moment the model's next
-    // generation was requested — so a thinking block's duration is `its ts − this`.
-    let mut trigger_ts: Option<EpochSeconds> = None;
+    // Timestamp of the previous event line of ANY kind — CC's thinking clock (#57,
+    // verified empirically): a thinking's duration is `its ts − this`, so a burst
+    // right after the turn's own text measures from that text, not from the last
+    // tool result.
+    let mut prev_ts: Option<EpochSeconds> = None;
     // Messages the human submits mid-turn are recorded as `queue-operation` events
     // (not `user` events). Their lifecycle: `enqueue` → `remove`/`dequeue` (a FIFO
     // front pop) when the agent picks the prompt up → a `queued_command` **attachment**
@@ -853,13 +795,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // to empty. Whatever prose is still queued at the end (a live `-f` session mid-
     // flight) renders as pending user turns.
     let mut queue: Vec<QueueItem> = Vec::new();
-    // Monotonic count of *agent* content blocks emitted (assistant text/thinking/
-    // tool_use). A queued prompt whose enqueue and pickup straddle no agent work
-    // (`content_seq` unchanged) was picked up immediately: its `⧗ queued:` marker is
-    // redundant with the `❯` turn, so we suppress it. Marker indices to drop collect
-    // in `suppress` and are filtered out after the loop (safe — `tool_slot` is only
-    // used during the loop).
-    let mut content_seq = 0usize;
+    // Marker indices to drop collect in `suppress` and are filtered out after the
+    // loop (safe — `tool_slot` is only used during the loop).
     let mut suppress: Vec<BlockIndex> = Vec::new();
     // Index of the most recent `Skill` tool_use block. The harness delivers a loaded
     // skill's instruction body as a following injected user message ("Base directory
@@ -884,8 +821,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             .get("timestamp")
             .and_then(|t| t.as_str())
             .and_then(epoch_secs);
-        // Stamp the user turns the previous event emitted, then claim this event's ts.
+        // Stamp the user turns the previous event emitted, then claim this event's ts
+        // (the outgoing `pending_ts` is the previous line's — the thinking clock's zero).
         stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        if pending_ts.is_some() {
+            prev_ts = pending_ts;
+        }
         pending_ts = ev_ts;
         match v.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
@@ -898,7 +839,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
                                     out.push(Block::AssistantText(t.to_string()));
-                                    content_seq += 1;
                                 }
                             }
                         }
@@ -909,7 +849,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
                             if !t.trim().is_empty() {
-                                let duration_secs = match (ev_ts, trigger_ts) {
+                                let duration_secs = match (ev_ts, prev_ts) {
                                     (Some(end), Some(start)) if end >= start => {
                                         Some((end - start) as u64)
                                     }
@@ -920,7 +860,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     duration_secs,
                                     tools: Vec::new(),
                                 });
-                                content_seq += 1;
                             }
                         }
                         Some("tool_use") => {
@@ -967,7 +906,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     read_lines: None,
                                 });
                             }
-                            content_seq += 1;
                             let idx = out.len() - 1;
                             if name == "Skill" {
                                 last_skill = Some(idx);
@@ -981,10 +919,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 }
             }
             Some("user") => {
-                // A user turn or tool_result — the trigger for the next generation.
-                if let Some(t) = ev_ts {
-                    trigger_ts = Some(t);
-                }
                 // The message-level toolUseResult metadata (shared by its result blocks).
                 let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
                 // `isMeta`/`isCompactSummary` events are injected system content, not
@@ -1223,7 +1157,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             keep
         });
     }
-    coalesce_activity_runs(group_turns(out))
+    crate::model::coalesce_spans(out)
 }
 
 /// Build an [`Attachment`] from a `type:"attachment"` event's inner `attachment`
@@ -1774,8 +1708,8 @@ mod tests {
         assert!(matches!(&blocks[0], Block::UserText(t) if t == "real"));
     }
 
-    /// A thinking block absorbs the activity tools that ran just before it and
-    /// carries a duration = (its timestamp − the triggering event's timestamp).
+    /// A span absorbs the activity tools around its thinking bursts (#57) and
+    /// carries a duration = (each burst's timestamp − the previous event's timestamp).
     #[test]
     fn thinking_groups_preceding_tools_with_duration() {
         let jsonl = r#"
@@ -1800,8 +1734,8 @@ mod tests {
         assert_eq!(tools.len(), 1, "did not absorb the preceding Bash");
     }
 
-    /// Edit/Write tools are NOT absorbed into a following thinking (CC shows their
-    /// diffs expanded); only transient activity tools (Bash/Read/…) group in.
+    /// Edit/Write tools are NOT absorbed into a span (CC shows their diffs expanded,
+    /// and they BREAK the span); only transient activity tools (Bash/Read/…) fold in.
     #[test]
     fn edit_stays_expanded_next_to_thinking() {
         let jsonl = r#"
@@ -1815,6 +1749,84 @@ mod tests {
             vec!["user", "edit", "thinking"],
             "{blocks:?}"
         );
+    }
+
+    /// The #57 span rule end-to-end (`design/cc-activity-coalescing.md`): ALL
+    /// consecutive thinking bursts + activity tools between two visible outputs merge
+    /// into ONE `Thinking` block — across assistant messages, across tool results, and
+    /// straight over a transparent attachment — with the bursts' durations SUMMED
+    /// (each = its ts − the previous event's ts, so the burst 4s after the turn's own
+    /// text contributes 4, not its distance from the last tool result). Task-
+    /// bookkeeping tools (TaskUpdate & co) break the span like CC (which renders them
+    /// invisibly; we keep their block). A LONE activity tool folds too.
+    #[test]
+    fn spans_merge_between_visible_outputs_and_break_on_cc_breakers() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:10.000Z","message":{"content":[{"type":"thinking","thinking":"burst one"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:12.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"cargo build"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:01:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}}
+{"type":"attachment","timestamp":"2026-06-30T03:01:02.000Z","attachment":{"type":"edited_text_file","filename":"/w/x.rs","snippet":"1\tfn x(){}"}}
+{"type":"assistant","timestamp":"2026-06-30T03:01:07.000Z","message":{"content":[{"type":"thinking","thinking":"burst two"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:01:08.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/a.rs"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:02:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"1\tsrc"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:02:05.000Z","message":{"content":[{"type":"text","text":"VISIBLE."}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:02:09.000Z","message":{"content":[{"type":"thinking","thinking":"after text"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:02:10.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"TaskUpdate","input":{"taskId":"9","status":"completed"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:03:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Updated task #9 status"}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:03:04.000Z","message":{"content":[{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-06-30T03:04:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"src"}]}}
+"#;
+        let blocks = parse(jsonl);
+        // Span 1 carries across the attachment (which renders in place, un-split);
+        // the TaskUpdate splits "after text" from the lone trailing Bash, which still
+        // folds into a tools-only span.
+        assert_eq!(
+            kinds(&blocks),
+            vec![
+                "user",
+                "attachment",
+                "thinking",
+                "assistant",
+                "thinking",
+                "tool",
+                "thinking"
+            ],
+            "{blocks:?}"
+        );
+        let Block::Thinking {
+            text,
+            duration_secs,
+            tools,
+        } = &blocks[2]
+        else {
+            panic!("span 1 missing: {blocks:?}");
+        };
+        // 10s (03:00:10−03:00:00) + 5s (03:01:07−03:01:02, measured from the
+        // attachment line — the previous event) = 15s.
+        assert_eq!(*duration_secs, Some(15), "summed burst durations");
+        assert_eq!(
+            text, "burst one\n\nburst two",
+            "burst texts join blank-line separated"
+        );
+        assert_eq!(tools.len(), 2, "Bash + Read folded into the one span");
+        // The post-text burst measures from the TEXT event (4s), not the last
+        // tool result (65s) — CC's thinking clock.
+        let Block::Thinking { duration_secs, .. } = &blocks[4] else {
+            panic!("post-text span missing: {blocks:?}");
+        };
+        assert_eq!(*duration_secs, Some(4), "previous-event clock, not trigger");
+        // The lone trailing Bash folded into a tools-only span.
+        let Block::Thinking {
+            text,
+            duration_secs,
+            tools,
+        } = &blocks[6]
+        else {
+            panic!("lone-activity span missing: {blocks:?}");
+        };
+        assert!(text.is_empty() && duration_secs.is_none());
+        assert_eq!(tools.len(), 1, "a lone activity tool still folds");
     }
 
     /// A skill load is ONE collapsible unit: the `Skill` tool_use names the skill, and
@@ -2097,7 +2109,7 @@ mod tests {
     #[test]
     fn consecutive_activity_tools_coalesce_into_one_summary() {
         // A run of activity tools with no thinking → one activity block (like CC's
-        // "Searched for 1 pattern, ran N shell commands"); a lone one stays itself.
+        // "Searched for 1 pattern, ran N shell commands"); a lone one folds too (#57).
         let mut jsonl = String::from(
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
         );
@@ -2336,7 +2348,7 @@ mod tests {
     /// `apply(all)` for every split point — same blocks, same `user_times`. This is the
     /// property that makes the streaming (M9) and incremental (M11) paths safe. Covers the
     /// state that must survive a split: the tool back-patch (`tool_slot`), the
-    /// queue lifecycle, the thinking clock (`trigger_ts`), and stamping (`pending_ts`).
+    /// queue lifecycle, the thinking clock (`prev_ts`), and stamping (`pending_ts`).
     #[test]
     fn replayer_split_apply_is_identical() {
         fn assert_split(jsonl: &str) {

@@ -67,11 +67,14 @@ pub enum Block {
     QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
-    /// A ✻ thinking block, grouped as a "turn" like Claude Code: the thinking text,
-    /// the wall-clock seconds it took (floored, from transcript timestamps — `None`
-    /// if not derivable), and the tool calls that ran just before it (whose results
-    /// it processed). Collapsed → `<activities>, thought for Xs` (natural order —
-    /// tools ran first); expanded → the tools followed by the thinking.
+    /// A ✻ **work-span** block, coalesced like Claude Code (#57 — the empirically
+    /// derived rule in `design/cc-activity-coalescing.md`): ALL consecutive thinking
+    /// bursts + activity tool calls between two visible outputs fold into ONE of
+    /// these. `text` joins the span's thinking texts (blank-line separated),
+    /// `duration_secs` SUMS the bursts' durations (each = its ts − the previous
+    /// event's ts; `None` if none derivable), `tools` holds the span's activity tool
+    /// calls in order. Collapsed → `Thought for Xs, <activities>`; expanded → the
+    /// tools followed by the thinking.
     Thinking {
         text: String,
         duration_secs: Option<u64>,
@@ -470,6 +473,63 @@ pub(crate) fn is_activity_tool(name: &str) -> bool {
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
     )
+}
+
+/// Coalesce each **span** of consecutive thinking + activity tool calls into one
+/// `Thinking` block — Claude Code's between-outputs rule (#57; the full empirical
+/// derivation is `design/cc-activity-coalescing.md`). Any other block ends the span:
+/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/
+/// MCP/…), and the task-bookkeeping tools (TaskUpdate & co — CC renders them
+/// invisibly but they still split the span; we keep their blocks visible). The one
+/// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
+/// its spans demonstrably carry across one — so they emit in place without flushing
+/// (the span's summary then lands after the attachment, at the span's true end).
+/// Thinking texts join blank-line separated; durations sum; even a LONE activity
+/// tool folds (CC never leaves one expanded).
+pub(crate) fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
+    fn flush(
+        texts: &mut Vec<String>,
+        dur: &mut Option<u64>,
+        tools: &mut Vec<Block>,
+        out: &mut Vec<Block>,
+    ) {
+        if texts.is_empty() && tools.is_empty() {
+            return;
+        }
+        out.push(Block::Thinking {
+            text: std::mem::take(texts).join("\n\n"),
+            duration_secs: dur.take(),
+            tools: std::mem::take(tools),
+        });
+    }
+    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
+    let (mut texts, mut dur, mut tools) = (Vec::new(), None::<u64>, Vec::new());
+    for b in blocks {
+        match b {
+            Block::Thinking {
+                text,
+                duration_secs,
+                tools: inner,
+            } => {
+                // Raw folds emit tool-less thinkings; accept pre-grouped ones anyway.
+                tools.extend(inner);
+                if !text.trim().is_empty() {
+                    texts.push(text);
+                }
+                if let Some(d) = duration_secs {
+                    dur = Some(dur.unwrap_or(0) + d);
+                }
+            }
+            Block::ToolUse { ref name, .. } if is_activity_tool(name) => tools.push(b),
+            Block::Attachment(_) => out.push(b),
+            other => {
+                flush(&mut texts, &mut dur, &mut tools, &mut out);
+                out.push(other);
+            }
+        }
+    }
+    flush(&mut texts, &mut dur, &mut tools, &mut out);
+    out
 }
 
 #[cfg(test)]
