@@ -144,15 +144,21 @@ pub fn session_id(path: &Path) -> Option<String> {
     None
 }
 
-/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking each
-/// registered adapter's `sniff` (a Codex rollout
-/// opens with a `session_meta`/`payload` event; a Claude transcript has top-level
-/// `sessionId`/`message`). Defaults to Claude. A new agent adds a `sniff`, not an arm here.
+/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking
+/// each registered adapter's `sniff` claim (#59). An [`Owns`](crate::adapter::SniffClaim)
+/// claim (a distinctive head: Codex's `session_meta`, QoderWork's `runtime-config`)
+/// wins immediately; a mere `CanParse` (Claude's adapter can parse any Claude-format
+/// lines, including derived agents') is remembered and only wins if NO adapter owns
+/// any of the sniffed lines — so a new Claude-format agent is labeled by its owner
+/// marker, never mislabeled by the first can-parse adapter, and Claude's sniff needs
+/// no per-agent carve-outs. Defaults to Claude.
 pub fn detect_agent(path: &Path) -> Agent {
+    use crate::adapter::SniffClaim;
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
         return Agent::Claude;
     };
+    let mut can_parse: Option<Agent> = None;
     for line in std::io::BufReader::new(file)
         .lines()
         .map_while(Result::ok)
@@ -162,12 +168,18 @@ pub fn detect_agent(path: &Path) -> Agent {
             continue;
         };
         for a in crate::adapter::adapters() {
-            if a.sniff(&v) {
-                return a.agent();
+            match a.sniff(&v) {
+                SniffClaim::Owns => return a.agent(),
+                SniffClaim::CanParse => {
+                    if can_parse.is_none() {
+                        can_parse = Some(a.agent());
+                    }
+                }
+                SniffClaim::No => {}
             }
         }
     }
-    Agent::Claude
+    can_parse.unwrap_or(Agent::Claude)
 }
 
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
@@ -347,8 +359,10 @@ mod tests {
         )
         .unwrap();
 
-        // QoderWork: Claude-format lines under a `runtime-config` head — the head also carries
-        // `sessionId`, so this doubles as the sniff-exclusivity check (Claude must NOT claim it).
+        // QoderWork: Claude-format lines under a `runtime-config` head — the head also
+        // carries `sessionId`, so Claude's adapter CAN parse it, but QoderWork OWNS the
+        // distinctive head and ownership outranks can-parse (#59) — no carve-out in
+        // Claude's sniff, and detection stays order-independent.
         let qoderwork = dir.join(format!("detect-qw-{}.jsonl", std::process::id()));
         std::fs::write(
             &qoderwork,
@@ -359,6 +373,15 @@ mod tests {
         assert_eq!(detect_agent(&codex), Agent::Codex);
         assert_eq!(detect_agent(&claude), Agent::Claude);
         assert_eq!(detect_agent(&qoderwork), Agent::QoderWork);
+        // The claim levels behind that: Claude claims CanParse on QW's head; QW Owns it.
+        {
+            use crate::adapter::{adapter, SniffClaim};
+            let head: Value =
+                serde_json::from_str("{\"type\":\"runtime-config\",\"sessionId\":\"abc\"}")
+                    .unwrap();
+            assert_eq!(adapter(Agent::Claude).sniff(&head), SniffClaim::CanParse);
+            assert_eq!(adapter(Agent::QoderWork).sniff(&head), SniffClaim::Owns);
+        }
         // A missing/empty file falls back to Claude.
         assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::Claude);
 
