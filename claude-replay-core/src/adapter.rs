@@ -118,6 +118,12 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
     }
+    /// Is `path` inside this agent's OWN transcript store (#66)? Store provenance
+    /// proves ownership even without an in-band marker — a file in
+    /// `~/.claude/projects` is Claude's, no sniff needed. Default `false`.
+    fn store_contains(&self, _path: &Path) -> bool {
+        false
+    }
     /// The LIVE on-disk task list for the session at `path` (#15). Default `None` —
     /// an agent with no task store (Codex) has none; Claude reads
     /// `~/.claude/tasks/<session-id>/*.json`. Backs `discover::session_tasks`.
@@ -202,6 +208,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn load_tasks(&self, path: &Path) -> Option<crate::engine::tasks::TaskList> {
         crate::claude_discover::load_tasks(path)
     }
+    fn store_contains(&self, path: &Path) -> bool {
+        path.starts_with(crate::claude_discover::projects_dir())
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.
@@ -255,6 +264,9 @@ impl TranscriptAdapter for QoderWorkAdapter {
         } else {
             SniffClaim::No
         }
+    }
+    fn store_contains(&self, path: &Path) -> bool {
+        path.starts_with(crate::qoderwork_discover::projects_dir())
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         crate::claude_model::enrich_tree(path, blocks)

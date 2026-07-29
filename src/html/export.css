@@ -72,6 +72,9 @@ body {
   font-size: var(--fs);
   line-height: 1.6;
   min-height: 100vh;
+  /* #50/#66: the virtual window swings the spacer heights; the browser's native
+     scroll anchoring fights our own anchoring and bounces programmatic jumps. */
+  overflow-anchor: none;
 }
 
 a { color: var(--link); text-decoration: none; }

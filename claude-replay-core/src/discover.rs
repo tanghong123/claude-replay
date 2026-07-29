@@ -161,10 +161,19 @@ pub fn session_id(path: &Path) -> Option<String> {
 /// marker, never mislabeled by the first can-parse adapter, and Claude's sniff needs
 /// no per-agent carve-outs. Defaults to Claude.
 pub fn detect_agent(path: &Path) -> Agent {
+    detect_agent_claimed(path).0
+}
+
+/// [`detect_agent`] plus whether the label is OWNERSHIP-PROVEN (#66): `true` when a
+/// distinctive marker decided it, `false` for a merely-compatible (can-parse)
+/// fallback — an unknown Claude-format-derived agent's transcript parses fine but
+/// is honestly "compatible", not known to be Claude's. Presenters may badge the
+/// unowned case; parse dispatch uses the agent either way.
+pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
     use crate::adapter::SniffClaim;
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
-        return Agent::Claude;
+        return (Agent::Claude, false);
     };
     let mut can_parse: Option<Agent> = None;
     for line in std::io::BufReader::new(file)
@@ -177,7 +186,7 @@ pub fn detect_agent(path: &Path) -> Agent {
         };
         for a in crate::adapter::adapters() {
             match a.sniff(&v) {
-                SniffClaim::Owns => return a.agent(),
+                SniffClaim::Owns => return (a.agent(), true),
                 SniffClaim::CanParse => {
                     if can_parse.is_none() {
                         can_parse = Some(a.agent());
@@ -187,7 +196,7 @@ pub fn detect_agent(path: &Path) -> Agent {
             }
         }
     }
-    can_parse.unwrap_or(Agent::Claude)
+    (can_parse.unwrap_or(Agent::Claude), false)
 }
 
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
@@ -219,6 +228,15 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
 /// backfills pruned files.
 pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::TaskList> {
     crate::adapter::adapter(agent).load_tasks(path)
+}
+
+/// Is the `agent` label for `path` OWNERSHIP-PROVEN (#66)? True when the sniff
+/// owned it (a distinctive in-band marker) OR the file sits inside that agent's own
+/// transcript store (provenance — a normal `~/.claude/projects` session is Claude's
+/// without any marker). False = merely-compatible: an arbitrary path whose format
+/// parses but whose author is honestly unknown.
+pub fn detection_owned(agent: Agent, path: &Path) -> bool {
+    detect_agent_claimed(path).1 || crate::adapter::adapter(agent).store_contains(path)
 }
 
 /// Resolve which transcript to open, across agents, and return its path.
@@ -418,6 +436,53 @@ mod tests {
                 assert_eq!(*dirs.last().unwrap(), home, "should stop at $HOME");
             }
         }
+    }
+
+    /// #66: ownership is sniff-marker OR store-provenance. An arbitrary-path
+    /// Claude-format file is merely compatible (parse dispatch unaffected); the
+    /// same bytes inside Claude's own store are ownership-proven; a Codex head is
+    /// sniff-owned anywhere.
+    #[test]
+    fn detection_ownership_combines_sniff_and_provenance() {
+        let dir = std::env::temp_dir();
+        let stray = dir.join(format!("own-stray-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &stray,
+            "{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        let (agent, sniff_owned) = detect_agent_claimed(&stray);
+        assert_eq!(agent, Agent::Claude);
+        assert!(!sniff_owned, "claude format alone proves nothing");
+        assert!(
+            !detection_owned(Agent::Claude, &stray),
+            "arbitrary path: merely compatible"
+        );
+        let codex = dir.join(format!("own-codex-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &codex,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/x\"}}\n",
+        )
+        .unwrap();
+        assert!(
+            detection_owned(Agent::Codex, &codex),
+            "codex head is sniff-owned anywhere"
+        );
+        // Store provenance: the same Claude-format bytes inside the Claude store.
+        let in_store = crate::claude_discover::projects_dir()
+            .join("own-test-proj")
+            .join("own-in-store.jsonl");
+        if std::fs::create_dir_all(in_store.parent().unwrap()).is_ok()
+            && std::fs::copy(&stray, &in_store).is_ok()
+        {
+            assert!(
+                detection_owned(Agent::Claude, &in_store),
+                "store provenance proves ownership"
+            );
+            let _ = std::fs::remove_dir_all(in_store.parent().unwrap());
+        }
+        std::fs::remove_file(&stray).ok();
+        std::fs::remove_file(&codex).ok();
     }
 
     /// #62: for a cwd OUTSIDE `$HOME`, the climb stops BEFORE the filesystem root —

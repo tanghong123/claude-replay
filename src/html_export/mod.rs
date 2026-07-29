@@ -999,7 +999,15 @@ pub(super) fn display_title(agent: Agent, path: &Path) -> String {
     } else {
         stem // a file the user named → the stem is the meaningful name
     };
-    format!("{name} · {}", agent.label())
+    // #66: a merely-compatible detection — no in-band owner marker AND not in any
+    // known store (e.g. an unknown Claude-format-derived agent's file handed in by
+    // path) — is badged honestly rather than passed off as the parsing agent.
+    let owned = discover::detection_owned(agent, path);
+    if owned {
+        format!("{name} · {}", agent.label())
+    } else {
+        format!("{name} · compatible ({})", agent.label())
+    }
 }
 
 /// Does a transcript's file stem look machine-generated (a session UUID or a Codex
@@ -1921,7 +1929,7 @@ mod tests {
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
         assert_eq!(
             recs[0]["ancestors"],
-            json!([{ "id": "sess", "title": "sess · claude" }]),
+            json!([{ "id": "sess", "title": "sess · compatible (claude)" }]),
             "child breadcrumb points at the root (titled by session name + agent)"
         );
         // The lone Read folds into an activity-span record (#57); its tool block
@@ -2591,7 +2599,11 @@ mod tests {
             "{\"type\":\"user\",\"cwd\":\"/Users/me/code/knack\",\"message\":{\"content\":\"hi\"}}\n",
         )
         .unwrap();
-        assert_eq!(display_title(Agent::Claude, &uuid), "knack · claude");
+        // Temp-dir files sit outside every store → honestly badged (#66).
+        assert_eq!(
+            display_title(Agent::Claude, &uuid),
+            "knack · compatible (claude)"
+        );
 
         // A transcript the user named and pointed at directly keeps its file stem.
         let named = base.join("my-session.jsonl");
@@ -2600,7 +2612,10 @@ mod tests {
             "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
         )
         .unwrap();
-        assert_eq!(display_title(Agent::Claude, &named), "my-session · claude");
+        assert_eq!(
+            display_title(Agent::Claude, &named),
+            "my-session · compatible (claude)"
+        );
 
         // The UUID shape is recognized regardless of case; a non-UUID/non-store stem is kept.
         assert!(looks_like_session_id(
