@@ -837,6 +837,13 @@ fn build_page(
       <div id="agentitems"></div>
     </div>
   </div>
+  <div class="toolfilter" id="tasknav" style="display:none">
+    <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
+    <div id="taskmenu">
+      <div class="menu-head">Session tasks</div>
+      <div class="tasks" id="taskbox"></div>
+    </div>
+  </div>
   <div class="searchbox">
     <span class="mag">⌕</span>
     <input id="q" placeholder="Search transcript  ( / )" autocomplete="off">
@@ -851,7 +858,6 @@ fn build_page(
   <nav id="sidebar">
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
-    <div class="tasks" id="taskbox" style="display:none"></div>
     <div class="usage" id="usage"></div>
     <div class="legend">
       <span class="key">j k</span><span class="what">move</span>
