@@ -25,7 +25,6 @@
   var root = document.documentElement;
   var stream = document.getElementById("stream");
   var turnlist = document.getElementById("turnlist");
-  var matches = [];
   var mIdx = -1;
   var curTurn = null;
   var raf = null;
@@ -171,6 +170,267 @@
     return a;
   }
 
+  // ── #50 virtual DOM window ────────────────────────────────────────────
+  // The DOM used to hold EVERY block (O(session) nodes — ~673k for the dev session,
+  // hundreds of MB of renderer memory and multi-second layout stalls). Now the parsed
+  // RECORDS are the source of truth and only the blocks within viewport ± MARGIN_PX
+  // are materialized as DOM, between two spacer divs whose heights stand in for the
+  // rest — the browser twin of the TUI's C-5 heights+prefix windowing. Heights are
+  // estimated (EST_H) until a block is first laid out, then measured as the delta to
+  // its next sibling (which absorbs margin collapse exactly); the prefix-sum array
+  // over effective heights (0 when filter-hidden) drives scroll↔index mapping.
+  // Fold/filter/search state lives on the records so it survives dematerialization.
+  var records = [];      // block records, stream order — the source of truth
+  var recHeights = [];   // effective px height per record (EST_H until measured)
+  var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
+  var recHit = [];       // with a filter active: does this record (or a nested one) match?
+  var idIndex = {};      // block id (incl. nested items) -> top-level record index
+  var loIdx = 0, hiIdx = 0; // materialized window [loIdx, hiIdx)
+  var EST_H = 30;
+  var MARGIN_PX = 1500;
+  var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
+  var topPad = null, botPad = null;
+  var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
+
+  function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
+  function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
+  function effH(i) { return isHiddenRec(i) ? 0 : recHeights[i]; }
+  function P() {
+    if (!prefix) {
+      prefix = new Float64Array(records.length + 1);
+      for (var i = 0; i < records.length; i++) prefix[i + 1] = prefix[i] + effH(i);
+    }
+    return prefix;
+  }
+  // First index whose bottom edge lies below y (binary search over the prefix sums).
+  function idxAt(y) {
+    var p = P(), lo = 0, hi = records.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (p[mid + 1] > y) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+  }
+  function streamTop() {
+    return stream.getBoundingClientRect().top + window.scrollY;
+  }
+  function ensurePads() {
+    if (topPad) return;
+    topPad = el("div", "vpad");
+    botPad = el("div", "vpad");
+    stream.appendChild(topPad);
+    stream.appendChild(botPad);
+  }
+  function matEls() {
+    var out = [];
+    if (!topPad) return out;
+    for (var n = topPad.nextSibling; n && n !== botPad; n = n.nextSibling) out.push(n);
+    return out;
+  }
+  function matBlock(i) {
+    var b = records[i];
+    var e = renderBlock(b);
+    e.dataset.idx = i;
+    if (filter) {
+      if (isTurnKind(b)) e.classList.add("filter-dim");
+      else if (recHit[i]) markFilterHit(e);
+    }
+    return e;
+  }
+  // Post-materialization passes. Split into a WRITE phase (per element: strips,
+  // wrap styles, search marks — no layout reads) and a single BATCHED clamp pass
+  // (all layout reads together, then all writes), so materializing N blocks costs
+  // O(1) forced layouts, not O(N) — the difference between a 15ms and a 650ms
+  // window rebuild on this page.
+  function postMat(e) {
+    buildStripsIn(e);
+    applyWrapIn(e);
+    if (searchNeedle) markHits(e, searchNeedle, searchNeedle.length);
+  }
+  var CLAMP_LINES = 12; // long user turns clamp to this many lines + expander
+  function clampBatch(els) {
+    var jobs = [];
+    els.forEach(function (e) {
+      Array.prototype.forEach.call(e.querySelectorAll(".uturn-md"), function (md) {
+        if (md.dataset.clampChecked) return;
+        md.dataset.clampChecked = "1";
+        jobs.push(md);
+      });
+    });
+    if (!jobs.length) return;
+    // Phase A: all reads (one layout pass)…
+    var reads = jobs.map(function (md) {
+      return { md: md, lh: parseFloat(getComputedStyle(md).lineHeight) || 25, sh: md.scrollHeight };
+    });
+    // …phase B: all writes.
+    reads.forEach(function (r) {
+      var cap = r.lh * CLAMP_LINES;
+      if (r.sh <= cap + r.lh) return; // fits within N (+1 slack) lines
+      var hidden = Math.round((r.sh - cap) / r.lh);
+      r.md.style.maxHeight = cap + "px";
+      r.md.classList.add("clamped");
+      var btn = el("button", "morebtn clampbtn", "⋯ " + hidden + " more lines");
+      btn.dataset.cap = cap;
+      btn.dataset.more = "⋯ " + hidden + " more lines";
+      r.md.after(btn);
+    });
+  }
+  function updatePads() {
+    var p = P();
+    ensurePads();
+    topPad.style.height = p[loIdx] + "px";
+    botPad.style.height = Math.max(0, p[records.length] - p[hiIdx]) + "px";
+  }
+  // Measure the materialized run: each block's effective height is the offsetTop
+  // delta to its next sibling (the last one measures against the bottom pad).
+  function measureWindow() {
+    var els = matEls();
+    if (!els.length) return false;
+    var changed = false;
+    for (var k = 0; k < els.length; k++) {
+      var i = +els[k].dataset.idx;
+      var next = k + 1 < els.length ? els[k + 1] : botPad;
+      var h = next.offsetTop - els[k].offsetTop;
+      if (h > 0 && Math.abs(h - recHeights[i]) > 0.5) {
+        recHeights[i] = h;
+        changed = true;
+      }
+    }
+    if (changed) prefix = null;
+    return changed;
+  }
+  // Materialize exactly [lo, hi): incremental trim/extend at both ends; a disjoint
+  // jump rebuilds. Skips filter-hidden records (they contribute 0 height).
+  function setWindow(lo, hi) {
+    lo = Math.max(0, Math.min(lo, records.length));
+    hi = Math.max(lo, Math.min(hi, records.length));
+    ensurePads();
+    var fresh = [];
+    if (lo >= hiIdx || hi <= loIdx || hiIdx === loIdx) {
+      matEls().forEach(function (e) { e.remove(); });
+      var frag = document.createDocumentFragment();
+      for (var i = lo; i < hi; i++) {
+        if (isHiddenRec(i)) continue;
+        var e = matBlock(i);
+        frag.appendChild(e);
+        fresh.push(e);
+      }
+      stream.insertBefore(frag, botPad);
+      loIdx = lo; hiIdx = hi;
+    } else {
+      while (loIdx < lo && topPad.nextSibling !== botPad) {
+        topPad.nextSibling.remove();
+        loIdx++;
+        while (loIdx < lo && loIdx < hiIdx && isHiddenRec(loIdx)) loIdx++;
+      }
+      if (lo < loIdx) {
+        var ftop = document.createDocumentFragment();
+        for (var a = lo; a < loIdx; a++) {
+          if (isHiddenRec(a)) continue;
+          var ea = matBlock(a);
+          ftop.appendChild(ea);
+          fresh.push(ea);
+        }
+        stream.insertBefore(ftop, topPad.nextSibling);
+        loIdx = lo;
+      }
+      while (hiIdx > hi && botPad.previousSibling !== topPad) {
+        botPad.previousSibling.remove();
+        hiIdx--;
+        while (hiIdx > hi && hiIdx > loIdx && isHiddenRec(hiIdx - 1)) hiIdx--;
+      }
+      if (hi > hiIdx) {
+        var fbot = document.createDocumentFragment();
+        for (var c = hiIdx; c < hi; c++) {
+          if (isHiddenRec(c)) continue;
+          var ec = matBlock(c);
+          fbot.appendChild(ec);
+          fresh.push(ec);
+        }
+        stream.insertBefore(fbot, botPad);
+        hiIdx = hi;
+      }
+    }
+    fresh.forEach(postMat);   // writes only — no layout reads
+    clampBatch(fresh);        // one batched read pass + writes
+    measureWindow();          // one layout read pass
+    updatePads();
+  }
+  // Recompute the window for the current scroll position, anchoring the content
+  // under the viewport so height-measurement drift never visibly jumps the page.
+  function updateView() {
+    if (!records.length) return;
+    var st = streamTop();
+    var y0 = window.scrollY - st;
+    var lo = idxAt(y0 - MARGIN_PX);
+    var hi = idxAt(y0 + window.innerHeight + MARGIN_PX) + 1;
+    // Anchor: the first materialized element still on screen (or the window start).
+    var anchorEl = null, anchorTop = 0;
+    matEls().some(function (e) {
+      var r = e.getBoundingClientRect();
+      if (r.bottom > 0) { anchorEl = e; anchorTop = r.top; return true; }
+      return false;
+    });
+    setWindow(lo, hi);
+    if (anchorEl && anchorEl.isConnected) {
+      var d = anchorEl.getBoundingClientRect().top - anchorTop;
+      if (Math.abs(d) > 1) window.scrollBy(0, d);
+    }
+  }
+  // Re-render the materialized window in place (fold/filter state changed).
+  function refreshWindow() {
+    var lo = loIdx, hi = hiIdx;
+    loIdx = hiIdx = 0;
+    matEls().forEach(function (e) { e.remove(); });
+    setWindow(lo, hi);
+  }
+  // Register a record's ids (its own + nested items') for deep links and search nav.
+  function indexIds(b, top) {
+    if (b.id) idIndex[b.id] = top;
+    (b.body || []).forEach(function (p) {
+      if (p.p === "blocks") p.items.forEach(function (c) { indexIds(c, top); });
+    });
+  }
+  function pushRecord(b) {
+    records.push(b);
+    recHeights.push(EST_H);
+    recText.push(null);
+    recHit.push(false);
+    indexIds(b, records.length - 1);
+    if (b.turn != null) addTurn(b);
+  }
+  // Walk a top-level record's tree to the node with `id`, applying `fn` to every
+  // container on the path (for open-chains) and to the node itself.
+  function withChain(b, id, fn) {
+    if (b.id === id) { fn(b); return true; }
+    var parts = b.body || [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].p !== "blocks") continue;
+      var items = parts[i].items;
+      for (var j = 0; j < items.length; j++) {
+        if (withChain(items[j], id, fn)) { fn(b); return true; }
+      }
+    }
+    return false;
+  }
+  function isFoldRec(b) {
+    return !(b.kind === "user" || b.kind === "attachment" || b.kind === "queue" || b.kind === "assistant");
+  }
+  function setRecordOpen(id, open) {
+    var ti = idIndex[id];
+    if (ti == null) return;
+    withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = open ? 1 : 0; });
+  }
+  function eachFoldRec(fn) {
+    function walk(b) {
+      if (isFoldRec(b)) fn(b);
+      (b.body || []).forEach(function (p) {
+        if (p.p === "blocks") p.items.forEach(walk);
+      });
+    }
+    records.forEach(walk);
+  }
+
   function chips(head, into) {
     (head.chips || []).forEach(function (c) {
       into.appendChild(el("span", "chip" + (c.c ? " " + c.c : ""), c.x));
@@ -182,7 +442,7 @@
     var body = b.body || [];
 
     // Plain user turn — an always-open card. Long messages are clamped to a few
-    // lines with a "more" expander (measured after layout in clampLongTurns).
+    // lines with a "more" expander (measured after layout in clampBatch).
     if (b.kind === "user") {
       var card = el("div", "uturn blk");
       card.id = b.id;
@@ -484,19 +744,17 @@
     if (obj.t === "meta") { renderMeta(obj); return; }
     if (obj.t === "reset") { resetFrom(obj.from); return; }
     if (obj.t !== "block") return;
-    stream.appendChild(renderBlock(obj));
-    if (obj.turn != null) addTurn(obj);
+    pushRecord(obj);
   }
 
-  // The O(DOM) passes to run after a batch of new records: clamp long turns, rebuild the
-  // filter menu, give new code/diff panes their control strip, re-apply size + wrap.
+  // After a batch of new records: rebuild the filter menu (from the records), refresh
+  // the filter's hit map, and re-window (new tail records materialize if in range).
   function postRender() {
-    clampLongTurns();
     buildToolMenu();
-    buildStrips();
-    setMono(ms);
-    setWrap(wrap);
-    if (filter) applyFilter(filter);
+    if (filter) computeFilterHits();
+    prefix = null;
+    updatePads();
+    updateView();
   }
 
   // Whole-text, record-counter based: the inline snapshot and the single-file `-f`
@@ -533,15 +791,25 @@
     postRender();
   }
 
-  // Drop rendered blocks from stream index `from` onward (a rewritten tail), plus
-  // their sidebar turn entries, so the re-emitted records rebuild them cleanly.
+  // Drop records from stream index `from` onward (a rewritten tail), plus their
+  // sidebar turn entries, so the re-emitted records rebuild them cleanly.
   function resetFrom(from) {
-    while (stream.children.length > from) {
-      var last = stream.lastElementChild;
-      var si = turnlist.querySelector('.side-item[data-t="' + last.id + '"]');
-      if (si) si.remove();
-      last.remove();
-    }
+    if (records.length <= from) return;
+    records.length = from;
+    recHeights.length = from;
+    recText.length = from;
+    recHit.length = from;
+    // Ids of dropped records (incl. nested) leave the index; a full rebuild is
+    // cheap and only runs on tail rewrites.
+    idIndex = {};
+    records.forEach(function (b, i) { indexIds(b, i); });
+    turnlist.textContent = "";
+    records.forEach(function (b) { if (b.turn != null) addTurn(b); });
+    prefix = null;
+    if (loIdx > from) loIdx = from;
+    if (hiIdx > from) hiIdx = from;
+    matEls().forEach(function (e) { if (+e.dataset.idx >= from) e.remove(); });
+    updatePads();
   }
 
   // ── pull-client transport (`/pull?session=&cursor=`) ───────────────────
@@ -556,8 +824,7 @@
     return pc.epoch + "." + pc.committed + "." + pc.gen + "." + pc.index;
   }
   function putBlock(b) {
-    stream.appendChild(renderBlock(b));
-    if (b.turn != null) addTurn(b);
+    pushRecord(b);
   }
   function consumePull(r) {
     // Idle tick (same epoch, both zones empty): nothing to do.
@@ -588,15 +855,17 @@
   // content changes (live sessions grow types).
   var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command" };
   function buildToolMenu() {
+    // Counted from the RECORDS (nested items included), not the DOM — the DOM only
+    // holds the materialized window (#50).
     var entries = {}; // selector -> {label, count}
-    all(".fold[data-tool]").forEach(function (f) {
-      var sel = '.fold[data-tool="' + f.dataset.tool + '"]';
-      (entries[sel] = entries[sel] || { label: f.dataset.tool, count: 0 }).count++;
-    });
-    all(".fold[data-kind]:not([data-tool])").forEach(function (f) {
-      var k = f.dataset.kind;
-      var sel = '.fold[data-kind="' + k + '"]';
-      (entries[sel] = entries[sel] || { label: KIND_LABEL[k] || k, count: 0 }).count++;
+    eachFoldRec(function (b) {
+      if (b.tool) {
+        var sel = '.fold[data-tool="' + b.tool + '"]';
+        (entries[sel] = entries[sel] || { label: b.tool, count: 0 }).count++;
+      } else if (b.kind) {
+        var ks = '.fold[data-kind="' + b.kind + '"]';
+        (entries[ks] = entries[ks] || { label: KIND_LABEL[b.kind] || b.kind, count: 0 }).count++;
+      }
     });
     var sels = Object.keys(entries).sort(function (a, b) {
       return entries[a].label.localeCompare(entries[b].label);
@@ -620,27 +889,61 @@
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
   function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }
 
-  // Apply the current `filter` selector to the DOM: matching folds stay, expanded, with
-  // an accent; user turns stay dimmed as landmarks; the rest hide.
-  function applyFilter(sel) {
-    var matchesSel = all(sel);
-    all(".fold-h").forEach(function (h) { h.classList.remove("filter-hit"); });
-    all(".blk").forEach(function (b) {
-      if (b.classList.contains("uturn")) {
-        b.classList.remove("filter-hidden");
-        b.classList.add("filter-dim");
-        if (b.classList.contains("fold")) setFold(b, false); // collapse command turns
-        return;
+  // Does record `b` (or a nested item) match the filter selector's meaning? The two
+  // selector shapes the menu emits are '.fold[data-tool="X"]' / '.fold[data-kind="k"]'.
+  function parseFilterSel(sel) {
+    var mt = /\[data-tool="([^"]+)"\]/.exec(sel);
+    if (mt) return { tool: mt[1] };
+    var mk = /\[data-kind="([^"]+)"\]/.exec(sel);
+    if (mk) return { kind: mk[1] };
+    return {};
+  }
+  function recMatch(b, want) {
+    if (want.tool && b.tool === want.tool) return true;
+    if (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b)) return true;
+    var parts = b.body || [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].p !== "blocks") continue;
+      var items = parts[i].items;
+      for (var j = 0; j < items.length; j++) {
+        if (recMatch(items[j], want)) return true;
       }
-      b.classList.remove("filter-dim");
-      var hit = b.matches(sel) || b.querySelector(sel);
-      b.classList.toggle("filter-hidden", !hit);
+    }
+    return false;
+  }
+  // Rebuild the per-record hit map for the active filter, and open every hit's fold
+  // chain (record-level, so it holds for blocks materialized later too).
+  function computeFilterHits() {
+    var want = parseFilterSel(filter);
+    for (var i = 0; i < records.length; i++) {
+      var b = records[i];
+      recHit[i] = !isTurnKind(b) && recMatch(b, want);
+      if (recHit[i]) openFilterChain(b, want);
+      if (isTurnKind(b) && isFoldRec(b)) b.open = 0; // collapse command turns
+    }
+  }
+  function openFilterChain(b, want) {
+    var direct = (want.tool && b.tool === want.tool) ||
+      (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b));
+    var containsHit = false;
+    (b.body || []).forEach(function (p) {
+      if (p.p !== "blocks") return;
+      p.items.forEach(function (c) { if (openFilterChain(c, want)) containsHit = true; });
     });
-    matchesSel.forEach(function (m) {
-      for (var p = m.parentElement; p && p.id !== "stream"; p = p.parentElement) {
-        if (p.classList && p.classList.contains("fold")) setFold(p, true); // expand ancestors
-      }
-      setFold(m, true);
+    if ((direct || containsHit) && isFoldRec(b)) b.open = 1;
+    return direct || containsHit;
+  }
+  // Accent the hit headers of a materialized element: its own header if the record
+  // matches directly, plus any nested matching folds.
+  function markFilterHit(e) {
+    var want = parseFilterSel(filter);
+    var sel = want.tool
+      ? '.fold[data-tool="' + want.tool + '"]'
+      : '.fold[data-kind="' + want.kind + '"]:not([data-tool])';
+    var targets = [];
+    if (e.matches(sel)) targets.push(e);
+    Array.prototype.forEach.call(e.querySelectorAll(sel), function (m) { targets.push(m); });
+    targets.forEach(function (m) {
       var h = m.querySelector(":scope > .fold-h");
       if (h) h.classList.add("filter-hit");
     });
@@ -650,67 +953,46 @@
   function setFilter(sel, label) {
     if (sel === filter) sel = null;
     if (sel && !filter) {
-      // Snapshot every fold's open state so Clear restores it exactly.
+      // Snapshot every fold's open state (records, nested included) so Clear restores it.
       savedFolds = {};
-      all(".fold[id]").forEach(function (f) { savedFolds[f.id] = f.dataset.open; });
+      eachFoldRec(function (b) { if (b.id) savedFolds[b.id] = b.open ? "1" : "0"; });
     }
     filter = sel;
     if (!sel) {
-      // Re-anchor to CONTENT, not to the absolute scroll offset: while filtered most blocks
-      // are hidden, so the document is much shorter and scrollY means something different.
-      // Whatever the user navigated/scrolled to while filtered — the topmost block visible in
-      // the viewport — must stay put when the hidden blocks reflow back in; a raw offset would
-      // land back at the pre-filter position instead.
-      var anchor = null, anchorTop = 0;
-      var blocks = all(".blk");
-      for (var i = 0; i < blocks.length; i++) {
-        if (blocks[i].offsetParent === null) continue; // hidden by the filter
-        var r = blocks[i].getBoundingClientRect();
-        if (r.bottom > 0) { anchor = blocks[i]; anchorTop = r.top; break; }
-      }
-      all(".blk").forEach(function (b) {
-        b.classList.remove("filter-dim", "filter-hidden");
+      // Re-anchor to CONTENT, not the absolute offset: while filtered most records are
+      // hidden, so the document is much shorter and scrollY means something different.
+      var anchorId = null, anchorTop = 0;
+      matEls().some(function (e) {
+        var r = e.getBoundingClientRect();
+        if (r.bottom > 0) { anchorId = e.id; anchorTop = r.top; return true; }
+        return false;
       });
-      all(".fold-h").forEach(function (h) { h.classList.remove("filter-hit"); });
+      for (var i = 0; i < recHit.length; i++) recHit[i] = false;
       if (savedFolds) {
-        all(".fold[id]").forEach(function (f) {
-          if (savedFolds[f.id] !== undefined) setFold(f, savedFolds[f.id] === "1");
+        eachFoldRec(function (b) {
+          if (b.id && savedFolds[b.id] !== undefined) b.open = savedFolds[b.id] === "1" ? 1 : 0;
         });
       }
-      if (anchor) {
-        window.scrollTo({ top: anchor.getBoundingClientRect().top + window.scrollY - anchorTop });
+      prefix = null;
+      refreshWindow();
+      if (anchorId != null && idIndex[anchorId] != null) {
+        var ti = idIndex[anchorId];
+        window.scrollTo({ top: streamTop() + P()[ti] - anchorTop });
+        updateView();
       }
     } else {
-      applyFilter(sel);
+      computeFilterHits();
+      prefix = null;
+      refreshWindow();
+      updateView();
     }
-    all(".tool-item").forEach(function (ti) {
-      ti.classList.toggle("active", ti.dataset.sel === filter);
+    all(".tool-item").forEach(function (ti2) {
+      ti2.classList.toggle("active", ti2.dataset.sel === filter);
     });
     // The button becomes "<label> ✕": the label opens the menu, the ✕ clears.
     $("btn-tools").classList.toggle("active", !!filter);
     document.querySelector("#btn-tools .tf-label").textContent = filter ? label : "Filter ▾";
     spy();
-  }
-
-  // A long user message shows only its first CLAMP_LINES lines with a "⋯ N more
-  // lines" expander — measured after layout so it works for wrapped single
-  // paragraphs too (not just newline-broken text). Run once per turn body.
-  var CLAMP_LINES = 12;
-  function clampLongTurns() {
-    all(".uturn-md").forEach(function (md) {
-      if (md.dataset.clampChecked) return;
-      md.dataset.clampChecked = "1";
-      var lh = parseFloat(getComputedStyle(md).lineHeight) || 25;
-      var cap = lh * CLAMP_LINES;
-      if (md.scrollHeight <= cap + lh) return; // fits within N (+1 slack) lines
-      var hidden = Math.round((md.scrollHeight - cap) / lh);
-      md.style.maxHeight = cap + "px";
-      md.classList.add("clamped");
-      var btn = el("button", "morebtn clampbtn", "⋯ " + hidden + " more lines");
-      btn.dataset.cap = cap;
-      btn.dataset.more = "⋯ " + hidden + " more lines";
-      md.after(btn);
-    });
   }
 
   // ── follow-the-bottom (live tail UX) ──────────────────────────────────
@@ -746,9 +1028,9 @@
   // Render freshly consumed content, flagging/following new tail. Shared by every feed.
   function ingest(text) {
     var wasAtBottom = atBottom();
-    var before = stream.childElementCount;
+    var before = records.length;
     consume(text);
-    var added = stream.childElementCount - before;
+    var added = records.length - before;
     if (added > 0) {
       if (wasAtBottom) { toBottom(false); clearNew(); }
       else showNew(added);
@@ -795,7 +1077,7 @@
           })
           .then(function (reply) {
             var wasAtBottom = atBottom();
-            var before = stream.childElementCount;
+            var before = records.length;
             try {
               consumePull(reply);
             } catch (err) {
@@ -807,7 +1089,7 @@
               pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
               return;
             }
-            var added = stream.childElementCount - before;
+            var added = records.length - before;
             if (added > 0) {
               if (wasAtBottom) { toBottom(false); clearNew(); }
               else showNew(added);
@@ -844,10 +1126,10 @@
             if (d.off > cursor || end <= cursor) return; // a gap (retry) or already-seen
             var skip = cursor - d.off; // bytes we already have (server may overlap)
             var wasAtBottom = atBottom();
-            var before = stream.childElementCount;
+            var before = records.length;
             consumeDelta(new TextDecoder().decode(d.bytes.subarray(skip)));
             cursor = end;
-            var added = stream.childElementCount - before;
+            var added = records.length - before;
             if (added > 0) {
               if (wasAtBottom) { toBottom(false); clearNew(); }
               else showNew(added);
@@ -895,6 +1177,8 @@
   function setFold(f, open) {
     if (!f) return;
     f.dataset.open = open ? "1" : "0";
+    // Persist to the record (#50): the DOM window is disposable, the record isn't.
+    if (f.id) setRecordOpen(f.id, open);
     var h = f.querySelector(":scope > .fold-h");
     if (!h) return;
     h.setAttribute("aria-expanded", open ? "true" : "false");
@@ -926,14 +1210,18 @@
     var top = h.getBoundingClientRect().top;
     if (top < 96) window.scrollBy({ top: top - 104, behavior: "smooth" });
   }
-  function allFolds(open) { all(".fold").forEach(function (f) { setFold(f, open); }); }
+  function allFolds(open) {
+    // Record-level (#50): applies to every fold in the session, materialized or not.
+    eachFoldRec(function (b) { b.open = open ? 1 : 0; });
+    refreshWindow();
+  }
 
   // ── §8.3 per-pane code controls / §8.8 wide mode ─────────────────────────
   // Wrap each code/diff pane in `.codewrap` + a `.codefoot` row shared with the
   // "⋯ N more lines" expander: expander left, controls (A− size A+ wrap copy) right.
   // Static button styling lives in the stylesheet; only state goes on classes.
-  function buildStrips() {
-    all(".numbered, .diff").forEach(function (c) {
+  function buildStripsIn(root_) {
+    Array.prototype.slice.call(root_.querySelectorAll(".numbered, .diff")).forEach(function (c) {
       if (c.parentElement.classList.contains("codewrap")) return;
       var wrapEl = el("div", "codewrap");
       c.parentElement.insertBefore(wrapEl, c);
@@ -977,6 +1265,21 @@
       c.style.wordBreak = on ? "break-word" : "normal";
     });
   }
+  // The per-element form of setWrap's styling, for freshly materialized blocks (#50).
+  function applyWrapIn(root_) {
+    Array.prototype.slice.call(root_.querySelectorAll(".numbered, .diff")).forEach(function (c) {
+      c.style.overflowX = wrap ? "hidden" : "auto";
+      c.classList.toggle("scrollx", !wrap);
+    });
+    Array.prototype.slice.call(root_.querySelectorAll(".numbered .code, .diff .code")).forEach(function (c) {
+      c.style.whiteSpace = wrap ? "pre-wrap" : "pre";
+      c.style.wordBreak = wrap ? "break-word" : "normal";
+    });
+    Array.prototype.slice.call(root_.querySelectorAll(".ms-wrap")).forEach(function (b) {
+      b.textContent = wrap ? "⤶" : "↔";
+      b.classList.toggle("on", !wrap);
+    });
+  }
   function setWide(on) {
     wide = on;
     lsSet(WIDE_KEY, on ? "1" : "0");
@@ -1009,14 +1312,44 @@
   // Where goTo lands a target's top (px from the viewport top). `[`/`]` reference
   // this so a just-navigated turn isn't re-selected.
   var GOTO_Y = 120;
-  function goTo(target) {
+  // `instant` skips the smooth animation — a long-distance jump in the virtual list
+  // would otherwise re-window on every animation frame (and lose the landing
+  // element's transient state to churn); short local moves stay smooth.
+  function goTo(target, instant) {
     if (!target) return;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
-    window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - GOTO_Y, behavior: "smooth" });
+    var top = target.getBoundingClientRect().top + window.scrollY - GOTO_Y;
+    window.scrollTo({ top: top, behavior: instant ? "auto" : "smooth" });
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
+  }
+  // Navigate to a block id through the virtual layer (#50): open its record's fold
+  // chain, materialize its region, then land on the element (nested ids included).
+  function goToId(id) {
+    var ti = idIndex[id];
+    if (ti == null) return;
+    withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
+    var y = streamTop() + P()[ti];
+    setWindow(idxAt(y - streamTop() - MARGIN_PX), idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
+    // The chain-open may have changed an already-materialized element — refresh it.
+    var e0 = document.getElementById(records[ti].id);
+    if (e0 && e0.dataset.idx != null) {
+      var repl = matBlock(ti);
+      e0.replaceWith(repl);
+      postMat(repl);
+      clampBatch([repl]);
+      measureWindow();
+      updatePads();
+    }
+    var target = document.getElementById(id);
+    if (target) goTo(target, true);
+    else window.scrollTo({ top: streamTop() + P()[ti] - GOTO_Y });
+    // A landing at (nearly) the same y fires no scroll event — refresh the window
+    // and the scrollspy explicitly.
+    updateView();
+    spy();
   }
 
   // §8.5 One clipboard helper for all call sites. Exports normally open from
@@ -1183,9 +1516,9 @@
     if (e.target.closest(".agent-open")) return;
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
-    if (e.target.closest("#stickybar") && curTurn) { goTo(curTurn); return; }
+    if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
     var si = e.target.closest(".side-item");
-    if (si) goTo($(si.dataset.t));
+    if (si) goToId(si.dataset.t);
   });
 
   var themeBtn = $("btn-theme");
@@ -1201,11 +1534,14 @@
   window.addEventListener("resize", function () { fitBar(); }, { passive: true });
 
   // ── search ───────────────────────────────────────────────────────────
-  // `matches` holds the highlight <mark> elements (the hits), in document order. Typing
-  // wraps every occurrence in a <mark class="hl">; Enter cycles them, marking the current
-  // one `.cur` and scrolling to it (Shift+Enter goes back).
+  // Hits live on the RECORDS (`hitRecs`/`totalHits`, #50); the window's occurrences are
+  // wrapped in <mark class="hl"> as their blocks materialize. Enter cycles the global
+  // hit index, materializing + marking `.cur` on the way (Shift+Enter goes back).
   var q = $("q");
+  var hitRecs = [];   // {rec, count, start} per record with hits, in stream order (#50)
+  var totalHits = 0;
   function clearHl() {
+    searchNeedle = "";
     var touched = [];
     all("#stream mark.hl").forEach(function (m) {
       var p = m.parentNode;
@@ -1213,6 +1549,41 @@
       if (touched.indexOf(p) === -1) touched.push(p);
     });
     touched.forEach(function (p) { p.normalize(); }); // merge the split text nodes back
+  }
+  // Search scans the RECORDS' text (#50 — the DOM only holds the window). Text per
+  // record is extracted once, lazily, in tree order (headers then body, nested items
+  // recursively) and cached lowercase.
+  var stripDiv = null;
+  function stripHtml(h) {
+    if (!stripDiv) stripDiv = el("div");
+    stripDiv.innerHTML = h;
+    var t = stripDiv.textContent;
+    stripDiv.textContent = "";
+    return t;
+  }
+  function textOfRec(i) {
+    if (recText[i] != null) return recText[i];
+    var parts = [];
+    (function walk(b) {
+      var h = b.head || {};
+      ["summary", "badge", "preview", "name", "target", "att_name"].forEach(function (k) {
+        if (h[k]) parts.push(String(h[k]));
+      });
+      (b.body || []).forEach(function (p) {
+        if (p.p === "md" || p.p === "think") parts.push(stripHtml(p.h));
+        else if (p.p === "pre" || p.p === "note") parts.push(String(p.x));
+        else if (p.p === "num") p.rows.forEach(function (r) { parts.push(stripHtml(String(r[1]))); });
+        else if (p.p === "diff") p.rows.forEach(function (r) { parts.push(String(r[2])); });
+        else if (p.p === "blocks") p.items.forEach(walk);
+      });
+    })(records[i]);
+    recText[i] = parts.join("\n").toLowerCase();
+    return recText[i];
+  }
+  function countOcc(t, lc) {
+    var n = 0, i = 0;
+    while ((i = t.indexOf(lc, i)) !== -1) { n++; i += lc.length; }
+    return n;
   }
   function markHits(blk, lc, len) {
     // Collect matching text nodes first (the walk is read-only), then rewrite each so we
@@ -1241,27 +1612,52 @@
     var qc = $("qcount");
     clearHl();
     mIdx = -1;
+    hitRecs = [];
+    totalHits = 0;
     var needle = v.trim();
-    if (needle.length < 2) { matches = []; qc.textContent = ""; return; }
+    if (needle.length < 2) { qc.textContent = ""; return; }
     var lc = needle.toLowerCase();
-    all(".blk").forEach(function (b) {
-      if (b.textContent.toLowerCase().indexOf(lc) !== -1) markHits(b, lc, needle.length);
-    });
-    matches = all("#stream mark.hl");
-    qc.textContent = matches.length + " hit" + (matches.length === 1 ? "" : "s");
+    searchNeedle = lc;
+    for (var i = 0; i < records.length; i++) {
+      var n = countOcc(textOfRec(i), lc);
+      if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
+    }
+    matEls().forEach(function (e) { markHits(e, lc, lc.length); });
+    qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s");
   }
-  function gotoHit(i) {
-    matches.forEach(function (m) { m.classList.remove("cur"); });
-    var m = matches[i];
-    if (!m) return;
-    m.classList.add("cur");
-    $("qcount").textContent = (i + 1) + "/" + matches.length;
-    goTo(m);
+  function gotoHit(gi) {
+    all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
+    var hr = null;
+    for (var i = 0; i < hitRecs.length; i++) {
+      if (gi >= hitRecs[i].start && gi < hitRecs[i].start + hitRecs[i].count) { hr = hitRecs[i]; break; }
+    }
+    if (!hr) return;
+    // Materialize the hit's region, then land on its k-th mark (the record text is
+    // extracted in tree order, so occurrence order ≈ DOM mark order).
+    var ti = hr.rec;
+    var y = P()[ti];
+    setWindow(idxAt(y - MARGIN_PX), idxAt(y + window.innerHeight + MARGIN_PX) + 1);
+    var target = null;
+    matEls().some(function (e) {
+      if (+e.dataset.idx === ti) { target = e; return true; }
+      return false;
+    });
+    $("qcount").textContent = (gi + 1) + "/" + totalHits;
+    if (!target) {
+      window.scrollTo({ top: streamTop() + y - GOTO_Y });
+      return;
+    }
+    var marks = target.querySelectorAll("mark.hl");
+    var m = marks[gi - hr.start] || marks[0];
+    if (m) { m.classList.add("cur"); goTo(m, true); }
+    else goTo(target, true);
+    updateView();
+    spy();
   }
   q.addEventListener("input", function () { search(q.value); });
   q.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && matches.length) {
-      mIdx = (mIdx + (e.shiftKey ? matches.length - 1 : 1)) % matches.length;
+    if (e.key === "Enter" && totalHits) {
+      mIdx = (mIdx + (e.shiftKey ? totalHits - 1 : 1)) % totalHits;
       gotoHit(mIdx);
     }
     if (e.key === "Escape") q.blur();
@@ -1308,20 +1704,30 @@
     }
     if (e.key === "[" || e.key === "]") {
       e.preventDefault();
-      // Position-based (not index-of-curTurn, which lags a scroll): `]` goes to the
-      // first turn below the goTo landing line, `[` to the last turn above it. The
-      // ±dead-zone around GOTO_Y stops a just-navigated turn from re-selecting itself.
-      var turns = all("[data-turn]");
-      if (!turns.length) return;
+      // Position-based over the RECORDS (#50 — turns outside the DOM window count
+      // too): `]` goes to the first turn below the goTo landing line, `[` to the
+      // last turn above it, with a ±dead-zone so a just-navigated turn doesn't
+      // re-select itself.
       var dest = null;
       if (e.key === "]") {
-        dest = turns.find(function (t) { return t.getBoundingClientRect().top > GOTO_Y + 8; })
-          || turns[turns.length - 1];
+        for (var i = 0; i < records.length; i++) {
+          if (records[i].turn == null) continue;
+          dest = i; // falls back to the last turn if none lies below the line
+          if (turnTop(i) > GOTO_Y + 8) break;
+        }
       } else {
-        turns.forEach(function (t) { if (t.getBoundingClientRect().top < GOTO_Y - 8) dest = t; });
-        dest = dest || turns[0];
+        for (var j = 0; j < records.length; j++) {
+          if (records[j].turn == null) continue;
+          if (turnTop(j) < GOTO_Y - 8) dest = j;
+          else break;
+        }
+        if (dest == null) {
+          for (var j0 = 0; j0 < records.length; j0++) {
+            if (records[j0].turn != null) { dest = j0; break; }
+          }
+        }
       }
-      goTo(dest);
+      if (dest != null) goToId(records[dest].id);
     }
   });
 
@@ -1335,16 +1741,26 @@
   // click/navigate to lands below this line and spy keeps the PREVIOUS turn selected
   // (and a second click is a no-op because the scroll doesn't move → spy never re-runs).
   var STICKY_Y = 130;
+  // A turn record's viewport top: the REAL rect when materialized (estimates can
+  // drift by hundreds of px on unmeasured blocks), record math otherwise (#50).
+  function turnTop(i) {
+    var e = document.getElementById(records[i].id);
+    if (e && e.dataset.idx != null) return e.getBoundingClientRect().top;
+    return streamTop() + P()[i] - window.scrollY;
+  }
   function spy() {
-    var turns = all("[data-turn]");
     var cur = null;
-    for (var i = 0; i < turns.length; i++) {
-      if (turns[i].getBoundingClientRect().top <= STICKY_Y) cur = turns[i];
+    if (records.length) {
+      for (var i = 0; i < records.length; i++) {
+        if (records[i].turn == null) continue;
+        if (turnTop(i) <= STICKY_Y) cur = records[i];
+        else break;
+      }
     }
     curTurn = cur;
     var bar = $("stickybar");
     bar.classList.toggle("on", !!cur);
-    if (cur) $("stickytext").textContent = "Turn " + cur.dataset.turn + " — " + cur.dataset.label;
+    if (cur) $("stickytext").textContent = "Turn " + cur.turn + " — " + cur.label;
     var changed = cur && cur.id !== lastActiveId;
     lastActiveId = cur ? cur.id : null;
     all(".side-item").forEach(function (si) {
@@ -1359,18 +1775,21 @@
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
+      updateView(); // #50: materialize the window the scroll landed on
       spy();
       if (newCount && atBottom()) clearNew(); // caught up by scrolling down
     });
   }, { passive: true });
+  window.addEventListener("resize", function () { updateView(); }, { passive: true });
   spy();
 
   // On load, deep-link wins; otherwise jump to the end so the newest messages
   // show first (and live updates then follow the bottom).
   if (location.hash) {
-    var target = $(location.hash.slice(1));
-    if (target) setTimeout(function () { goTo(target); }, 150);
+    var hid = location.hash.slice(1);
+    setTimeout(function () { goToId(hid); }, 150);
   } else {
     toBottom(false);
+    updateView();
   }
 })();
