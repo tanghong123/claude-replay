@@ -103,7 +103,10 @@ pub(crate) struct Replayer<'a> {
     pending_ts: Option<EpochSeconds>,
     stamped: usize,
     tool_slot: HashMap<String, BlockIndex>,
-    trigger_ts: Option<EpochSeconds>,
+    /// Timestamp of the previous event line of ANY kind — CC's thinking clock (#57):
+    /// a thinking's duration is `its ts − this` (so a burst right after the turn's own
+    /// text measures from that text, not from the last tool result).
+    prev_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     suppress: Vec<BlockIndex>,
     last_skill: Option<BlockIndex>,
@@ -152,7 +155,7 @@ impl<'a> Replayer<'a> {
             pending_ts: None,
             stamped: 0,
             tool_slot: HashMap::new(),
-            trigger_ts: None,
+            prev_ts: None,
             queue: Vec::new(),
             suppress: Vec::new(),
             last_skill: None,
@@ -179,18 +182,21 @@ impl<'a> Replayer<'a> {
                     let mut ws = self.window_stamped();
                     stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
                     self.stamped = self.base + ws;
+                    // The outgoing `pending_ts` is the previous line's — the thinking clock's zero.
+                    if self.pending_ts.is_some() {
+                        self.prev_ts = self.pending_ts;
+                    }
                     self.pending_ts = *ts;
                 }
-                Message::Trigger(ts) => {
-                    if let Some(t) = ts {
-                        self.trigger_ts = Some(*t);
-                    }
-                }
+                // Task ops (#15) are session state, folded by the ACCUMULATOR — the
+                // block fold ignores them (they produce no block; the parse_main
+                // oracle never sees them either, so equivalence is untouched).
+                Message::TaskOp(_) => {}
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
                 }
                 Message::Thinking { text, ts } => {
-                    let duration_secs = match (ts, self.trigger_ts) {
+                    let duration_secs = match (ts, self.prev_ts) {
                         (Some(end), Some(start)) if *end >= start => Some((end - start) as u64),
                         _ => None,
                     };

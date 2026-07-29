@@ -118,6 +118,10 @@ input::placeholder { color: var(--faint); }
 .tf-x { display: none; margin-left: 8px; padding: 0 2px; opacity: 0.8; }
 #btn-tools.active .tf-x { display: inline; }
 .tf-x:hover { opacity: 1; }
+/* #49 prev/next through filtered hits — shown only while a filter is active. */
+.tf-prev, .tf-next { display: none; margin-left: 6px; padding: 0 3px; opacity: 0.8; }
+#btn-tools.active .tf-prev, #btn-tools.active .tf-next { display: inline; }
+.tf-prev:hover, .tf-next:hover { opacity: 1; }
 #btn-agents.active { color: var(--kw); border-color: var(--kw); }
 #toolmenu, #agentmenu {
   display: none; position: absolute; top: 34px; left: 0; min-width: 190px; z-index: 40;
@@ -197,6 +201,11 @@ a.crumb:hover { text-decoration: underline; }
 .fold[data-kind="act"] > .fold-h { box-shadow: inset 2px 0 0 var(--faint); }
 .fold[data-kind="command"] > .fold-h { box-shadow: none; }
 .fold-h.filter-hit { box-shadow: inset 3px 0 0 var(--tool) !important; }
+/* #49 the CURRENT filtered hit — a stronger accent, like search's `.cur` match. */
+.fold-h.filter-cur {
+  box-shadow: inset 3px 0 0 var(--tool), inset 0 0 0 1px var(--tool) !important;
+  background: var(--hover);
+}
 /* User-turn cards stay as dimmed context landmarks while filtering. */
 .blk.filter-dim { opacity: 0.5; }
 .blk.filter-hidden { display: none; }
@@ -236,6 +245,36 @@ a.crumb:hover { text-decoration: underline; }
 }
 .usage { display: flex; flex-direction: column; gap: 5px; }
 .usage .side-head { padding: 0 0 2px; }
+/* #15 the session task/todo panel — a sidebar section fed by the meta record. */
+.tasks {
+  padding: 10px; border-top: 1px solid var(--border);
+  font: 11px var(--mono); color: var(--muted);
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
+}
+.tasks .side-head { padding: 0 0 4px; }
+.task-row { display: flex; gap: 5px; cursor: pointer; border-radius: 4px; padding: 1px 2px; }
+.task-row:hover { background: var(--hover); }
+.task-row.done { color: var(--faint); }
+.task-row.active { color: var(--fg); font-weight: 600; }
+.task-glyph { flex: none; }
+.task-row.active .task-glyph { color: var(--tool); }
+.task-id { flex: none; color: var(--faint); }
+.task-subj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-det { display: none; padding: 3px 2px 5px 18px; }
+.task-item.open .task-det { display: block; }
+.task-item.open .task-subj { white-space: normal; }
+.task-deps { color: var(--faint); padding-bottom: 3px; }
+.task-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+/* #16 inline plan body on a ▤ plan attachment card. */
+.planview { margin-left: 10px; }
+.plan-body {
+  display: none; flex-basis: 100%; margin: 6px 0 2px 22px; padding: 8px 10px;
+  font: var(--ms)/1.5 var(--mono); color: var(--fg); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto;
+}
+.plan-body.shown { display: block; }
 .urow { display: flex; justify-content: space-between; gap: 8px; }
 .urow span:first-child { color: var(--faint); }
 .urow.total { padding-top: 4px; border-top: 1px dashed var(--border); color: var(--fg); }

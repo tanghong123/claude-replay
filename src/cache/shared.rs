@@ -64,6 +64,8 @@ pub struct PullDelta {
     pub metrics: Metrics,
     /// The maintained live header (turns / tools / children) — matches `committed ++ provisional`.
     pub meta: SessionMeta,
+    /// The task op-log state (#15) — from the live fold, or the hibernated sidecar.
+    pub tasks: crate::engine::TaskList,
 }
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
@@ -112,6 +114,8 @@ struct Hibernated<S: BlockStore> {
     user_times: Vec<Option<EpochSeconds>>,
     metrics: Metrics,
     meta: SessionMeta,
+    /// The task op-log state at hibernation (#15) — restored from the sidecar.
+    tasks: crate::engine::TaskList,
     /// The tailed source + its byte length at hibernation — the validity check
     /// [`hibernation_stale`](SharedSession::hibernation_stale) re-evaluates.
     source: Transcript,
@@ -154,6 +158,7 @@ impl<S: BlockStore> Body<S> {
                 metrics: h.metrics.clone(),
                 meta: h.meta.clone(),
                 n_committed: h.committed.len(),
+                tasks: h.tasks.clone(),
             },
         }
     }
@@ -295,6 +300,7 @@ impl<S: BlockStore> SharedSession<S> {
             user_times: r.user_times,
             metrics: r.metrics,
             meta: r.meta,
+            tasks: r.tasks,
         }
     }
 
@@ -374,6 +380,9 @@ struct HibernatedSidecar {
     user_times: Vec<Option<EpochSeconds>>,
     metrics: Metrics,
     meta: SessionMeta,
+    /// Task state (#15). `default` keeps pre-#15 sidecars loadable.
+    #[serde(default)]
+    tasks: crate::engine::TaskList,
 }
 
 impl SharedSession<crate::engine::tier_b::TierBStore> {
@@ -396,6 +405,7 @@ impl SharedSession<crate::engine::tier_b::TierBStore> {
                     user_times: r.user_times,
                     metrics: r.metrics,
                     meta: r.meta,
+                    tasks: r.tasks,
                 }
             }
             Body::Hibernated(h) => HibernatedSidecar {
@@ -408,6 +418,7 @@ impl SharedSession<crate::engine::tier_b::TierBStore> {
                 user_times: h.user_times.clone(),
                 metrics: h.metrics.clone(),
                 meta: h.meta.clone(),
+                tasks: h.tasks.clone(),
             },
         };
         let json = serde_json::to_vec(&side)
@@ -443,6 +454,7 @@ impl SharedSession<crate::engine::tier_b::TierBStore> {
                     user_times: side.user_times,
                     metrics: side.metrics,
                     meta: side.meta,
+                    tasks: side.tasks,
                     source: Transcript::detect(src),
                     src_len: side.src_len,
                 })),

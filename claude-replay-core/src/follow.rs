@@ -13,6 +13,9 @@ use crate::model::{Block, EpochSeconds};
 use crate::reader::LineReader;
 use crate::{Agent, SessionGraph};
 
+/// One `poll_delta` tick's payload: `(blocks, user_times, metrics, changed_from)`.
+pub type PollDelta = (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics, usize);
+
 /// The outcome of one advance-from-source: whether content moved, whether it was a reset
 /// (truncation/rewrite), and the batch's back-patch signal (`patch_floor`).
 struct Tick {
@@ -147,9 +150,13 @@ impl<S: BlockStore> FollowParser<S> {
     /// prior committed length; only the open turn is re-derived), instead of the consumer re-scanning
     /// the whole block list for the common prefix. `None` on an idle tick.
     #[allow(clippy::type_complexity)]
-    pub fn poll_delta(
-        &mut self,
-    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics, usize)>> {
+    /// The current task op-log state (#15) — for consumers that refresh a panel
+    /// alongside `poll_delta` without assembling a session.
+    pub fn tasks(&self) -> crate::engine::tasks::TaskList {
+        self.builder.tasks().clone()
+    }
+
+    pub fn poll_delta(&mut self) -> std::io::Result<Option<PollDelta>> {
         let tick = self.advance_from_source()?;
         if !tick.advanced {
             return Ok(None);

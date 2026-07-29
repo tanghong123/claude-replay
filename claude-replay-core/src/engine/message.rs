@@ -19,6 +19,7 @@
 //! One later, separately-gated step remains: the incremental phase's `seq`/`offset`/`Reset`
 //! envelope (§5.2 Phase 6). `tokenize`/`replay` are pure and I/O-free (§3.6's sans-I/O core).
 
+use crate::engine::tasks::TaskOp;
 use crate::model::{AgentStatus, Attachment, EpochSeconds};
 use serde_json::Value;
 
@@ -39,13 +40,10 @@ pub enum Message {
     /// line's turns with the running `pending_ts`, then adopts this line's ts — exactly
     /// `parse_main`'s `pending_ts` / `stamped` dance, so `user_times` come out identical.
     LineStart(Option<EpochSeconds>),
-    /// A `user`-type line occurred — the trigger that resets the thinking-duration clock.
-    /// Emitted right after this line's `LineStart`, before its content messages.
-    Trigger(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
     /// Assistant thinking content item + this line's ts (the fold computes the duration
-    /// as `ts − trigger_ts`).
+    /// as `ts − the previous line's ts` — CC's thinking clock, #57).
     Thinking {
         text: String,
         ts: Option<EpochSeconds>,
@@ -96,6 +94,13 @@ pub enum Message {
     AttachmentPrompt { text: String },
     /// A file / plan / image attachment to surface as-is.
     Attachment(Attachment),
+    /// A task-queue operation (#15) — emitted by an agent's L1 ALONGSIDE the
+    /// `ToolUse` when it sees a `TaskCreate`/`TaskUpdate` call (only the tokenizer
+    /// sees tool inputs; the built `ToolUse` block doesn't retain them). Folded by
+    /// the ACCUMULATOR into the session's [`TaskList`](crate::engine::tasks::TaskList)
+    /// — not by the block replayer, so the block oracle and its equivalence gates
+    /// are untouched. An agent with no task tools (Codex) never emits it.
+    TaskOp(TaskOp),
     /// A `queue-operation` line + its content (if any). The fold owns the queue
     /// *lifecycle* (marker emit, FIFO pop, immediate-pickup suppression) but no longer
     /// parses the content: `prose` is L1's classification of whether this enqueue should

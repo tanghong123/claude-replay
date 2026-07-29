@@ -1665,8 +1665,9 @@ mod tests {
         assert!(t[1].contains("⎿ Compacted"), "first line: {:?}", t[1]);
     }
 
-    /// A grouped turn collapses to `Thought for Xs, <activities>` (no `✻` glyph),
-    /// counting its absorbed tools; expanded, it shows the tools then the thinking.
+    /// A coalesced span collapses to `Thought for Xs, <activities>` (no `✻` glyph) in
+    /// CC's clause order (#57: thought first, `ls` classifies as a directory listing);
+    /// expanded, it shows the tools then the thinking.
     #[test]
     fn turn_collapses_to_thought_for_summary() {
         let tools = vec![
@@ -1694,7 +1695,7 @@ mod tests {
         };
         let coll = texts(&render_collapsed(&turn));
         assert_eq!(
-            coll[0], "  Read 1 file, ran 1 shell command (ls), thought for 1m 12s",
+            coll[0], "  Thought for 1m 12s, read 1 file, listed 1 directory",
             "collapsed summary: {:?}",
             coll[0]
         );

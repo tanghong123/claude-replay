@@ -153,6 +153,10 @@ Where Gemini keeps its transcripts on disk. Provide `candidates_scoped(cwd)` (se
 directory, scoped to the nearest ancestor that has any — reuse `discover::ancestors_of`) and
 `resolve_id(id)` (id → path).
 
+If Gemini has a separate live task store, implement `load_tasks(path)` here and return the
+shared `TaskList`. Otherwise inherit `None`; transcript `TaskOp`s, when the decoder emits
+them, are already folded by `SessionAccumulator`.
+
 If Gemini has child transcripts, implement a crate-private `SessionGraphBackend` here. It
 must normalize Gemini-specific spawn/completion identifiers into the shared
 `Block::SubAgent`/`Block::AgentDone` semantics and resolve a stable child id to its source,
@@ -168,7 +172,11 @@ modules above:
 pub(crate) struct GeminiAdapter;
 impl TranscriptAdapter for GeminiAdapter {
     fn agent(&self) -> Agent { Agent::Gemini }
-    fn sniff(&self, head: &Value) -> bool { /* recognize a Gemini head */ }
+    fn sniff(&self, head: &Value) -> SniffClaim {
+        if /* a distinctive Gemini marker */ { SniffClaim::Owns }
+        else if /* only format-compatible */ { SniffClaim::CanParse }
+        else { SniffClaim::No }
+    }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         crate::gemini_model::decode_line(line, cwd, out)
     }
@@ -178,6 +186,7 @@ impl TranscriptAdapter for GeminiAdapter {
     fn resolve_id(&self, id: &str) -> Option<PathBuf> { crate::gemini_discover::resolve_id(id) }
     // session_graph inherits the empty default for a tree-less agent.
     // With child transcripts, override it to construct GeminiSessionGraph::open(root).
+    // load_tasks inherits None unless Gemini has a separate live task store.
 }
 ```
 
@@ -203,7 +212,8 @@ You wrote three small per-agent files + one adapter impl. You did **not** touch:
 (`detect_agent`/`resolve_any` pick up the new `sniff`/registry automatically), the live
 follower, or any presenter. `sniff` makes `detect_agent` recognize the format; the registry
 row makes it reachable everywhere. If the agent has child sessions, the only additional
-shared-facing hook is its adapter-created, operation-scoped relationship backend.
+shared-facing hook is its adapter-created, operation-scoped relationship backend. Optional
+task-store loading stays behind the same adapter and does not change presenter code.
 
 ### Step 7 — test it
 
@@ -212,7 +222,8 @@ shared-facing hook is its adapter-created, operation-scoped relationship backend
   `replay_tokenize_matches_*` tests.
 - Add a black-box integration test under `claude-replay-core/tests/` that uses only
   `Transcript::{parse, follow, subagent}`. Do not import or expose `SessionGraph`; the test
-  should keep passing if the relationship implementation is replaced.
+  should keep passing if the relationship implementation is replaced. When the agent emits
+  task ops too, assert relationship normalization preserves `Session.tasks`.
 - Add a `FollowParser` round-trip: the follower's incremental output must equal a full
   `parse_session_as` at each append (see `follow.rs`'s `assert_follow`).
 - Run the full gate (`fmt` / `clippy` / `test`).

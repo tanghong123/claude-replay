@@ -12,6 +12,7 @@ pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `B
 pub(crate) mod path; // relativize helpers — internal to the parsers + HTML path rendering
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)
 pub mod session;
+pub mod tasks; // the agent-neutral task/todo model + op-log fold (#15)
 pub mod tier_b;
 pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metrics
 
@@ -22,3 +23,4 @@ pub use session::{
     parse_session_enriched_as, BlockAccess, BlockStore, ChildMeta, InMemoryStore, Session,
     SessionMeta,
 };
+pub use tasks::{TaskItem, TaskList, TaskStatus};

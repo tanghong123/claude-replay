@@ -66,8 +66,9 @@ flowchart LR
 - **Layer 1 — decode (agent-specific).** `claude_model` / `codex_model` map that agent's raw
   line shapes onto a single **canonical [`Message`] vocabulary** (`engine::message`):
   `UserText`, `AssistantText`, `Thinking`, `ToolUse`, `ToolResult`, `Command`, `Attachment`,
-  `Completion`, `QueueOp`, … Different agents name things differently; the L1 decoder is the
-  *only* place that knows those names. Nothing downstream parses a raw agent format.
+  `Completion`, `QueueOp`, `TaskOp`, … Different agents name things differently; the L1
+  decoder is the *only* place that knows those names. Nothing downstream parses a raw agent
+  format.
 - **Layer 2 — fold (shared).** `engine::replay::Replayer` folds the `Message` stream into the
   `Block` render model: joining tool results onto their calls, grouping thinking turns,
   coalescing activity runs, resolving the queued-prompt lifecycle, stamping per-turn times.
@@ -90,8 +91,8 @@ The presenter-facing vocabulary lives in `model.rs` and is the stable public API
   are already joined onto their calls; nothing is dropped or truncated (what shows collapsed
   is a *view* decision, not a parse decision).
 - **[`Session`]** — one flat transcript parse: `{ agent, cwd, committed, provisional,
-  user_times, metrics, index, sub_agents }`. Child content stays lazy unless the caller asks
-  for an enriched tree.
+  user_times, metrics, index, sub_agents, tasks }`. Child content stays lazy unless the caller
+  asks for an enriched tree; task state is reconstructed from the transcript op-log.
 - **[`SessionIndex`]** — derived within-session rollups (turns, tool counts, attachments)
   computed in one scan. `Session.sub_agents` is the stable-id entity map for child lifecycle
   and source navigation.
@@ -115,7 +116,7 @@ The trait's hooks (with defaults where an agent may not need them):
 | Hook | Role | Default |
 |------|------|---------|
 | `agent()` | which `Agent` | — |
-| `sniff(head)` | does this transcript look like mine? (drives `detect_agent`) | — |
+| `sniff(head)` | ownership claim: `Owns` / `CanParse` / `No` | — |
 | `decode_line(line, cwd, out)` | **L1**: raw line → 0+ canonical `Message`s | — |
 | `shaping()` | the L2 `Shaping` const (4 fn-pointers) | — |
 | `metrics_acc()` | a fresh token/cost accumulator | — |
@@ -123,6 +124,7 @@ The trait's hooks (with defaults where an agent may not need them):
 | `candidates_scoped(cwd)` | discovery: sessions for a cwd | — |
 | `resolve_id(id)` | discovery: id → transcript path | — |
 | `session_graph(root)` | operation-scoped child identity/source resolver | **empty graph** |
+| `load_tasks(path)` | optional live task-store overlay | **None** |
 
 `session_graph` defaults to "this agent has no cross-transcript relationships", so a
 tree-less agent implements nothing for it. Claude overrides it with its deterministic
@@ -130,6 +132,12 @@ tree-less agent implements nothing for it. Claude overrides it with its determin
 `parent_thread_id` + `agent_path` to a stable child session id. The shared
 [`Transcript`] handle owns the graph for one operation and is the public route for
 `parse`/`follow`/`subagent`; presenters never call the graph directly.
+
+`SniffClaim` separates ownership from format compatibility: a distinctive owner marker wins
+over an adapter that can merely parse a compatible body. `load_tasks` is orthogonal to both
+parsing and relationship resolution; Claude uses it to overlay the live task store, while the
+shared `SessionAccumulator` retains transcript task ops and `SessionGraph` normalization leaves
+that state untouched.
 
 Everything agent-neutral reaches the per-agent behavior *only* through `adapter(agent)` /
 `adapters()`. There is no `match agent` scattered across the engine — `detect_agent`,
@@ -144,7 +152,7 @@ Everything agent-neutral reaches the per-agent behavior *only* through `adapter(
 Transcripts can be large, so parsing **streams in one pass**: one line resident at a time,
 never building a whole-file `Vec<Value>` or `String`. A `SessionAccumulator` feeds each
 decoded line through the shared fold while maintaining blocks, metrics, times, and live
-metadata together. `Transcript::parse` is the canonical one-shot implementation;
+metadata/task state together. `Transcript::parse` is the canonical one-shot implementation;
 `parse_session_as` is its compatibility free-function entry.
 
 The **live follower** ([`FollowParser`]) is the same fold made incremental: it holds a
@@ -173,7 +181,8 @@ The free functions remain convenient wrappers: `parse_session` auto-detects the 
 `candidates_all(only)` (the cross-agent picker list), `resolve_any(only, target, latest)`
 (id/path/latest → a path). `Transcript::subagent` is the canonical child-navigation API;
 the `subagent_source` free function is a compatibility wrapper that opens a one-operation
-resolver. Each dispatches to the adapter registry, so discovery is agent-agnostic too.
+resolver. `session_tasks(agent, path)` reads an optional adapter-owned live task store. Each
+dispatches to the adapter registry, so discovery is agent-agnostic too.
 
 ## 8. Presenters (Layer 3, root crate)
 
@@ -184,7 +193,10 @@ resolver. Each dispatches to the adapter registry, so discovery is agent-agnosti
 - **`html_export/`** — `mod.rs` is the render core (markdown → HTML, the JSON block emitter,
   page assembly); `bundle.rs` writes the offline `--dump-html`/`--dump-all-html` files;
   `serve.rs` is the `--html` loopback live server. Rust emits an append-only JSON block
-  stream; the embedded JS (`html/export.{css,js}`) renders it.
+  stream; the embedded JS (`html/export.{css,js}`) virtualizes and renders it.
+- **Tasks and plans** — `Session.tasks` drives the shared task panel in both viewers; plan
+  documents are canonical attachments. Neither presenter parses an agent-specific task or
+  plan event.
 - **`--dump`** — renders the block stream to text/ansi (no TUI), the basis of the
   byte-identical regression gate (§9).
 

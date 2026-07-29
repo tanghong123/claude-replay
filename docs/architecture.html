@@ -335,13 +335,14 @@
       <table>
         <thead><tr><th>Hook</th><th>Role</th><th>Default</th></tr></thead>
         <tbody>
-          <tr><td><code>sniff</code></td><td class="role">Does this transcript look like mine? (drives auto-detect)</td><td><span class="badge">required</span></td></tr>
+          <tr><td><code>sniff</code></td><td class="role">Ownership claim: Owns · CanParse · No</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>decode_line</code></td><td class="role"><b>L1</b>: one raw line → 0+ canonical messages</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>shaping</code></td><td class="role">The four L2 fn-pointers (build tool · join result · keep-orphan · finish)</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>metrics_acc</code></td><td class="role">A fresh token/cost accumulator</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>load_attachment</code></td><td class="role">Materialize one embedded attachment on demand</td><td><span class="badge def">None</span></td></tr>
           <tr><td><code>candidates_scoped</code> · <code>resolve_id</code></td><td class="role">Discovery: sessions for a cwd · id → path</td><td><span class="badge">required</span></td></tr>
           <tr><td><code>session_graph</code></td><td class="role">Operation-scoped stable child identity + source resolution</td><td><span class="badge def">empty graph</span></td></tr>
+          <tr><td><code>load_tasks</code></td><td class="role">Optional live task-store overlay</td><td><span class="badge def">None</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -349,8 +350,9 @@
       overrides it for its deterministic <code>subagents/</code> layout; Codex overrides it with
       an anchored rollout graph. The public <code>Transcript</code> handle owns this resolver for
       one operation, so presenters use only <code>parse</code>, <code>follow</code>, and
-      <code>subagent</code>. The <code>agent-jdi</code> supervisor mirrors the adapter + registry
-      shape.</p>
+      <code>subagent</code>. <code>SniffClaim</code> separates ownership from mere format
+      compatibility; live task loading remains an independent optional adapter hook. The
+      <code>agent-jdi</code> supervisor mirrors the adapter + registry shape.</p>
   </section>
 
   <section id="streaming">
@@ -385,8 +387,8 @@
       <li><b>Register</b> <span class="d">— add the <code>Agent::Gemini</code> variant + label.</span></li>
       <li><b>gemini_model.rs</b> <span class="d">— the L1 decoder: <code>decode_line</code> and a <code>GEMINI_SHAPING</code> const. The only place that knows Gemini's raw format.</span></li>
       <li><b>gemini_metrics.rs</b> <span class="d">— a small token/cost accumulator (reuse <code>TimeSpan</code> + <code>estimate_cost</code>).</span></li>
-      <li><b>gemini_discover.rs</b> <span class="d">— where Gemini keeps transcripts: <code>candidates_scoped</code> + <code>resolve_id</code>; add a relationship backend only if it has child transcripts.</span></li>
-      <li><b>impl TranscriptAdapter</b> <span class="d">— a unit struct delegating to the three modules; tree-less agents inherit the empty graph.</span></li>
+      <li><b>gemini_discover.rs</b> <span class="d">— where Gemini keeps transcripts: <code>candidates_scoped</code> + <code>resolve_id</code>; add relationship/task-store backends only when supported.</span></li>
+      <li><b>impl TranscriptAdapter</b> <span class="d">— return an ownership-aware <code>SniffClaim</code>; tree-less agents inherit the empty graph and agents without a live task store inherit <code>None</code>.</span></li>
       <li><b>Register the row</b> <span class="d">— one arm in <code>adapter()</code> and one entry in <code>adapters()</code>.</span></li>
       <li><b>Test it</b> <span class="d">— an L1 equivalence gate + a <code>FollowParser</code> round-trip; then the usual fmt / clippy / test.</span></li>
     </ol>

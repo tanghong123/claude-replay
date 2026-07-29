@@ -35,14 +35,33 @@ pub(crate) trait MetricsAccumulator: Send {
 /// it via [`adapter`]. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
 /// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
 /// which both the whole-file batch parse and the live follower feed, so batch and live share
-/// one seam. Discovery and the operation-scoped relationship graph round it out.
+/// one seam. Discovery, live task loading, and the operation-scoped relationship graph round it
+/// out.
+///
+/// An adapter's claim strength on a sniffed transcript head (#59). Ordering matters
+/// to [`crate::discover::detect_agent`]: `Owns` beats `CanParse` beats `No`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SniffClaim {
+    /// A distinctive marker proves the transcript belongs to this agent.
+    Owns,
+    /// The format is compatible (parseable), but nothing proves ownership.
+    CanParse,
+    /// Not this agent's format.
+    No,
+}
+
 pub(crate) trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
 
-    /// Does a transcript whose head parses to `head` look like this agent's format?
-    /// (Used by [`crate::discover::detect_agent`]; the sniffs are mutually exclusive.)
-    fn sniff(&self, head: &Value) -> bool;
+    /// How strongly this adapter claims a transcript whose head parses to `head`
+    /// (#59). [`SniffClaim::Owns`] means a DISTINCTIVE marker proves the transcript
+    /// is this agent's (Codex's `session_meta`, QoderWork's `runtime-config`);
+    /// [`SniffClaim::CanParse`] means only "the format is compatible" (Claude's
+    /// adapter can parse any Claude-format lines, including derived agents').
+    /// `detect_agent` picks an OWNER over a mere parser, so a new Claude-format
+    /// agent never needs a carve-out in Claude's sniff to be detected correctly.
+    fn sniff(&self, head: &Value) -> SniffClaim;
 
     // ── incremental-follower primitives ──
     /// This agent's L2 shaping hooks (`&'static`, a per-agent const).
@@ -76,6 +95,12 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// inherit an empty resolver.
     fn session_graph(&self, _root: &Path) -> crate::SessionGraph {
         crate::SessionGraph::empty()
+    }
+    /// The LIVE on-disk task list for the session at `path` (#15). Default `None` —
+    /// an agent with no task store (Codex) has none; Claude reads
+    /// `~/.claude/tasks/<session-id>/*.json`. Backs `discover::session_tasks`.
+    fn load_tasks(&self, _path: &Path) -> Option<crate::engine::tasks::TaskList> {
+        None
     }
 }
 
@@ -118,11 +143,15 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn agent(&self) -> Agent {
         Agent::Claude
     }
-    fn sniff(&self, head: &Value) -> bool {
-        // A QoderWork transcript's head (`runtime-config`) also carries `sessionId`; exclude it
-        // so the sniffs stay mutually exclusive and detection is order-independent.
-        head.get("type").and_then(Value::as_str) != Some("runtime-config")
-            && (head.get("sessionId").is_some() || head.get("message").is_some())
+    fn sniff(&self, head: &Value) -> SniffClaim {
+        // Claude-format lines (sessionId/message) are only a CAN-PARSE claim: derived
+        // agents (QoderWork) share the body format and OWN their distinctive heads,
+        // which outranks this — no per-agent carve-outs needed here (#59).
+        if head.get("sessionId").is_some() || head.get("message").is_some() {
+            SniffClaim::CanParse
+        } else {
+            SniffClaim::No
+        }
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::claude_model::CLAUDE_SHAPING
@@ -147,6 +176,9 @@ impl TranscriptAdapter for ClaudeAdapter {
             crate::claude_discover::ClaudeSessionGraph::open(root),
         ))
     }
+    fn load_tasks(&self, path: &Path) -> Option<crate::engine::tasks::TaskList> {
+        crate::claude_discover::load_tasks(path)
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.
@@ -155,11 +187,16 @@ impl TranscriptAdapter for CodexAdapter {
     fn agent(&self) -> Agent {
         Agent::Codex
     }
-    fn sniff(&self, head: &Value) -> bool {
+    fn sniff(&self, head: &Value) -> SniffClaim {
         let ty = head.get("type").and_then(Value::as_str);
-        ty == Some("session_meta")
+        let hit = ty == Some("session_meta")
             || (head.get("payload").is_some()
-                && matches!(ty, Some("response_item" | "turn_context" | "event_msg")))
+                && matches!(ty, Some("response_item" | "turn_context" | "event_msg")));
+        if hit {
+            SniffClaim::Owns // Codex's rollout shapes are distinctive to Codex
+        } else {
+            SniffClaim::No
+        }
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING
@@ -194,8 +231,12 @@ impl TranscriptAdapter for QoderWorkAdapter {
     fn agent(&self) -> Agent {
         Agent::QoderWork
     }
-    fn sniff(&self, head: &Value) -> bool {
-        head.get("type").and_then(Value::as_str) == Some("runtime-config")
+    fn sniff(&self, head: &Value) -> SniffClaim {
+        if head.get("type").and_then(Value::as_str) == Some("runtime-config") {
+            SniffClaim::Owns // the runtime-config head is QoderWork's signature
+        } else {
+            SniffClaim::No
+        }
     }
     fn shaping(&self) -> &'static Shaping {
         &crate::claude_model::CLAUDE_SHAPING
@@ -236,8 +277,8 @@ mod tests {
             Agent::Claude
         }
 
-        fn sniff(&self, _head: &Value) -> bool {
-            false
+        fn sniff(&self, _head: &Value) -> SniffClaim {
+            SniffClaim::No
         }
 
         fn shaping(&self) -> &'static Shaping {

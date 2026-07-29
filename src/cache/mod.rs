@@ -173,6 +173,13 @@ impl SessionCache {
         resident.follower.poll_delta().transpose()
     }
 
+    /// The resident follower's current task op-log state (#15) — `None` when `id`
+    /// has no resident follower. Cheap (a clone of the fold's list; no session build).
+    pub fn follower_tasks(&self, id: &str) -> Option<crate::engine::TaskList> {
+        let residents = lock_recover(&self.residents);
+        residents.get(id).map(|(_, r)| r.follower.tasks())
+    }
+
     /// Evict follower residents beyond `budget` — least-recently-touched first — never evicting
     /// `pinned` (the session the viewer is anchored to, which doesn't count against the budget).
     /// The navigation-recency residency policy the TUI rides: evicted followers re-materialize

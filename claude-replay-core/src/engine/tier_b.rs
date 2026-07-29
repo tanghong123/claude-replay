@@ -254,6 +254,7 @@ impl TierBSession {
             sub_agents: self.session.sub_agents.clone(),
             committed: self.session.committed.clone(),
             provisional: self.session.provisional.clone(),
+            tasks: self.session.tasks.clone(),
         };
         let json = serde_json::to_vec(&sidecar).map_err(to_io)?;
         std::fs::write(dir.join(SIDECAR_FILE), json)?;
@@ -306,6 +307,7 @@ impl TierBSession {
             metrics: sidecar.metrics,
             index,
             sub_agents: sidecar.sub_agents,
+            tasks: sidecar.tasks,
         };
         Ok(Self { session, backing })
     }
@@ -326,6 +328,9 @@ struct Sidecar {
     sub_agents: BTreeMap<AgentId, SubAgentMeta>,
     committed: Vec<Deferred>,
     provisional: Vec<Block>,
+    /// Task state (#15). `default` keeps pre-#15 sidecars loadable.
+    #[serde(default)]
+    tasks: crate::engine::tasks::TaskList,
 }
 
 /// Map a `serde_json` error into an `io::Error` (persist/load surface `io::Result`).
@@ -576,6 +581,7 @@ mod tests {
             metrics: Default::default(),
             index: Default::default(),
             sub_agents: Default::default(),
+            tasks: Default::default(),
         };
         let tb = TierBSession::new(session, backing);
         for (i, original) in blocks.iter().enumerate() {

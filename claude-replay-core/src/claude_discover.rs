@@ -200,6 +200,55 @@ pub(crate) fn transcript_by_id_in(root: &Path, id: &str) -> Option<PathBuf> {
         .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(needle.as_str()))
 }
 
+/// The Claude tasks store root: `~/.claude/tasks`, or the `CLAUDE_JDI_TASKS_ROOT`
+/// override (kept name-compatible with agent-jdi's, which reads the same store).
+fn tasks_root() -> PathBuf {
+    std::env::var_os("CLAUDE_JDI_TASKS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            home.join(".claude").join("tasks")
+        })
+}
+
+/// The LIVE on-disk task list for the session transcript at `path` (#15): the session
+/// id (== the `.jsonl` stem) names `~/.claude/tasks/<id>/<n>.json`, one file per task,
+/// ordered numerically (a string sort gives 18, 19, 2, 20). `None` when the dir is
+/// missing or nothing parses — the caller then falls back to the transcript's op-log.
+/// This is Claude's half of `discover::session_tasks` (the `TranscriptAdapter::load_tasks`
+/// hook); files may be pruned/gc'd, which the op-log merge backfills.
+pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::tasks::TaskList> {
+    let id = path.file_stem()?.to_str()?;
+    let dir = tasks_root().join(id);
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .collect();
+    entries.sort_by_key(|p| {
+        p.file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
+    });
+    let mut items = Vec::new();
+    for p in entries {
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if let Some(t) = crate::engine::tasks::task_from_json(&v) {
+            items.push(t);
+        }
+    }
+    (!items.is_empty()).then_some(crate::engine::tasks::TaskList { items })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

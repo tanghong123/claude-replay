@@ -144,15 +144,21 @@ pub fn session_id(path: &Path) -> Option<String> {
     None
 }
 
-/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking each
-/// registered adapter's `sniff` (a Codex rollout
-/// opens with a `session_meta`/`payload` event; a Claude transcript has top-level
-/// `sessionId`/`message`). Defaults to Claude. A new agent adds a `sniff`, not an arm here.
+/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking
+/// each registered adapter's `sniff` claim (#59). An [`Owns`](crate::adapter::SniffClaim)
+/// claim (a distinctive head: Codex's `session_meta`, QoderWork's `runtime-config`)
+/// wins immediately; a mere `CanParse` (Claude's adapter can parse any Claude-format
+/// lines, including derived agents') is remembered and only wins if NO adapter owns
+/// any of the sniffed lines — so a new Claude-format agent is labeled by its owner
+/// marker, never mislabeled by the first can-parse adapter, and Claude's sniff needs
+/// no per-agent carve-outs. Defaults to Claude.
 pub fn detect_agent(path: &Path) -> Agent {
+    use crate::adapter::SniffClaim;
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
         return Agent::Claude;
     };
+    let mut can_parse: Option<Agent> = None;
     for line in std::io::BufReader::new(file)
         .lines()
         .map_while(Result::ok)
@@ -162,12 +168,18 @@ pub fn detect_agent(path: &Path) -> Agent {
             continue;
         };
         for a in crate::adapter::adapters() {
-            if a.sniff(&v) {
-                return a.agent();
+            match a.sniff(&v) {
+                SniffClaim::Owns => return a.agent(),
+                SniffClaim::CanParse => {
+                    if can_parse.is_none() {
+                        can_parse = Some(a.agent());
+                    }
+                }
+                SniffClaim::No => {}
             }
         }
     }
-    Agent::Claude
+    can_parse.unwrap_or(Agent::Claude)
 }
 
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
@@ -190,6 +202,17 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
     crate::SessionGraph::open(agent, root).subagent_source(root, child_id)
 }
 
+/// The LIVE on-disk task list for the session at `path` (#15) — the agent-neutral
+/// facade over each adapter's `load_tasks` hook (Claude reads
+/// `~/.claude/tasks/<session-id>/*.json`; agents with no task store return `None`).
+/// Complements the transcript-derived op-log state in
+/// [`Session::tasks`](crate::Session); merge with
+/// [`tasks::merged`](crate::engine::tasks::merged) — disk wins per id, the op-log
+/// backfills pruned files.
+pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::TaskList> {
+    crate::adapter::adapter(agent).load_tasks(path)
+}
+
 /// Resolve which transcript to open, across agents, and return its path.
 ///
 /// - `target` — an explicit selection, **either a filesystem path to a `.jsonl` transcript OR
@@ -201,8 +224,11 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
 ///   current directory (or its nearest ancestor that has sessions; cwd-matches first, no global
 ///   fallback) instead of erroring.
 ///
-/// Precedence: `target` (as a path, then as a session id) → else `latest` → else an `Err`
-/// asking for one of them.
+/// Precedence: `target` (as a path, then as a session id) → else `latest` → else: when the
+/// cwd-scoped session set has exactly ONE candidate it is auto-selected (#51 — selection is
+/// only demanded on genuine ambiguity; the non-interactive `--dump*` paths land here, while
+/// the interactive default opens the picker and never reaches this branch), several
+/// candidates `Err` listing them, zero `Err` with the no-session message.
 pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> Result<PathBuf> {
     if let Some(t) = target {
         let as_path = PathBuf::from(t);
@@ -221,25 +247,101 @@ pub fn resolve_any(only: Option<Agent>, target: Option<&str>, latest: bool) -> R
             "no transcript found for '{t}' (not a file, and no session id match)"
         ));
     }
+    // Scoped to the cwd or its nearest ancestor that has sessions — NOT the
+    // global newest. `candidates_all` sorts cwd-matches first, then most-recent,
+    // with no global fallback, so an unrelated directory's session never wins.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut cands = candidates_all(only);
     if latest {
-        // Scoped to the cwd or its nearest ancestor that has sessions — NOT the
-        // global newest. `candidates_all` sorts cwd-matches first, then most-recent,
-        // with no global fallback, so an unrelated directory's session never wins.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        return candidates_all(only)
+        return cands
             .into_iter()
             .next()
             .map(|c| c.path)
             .ok_or_else(|| anyhow!("no session found for {} or its ancestors", cwd.display()));
     }
-    Err(anyhow!(
-        "give a session id or a path, or use --latest (no session picker yet)"
-    ))
+    resolve_lone(&mut cands, &cwd)
+}
+
+/// The no-target-no-`--latest` fallback (#51): exactly one cwd-scoped candidate is
+/// unambiguous — use it; several demand a selection (the error names them, newest
+/// first); zero keeps the no-session message. Split from [`resolve_any`] so the
+/// three-way rule is unit-testable without a real store.
+fn resolve_lone(cands: &mut Vec<Candidate>, cwd: &Path) -> Result<PathBuf> {
+    match cands.len() {
+        1 => Ok(cands.remove(0).path),
+        0 => Err(anyhow!(
+            "no session found for {} or its ancestors — give a session id or a path",
+            cwd.display()
+        )),
+        n => {
+            let mut msg =
+                format!("{n} sessions match this directory — give a session id or use --latest:");
+            for c in cands.iter().take(10) {
+                let id = c
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("<unnamed>");
+                let age = match c.mtime.elapsed() {
+                    Ok(d) if d.as_secs() < 3600 => format!("{}m ago", d.as_secs() / 60),
+                    Ok(d) if d.as_secs() < 86_400 => format!("{}h ago", d.as_secs() / 3600),
+                    Ok(d) => format!("{}d ago", d.as_secs() / 86_400),
+                    Err(_) => String::new(),
+                };
+                let snippet: String = c.snippet.chars().take(60).collect();
+                msg.push_str(&format!("\n  {id}  [{}] {age}  {snippet}", c.agent.label()));
+            }
+            if n > 10 {
+                msg.push_str(&format!("\n  … and {} more", n - 10));
+            }
+            Err(anyhow!(msg))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The no-target-no-`--latest` rule (#51): one cwd-scoped candidate is
+    /// unambiguous and auto-selects; several error NAMING each (id, agent, snippet)
+    /// so the user can pick; zero keeps the no-session error.
+    #[test]
+    fn lone_candidate_auto_selects_and_ambiguity_names_the_choices() {
+        let cand = |stem: &str, snippet: &str| Candidate {
+            path: PathBuf::from(format!("/store/{stem}.jsonl")),
+            mtime: SystemTime::now(),
+            project: "proj".into(),
+            snippet: snippet.into(),
+            cwd_affinity: true,
+            agent: Agent::Claude,
+        };
+        let cwd = PathBuf::from("/w/proj");
+        // Exactly one → auto-selected.
+        let mut one = vec![cand("aaaa-1111", "fix the parser")];
+        assert_eq!(
+            resolve_lone(&mut one, &cwd).unwrap(),
+            PathBuf::from("/store/aaaa-1111.jsonl")
+        );
+        // Two → error names both ids and the snippets.
+        let mut two = vec![
+            cand("aaaa-1111", "fix the parser"),
+            cand("bbbb-2222", "add the exporter"),
+        ];
+        let err = resolve_lone(&mut two, &cwd).unwrap_err().to_string();
+        assert!(err.contains("2 sessions match"), "{err}");
+        assert!(
+            err.contains("aaaa-1111") && err.contains("bbbb-2222"),
+            "{err}"
+        );
+        assert!(
+            err.contains("fix the parser") && err.contains("--latest"),
+            "{err}"
+        );
+        // Zero → the no-session error.
+        let err = resolve_lone(&mut Vec::new(), &cwd).unwrap_err().to_string();
+        assert!(err.contains("no session found"), "{err}");
+    }
 
     #[test]
     fn detect_agent_sniffs_transcript_shape() {
@@ -257,8 +359,10 @@ mod tests {
         )
         .unwrap();
 
-        // QoderWork: Claude-format lines under a `runtime-config` head — the head also carries
-        // `sessionId`, so this doubles as the sniff-exclusivity check (Claude must NOT claim it).
+        // QoderWork: Claude-format lines under a `runtime-config` head — the head also
+        // carries `sessionId`, so Claude's adapter CAN parse it, but QoderWork OWNS the
+        // distinctive head and ownership outranks can-parse (#59) — no carve-out in
+        // Claude's sniff, and detection stays order-independent.
         let qoderwork = dir.join(format!("detect-qw-{}.jsonl", std::process::id()));
         std::fs::write(
             &qoderwork,
@@ -269,6 +373,15 @@ mod tests {
         assert_eq!(detect_agent(&codex), Agent::Codex);
         assert_eq!(detect_agent(&claude), Agent::Claude);
         assert_eq!(detect_agent(&qoderwork), Agent::QoderWork);
+        // The claim levels behind that: Claude claims CanParse on QW's head; QW Owns it.
+        {
+            use crate::adapter::{adapter, SniffClaim};
+            let head: Value =
+                serde_json::from_str("{\"type\":\"runtime-config\",\"sessionId\":\"abc\"}")
+                    .unwrap();
+            assert_eq!(adapter(Agent::Claude).sniff(&head), SniffClaim::CanParse);
+            assert_eq!(adapter(Agent::QoderWork).sniff(&head), SniffClaim::Owns);
+        }
         // A missing/empty file falls back to Claude.
         assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::Claude);
 

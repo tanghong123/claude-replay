@@ -101,7 +101,7 @@ fn codex_parent_child_navigation_uses_only_the_transcript_api() {
 }
 
 #[test]
-fn claude_parent_child_navigation_uses_the_same_transcript_api() {
+fn claude_relationships_and_tasks_share_the_transcript_api() {
     let fixture = Fixture::new("claude");
     let parent = fixture.write(
         "project/session.jsonl",
@@ -109,6 +109,10 @@ fn claude_parent_child_navigation_uses_the_same_transcript_api() {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"reviewer","description":"review","prompt":"inspect"}}]}}"#,
             "\n",
             r#"{"type":"user","toolUseResult":{"agentId":"child","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tc1","name":"TaskCreate","input":{"subject":"preserve adapter state","description":"relationship normalization must not drop tasks","activeForm":"Preserving adapter state"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tc1","content":"Created task #12: preserve adapter state"}]}}"#,
             "\n",
         ),
     );
@@ -122,5 +126,11 @@ fn claude_parent_child_navigation_uses_the_same_transcript_api() {
         ),
     );
 
-    assert_child_contract(&Transcript::open(Agent::Claude, parent), "child", &child);
+    let transcript = Transcript::open(Agent::Claude, parent);
+    assert_child_contract(&transcript, "child", &child);
+
+    let session = transcript.parse().unwrap();
+    assert_eq!(session.tasks.items.len(), 1);
+    assert_eq!(session.tasks.items[0].id, "12");
+    assert_eq!(session.tasks.items[0].subject, "preserve adapter state");
 }
