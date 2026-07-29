@@ -1375,6 +1375,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn codex_pull_registers_and_serves_child_rollout() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!("cr-codex-serve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sessions = base.join("sessions/2026/07/29");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&bundle).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        let child = sessions.join("rollout-child.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Nash"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::Codex,
+            fold: FoldPolicy::default(),
+            root_path: parent.clone(),
+            cwd: "/repo".into(),
+            cache: SessionCache::new(),
+            prev: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            render: Mutex::new(HashMap::new()),
+            parents: Mutex::new(HashMap::new()),
+        };
+        live.cache
+            .register("root", Transcript::open(Agent::Codex, parent));
+        crate::cache::lock_recover(&live.titles).insert(
+            "root".into(),
+            TitleInfo {
+                title: "root title".into(),
+                ..Default::default()
+            },
+        );
+
+        let child_id = "codex-agent-2f726f6f742f726576696577";
+        let root_reply = live
+            .pull_response("root", Cursor::default())
+            .expect("root reply");
+        let root_json: Value = serde_json::from_str(&root_reply).unwrap();
+        assert_eq!(root_json["meta"]["children"][0]["id"], child_id);
+        assert!(
+            live.cache.is_registered(child_id),
+            "child source registered"
+        );
+
+        let child_reply = live
+            .pull_response(child_id, Cursor::default())
+            .expect("child reply");
+        let child_json: Value = serde_json::from_str(&child_reply).unwrap();
+        assert_eq!(child_json["meta"]["sid"], child_id);
+        assert_eq!(child_json["meta"]["ancestors"][0]["id"], "root");
+        assert!(
+            child_json["provisional"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record.to_string().contains("child body")),
+            "child rollout records served"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// append_records → read_range round-trips: records land on disk in order, and reading from a
     /// given committed offset returns exactly the records from there on (the render-once serve path).
     #[test]

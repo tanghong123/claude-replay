@@ -1941,6 +1941,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn dump_all_html_writes_navigable_codex_bundle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-codex-bundle-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let sessions = base.join("sessions/2026/07/29");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        let child = sessions.join("rollout-child.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Nash"}}}}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            parent.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &parent).unwrap();
+
+        let child_id = "codex-agent-2f726f6f742f726576696577";
+        assert!(out.join("index.html").is_file());
+        assert!(out.join("rollout-parent.jsonl").is_file());
+        assert!(out.join(format!("{child_id}.jsonl")).is_file());
+
+        let root = std::fs::read_to_string(out.join("rollout-parent.jsonl")).unwrap();
+        let root_meta: Value = serde_json::from_str(root.lines().next().unwrap()).unwrap();
+        assert_eq!(root_meta["agent"], json!("codex"));
+        assert_eq!(root_meta["children"][0]["id"], json!(child_id));
+        assert_eq!(root_meta["children"][0]["running"], json!(false));
+        assert!(
+            root.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| record["head"]["badge"] == json!("Agent"))
+                .all(|record| record["head"]["child"] == json!(format!("?session={child_id}"))),
+            "spawn and completion link to the child stream"
+        );
+
+        let child_stream = std::fs::read_to_string(out.join(format!("{child_id}.jsonl"))).unwrap();
+        let child_meta: Value = serde_json::from_str(child_stream.lines().next().unwrap()).unwrap();
+        assert_eq!(child_meta["sid"], json!(child_id));
+        assert_eq!(child_meta["ancestors"][0]["id"], json!("rollout-parent"));
+        assert!(
+            child_stream.contains("child body"),
+            "child transcript rendered"
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     /// Regression: a **synchronous** `Agent` spawn signals completion *inline* on its
     /// `tool_result` (`toolUseResult.status == "completed"` + `agentId`), with **no** later
     /// `<task-notification>` and therefore no `AgentDone` block. The "Agents ▾" running flag
