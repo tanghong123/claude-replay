@@ -45,13 +45,21 @@ pub struct Candidate {
 }
 
 /// Directories from `cwd` up to (and including) `$HOME` — the ancestors we probe
-/// for a matching project, nearest first. Never climbs above `$HOME`. Agent-neutral;
+/// for a matching project, nearest first. Never climbs above `$HOME`; for a cwd
+/// OUTSIDE `$HOME` the climb stops before the filesystem root — `/`'s slug (`-`)
+/// can collide with a real store dir for sessions recorded at `/`, which made a
+/// brand-new scratch dir under `/private/tmp` match four unrelated QoderWork
+/// sessions (#62). The bare root is only probed when it IS the cwd. Agent-neutral;
 /// each adapter maps these to its own store layout.
 pub(crate) fn ancestors_of(cwd: &Path) -> Vec<PathBuf> {
     let home = std::env::var("HOME").ok().map(PathBuf::from);
-    let mut dirs = Vec::new();
-    let mut cur: Option<&Path> = Some(cwd);
+    let root = Path::new("/");
+    let mut dirs = vec![cwd.to_path_buf()];
+    let mut cur = cwd.parent();
     while let Some(d) = cur {
+        if d == root {
+            break; // never a CLIMBED ancestor (slug collision with `/`-cwd sessions)
+        }
         dirs.push(d.to_path_buf());
         if home.as_deref() == Some(d) {
             break;
@@ -410,5 +418,22 @@ mod tests {
                 assert_eq!(*dirs.last().unwrap(), home, "should stop at $HOME");
             }
         }
+    }
+
+    /// #62: for a cwd OUTSIDE `$HOME`, the climb stops BEFORE the filesystem root —
+    /// `/`'s slug (`-`) collides with store dirs for sessions recorded at `/`,
+    /// which leaked unrelated sessions into a scratch dir's candidate set. The bare
+    /// root is only probed when it IS the cwd.
+    #[test]
+    fn ancestors_outside_home_never_reach_the_bare_root() {
+        let dirs = ancestors_of(Path::new("/private/tmp/some/scratch"));
+        assert_eq!(dirs[0], Path::new("/private/tmp/some/scratch"));
+        assert!(
+            !dirs.iter().any(|d| d == Path::new("/")),
+            "climbed to the bare root: {dirs:?}"
+        );
+        assert_eq!(*dirs.last().unwrap(), Path::new("/private"), "{dirs:?}");
+        // Degenerate: the root as the STARTING cwd still probes itself.
+        assert_eq!(ancestors_of(Path::new("/")), vec![PathBuf::from("/")]);
     }
 }
