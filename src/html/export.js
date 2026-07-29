@@ -250,6 +250,7 @@
   function postMat(e) {
     buildStripsIn(e);
     applyWrapIn(e);
+    reapplySmallMore(e);
     if (searchNeedle) {
       markHits(e, searchNeedle, searchNeedle.length);
       // The current hit survives rematerialization (#66) — same id-keyed idea as
@@ -424,6 +425,35 @@
   // Every record entering the stream re-applies the user's overrides, keyed by
   // block id (stable across re-emission; stale ids simply never match again).
   var userFolds = {};
+  // Small "⋯ N more lines" expansions survive rematerialization (#67): a block just
+  // over the display cap keeps its expansion (recorded by record-id + the button's
+  // ordinal within the block — stable, since re-renders are deterministic from the
+  // records); LARGE expansions stay ephemeral by design (a reset is welcome there).
+  var MAX_BUFFER_LINES = 200;
+  var smallMore = {}; // "recId:ordinal" -> true
+  function hiddenLineCount(hidden) {
+    var rows = hidden.querySelectorAll(".nrow").length;
+    if (rows) return rows;
+    var t = hidden.textContent || "";
+    return t.split("\n").length;
+  }
+  function expandMore(btn) {
+    var hidden = $(btn.dataset.more);
+    if (hidden) hidden.classList.add("shown");
+    btn.remove();
+  }
+  // Stamp stable ordinals on a fresh element's expand buttons (indices computed at
+  // click time would shift as earlier buttons get removed), then re-apply recorded
+  // small expansions.
+  function reapplySmallMore(e) {
+    var recId = e.id;
+    if (!recId) return;
+    var btns = Array.prototype.slice.call(e.querySelectorAll(".morebtn:not(.clampbtn)"));
+    for (var k = btns.length - 1; k >= 0; k--) {
+      btns[k].dataset.ord = k;
+      if (smallMore[recId + ":" + k]) expandMore(btns[k]);
+    }
+  }
   function applyUserFolds(b) {
     if (b.id && userFolds[b.id] !== undefined && isFoldRec(b)) b.open = userFolds[b.id];
     (b.body || []).forEach(function (p) {
@@ -1661,9 +1691,15 @@
     }
     var more = e.target.closest(".morebtn");
     if (more) {
-      var hidden = $(more.dataset.more);
-      if (hidden) hidden.classList.add("shown");
-      more.remove();
+      // #67: a SMALL expansion (content within MAX_BUFFER_LINES) is recorded by
+      // record-id + ordinal so it survives rematerialization; large ones reset.
+      var blk67 = more.closest(".blk");
+      var hidden67 = $(more.dataset.more);
+      if (blk67 && blk67.id && hidden67 && more.dataset.ord != null
+          && hiddenLineCount(hidden67) <= MAX_BUFFER_LINES) {
+        smallMore[blk67.id + ":" + more.dataset.ord] = true;
+      }
+      expandMore(more);
       return;
     }
     // §8.4 the `#` anchor COPIES a deep link — no scroll, no hash write, no fold
