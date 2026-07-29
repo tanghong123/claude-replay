@@ -1,6 +1,6 @@
 [package]
 name = "claude-replay"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 default-run = "claude-replay"
 description = "Interactive, read-only viewer for Claude Code session transcripts (like `claude --resume`, but you can't type)."
@@ -35,7 +35,7 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
 [dependencies]
-claude-replay-core = { path = "claude-replay-core", version = "1.1.0" }
+claude-replay-core = { path = "claude-replay-core", version = "1.1.1" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
