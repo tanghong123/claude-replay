@@ -283,6 +283,10 @@ pub struct View {
     focus: Option<crate::model::BlockIndex>, // focused foldable block index ([ / ] / hover)
     show_help: bool, // `?` help overlay visible
     agents_popup: Option<usize>, // `a` active-sub-agents popup: selected row, when open
+    /// The `t` task/todo panel (#15): selected row, when open. The list itself is
+    /// `tasks` — fed by the app (op-log state merged with the live task files).
+    tasks_popup: Option<usize>,
+    tasks: crate::engine::TaskList,
     can_go_back: bool, // launched via the picker → Esc returns to the session list
     can_open_picker: bool, // `s` opens the session switcher overlay (--latest launch)
     switcher: Option<Picker>, // session switcher overlay, when open
@@ -329,6 +333,8 @@ impl View {
             focus: None,
             show_help: false,
             agents_popup: None,
+            tasks_popup: None,
+            tasks: crate::engine::TaskList::default(),
             can_go_back: false,
             can_open_picker: false,
             switcher: None,
@@ -399,6 +405,40 @@ impl View {
     }
     /// Confirm the popup selection: close it and return the selected active agent's block
     /// index (for the caller to `Descend` into).
+    // --- the `t` task/todo panel (#15) ---
+    /// Replace the panel's task list (the app feeds the merged live+op-log state on
+    /// load and on every live poll).
+    pub fn set_tasks(&mut self, tasks: crate::engine::TaskList) {
+        self.tasks = tasks;
+        // Keep the selection in range across live shrinks.
+        if let Some(sel) = self.tasks_popup {
+            let n = self.tasks.items.len();
+            self.tasks_popup = Some(if n == 0 { 0 } else { sel.min(n - 1) });
+        }
+    }
+    /// The panel's current list (for the app's re-merge when no follower is resident).
+    pub fn tasks_snapshot(&self) -> crate::engine::TaskList {
+        self.tasks.clone()
+    }
+    pub fn toggle_tasks_popup(&mut self) {
+        self.tasks_popup = match self.tasks_popup {
+            Some(_) => None,
+            None => Some(0),
+        };
+    }
+    pub fn tasks_popup_open(&self) -> bool {
+        self.tasks_popup.is_some()
+    }
+    pub fn tasks_popup_close(&mut self) {
+        self.tasks_popup = None;
+    }
+    pub fn tasks_popup_move(&mut self, dir: isize) {
+        let n = self.tasks.items.len();
+        if let (Some(sel), true) = (self.tasks_popup, n > 0) {
+            self.tasks_popup = Some((sel as isize + dir).rem_euclid(n as isize) as usize);
+        }
+    }
+
     pub fn agents_popup_confirm(&mut self) -> Option<crate::model::BlockIndex> {
         let sel = self.agents_popup.take()?;
         self.active_agent_indices().get(sel).copied()
@@ -1437,6 +1477,10 @@ impl View {
                 .collect();
             render_agents_popup(f, area, &rows, sel);
         }
+        // The `t` task/todo panel (#15).
+        if let Some(sel) = self.tasks_popup {
+            render_tasks_popup(f, area, &self.tasks, sel);
+        }
         // The switcher overlay (Picker clears the frame itself) sits on top.
         if let Some(p) = self.switcher.as_mut() {
             p.draw(f);
@@ -1492,6 +1536,139 @@ fn render_agents_popup(f: &mut Frame, area: Rect, rows: &[String], sel: usize) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
+/// The `t` task/todo panel (#15): a full-content-area overlay — a header with the
+/// open/total counts, one selectable row per task (status glyph + #id + subject, the
+/// in-progress one adding its activeForm), and a details region beneath the list
+/// showing the SELECTED task's description + dependency edges (the "see details"
+/// requirement — description text is only present when the task file / create op
+/// carried it). `j/k` move; `t`/`Esc` close.
+fn render_tasks_popup(f: &mut Frame, area: Rect, tasks: &crate::engine::TaskList, sel: usize) {
+    use crate::engine::TaskStatus;
+    use unicode_width::UnicodeWidthStr;
+    let width = area.width as usize;
+    let pad = |s: String| -> String {
+        let w = UnicodeWidthStr::width(s.as_str());
+        if w < width {
+            format!("{s}{}", " ".repeat(width - w))
+        } else {
+            s
+        }
+    };
+    let header = Style::default()
+        .fg(theme::fold_header())
+        .bg(theme::user_bg());
+    let open = tasks
+        .items
+        .iter()
+        .filter(|t| t.status != TaskStatus::Completed)
+        .count();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(area.height as usize);
+    lines.push(Line::from(Span::styled(
+        pad(format!(
+            " tasks — {open} open / {} total",
+            tasks.items.len()
+        )),
+        header,
+    )));
+    // The details region: ~1/3 of the panel, min 4 rows (only when a task is selected).
+    let details_rows = if tasks.items.is_empty() {
+        0
+    } else {
+        ((area.height as usize) / 3).clamp(4, 10)
+    };
+    let list_rows = (area.height as usize)
+        .saturating_sub(2) // header + footer
+        .saturating_sub(details_rows);
+    // Scroll the list window so the selection stays visible.
+    let first = sel.saturating_sub(list_rows.saturating_sub(1));
+    for (i, t) in tasks.items.iter().enumerate().skip(first).take(list_rows) {
+        let glyph = match t.status {
+            TaskStatus::Pending => "○",
+            TaskStatus::InProgress => "◐",
+            TaskStatus::Completed => "●",
+        };
+        let active = if t.status == TaskStatus::InProgress && !t.active_form.is_empty() {
+            format!(" · {}", t.active_form)
+        } else {
+            String::new()
+        };
+        let row = format!(
+            "{} {glyph} #{}  {}{active}",
+            if i == sel { "❯" } else { " " },
+            t.id,
+            t.subject
+        );
+        let style = if i == sel {
+            match t.status {
+                TaskStatus::Completed => theme::dim().bg(theme::focus_bg()),
+                _ => theme::user().bg(theme::focus_bg()),
+            }
+        } else {
+            match t.status {
+                TaskStatus::Completed => theme::dim(),
+                TaskStatus::InProgress => theme::user(),
+                TaskStatus::Pending => theme::status(),
+            }
+        };
+        lines.push(Line::from(Span::styled(pad(row), style)));
+    }
+    if tasks.items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            pad("   (no tasks recorded for this session)".to_string()),
+            theme::dim(),
+        )));
+    }
+    // Details for the selected task.
+    if let Some(t) = tasks.items.get(sel) {
+        while lines.len() < (area.height as usize).saturating_sub(1 + details_rows) {
+            lines.push(Line::from(""));
+        }
+        let mut deps = String::new();
+        if !t.blocked_by.is_empty() {
+            deps.push_str(&format!("  blocked by: {}", t.blocked_by.join(", ")));
+        }
+        if !t.blocks.is_empty() {
+            deps.push_str(&format!("  blocks: {}", t.blocks.join(", ")));
+        }
+        lines.push(Line::from(Span::styled(
+            pad(format!(" #{} · {}{deps}", t.id, t.status.label())),
+            header,
+        )));
+        let body = if t.description.is_empty() {
+            "(no recorded description)".to_string()
+        } else {
+            t.description.clone()
+        };
+        // Simple greedy char-wrap — good enough for a details pane.
+        let w = width.saturating_sub(2).max(8);
+        let mut wrapped: Vec<String> = Vec::new();
+        for para in body.lines() {
+            let mut cur = String::new();
+            for ch in para.chars() {
+                cur.push(ch);
+                if cur.chars().count() >= w {
+                    wrapped.push(std::mem::take(&mut cur));
+                }
+            }
+            wrapped.push(cur);
+        }
+        for l in wrapped.into_iter().take(details_rows.saturating_sub(1)) {
+            lines.push(Line::from(Span::styled(format!("  {l}"), theme::status())));
+        }
+    }
+    let footer_row = area.height.saturating_sub(1) as usize;
+    while lines.len() < footer_row {
+        lines.push(Line::from(""));
+    }
+    lines.truncate(footer_row);
+    lines.push(Line::from(Span::styled(
+        pad(" j/k move · t/esc close".to_string()),
+        header,
+    )));
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 /// The `?` help overlay: a centered bordered panel listing every hotkey.
 fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bool) {
     let mut rows: Vec<(&str, &str)> = vec![
@@ -1504,6 +1681,7 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("[ / ]", "focus previous / next foldable"),
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
+        ("t", "task/todo panel (session task queue)"),
         (
             "mouse",
             "wheel scrolls · click header=fold · attachment name=download/reveal",
@@ -1692,6 +1870,66 @@ mod tests {
             v1.is_collapsed(2) && v2.is_collapsed(2),
             "fold toggle on the unchanged prefix survived both paths"
         );
+    }
+
+    /// The `t` task/todo panel (#15): renders the fed TaskList — status glyphs, the
+    /// selected task highlighted with its description in the details region — and
+    /// j/k moves the selection (TestBackend, no TTY).
+    #[test]
+    fn tasks_panel_renders_and_navigates() {
+        use crate::engine::{TaskItem, TaskList, TaskStatus};
+        let mut v = View::new(blocks(3), "m", false, FoldPolicy::default());
+        v.set_tasks(TaskList {
+            items: vec![
+                TaskItem {
+                    id: "9".into(),
+                    subject: "ship the panel".into(),
+                    description: "the long details of nine".into(),
+                    status: TaskStatus::Completed,
+                    ..TaskItem::default()
+                },
+                TaskItem {
+                    id: "12".into(),
+                    subject: "fix the parser".into(),
+                    description: "the long details of twelve".into(),
+                    active_form: "Fixing the parser".into(),
+                    status: TaskStatus::InProgress,
+                    blocked_by: vec!["9".into()],
+                    ..TaskItem::default()
+                },
+            ],
+        });
+        let txt = |b: &Buffer| {
+            (0..b.area.height)
+                .map(|y| row(b, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let b0 = draw(&mut v, 80, 24);
+        assert!(!txt(&b0).contains("ship the panel"), "panel starts closed");
+        v.toggle_tasks_popup();
+        let b1 = draw(&mut v, 80, 24);
+        let t1 = txt(&b1);
+        assert!(t1.contains("1 open / 2 total"), "header counts:\n{t1}");
+        assert!(t1.contains("#9  ship the panel"), "row 9:\n{t1}");
+        assert!(
+            t1.contains("#12  fix the parser · Fixing the parser"),
+            "in-progress row shows activeForm:\n{t1}"
+        );
+        assert!(
+            t1.contains("the long details of nine"),
+            "selected (#9) details show:\n{t1}"
+        );
+        v.tasks_popup_move(1);
+        let b2 = draw(&mut v, 80, 24);
+        let t2 = txt(&b2);
+        assert!(
+            t2.contains("the long details of twelve") && t2.contains("blocked by: 9"),
+            "selection moved to #12 with dependency edges:\n{t2}"
+        );
+        v.tasks_popup_close();
+        let b3 = draw(&mut v, 80, 24);
+        assert!(!txt(&b3).contains("ship the panel"), "panel closes");
     }
 
     /// #61: a block the USER expanded stays expanded when a live update re-folds the

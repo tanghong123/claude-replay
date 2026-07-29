@@ -324,19 +324,35 @@ fn build_frame(
     // is never touched, so no follower exists.
     let transcript = crate::Transcript::open(agent, path);
     let id = title.clone();
-    let (blocks, cwd, metrics) = if args.follow {
+    let (blocks, cwd, metrics, oplog_tasks) = if args.follow {
         cache.register(&id, transcript.clone());
         match cache.poll(&id) {
-            Some(Ok(s)) => (s.blocks(), s.cwd.clone(), s.metrics.clone()),
-            _ => (Vec::new(), discover::session_cwd(path), Default::default()),
+            Some(Ok(s)) => (
+                s.blocks(),
+                s.cwd.clone(),
+                s.metrics.clone(),
+                s.tasks.clone(),
+            ),
+            _ => (
+                Vec::new(),
+                discover::session_cwd(path),
+                Default::default(),
+                Default::default(),
+            ),
         }
     } else {
         let s = transcript.parse()?;
-        (s.blocks(), s.cwd, s.metrics)
+        (s.blocks(), s.cwd, s.metrics, s.tasks)
     };
     let mut view = View::new(blocks, title, args.follow, fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
+    // The task panel's initial state (#15): the transcript's op-log merged with the
+    // live task files (disk wins per id; the op-log backfills pruned files).
+    view.set_tasks(crate::engine::tasks::merged(
+        &oplog_tasks,
+        discover::session_tasks(agent, path),
+    ));
     // The blocks hold only attachment locators; give the view the transcript to load them from.
     view.set_source(Some(transcript));
     view.set_can_open_picker(args.latest);
@@ -478,6 +494,14 @@ fn event_loop<B: ratatui::backend::Backend>(
             if !id.is_empty() {
                 if let Some(Ok((blocks, _times, metrics, changed_from))) = cache.poll_delta(id) {
                     view.apply_poll(blocks, &metrics, changed_from);
+                    // Keep the task panel's op-log side current (#15); the on-disk
+                    // side refreshes when the panel opens.
+                    if let Some(t) = cache.follower_tasks(id) {
+                        view.set_tasks(crate::engine::tasks::merged(
+                            &t,
+                            discover::session_tasks(_agent, _path),
+                        ));
+                    }
                 }
             }
             continue;
@@ -505,6 +529,17 @@ fn event_loop<B: ratatui::backend::Backend>(
             }
             // While the active-sub-agents popup is open, route keys to it: ↑/↓ select,
             // Enter descends into the chosen agent, Esc / `a` close.
+            // While the `t` task panel is open, route keys to it (#15).
+            Event::Key(k) if k.kind != KeyEventKind::Release && view.tasks_popup_open() => {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => {
+                        view.tasks_popup_close()
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => view.tasks_popup_move(-1),
+                    KeyCode::Down | KeyCode::Char('j') => view.tasks_popup_move(1),
+                    _ => {}
+                }
+            }
             Event::Key(k) if k.kind != KeyEventKind::Release && view.agents_popup_open() => {
                 match k.code {
                     KeyCode::Esc | KeyCode::Char('a') => view.agents_popup_close(),
@@ -559,6 +594,20 @@ fn event_loop<B: ratatui::backend::Backend>(
                     KeyCode::Char('G') => view.jump_bottom(),
                     KeyCode::Char(' ') => view.toggle_at_cursor(),
                     KeyCode::Char('T') => view.toggle_all(),
+                    KeyCode::Char('t') => {
+                        // Open the task panel with a FRESH disk read (#15) merged over
+                        // the current op-log state.
+                        if !view.tasks_popup_open() {
+                            let oplog = cache
+                                .follower_tasks(id)
+                                .unwrap_or_else(|| view.tasks_snapshot());
+                            view.set_tasks(crate::engine::tasks::merged(
+                                &oplog,
+                                discover::session_tasks(_agent, _path),
+                            ));
+                        }
+                        view.toggle_tasks_popup();
+                    }
                     KeyCode::Char(']') => view.focus_next(),
                     KeyCode::Char('[') => view.focus_prev(),
                     // Enter activates the focused block: fold toggle, descend a sub-agent,

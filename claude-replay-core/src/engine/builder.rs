@@ -46,6 +46,9 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// (never rescanned). The full header for a poll is this + the open turn re-folded on top (see
     /// [`session_meta`](Self::session_meta)) — so a live consumer reads it without an O(N) scan.
     committed_meta: SessionMeta,
+    /// The task op-log fold (#15) — session state maintained here (like metrics),
+    /// never seen by the block replayer.
+    task_fold: crate::engine::tasks::TaskFold,
 }
 
 /// The delta-sized read a live streaming consumer (the pull protocol) needs each poll — WITHOUT
@@ -66,6 +69,9 @@ pub struct StreamRead {
     /// The current committed count (== the split point between `committed_delta`'s base and the
     /// provisional zone).
     pub n_committed: usize,
+    /// The current task op-log state (#15) — rides the read so the pull path's meta
+    /// carries it without a session assembly.
+    pub tasks: crate::engine::tasks::TaskList,
 }
 
 impl SessionAccumulator<InMemoryStore> {
@@ -90,6 +96,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             store,
             committed: Vec::new(),
             committed_meta: SessionMeta::default(),
+            task_fold: crate::engine::tasks::TaskFold::default(),
         }
     }
 
@@ -120,6 +127,19 @@ impl<S: BlockStore> SessionAccumulator<S> {
                     *ix = index;
                     index += 1;
                 }
+            }
+        }
+        // The task op-log (#15) folds HERE, at the accumulator — task state is
+        // session state like metrics/meta, not a block, so the block replayer (and
+        // its parse_main equivalence oracle) never see it. Tool results feed the
+        // create→id join.
+        for m in &delta {
+            match m {
+                Message::TaskOp(op) => self.task_fold.apply(op),
+                Message::ToolResult {
+                    tool_use_id, text, ..
+                } => self.task_fold.on_tool_result(tool_use_id, text),
+                _ => {}
             }
         }
         let patched = self.replayer.apply(&delta);
@@ -190,6 +210,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
+        self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's
         // locators start from a clean slate instead of accreting dead content.
         self.store.reset();
@@ -259,6 +280,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             metrics: self.metrics.finish(),
             meta,
             n_committed: self.committed.len(),
+            tasks: self.task_fold.snapshot().clone(),
         }
     }
 
@@ -285,6 +307,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// Takes `&mut self` because `put` is `&mut` (the store may append to a backing tier).
     /// Stage 1 maps-through-put per snapshot (fine for identity); Stage 2 moves to
     /// put-once-on-emit.
+    /// The current task op-log state (#15) — cheap (no session assembly).
+    pub fn tasks(&self) -> &crate::engine::tasks::TaskList {
+        self.task_fold.snapshot()
+    }
+
     pub fn snapshot(&mut self) -> Session<S::Bv> {
         let (blocks, user_times, metrics) = self.fold();
         let index = SessionIndex::build(&blocks, &user_times);
@@ -305,6 +332,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             metrics,
             index,
             sub_agents,
+            tasks: self.task_fold.snapshot().clone(),
         }
     }
 }
@@ -505,6 +533,43 @@ mod tests {
             d.committed_len() > 0,
             "queue drained ⇒ the durability frontier advanced past the delivered turns"
         );
+    }
+
+    /// The task op-log end-to-end (#15): real transcript lines with
+    /// `TaskCreate`/`TaskUpdate` calls fold into `Session.tasks` — the create's id
+    /// joined from its RESULT text, updates applied by task id — while the BLOCK
+    /// stream is untouched (task tools still render as ordinary ToolUse blocks).
+    #[test]
+    fn task_ops_fold_into_session_tasks() {
+        use crate::engine::tasks::TaskStatus;
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-07-29T10:00:00Z","message":{"role":"user","content":"go"}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-07-29T10:00:05Z","message":{"content":[{"type":"tool_use","id":"tc1","name":"TaskCreate","input":{"subject":"fix the parser","description":"long details","activeForm":"Fixing the parser"}}]}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-07-29T10:00:06Z","message":{"content":[{"type":"tool_result","tool_use_id":"tc1","content":"Created task #12: fix the parser"}]}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-07-29T10:00:10Z","message":{"content":[{"type":"tool_use","id":"tu1","name":"TaskUpdate","input":{"taskId":"12","status":"in_progress"}}]}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-07-29T10:00:11Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Updated task #12 status"}]}}"#.to_string(),
+        ];
+        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut off: ByteOffset = 0;
+        for l in &lines {
+            acc.advance_at(off, l);
+            off += l.len() as u64 + 1;
+        }
+        let s = acc.snapshot();
+        assert_eq!(s.tasks.items.len(), 1, "{:?}", s.tasks);
+        let t = &s.tasks.items[0];
+        assert_eq!(t.id, "12");
+        assert_eq!(t.subject, "fix the parser");
+        assert_eq!(t.description, "long details");
+        assert_eq!(t.active_form, "Fixing the parser");
+        assert_eq!(t.status, TaskStatus::InProgress);
+        // The block stream still shows the two tool calls as ordinary blocks.
+        let tools = s
+            .blocks()
+            .iter()
+            .filter(|b| matches!(b, Block::ToolUse { .. } | Block::Thinking { .. }))
+            .count();
+        assert!(tools >= 1, "task tools still render as blocks");
     }
 
     /// A truncation/rewrite resets the maintained committed meta (no stale carry-over).

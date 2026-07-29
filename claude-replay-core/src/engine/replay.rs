@@ -188,6 +188,10 @@ impl<'a> Replayer<'a> {
                     }
                     self.pending_ts = *ts;
                 }
+                // Task ops (#15) are session state, folded by the ACCUMULATOR — the
+                // block fold ignores them (they produce no block; the parse_main
+                // oracle never sees them either, so equivalence is untouched).
+                Message::TaskOp(_) => {}
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
                 }

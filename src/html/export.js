@@ -699,12 +699,50 @@
     row("cache read", (u.cache_read || "0") + " tok");
     if (u.cost) row("est. cost", u.cost, "total");
 
+    renderTasks(m.tasks);
     renderCrumbs(m.ancestors);
     synthesizeBack(m.ancestors);
     // In a multi-agent tree (this session has children, or is itself a sub-agent) the box
     // is always shown — grayed on a childless leaf. A standalone session hides it entirely.
     var inTree = (m.children && m.children.length) || (m.ancestors && m.ancestors.length);
     renderAgentMenu(m.children, inTree);
+  }
+
+  // The session's task/todo panel (#15): a sidebar section fed by the meta record
+  // (op-log state merged with the live task files server-side). Each row: status
+  // glyph + #id + subject (activeForm for the in-progress one); click toggles the
+  // description + dependency details inline. Hidden when the session has no tasks.
+  function renderTasks(tasks) {
+    var box = $("taskbox");
+    if (!box) return;
+    if (!tasks || !tasks.length) { box.style.display = "none"; box.textContent = ""; return; }
+    // Preserve which details are expanded across live meta refreshes.
+    var openIds = {};
+    all("#taskbox .task-item.open").forEach(function (t) { openIds[t.dataset.tid] = 1; });
+    box.style.display = "";
+    box.textContent = "";
+    var open = tasks.filter(function (t) { return t.status !== "Completed"; }).length;
+    box.appendChild(el("div", "side-head", "Tasks (" + open + " open)"));
+    tasks.forEach(function (t) {
+      var item = el("div", "task-item" + (openIds[t.id] ? " open" : ""));
+      item.dataset.tid = t.id;
+      var glyph = t.status === "Completed" ? "●" : t.status === "InProgress" ? "◐" : "○";
+      var row = el("div", "task-row" + (t.status === "Completed" ? " done" : t.status === "InProgress" ? " active" : ""));
+      row.appendChild(el("span", "task-glyph", glyph));
+      row.appendChild(el("span", "task-id", "#" + t.id));
+      var subj = t.subject || "(untitled)";
+      if (t.status === "InProgress" && t.active_form) subj += " · " + t.active_form;
+      row.appendChild(el("span", "task-subj", subj));
+      item.appendChild(row);
+      var det = el("div", "task-det");
+      var deps = [];
+      if (t.blocked_by && t.blocked_by.length) deps.push("blocked by " + t.blocked_by.join(", "));
+      if (t.blocks && t.blocks.length) deps.push("blocks " + t.blocks.join(", "));
+      if (deps.length) det.appendChild(el("div", "task-deps", deps.join(" · ")));
+      det.appendChild(el("div", "task-desc", t.description || "(no recorded description)"));
+      item.appendChild(det);
+      box.appendChild(item);
+    });
   }
 
   // The breadcrumb bar: `↑ <parent> › <current>`. Navigation steps up ONE level — to the
@@ -1626,6 +1664,8 @@
     if (e.target.closest(".agent-open")) return;
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
+    var trow = e.target.closest(".task-row");
+    if (trow) { trow.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
     var si = e.target.closest(".side-item");
     if (si) goToId(si.dataset.t);

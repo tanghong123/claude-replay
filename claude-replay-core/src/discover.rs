@@ -190,6 +190,17 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }
 
+/// The LIVE on-disk task list for the session at `path` (#15) — the agent-neutral
+/// facade over each adapter's `load_tasks` hook (Claude reads
+/// `~/.claude/tasks/<session-id>/*.json`; agents with no task store return `None`).
+/// Complements the transcript-derived op-log state in
+/// [`Session::tasks`](crate::Session); merge with
+/// [`tasks::merged`](crate::engine::tasks::merged) — disk wins per id, the op-log
+/// backfills pruned files.
+pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::TaskList> {
+    crate::adapter::adapter(agent).load_tasks(path)
+}
+
 /// Resolve which transcript to open, across agents, and return its path.
 ///
 /// - `target` — an explicit selection, **either a filesystem path to a `.jsonl` transcript OR

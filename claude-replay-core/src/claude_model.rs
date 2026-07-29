@@ -152,6 +152,45 @@ fn push_injected(s: &str, out: &mut Vec<Block>) {
     }
 }
 
+/// Map a `TaskCreate`/`TaskUpdate` call input onto a structured task op (#15) — the
+/// L1-only extraction (the built `ToolUse` block doesn't retain inputs). Any other
+/// tool → `None`. Field names follow the harness's task-tool schema; `blockedBy` on
+/// an update is treated as additive alongside `addBlockedBy`.
+fn task_op(name: &str, id: &str, input: &Value) -> Option<crate::engine::tasks::TaskOp> {
+    use crate::engine::tasks::TaskOp;
+    let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(String::from);
+    let list = |k: &str| -> Vec<String> {
+        input
+            .get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    match name {
+        "TaskCreate" => Some(TaskOp::Create {
+            tool_use_id: id.to_string(),
+            subject: s("subject").unwrap_or_default(),
+            description: s("description").unwrap_or_default(),
+            active_form: s("activeForm").unwrap_or_default(),
+            blocked_by: list("blockedBy"),
+        }),
+        "TaskUpdate" => Some(TaskOp::Update {
+            task_id: s("taskId").unwrap_or_default(),
+            status: s("status"),
+            subject: s("subject"),
+            description: s("description"),
+            active_form: s("activeForm"),
+            add_blocks: [list("addBlocks"), list("blocks")].concat(),
+            add_blocked_by: [list("addBlockedBy"), list("blockedBy")].concat(),
+        }),
+        _ => None,
+    }
+}
+
 /// Turn one plain-string `user` message into block(s) — a slash command becomes a
 /// `Command`, a task-notification collapses to its summary, caveat noise is dropped, and
 /// the rest is `UserText`. Used by the frozen reference parser [`parse_main`]; the streaming
@@ -564,6 +603,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                         let input = blk.get("input").cloned().unwrap_or(Value::Null);
                         let id = blk.get("id").and_then(|s| s.as_str()).unwrap_or("");
+                        // Task-queue ops (#15): only L1 sees the call input, so the
+                        // structured op is emitted here, alongside the ToolUse.
+                        if let Some(op) = task_op(name, id, &input) {
+                            msgs.push(Message::TaskOp(op));
+                        }
                         // Raw fields only — the block is shaped in L2 via `claude_build_tool`.
                         msgs.push(Message::ToolUse {
                             id: id.to_string(),

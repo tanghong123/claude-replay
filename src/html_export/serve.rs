@@ -222,8 +222,15 @@ impl Live {
             ),
             None => (&[][..], &[][..], &empty_metrics),
         };
+        let tasks = crate::engine::tasks::merged(
+            session
+                .as_ref()
+                .map(|s| &s.tasks)
+                .unwrap_or(&Default::default()),
+            crate::discover::session_tasks(self.agent, src.path()),
+        );
         let (jsonl, children) = render_agent_stream(
-            self.agent, &self.fold, &self.cwd, true, &info, blocks, times, metrics, None,
+            self.agent, &self.fold, &self.cwd, true, &info, blocks, times, metrics, &tasks, None,
         );
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
@@ -364,7 +371,13 @@ impl Live {
         // presentation info. Children get a one-time source+parent-pointer note so their
         // `?session=` links resolve; their titles derive lazily on THEIR first pull
         // (`derive_title`) — this pull touches no other session's presentation state.
-        let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics);
+        // Meta tasks (#15): the fold's op-log overlaid by a fresh read of the live task
+        // files (small dir; the pull is already a per-second file poll).
+        let tasks = crate::engine::tasks::merged(
+            &d.tasks,
+            crate::discover::session_tasks(self.agent, src.path()),
+        );
+        let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics, &tasks);
         self.register_child_sources(id, &d.meta.children);
         let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
             .iter()
@@ -474,6 +487,10 @@ impl Live {
                     .unwrap_or_default();
                 let info = self.agent_info(&id, src.path().to_path_buf(), &title);
                 let blocks = session.blocks();
+                let tasks = crate::engine::tasks::merged(
+                    &session.tasks,
+                    crate::discover::session_tasks(self.agent, src.path()),
+                );
                 let (jsonl, children) = render_agent_stream(
                     self.agent,
                     &self.fold,
@@ -483,6 +500,7 @@ impl Live {
                     &blocks,
                     &session.user_times,
                     &session.metrics,
+                    &tasks,
                     None,
                 );
                 self.register_children(&info, children);
@@ -627,6 +645,10 @@ pub(super) fn follow_and_append(
         let cwd = crate::discover::session_cwd(path)
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+        let tasks = crate::engine::tasks::merged(
+            &follower.tasks(),
+            crate::discover::session_tasks(agent, path),
+        );
         let (fresh, _) = render_snapshot(
             agent,
             path,
@@ -636,6 +658,7 @@ pub(super) fn follow_and_append(
             &cwd,
             fold,
             reveal,
+            &tasks,
         );
         let meta = fresh.lines().next().unwrap_or("{}");
         let blocks = block_lines(&fresh);

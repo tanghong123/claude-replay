@@ -851,6 +851,7 @@ fn build_page(
   <nav id="sidebar">
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
+    <div class="tasks" id="taskbox" style="display:none"></div>
     <div class="usage" id="usage"></div>
     <div class="legend">
       <span class="key">j k</span><span class="what">move</span>
@@ -932,6 +933,7 @@ pub(super) fn render_snapshot(
     cwd: &str,
     fold: &FoldPolicy,
     reveal: bool,
+    tasks: &crate::engine::TaskList,
 ) -> (String, Vec<(String, String)>) {
     let session_id = session_id(path);
     // Prefer the repo/dir name as the display title; fall back to the session id
@@ -954,6 +956,8 @@ pub(super) fn render_snapshot(
             "cost": m.cost_usd.map(|c| format!("${c:.2}")),
             "model": m.model,
         },
+        "version": env!("CARGO_PKG_VERSION"),
+        "tasks": tasks.items,
     });
     // The blocks hold only attachment locators; the served/bundle paths load their bytes on
     // demand from this transcript. (A portable `--dump-html` never loads — it shows the name.)
@@ -1094,9 +1098,10 @@ pub(super) fn render_agent_stream(
     blocks: &[Block],
     user_times: &[Option<f64>],
     m: &crate::metrics::Metrics,
+    tasks: &crate::engine::TaskList,
     assets: Option<&mut AssetSink>,
 ) -> (String, Vec<ChildRef>) {
-    let (meta, child_refs) = agent_meta(agent, cwd, info, blocks, m);
+    let (meta, child_refs) = agent_meta(agent, cwd, info, blocks, m, tasks);
     // Each agent's attachment locators point into its OWN source transcript; load from there.
     let transcript = Transcript::open(agent, &info.source);
     let (jsonl, _) = build_jsonl_inner(
@@ -1123,6 +1128,7 @@ pub(super) fn agent_meta(
     info: &AgentInfo,
     blocks: &[Block],
     m: &crate::metrics::Metrics,
+    tasks: &crate::engine::TaskList,
 ) -> (Value, Vec<ChildRef>) {
     let usage = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
@@ -1165,6 +1171,7 @@ pub(super) fn agent_meta(
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
         "version": env!("CARGO_PKG_VERSION"),
+        "tasks": tasks.items,
     });
     (meta, child_refs)
 }
@@ -1181,6 +1188,7 @@ pub(super) fn assemble_meta(
     info: &AgentInfo,
     sm: &crate::engine::SessionMeta,
     m: &crate::metrics::Metrics,
+    tasks: &crate::engine::TaskList,
 ) -> Value {
     let usage = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
@@ -1211,6 +1219,7 @@ pub(super) fn assemble_meta(
         "agent_type": &info.agent_type, "usage": usage,
         "ancestors": ancestors, "children": children,
         "version": env!("CARGO_PKG_VERSION"),
+        "tasks": tasks.items,
     })
 }
 
@@ -1451,12 +1460,25 @@ mod tests {
         m.model = "claude-x".into();
         m.duration_secs = 5;
 
-        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m);
+        // Both assemblers receive the SAME task list (#15) — parity includes it.
+        let tasks = crate::engine::TaskList {
+            items: vec![crate::engine::TaskItem {
+                id: "3".into(),
+                subject: "meta parity".into(),
+                status: crate::engine::TaskStatus::InProgress,
+                ..Default::default()
+            }],
+        };
+        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m, &tasks);
         let maintained = crate::engine::SessionMeta::build(&blocks);
-        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m);
+        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m, &tasks);
         assert_eq!(
             got, oracle,
             "assemble_meta(SessionMeta) == agent_meta(blocks)"
+        );
+        assert_eq!(
+            oracle["tasks"][0]["subject"], "meta parity",
+            "meta carries tasks"
         );
         // Guard the fixture's coverage: the counts exercised the nested/spawn rules.
         assert_eq!(oracle["turns"], 2);

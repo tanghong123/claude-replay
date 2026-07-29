@@ -108,6 +108,12 @@ pub struct Session<BV = Block> {
     /// over the finished blocks; `transcript` is filled by the path-aware parse. Empty for an
     /// agent with no sub-agents (Codex). Replaces the retired `SessionIndex.agents`.
     pub sub_agents: BTreeMap<AgentId, SubAgentMeta>,
+    /// The session's task/todo state reconstructed from the transcript's op-log
+    /// (`TaskCreate`/`TaskUpdate` calls, #15) — point-in-time as of the fold's end.
+    /// Empty for agents with no task tools (Codex). The LIVE on-disk state (richer,
+    /// possibly newer) comes from the adapter facade `discover::session_tasks`; merge
+    /// with [`tasks::merged`](crate::engine::tasks::merged).
+    pub tasks: crate::engine::tasks::TaskList,
 }
 
 impl<BV> Session<BV> {

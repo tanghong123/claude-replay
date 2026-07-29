@@ -101,6 +101,12 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
     }
+    /// The LIVE on-disk task list for the session at `path` (#15). Default `None` —
+    /// an agent with no task store (Codex) has none; Claude reads
+    /// `~/.claude/tasks/<session-id>/*.json`. Backs `discover::session_tasks`.
+    fn load_tasks(&self, _path: &Path) -> Option<crate::engine::tasks::TaskList> {
+        None
+    }
 }
 
 /// The adapter for `agent`.
@@ -171,6 +177,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         crate::claude_model::subagent_file(root, child_id)
+    }
+    fn load_tasks(&self, path: &Path) -> Option<crate::engine::tasks::TaskList> {
+        crate::claude_discover::load_tasks(path)
     }
 }
 

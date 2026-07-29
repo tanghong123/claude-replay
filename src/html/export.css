@@ -245,6 +245,27 @@ a.crumb:hover { text-decoration: underline; }
 }
 .usage { display: flex; flex-direction: column; gap: 5px; }
 .usage .side-head { padding: 0 0 2px; }
+/* #15 the session task/todo panel — a sidebar section fed by the meta record. */
+.tasks {
+  padding: 10px; border-top: 1px solid var(--border);
+  font: 11px var(--mono); color: var(--muted);
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
+}
+.tasks .side-head { padding: 0 0 4px; }
+.task-row { display: flex; gap: 5px; cursor: pointer; border-radius: 4px; padding: 1px 2px; }
+.task-row:hover { background: var(--hover); }
+.task-row.done { color: var(--faint); }
+.task-row.active { color: var(--fg); font-weight: 600; }
+.task-glyph { flex: none; }
+.task-row.active .task-glyph { color: var(--tool); }
+.task-id { flex: none; color: var(--faint); }
+.task-subj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-det { display: none; padding: 3px 2px 5px 18px; }
+.task-item.open .task-det { display: block; }
+.task-item.open .task-subj { white-space: normal; }
+.task-deps { color: var(--faint); padding-bottom: 3px; }
+.task-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 .urow { display: flex; justify-content: space-between; gap: 8px; }
 .urow span:first-child { color: var(--faint); }
 .urow.total { padding-top: 4px; border-top: 1px dashed var(--border); color: var(--fg); }
