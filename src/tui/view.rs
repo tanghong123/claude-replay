@@ -244,6 +244,11 @@ pub enum PopupClick {
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>, // per-block fold state
+    /// Explicit user fold gestures by block index (#61) — re-applied over the
+    /// policy-derived defaults whenever a live update re-folds the tail, so an
+    /// expansion the user made survives incoming blocks. Position-keyed: across a
+    /// tail reshape the override lands on whatever block now holds that index.
+    user_folds: std::collections::HashMap<crate::model::BlockIndex, bool>,
     /// First block whose display geometry is stale (fold toggle / live update); `layout`
     /// re-measures from here. `None` = geometry current.
     dirty_from: Option<usize>,
@@ -300,6 +305,7 @@ impl View {
         Self {
             blocks,
             collapsed,
+            user_folds: std::collections::HashMap::new(),
             dirty_from: Some(0),
             heights: Vec::new(),
             prefix: vec![0],
@@ -743,6 +749,9 @@ impl View {
         if self.blocks.get(i).map(render::foldable).unwrap_or(false) {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
+                // An explicit user gesture (#61): pin it so a live tail re-fold
+                // (apply_from re-deriving policy defaults) can't undo it.
+                self.user_folds.insert(i, *c);
             }
             // O(one block): re-render/measure only the toggled block; later blocks shift by
             // an integer delta in the prefix sums.
@@ -785,6 +794,8 @@ impl View {
         for i in 0..self.blocks.len() {
             if render::foldable(&self.blocks[i]) {
                 self.collapsed[i] = any_expanded;
+                // Also a user intent — pinned like a single toggle (#61).
+                self.user_folds.insert(i, any_expanded);
             }
         }
         self.rebuild_raw();
@@ -1179,6 +1190,18 @@ impl View {
         let tail = self.fold.collapsed_for(&new_blocks[d..]);
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
+        // Re-apply the user's explicit fold gestures over the re-derived tail (#61):
+        // without this, a live update snaps a block the user expanded back to the
+        // policy default. Position-keyed — a reshaped tail maps by index (the same
+        // heuristic the HTML client uses; ids there are position-derived too).
+        for (&i, &c) in &self.user_folds {
+            if i >= d
+                && new_blocks.get(i).map(render::foldable).unwrap_or(false)
+                && i < self.collapsed.len()
+            {
+                self.collapsed[i] = c;
+            }
+        }
         self.blocks = new_blocks;
         // Geometry for the unchanged prefix [0..d] survives; the next layout re-measures only
         // the changed tail (heights + text index), keeping a live poll O(tail), not O(session).
@@ -1669,6 +1692,48 @@ mod tests {
             v1.is_collapsed(2) && v2.is_collapsed(2),
             "fold toggle on the unchanged prefix survived both paths"
         );
+    }
+
+    /// #61: a block the USER expanded stays expanded when a live update re-folds the
+    /// tail (apply_poll re-derives the policy defaults for `[d..]` — without the
+    /// user-fold overlay, the expansion snapped shut exactly when following the tail).
+    #[test]
+    fn user_fold_survives_live_tail_refold() {
+        // A foldable tool block in the tail (Bash folds by default policy).
+        let tool = |cmd: &str| Block::ToolUse {
+            name: "Bash".into(),
+            target: cmd.into(),
+            diffs: vec![],
+            output: Some("out".into()),
+            patch: None,
+            read_lines: None,
+        };
+        let a = vec![
+            Block::UserText("go".into()),
+            Block::AssistantText("working".into()),
+            tool("ls -la"),
+        ];
+        let mut v = View::new(a.clone(), "m", true, FoldPolicy::default());
+        v.layout(80, 24);
+        assert!(v.is_collapsed(2), "bash starts collapsed by policy");
+        // USER expands it (a real gesture, not a direct collapsed[] poke).
+        v.toggle_block(2);
+        assert!(!v.is_collapsed(2), "expanded by the user");
+        // A live update re-emits the tail from index 2 (a re-fold of the open turn:
+        // the same block plus a new one after it).
+        let b = vec![
+            a[0].clone(),
+            a[1].clone(),
+            tool("ls -la"),
+            Block::AssistantText("new message".into()),
+        ];
+        v.apply_poll(b, &Metrics::default(), 2);
+        v.layout(80, 24);
+        assert!(
+            !v.is_collapsed(2),
+            "the user's expansion survived the live tail re-fold"
+        );
+        assert_eq!(v.block_kinds().len(), 4, "new block arrived too");
     }
 
     /// The default fold policy (no `--unfold`) collapses `Agent`/`Task` spawn blocks —

@@ -391,7 +391,20 @@
       if (p.p === "blocks") p.items.forEach(function (c) { indexIds(c, top); });
     });
   }
+  // Fold overrides from explicit user gestures (#61): a live update re-emits the
+  // open turn's records with the server's AUTHORED open state, which used to snap a
+  // block the user expanded back shut (visible exactly when following the tail).
+  // Every record entering the stream re-applies the user's overrides, keyed by
+  // block id (stable across re-emission; stale ids simply never match again).
+  var userFolds = {};
+  function applyUserFolds(b) {
+    if (b.id && userFolds[b.id] !== undefined && isFoldRec(b)) b.open = userFolds[b.id];
+    (b.body || []).forEach(function (p) {
+      if (p.p === "blocks") p.items.forEach(applyUserFolds);
+    });
+  }
   function pushRecord(b) {
+    applyUserFolds(b);
     records.push(b);
     recHeights.push(EST_H);
     recText.push(null);
@@ -1199,6 +1212,7 @@
   // paths call setFold directly and skip anchoring.
   function toggleFold(f, open) {
     if (!f) return;
+    if (f.id) userFolds[f.id] = open ? 1 : 0; // an explicit user gesture (#61)
     var h = f.querySelector(":scope > .fold-h");
     var y0 = h ? h.getBoundingClientRect().top : 0;
     setFold(f, open);
@@ -1211,8 +1225,12 @@
     if (top < 96) window.scrollBy({ top: top - 104, behavior: "smooth" });
   }
   function allFolds(open) {
-    // Record-level (#50): applies to every fold in the session, materialized or not.
-    eachFoldRec(function (b) { b.open = open ? 1 : 0; });
+    // Record-level (#50): applies to every fold in the session, materialized or not,
+    // and pins each as a user override so live re-emission can't undo it (#61).
+    eachFoldRec(function (b) {
+      b.open = open ? 1 : 0;
+      if (b.id) userFolds[b.id] = b.open;
+    });
     refreshWindow();
   }
 
