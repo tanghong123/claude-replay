@@ -1739,6 +1739,68 @@ mod tests {
     /// the root's agent blocks carrying `child:` nav links and each child stream holding
     /// its own transcript.
     #[test]
+    /// #64 the bundle completeness contract: EVERY embedded, non-inline-rendered
+    /// object in a transcript — prompt images, tool-result images, `file`
+    /// attachments, `plan_file_reference` plans, ExitPlanMode plans — materializes
+    /// into the offline bundle's assets/ with a working `att_href` link. (Path-only
+    /// attachments like `edited_text_file` carry no embedded bytes — nothing to
+    /// dump, by design; portable single-file `--dump-html` stays name-only.)
+    #[test]
+    fn bundle_materializes_every_embedded_object() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("cr-bundle-complete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sess = base.join("one-of-each.jsonl");
+        // Zm9v / YmFy = "foo"/"bar" — tiny valid base64 payloads.
+        let jsonl = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"Zm9v\"}}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"r1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/w/shot.png\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"r1\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"YmFy\"}}]}]}}\n",
+            "{\"type\":\"attachment\",\"attachment\":{\"type\":\"file\",\"filename\":\"/w/notes.md\",\"displayPath\":\"notes.md\",\"content\":{\"type\":\"text\",\"file\":{\"filePath\":\"/w/notes.md\",\"content\":\"# notes body\"}}}}\n",
+            "{\"type\":\"attachment\",\"attachment\":{\"type\":\"plan_file_reference\",\"planFilePath\":\"/p/big-plan.md\",\"planContent\":\"# the referenced plan\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"ep1\",\"name\":\"ExitPlanMode\",\"input\":{\"plan\":\"# the exit plan\"}}]}}\n"
+        );
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(jsonl.as_bytes())
+            .unwrap();
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            sess.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &sess).unwrap();
+        // Every embedded object landed in assets/.
+        let assets: Vec<String> = std::fs::read_dir(out.join("assets"))
+            .expect("assets dir exists")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        for expect in ["notes.md", "big-plan.md", "plan.md"] {
+            assert!(
+                assets.iter().any(|a| a.contains(expect.trim_end_matches(".md")) || a == expect),
+                "missing {expect} in assets: {assets:?}"
+            );
+        }
+        let images = assets.iter().filter(|a| a.ends_with(".png") || a.ends_with(".jpg") || a.ends_with(".jpeg")).count();
+        assert!(images >= 2, "prompt + tool-result images materialized: {assets:?}");
+        // And each attachment record links its asset.
+        let stream_file = std::fs::read_dir(&out)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .expect("agent stream present");
+        let stream = std::fs::read_to_string(stream_file).unwrap();
+        let hrefs = stream.matches("\"att_href\":\"assets/").count();
+        assert!(hrefs >= 5, "all five embedded objects linked (got {hrefs}):\n{stream}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     fn dump_all_html_writes_navigable_bundle() {
         use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
