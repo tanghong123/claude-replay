@@ -11,8 +11,8 @@ A developer-facing design document for the `claude-replay` workspace: the reusab
 **engine**, the **presentation-support layer**, and the **presenters** built on them (a
 terminal viewer, an HTML export/live server, and the `agent-jdi` supervisor). For the
 hands-on "how do I build/test/extend this" material — including the
-**[add-an-agent walkthrough](developer-guide.md#adding-an-agent)** and the
-**[build-your-own-frontend guide](developer-guide.md#level-2--build-your-own-frontend-on-core--present)**
+**[add-an-agent walkthrough](developer-guide.md#7-adding-an-agent)** and the
+**[build-your-own-frontend guide](developer-guide.md#5-level-2--build-your-own-frontend-on-core--present)**
 — see the [Developer Guide](developer-guide.md).
 
 ---
@@ -73,59 +73,61 @@ Internally, each crate re-exports the layers below it at its own root (`crate::m
 `crate::present`, …) — the same transparency trick at every boundary, so moved code reads as
 if the split weren't there. One workspace version, bumped in one place.
 
-## 3. The three-layer engine (core)
+## 3. The pipeline
 
-Parsing is a pipeline. Each layer has one job, and the agent-specific knowledge is confined
-to Layer 1. These *pipeline* layers are orthogonal to the §2 *crate* layers, so the diagram
-names both: Layers 1 and 2 are internal structure **of the `claude-replay-core` crate** —
-the `Block` stream between L2 and L3 is exactly the core crate's public output — and Layer 3
-is the frontend crates, leaning on `claude-replay-present` for the shared support (cache,
-formatters, highlighting) that isn't part of the pipeline itself.
+Everything in the workspace is a stage on one top-to-bottom data path (or a cache beside
+it). Arrows are the *actions*; the table below maps each action to the module/function that
+implements it. The dashed back-edge is what makes sub-agent trees work: a parsed session can
+name further raw transcripts, which run the same pipeline recursively.
 
 ```mermaid
-flowchart LR
-  subgraph CORE["crate: claude-replay-core"]
-    direction LR
-    subgraph L1["Layer 1 — per agent (claude_model / codex_model)"]
-      RAW["raw JSONL line"] -->|decode_line| MSG["canonical Message"]
-    end
-    subgraph L2["Layer 2 — shared (engine::replay)"]
-      MSG -->|"Replayer fold + Shaping"| BLK["Block stream"]
-    end
-  end
-  subgraph L3["Layer 3 — presenter crates (supported by claude-replay-present)"]
-    TUI["crate: claude-replay-tui&nbsp;&nbsp;(ratatui view · --dump text/ansi)"]
-    HTML["crate: claude-replay-html&nbsp;&nbsp;(export / bundle / live server)"]
-  end
-  BLK --> TUI
-  BLK --> HTML
+flowchart TB
+  RAW["raw JSONL transcript(s)<br/>(the agent's own on-disk store)"]
+  MSG["canonical Message stream"]
+  BLK["Block stream<br/>(committed ++ open turn)"]
+  SES["Session<br/>{ blocks, index, metrics, tasks }"]
+  CACHE["SessionCache<br/>(tiered residency, kept current)"]
+  TUI["TUI View state"]
+  HTMLR["HTML record stream"]
+  TERM["terminal cells"]
+  DOM["browser DOM"]
+
+  RAW  -->|"① decode — one raw line → 0+ canonical messages"| MSG
+  MSG  -->|"② fold — join results onto calls, group turns, coalesce spans"| BLK
+  BLK  -->|"③ accumulate — commit finished turns, index, meter"| SES
+  SES  -->|"④ cache — keep live sessions current, evictable, shareable"| CACHE
+  CACHE -->|"⑤a poll — in-process delta (changed_from)"| TUI
+  CACHE -->|"⑤b pull — cross-process delta (4-tuple Cursor)"| HTMLR
+  TUI  -->|"⑥a render — wrap + highlight, windowed"| TERM
+  HTMLR -->|"⑥b render — records → virtualized DOM"| DOM
+  SES  -.->|"⓪ discover — a SubAgent block names a child transcript"| RAW
 ```
 
-| pipeline layer | lives in | role |
+| action | what it means | code |
 |---|---|---|
-| L1 decode | `claude-replay-core` (`*_model` modules) | raw agent format → canonical `Message` |
-| L2 fold | `claude-replay-core` (`engine::replay`) | `Message` stream → `Block` stream |
-| L3 present | `claude-replay-tui` / `claude-replay-html` | `Block` stream → pixels/HTML, via `claude-replay-present`'s shared cache + formatters |
+| ⓪ discover | find transcripts: by path/id/cwd up front, and the back-edge — a parsed `SubAgent` block resolves to its child's raw transcript, fed through the same pipeline | `core::discover` (`resolve_any`, `candidates_all`, `subagent_source`); `TranscriptAdapter::enrich` loads the tree |
+| ① decode | the only agent-specific stage ("L1" in code comments): raw field names → the shared `Message` vocabulary | `core::adapter::TranscriptAdapter::decode_line`, dispatched to the agent's `*_model` decoder |
+| ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queue lifecycle | `core::engine::replay` — `Replayer`, parameterized by the agent's `Shaping` (4 fn-pointers) |
+| ③ accumulate | maintain the durability frontier: finished turns drained **put-once** into a `BlockStore`, `SessionIndex`/`Metrics`/tasks folded alongside; `snapshot()` yields a `Session` | `core::engine::builder::SessionAccumulator` (sans-io — §4) |
+| ④ cache | residency for live sessions: register cheaply, materialize a follower on demand, reap idle, hibernate/restore | `present::cache::SessionCache`; residents kept current by `core::FollowParser` (batch parsing skips this stage — `parse_session` drives ①–③ directly) |
+| ⑤a poll | in-process consumption: the delta since last tick as `(blocks, …, changed_from)` | `core::FollowParser::poll_delta` → `tui::View::apply_poll` |
+| ⑤b pull | cross-process consumption: per-client stateless replies against a client-held cursor | `present::cache::stream` — `SharedSession::pull`, `Cursor`, `PullClient` (§8) |
+| ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render`/`markdown`/`wrap` + `present::highlight`; the `hot` window (§7) |
+| ⑥b render | blocks → JSON records → a windowed DOM | `html_export` emits records; `html/export.js` virtualizes (§7) |
 
-- **Layer 1 — decode (agent-specific).** `claude_model` / `codex_model` map that agent's raw
-  line shapes onto a single **canonical [`Message`] vocabulary** (`engine::message`):
-  `UserText`, `AssistantText`, `Thinking`, `ToolUse`, `ToolResult`, `Command`, `Attachment`,
-  `Completion`, `QueueOp`, … The L1 decoder is the *only* place that knows an agent's field
-  names. (QoderWork demonstrates the degenerate case: its format matches Claude's, so its
-  adapter rides Claude's decoder wholesale — an agent can cost *zero* new parsing code.)
-- **Layer 2 — fold (shared).** `engine::replay::Replayer` folds the `Message` stream into the
-  `Block` render model: joining tool results onto their calls, grouping thinking turns,
-  coalescing activity runs (the empirically-derived Claude Code span rules —
-  [`design/cc-activity-coalescing.md`](../design/cc-activity-coalescing.md)), resolving the
-  queued-prompt lifecycle, stamping per-turn times. The four points agents genuinely differ
-  are isolated in a `Shaping` seam (build a tool block, join a result, keep-orphan policy,
-  final turn grouping).
-- **Layer 3 — present.** The viewer, HTML export, and `--dump` consume the `Block` stream.
-  They never see a `Message` or a raw line.
+The **crate layering follows the pipeline**: stages ⓪–③ are `claude-replay-core`; stage ④
+and the ⑤b protocol are `claude-replay-present`; the ⑥ fan-out is `claude-replay-tui` /
+`claude-replay-html`. (`--dump` is ⑥a writing text instead of cells; `--dump-html` is ⑥b
+writing a file instead of serving.)
 
-**Why a canonical `Message` between L1 and L2?** It lets the meaty fold logic (hundreds of
+**Why a canonical `Message` between ① and ②?** It lets the meaty fold logic (hundreds of
 lines: back-patching, grouping, the queue state machine) be written **once** and shared by
-every agent. A new agent writes a small decoder, not a new fold.
+every agent — a new agent writes a small decoder, not a new fold. (QoderWork demonstrates
+the degenerate case: its format matches Claude's, so its adapter rides Claude's decoder
+wholesale — an agent can cost *zero* new parsing code.) The span-coalescing rules in ② are
+the empirically-derived Claude Code behavior
+([`design/cc-activity-coalescing.md`](../design/cc-activity-coalescing.md)); agents opt in
+or out through `Shaping::finish_turns`.
 
 ## 4. The sans-io accumulator — one fold, every acquisition mode
 

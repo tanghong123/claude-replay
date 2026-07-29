@@ -202,7 +202,7 @@ the two frontends (`src/lib.rs::run_viewer`).
 
 ## 7. Adding an agent
 
-The payoff of the [three-layer design](architecture.md#3-the-three-layer-engine-core): a new
+The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
 agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter` row**
 — the shared engine is never touched. Calibrate the cost by the three existing adapters:
 Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
