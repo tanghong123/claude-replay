@@ -612,10 +612,8 @@ fn apply_output(block: &mut Block, output: String) {
         }
         Block::ToolUse {
             name, output: slot, ..
-        } => {
-            if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() {
-                *slot = Some(output);
-            }
+        } if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() => {
+            *slot = Some(output);
         }
         _ => {}
     }
