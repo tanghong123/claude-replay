@@ -174,7 +174,7 @@ mod tests {
         let body = format!("{l0}\n{l1}\n{l2}\n{l3}\n");
         let path = tmp(&body);
 
-        let s = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
+        let s = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
         let blocks = s.blocks();
         let atts: Vec<&Block> = blocks
             .iter()
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(deferred(atts[3]), None, "edited is path-only (None)");
 
         // Round-trip each locator through the Transcript loader → the embedded bytes.
-        let t = Transcript::open(Agent::Claude, &path);
+        let t = Transcript::open(Agent::CLAUDE, &path);
         assert_eq!(
             t.load_attachment(off0, 0).unwrap(),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
@@ -217,12 +217,12 @@ mod tests {
     fn multiple_images_on_one_line_get_distinct_indices() {
         let line = r##"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA="}},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BBB="}}]}}"##;
         let path = tmp(&format!("{line}\n"));
-        let s = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
+        let s = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
         let blocks = s.blocks();
         let locs: Vec<(ByteOffset, usize)> = blocks.iter().filter_map(deferred).collect();
         assert_eq!(locs, vec![(0, 0), (0, 1)], "{blocks:?}");
 
-        let t = Transcript::open(Agent::Claude, &path);
+        let t = Transcript::open(Agent::CLAUDE, &path);
         assert_eq!(
             t.load_attachment(0, 0).unwrap(),
             Some(LoadedAttachment::Base64 {
@@ -253,11 +253,11 @@ mod tests {
         let path = tmp(body);
 
         let detected = Transcript::detect(&path);
-        assert_eq!(detected.agent(), Agent::Claude);
+        assert_eq!(detected.agent(), Agent::CLAUDE);
         assert_eq!(detected.path(), path.as_path());
 
-        let via_handle = Transcript::open(Agent::Claude, &path).parse().unwrap();
-        let via_free = crate::engine::parse_session_as(Agent::Claude, &path).unwrap();
+        let via_handle = Transcript::open(Agent::CLAUDE, &path).parse().unwrap();
+        let via_free = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
         assert_eq!(format!("{via_handle:?}"), format!("{via_free:?}"));
 
         let enriched_handle = detected.parse_enriched().unwrap();

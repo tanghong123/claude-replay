@@ -182,7 +182,7 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
                 project,
                 snippet: first_user_snippet(&session.path),
                 cwd_affinity,
-                agent: Agent::Codex,
+                agent: Agent::CODEX,
             }
         })
         .collect();
@@ -260,7 +260,7 @@ fn candidates_scoped_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Vec<Can
                 project,
                 snippet: first_user_snippet(&s.path),
                 cwd_affinity: is_exact,
-                agent: Agent::Codex,
+                agent: Agent::CODEX,
             }
         })
         .collect()

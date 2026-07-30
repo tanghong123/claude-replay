@@ -300,7 +300,7 @@ mod tests {
         const USER2: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"next\"}]},\"timestamp\":\"2026-07-26T10:00:04Z\"}\n";
 
         let path = tmp();
-        let mut fp = FollowParser::open(Agent::Claude, &path);
+        let mut fp = FollowParser::open(Agent::CLAUDE, &path);
         let mut prev: Vec<Block> = Vec::new();
         let mut written = String::new();
         for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn follow_matches_full_reparse_claude() {
         assert_follow(
-            Agent::Claude,
+            Agent::CLAUDE,
             &[
                 "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n",
                 "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}],\"usage\":{\"input_tokens\":10,\"output_tokens\":20}},\"timestamp\":\"2026-07-26T10:00:01Z\"}\n",
@@ -383,7 +383,7 @@ mod tests {
         // Codex splits a call and its output across polls — the persistent Replayer
         // back-patches without a full re-parse.
         assert_follow(
-            Agent::Codex,
+            Agent::CODEX,
             &[
                 "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/tmp/repo\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix\"}]}}\n",

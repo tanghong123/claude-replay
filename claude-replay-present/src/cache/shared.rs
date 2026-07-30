@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn gen_and_epoch_track_append_backpatch_commit_reset() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         assert_eq!((ss.epoch(), ss.provisional_gen()), (1, 0));
 
         // Open the turn (append only) — no gen bump.
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn pull_serves_resync_append_backpatch_and_commit() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         append(&path, USER1);
         append(&path, TOOL);
         ss.advance().unwrap();
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn pull_delta_returns_the_unrendered_tail_and_maintained_meta() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         append(&path, USER1);
         append(&path, TOOL);
         ss.advance().unwrap();
@@ -866,9 +866,9 @@ mod tests {
         let backing =
             std::env::temp_dir().join(format!("cr-shared-tb-{}.blocks", std::process::id()));
         let _ = std::fs::remove_file(&backing);
-        let mem = SharedSession::open(Agent::Claude, &path);
+        let mem = SharedSession::open(Agent::CLAUDE, &path);
         let tb = SharedSession::with_store(
-            Agent::Claude,
+            Agent::CLAUDE,
             &path,
             TierBStore::file(&backing).expect("create backing"),
         );
@@ -916,7 +916,7 @@ mod tests {
         let backing = path.with_extension("blocks");
         let sidecar = path.with_extension("state");
         let live =
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::file(&backing).unwrap());
         for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
             append(&path, chunk);
         }
@@ -972,7 +972,7 @@ mod tests {
         let backing = path.with_extension("blocks");
         let sidecar = path.with_extension("state");
         let live =
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::file(&backing).unwrap());
         append(&path, USER1);
         live.advance().unwrap();
         live.hibernate(&sidecar).unwrap();
@@ -997,7 +997,7 @@ mod tests {
         use std::sync::Arc;
         let path = tmp();
         append(&path, USER1);
-        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        let ss = Arc::new(SharedSession::open(Agent::CLAUDE, &path));
         ss.advance().unwrap();
         assert!(!ss.poisoned());
 
@@ -1029,7 +1029,7 @@ mod tests {
         use std::sync::Arc;
         let path = tmp();
         std::fs::write(&path, USER1).unwrap();
-        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        let ss = Arc::new(SharedSession::open(Agent::CLAUDE, &path));
         ss.advance().unwrap();
 
         let writer = {

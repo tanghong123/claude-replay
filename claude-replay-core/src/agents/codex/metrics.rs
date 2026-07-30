@@ -82,7 +82,7 @@ mod tests {
     /// default path with Codex's accumulator.
     fn parse_codex_reader(jsonl: &str) -> Metrics {
         parse_reader_for(
-            crate::engine::seam::Agent::Codex,
+            crate::engine::seam::Agent::CODEX,
             std::io::Cursor::new(jsonl),
         )
     }

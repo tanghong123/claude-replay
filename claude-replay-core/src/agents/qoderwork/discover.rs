@@ -23,7 +23,7 @@ pub(crate) fn projects_dir() -> PathBuf {
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     crate::engine::seam::candidates_scoped_in(
         &projects_dir(),
-        Agent::QoderWork,
+        Agent::QODERWORK,
         cwd,
         crate::engine::seam::home_dir().as_deref(),
     )
@@ -56,8 +56,8 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-07-26T12:15:41Z"}"#, "
 ",
         )).unwrap();
-        let qw = crate::engine::seam::parse_session_as(Agent::QoderWork, &f).unwrap();
-        let cl = crate::engine::seam::parse_session_as(Agent::Claude, &f).unwrap();
+        let qw = crate::engine::seam::parse_session_as(Agent::QODERWORK, &f).unwrap();
+        let cl = crate::engine::seam::parse_session_as(Agent::CLAUDE, &f).unwrap();
         assert_eq!(
             format!("{:?}", qw.blocks()),
             format!("{:?}", cl.blocks()),
@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(qw.metrics, cl.metrics);
         assert_eq!(
             qw.agent,
-            Agent::QoderWork,
+            Agent::QODERWORK,
             "identity is the only difference"
         );
         let _ = std::fs::remove_file(&f);
@@ -100,13 +100,13 @@ mod tests {
         // With the matching home bound, the store discovers and scopes normally.
         let cands = crate::engine::seam::candidates_scoped_in(
             &root,
-            Agent::QoderWork,
+            Agent::QODERWORK,
             cwd,
             Some(Path::new("/Users/dev")),
         );
 
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].agent, Agent::QoderWork);
+        assert_eq!(cands[0].agent, Agent::QODERWORK);
         assert!(cands[0].cwd_affinity, "scoped to the cwd's own slug");
         assert_eq!(
             by_id.as_deref(),

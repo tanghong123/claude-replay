@@ -439,7 +439,7 @@ mod tests {
             r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]},"timestamp":"2026-07-26T10:00:04Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:05Z"}"#,
         ];
-        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
         let mut off: crate::model::ByteOffset = 0;
         for line in lines {
             acc.advance_at(off, line);
@@ -480,7 +480,7 @@ mod tests {
             r#"{"type":"totally-unknown","x":1}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T12:16:00Z"}"#,
         ];
-        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
         let mut off: crate::model::ByteOffset = 0;
         for line in lines {
             acc.advance_at(off, line);
@@ -540,7 +540,7 @@ mod tests {
                 .count()
         };
         let drive = |lines: &[String]| {
-            let mut acc = SessionAccumulator::new(Agent::Claude);
+            let mut acc = SessionAccumulator::new(Agent::CLAUDE);
             let mut off: crate::model::ByteOffset = 0;
             for l in lines {
                 acc.advance_at(off, l);
@@ -615,7 +615,7 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-07-29T10:00:10Z","message":{"content":[{"type":"tool_use","id":"tu1","name":"TaskUpdate","input":{"taskId":"12","status":"in_progress"}}]}}"#.to_string(),
             r#"{"type":"user","timestamp":"2026-07-29T10:00:11Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Updated task #12 status"}]}}"#.to_string(),
         ];
-        let mut acc = SessionAccumulator::new(Agent::Claude);
+        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
         let mut off: ByteOffset = 0;
         for l in &lines {
             acc.advance_at(off, l);
@@ -644,7 +644,7 @@ mod tests {
         let a = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"a"}]},"timestamp":"2026-07-26T10:00:00Z"}"#;
         let b = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"b"}]},"timestamp":"2026-07-26T10:00:01Z"}"#;
         let path = tmp(&format!("{a}\n{b}\n"));
-        let mut fp = crate::FollowParser::open(Agent::Claude, &path);
+        let mut fp = crate::FollowParser::open(Agent::CLAUDE, &path);
         fp.advance_stream().unwrap();
         assert_eq!(fp.stream_read(0).meta.turns, 2);
         // Rewrite to a single turn → reset → meta rebuilt from scratch.

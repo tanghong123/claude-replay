@@ -119,7 +119,7 @@ mod tests {
 
         // Parse through the public entry point (enriched = loads the sub-agent tree), the
         // same way a library consumer would — no reach into the core's per-agent internals.
-        let blocks = crate::engine::parse_session_enriched_as(crate::Agent::Claude, &sess)
+        let blocks = crate::engine::parse_session_enriched_as(crate::Agent::CLAUDE, &sess)
             .unwrap()
             .blocks();
         let Some(crate::model::Block::SubAgent(sa)) = blocks

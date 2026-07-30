@@ -1520,9 +1520,9 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m, &tasks);
+        let (oracle, _children) = agent_meta(Agent::CLAUDE, "/repo", &info, &blocks, &m, &tasks);
         let maintained = crate::engine::SessionMeta::build(&blocks);
-        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m, &tasks);
+        let got = assemble_meta(Agent::CLAUDE, "/repo", &info, &maintained, &m, &tasks);
         assert_eq!(
             got, oracle,
             "assemble_meta(SessionMeta) == agent_meta(blocks)"
@@ -2206,7 +2206,7 @@ mod tests {
         // A real transcript carrying the `file` body; the block holds only a `Deferred` locator.
         let line = r#"{"type":"attachment","attachment":{"type":"file","filename":"/w/notes.md","displayPath":"notes.md","content":{"type":"text","file":{"filePath":"/w/notes.md","content":"hello"}}}}"#;
         let tpath = att_transcript(line);
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let file = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
@@ -2265,7 +2265,7 @@ mod tests {
         // A real transcript carrying the base64 image; the block holds only a locator.
         let line = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}}"#;
         let tpath = att_transcript(line);
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let img = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
@@ -2608,7 +2608,7 @@ mod tests {
         .unwrap();
         // Temp-dir files sit outside every store → honestly badged (#66).
         assert_eq!(
-            display_title(Agent::Claude, &uuid),
+            display_title(Agent::CLAUDE, &uuid),
             "knack · compatible (claude)"
         );
 
@@ -2620,7 +2620,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            display_title(Agent::Claude, &named),
+            display_title(Agent::CLAUDE, &named),
             "my-session · compatible (claude)"
         );
 

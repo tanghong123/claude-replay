@@ -411,7 +411,7 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     // Stream through the shared incremental fold in a single pass, one line resident, and keep
     // only the blocks (this sub-agent path doesn't need times or metrics).
-    let mut b = crate::engine::seam::SessionAccumulator::new(Agent::Claude);
+    let mut b = crate::engine::seam::SessionAccumulator::new(Agent::CLAUDE);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?;
     Ok(b.fold().0)
@@ -467,7 +467,7 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
 /// rolled-up costs. `None` when neither is known.
 fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<UsdCost> {
     let own = std::fs::File::open(child_path).ok().and_then(|f| {
-        crate::engine::seam::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
+        crate::engine::seam::parse_reader_for(Agent::CLAUDE, std::io::BufReader::new(f)).cost_usd
     });
     let desc: UsdCost = child_blocks
         .iter()

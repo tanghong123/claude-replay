@@ -132,17 +132,21 @@ pub(crate) trait TranscriptAdapter: Sync {
     }
 }
 
-/// The adapter for `agent`.
+/// The adapter for `agent` — a scan of [`adapters`], so the registry row is the ONE
+/// place an agent is wired (#87 step 2: `Agent` is an open id, not a matchable enum).
+/// An id with no registered adapter is a programming error: ids in circulation come
+/// from detection (registry-derived), the built-in constants, or a sidecar label that
+/// already round-tripped through [`Agent::from_label`].
 pub(crate) fn adapter(agent: Agent) -> &'static dyn TranscriptAdapter {
-    match agent {
-        Agent::Claude => &ClaudeAdapter,
-        Agent::Codex => &CodexAdapter,
-        Agent::QoderWork => &QoderWorkAdapter,
-    }
+    adapters()
+        .iter()
+        .copied()
+        .find(|a| a.agent() == agent)
+        .unwrap_or_else(|| panic!("no adapter registered for agent {:?}", agent.label()))
 }
 
 /// Every registered adapter, in a stable order (drives `detect_agent` iteration and the
-/// cross-agent picker order). A new agent adds one entry here and one arm in [`adapter`].
+/// cross-agent picker order). A new agent adds its one entry here.
 pub(crate) fn adapters() -> &'static [&'static dyn TranscriptAdapter] {
     &[&ClaudeAdapter, &CodexAdapter, &QoderWorkAdapter]
 }
@@ -169,7 +173,7 @@ impl MetricsAccumulator for crate::agents::codex::metrics::CodexMetricsAcc {
 pub(crate) struct ClaudeAdapter;
 impl TranscriptAdapter for ClaudeAdapter {
     fn agent(&self) -> Agent {
-        Agent::Claude
+        Agent::CLAUDE
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
         // Claude-format lines (sessionId/message) are only a CAN-PARSE claim: derived
@@ -217,7 +221,7 @@ impl TranscriptAdapter for ClaudeAdapter {
 pub(crate) struct CodexAdapter;
 impl TranscriptAdapter for CodexAdapter {
     fn agent(&self) -> Agent {
-        Agent::Codex
+        Agent::CODEX
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
         let ty = head.get("type").and_then(Value::as_str);
@@ -256,7 +260,7 @@ impl TranscriptAdapter for CodexAdapter {
 pub(crate) struct QoderWorkAdapter;
 impl TranscriptAdapter for QoderWorkAdapter {
     fn agent(&self) -> Agent {
-        Agent::QoderWork
+        Agent::QODERWORK
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
         if head.get("type").and_then(Value::as_str) == Some("runtime-config") {

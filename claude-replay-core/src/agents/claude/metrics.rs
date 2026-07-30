@@ -85,7 +85,7 @@ mod tests {
     /// default path with Claude's accumulator.
     fn parse_reader(jsonl: &str) -> Metrics {
         parse_reader_for(
-            crate::engine::seam::Agent::Claude,
+            crate::engine::seam::Agent::CLAUDE,
             std::io::Cursor::new(jsonl),
         )
     }

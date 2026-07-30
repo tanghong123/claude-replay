@@ -915,7 +915,7 @@ fn default_agent(config: &Config, cwd: &Path) -> Agent {
     if let Some(a) = slot.meta_get("agent").and_then(|s| Agent::from_label(&s)) {
         return a;
     }
-    detect::agent_for(cwd, None).unwrap_or(Agent::Claude)
+    detect::agent_for(cwd, None).unwrap_or(Agent::CLAUDE)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1983,7 +1983,7 @@ fn pinned_handoff_session_id(
     explicit
         .filter(|id| !id.is_empty())
         .or_else(|| {
-            (agent == Agent::Codex)
+            (agent == Agent::CODEX)
                 .then_some(codex_thread_id)
                 .flatten()
                 .filter(|id| !id.is_empty())
@@ -2144,8 +2144,8 @@ fn ancestor_agent(forced: Option<Agent>) -> Option<(u32, Agent)> {
             return None;
         }
         let found = match comm_name(&comm) {
-            "claude" => Some(Agent::Claude),
-            "codex" => Some(Agent::Codex),
+            "claude" => Some(Agent::CLAUDE),
+            "codex" => Some(Agent::CODEX),
             _ => None,
         };
         if let Some(a) = found {
@@ -2194,9 +2194,11 @@ fn session_id_from_argv(_pid: u32, _agent: Agent) -> Option<String> {
 fn session_id_in_cmdline(cmdline: &str, agent: Agent) -> Option<String> {
     let toks: Vec<&str> = cmdline.split_whitespace().collect();
     let flags: &[&str] = match agent {
-        // QoderWork is a Claude-Code fork; its CLI carries the same resume flags.
-        Agent::Claude | Agent::QoderWork => &["--resume", "--session-id"],
-        Agent::Codex => &["resume"],
+        Agent::CODEX => &["resume"],
+        // Claude — and QoderWork or any other Claude-Code fork — carries the same
+        // resume flags; an unknown agent gets the Claude shape (jdi can't drive it
+        // anyway, see `agent::adapter`'s unsupported stub).
+        _ => &["--resume", "--session-id"],
     };
     let looks_like_id =
         |s: &str| s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
@@ -2318,7 +2320,7 @@ mod tests {
         )
         .unwrap();
 
-        persist_permissions(&session, Agent::Codex, Some(&full)).unwrap();
+        persist_permissions(&session, Agent::CODEX, Some(&full)).unwrap();
         assert_eq!(
             std::fs::read_to_string(session.cargs_path()).unwrap(),
             "-c\nsandbox_mode=\"danger-full-access\"\n"
@@ -2328,7 +2330,7 @@ mod tests {
             Some("danger-full-access (preserved from current Codex turn)")
         );
 
-        persist_permissions(&session, Agent::Codex, None).unwrap();
+        persist_permissions(&session, Agent::CODEX, None).unwrap();
         assert!(!session.cargs_path().exists());
         assert_eq!(
             session.meta_get("permissions").as_deref(),
@@ -2349,7 +2351,7 @@ mod tests {
         session.ensure_dir().unwrap();
         std::fs::write(session.cargs_path(), "--existing-claude-arg\n").unwrap();
 
-        persist_permissions(&session, Agent::Claude, None).unwrap();
+        persist_permissions(&session, Agent::CLAUDE, None).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(session.cargs_path()).unwrap(),
@@ -2381,7 +2383,7 @@ mod tests {
             )
             .unwrap();
 
-        persist_permissions(&session, Agent::Claude, None).unwrap();
+        persist_permissions(&session, Agent::CLAUDE, None).unwrap();
 
         assert!(!session.cargs_path().exists());
         assert_eq!(permission_status_line(&session), None);
@@ -2549,7 +2551,7 @@ mod tests {
 
     #[test]
     fn codex_handoff_fails_closed_without_a_pinned_transcript() {
-        let error = handoff_permission_snapshot(Agent::Codex, None, None).unwrap_err();
+        let error = handoff_permission_snapshot(Agent::CODEX, None, None).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -2557,7 +2559,7 @@ mod tests {
             "{error:#}"
         );
         let error =
-            handoff_permission_snapshot(Agent::Codex, Some("thread-123"), None).unwrap_err();
+            handoff_permission_snapshot(Agent::CODEX, Some("thread-123"), None).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -2569,7 +2571,7 @@ mod tests {
     #[test]
     fn claude_handoff_does_not_require_a_codex_permission_snapshot() {
         assert_eq!(
-            handoff_permission_snapshot(Agent::Claude, None, None).unwrap(),
+            handoff_permission_snapshot(Agent::CLAUDE, None, None).unwrap(),
             None
         );
     }
@@ -2647,26 +2649,26 @@ mod tests {
         assert_eq!(
             session_id_in_cmdline(
                 "claude --resume 094539f2-40d7-4703-a510-8c3ee69657a4 --dangerously-skip-permissions",
-                Agent::Claude
+                Agent::CLAUDE
             )
             .as_deref(),
             Some("094539f2-40d7-4703-a510-8c3ee69657a4")
         );
         assert_eq!(
-            session_id_in_cmdline("claude --session-id abc12345 -p hi", Agent::Claude).as_deref(),
+            session_id_in_cmdline("claude --session-id abc12345 -p hi", Agent::CLAUDE).as_deref(),
             Some("abc12345")
         );
         // Codex: the `resume <id>` subcommand.
         assert_eq!(
-            session_id_in_cmdline("codex resume 019f7ff6-2664-7263", Agent::Codex).as_deref(),
+            session_id_in_cmdline("codex resume 019f7ff6-2664-7263", Agent::CODEX).as_deref(),
             Some("019f7ff6-2664-7263")
         );
         // A fresh interactive session carries no id → None (caller falls back).
-        assert_eq!(session_id_in_cmdline("claude", Agent::Claude), None);
-        assert_eq!(session_id_in_cmdline("codex", Agent::Codex), None);
+        assert_eq!(session_id_in_cmdline("claude", Agent::CLAUDE), None);
+        assert_eq!(session_id_in_cmdline("codex", Agent::CODEX), None);
         // Don't mistake a non-id token (a path, a prompt word) for the id.
         assert_eq!(
-            session_id_in_cmdline("claude --resume ./notes -p go", Agent::Claude),
+            session_id_in_cmdline("claude --resume ./notes -p go", Agent::CLAUDE),
             None,
             "`./notes` is not id-shaped"
         );
@@ -2675,14 +2677,14 @@ mod tests {
     #[test]
     fn codex_handoff_prefers_thread_environment_over_argv_and_discovery() {
         assert_eq!(
-            pinned_handoff_session_id(None, Agent::Codex, Some("env-thread"), Some("argv-thread"),)
+            pinned_handoff_session_id(None, Agent::CODEX, Some("env-thread"), Some("argv-thread"),)
                 .as_deref(),
             Some("env-thread")
         );
         assert_eq!(
             pinned_handoff_session_id(
                 Some("explicit-thread"),
-                Agent::Codex,
+                Agent::CODEX,
                 Some("env-thread"),
                 Some("argv-thread"),
             )
@@ -2692,7 +2694,7 @@ mod tests {
         assert_eq!(
             pinned_handoff_session_id(
                 None,
-                Agent::Claude,
+                Agent::CLAUDE,
                 Some("stale-codex-env"),
                 Some("claude-id")
             )
@@ -2701,7 +2703,7 @@ mod tests {
             "Codex environment must never leak into Claude handoff"
         );
         assert_eq!(
-            pinned_handoff_session_id(None, Agent::Codex, None, None),
+            pinned_handoff_session_id(None, Agent::CODEX, None, None),
             None,
             "None tells the caller to use cwd-scoped discovery"
         );
@@ -2731,7 +2733,7 @@ mod tests {
     /// session unchanged even when it's stale, rather than waiting for input.
     #[test]
     fn stale_confirm_never_blocks_without_a_tty() {
-        let adapter = agent::adapter(Agent::Claude);
+        let adapter = agent::adapter(Agent::CLAUDE);
         let cwd = std::env::temp_dir().join("agent-jdi-nonexistent-cwd");
         let stale = agent::ResumableSession {
             id: "the-only-one".into(),
@@ -2779,7 +2781,7 @@ mod tests {
             "resume",
             "knack-98db47",
             Path::new("/Users/hong/code/knack"),
-            Agent::Claude,
+            Agent::CLAUDE,
             "a3cdd86e-398b-498f-807c-185332447c5c",
             Some(7),
             600,
@@ -2823,7 +2825,7 @@ mod tests {
             "start",
             "knack-98db47",
             Path::new("/Users/hong/code/knack"),
-            Agent::Codex,
+            Agent::CODEX,
             "", // not pinned
             None,
             600,
@@ -2970,7 +2972,7 @@ mod tests {
 
         let target = resolve_resume_target(
             &config,
-            Some(Agent::Codex),
+            Some(Agent::CODEX),
             Some("avatar-kit-5ce3fb"),
             None,
             Path::new("/an/unrelated/current/directory"),
@@ -2979,7 +2981,7 @@ mod tests {
 
         assert_eq!(target.slot, "avatar-kit-5ce3fb");
         assert_eq!(target.cwd, Path::new("/work/repos/project-h/avatar-kit"));
-        assert_eq!(target.agent, Agent::Codex);
+        assert_eq!(target.agent, Agent::CODEX);
         assert_eq!(target.resumable.id, "codex-session-123");
         assert_eq!(
             target.resumable.transcript,
@@ -3000,7 +3002,7 @@ mod tests {
         Session::new(&config.home, &state::slot_id(&cwd))
             .meta_set("agent", "codex")
             .unwrap();
-        assert_eq!(default_agent(&config, &cwd), Agent::Codex);
+        assert_eq!(default_agent(&config, &cwd), Agent::CODEX);
         std::fs::remove_dir_all(&base).ok();
     }
 

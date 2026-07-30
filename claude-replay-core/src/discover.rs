@@ -188,7 +188,7 @@ pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
     use crate::adapter::SniffClaim;
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
-        return (Agent::Claude, false);
+        return (Agent::CLAUDE, false);
     };
     let mut can_parse: Option<Agent> = None;
     for line in std::io::BufReader::new(file)
@@ -211,7 +211,7 @@ pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
             }
         }
     }
-    (can_parse.unwrap_or(Agent::Claude), false)
+    (can_parse.unwrap_or(Agent::CLAUDE), false)
 }
 
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
@@ -355,7 +355,7 @@ mod tests {
             project: "proj".into(),
             snippet: snippet.into(),
             cwd_affinity: true,
-            agent: Agent::Claude,
+            agent: Agent::CLAUDE,
         };
         let cwd = PathBuf::from("/w/proj");
         // Exactly one → auto-selected.
@@ -411,20 +411,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(detect_agent(&codex), Agent::Codex);
-        assert_eq!(detect_agent(&claude), Agent::Claude);
-        assert_eq!(detect_agent(&qoderwork), Agent::QoderWork);
+        assert_eq!(detect_agent(&codex), Agent::CODEX);
+        assert_eq!(detect_agent(&claude), Agent::CLAUDE);
+        assert_eq!(detect_agent(&qoderwork), Agent::QODERWORK);
         // The claim levels behind that: Claude claims CanParse on QW's head; QW Owns it.
         {
             use crate::adapter::{adapter, SniffClaim};
             let head: Value =
                 serde_json::from_str("{\"type\":\"runtime-config\",\"sessionId\":\"abc\"}")
                     .unwrap();
-            assert_eq!(adapter(Agent::Claude).sniff(&head), SniffClaim::CanParse);
-            assert_eq!(adapter(Agent::QoderWork).sniff(&head), SniffClaim::Owns);
+            assert_eq!(adapter(Agent::CLAUDE).sniff(&head), SniffClaim::CanParse);
+            assert_eq!(adapter(Agent::QODERWORK).sniff(&head), SniffClaim::Owns);
         }
         // A missing/empty file falls back to Claude.
-        assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::Claude);
+        assert_eq!(detect_agent(Path::new("/nonexistent.jsonl")), Agent::CLAUDE);
 
         std::fs::remove_file(&codex).ok();
         std::fs::remove_file(&claude).ok();
@@ -473,10 +473,10 @@ mod tests {
         )
         .unwrap();
         let (agent, sniff_owned) = detect_agent_claimed(&stray);
-        assert_eq!(agent, Agent::Claude);
+        assert_eq!(agent, Agent::CLAUDE);
         assert!(!sniff_owned, "claude format alone proves nothing");
         assert!(
-            !detection_owned(Agent::Claude, &stray),
+            !detection_owned(Agent::CLAUDE, &stray),
             "arbitrary path: merely compatible"
         );
         let codex = dir.join(format!("own-codex-{}.jsonl", std::process::id()));
@@ -486,7 +486,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            detection_owned(Agent::Codex, &codex),
+            detection_owned(Agent::CODEX, &codex),
             "codex head is sniff-owned anywhere"
         );
         // Store provenance: the same Claude-format bytes inside the Claude store.
@@ -497,7 +497,7 @@ mod tests {
             && std::fs::copy(&stray, &in_store).is_ok()
         {
             assert!(
-                detection_owned(Agent::Claude, &in_store),
+                detection_owned(Agent::CLAUDE, &in_store),
                 "store provenance proves ownership"
             );
             let _ = std::fs::remove_dir_all(in_store.parent().unwrap());

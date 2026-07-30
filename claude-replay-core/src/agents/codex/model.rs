@@ -543,7 +543,7 @@ not json
         std::fs::write(&path, jsonl).unwrap();
         // Through the public dispatcher (the adapter's default `parse_path_timed`).
         let (actual, _, _) =
-            crate::engine::seam::parse_path_timed_for(crate::engine::seam::Agent::Codex, &path)
+            crate::engine::seam::parse_path_timed_for(crate::engine::seam::Agent::CODEX, &path)
                 .unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));

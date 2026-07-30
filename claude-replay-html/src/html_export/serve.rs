@@ -849,14 +849,14 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::Claude,
+            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
         };
         live.cache
-            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
 
         // A live session's growth, one appended chunk per tick: turns that commit, a tool call
         // whose result back-patches, activity runs that regroup, a spawn whose async completion
@@ -948,14 +948,14 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::Claude,
+            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
         };
         live.cache
-            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
 
         // Fresh cursor: turn 1 committed (the second user turn opened turn 2) ⇒ the reply carries
         // a pointer, not inline committed records.
@@ -1028,14 +1028,14 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::Claude,
+            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
         };
         live.cache
-            .register("sid", Transcript::open(Agent::Claude, sess.clone()));
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
         live.cache.aux_with("sid", |a| {
             a.title = Some(TitleInfo {
                 title: "root title".into(),
@@ -1094,7 +1094,7 @@ mod tests {
             &path,
             FoldPolicy::default(),
             "/r".into(),
-            crate::Transcript::open(Agent::Claude, path.clone()),
+            crate::Transcript::open(Agent::CLAUDE, path.clone()),
         )
         .unwrap();
         let blocks = [

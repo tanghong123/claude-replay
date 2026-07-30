@@ -405,13 +405,13 @@ mod tests {
         let path = tmp("claude.jsonl", body);
 
         let s = parse_session(&path).unwrap();
-        assert_eq!(s.agent, Agent::Claude);
+        assert_eq!(s.agent, Agent::CLAUDE);
 
         let (blocks, times, folded_metrics) =
-            crate::engine::replay::parse_path_timed_for(Agent::Claude, &path).unwrap();
+            crate::engine::replay::parse_path_timed_for(Agent::CLAUDE, &path).unwrap();
         // The retired separate metrics pass, as the byte-identical reference for the fold.
         let ref_metrics = crate::metrics::parse_reader_for(
-            Agent::Claude,
+            Agent::CLAUDE,
             io::BufReader::new(std::fs::File::open(&path).unwrap()),
         );
         // `Block` isn't `PartialEq` (like the other equivalence tests, compare via Debug).
@@ -650,7 +650,7 @@ mod tests {
             .write_all(child.as_bytes())
             .unwrap();
 
-        let s = parse_session_enriched_as(Agent::Claude, &sess).unwrap();
+        let s = parse_session_enriched_as(Agent::CLAUDE, &sess).unwrap();
         let meta = s
             .sub_agents
             .get("achild01")

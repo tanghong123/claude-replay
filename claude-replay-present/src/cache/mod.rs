@@ -271,7 +271,7 @@ mod tests {
         let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
 
         assert!(cache.poll_view("s").is_none(), "unregistered");
-        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
+        cache.register("s", Transcript::open(Agent::CLAUDE, path.clone()));
         let d1 = cache.poll_view("s").expect("registered").expect("readable");
         assert_eq!(d1.changed_from, 0, "first poll: everything is new");
         let n1 = d1.committed_len + d1.provisional.len();
@@ -291,7 +291,7 @@ mod tests {
             joined.extend(d.committed_delta.iter().map(|a| a.as_ref().clone()));
             joined.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
         }
-        let full = parse_session_as(Agent::Claude, &path).unwrap();
+        let full = parse_session_as(Agent::CLAUDE, &path).unwrap();
         assert_eq!(
             format!("{joined:?}"),
             format!("{:?}", full.blocks()),
@@ -319,7 +319,7 @@ mod tests {
 
         assert!(cache.shared_peek("s").is_none(), "nothing resident yet");
         let a = cache.shared_session("s", || {
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::new())
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::new())
         });
         let b = cache.shared_session("s", || panic!("must not re-open a resident session"));
         assert!(Arc::ptr_eq(&a, &b), "materialized once, shared");
@@ -331,7 +331,7 @@ mod tests {
         cache.reap(0);
         assert!(cache.shared_peek("s").is_none(), "reaped with the rest");
         let c = cache.shared_session("s", || {
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::new())
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::new())
         });
         assert!(!Arc::ptr_eq(&a, &c), "re-admit re-materializes");
         let _ = std::fs::remove_file(&path);
@@ -346,7 +346,7 @@ mod tests {
         for id in ["root", "a", "b", "c"] {
             let path = tmp();
             std::fs::write(&path, CLAUDE_1).unwrap();
-            cache.register(id, Transcript::open(Agent::Claude, path));
+            cache.register(id, Transcript::open(Agent::CLAUDE, path));
         }
         // Materialize in a known touch order: root, then a (oldest child), b, c (newest).
         for id in ["root", "a", "b", "c"] {
@@ -371,10 +371,10 @@ mod tests {
     #[test]
     fn register_new_preserves_first_source() {
         let cache: SessionCache = SessionCache::new();
-        cache.register_new("c", Transcript::open(Agent::Claude, PathBuf::from("rich")));
-        cache.register_new("c", Transcript::open(Agent::Codex, PathBuf::from("bare")));
+        cache.register_new("c", Transcript::open(Agent::CLAUDE, PathBuf::from("rich")));
+        cache.register_new("c", Transcript::open(Agent::CODEX, PathBuf::from("bare")));
         let s = cache.resolve("c").expect("registered");
         assert_eq!(s.path(), PathBuf::from("rich").as_path());
-        assert_eq!(s.agent(), Agent::Claude);
+        assert_eq!(s.agent(), Agent::CLAUDE);
     }
 }

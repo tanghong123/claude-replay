@@ -90,7 +90,7 @@ fn nearest_project_transcripts(
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     candidates_scoped_in(
         &projects_dir(),
-        Agent::Claude,
+        Agent::CLAUDE,
         cwd,
         crate::engine::seam::home_dir().as_deref(),
     )
@@ -273,7 +273,7 @@ mod tests {
             std::fs::write(root.join(&slug).join("h1.jsonl"), format!("{line}\n")).unwrap();
         }
         assert!(
-            candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home)).is_empty(),
+            candidates_scoped_in(&root, Agent::QODERWORK, &cwd, Some(home)).is_empty(),
             "home-recorded sessions leaked into a subdir cwd"
         );
         // Sanity: the same store WITH a real project dir for the cwd still discovers it.
@@ -283,7 +283,7 @@ mod tests {
             format!("{line}\n"),
         )
         .unwrap();
-        let cands = candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home));
+        let cands = candidates_scoped_in(&root, Agent::QODERWORK, &cwd, Some(home));
         assert_eq!(cands.len(), 1);
         assert!(cands[0].cwd_affinity);
         let _ = std::fs::remove_dir_all(&root);

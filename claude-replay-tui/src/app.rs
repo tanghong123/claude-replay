@@ -954,7 +954,7 @@ mod tests {
                     crate::fold::FoldPolicy::default(),
                 )),
                 id: String::new(),
-                agent: Agent::Claude,
+                agent: Agent::CLAUDE,
                 path: std::path::PathBuf::from("/x"),
                 from: 0,
                 last_used,

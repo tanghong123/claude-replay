@@ -442,12 +442,12 @@ mod tests {
 {"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_B</tool-use-id>\n<status>completed</status>\n<summary>Agent \"review\" finished</summary>\n<result>Two gaps.</result>\n</task-notification>"}
 "##;
 
-        let mut mem = SessionAccumulator::new(Agent::Claude);
+        let mut mem = SessionAccumulator::new(Agent::CLAUDE);
         mem.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
             .unwrap();
         let mem_session = mem.snapshot(); // Session<Block>
 
-        let mut tb = SessionAccumulator::with_store(Agent::Claude, TierBStore::new());
+        let mut tb = SessionAccumulator::with_store(Agent::CLAUDE, TierBStore::new());
         tb.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
             .unwrap();
         let tb_session = tb.snapshot(); // Session<Deferred>
@@ -494,7 +494,7 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"text","text":"thanks"}]}}
 "##;
 
-        let mut acc = SessionAccumulator::with_store(Agent::Claude, TierBStore::new());
+        let mut acc = SessionAccumulator::with_store(Agent::CLAUDE, TierBStore::new());
         acc.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
             .unwrap();
         let session = acc.snapshot();
@@ -581,7 +581,7 @@ mod tests {
 
         // Every block decodes byte-for-byte back to what was stored (via BlockAccess).
         let session = Session {
-            agent: crate::Agent::Claude,
+            agent: crate::Agent::CLAUDE,
             cwd: None,
             committed: locators,
             provisional: vec![],

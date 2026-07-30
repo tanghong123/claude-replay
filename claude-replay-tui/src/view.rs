@@ -2249,7 +2249,7 @@ mod tests {
         // per-agent internals — so the viewer stays off `claude_model`.
         let path = std::env::temp_dir().join(format!("cr-fold-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let blocks = crate::engine::parse_session_as(crate::Agent::Claude, &path)
+        let blocks = crate::engine::parse_session_as(crate::Agent::CLAUDE, &path)
             .unwrap()
             .blocks();
         let _ = std::fs::remove_file(&path);
@@ -2690,7 +2690,7 @@ mod tests {
             project: "proj".into(),
             snippet: format!("{name} snippet"),
             cwd_affinity: false,
-            agent: crate::Agent::Claude,
+            agent: crate::Agent::CLAUDE,
         };
         let txt = |b: &Buffer| {
             (0..b.area.height)
@@ -3237,7 +3237,7 @@ mod tests {
             .unwrap()
             .write_all(format!("{l0}\n{l1}\n").as_bytes())
             .unwrap();
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
 
         let off_img = (l0.len() + 1) as u64;
         let text = Attachment {
