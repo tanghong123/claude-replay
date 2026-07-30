@@ -258,7 +258,7 @@ pub struct ViewSidecar {
 }
 
 pub struct View {
-    blocks: Vec<Block>,
+    blocks: Vec<std::sync::Arc<Block>>,
     collapsed: Vec<bool>, // per-block fold state
     /// Explicit user fold gestures by block index (#61) — re-applied over the
     /// policy-derived defaults whenever a live update re-folds the tail, so an
@@ -318,7 +318,23 @@ pub struct View {
 
 impl View {
     pub fn new(blocks: Vec<Block>, title: impl Into<String>, live: bool, fold: FoldPolicy) -> Self {
-        let collapsed = fold.collapsed_for(&blocks);
+        Self::new_shared(
+            blocks.into_iter().map(std::sync::Arc::new).collect(),
+            title,
+            live,
+            fold,
+        )
+    }
+
+    /// [`new`](Self::new) over already-shared blocks (#84): the live path hands `Arc` clones
+    /// of the cache's authoritative copy — the view holds pointers, content stays single-copy.
+    pub fn new_shared(
+        blocks: Vec<std::sync::Arc<Block>>,
+        title: impl Into<String>,
+        live: bool,
+        fold: FoldPolicy,
+    ) -> Self {
+        let collapsed: Vec<bool> = blocks.iter().map(|b| fold.collapses(b)).collect();
         // Raw is built lazily on the first `layout`, once the real terminal width
         // is known — rendering here (at width 0) would be thrown away and re-done,
         // doubling the (expensive) syntax-highlight pass at startup.
@@ -391,7 +407,7 @@ impl View {
             .iter()
             .enumerate()
             .filter(|(_, b)| {
-                matches!(b, Block::SubAgent(sa)
+                matches!(&***b, Block::SubAgent(sa)
                     if !agents.get(&sa.agent_id).map(|m| m.status.is_terminal()).unwrap_or(false))
             })
             .map(|(i, _)| i)
@@ -708,7 +724,10 @@ impl View {
     /// The fold-key of every top-level block (for asserting live-tail grouping).
     #[cfg(test)]
     pub fn block_kinds(&self) -> Vec<&'static str> {
-        self.blocks.iter().map(crate::model::fold_key).collect()
+        self.blocks
+            .iter()
+            .map(|b| crate::model::fold_key(b))
+            .collect()
     }
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
@@ -840,7 +859,12 @@ impl View {
     // --- fold / expand (P4) ---
     /// Toggle the collapse state of a foldable block by index.
     pub fn toggle_block(&mut self, i: crate::model::BlockIndex) {
-        if self.blocks.get(i).map(render::foldable).unwrap_or(false) {
+        if self
+            .blocks
+            .get(i)
+            .map(|b| render::foldable(b))
+            .unwrap_or(false)
+        {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
                 // An explicit user gesture (#61): pin it so a live tail re-fold
@@ -857,10 +881,12 @@ impl View {
         // Prefer the focused foldable (set by `[`/`]`/hover); otherwise the first
         // foldable block visible in the viewport. (The block exactly at the top line
         // is usually non-foldable — e.g. assistant text — which made `t` look dead.)
-        if let Some(f) = self
-            .focus
-            .filter(|&i| self.blocks.get(i).map(render::foldable).unwrap_or(false))
-        {
+        if let Some(f) = self.focus.filter(|&i| {
+            self.blocks
+                .get(i)
+                .map(|b| render::foldable(b))
+                .unwrap_or(false)
+        }) {
             self.toggle_block(f);
             return;
         }
@@ -870,7 +896,12 @@ impl View {
             return;
         };
         while b < self.blocks.len() && self.prefix[b] < end {
-            if self.blocks.get(b).map(render::foldable).unwrap_or(false) {
+            if self
+                .blocks
+                .get(b)
+                .map(|b| render::foldable(b))
+                .unwrap_or(false)
+            {
                 self.toggle_block(b);
                 return;
             }
@@ -915,7 +946,7 @@ impl View {
         // A mouse click elsewhere on a spawn / completion header just FOLDS it (only the
         // agent id descends); other blocks do their normal activation.
         if matches!(
-            self.blocks.get(b),
+            self.blocks.get(b).map(|b| &**b),
             Some(Block::SubAgent(_) | Block::AgentDone { .. })
         ) {
             self.toggle_block(b);
@@ -931,7 +962,7 @@ impl View {
         if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return false;
         }
-        let span = match self.blocks.get(b) {
+        let span = match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => render::agent_id_span(sa),
             Some(Block::AgentDone {
                 agent_id,
@@ -949,7 +980,7 @@ impl View {
     /// child **descends** directly (Space still folds it); an [`Attachment`] downloads
     /// (flashed) or reveals its path; any other block toggles its fold.
     fn activate_block(&mut self, b: crate::model::BlockIndex) -> Option<Action> {
-        match self.blocks.get(b) {
+        match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => {
                 if sa.agent_id.is_empty() {
                     self.toggle_block(b); // no id ⇒ nothing to descend into → just fold
@@ -991,7 +1022,7 @@ impl View {
 
     /// The `SubAgent` at block index `b` — the caller descends using its `blocks`.
     pub fn subagent_at(&self, b: crate::model::BlockIndex) -> Option<&crate::model::SubAgent> {
-        match self.blocks.get(b) {
+        match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => Some(sa),
             _ => None,
         }
@@ -1001,7 +1032,7 @@ impl View {
     /// child `blocks`) OR an `AgentDone` completion (whose child always loads lazily from
     /// its file). `None` for any other block or a missing agent id.
     pub fn descend_ref_at(&self, b: crate::model::BlockIndex) -> Option<DescendRef> {
-        match self.blocks.get(b)? {
+        match &**self.blocks.get(b)? {
             Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(DescendRef {
                 agent_id: sa.agent_id.clone(),
                 agent_type: sa.agent_type.clone(),
@@ -1045,7 +1076,7 @@ impl View {
         if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return None;
         }
-        let Block::ToolUse { name, target, .. } = self.blocks.get(b)? else {
+        let Block::ToolUse { name, target, .. } = &**self.blocks.get(b)? else {
             return None;
         };
         if target.is_empty() {
@@ -1083,7 +1114,7 @@ impl View {
     fn focusable_blocks(&self) -> Vec<crate::model::BlockIndex> {
         (0..self.blocks.len())
             .filter(|&i| {
-                render::foldable(&self.blocks[i]) || matches!(self.blocks[i], Block::Attachment(_))
+                render::foldable(&self.blocks[i]) || matches!(*self.blocks[i], Block::Attachment(_))
             })
             .collect()
     }
@@ -1253,7 +1284,7 @@ impl View {
             .blocks
             .iter()
             .zip(&new_blocks)
-            .take_while(|(a, b)| a == b)
+            .take_while(|(a, b)| a.as_ref() == *b)
             .count();
         self.apply_from(new_blocks, d);
     }
@@ -1281,15 +1312,15 @@ impl View {
         if !self.follow {
             self.new_count += new_blocks.len().saturating_sub(self.blocks.len());
         }
-        self.blocks = new_blocks;
+        self.blocks = new_blocks.into_iter().map(std::sync::Arc::new).collect();
         self.post_splice(d);
     }
 
-    /// The **handoff** apply (#76): splice the delta in place — keep `[0..frontier)`, append
-    /// the newly-committed blocks and the fresh open turn. The View is the session's sole
-    /// block owner (the follower drained its copy), so a live tick costs O(delta) allocation,
-    /// not an O(session) vector swap.
-    pub fn apply_handoff(&mut self, d: crate::follow::HandoffDelta) {
+    /// The **shared-copy** apply (#84): splice the delta in place — keep `[0..frontier)`,
+    /// append `Arc` clones of the newly-committed blocks and the fresh open turn. Content
+    /// lives once, in the cache's authoritative copy; a live tick costs O(delta) refcount
+    /// bumps, not an O(session) content move.
+    pub fn apply_arc(&mut self, d: crate::follow::ArcDelta) {
         let prev_committed = (d.committed_len - d.committed_delta.len()).min(self.blocks.len());
         let joined = d.committed_len + d.provisional.len();
         if !self.follow {
@@ -1310,12 +1341,19 @@ impl View {
     /// O(tail), not O(session).
     fn post_splice(&mut self, d: usize) {
         let d = d.min(self.blocks.len());
-        let tail = self.fold.collapsed_for(&self.blocks[d..]);
+        let tail: Vec<bool> = self.blocks[d..]
+            .iter()
+            .map(|b| self.fold.collapses(b))
+            .collect();
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
         for (&i, &c) in &self.user_folds {
             if i >= d
-                && self.blocks.get(i).map(render::foldable).unwrap_or(false)
+                && self
+                    .blocks
+                    .get(i)
+                    .map(|b| render::foldable(b))
+                    .unwrap_or(false)
                 && i < self.collapsed.len()
             {
                 self.collapsed[i] = c;
@@ -1947,13 +1985,13 @@ mod tests {
         );
     }
 
-    /// The single-owner `apply_handoff` (#76) yields the exact same view state as the
+    /// The shared-copy `apply_arc` (#84) yields the exact same view state as the
     /// scan-based `update` for the same session evolution — same rendered lines, same
     /// per-block fold state, and a preserved fold toggle on the unchanged prefix — while
     /// the View splices deltas instead of swapping whole vectors. Also covers the
     /// commit-shaped delta (prefix moves from open to committed).
     #[test]
-    fn apply_handoff_equals_update_scan() {
+    fn apply_arc_equals_update_scan() {
         let a = blocks(10);
         let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
         let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
@@ -1969,11 +2007,19 @@ mod tests {
         // 8), the last 2 provisional. The splice must land identically to the full scan.
         let committed_len = 11usize;
         let prev_committed = 8usize; // pretend 8 were already handed over
-        v2.apply_handoff(crate::follow::HandoffDelta {
+        v2.apply_arc(crate::follow::ArcDelta {
             reset: false,
-            committed_delta: b[prev_committed..committed_len].to_vec(),
+            committed_delta: b[prev_committed..committed_len]
+                .iter()
+                .cloned()
+                .map(std::sync::Arc::new)
+                .collect(),
             committed_len,
-            provisional: b[committed_len..].to_vec(),
+            provisional: b[committed_len..]
+                .iter()
+                .cloned()
+                .map(std::sync::Arc::new)
+                .collect(),
             user_times: Vec::new(),
             metrics: Metrics::default(),
             changed_from: d,
@@ -2748,7 +2794,7 @@ mod tests {
         // Mouse: a click on the header (not the id) FOLDS/expands; a click on the agent
         // id descends. Locate the spawn's header row + the id column span.
         let row = v.block_start(1).unwrap() as u16;
-        let Block::SubAgent(spawn) = &v.blocks[1] else {
+        let Block::SubAgent(spawn) = &*v.blocks[1] else {
             unreachable!()
         };
         let (ids, ide) = crate::tui::render::agent_id_span(spawn).expect("id span");
@@ -2799,7 +2845,7 @@ mod tests {
         );
         draw(&mut v, 120, 20);
         // The affordance is present even with an empty child.
-        let Block::SubAgent(spawn) = &v.blocks[1] else {
+        let Block::SubAgent(spawn) = &*v.blocks[1] else {
             unreachable!()
         };
         assert!(

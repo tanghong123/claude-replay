@@ -302,13 +302,15 @@ impl<P: BlockStore, A> SessionCache<P, InMemoryStore, A> {
     }
 }
 
-/// The **handoff** surface (#76) — only on a cache whose follow tier is the single-consumer
-/// [`HandoffStore`](crate::engine::HandoffStore): committed blocks flow to the poller exactly
-/// once, so the poller (the TUI `View`) is the sole owner of the session's blocks and a poll
-/// costs O(delta). Same lifecycle as `poll_delta` (materialize on first call, `None` when
-/// idle/unregistered, bumps the idle clock).
-impl<P: BlockStore, A> SessionCache<P, crate::engine::HandoffStore, A> {
-    pub fn poll_handoff(&self, id: &str) -> Option<std::io::Result<crate::follow::HandoffDelta>> {
+/// The **shared-copy** surface (#84) — on a cache whose follow tier is [`ArcStore`]
+/// (crate::engine::ArcStore): the accumulator retains the authoritative committed vector
+/// (the cache-owned source of truth, principle 2) and each poll hands the consumer `Arc`
+/// clones of the delta — one full content copy in the process, shared by reference
+/// (principle 1: it exists to make search fast, and search scans it). Same lifecycle as
+/// the other polls: materialize on first call, `None` when idle/unregistered, bumps the
+/// idle clock.
+impl<P: BlockStore, A> SessionCache<P, crate::engine::ArcStore, A> {
+    pub fn poll_arc(&self, id: &str) -> Option<std::io::Result<crate::follow::ArcDelta>> {
         let src = self.resolve(id)?;
         let mut residents = lock_recover(&self.residents);
         let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
@@ -318,13 +320,13 @@ impl<P: BlockStore, A> SessionCache<P, crate::engine::HandoffStore, A> {
                     follower: FollowParser::with_store(
                         src.agent(),
                         src.path(),
-                        crate::engine::HandoffStore::default(),
+                        crate::engine::ArcStore,
                     ),
                 },
             )
         });
         *last_seen = Instant::now();
-        resident.follower.poll_handoff().transpose()
+        resident.follower.poll_arc().transpose()
     }
 }
 

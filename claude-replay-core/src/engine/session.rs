@@ -82,36 +82,33 @@ impl BlockRead for InMemoryStore {
     }
 }
 
-/// The single-consumer **streaming** store (#76): committed blocks are handed to the consumer
-/// exactly once instead of being retained — `put` queues, the consumer drains. The `Session`'s
-/// committed table stores `()` (the accumulator keeps only counts), so the CONSUMER — e.g. the
-/// TUI `View` — is the sole owner of committed content: one copy in the whole process, and a
-/// poll costs O(delta), not an O(session) rebuild. Not [`BlockRead`] (the content is gone once
-/// drained), so the type system keeps whole-session consumers (`snapshot`, `poll`) off it.
+/// The shared-ownership store (#84): committed blocks live behind `Arc` — the accumulator
+/// RETAINS the authoritative copy (the cache-owned source of truth every consumer reads),
+/// and handing a block to a reader is a refcount bump, never a content copy. Readers get
+/// `&Block` through the `Arc` (immutable by construction); "mutation" is building a new
+/// block and swapping the slot — though committed blocks never mutate (put-once) and the
+/// open turn is replaced per finalize, so that stays theoretical. This is the store behind
+/// the principles: ONE full in-memory presentation copy per client instance (it exists to
+/// make search fast), owned by the cache, with views keeping only rendered windows and
+/// small derived indexes.
 #[derive(Default)]
-pub struct HandoffStore {
-    pending: Vec<Block>,
-}
+pub struct ArcStore;
 
-impl HandoffStore {
-    /// Take everything committed since the last drain — each block exactly once.
-    pub fn drain(&mut self) -> Vec<Block> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
-impl BlockStore for HandoffStore {
-    type Bv = ();
+impl BlockStore for ArcStore {
+    type Bv = std::sync::Arc<Block>;
     fn put(
         &mut self,
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<crate::model::EpochSeconds>],
-    ) {
-        self.pending.push(b);
+    ) -> std::sync::Arc<Block> {
+        std::sync::Arc::new(b)
     }
-    fn reset(&mut self) {
-        self.pending.clear();
+}
+
+impl BlockRead for ArcStore {
+    fn get<'a>(&'a self, bv: &'a std::sync::Arc<Block>) -> std::borrow::Cow<'a, Block> {
+        std::borrow::Cow::Borrowed(bv)
     }
 }
 
@@ -204,10 +201,12 @@ impl Session<Block> {
 /// agent id, with status derived from the two durable events (spawn → running/async; a later
 /// `AgentDone` → terminal). The authoritative status source for renderers (they compute this
 /// from their own blocks) — the step off reading a mutated spawn block.
-pub fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
+pub fn build_sub_agents<B: std::borrow::Borrow<Block>>(
+    blocks: &[B],
+) -> BTreeMap<AgentId, SubAgentMeta> {
     let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
     for (at, b) in blocks.iter().enumerate() {
-        push_sub_agent(&mut map, at, b);
+        push_sub_agent(&mut map, at, b.borrow());
     }
     map
 }

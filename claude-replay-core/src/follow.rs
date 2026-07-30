@@ -43,17 +43,19 @@ impl Tick {
 /// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
 /// works for any store — a live server follows with a tier-b store so committed content lives on
 /// disk; the `Session`-assembling polls (`poll*`) stay on the in-memory default.
-/// One handoff tick's payload (#76): the committed delta (each block handed out exactly
-/// once), the finalized open turn, and the splice math a sole-owner consumer needs.
-pub struct HandoffDelta {
+/// One shared-copy tick's payload (#84): committed deltas arrive as `Arc` clones of the
+/// accumulator's RETAINED committed vector — the cache-owned source of truth — so handing
+/// blocks to the view is a refcount bump per block, never a content copy, and a fresh
+/// consumer (or a pull-from-zero resync) is served from memory, never by re-parsing.
+pub struct ArcDelta {
     pub reset: bool,
-    /// Newly-committed blocks since the last poll — drained from the store, never resent.
-    pub committed_delta: Vec<Block>,
+    /// `committed[prev..]` as `Arc` clones — shared content, cheap to hand over.
+    pub committed_delta: Vec<std::sync::Arc<Block>>,
     /// Total committed after this delta; the consumer splices at
     /// `committed_len - committed_delta.len()`.
     pub committed_len: usize,
-    /// The finalized open turn — replaces everything past the committed frontier.
-    pub provisional: Vec<Block>,
+    /// The finalized open turn, freshly wrapped (O(turn) small allocations per tick).
+    pub provisional: Vec<std::sync::Arc<Block>>,
     pub user_times: Vec<Option<EpochSeconds>>,
     pub metrics: Metrics,
     /// First index (in the joined `committed ++ open` view) the consumer must re-derive.
@@ -77,44 +79,48 @@ fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-impl FollowParser<crate::engine::HandoffStore> {
-    /// The **handoff** poll (#76): the single-consumer streaming surface. Committed blocks
-    /// arrive exactly once (drained from the [`HandoffStore`](crate::engine::HandoffStore) that
-    /// queued them at commit) and the open turn replaces the tail — so the CONSUMER owns the
-    /// only copy of the session's blocks and a poll is O(delta), never an O(session) rebuild.
-    /// `None` on an idle tick. `changed_from` has [`poll_delta`](Self::poll_delta) semantics
-    /// (first differing index in the consumer's joined view), computed O(turn).
-    pub fn poll_handoff(&mut self) -> std::io::Result<Option<HandoffDelta>> {
+impl FollowParser<crate::engine::ArcStore> {
+    /// The **shared-copy** poll (#84): fold any newly-appended lines, then hand back the
+    /// committed delta as `Arc` clones (the accumulator keeps the authoritative vector —
+    /// principle 2) plus the freshly-finalized open turn. `None` on an idle tick.
+    /// `changed_from` has [`poll_delta`](Self::poll_delta) semantics, computed O(turn).
+    pub fn poll_arc(&mut self) -> std::io::Result<Option<ArcDelta>> {
         let tick = self.advance_from_source()?;
         if !tick.advanced {
             return Ok(None);
         }
-        let committed_delta = self.builder.store_mut().drain();
-        let r = self.builder.open_read();
         let committed_len = self.builder.committed_len();
-        let prev_committed = committed_len - committed_delta.len();
+        let from = self.prev_committed.min(committed_len);
+        let committed_delta: Vec<std::sync::Arc<Block>> = self.builder.committed()[from..].to_vec();
+        let r = self.builder.open_read();
+        let prev_committed = from;
         let changed_from = if tick.reset {
             0 // truncation/rewrite ⇒ everything changed
         } else {
             // Blocks below the prior committed length are unchanged (append-only). The exact
-            // common prefix beyond it — whether the old open turn appended, back-patched, or
-            // finalized into the new committed tail — is one comparison of the previous open
-            // region against `committed_delta ++ provisional`: O(turn).
+            // common prefix beyond it — appended, back-patched, or finalized into the new
+            // committed tail — is one comparison of the previous open region against
+            // `committed_delta ++ provisional`: O(turn).
             let stable = self
                 .prev_provisional
                 .iter()
-                .zip(committed_delta.iter().chain(r.provisional.iter()))
+                .zip(
+                    committed_delta
+                        .iter()
+                        .map(|a| a.as_ref())
+                        .chain(r.provisional.iter()),
+                )
                 .take_while(|(a, b)| a == b)
                 .count();
             prev_committed + stable
         };
         self.prev_committed = committed_len;
         self.prev_provisional = r.provisional.clone();
-        Ok(Some(HandoffDelta {
+        Ok(Some(ArcDelta {
             reset: tick.reset,
             committed_delta,
             committed_len,
-            provisional: r.provisional,
+            provisional: r.provisional.into_iter().map(std::sync::Arc::new).collect(),
             user_times: r.user_times,
             metrics: r.metrics,
             changed_from,

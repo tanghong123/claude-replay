@@ -7,7 +7,7 @@ use crate::sys::{deduce_stem, reveal_in_file_manager};
 /// in the aux slot — evicted frames park their derived view state there (#75).
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
     claude_replay_present::cache::TierBStore, // pull tier: unused by the TUI
-    claude_replay_core::engine::HandoffStore, // follow tier: single-owner streaming (#76)
+    claude_replay_core::engine::ArcStore,     // follow tier: cache-owned shared copy (#84)
     crate::view::ViewSidecar,                 // aux slot: evicted frames' derived state (#75)
 >;
 use crate::tui::picker::Picker;
@@ -350,10 +350,10 @@ fn build_frame(
     let id = title.clone();
     let (blocks, cwd, metrics, oplog_tasks) = if args.follow {
         cache.register(&id, transcript.clone());
-        // The follower's FIRST handoff folds the whole current file and hands over every
-        // committed block exactly once (#76): from here on the View is the sole owner of
-        // the session's blocks — the follower retains only the open turn.
-        match cache.poll_handoff(&id) {
+        // The follower's FIRST poll folds the whole current file; the accumulator RETAINS
+        // the authoritative committed copy (#84 — the cache-owned source of truth) and the
+        // view receives Arc clones: one content copy in the process, shared by reference.
+        match cache.poll_arc(&id) {
             Some(Ok(d)) => {
                 let mut blocks = d.committed_delta;
                 blocks.extend(d.provisional);
@@ -373,9 +373,14 @@ fn build_frame(
         }
     } else {
         let s = transcript.parse()?;
-        (s.blocks(), s.cwd, s.metrics, s.tasks)
+        (
+            s.blocks().into_iter().map(std::sync::Arc::new).collect(),
+            s.cwd,
+            s.metrics,
+            s.tasks,
+        )
     };
-    let mut view = View::new(blocks, title, args.follow, fold);
+    let mut view = View::new_shared(blocks, title, args.follow, fold);
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
     // The task panel's initial state (#15): the transcript's op-log merged with the
@@ -537,8 +542,8 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Only a registered id has a follower (registration happens in `-f` mode only); an
             // evicted follower silently re-materializes from the registry inside the cache.
             if !id.is_empty() {
-                if let Some(Ok(d)) = cache.poll_handoff(id) {
-                    view.apply_handoff(d);
+                if let Some(Ok(d)) = cache.poll_arc(id) {
+                    view.apply_arc(d);
                     // Keep the task panel's op-log side current (#15); the on-disk
                     // side refreshes when the panel opens.
                     if let Some(t) = cache.follower_tasks(id) {
