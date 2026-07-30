@@ -33,9 +33,9 @@ mod stream;
 mod shared;
 #[allow(unused_imports)]
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
-use crate::engine::{BlockStore, InMemoryStore};
+use crate::engine::BlockStore;
 #[allow(unused_imports)]
-pub use shared::{PersistentStore, PullDelta, SharedSession};
+pub use shared::{PersistentStore, PullDelta, SharedSession, ViewDelta};
 #[allow(unused_imports)]
 pub use stream::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
@@ -53,24 +53,15 @@ pub fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-use crate::engine::Session;
-use crate::follow::FollowParser;
 use crate::Transcript;
-
-/// A resident session: an open incremental follower over its source. Its idle clock lives in
-/// the residents map alongside it.
-struct Resident<F: BlockStore> {
-    follower: FollowParser<F>,
-}
 
 /// A keyed cache of sessions in two residency tiers (see the module docs). Owns the session
 /// domain — the followers, the materialized [`Session`]s, and the pull-servable
 /// [`SharedSession`]s — so its consumer (the live server) keeps only presentation state.
-pub struct SessionCache<P: BlockStore = TierBStore, F: BlockStore = InMemoryStore, A = ()> {
+pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// Tier (c): every known session → its [`Transcript`] source handle.
     registry: Mutex<HashMap<String, Transcript>>,
     /// Tier (a): the currently-resident subset → (last polled, open follower).
-    residents: Mutex<HashMap<String, (Instant, Resident<F>)>>,
     /// Tier (a′): the **pull-servable** residents — one [`SharedSession`] per id a `/pull` client
     /// is following (`Arc` so any number of request threads share it). A resident kind of its own
     /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
@@ -90,18 +81,17 @@ pub struct SessionCache<P: BlockStore = TierBStore, F: BlockStore = InMemoryStor
 /// block content of a followed session lives in the store's on-disk backing, not RAM.
 type PullResident<P> = (Instant, std::sync::Arc<SharedSession<P>>);
 
-impl<P: BlockStore, F: BlockStore, A> Default for SessionCache<P, F, A> {
+impl<P: BlockStore, A> Default for SessionCache<P, A> {
     fn default() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
-            residents: Mutex::new(HashMap::new()),
             pull_residents: Mutex::new(HashMap::new()),
             aux: Mutex::new(HashMap::new()),
         }
     }
 }
 
-impl<P: BlockStore, F: BlockStore + Default, A> SessionCache<P, F, A> {
+impl<P: BlockStore, A> SessionCache<P, A> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -150,53 +140,12 @@ impl<P: BlockStore, F: BlockStore + Default, A> SessionCache<P, F, A> {
         lock_recover(&self.registry).get(id).cloned()
     }
 
-    /// Like [`poll`](Self::poll), but through the follower's **delta** surface: additionally
-    /// returns `changed_from` — the first block index that differs from the previous poll — so a
-    /// windowed/render-caching consumer (the TUI) keeps its fold state and rendered lines for the
-    /// unchanged prefix instead of re-scanning the whole block list. Same lifecycle as `poll`:
-    /// materialize on first call, `None` when idle/unregistered, bumps the idle clock.
-    #[allow(clippy::type_complexity)]
-    pub fn poll_delta(
-        &self,
-        id: &str,
-    ) -> Option<
-        std::io::Result<(
-            Vec<crate::model::Block>,
-            Vec<Option<crate::model::EpochSeconds>>,
-            crate::metrics::Metrics,
-            usize,
-        )>,
-    >
-    where
-        F: crate::engine::BlockRead,
-    {
-        let src = self.resolve(id)?;
-        let mut residents = lock_recover(&self.residents);
-        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
-            (
-                Instant::now(),
-                Resident {
-                    follower: FollowParser::with_store(src.agent(), src.path(), F::default()),
-                },
-            )
-        });
-        *last_seen = Instant::now();
-        resident.follower.poll_delta().transpose()
-    }
-
-    /// The resident follower's current task op-log state (#15) — `None` when `id`
-    /// has no resident follower. Cheap (a clone of the fold's list; no session build).
-    pub fn follower_tasks(&self, id: &str) -> Option<crate::engine::TaskList> {
-        let residents = lock_recover(&self.residents);
-        residents.get(id).map(|(_, r)| r.follower.tasks())
-    }
-
     /// Evict follower residents beyond `budget` — least-recently-touched first — never evicting
     /// `pinned` (the session the viewer is anchored to, which doesn't count against the budget).
-    /// The navigation-recency residency policy the TUI rides: evicted followers re-materialize
-    /// from the registry on their next poll (a fresh whole-file fold).
+    /// The navigation-recency residency policy the TUI rides: evicted residents
+    /// re-materialize from the registry on their next poll (a fresh whole-file fold).
     pub fn reap_over_budget(&self, budget: usize, pinned: &str) {
-        let mut residents = lock_recover(&self.residents);
+        let mut residents = lock_recover(&self.pull_residents);
         let mut others: Vec<(String, Instant)> = residents
             .iter()
             .filter(|(id, _)| id.as_str() != pinned)
@@ -245,10 +194,6 @@ impl<P: BlockStore, F: BlockStore + Default, A> SessionCache<P, F, A> {
     /// one's serving state (see [`SharedSession::hibernate`]) before the reference drops — the
     /// cache stays policy-free about where materializations live.
     pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<P>>)> {
-        self.residents
-            .lock()
-            .unwrap()
-            .retain(|_, (last_seen, _)| last_seen.elapsed().as_millis() < ttl_ms);
         let mut evicted = Vec::new();
         self.pull_residents
             .lock()
@@ -263,70 +208,32 @@ impl<P: BlockStore, F: BlockStore + Default, A> SessionCache<P, F, A> {
         evicted
     }
 
+    /// A resident session's task op-log state (#15) without materializing or touching its
+    /// idle clock — `None` when `id` has no live resident.
+    pub fn resident_tasks(&self, id: &str) -> Option<crate::engine::TaskList> {
+        self.shared_peek(id).map(|ss| ss.tasks())
+    }
+
     /// Drop one pull resident immediately (regardless of idle time) — used when a restored
     /// materialization turns out stale ([`SharedSession::hibernation_stale`]) and must be replaced
     /// by a fresh live session.
     pub fn remove_pull(&self, id: &str) {
         lock_recover(&self.pull_residents).remove(id);
     }
-
-    /// The ids currently resident (tier (a)) — the set the caller polls each cycle.
-    pub fn resident_ids(&self) -> Vec<String> {
-        lock_recover(&self.residents).keys().cloned().collect()
-    }
 }
 
-/// The `Session`-assembling poll — only on the in-memory follow tier, whose `Bv` **is**
-/// `Block` (see `FollowParser::poll_session`). Delta consumers use `poll_delta`; the
-/// single-owner TUI path uses `poll_handoff` below.
-impl<P: BlockStore, A> SessionCache<P, InMemoryStore, A> {
-    /// Poll `id`, materializing its follower on first call (folds the whole current file;
-    /// later calls fold only appended bytes), and return an OWNED current [`Session`] equal
-    /// to a full `parse_session_as` of the current file. `None` when idle/unregistered;
-    /// `Some(Err)` when unreadable. Bumps the resident's idle clock.
-    pub fn poll(&self, id: &str) -> Option<std::io::Result<Session>> {
+/// The **in-process view surface** (#85) — on a cache whose live store is
+/// [`ArcStore`](crate::engine::ArcStore): ONE call per tick materializes the resident on
+/// first use (from the registry), advances it borrow-to-tail, and returns the
+/// splice-shaped [`ViewDelta`] — Arc-clone blocks + times + metrics + tasks. The same
+/// resident serves the wire pull protocol; there is exactly one live tier (#85).
+impl<A> SessionCache<crate::engine::ArcStore, A> {
+    pub fn poll_view(&self, id: &str) -> Option<std::io::Result<crate::cache::ViewDelta>> {
         let src = self.resolve(id)?;
-        let mut residents = lock_recover(&self.residents);
-        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
-            (
-                Instant::now(),
-                Resident {
-                    follower: FollowParser::with_store(src.agent(), src.path(), InMemoryStore),
-                },
-            )
+        let ss = self.shared_session(id, || {
+            SharedSession::with_store(src.agent(), src.path(), crate::engine::ArcStore)
         });
-        *last_seen = Instant::now();
-        // `poll_session` returns a fully-assembled Session (cwd + sub-agent transcripts filled),
-        // so the cache needs no core internals — the step toward moving it into the present layer.
-        resident.follower.poll_session().transpose()
-    }
-}
-
-/// The **shared-copy** surface (#84) — on a cache whose follow tier is [`ArcStore`]
-/// (crate::engine::ArcStore): the accumulator retains the authoritative committed vector
-/// (the cache-owned source of truth, principle 2) and each poll hands the consumer `Arc`
-/// clones of the delta — one full content copy in the process, shared by reference
-/// (principle 1: it exists to make search fast, and search scans it). Same lifecycle as
-/// the other polls: materialize on first call, `None` when idle/unregistered, bumps the
-/// idle clock.
-impl<P: BlockStore, A> SessionCache<P, crate::engine::ArcStore, A> {
-    pub fn poll_arc(&self, id: &str) -> Option<std::io::Result<crate::follow::ArcDelta>> {
-        let src = self.resolve(id)?;
-        let mut residents = lock_recover(&self.residents);
-        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
-            (
-                Instant::now(),
-                Resident {
-                    follower: FollowParser::with_store(
-                        src.agent(),
-                        src.path(),
-                        crate::engine::ArcStore,
-                    ),
-                },
-            )
-        });
-        *last_seen = Instant::now();
-        resident.follower.poll_arc().transpose()
+        ss.poll_view().transpose()
     }
 }
 
@@ -356,73 +263,52 @@ mod tests {
         f.write_all(s.as_bytes()).unwrap();
     }
 
-    /// A materialized `poll` must return byte-identical (`Debug`) to a full `parse_session_as`
-    /// of the current file — the cache's Session assembly (builder snapshot + cwd + sub-agent
-    /// transcripts) equals the whole-file parse. Mirrors `follow_matches_full_reparse`.
+    /// The unified live tier's in-process surface (#85): registered → first `poll_view`
+    /// materializes the resident and hands the WHOLE file as the delta (`changed_from` 0);
+    /// an unchanged file is idle (`None`); an append hands only the delta with the boundary
+    /// past the stable prefix; the joined view equals a full parse; `reap` evicts back to
+    /// the registry and a later poll re-materializes. One tier, one lifecycle, both
+    /// protocols on the same resident.
     #[test]
-    fn poll_equals_full_parse() {
-        let path = tmp();
-        std::fs::write(&path, format!("{CLAUDE_1}{CLAUDE_2}")).unwrap();
-        let cache: SessionCache = SessionCache::new();
-        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
-        let polled = cache.poll("s").expect("registered").expect("readable");
-        let full = parse_session_as(Agent::Claude, &path).unwrap();
-        assert_eq!(
-            format!("{polled:?}"),
-            format!("{full:?}"),
-            "cache.poll == parse_session_as"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// The residency lifecycle the live server rides on: registered → first `poll` materializes
-    /// (tier a) → a second `poll` on an unchanged file returns `None` (idle) → append to the
-    /// source → `poll` returns the grown Session → `reap` past the TTL frees the resident back
-    /// to tier (c) → a later `poll` re-materializes from the registry. (Ports the retired
-    /// `SessionStore::tier_lifecycle_see_admit_reap_readmit`.)
-    #[test]
-    fn tier_lifecycle_register_poll_reap_rematerialize() {
+    fn poll_view_lifecycle_equals_full_parse() {
         let path = tmp();
         std::fs::write(&path, CLAUDE_1).unwrap();
-        let cache: SessionCache = SessionCache::new();
+        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
 
-        // Unregistered → poll is None, nothing resident.
-        assert!(cache.poll("s").is_none());
-        assert!(!cache.is_registered("s"));
-        assert!(cache.resident_ids().is_empty());
-
-        // Register (tier c), then the first poll materializes it (tier a).
+        assert!(cache.poll_view("s").is_none(), "unregistered");
         cache.register("s", Transcript::open(Agent::Claude, path.clone()));
-        assert!(cache.is_registered("s"));
-        let s1 = cache.poll("s").expect("registered").expect("readable");
-        assert_eq!(cache.resident_ids(), vec!["s".to_string()]);
-        let blocks1 = s1.block_count();
+        let d1 = cache.poll_view("s").expect("registered").expect("readable");
+        assert_eq!(d1.changed_from, 0, "first poll: everything is new");
+        let n1 = d1.committed_len + d1.provisional.len();
+        assert!(n1 > 0);
+        assert!(cache.poll_view("s").is_none(), "idle on an unchanged file");
 
-        // A second poll on an unchanged file → None (idle, no growth).
-        assert!(cache.poll("s").is_none());
-
-        // Append → poll returns the grown session, still == a full parse.
         append(&path, CLAUDE_2);
-        let s2 = cache.poll("s").expect("registered").expect("readable");
-        assert!(s2.block_count() >= blocks1, "grew");
+        let d2 = cache.poll_view("s").expect("registered").expect("readable");
+        assert!(
+            d2.changed_from <= d1.committed_len + d1.provisional.len(),
+            "boundary within the previously-seen view"
+        );
+        // Reconstruct the joined view the way a View splices, and compare to a full parse.
+        let mut joined: Vec<crate::model::Block> = Vec::new();
+        for d in [&d1, &d2] {
+            joined.truncate(d.committed_len - d.committed_delta.len());
+            joined.extend(d.committed_delta.iter().map(|a| a.as_ref().clone()));
+            joined.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
+        }
+        let full = parse_session_as(Agent::Claude, &path).unwrap();
         assert_eq!(
-            format!("{s2:?}"),
-            format!("{:?}", parse_session_as(Agent::Claude, &path).unwrap())
+            format!("{joined:?}"),
+            format!("{:?}", full.blocks()),
+            "spliced view == full parse"
         );
 
-        // Reap past the TTL evicts the resident back to tier (c); the registry survives.
+        // Reap evicts; the registry survives; a later poll re-materializes whole-file.
         cache.reap(0);
-        assert!(cache.resident_ids().is_empty());
+        assert!(cache.shared_peek("s").is_none());
         assert!(cache.is_registered("s"));
-
-        // A later poll re-materializes from the registry (fresh follower, whole file).
-        let s3 = cache.poll("s").expect("registered").expect("readable");
-        assert_eq!(cache.resident_ids(), vec!["s".to_string()]);
-        assert_eq!(
-            format!("{s3:?}"),
-            format!("{:?}", parse_session_as(Agent::Claude, &path).unwrap())
-        );
-
+        let d3 = cache.poll_view("s").expect("registered").expect("readable");
+        assert_eq!(d3.changed_from, 0, "re-materialized from scratch");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -456,38 +342,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// `poll_delta` (the TUI's live surface): first poll folds the whole file with
-    /// `changed_from == 0`; a pure append returns the grown list with the unchanged prefix intact
-    /// (`changed_from` past it); an idle poll is `None`. Same lifecycle as `poll`.
-    #[test]
-    fn poll_delta_forwards_the_follower_delta_surface() {
-        let path = tmp();
-        std::fs::write(&path, CLAUDE_1).unwrap();
-        let cache: SessionCache = SessionCache::new();
-        cache.register("s", Transcript::open(Agent::Claude, path.clone()));
-
-        let (blocks1, _t, _m, cf1) = cache.poll_delta("s").unwrap().unwrap();
-        assert_eq!(cf1, 0, "first poll: everything is new");
-        assert!(!blocks1.is_empty());
-        assert!(cache.poll_delta("s").is_none(), "idle");
-
-        append(&path, CLAUDE_2);
-        let (blocks2, _t, _m, cf2) = cache.poll_delta("s").unwrap().unwrap();
-        assert!(blocks2.len() >= blocks1.len(), "grew");
-        assert_eq!(
-            format!("{:?}", &blocks2[..cf2]),
-            format!("{:?}", &blocks1[..cf2]),
-            "the kept prefix is unchanged"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// `reap_over_budget` — the TUI's residency policy: the pinned root never counts or evicts;
-    /// beyond the budget, the least-recently-touched followers go; the registry survives so a
-    /// later poll re-materializes.
+    /// `reap_over_budget` — the TUI's residency policy on the unified tier (#85): the
+    /// pinned root never counts or evicts; beyond the budget, the least-recently-touched
+    /// residents go; the registry survives so a later poll re-materializes.
     #[test]
     fn reap_over_budget_pins_root_and_evicts_lru() {
-        let cache: SessionCache = SessionCache::new();
+        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
         for id in ["root", "a", "b", "c"] {
             let path = tmp();
             std::fs::write(&path, CLAUDE_1).unwrap();
@@ -495,15 +355,18 @@ mod tests {
         }
         // Materialize in a known touch order: root, then a (oldest child), b, c (newest).
         for id in ["root", "a", "b", "c"] {
-            cache.poll(id);
+            cache.poll_view(id);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         cache.reap_over_budget(2, "root");
-        let mut resident = cache.resident_ids();
+        let mut resident: Vec<&str> = ["root", "a", "b", "c"]
+            .into_iter()
+            .filter(|id| cache.shared_peek(id).is_some())
+            .collect();
         resident.sort();
         assert_eq!(
             resident,
-            vec!["b".to_string(), "c".to_string(), "root".to_string()],
+            vec!["b", "c", "root"],
             "root pinned; newest 2 children kept; oldest evicted"
         );
         assert!(cache.is_registered("a"), "eviction is residency-only");

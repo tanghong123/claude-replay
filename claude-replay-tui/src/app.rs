@@ -3,12 +3,12 @@
 
 use crate::sys::{deduce_stem, reveal_in_file_manager};
 
-/// The TUI's cache instantiation: default block store, [`ViewSidecar`](crate::view::ViewSidecar)
-/// in the aux slot — evicted frames park their derived view state there (#75).
+/// The TUI's cache instantiation — both seams doing chosen work (#85: no phantom
+/// parameters): the live store is the cache-owned shared copy, the aux slot parks
+/// evicted frames' derived view state.
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
-    claude_replay_present::cache::TierBStore, // pull tier: unused by the TUI
-    claude_replay_core::engine::ArcStore,     // follow tier: cache-owned shared copy (#84)
-    crate::view::ViewSidecar,                 // aux slot: evicted frames' derived state (#75)
+    claude_replay_core::engine::ArcStore, // live store: cache-owned shared copy (#84)
+    crate::view::ViewSidecar,             // aux slot: evicted frames' derived state (#75)
 >;
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
@@ -353,16 +353,11 @@ fn build_frame(
         // The follower's FIRST poll folds the whole current file; the accumulator RETAINS
         // the authoritative committed copy (#84 — the cache-owned source of truth) and the
         // view receives Arc clones: one content copy in the process, shared by reference.
-        match cache.poll_arc(&id) {
+        match cache.poll_view(&id) {
             Some(Ok(d)) => {
                 let mut blocks = d.committed_delta;
                 blocks.extend(d.provisional);
-                (
-                    blocks,
-                    discover::session_cwd(path),
-                    d.metrics,
-                    cache.follower_tasks(&id).unwrap_or_default(),
-                )
+                (blocks, discover::session_cwd(path), d.metrics, d.tasks)
             }
             _ => (
                 Vec::new(),
@@ -542,16 +537,14 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Only a registered id has a follower (registration happens in `-f` mode only); an
             // evicted follower silently re-materializes from the registry inside the cache.
             if !id.is_empty() {
-                if let Some(Ok(d)) = cache.poll_arc(id) {
-                    view.apply_arc(d);
-                    // Keep the task panel's op-log side current (#15); the on-disk
-                    // side refreshes when the panel opens.
-                    if let Some(t) = cache.follower_tasks(id) {
-                        view.set_tasks(crate::engine::tasks::merged(
-                            &t,
-                            discover::session_tasks(_agent, _path),
-                        ));
-                    }
+                if let Some(Ok(d)) = cache.poll_view(id) {
+                    // The tick carries the task op-log state (#15) — one call, no second
+                    // cache lock; the on-disk side refreshes when the panel opens.
+                    view.set_tasks(crate::engine::tasks::merged(
+                        &d.tasks,
+                        discover::session_tasks(_agent, _path),
+                    ));
+                    view.apply_view(d);
                 }
             }
             continue;
@@ -649,7 +642,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                         // the current op-log state.
                         if !view.tasks_popup_open() {
                             let oplog = cache
-                                .follower_tasks(id)
+                                .resident_tasks(id)
                                 .unwrap_or_else(|| view.tasks_snapshot());
                             view.set_tasks(crate::engine::tasks::merged(
                                 &oplog,

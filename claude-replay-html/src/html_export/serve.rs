@@ -35,7 +35,7 @@ struct Live {
     root_path: std::path::PathBuf,
     cwd: String,
     /// The session domain: id→source registry + resident followers + TTL reaping.
-    cache: SessionCache<RecordStore, crate::engine::InMemoryStore, ServeAux>,
+    cache: SessionCache<RecordStore, ServeAux>,
 }
 
 /// The live server's per-session presentation sidecar, held in the cache's aux slot (#76 —

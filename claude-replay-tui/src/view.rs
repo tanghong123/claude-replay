@@ -1350,11 +1350,11 @@ impl View {
         self.post_splice(d);
     }
 
-    /// The **shared-copy** apply (#84): splice the delta in place — keep `[0..frontier)`,
-    /// append `Arc` clones of the newly-committed blocks and the fresh open turn. Content
-    /// lives once, in the cache's authoritative copy; a live tick costs O(delta) refcount
-    /// bumps, not an O(session) content move.
-    pub fn apply_arc(&mut self, d: crate::follow::ArcDelta) {
+    /// The **shared-copy** apply (#84/#85): splice the delta in place — keep
+    /// `[0..frontier)`, append `Arc` clones of the newly-committed blocks and the fresh
+    /// open turn. Content lives once, in the cache's authoritative copy; a live tick costs
+    /// O(delta) refcount bumps, not an O(session) content move.
+    pub fn apply_view(&mut self, d: claude_replay_present::cache::ViewDelta) {
         let prev_committed = (d.committed_len - d.committed_delta.len()).min(self.blocks.len());
         let joined = d.committed_len + d.provisional.len();
         if !self.follow {
@@ -2082,13 +2082,13 @@ mod tests {
         );
     }
 
-    /// The shared-copy `apply_arc` (#84) yields the exact same view state as the
+    /// The shared-copy `apply_view` (#84/#85) yields the exact same view state as the
     /// scan-based `update` for the same session evolution — same rendered lines, same
     /// per-block fold state, and a preserved fold toggle on the unchanged prefix — while
     /// the View splices deltas instead of swapping whole vectors. Also covers the
     /// commit-shaped delta (prefix moves from open to committed).
     #[test]
-    fn apply_arc_equals_update_scan() {
+    fn apply_view_equals_update_scan() {
         let a = blocks(10);
         let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
         let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
@@ -2104,7 +2104,7 @@ mod tests {
         // 8), the last 2 provisional. The splice must land identically to the full scan.
         let committed_len = 11usize;
         let prev_committed = 8usize; // pretend 8 were already handed over
-        v2.apply_arc(crate::follow::ArcDelta {
+        v2.apply_view(claude_replay_present::cache::ViewDelta {
             reset: false,
             committed_delta: b[prev_committed..committed_len]
                 .iter()
@@ -2117,9 +2117,10 @@ mod tests {
                 .cloned()
                 .map(std::sync::Arc::new)
                 .collect(),
+            changed_from: d,
             user_times: Vec::new(),
             metrics: Metrics::default(),
-            changed_from: d,
+            tasks: Default::default(),
         });
         v1.layout(80, 24);
         v2.layout(80, 24);

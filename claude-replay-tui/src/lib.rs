@@ -23,6 +23,6 @@ pub(crate) mod tui {
 
 // Aliases so moved modules keep referring to `crate::model`, `crate::present`, … unchanged.
 pub(crate) use claude_replay_core::{
-    diff, discover, engine, fold, follow, metrics, model, Agent, Transcript,
+    diff, discover, engine, fold, metrics, model, Agent, Transcript,
 };
 pub(crate) use claude_replay_present::{highlight, present, sys, Args, SessionCache};
