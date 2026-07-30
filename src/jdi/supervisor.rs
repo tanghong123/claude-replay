@@ -337,7 +337,9 @@ fn state_fingerprint(
     cwd: &Path,
 ) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let tasks_fp = adapter.task_queue().and_then(|q| q.fingerprint(session_id));
+    let tasks_fp = adapter
+        .task_queue()
+        .and_then(|q| q.fingerprint(session_id, cwd));
     let git = |args: &[&str]| -> Option<String> {
         let out = Command::new("git")
             .arg("-C")

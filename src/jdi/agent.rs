@@ -137,15 +137,15 @@ pub trait TaskQueue {
     /// only parked/blocked work must classify as DONE, not spawn retry rounds forever).
     /// `None` = unknown (missing dir / parse fail), which callers treat as "trust the
     /// exit code" rather than "zero left".
-    fn actionable_count(&self, session_id: &str) -> Option<usize>;
+    fn actionable_count(&self, session_id: &str, cwd: &Path) -> Option<usize>;
     /// A stable fingerprint of the queue's `(id, status)` pairs — the task half of the
     /// supervisor's no-progress detection (#79). `None` = unknown.
-    fn fingerprint(&self, session_id: &str) -> Option<u64> {
-        let _ = session_id;
+    fn fingerprint(&self, session_id: &str, cwd: &Path) -> Option<u64> {
+        let _ = (session_id, cwd);
         None
     }
     /// Human-readable rendering for `status`.
-    fn render(&self, session_id: &str) -> String;
+    fn render(&self, session_id: &str, cwd: &Path) -> String;
 }
 
 /// One agent's integration with the supervisor.

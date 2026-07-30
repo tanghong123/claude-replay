@@ -1168,7 +1168,7 @@ fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     if let Some(a) = agent {
         if let Some(q) = agent::adapter(a).task_queue() {
             println!("\n── task queue (live) ──");
-            println!("{}", q.render(&sid));
+            println!("{}", q.render(&sid, &cwd));
         }
     }
 
