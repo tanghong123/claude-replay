@@ -109,6 +109,14 @@ pub(crate) struct Replayer<'a> {
     prev_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     suppress: Vec<BlockIndex>,
+    /// Adjacency tracker for the queued-prompt pickup dedup (#88): the text of the
+    /// immediately-preceding content message iff it was a `UserText`. Bookkeeping
+    /// messages (`LineStart`/`TaskOp`) don't break adjacency.
+    prev_user_text: Option<String>,
+    /// Contents of popped queue items that were `rendered` — a pickup stamp arriving
+    /// after its dequeue op consumes its note here instead of emitting a second turn.
+    /// Cleared at the next real user turn (staleness bound).
+    delivered_rendered: Vec<String>,
     last_skill: Option<BlockIndex>,
     // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
     // each `SubAgent` spawn is emitted and refreshed when its result fills `agent_id`. It lets an
@@ -158,6 +166,8 @@ impl<'a> Replayer<'a> {
             prev_ts: None,
             queue: Vec::new(),
             suppress: Vec::new(),
+            prev_user_text: None,
+            delivered_rendered: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
         }
@@ -176,6 +186,12 @@ impl<'a> Replayer<'a> {
         let emitted_frontier = self.base + self.out.len();
         let mut patch_floor: Option<usize> = None;
         for m in messages {
+            // #88 adjacency: content messages consume the tracker (the `UserText` arm
+            // re-arms it); `LineStart`/`TaskOp` are bookkeeping and pass it through.
+            let prev_user = match m {
+                Message::LineStart(_) | Message::TaskOp(_) => self.prev_user_text.clone(),
+                _ => self.prev_user_text.take(),
+            };
             match m {
                 Message::LineStart(ts) => {
                     // Stamp over the resident window; `stamped` is logical, so translate by `base`.
@@ -255,6 +271,8 @@ impl<'a> Replayer<'a> {
                         }
                     }
                     self.out.push(Block::UserText(text.clone()));
+                    self.prev_user_text = Some(text.trim().to_string());
+                    self.delivered_rendered.clear();
                 }
                 Message::SystemNote { text } => {
                     self.out.push(Block::ToolResult(text.clone()));
@@ -296,7 +314,31 @@ impl<'a> Replayer<'a> {
                     }
                 }
                 Message::AttachmentPrompt { text } => {
-                    self.out.push(Block::UserText(text.clone()));
+                    // The pickup stamp of a queued prompt — usually the ONLY record of a
+                    // mid-turn typed prompt, rendered as the user turn right here (its
+                    // chronological pickup point). But when the prompt already rendered as
+                    // a real user turn (see `QueueItem::rendered`), this stamp is redundant
+                    // — emitting it would show the turn twice (#88). Consume the pending
+                    // item (suppressing its marker) or the popped item's note; emit only
+                    // if the prompt is new.
+                    let t = text.trim();
+                    let rendered_before = if let Some(pos) =
+                        self.queue.iter().position(|q| q.content == t)
+                    {
+                        let item = self.queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            self.suppress.push(mi);
+                        }
+                        item.rendered
+                    } else if let Some(pos) = self.delivered_rendered.iter().position(|d| d == t) {
+                        self.delivered_rendered.remove(pos);
+                        true
+                    } else {
+                        false
+                    };
+                    if !rendered_before {
+                        self.out.push(Block::UserText(text.clone()));
+                    }
                 }
                 Message::Attachment(att) => {
                     self.out.push(Block::Attachment(att.clone()));
@@ -335,7 +377,12 @@ impl<'a> Replayer<'a> {
                 Message::QueueOp { op, content, prose } => match op {
                     QueueOpKind::Enqueue => {
                         if let Some(c) = content {
-                            let marker_idx = if *prose {
+                            // Enqueue right after the same text arrived as a real user
+                            // turn: the prompt is already on screen — no `⧗ queued:`
+                            // duplicate below it, and its pickup stamp won't re-render
+                            // it (#88).
+                            let rendered = prev_user.as_deref() == Some(c.trim());
+                            let marker_idx = if *prose && !rendered {
                                 self.out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
@@ -346,6 +393,7 @@ impl<'a> Replayer<'a> {
                             self.queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
+                                rendered,
                             });
                         }
                     }
@@ -367,6 +415,9 @@ impl<'a> Replayer<'a> {
                         if let Some(item) = popped {
                             if let Some(mi) = item.marker_idx {
                                 self.suppress.push(mi);
+                            }
+                            if item.rendered {
+                                self.delivered_rendered.push(item.content);
                             }
                         }
                     }
@@ -578,6 +629,11 @@ pub(crate) fn replay(
 pub(crate) struct QueueItem {
     pub(crate) content: String,
     pub(crate) marker_idx: Option<BlockIndex>,
+    /// The prompt was ALREADY rendered as a real user turn when it was enqueued (Claude
+    /// Code sometimes writes the standalone `user` event right before the enqueue op —
+    /// both records carry the text). Its pickup stamp (`queued_command` attachment) must
+    /// then NOT render a second turn (#88).
+    pub(crate) rendered: bool,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`

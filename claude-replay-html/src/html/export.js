@@ -402,7 +402,10 @@
     setWindow(lo, hi);
     if (anchorEl && anchorEl.isConnected) {
       var d = anchorEl.getBoundingClientRect().top - anchorTop;
-      if (Math.abs(d) > 1) window.scrollBy(0, d);
+      if (Math.abs(d) > 1) {
+        progScroll = true;
+        window.scrollBy(0, d);
+      }
     }
   }
   // Re-render the materialized window in place (fold/filter state changed).
@@ -892,9 +895,15 @@
     section("Completed", done);
   }
 
-  // Append one turn to the sidebar (live sessions grow it).
+  // Append one turn to the sidebar (live sessions grow it). Keyed by the turn's
+  // stable id: a record re-emitted through any feed (a provisional resend, a
+  // resync) UPDATES its entry in place, so the sidebar can never show a turn
+  // twice (#88).
   function addTurn(b) {
-    var item = el("div", "side-item", b.turn + " · " + b.label);
+    var label = b.turn + " \u00b7 " + b.label;
+    var exist = turnlist.querySelector('[data-t="' + b.id + '"]');
+    if (exist) { exist.textContent = label; return; }
+    var item = el("div", "side-item", label);
     item.dataset.t = b.id;
     item.tabIndex = 0;
     turnlist.appendChild(item);
@@ -942,26 +951,6 @@
     postRender();
   }
 
-  // Delta-only: the multi-file live feed hands us just the NEW bytes each poll, so we parse
-  // only the new complete lines — never re-splitting the whole accumulated stream — and keep
-  // any trailing partial line in `pending`. A bad line is skipped, not fatal.
-  var pending = "";
-  function consumeDelta(chunk) {
-    pending += chunk;
-    var nl = pending.lastIndexOf("\n");
-    if (nl < 0) return; // no complete line yet
-    var lines = pending.slice(0, nl).split("\n");
-    pending = pending.slice(nl + 1);
-    for (var i = 0; i < lines.length; i++) {
-      var l = lines[i];
-      if (!l.trim()) continue;
-      var obj;
-      try { obj = JSON.parse(l); } catch (e) { continue; }
-      applyRecord(obj);
-    }
-    postRender();
-  }
-
   // Drop records from stream index `from` onward (a rewritten tail), plus their
   // sidebar turn entries, so the re-emitted records rebuild them cleanly.
   function resetFrom(from) {
@@ -999,7 +988,7 @@
   }
   function consumePull(r) {
     // Idle tick (same epoch, both zones empty): nothing to do.
-    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return;
+    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return false;
     if (r.epoch !== pc.epoch) { resetFrom(0); pc.committed = 0; } // resync
     if (r.meta) renderMeta(r.meta);
     // A commit (or resync): committed grew — drop everything at/after committed_from, then append
@@ -1017,6 +1006,7 @@
     pc.gen = r.provisional_gen;
     pc.index = r.provisional_from + r.provisional.length;
     postRender();
+    return true;
   }
 
   // ── type / tool filter ────────────────────────────────────────────────
@@ -1227,8 +1217,27 @@
   function atBottom() {
     return window.innerHeight + window.scrollY >= document.body.scrollHeight - BOTTOM_SLACK;
   }
-  function toBottom(smooth) {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
+  // pixel proximity each tick (#88): under the virtualizer, materializing the tail
+  // corrects estimated heights and silently moves the true bottom away from the
+  // viewport — proximity-based following then unlatches on its own. The flag flips
+  // only on user intent: scrolling away unpins, scrolling to the end (or clicking
+  // the badge) re-pins. While pinned, every content/height change re-anchors.
+  var following = false;
+  // Our own scrollTo/scrollBy calls fire the same scroll event as a user's wheel —
+  // this one-shot guard keeps them from being read as intent to (un)pin.
+  var progScroll = false;
+  function toBottom() {
+    // Two-step: the jump materializes the tail window (real heights replace
+    // estimates, pads shift), so re-read the height and correct. A smooth scroll
+    // is not survivable here — any DOM mutation under it cancels the animation.
+    progScroll = true;
+    window.scrollTo({ top: document.body.scrollHeight });
+    updateView();
+    if (!atBottom()) {
+      progScroll = true;
+      window.scrollTo({ top: document.body.scrollHeight });
+    }
   }
   var newCount = 0;
   var badge = $("newbadge");
@@ -1241,7 +1250,11 @@
     newCount = 0;
     badge.classList.remove("on");
   }
-  badge.addEventListener("click", function () { toBottom(true); clearNew(); });
+  badge.addEventListener("click", function () {
+    following = true;
+    toBottom();
+    clearNew();
+  });
 
   // Initial render from the inlined snapshot, then drop the inline copy: the
   // rendered DOM is the source of truth now, so keeping ~1× the payload as script
@@ -1251,16 +1264,19 @@
   var pollMs = parseInt(document.body.dataset.poll || "0", 10);
   var multi = document.body.dataset.multi;
 
-  // Render freshly consumed content, flagging/following new tail. Shared by every feed.
+  // Render freshly consumed content, following/flagging the new tail. Shared by every
+  // feed. Re-anchoring keys off `following` and off ANY change — a tail rewrite that
+  // nets zero new records still moves heights, and the old at-bottom check silently
+  // dropped the pin there (#88).
   function ingest(text) {
-    var wasAtBottom = atBottom();
     var before = records.length;
+    var beforeConsumed = consumed;
     consume(text);
     var added = records.length - before;
-    if (added > 0) {
-      if (wasAtBottom) { toBottom(false); clearNew(); }
-      else showNew(added);
-      spy();
+    if (consumed > beforeConsumed) {
+      if (following) { toBottom(); clearNew(); }
+      else if (added > 0) showNew(added);
+      if (added > 0) spy();
     }
   }
 
@@ -1303,10 +1319,10 @@
               });
           })
           .then(function (reply) {
-            var wasAtBottom = atBottom();
             var before = records.length;
+            var changed = false;
             try {
-              consumePull(reply);
+              changed = consumePull(reply);
             } catch (err) {
               // Self-heal (#54): a torn apply must never leave the page desynced — drop all
               // local state and cursor; the next tick resyncs from the server's canonical
@@ -1317,10 +1333,10 @@
               return;
             }
             var added = records.length - before;
-            if (added > 0) {
-              if (wasAtBottom) { toBottom(false); clearNew(); }
-              else showNew(added);
-              spy();
+            if (changed) {
+              if (following) { toBottom(); clearNew(); }
+              else if (added > 0) showNew(added);
+              if (added > 0) spy();
             }
           })
           .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
@@ -2010,6 +2026,8 @@
   }
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
+    if (progScroll) progScroll = false;
+    else following = atBottom(); // user scroll: away unpins, to-the-end re-pins
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
@@ -2027,7 +2045,7 @@
     var hid = location.hash.slice(1);
     setTimeout(function () { goToId(hid); }, 150);
   } else {
-    toBottom(false);
-    updateView();
+    following = true;
+    toBottom();
   }
 })();

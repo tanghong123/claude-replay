@@ -102,6 +102,10 @@ input::placeholder { color: var(--faint); }
   border: none; outline: none; background: transparent; color: var(--fg);
   font: 13px var(--sans); width: auto; flex: 1 1 auto; min-width: 0; height: 28px;
 }
+/* Focus cue: `/` and a mouse click land the caret the same way — the box lights up
+   so the eye finds where typing will go. */
+.searchbox:focus-within { border-color: var(--link); box-shadow: 0 0 0 1px var(--link); }
+.searchbox:focus-within .mag { color: var(--link); }
 #qcount { font: 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
 .tbtn {
   font: 12.5px var(--sans); padding: 5px 10px; border: 1px solid var(--border);

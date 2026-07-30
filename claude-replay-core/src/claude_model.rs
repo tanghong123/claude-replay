@@ -202,6 +202,8 @@ fn push_user_string(
     out: &mut Vec<Block>,
     queue: &mut Vec<QueueItem>,
     suppress: &mut Vec<BlockIndex>,
+    prev_user_out: &mut Option<String>,
+    delivered: &mut Vec<String>,
 ) {
     if tag_inner(s, "task-notification").is_some() {
         if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
@@ -260,6 +262,8 @@ fn push_user_string(
                     suppress.push(mi);
                 }
             }
+            *prev_user_out = Some(cleaned.trim().to_string());
+            delivered.clear();
             out.push(Block::UserText(cleaned));
         }
     }
@@ -859,6 +863,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // Marker indices to drop collect in `suppress` and are filtered out after the
     // loop (safe — `tool_slot` is only used during the loop).
     let mut suppress: Vec<BlockIndex> = Vec::new();
+    // #88 mirror of the streaming fold's pickup dedup (see `Replayer`): the text of the
+    // immediately-preceding event iff it emitted a `UserText`, plus notes for popped
+    // `rendered` queue items whose pickup stamp is still to come.
+    let mut prev_user_text: Option<String> = None;
+    let mut delivered_rendered: Vec<String> = Vec::new();
     // Index of the most recent `Skill` tool_use block. The harness delivers a loaded
     // skill's instruction body as a following injected user message ("Base directory
     // for this skill: …"); we nest that body into this block so a skill load reads as
@@ -891,6 +900,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
         pending_ts = ev_ts;
         match v.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
+                prev_user_text = None;
                 let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
                     continue;
                 };
@@ -985,7 +995,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 }
             }
             Some("user") => {
-                // The message-level toolUseResult metadata (shared by its result blocks).
+                prev_user_text = None; // re-armed below iff this event emits a UserText
+                                       // The message-level toolUseResult metadata (shared by its result blocks).
                 let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
                 // `isMeta`/`isCompactSummary` events are injected system content, not
                 // human turns — route their prose to a folded system block so it never
@@ -1000,7 +1011,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     } else if injected {
                         push_injected(s, &mut out);
                     } else {
-                        push_user_string(s, &mut out, &mut queue, &mut suppress);
+                        push_user_string(
+                            s,
+                            &mut out,
+                            &mut queue,
+                            &mut suppress,
+                            &mut prev_user_text,
+                            &mut delivered_rendered,
+                        );
                     }
                 } else if let Some(arr) = content.as_array() {
                     for blk in arr {
@@ -1024,6 +1042,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                                     suppress.push(mi);
                                                 }
                                             }
+                                            prev_user_text = Some(t.trim().to_string());
+                                            delivered_rendered.clear();
                                             out.push(Block::UserText(t.to_string()));
                                         }
                                     }
@@ -1036,6 +1056,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 }
                             }
                             Some("tool_result") => {
+                                prev_user_text = None;
                                 let tid = blk
                                     .get("tool_use_id")
                                     .and_then(|s| s.as_str())
@@ -1070,6 +1091,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // that finds the prompt was picked up with no agent work in between marks
             // that marker for suppression (immediate → the `❯` turn alone suffices).
             Some("queue-operation") => {
+                let prev_user = prev_user_text.take();
                 let content = v.get("content").and_then(|c| c.as_str());
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
@@ -1102,7 +1124,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 });
                             }
                             let is_prose = is_queue_prose(c);
-                            let marker_idx = if is_prose {
+                            // #88: enqueue right after the same text arrived as a real
+                            // user turn — already on screen; no `⧗ queued:` duplicate,
+                            // and the pickup stamp won't re-render it.
+                            let rendered = prev_user.as_deref() == Some(c.trim());
+                            let marker_idx = if is_prose && !rendered {
                                 out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
@@ -1113,6 +1139,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
+                                rendered,
                             });
                         }
                     }
@@ -1131,6 +1158,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             if let Some(mi) = item.marker_idx {
                                 suppress.push(mi);
                             }
+                            if item.rendered {
+                                delivered_rendered.push(item.content);
+                            }
                         }
                     }
                     _ => {}
@@ -1145,6 +1175,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // a user turn right here, so they land in chronological order at the point
             // they took effect.
             Some("attachment") => {
+                prev_user_text = None;
                 let a = v.get("attachment");
                 let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
                     == Some("queued_command")
@@ -1154,13 +1185,28 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 if is_prompt {
                     if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                         if !p.trim().is_empty() {
-                            // #52 op-less delivery, attachment form (see above).
-                            if let Some(pos) = queue.iter().position(|q| q.content == p.trim()) {
-                                if let Some(mi) = queue.remove(pos).marker_idx {
+                            // #52 op-less delivery, attachment form (see above) + the
+                            // #88 pickup dedup (see the streaming fold's
+                            // `AttachmentPrompt` arm — kept in lockstep).
+                            let t = p.trim();
+                            let rendered_before = if let Some(pos) =
+                                queue.iter().position(|q| q.content == t)
+                            {
+                                let item = queue.remove(pos);
+                                if let Some(mi) = item.marker_idx {
                                     suppress.push(mi);
                                 }
+                                item.rendered
+                            } else if let Some(pos) = delivered_rendered.iter().position(|d| d == t)
+                            {
+                                delivered_rendered.remove(pos);
+                                true
+                            } else {
+                                false
+                            };
+                            if !rendered_before {
+                                out.push(Block::UserText(p.to_string()));
                             }
-                            out.push(Block::UserText(p.to_string()));
                         }
                     }
                 } else if let Some(att) = a.and_then(attachment_from_event) {
@@ -1724,6 +1770,77 @@ mod tests {
             vec!["first turn", "mid-turn interjection", "last turn"],
             "{blocks:?}"
         );
+    }
+
+    /// #88: Claude Code sometimes writes a mid-turn typed prompt as a standalone `user`
+    /// event AND queues it (enqueue right after, remove + `queued_command` attachment at
+    /// pickup — all four records carry the same text). The prompt must render as ONE user
+    /// turn, at its typed position: no `⧗ queued:` echo below the real turn, and no second
+    /// turn at the pickup stamp. Both the streaming fold and the `parse_main` reference
+    /// must agree (their equivalence is the gate).
+    #[test]
+    fn user_event_plus_queue_lifecycle_renders_one_turn() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-07-01T03:48:00.000Z","message":{"content":"do the thing"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-01T03:48:01.000Z","content":"do the thing"}
+{"type":"assistant","timestamp":"2026-07-01T03:48:02.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-07-01T03:48:03.000Z","content":"do the thing"}
+{"type":"user","timestamp":"2026-07-01T03:48:04.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"attachment","timestamp":"2026-07-01T03:48:05.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"do the thing"}}
+{"type":"assistant","timestamp":"2026-07-01T03:48:06.000Z","message":{"content":[{"type":"text","text":"done"}]}}
+"##;
+        for blocks in [
+            parse(jsonl),
+            parse_main(
+                jsonl.lines().filter(|l| !l.trim().is_empty()),
+                &mut Vec::new(),
+            ),
+        ] {
+            let users: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::UserText(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(users, vec!["do the thing"], "{blocks:?}");
+            assert!(
+                !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+                "no queued echo under the real turn: {blocks:?}"
+            );
+        }
+        // The attachment-only flow (no standalone user event) still renders the pickup
+        // as the turn — the dedup must not eat a genuinely new prompt, even one whose
+        // text repeats an earlier turn's.
+        let jsonl2 = r##"
+{"type":"user","timestamp":"2026-07-01T03:48:00.000Z","message":{"content":"continue"}}
+{"type":"assistant","timestamp":"2026-07-01T03:48:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-01T03:48:02.000Z","content":"continue"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-07-01T03:48:03.000Z","content":"continue"}
+{"type":"user","timestamp":"2026-07-01T03:48:04.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"attachment","timestamp":"2026-07-01T03:48:05.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"continue"}}
+"##;
+        for blocks in [
+            parse(jsonl2),
+            parse_main(
+                jsonl2.lines().filter(|l| !l.trim().is_empty()),
+                &mut Vec::new(),
+            ),
+        ] {
+            let users: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::UserText(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                users,
+                vec!["continue", "continue"],
+                "a tool_use between the turn and the enqueue breaks adjacency — the \
+                 pickup is a new prompt: {blocks:?}"
+            );
+        }
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:
