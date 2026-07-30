@@ -250,7 +250,6 @@ pub struct ViewSidecar {
     width: u16,
     heights: Vec<usize>,
     prefix: Vec<usize>,
-    search_text: Vec<String>,
     collapsed: Vec<bool>,
     user_folds: std::collections::HashMap<crate::model::BlockIndex, bool>,
     scroll: usize,
@@ -277,9 +276,6 @@ pub struct View {
     /// Bounded cache of rendered+wrapped lines for the blocks near the viewport — the ONLY
     /// styled-line residency (O(window), not O(session)). Evicted by distance when it grows.
     hot: std::collections::HashMap<crate::model::BlockIndex, Vec<Line<'static>>>,
-    /// Plain text of every wrapped line — the search index (content-sized, no styling; the
-    /// design allows an O(N) text index while styled lines stay windowed).
-    search_text: Vec<String>,
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
     scroll: usize, // top wrapped-line index
@@ -288,9 +284,14 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,                           // current needle (empty = no search)
-    searching: bool,                         // in `/` input mode
-    matches: Vec<usize>,                     // wrapped-line indices containing the needle
+    query: String,   // current needle (empty = no search)
+    searching: bool, // in `/` input mode
+    /// Blocks containing ≥1 query occurrence (#84: block-level, fold-independent).
+    matches: Vec<crate::model::BlockIndex>,
+    /// Total occurrence count across all hit blocks (the status tally).
+    occurrences: usize,
+    /// The transiently peek-expanded hit block, if any (vim `foldopen=search`).
+    peeked: Option<crate::model::BlockIndex>,
     match_pos: usize,                        // index into `matches`
     metrics: String, // footer text (tokens/cost/duration/model) — legacy string
     footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
@@ -346,7 +347,6 @@ impl View {
             heights: Vec::new(),
             prefix: vec![0],
             hot: std::collections::HashMap::new(),
-            search_text: Vec::new(),
             width: 0,
             view_h: 0,
             scroll: 0,
@@ -357,6 +357,8 @@ impl View {
             query: String::new(),
             searching: false,
             matches: Vec::new(),
+            occurrences: 0,
+            peeked: None,
             match_pos: 0,
             metrics: String::new(),
             footer_segs: Vec::new(),
@@ -587,7 +589,6 @@ impl View {
         let d = d.min(self.blocks.len()).min(self.heights.len());
         self.heights.truncate(d);
         self.prefix.truncate(d + 1);
-        self.search_text.truncate(self.prefix[d]);
         self.hot.retain(|&b, _| b < d);
         let mut total = self.prefix[d];
         let mut carry = self.prefix[d] > 0;
@@ -597,10 +598,6 @@ impl View {
             self.heights.push(wrapped.len());
             total += wrapped.len();
             self.prefix.push(total);
-            for l in &wrapped {
-                self.search_text
-                    .push(l.spans.iter().map(|s| s.content.as_ref()).collect());
-            }
         }
     }
 
@@ -668,16 +665,6 @@ impl View {
             self.measure_from(b); // emptiness flip can ripple the blank-carry
             return;
         }
-        let start = self.prefix[b];
-        self.search_text.splice(
-            start..start + old_h,
-            wrapped.iter().map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            }),
-        );
         self.hot.insert(b, wrapped);
         self.heights[b] = new_h;
         if new_h != old_h {
@@ -686,7 +673,6 @@ impl View {
                 *p = (*p as isize + delta) as usize;
             }
         }
-        self.recompute_matches();
     }
 
     /// Mark display geometry stale from block 0 (fold-all / policy changes); the next `layout`
@@ -758,7 +744,6 @@ impl View {
             width: self.width,
             heights: self.heights,
             prefix: self.prefix,
-            search_text: self.search_text,
             collapsed: self.collapsed,
             user_folds: self.user_folds,
             scroll: self.scroll,
@@ -778,7 +763,6 @@ impl View {
         self.width = sc.width;
         self.heights = sc.heights;
         self.prefix = sc.prefix;
-        self.search_text = sc.search_text;
         self.collapsed = sc.collapsed;
         self.user_folds = sc.user_folds;
         self.scroll = sc.scroll;
@@ -1206,25 +1190,69 @@ impl View {
     pub fn is_searching(&self) -> bool {
         self.searching
     }
+    /// Source-of-truth search (#84): DISCOVERY scans every block's text content — the one
+    /// shared in-memory copy, which exists precisely to make this fast — so matches inside
+    /// FOLDED blocks are found (the old display-text index was fold-blind). Extraction is
+    /// string-only (no render, no wrap, no styling); position mapping stays lazy (the jump
+    /// target's block start comes from the prefix sums; visible highlighting happens during
+    /// the normal draw of the hot window).
     fn recompute_matches(&mut self) {
         self.matches.clear();
+        self.occurrences = 0;
         if self.query.is_empty() {
             return;
         }
         let q = self.query.to_lowercase();
-        for (i, text) in self.search_text.iter().enumerate() {
-            if text.to_lowercase().contains(&q) {
+        for (i, b) in self.blocks.iter().enumerate() {
+            let n = block_occurrences(b, &q);
+            if n > 0 {
                 self.matches.push(i);
+                self.occurrences += n;
             }
         }
         if self.match_pos >= self.matches.len() {
             self.match_pos = 0;
         }
     }
+
+    /// Navigate to the current hit block. A hit inside a FOLDED block **peek-expands** it
+    /// (vim's `foldopen=search` behaviour): the expansion is transient — stepping away
+    /// re-collapses it unless the user touched it (a toggle records a `user_folds` entry,
+    /// which converts the peek to sticky). `Enter` (keep) also stickies the current peek;
+    /// `Esc` (cancel) restores it.
     fn jump_to_current_match(&mut self) {
-        if let Some(&line) = self.matches.get(self.match_pos) {
+        self.unpeek();
+        let Some(&b) = self.matches.get(self.match_pos) else {
+            return;
+        };
+        if self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]) {
+            self.collapsed[b] = false; // peek — deliberately NOT a user_folds gesture
+            self.peeked = Some(b);
+            self.dirty_from = Some(self.dirty_from.map_or(b, |d| d.min(b)));
+        }
+        // The block's first display line is exact without any wrapping (prefix sums); the
+        // peek expansion only changes heights AFTER this block, so the target is stable.
+        if let Some(&line) = self.prefix.get(b) {
             self.scroll = line.min(self.max_scroll());
             self.follow = false;
+        }
+    }
+
+    /// Restore a transient peek expansion, unless the user made it sticky by toggling it
+    /// (which records a `user_folds` entry).
+    fn unpeek(&mut self) {
+        if let Some(p) = self.peeked.take() {
+            if !self.user_folds.contains_key(&p)
+                && p < self.collapsed.len()
+                && self
+                    .blocks
+                    .get(p)
+                    .map(|b| render::foldable(b))
+                    .unwrap_or(false)
+            {
+                self.collapsed[p] = true;
+                self.dirty_from = Some(self.dirty_from.map_or(p, |d| d.min(p)));
+            }
         }
     }
     pub fn search_start(&mut self) {
@@ -1244,11 +1272,17 @@ impl View {
     }
     pub fn search_confirm(&mut self) {
         self.searching = false; // keep query + highlights
+        if let Some(p) = self.peeked.take() {
+            // Enter = "I want to stay here": the current hit's expansion becomes sticky.
+            self.user_folds.insert(p, false);
+        }
     }
     pub fn search_cancel(&mut self) {
+        self.unpeek();
         self.searching = false;
         self.query.clear();
         self.matches.clear();
+        self.occurrences = 0;
     }
     pub fn search_next(&mut self) {
         if self.matches.is_empty() {
@@ -1943,6 +1977,67 @@ fn pretty_home(p: &Path) -> String {
     s
 }
 
+/// Occurrences of the (lowercased) needle in one block's TEXT CONTENT — the search
+/// discovery primitive (#84). String-only: no render, no wrap, no styling; nested blocks
+/// (a thinking span's absorbed tools, a spawn's inline child) recurse so folded and
+/// nested content is searchable. The contract is raw-content search (like vim searching
+/// the source, not the wrapped display).
+fn block_occurrences(b: &Block, needle: &str) -> usize {
+    fn count(hay: &str, needle: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+        hay.to_lowercase().matches(needle).count()
+    }
+    match b {
+        Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
+        Block::QueueEvent { text } => count(text, needle),
+        Block::Thinking { text, tools, .. } => {
+            count(text, needle)
+                + tools
+                    .iter()
+                    .map(|t| block_occurrences(t, needle))
+                    .sum::<usize>()
+        }
+        Block::ToolUse {
+            name,
+            target,
+            diffs,
+            output,
+            ..
+        } => {
+            count(name, needle)
+                + count(target, needle)
+                + output.as_deref().map(|o| count(o, needle)).unwrap_or(0)
+                + diffs
+                    .iter()
+                    .map(|(a, b)| count(a, needle) + count(b, needle))
+                    .sum::<usize>()
+        }
+        Block::Command { name, args, output } => {
+            count(name, needle)
+                + count(args, needle)
+                + output.iter().map(|o| count(o, needle)).sum::<usize>()
+        }
+        Block::SubAgent(sa) => {
+            count(&sa.agent_id, needle)
+                + count(&sa.description, needle)
+                + count(&sa.prompt, needle)
+                + sa.result.as_deref().map(|r| count(r, needle)).unwrap_or(0)
+                + sa.blocks
+                    .iter()
+                    .map(|c| block_occurrences(c, needle))
+                    .sum::<usize>()
+        }
+        Block::AgentDone {
+            agent_id,
+            description,
+            ..
+        } => count(agent_id, needle) + count(description, needle),
+        Block::Attachment(a) => count(&a.name, needle),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2218,6 +2313,68 @@ mod tests {
             !v3.adopt_sidecar(sc2),
             "different block count ⇒ fresh measure"
         );
+    }
+
+    /// #84 source-of-truth search: a match INSIDE a collapsed tool output is found
+    /// (the retired display-text index was fold-blind), navigation peek-expands the
+    /// folded hit, stepping away re-collapses it, Esc restores, and Enter makes the
+    /// current peek sticky — vim's foldopen=search semantics.
+    #[test]
+    fn search_finds_folded_content_and_peeks() {
+        let blocks = vec![
+            Block::UserText("go".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "run".into(),
+                diffs: Vec::new(),
+                output: Some("the ZEBRA lives here".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::AssistantText("done".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "again".into(),
+                diffs: Vec::new(),
+                output: Some("another ZEBRA sighting".into()),
+                patch: None,
+                read_lines: None,
+            },
+        ];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::default());
+        v.layout(80, 24);
+        assert!(
+            v.is_collapsed(1) && v.is_collapsed(3),
+            "bash folds by default"
+        );
+
+        v.search_start();
+        for c in "zebra".chars() {
+            v.search_input(c);
+        }
+        assert_eq!(v.match_count(), 2, "hits inside FOLDED outputs are found");
+        assert!(!v.is_collapsed(1), "navigating peek-expanded the first hit");
+        assert!(v.is_collapsed(3), "the other hit stays folded");
+
+        v.search_next();
+        assert!(v.is_collapsed(1), "stepping away re-collapsed the peek");
+        assert!(!v.is_collapsed(3), "the new current hit peek-expanded");
+
+        // Esc restores the current peek too.
+        v.search_cancel();
+        assert!(v.is_collapsed(3), "cancel restored the peek");
+
+        // Enter (keep) makes the current peek sticky instead.
+        v.search_start();
+        for c in "zebra".chars() {
+            v.search_input(c);
+        }
+        assert!(!v.is_collapsed(1), "peeked again");
+        v.search_confirm();
+        assert!(!v.is_collapsed(1), "Enter kept the current hit expanded");
+        // …and a live update must not snap it back (it is a user_folds entry now).
+        v.layout(80, 24);
+        assert!(!v.is_collapsed(1), "sticky across layout");
     }
 
     /// A drag across two lines extracts the spanning text and paints the selection
