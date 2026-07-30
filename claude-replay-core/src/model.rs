@@ -469,17 +469,20 @@ pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &st
 /// tool a given agent never emits simply never matches. A new agent maps its tools into this
 /// vocabulary in its adapter; the shared classifiers don't grow per-agent arms.
 pub(crate) fn is_activity_tool(name: &str) -> bool {
+    // MCP calls (`mcp__<server>__<tool>`) coalesce too — observed on CC 2.x
+    // (#90): a browser-automation run renders as ONE span line, `Thought for
+    // 1m 33s, called claude-in-chrome 4 times, ran 3 shell commands`.
     matches!(
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
-    )
+    ) || name.starts_with("mcp__")
 }
 
 /// Coalesce each **span** of consecutive thinking + activity tool calls into one
 /// `Thinking` block — Claude Code's between-outputs rule (#57; the full empirical
 /// derivation is `design/cc-activity-coalescing.md`). Any other block ends the span:
-/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/
-/// MCP/…), and the task-bookkeeping tools (TaskUpdate & co — CC renders them
+/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/…),
+/// and the task-bookkeeping tools (TaskUpdate & co — CC renders them
 /// invisibly but they still split the span; we keep their blocks visible). The one
 /// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
 /// its spans demonstrably carry across one — so they emit in place without flushing
@@ -536,6 +539,41 @@ pub(crate) fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
     // its parse entries + decode helpers now live in `claude_model`.
+
+    /// #90: an MCP call inside a thinking+activity run must JOIN the span, not
+    /// split it (CC folds the whole run into one line).
+    #[test]
+    fn mcp_tools_join_the_coalesced_span() {
+        let t = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: String::new(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![
+            Block::Thinking {
+                text: "a".into(),
+                duration_secs: Some(3),
+                tools: Vec::new(),
+            },
+            t("mcp__claude-in-chrome__javascript_tool"),
+            Block::Thinking {
+                text: "b".into(),
+                duration_secs: Some(2),
+                tools: Vec::new(),
+            },
+            t("Bash"),
+            Block::AssistantText("done".into()),
+        ];
+        let out = coalesce_spans(blocks);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(
+            matches!(&out[0], Block::Thinking { tools, duration_secs: Some(5), .. } if tools.len() == 2),
+            "{out:?}"
+        );
+    }
 
     #[test]
     fn relativize_uses_cwd_then_home_tilde() {

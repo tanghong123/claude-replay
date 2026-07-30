@@ -147,13 +147,17 @@ fn classify_bash(cmd: &str, output: Option<&str>) -> BashClass {
 
 /// Summarize a span's tool calls in Claude Code's exact clause vocabulary and order
 /// (#57): `committed <hashes>, pushed to <branches>, searched for N patterns, read N
-/// files, listed N directories, ran N shell commands` — each clause omitted at zero.
+/// files, listed N directories, called <mcp-server> N times, ran N shell commands` —
+/// each clause omitted at zero (the MCP clause per server, first-seen order; #90).
 /// Files count UNIQUE paths (a bash `cat` of a file dedupes against a `Read` of it);
 /// searches/listings/plain shells count occurrences; git-phrased commands aren't
 /// double-counted as "ran". CC names no shell programs, so neither do we.
 pub fn activities(tools: &[Block]) -> String {
     let s = |n: usize| if n == 1 { "" } else { "s" };
     let (mut pat, mut dir, mut ran) = (0usize, 0usize, 0usize);
+    // MCP calls count per SERVER (`mcp__<server>__<tool>`), clause per server in
+    // first-seen order: CC renders `called claude-in-chrome 4 times` (#90).
+    let mut mcp: Vec<(String, usize)> = Vec::new();
     let mut files: Vec<String> = Vec::new();
     let mut file_seen = std::collections::HashSet::new();
     let mut hashes: Vec<String> = Vec::new();
@@ -196,6 +200,13 @@ pub fn activities(tools: &[Block]) -> String {
                 "Read" | "NotebookRead" => push_file(target.clone(), &mut file_seen),
                 "Grep" | "Glob" => pat += 1,
                 "LS" => dir += 1,
+                n if n.starts_with("mcp__") => {
+                    let server = n.split("__").nth(1).unwrap_or(n).to_string();
+                    match mcp.iter_mut().find(|(sv, _)| *sv == server) {
+                        Some((_, c)) => *c += 1,
+                        None => mcp.push((server, 1)),
+                    }
+                }
                 _ => ran += 1,
             }
         }
@@ -219,6 +230,9 @@ pub fn activities(tools: &[Block]) -> String {
             "listed {dir} director{}",
             if dir == 1 { "y" } else { "ies" }
         ));
+    }
+    for (server, n) in &mcp {
+        parts.push(format!("called {server} {n} time{}", s(*n)));
     }
     if ran > 0 {
         parts.push(format!("ran {ran} shell command{}", s(ran)));
@@ -245,6 +259,24 @@ mod tests {
     /// commands classify semantically; a `cd`-led newline compound is ONE segment whose
     /// first word is noise, so the whole command stays a plain shell command; git
     /// commit/push phrases require parseable OUTPUT and otherwise fall through.
+    /// #90: MCP calls coalesce and phrase per server — observed on CC 2.x:
+    /// `called claude-in-chrome 4 times, ran 3 shell commands` (called before ran;
+    /// servers in first-seen order; singular "1 time").
+    #[test]
+    fn mcp_calls_phrase_per_server() {
+        let tools = vec![
+            tool("mcp__claude-in-chrome__javascript_tool", "", None),
+            tool("Bash", "cargo build", None),
+            tool("mcp__claude-in-chrome__navigate", "", None),
+            tool("mcp__okr__authenticate", "", None),
+            tool("mcp__claude-in-chrome__computer", "", None),
+        ];
+        assert_eq!(
+            activities(&tools),
+            "called claude-in-chrome 3 times, called okr 1 time, ran 1 shell command"
+        );
+    }
+
     #[test]
     fn bash_classifies_like_claude_code() {
         let act = |cmd: &str, out: Option<&str>| activities(&[tool("Bash", cmd, out)]);

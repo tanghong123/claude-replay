@@ -20,8 +20,13 @@ It is flushed as ONE summary line when a **breaker** renders:
 - assistant text output
 - a user turn / slash command / queue marker
 - an expanded tool: Edit/Write/NotebookEdit (`⏺ Update(file)` + diff),
-  WebFetch (`⏺ Fetch(url)`), Task/Agent spawns, Skill, MCP tools, and any
-  other non-activity tool
+  WebFetch (`⏺ Fetch(url)`), Task/Agent spawns, Skill, and any other
+  non-activity tool. **MCP tools no longer break** (#90, revising S4's
+  observation): CC 2.x coalesces `mcp__<server>__<tool>` calls into the span
+  and phrases them per server — observed live (session 530339ac, 2026-07-31):
+  `Thought for 1m 33s, called claude-in-chrome 4 times, ran 3 shell commands`
+  (clause between `listed` and `ran`; servers in first-seen order; `1 time`
+  singular)
 - task-bookkeeping tools — TaskCreate/TaskUpdate/TaskGet/TaskList/TodoWrite —
   **break the span but render nothing at all** in CC (verified twice: the
   synthetic probe and the real-session split above)
@@ -89,6 +94,7 @@ S2: bash grep/cat classes, read dedup, TaskUpdate invisible break,
 S3: "1m 15s" format, read dedup by path, listed not deduped, push branch from
     output, "Committed abc", Glob → searched, WebFetch expands+breaks,
     TaskCreate/TodoWrite invisible break.
-S4: full clause order, compound commit+push both clauses, MCP breaks,
+S4: full clause order, compound commit+push both clauses, MCP breaks
+    (OVERTURNED by #90 — CC 2.x coalesces MCP calls; see above),
     failed push → ran, double push merges.
 Real-session validation: the #57 paste's three CC lines reproduce exactly.
