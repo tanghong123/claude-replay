@@ -134,7 +134,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache`] | keyed residency: register sessions cheaply, `poll`/`poll_delta` materializes a follower on demand, 30 s TTL reaps idle residents | the TUI event loop (`claude-replay-tui/src/app.rs`) and the HTML server (`serve.rs`) share it — one resident set, one policy |
+| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, HandoffStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -145,21 +145,29 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
-tick, never spawn a follower thread.
+tick, never spawn a follower thread — and with the `HandoffStore` follow tier (#76), your
+view is the process's ONLY copy of the session's blocks (the follower drains committed
+blocks to you exactly once; a tick costs O(delta), not an O(session) rebuild):
 
 ```rust
-let cache = SessionCache::new();
+type MyCache = SessionCache<TierBStore /*pull: unused*/, HandoffStore, MySidecar>;
+let cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
-        if let Some(Ok((blocks, _t, metrics, changed_from))) = cache.poll_delta(&id) {
-            view.apply_from(blocks, changed_from);   // re-render only the tail
-            view.set_footer(metrics);
+        if let Some(Ok(d)) = cache.poll_handoff(&id) {
+            // splice: keep [0..frontier), append d.committed_delta + d.provisional,
+            // re-derive from d.changed_from — see View::apply_handoff for the real one
+            view.splice(d);
         }
     }
     cache.reap(30_000);   // idle residents fall back to cheap registrations
 }
 ```
+
+(Prefer whole-`Session` values instead? Use `F = InMemoryStore` and `poll`/`poll_delta` —
+the capability bounds pick the menu for you; see the protocol table in
+[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
 `PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
@@ -215,7 +223,10 @@ Two optional capabilities refine what your store can feed:
 - **`PersistentStore`** (present) — `backing_len`/`reopen` + optional hibernate-state hooks,
   so `SharedSession` can hibernate/restore around your backing across cache evictions.
 
-The in-repo dog-food is `claude-replay-html`'s `RecordStore`
+Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
+`HandoffStore` (`BV = ()` — committed blocks are QUEUED for the consumer instead of retained,
+making the poller the sole owner; the TUI live path, #76), and the richest one,
+`claude-replay-html`'s `RecordStore`
 (`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
 `put` **renders the committed block to its wire-format JSON record** as the side effect and
 returns the pointer — the `Session` itself captures the session in the exact form the
@@ -338,4 +349,5 @@ up with no further changes.
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
+[`SessionCache<P, F, A>`]: ../claude-replay-present/src/cache/mod.rs
 [`PullClient`]: ../claude-replay-present/src/cache/stream.rs

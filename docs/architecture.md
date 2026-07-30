@@ -96,7 +96,7 @@ flowchart TB
   MSG  -->|"② fold — join results onto calls, group turns, coalesce spans"| BLK
   BLK  -->|"③ accumulate — commit finished turns, index, meter"| SES
   SES  -->|"④ cache — keep live sessions current, evictable, shareable"| CACHE
-  CACHE -->|"⑤a poll — in-process delta (changed_from)"| TUI
+  CACHE -->|"⑤a handoff — in-process delta, blocks handed over once"| TUI
   CACHE -->|"⑤b pull — cross-process delta (4-tuple Cursor)"| HTMLR
   TUI  -->|"⑥a render — wrap + highlight, windowed"| TERM
   HTMLR -->|"⑥b render — records → virtualized DOM"| DOM
@@ -110,7 +110,7 @@ flowchart TB
 | ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queue lifecycle | `core::engine::replay` — `Replayer`, parameterized by the agent's `Shaping` (4 fn-pointers) |
 | ③ accumulate | maintain the durability frontier: finished turns drained **put-once** into a `BlockStore`, `SessionIndex`/`Metrics`/tasks folded alongside; `snapshot()` yields a `Session` | `core::engine::builder::SessionAccumulator` (sans-io — §4) |
 | ④ cache | residency for live sessions: register cheaply, materialize a follower on demand, reap idle, hibernate/restore | `present::cache::SessionCache`; residents kept current by `core::FollowParser` (batch parsing skips this stage — `parse_session` drives ①–③ directly) |
-| ⑤a poll | in-process consumption: the delta since last tick as `(blocks, …, changed_from)` | `core::FollowParser::poll_delta` → `tui::View::apply_poll` |
+| ⑤a handoff | in-process consumption: a splice-shaped delta — newly-committed blocks (each handed over exactly once, #76), the fresh open turn, and `changed_from` | `core::FollowParser::poll_handoff` → `tui::View::apply_handoff` (the generic `poll`/`poll_delta` remain for `BlockRead` stores) |
 | ⑤b pull | cross-process consumption: per-client stateless replies against a client-held cursor | `present::cache::stream` — `SharedSession::pull`, `Cursor`, `PullClient` (§8) |
 | ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render`/`markdown`/`wrap` + `present::highlight`; the `hot` window (§7) |
 | ⑥b render | blocks → JSON records → a windowed DOM | `html_export` emits records; `html/export.js` virtualizes (§7) |
@@ -161,6 +161,11 @@ not baked in:
 - `TierBStore` (`engine/tier_b.rs`) — committed *content* serialized append-only to an
   off-heap buffer or an on-disk file; `Bv = Deferred { offset, size }`, a 12-byte locator.
   Reading a block back is a positional read + decode, dropped after use.
+- `HandoffStore` (#76) — committed blocks are QUEUED for a single consumer and handed over
+  exactly once (`Bv = ()`): the consumer becomes the sole owner. Not `BlockRead` — the type
+  system keeps whole-session readers off it.
+- …or the presentation's own: the html crate's `RecordStore` renders each block to its wire
+  record at `put` time (`Bv = RecordLocator` — the §5 showcase).
 
 Incremental facts are maintained the same way: `session_meta()` folds the live header
 (turns/tools/children) once per committed block on drain, and `stream_read(from)` hands a
@@ -263,8 +268,11 @@ a *window*, not the session:
   canonical Message                          resident: ~1 line's worth, transient
       │  L2 fold (Replayer)
   Block — open turn                          resident: O(turn) in the accumulator
-  Block — committed                          resident: policy! InMemoryStore = RAM;
-      │                                        TierBStore = 12-byte locators, content on disk
+  Block — committed                          resident: policy! InMemoryStore = RAM ·
+      │                                        TierBStore = 12-byte locators, content on disk ·
+      │                                        RecordStore = wire-record locators (#74) ·
+      │                                        HandoffStore = NOTHING (handed to the consumer
+      │                                        exactly once — the TUI View is the sole owner, #76)
       │  presentation shaping (fold policy, summaries, records/lines)
   presentation-friendly form                 TUI: heights+prefix (O(N) small ints);
       │                                        HTML: JSON records (client), record log (server)
@@ -290,25 +298,59 @@ expensive rendered output:
   maps beside the records, re-applied on re-materialization. The full technique write-up:
   [`design/dom-virtualization.md`](../design/dom-virtualization.md).
 - **HTML server** (`serve.rs` + `cache/`): a followed session's resident footprint is
-  O(open turn) + tables — committed content spills to an on-disk `TierBStore` next to the
-  render log, and the committed wire zone is served as a **pointer** (`committed_ext:
-  {offset, len}`) that clients range-read from the append-only record log at their own pace
-  (one serialization, N readers).
+  O(open turn) + a locator table — the `Session`'s own `RecordStore` renders each committed
+  block to its wire record put-once (#74, §5 showcase), and the committed zone is served as
+  a **pointer** (`committed_ext: {offset, len}`) that clients range-read from the append-only
+  record log at their own pace (one serialization on disk, zero in RAM, N readers).
 
-And the residency *cache* around all of it — [`SessionCache`] (`present::cache`) — is tiered:
+### The unified data layer: `SessionCache<P, F, A>`
+
+Everything above meets in one owner. [`SessionCache`] is **the data layer a presentation
+builds on** — it answers "which sessions exist, which are materialized, in what
+representation, with what derived state attached" — and its three type parameters are the
+three decisions a frontend gets to make without losing generality *or* efficiency:
+
+| seam | decides | the menu |
+|---|---|---|
+| `P: BlockStore` | the **pull tier's** committed representation | `TierBStore` (lossless spill) · the html crate's `RecordStore` (the wire projection itself, #74) |
+| `F: BlockStore` | the **follow tier's** committed representation | `InMemoryStore` (owned `Session` snapshots) · `HandoffStore` (single-owner streaming, #76) |
+| `A` | the per-session **presentation sidecar** | any type — park-and-take (`aux_put`/`aux_take`) or in-place (`aux_with`) |
+
+The residency tiers under it:
 
 | tier | holds | cost | transition |
 |---|---|---|---|
 | (c) registered | agent + path | ~nothing | the default for a discovered-but-unopened session (a large sub-agent tree stays here) |
-| (a) resident | an open `FollowParser` | O(turn) + tables | `poll`ed recently; reaped to (c) after 30 s idle |
-| (a′) pull-resident | a `SharedSession` | O(turn) + tables + disk backing | same reap policy; on eviction it **hibernates** its serving state to a sidecar, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
+| (a) resident | an open `FollowParser<F>` | O(turn) + tables | polled recently; reaped to (c) after 30 s idle |
+| (a′) pull-resident | a `SharedSession<P>` | O(turn) + tables + disk backing | same reap policy; on eviction it **hibernates** its serving state to a sidecar, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
 
-The cache also carries a per-session **presentation sidecar** slot (#75) — the home for
-derived, view-parameter-*dependent* state that `put`-once storage can't hold: the TUI parks
-an evicted frame's measured heights/prefix, search index, fold toggles, and scroll there
-(`ViewSidecar`), and re-adopts them when the frame reloads — same width and shape means no
-re-measure, and the user's interaction state survives the eviction. The slot is opaque to
-the cache; the consumer owns validity.
+And the consumption protocols, each matched to a representation by the type system
+(a capability bound, not a convention):
+
+| protocol | shape | requires | copies of committed blocks | per-tick cost |
+|---|---|---|---|---|
+| `poll(id) → Session` | whole-session snapshot | `F = InMemoryStore` | 2 (follower + snapshot) | O(session) |
+| `poll_delta(id)` | full blocks + `changed_from` | `F: BlockRead` | 2 + a transient rebuild | O(session) alloc, O(turn) diff |
+| `poll_handoff(id)` | splice-shaped delta (#76) | `F = HandoffStore` | **1 — the consumer owns them** | **O(delta)** |
+| `shared_session(id)` + pull | cursor zones / wire pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
+
+Both frontends instantiate the same type — that is the "unified without losing generality"
+claim made concrete:
+
+```rust
+// TUI (app.rs):  the View is the sole block owner; evicted frames park their derived state
+type TuiCache = SessionCache<TierBStore /*unused*/, HandoffStore, ViewSidecar>;
+// HTML server (serve.rs):  committed IS the wire projection; per-id serve state lives in aux
+cache: SessionCache<RecordStore, InMemoryStore, ServeAux>
+```
+
+The **sidecar slot** (#75) completes the story: it is the home for derived,
+view-parameter-*dependent* state that `put`-once storage can't hold. The TUI parks an
+evicted frame's measured heights/prefix, search index, fold toggles, and scroll there
+(`ViewSidecar`) and re-adopts them when the frame reloads — same width and shape means no
+re-measure, and the user's interaction state survives the eviction. The HTML server keeps
+its per-session titles, parent pointers, and stream-diff baselines there (`ServeAux`, #76).
+The slot is opaque to the cache; **the consumer owns validity**.
 
 The TUI applies the same thinking one level up: sub-agent frames you drill into are kept
 under an LRU cap of 4 (`MAX_RESIDENT_SUBAGENTS`); ancestors evict to registrations and
@@ -322,7 +364,7 @@ wait.** Two mechanisms:
 **Borrowed-thread tailing.** Neither frontend runs a follower thread:
 
 - The **TUI** pumps the live tail on its *input event loop*: when `event::poll(250 ms)` times
-  out with no keystroke, the idle tick calls `cache.poll_delta(id)` — so tailing costs zero
+  out with no keystroke, the idle tick calls `cache.poll_handoff(id)` — so tailing costs zero
   threads and zero work while the user is interacting flat-out, and at most 4 polls/s idle.
 - The **HTML server** (pull mode, the default) has **no background tailer at all**: the fold
   advances on the *client's request thread* (`/pull` → `SharedSession.advance()` → reply).
@@ -333,10 +375,13 @@ wait.** Two mechanisms:
 **Delta-only protocols, at both distances.** The committed/open split (§4) makes "what
 changed?" answerable in O(turn), and both consumption protocols exploit it:
 
-- In-process: [`FollowParser::poll_delta`] returns `(blocks, times, metrics,
-  changed_from)` — the first index that differs, computed against the prior committed length
-  plus a `common_prefix` over the small open-turn region. `View::apply_poll` keeps geometry
-  and render cache for `[0..changed_from)` and re-derives only the tail (`dirty_from`).
+- In-process: [`FollowParser::poll_handoff`] hands the TUI a splice-shaped delta — the
+  newly-committed blocks (drained from the `HandoffStore`, each exactly once), the fresh
+  open turn, and `changed_from` (the first differing index, computed against the prior
+  committed length plus a `common_prefix` over the small open-turn region — O(turn)).
+  `View::apply_handoff` splices in place and re-derives only the tail (`dirty_from`), so a
+  live tick is O(delta) in BOTH allocation and re-measure — and the View is the process's
+  only copy of the blocks (#76).
 - Cross-process: the **4-tuple cursor protocol** (`present::cache::stream`) — `Cursor
   { epoch, committed_id, provisional_gen, provisional_index }`. The cursor travels with each
   request, so the server is **per-client stateless** and N tabs/windows each read at their
@@ -406,7 +451,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 [`SessionIndex`]: ../claude-replay-core/src/engine/index.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`FollowParser::poll_delta`]: ../claude-replay-core/src/follow.rs
+[`FollowParser::poll_handoff`]: ../claude-replay-core/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`pull`]: ../claude-replay-present/src/cache/stream.rs
