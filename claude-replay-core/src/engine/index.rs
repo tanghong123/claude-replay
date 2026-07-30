@@ -75,10 +75,14 @@ impl SessionIndex {
     /// Build the index in one scan over the top-level blocks. `user_times` supplies each
     /// turn's timestamp in order (exactly the order `stamp_user_turns` emits them). Internal:
     /// a consumer always receives an already-built index via [`Session`](crate::Session).
-    pub(crate) fn build(blocks: &[Block], user_times: &[Option<f64>]) -> Self {
+    pub(crate) fn build<B: std::borrow::Borrow<Block>>(
+        blocks: &[B],
+        user_times: &[Option<f64>],
+    ) -> Self {
         let mut idx = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {
+            let b = b.borrow();
             // Advance the user-turn cursor exactly as the incremental caller would: a user turn
             // consumes the next `user_times` entry, everything else passes `None`.
             let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {

@@ -94,6 +94,8 @@
   .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;padding:22px}
   .layer{border:1px solid var(--line);border-radius:11px;padding:16px 15px;background:var(--surface-2);display:flex;flex-direction:column;gap:9px}
   .layer.core{background:var(--accent-wash);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+  .layer.support{background:color-mix(in srgb,var(--add) 12%,var(--surface));border-color:color-mix(in srgb,var(--add) 45%,var(--line))}
+  .layer.front{background:color-mix(in srgb,var(--thinking) 10%,var(--surface));border-color:color-mix(in srgb,var(--thinking) 40%,var(--line))}
   .layer .lname{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--muted)}
   .layer.core .lname{color:var(--accent-ink)}
   .layer .lwhat{font-size:14px;line-height:1.45}
@@ -251,19 +253,20 @@
           <div class="lmods">SessionAccumulator</div>
         </div>
         <div class="arrow"><span class="token">Session</span><span class="line">→</span></div>
-        <div class="layer">
-          <div class="lname">④ cache → present</div>
-          <div class="lwhat">The residency cache feeds the TUI (Arc-clone deltas) and HTML (cursor pulls).</div>
+        <div class="layer support">
+          <div class="lname">④ cache → ⑤ present</div>
+          <div class="lwhat">ONE live resident per session feeds the TUI (<code>poll_view</code>) and HTML (4-member-cursor pulls); the frontends render windows.</div>
           <div class="lmods">SessionCache · view · html_export</div>
         </div>
       </div>
     </div>
     <p class="col" style="color:var(--muted);font-size:14px;margin-top:14px">
-      The colour tells the story: agent-specific code exists only at <b>①</b>; the
-      correctness-critical middle — the <b style="color:var(--accent-ink)">shared fold and the
-      durability frontier</b> — is written <em>once</em> and reused by every agent and every
-      frontend. A dashed back-edge closes the loop: a parsed <code>SubAgent</code> block names a
-      child transcript, which runs the same pipeline recursively.</p>
+      The colour maps stages to layers — <b style="color:var(--accent-ink)">engine</b> (the
+      shared fold and durability frontier, written once for every agent),
+      <b style="color:var(--add)">presentation support</b> (the live data layer), and the
+      frontends' windows. Agent-specific code exists only at <b>①</b>; a dashed back-edge
+      closes the loop — a parsed <code>SubAgent</code> block names a child transcript, which
+      runs the same pipeline recursively.</p>
   </div>
 </div>
 

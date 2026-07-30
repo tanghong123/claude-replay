@@ -138,7 +138,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
+| [`SessionCache<P, A>`] | **the unified data layer** ([Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a)): keyed residency + your choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -172,7 +172,7 @@ loop {
 (Prefer whole-`Session` values instead? Use the core's own follower —
 `FollowParser::poll`/`poll_delta` — or batch `parse_session`; the cache's job is live
 residency, and its two protocols share one resident. See the protocol table in
-[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a).)
+[Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
 `PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
@@ -354,5 +354,5 @@ up with no further changes.
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
-[`SessionCache<P, F, A>`]: ../claude-replay-present/src/cache/mod.rs
+[`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
 [`PullClient`]: ../claude-replay-present/src/cache/stream.rs

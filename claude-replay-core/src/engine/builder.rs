@@ -341,6 +341,40 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.task_fold.snapshot()
     }
 
+    /// Finish the fold and take the [`Session`] BY MOVE — the one-shot ending every batch
+    /// parse uses. Unlike [`snapshot`](Self::snapshot) (a mid-flight copy for a fold that
+    /// keeps going), this transfers the committed values out and borrows content only to
+    /// build the derived index — for the in-memory and `Arc` stores that is ZERO block
+    /// clones for a whole-file parse.
+    pub fn into_session(mut self) -> Session<S::Bv>
+    where
+        S: BlockRead,
+    {
+        let (open, user_times) = self.replayer.open_snapshot();
+        // Borrowed view of committed ++ open for the derived passes (`Cow: Borrow<Block>`
+        // — identity for RAM/Arc stores, a one-time decode for on-disk backings).
+        let mut view: Vec<std::borrow::Cow<Block>> =
+            self.committed.iter().map(|bv| self.store.get(bv)).collect();
+        view.extend(open.iter().map(std::borrow::Cow::Borrowed));
+        let index = SessionIndex::build(&view, &user_times);
+        let sub_agents = crate::engine::session::build_sub_agents(&view);
+        drop(view);
+        Session {
+            agent: self.agent,
+            cwd: None,
+            committed: std::mem::take(&mut self.committed),
+            provisional: open,
+            user_times,
+            metrics: self.metrics.finish(),
+            index,
+            sub_agents,
+            tasks: self.task_fold.snapshot().clone(),
+        }
+    }
+
+    /// A MID-FLIGHT copy of the current state (the fold keeps going) — this clones the
+    /// committed content; a finished one-shot parse should use
+    /// [`into_session`](Self::into_session) instead, which moves it.
     pub fn snapshot(&mut self) -> Session<S::Bv>
     where
         S: BlockRead,
