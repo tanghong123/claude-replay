@@ -76,6 +76,12 @@ body {
      scroll anchoring fights our own anchoring and bounces programmatic jumps. */
   overflow-anchor: none;
 }
+/* #89: the rule above sat on body only — but the WINDOW's scroll container is the
+   root element, so native anchoring still ran there: every tail rewrite removed
+   the node Chrome anchored on and its fallback yanked the viewport far up. The
+   page owns all anchoring (captureAnchor/restoreAnchor/toBottom); the browser's
+   must be off on the element that actually scrolls. */
+html { overflow-anchor: none; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }

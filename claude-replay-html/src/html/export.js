@@ -402,10 +402,7 @@
     setWindow(lo, hi);
     if (anchorEl && anchorEl.isConnected) {
       var d = anchorEl.getBoundingClientRect().top - anchorTop;
-      if (Math.abs(d) > 1) {
-        progScroll = true;
-        window.scrollBy(0, d);
-      }
+      if (Math.abs(d) > 1) window.scrollBy(0, d);
     }
   }
   // Re-render the materialized window in place (fold/filter state changed).
@@ -1220,24 +1217,80 @@
   // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
   // pixel proximity each tick (#88): under the virtualizer, materializing the tail
   // corrects estimated heights and silently moves the true bottom away from the
-  // viewport — proximity-based following then unlatches on its own. The flag flips
-  // only on user intent: scrolling away unpins, scrolling to the end (or clicking
-  // the badge) re-pins. While pinned, every content/height change re-anchors.
+  // viewport — proximity-based following then unlatches on its own.
+  //
+  // Who may flip it (#89): ONLY the user. A scroll event within USER_MS of real
+  // input (wheel, keys, pointer — incl. scrollbar drags —, touch) is the user
+  // moving: position decides (at the bottom ⇒ pin, away ⇒ unpin). Every other
+  // scroll — ours, or the BROWSER's own (scroll-anchoring adjustments and
+  // clamp-on-shrink fire the same event with no marker) — carries no intent:
+  // while pinned it is displacement to heal with a re-pin, never a state change.
   var following = false;
-  // Our own scrollTo/scrollBy calls fire the same scroll event as a user's wheel —
-  // this one-shot guard keeps them from being read as intent to (un)pin.
-  var progScroll = false;
+  var USER_MS = 300;
+  // Sentinel far in the past: performance.now() is small right after load, so a 0
+  // init would classify the load sequence's own scrolls (and the browser's async
+  // scroll restoration) as user input and wrongly unpin the fresh page (#89).
+  var lastUserInput = -1e9;
+  ["pointerdown", "wheel", "keydown", "touchstart", "touchmove"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      // Typing in the search box is not scroll intent.
+      if (ev === "keydown" && e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+      lastUserInput = performance.now();
+    }, { passive: true, capture: true });
+  });
   function toBottom() {
     // Two-step: the jump materializes the tail window (real heights replace
     // estimates, pads shift), so re-read the height and correct. A smooth scroll
     // is not survivable here — any DOM mutation under it cancels the animation.
-    progScroll = true;
     window.scrollTo({ top: document.body.scrollHeight });
     updateView();
-    if (!atBottom()) {
-      progScroll = true;
-      window.scrollTo({ top: document.body.scrollHeight });
+    if (!atBottom()) window.scrollTo({ top: document.body.scrollHeight });
+  }
+  // Displacement is a HEIGHT signal, not a scroll signal (#89): late reflows —
+  // fonts arriving, images sizing, estimate-vs-real pad shifts — grow the page
+  // below the viewport WITHOUT firing any scroll event, silently parking a pinned
+  // view above the tail. Observe the body: any size change while pinned that
+  // leaves the bottom is healed on the spot. (toBottom moves scroll, not size —
+  // no feedback loop.)
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      if (following && !atBottom()) toBottom();
+    }).observe(document.body);
+  }
+  // The pre-apply viewport anchor (#89): while unpinned, a content apply must not
+  // shift what the reader is looking at — capture the first on-screen materialized
+  // element, and afterwards put it back at the exact same viewport offset (the tail
+  // rewrite dropped measured heights back to estimates below it; without this the
+  // resulting pad shifts + the browser's own anchoring walk the page around).
+  function captureAnchor() {
+    if (following) return null;
+    var a = null;
+    matEls().some(function (e) {
+      var r = e.getBoundingClientRect();
+      if (r.bottom > 0 && e.id) { a = { id: e.id, top: r.top }; return true; }
+      return false;
+    });
+    return a;
+  }
+  function restoreAnchor(a) {
+    if (!a) return;
+    var e = document.getElementById(a.id);
+    if (!e) return; // the anchor was inside the rewritten tail — nothing stable to hold
+    var d = e.getBoundingClientRect().top - a.top;
+    if (Math.abs(d) > 1) window.scrollBy(0, d);
+  }
+  // Shared apply epilogue: settle the viewport (pin or anchor), then refresh the
+  // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
+  // the sidebar, and without this the active-turn highlight silently vanished.
+  function settleAfterApply(anchor, added) {
+    if (following) {
+      toBottom();
+      clearNew();
+    } else {
+      restoreAnchor(anchor);
+      if (added > 0) showNew(added);
     }
+    spy();
   }
   var newCount = 0;
   var badge = $("newbadge");
@@ -1263,21 +1316,16 @@
   turnlist.textContent = "";
   var pollMs = parseInt(document.body.dataset.poll || "0", 10);
   var multi = document.body.dataset.multi;
+  var kickFeed = null; // the active feed's poll-now hook (visibility kick, #89)
 
   // Render freshly consumed content, following/flagging the new tail. Shared by every
-  // feed. Re-anchoring keys off `following` and off ANY change — a tail rewrite that
-  // nets zero new records still moves heights, and the old at-bottom check silently
-  // dropped the pin there (#88).
+  // feed. Any change settles through the epilogue — pin or anchor, then spy (#89).
   function ingest(text) {
+    var anchor = captureAnchor();
     var before = records.length;
     var beforeConsumed = consumed;
     consume(text);
-    var added = records.length - before;
-    if (consumed > beforeConsumed) {
-      if (following) { toBottom(); clearNew(); }
-      else if (added > 0) showNew(added);
-      if (added > 0) spy();
-    }
+    if (consumed > beforeConsumed) settleAfterApply(anchor, records.length - before);
   }
 
   if (multi) {
@@ -1319,6 +1367,7 @@
               });
           })
           .then(function (reply) {
+            var anchor = captureAnchor();
             var before = records.length;
             var changed = false;
             try {
@@ -1332,18 +1381,14 @@
               pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
               return;
             }
-            var added = records.length - before;
-            if (changed) {
-              if (following) { toBottom(); clearNew(); }
-              else if (added > 0) showNew(added);
-              if (added > 0) spy();
-            }
+            if (changed) settleAfterApply(anchor, records.length - before);
           })
           .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
           .finally(function () { inflightP = false; });
       };
       pullTick();
       if (pollMs > 0) setInterval(pullTick, pollMs);
+      kickFeed = pullTick;
     } else {
       // Static bundle (served by any file server): fetch the whole stream file once.
       fetch(sess + ".jsonl", { cache: "no-store" })
@@ -1367,14 +1412,21 @@
   var src = document.body.dataset.src;
   if (!multi && src && pollMs > 0) {
     var failedC = false;
-    setInterval(function () {
+    var pollOnce = function () {
       if (failedC) return;
       fetch(src, { cache: "no-store" })
         .then(function (r) { return r.text(); })
         .then(ingest)
         .catch(function () { failedC = true; });
-    }, pollMs);
+    };
+    setInterval(pollOnce, pollMs);
+    kickFeed = pollOnce;
   }
+  // Background tabs throttle timers; on return, poll NOW instead of waiting out
+  // the stretched interval (#89).
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && kickFeed) kickFeed();
+  });
 
   // ── folds ────────────────────────────────────────────────────────────
   function setFold(f, open) {
@@ -2010,6 +2062,14 @@
         if (turnTop(i) <= STICKY_Y) cur = records[i];
         else break;
       }
+      // End rule (#89): at the document bottom no further header can ever cross
+      // the sticky line, so the LAST turn could otherwise never become active —
+      // exactly where a pinned live tail sits. At the bottom, the last turn wins.
+      if (atBottom()) {
+        for (var j = records.length - 1; j >= 0; j--) {
+          if (records[j].turn != null) { cur = records[j]; break; }
+        }
+      }
     }
     curTurn = cur;
     var bar = $("stickybar");
@@ -2026,8 +2086,11 @@
   }
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
-    if (progScroll) progScroll = false;
-    else following = atBottom(); // user scroll: away unpins, to-the-end re-pins
+    if (performance.now() - lastUserInput < USER_MS) {
+      following = atBottom(); // the user moving: away unpins, to-the-end re-pins
+    } else if (following && !atBottom()) {
+      toBottom(); // browser displacement (anchoring/clamp) while pinned — heal it
+    }
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
@@ -2045,6 +2108,9 @@
     var hid = location.hash.slice(1);
     setTimeout(function () { goToId(hid); }, 150);
   } else {
+    // A live page OWNS its landing position (the tail) — stop the browser's async
+    // scroll restoration from yanking the view to a stale offset seconds later (#89).
+    if (pollMs > 0 && "scrollRestoration" in history) history.scrollRestoration = "manual";
     following = true;
     toBottom();
   }
