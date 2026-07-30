@@ -166,7 +166,12 @@ impl TierBStore {
 
 impl BlockStore for TierBStore {
     type Bv = Deferred;
-    fn put(&mut self, b: Block, _at: BlockIndex) -> Deferred {
+    fn put(
+        &mut self,
+        b: Block,
+        _at: BlockIndex,
+        _user_times: &[Option<crate::model::EpochSeconds>],
+    ) -> Deferred {
         // `serde_json` over the `Block` model (see the model's serde derives). Serialization is
         // total for the block vocabulary (only Strings/ints/Options/Vecs/plain enums), so this never
         // fails in practice; a corrupt/older backing surfaces at read time (reset ⇒ rebuild).
@@ -190,10 +195,6 @@ impl BlockStore for TierBStore {
             }
         }
     }
-    fn get<'a>(&'a self, d: &'a Deferred) -> Cow<'a, Block> {
-        let bytes = self.read_at(d.offset, d.size as usize);
-        Cow::Owned(serde_json::from_slice(&bytes).expect("tier-b: valid block record"))
-    }
     fn reset(&mut self) {
         match &mut self.backing {
             Backing::Mem(buf) => buf.clear(),
@@ -207,6 +208,13 @@ impl BlockStore for TierBStore {
                 *len = 0;
             }
         }
+    }
+}
+
+impl crate::engine::session::BlockRead for TierBStore {
+    fn get<'a>(&'a self, d: &'a Deferred) -> Cow<'a, Block> {
+        let bytes = self.read_at(d.offset, d.size as usize);
+        Cow::Owned(serde_json::from_slice(&bytes).expect("tier-b: valid block record"))
     }
 }
 
@@ -354,7 +362,7 @@ impl BlockAccess for TierBSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::session::BlockStore;
+    use crate::engine::session::{BlockRead, BlockStore};
     use crate::model::{AgentStatus, Attachment, AttachmentContent, AttachmentKind, SubAgent};
 
     fn sample_blocks() -> Vec<Block> {
@@ -532,7 +540,7 @@ mod tests {
         let locs: Vec<Deferred> = blocks
             .iter()
             .enumerate()
-            .map(|(at, b)| store.put(b.clone(), at))
+            .map(|(at, b)| store.put(b.clone(), at, &[]))
             .collect();
         for (d, b) in locs.iter().zip(&blocks) {
             assert_eq!(&*store.get(d), b, "file round-trip");
@@ -546,7 +554,7 @@ mod tests {
         store.reset();
         assert!(store.is_empty());
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "truncated");
-        let d = store.put(blocks[0].clone(), 0);
+        let d = store.put(blocks[0].clone(), 0, &[]);
         assert_eq!(d.offset, 0, "offsets restart after reset");
         assert_eq!(&*store.get(&d), &blocks[0]);
         let _ = std::fs::remove_file(&path);
@@ -559,7 +567,7 @@ mod tests {
         let locators: Vec<Deferred> = blocks
             .iter()
             .enumerate()
-            .map(|(at, b)| store.put(b.clone(), at))
+            .map(|(at, b)| store.put(b.clone(), at, &[]))
             .collect();
         let backing = store.into_backing();
 

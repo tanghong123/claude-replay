@@ -107,7 +107,7 @@ impl AgentAdapter for ClaudeAdapter {
                     // read as "finished" and a half-done run would stop after one turn.
                     let open = self
                         .task_queue()
-                        .and_then(|q| q.open_count(ctx.session_id))
+                        .and_then(|q| q.actionable_count(ctx.session_id, ctx.cwd))
                         .or_else(|| {
                             ctx.brief
                                 .checklist
@@ -265,7 +265,8 @@ impl AgentAdapter for ClaudeAdapter {
 /// alone proves nothing. Used to drop the checklist-fallback paragraph when it's
 /// dead weight.
 fn has_native_tasks(session_id: &str) -> bool {
-    !session_id.is_empty() && ClaudeTaskQueue::tasks(session_id).is_some_and(|t| !t.is_empty())
+    !session_id.is_empty()
+        && ClaudeTaskQueue::tasks_in_dir(session_id).is_some_and(|t| !t.is_empty())
 }
 
 /// Unchecked `- [ ]` items in the fallback checklist. `None` when the file doesn't
@@ -325,10 +326,34 @@ impl ClaudeTaskQueue {
             })
     }
 
-    /// Collect `(status, title)` for each task in a session's json files, in file
-    /// order. `None` if the dir is missing or nothing parses (⇒ "unknown", so the
-    /// caller trusts the exit code rather than assuming zero).
-    fn tasks(session_id: &str) -> Option<Vec<(String, String)>> {
+    /// The task union for a session's whole PROJECT (#80): the supervised session's own
+    /// dir first, then every sibling session of the same cwd (a project's queue often
+    /// lives under an EARLIER session's dir — even tasks the current session created).
+    /// Sibling ids come from the store via `candidates_scoped` (home-scoped, #69).
+    /// `None` only when NOTHING parses anywhere (⇒ "unknown", trust the exit code).
+    fn tasks(session_id: &str, cwd: &Path) -> Option<Vec<QueueTask>> {
+        let mut sids = vec![session_id.to_string()];
+        for c in claude_discover::candidates_scoped(cwd) {
+            if let Some(stem) = c.path.file_stem().and_then(|s| s.to_str()) {
+                if !sids.iter().any(|s| s == stem) {
+                    sids.push(stem.to_string());
+                }
+            }
+        }
+        let mut out: Vec<QueueTask> = Vec::new();
+        let mut parsed_any = false;
+        for sid in &sids {
+            if let Some(ts) = Self::tasks_in_dir(sid) {
+                parsed_any = true;
+                out.extend(ts);
+            }
+        }
+        parsed_any.then_some(out)
+    }
+
+    /// One session dir's tasks, in numeric file order. `None` if the dir is missing or
+    /// nothing parses.
+    fn tasks_in_dir(session_id: &str) -> Option<Vec<QueueTask>> {
         let dir = Self::tasks_root().join(session_id);
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
             .ok()?
@@ -344,7 +369,7 @@ impl ClaudeTaskQueue {
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(u64::MAX)
         });
-        let mut out: Vec<(String, String)> = Vec::new();
+        let mut out: Vec<QueueTask> = Vec::new();
         let mut parsed_any = false;
         for p in entries {
             let Ok(text) = std::fs::read_to_string(&p) else {
@@ -354,29 +379,86 @@ impl ClaudeTaskQueue {
                 continue;
             };
             parsed_any = true;
-            collect_tasks(&v, &mut out);
+            collect_tasks(&v, session_id, &mut out);
         }
         parsed_any.then_some(out)
     }
 }
 
-/// Pull every `(status, title)` out of a tasks document (array of tasks,
-/// `{tasks:[…]}`, or a single task object). Title prefers `subject` — Claude's real
-/// schema is `{id, subject, description, activeForm, status, blocks, blockedBy}`,
-/// and `description` is long prose that would swamp the checklist.
-fn collect_tasks(v: &Value, out: &mut Vec<(String, String)>) {
+/// One task as the supervisor sees it — enough to decide actionability (#79) and to
+/// attribute it to the session dir it came from (#80: ids are per-directory ordinals,
+/// so blockers only resolve within their own source).
+#[derive(Debug, Clone)]
+struct QueueTask {
+    id: String,
+    status: String,
+    title: String,
+    blocked_by: Vec<String>,
+    source: String,
+}
+
+impl QueueTask {
+    /// Parked by an explicit machine-readable status (prose like "DEFERRED BY USER"
+    /// inside the description deliberately does NOT count — see `blocked_note`).
+    fn parked(&self) -> bool {
+        matches!(self.status.as_str(), "deferred" | "paused" | "parked")
+    }
+}
+
+/// Actionable = open, not parked, and not blocked by a task in `all` that is itself
+/// not completed (#79: an unknown blocker id never blocks — a typo must not park a
+/// queue forever). The knack/claude-replay retry storms both reduced to this test:
+/// their queues held ONLY parked/blocked pending items, yet counted as open work.
+fn actionable(t: &QueueTask, all: &[QueueTask]) -> bool {
+    if t.status == "completed" || t.parked() {
+        return false;
+    }
+    // A blocker gates while it is not completed — INCLUDING a parked blocker: deferring
+    // the dependency defers the dependents (they cannot run without its work). Blocker
+    // ids resolve within the task's own source dir only (#80: ids are per-dir ordinals).
+    !t.blocked_by.iter().any(|b| {
+        all.iter()
+            .any(|o| o.source == t.source && &o.id == b && o.status != "completed")
+    })
+}
+
+/// Pull every task out of a tasks document (array of tasks, `{tasks:[…]}`, or a
+/// single task object). Title prefers `subject` — Claude's real schema is
+/// `{id, subject, description, activeForm, status, blocks, blockedBy}`, and
+/// `description` is long prose that would swamp the checklist.
+fn collect_tasks(v: &Value, source: &str, out: &mut Vec<QueueTask>) {
     match v {
-        Value::Array(items) => items.iter().for_each(|it| collect_tasks(it, out)),
+        Value::Array(items) => items.iter().for_each(|it| collect_tasks(it, source, out)),
         Value::Object(map) => {
             if let Some(Value::Array(items)) = map.get("tasks") {
-                items.iter().for_each(|it| collect_tasks(it, out));
+                items.iter().for_each(|it| collect_tasks(it, source, out));
             } else if let Some(status) = map.get("status").and_then(Value::as_str) {
                 let title = ["subject", "content", "title", "description", "activeForm"]
                     .iter()
                     .find_map(|k| map.get(*k).and_then(Value::as_str))
                     .unwrap_or("")
                     .to_string();
-                out.push((status.to_string(), title));
+                let blocked_by = map
+                    .get("blockedBy")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.push(QueueTask {
+                    id: map
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    status: status.to_string(),
+                    title,
+                    blocked_by,
+                    source: source.to_string(),
+                });
             }
         }
         _ => {}
@@ -384,38 +466,83 @@ fn collect_tasks(v: &Value, out: &mut Vec<(String, String)>) {
 }
 
 impl TaskQueue for ClaudeTaskQueue {
-    fn open_count(&self, session_id: &str) -> Option<usize> {
-        Self::tasks(session_id).map(|ts| ts.iter().filter(|(s, _)| s != "completed").count())
+    fn actionable_count(&self, session_id: &str, cwd: &Path) -> Option<usize> {
+        Self::tasks(session_id, cwd).map(|ts| ts.iter().filter(|t| actionable(t, &ts)).count())
     }
 
-    /// A live checklist: `✓`/`▶`/`·` per task with its title, then `done/total`.
-    fn render(&self, session_id: &str) -> String {
-        let Some(ts) = Self::tasks(session_id) else {
+    fn fingerprint(&self, session_id: &str, cwd: &Path) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let ts = Self::tasks(session_id, cwd)?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for t in &ts {
+            t.source.hash(&mut h);
+            t.id.hash(&mut h);
+            t.status.hash(&mut h);
+        }
+        Some(h.finish())
+    }
+
+    /// A live checklist: `✓` done / `▶` in progress / `·` actionable / `⊘ blocked` /
+    /// `◌ deferred` per task with its title, then a `done/total (+N blocked, M
+    /// deferred)` summary — so both the human and the next turn's brief can tell
+    /// parked work from real work (#79).
+    fn render(&self, session_id: &str, cwd: &Path) -> String {
+        let Some(ts) = Self::tasks(session_id, cwd) else {
             return "  (no task queue for this session)".to_string();
         };
         if ts.is_empty() {
             return "  (task queue is empty)".to_string();
         }
-        let mut done = 0usize;
+        let (mut done, mut blocked, mut parked) = (0usize, 0usize, 0usize);
         let mut s = String::new();
-        for (i, (status, title)) in ts.iter().enumerate() {
-            let marker = match status.as_str() {
+        let mut cur_source: Option<&str> = None;
+        for (i, t) in ts.iter().enumerate() {
+            // #80: attribute sibling sessions' queues (the supervised session's own dir
+            // comes first and gets no header).
+            if cur_source != Some(t.source.as_str()) {
+                if t.source != session_id {
+                    let short: String = t.source.chars().take(8).collect();
+                    s.push_str(&format!("  ── queued in session {short}… ──\n"));
+                }
+                cur_source = Some(t.source.as_str());
+            }
+            let marker = match t.status.as_str() {
                 "completed" => {
                     done += 1;
                     "✓"
                 }
                 "in_progress" => "▶",
+                _ if t.parked() => {
+                    parked += 1;
+                    "◌"
+                }
+                _ if !actionable(t, &ts) => {
+                    blocked += 1;
+                    "⊘"
+                }
                 _ => "·",
             };
-            let t: String = title.replace('\n', " ");
-            let t = if t.chars().count() > 68 {
-                format!("{}…", t.chars().take(67).collect::<String>())
+            let title: String = t.title.replace('\n', " ");
+            let title = if title.chars().count() > 68 {
+                format!("{}…", title.chars().take(67).collect::<String>())
             } else {
-                t
+                title
             };
-            s.push_str(&format!("  {marker} [{}] {t}\n", i + 1));
+            let note = if marker == "⊘" {
+                format!("  (blocked by {})", t.blocked_by.join(", "))
+            } else if marker == "◌" {
+                format!("  ({})", t.status)
+            } else {
+                String::new()
+            };
+            s.push_str(&format!("  {marker} [{}] {title}{note}\n", i + 1));
         }
         s.push_str(&format!("  ── {done}/{} completed", ts.len()));
+        if blocked + parked > 0 {
+            s.push_str(&format!(
+                " (+{blocked} blocked, {parked} deferred — not actionable)"
+            ));
+        }
         s
     }
 }
@@ -669,7 +796,7 @@ mod tests {
             .unwrap();
         }
         std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &root);
-        let out = ClaudeTaskQueue.render(sid);
+        let out = ClaudeTaskQueue.render(sid, Path::new("/outside-home-nonproject"));
         std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
 
         assert!(out.contains("[1] second"), "{out}");
@@ -770,8 +897,163 @@ mod tests {
         assert_eq!(a.classify(1, "some transient blip", &c), TurnOutcome::Retry);
     }
 
+    /// #79: the exact queue shapes from the retry-storm forensics classify as DONE.
+    /// A pending task blocked by a pending task, a deferred task, and a completed one
+    /// leave ZERO actionable work — rc 0 must be Done, not Retry-forever. Completing
+    /// the blocker makes the blocked task actionable again; an unknown blocker id
+    /// never blocks (a typo must not park a queue).
     #[test]
-    fn task_queue_open_count_from_json() {
+    fn blocked_and_deferred_tasks_are_not_actionable() {
+        let _g = lock_env();
+        let dir = std::env::temp_dir().join(format!("claude-tasks-act-{}", std::process::id()));
+        let sid = "sess-act";
+        let sdir = dir.join(sid);
+        let _ = std::fs::remove_dir_all(&sdir);
+        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::write(
+            sdir.join("17.json"),
+            r#"{"id":"17","status":"pending","subject":"spine","blockedBy":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join("26.json"),
+            r#"{"id":"26","status":"pending","subject":"skill install","blockedBy":["17"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join("30.json"),
+            r#"{"id":"30","status":"deferred","subject":"someday","blockedBy":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join("31.json"),
+            r#"{"id":"31","status":"completed","subject":"done","blockedBy":[]}"#,
+        )
+        .unwrap();
+        std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &dir);
+        let q = ClaudeTaskQueue;
+        // #17 is pending & unblocked ⇒ 1 actionable (26 blocked by it, 30 deferred).
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(1)
+        );
+        // classify: rc 0 with actionable work left ⇒ Retry.
+        let a = ClaudeAdapter;
+        let brief = Brief::default();
+        let c = ctx(Mode::Execute, true, sid, &brief);
+        assert_eq!(a.classify(0, "", &c), TurnOutcome::Retry);
+        // Park #17 ⇒ nothing actionable: a parked blocker still gates its dependents
+        // (#26 cannot run without #17's work), and parked tasks are never actionable
+        // themselves — the exact deferred-chain shape that fed the retry storms.
+        std::fs::write(
+            sdir.join("17.json"),
+            r#"{"id":"17","status":"deferred","subject":"spine","blockedBy":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(0)
+        );
+        assert_eq!(a.classify(0, "", &c), TurnOutcome::Done);
+        // Complete 17 ⇒ 26 becomes the single actionable task.
+        std::fs::write(
+            sdir.join("17.json"),
+            r#"{"id":"17","status":"completed","subject":"spine","blockedBy":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(1)
+        );
+        // Complete 26 ⇒ zero actionable ⇒ classify(0) is Done despite pending-deferred #30.
+        std::fs::write(
+            sdir.join("26.json"),
+            r#"{"id":"26","status":"completed","subject":"skill install","blockedBy":["17"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(0)
+        );
+        assert_eq!(a.classify(0, "", &c), TurnOutcome::Done);
+        // Unknown blocker id never blocks.
+        std::fs::write(
+            sdir.join("40.json"),
+            r#"{"id":"40","status":"pending","subject":"typo blocker","blockedBy":["999"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(1)
+        );
+        // The render distinguishes parked from blocked from actionable.
+        let r = q.render(sid, Path::new("/outside-home-nonproject"));
+        assert!(r.contains("◌"), "deferred marker: {r}");
+        assert!(
+            r.contains("not actionable"),
+            "summary notes parked work: {r}"
+        );
+        std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
+        let _ = std::fs::remove_dir_all(&sdir);
+    }
+
+    /// #80: the queue unions ALL sessions of the same project — a project's tasks often
+    /// live under an EARLIER session's dir (this repo's own queue does). Sibling ids come
+    /// from the store scoped to the cwd; blockers resolve within their source dir only;
+    /// the render attributes sibling items; the fingerprint tracks the whole union.
+    #[test]
+    fn project_wide_task_aggregation_unions_sibling_sessions() {
+        let _g = lock_env();
+        let base = std::env::temp_dir().join(format!("jdi-agg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // cwd must sit strictly inside $HOME (#69 scoping); it need not exist on disk.
+        let home = std::env::var("HOME").expect("HOME set in test env");
+        let cwd = Path::new(&home).join(format!("jdi-agg-cwd-{}", std::process::id()));
+        let slug: String = cwd.to_string_lossy().replace(['/', '.'], "-");
+        // The fake store: two sessions of this project.
+        let store = base.join("store");
+        std::fs::create_dir_all(store.join(&slug)).unwrap();
+        let line = r#"{"sessionId":"x","type":"user","message":{"role":"user","content":"hi"}}"#;
+        for sid in ["sess-agg-a", "sess-agg-b"] {
+            std::fs::write(store.join(&slug).join(format!("{sid}.jsonl")), line).unwrap();
+        }
+        // Task dirs: one pending task in each session's dir.
+        let tasks = base.join("tasks");
+        for (sid, subj) in [("sess-agg-a", "mine"), ("sess-agg-b", "sibling work")] {
+            std::fs::create_dir_all(tasks.join(sid)).unwrap();
+            std::fs::write(
+                tasks.join(sid).join("1.json"),
+                format!(r#"{{"id":"1","status":"pending","subject":"{subj}","blockedBy":[]}}"#),
+            )
+            .unwrap();
+        }
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &store);
+        std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &tasks);
+        let q = ClaudeTaskQueue;
+        assert_eq!(
+            q.actionable_count("sess-agg-a", &cwd),
+            Some(2),
+            "own task + the sibling session's task"
+        );
+        let r = q.render("sess-agg-a", &cwd);
+        assert!(r.contains("sibling work"), "sibling item rendered: {r}");
+        assert!(r.contains("queued in session sess-agg"), "attributed: {r}");
+        let fp1 = q.fingerprint("sess-agg-a", &cwd);
+        // Completing the SIBLING's task changes the union fingerprint and the count.
+        std::fs::write(
+            tasks.join("sess-agg-b").join("1.json"),
+            r#"{"id":"1","status":"completed","subject":"sibling work","blockedBy":[]}"#,
+        )
+        .unwrap();
+        assert_ne!(fp1, q.fingerprint("sess-agg-a", &cwd));
+        assert_eq!(q.actionable_count("sess-agg-a", &cwd), Some(1));
+        std::env::remove_var("CLAUDE_PROJECTS_DIR");
+        std::env::remove_var("CLAUDE_JDI_TASKS_ROOT");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn task_queue_actionable_count_from_json() {
         let _g = lock_env();
         let dir = std::env::temp_dir().join(format!("claude-tasks-{}", std::process::id()));
         let sid = "sess-x";
@@ -784,8 +1066,14 @@ mod tests {
         .unwrap();
         std::env::set_var("CLAUDE_JDI_TASKS_ROOT", &dir);
         let q = ClaudeTaskQueue;
-        assert_eq!(q.open_count(sid), Some(2)); // 2 not completed
-        assert_eq!(q.open_count("missing"), None); // unknown
+        assert_eq!(
+            q.actionable_count(sid, Path::new("/outside-home-nonproject")),
+            Some(2)
+        ); // 2 not completed, none parked
+        assert_eq!(
+            q.actionable_count("missing", Path::new("/outside-home-nonproject")),
+            None
+        ); // unknown
 
         // The detailed render is a per-task checklist with a completion tally.
         std::fs::write(
@@ -795,7 +1083,7 @@ mod tests {
                 {"status":"pending","content":"Interactive multi-select"}]"#,
         )
         .unwrap();
-        let out = q.render(sid);
+        let out = q.render(sid, Path::new("/outside-home-nonproject"));
         assert!(out.contains("✓ [1] Commit the guard"), "{out}");
         assert!(out.contains("▶ [2] Install the skill"), "{out}");
         assert!(out.contains("· [3] Interactive multi-select"), "{out}");

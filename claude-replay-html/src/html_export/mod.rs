@@ -30,6 +30,7 @@ use std::path::Path;
 // server in `serve`. All three public entries are re-exported so `html_export::{dump_html,
 // dump_all_html, serve}` stays the crate's surface.
 mod bundle;
+mod record_store;
 mod serve;
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::serve;
@@ -673,7 +674,7 @@ fn build_jsonl(
 /// forward state — instead of re-rendering the whole session every poll. Carrying it keeps the
 /// settled anchors (`#bN`), turn numbers, and sidebar entries stable across ranges. `Default` is the
 /// from-scratch start, so a single whole-session render is byte-identical to before.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct EmitState {
     next_block: crate::model::BlockIndex,
     turn: usize,
@@ -837,6 +838,13 @@ fn build_page(
       <div id="agentitems"></div>
     </div>
   </div>
+  <div class="toolfilter" id="tasknav" style="display:none">
+    <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
+    <div id="taskmenu">
+      <div class="menu-head">Session tasks</div>
+      <div class="tasks" id="taskbox"></div>
+    </div>
+  </div>
   <div class="searchbox">
     <span class="mag">⌕</span>
     <input id="q" placeholder="Search transcript  ( / )" autocomplete="off">
@@ -851,7 +859,6 @@ fn build_page(
   <nav id="sidebar">
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
-    <div class="tasks" id="taskbox" style="display:none"></div>
     <div class="usage" id="usage"></div>
     <div class="legend">
       <span class="key">j k</span><span class="what">move</span>
@@ -1215,7 +1222,10 @@ pub(super) fn agent_meta(
         count_tools(blocks),
         usage_json(m, true),
         tasks,
-        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+        json!({
+            "agent_type": &info.agent_type, "ancestors": ancestors, "children": children,
+            "path": info.source.display().to_string(),
+        }),
     );
     (meta, child_refs)
 }
@@ -1260,7 +1270,10 @@ pub(super) fn assemble_meta(
         sm.tools,
         usage_json(m, true),
         tasks,
-        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+        json!({
+            "agent_type": &info.agent_type, "ancestors": ancestors, "children": children,
+            "path": info.source.display().to_string(),
+        }),
     )
 }
 
@@ -1927,6 +1940,16 @@ mod tests {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .collect();
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
+        // #81: every live/bundle meta carries its transcript path — the header's
+        // click-to-copy writes THIS (an absent path used to flash "copied" over an
+        // empty clipboard write).
+        assert!(
+            recs[0]["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with(".jsonl")),
+            "child meta path: {:?}",
+            recs[0]["path"]
+        );
         assert_eq!(
             recs[0]["ancestors"],
             json!([{ "id": "sess", "title": "sess · compatible (claude)" }]),

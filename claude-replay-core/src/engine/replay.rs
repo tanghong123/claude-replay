@@ -510,6 +510,12 @@ impl<'a> Replayer<'a> {
     /// The finalized **open** window (the still-provisional tail) + the full per-turn timestamps
     /// (pending stamps flushed) — the non-consuming complement to [`drain_committed`]. The
     /// accumulator's snapshot is `committed ++ open_snapshot().0`.
+    /// The per-turn timestamps stamped so far (committed turns final). Borrowed by the
+    /// accumulator's drain so a projection store can index times at `put` time (#74).
+    pub(crate) fn user_times(&self) -> &[Option<EpochSeconds>] {
+        &self.user_times
+    }
+
     pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();

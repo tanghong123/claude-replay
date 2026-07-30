@@ -32,9 +32,9 @@ Each **agent** implements `AgentAdapter`:
 |---|---|---|
 | `initial_mode(trigger)` | `ResumeDump`→`ResumeExecute` (plan then do) | `Execute` (no plan step) |
 | `build_invocation(ctx)` | `claude --resume\|--session-id … --dangerously-skip-permissions -p <prompt>` | `codex exec resume -c approval_policy=never -c sandbox_mode=… [-c sandbox_workspace_write.network_access=…] <id> --json <prompt>` |
-| `classify(rc, out, ctx)` | dump→advance; execute + task-queue-empty→Done; "No conversation found"→recreate; UNRECOVERABLE→failed | rc 0→Done; 130/143→stopped; else retry |
+| `classify(rc, out, ctx)` | dump→advance; execute + **no actionable task** (#79: blocked/deferred don't count)→Done; "No conversation found"→recreate; UNRECOVERABLE→failed | rc 0→Done; 130/143→stopped; else retry |
 | `discover_resumable(cwd)` | newest `~/.claude/projects/<slug>/*.jsonl` | newest `~/.codex/sessions/**` for cwd |
-| `task_queue()` *(optional)* | `Some` (`~/.claude/tasks/`) | `None` |
+| `task_queue()` *(optional)* | `Some` (`~/.claude/tasks/`, unioned across the project's sessions — #80) | `None` |
 | `pins_session_id()` | `true` (`--session-id`) | `false` (Codex assigns; captured after turn 1) |
 | `fresh_invocation()` / `capture_session_id()` | pins → default reuse | `codex exec …` + nonce scan / `--json` |
 | `interactive_invocation()` / `resume_commands()` *(optional)* | `claude --resume <id>` (+ the autonomous variant for the printout) | `codex resume <id>` |
@@ -66,9 +66,13 @@ transcript (`live_agent_for_session`) unless `--force` kills it first.
 it finds the session's process (nearest ancestor whose **executable name** — `ps -o
 comm=`, never the full argv — is the agent binary), spawns a detached `__handoff`
 watcher that waits for that pid to exit then runs `resume`, and — unless `--armed` —
-SIGTERMs the session (the watcher escalates to SIGKILL after a 10s grace) so it's
-fully hands-off. The deferral is required: two agents can't drive the same
-transcript at once.
+SIGTERMs the session so it's fully hands-off. The watcher escalates to SIGKILL only
+when the session is demonstrably idle (#82): a dangling `tool_use`/`function_call`
+in the transcript tail means a tool is RUNNING (transcripts are only written when a
+result lands, so mtimes freeze mid-`cargo build`) — in-flight blocks escalation
+outright, and the mtime grace is tool-scale (120 s, not 10). Every kill/hold
+decision is appended to `<home>/handoff.log`. The deferral is required: two agents
+can't drive the same transcript at once.
 
 For Codex, the live command first pins the exact thread and reads the newest
 `turn_context` from its rollout. It normalizes only three supported policies:
@@ -101,8 +105,16 @@ lookups are targeted (`ps -p <pid>`, one per level) rather than a whole-table du
 The tricky **done-signal** (claude-jdi's `cmd_run` 470-511) lives entirely in
 `classify`: the spine just acts on the returned `TurnOutcome`
 (`Done`/`Retry`/`AdvanceMode`/`RecreateSession`/`Failed`/`Stopped`/`GaveUp`). For
-Claude, "planned ≠ done" comes from `task_queue().open_count()` — `Some(0)`/`None`
-(unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain.
+Claude, "planned ≠ done" comes from `task_queue().actionable_count()` — `Some(0)`/
+`None` (unknown ⇒ trust exit code) → done, `Some(n>0)` → re-drain. **Actionable**
+excludes completed, parked (`deferred`/`paused`/`parked`), and blocked-by-open
+tasks (#79 — queues holding only parked/blocked work used to relaunch every
+`interval` until the session died of context exhaustion), and the queue is the
+UNION of every session of the same project (#80 — a project's tasks often live
+under an earlier session's dir). The spine adds a second stop: a **no-progress
+guard** — two consecutive Retry turns that change nothing meaningful (task
+statuses + git HEAD + worktree; deliberately not capture text) stop the run with
+`state=idle` instead of burning context on no-op relaunches.
 
 **Prompts are ported from the bash claude-jdi**, whose specificity is what actually
 gets a usable queue built: a self-contained subject + description per unit of work,

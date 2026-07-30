@@ -241,6 +241,22 @@ pub enum PopupClick {
     None,
 }
 
+/// Derived per-session view state that outlives an evicted frame (#75): the measure pass's
+/// outputs + the user's interaction state, keyed in the [`SessionCache`](crate::SessionCache)
+/// aux slot. Deliberately NOT in the session's `BlockStore::Bv`: geometry is a function of
+/// (width, fold state), which change interactively — put-once storage can't hold it, an
+/// invalidatable cache-level sidecar can.
+pub struct ViewSidecar {
+    width: u16,
+    heights: Vec<usize>,
+    prefix: Vec<usize>,
+    search_text: Vec<String>,
+    collapsed: Vec<bool>,
+    user_folds: std::collections::HashMap<crate::model::BlockIndex, bool>,
+    scroll: usize,
+    follow: bool,
+}
+
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>, // per-block fold state
@@ -712,6 +728,44 @@ impl View {
     /// Force a re-wrap on the next layout (after a resize or new content).
     pub fn invalidate_wrap(&mut self) {
         self.width = 0;
+    }
+
+    /// Extract this view's **sidecar** (#75): the expensive measure pass's outputs (heights,
+    /// prefix sums, the search-text index) plus the user's interaction state (fold toggles,
+    /// scroll, follow) — everything worth keeping when the frame LRU evicts the view. Stored
+    /// in the `SessionCache`'s aux slot; re-installed by [`adopt_sidecar`](Self::adopt_sidecar).
+    pub fn into_sidecar(self) -> ViewSidecar {
+        ViewSidecar {
+            width: self.width,
+            heights: self.heights,
+            prefix: self.prefix,
+            search_text: self.search_text,
+            collapsed: self.collapsed,
+            user_folds: self.user_folds,
+            scroll: self.scroll,
+            follow: self.follow,
+        }
+    }
+
+    /// Re-install an evicted frame's sidecar onto a freshly-rebuilt view of the same session.
+    /// Valid only while the geometry's inputs still match: the block count must equal the
+    /// sidecar's (a session that grew while evicted re-measures instead). Width validity is
+    /// free: the sidecar's width is installed, so the first `layout()` at any OTHER width
+    /// takes the width-changed path and re-measures — the existing sentinel mechanics.
+    pub fn adopt_sidecar(&mut self, sc: ViewSidecar) -> bool {
+        if sc.heights.len() != self.blocks.len() || sc.collapsed.len() != self.blocks.len() {
+            return false; // the session changed shape while evicted — fresh measure
+        }
+        self.width = sc.width;
+        self.heights = sc.heights;
+        self.prefix = sc.prefix;
+        self.search_text = sc.search_text;
+        self.collapsed = sc.collapsed;
+        self.user_folds = sc.user_folds;
+        self.scroll = sc.scroll;
+        self.follow = sc.follow;
+        self.dirty_from = None; // geometry is valid as adopted
+        true
     }
 
     /// Compute geometry for a given area (call before scroll math in handlers).
@@ -1227,26 +1281,47 @@ impl View {
         if !self.follow {
             self.new_count += new_blocks.len().saturating_sub(self.blocks.len());
         }
-        let tail = self.fold.collapsed_for(&new_blocks[d..]);
+        self.blocks = new_blocks;
+        self.post_splice(d);
+    }
+
+    /// The **handoff** apply (#76): splice the delta in place — keep `[0..frontier)`, append
+    /// the newly-committed blocks and the fresh open turn. The View is the session's sole
+    /// block owner (the follower drained its copy), so a live tick costs O(delta) allocation,
+    /// not an O(session) vector swap.
+    pub fn apply_handoff(&mut self, d: crate::follow::HandoffDelta) {
+        let prev_committed = (d.committed_len - d.committed_delta.len()).min(self.blocks.len());
+        let joined = d.committed_len + d.provisional.len();
+        if !self.follow {
+            self.new_count += joined.saturating_sub(self.blocks.len());
+        }
+        self.blocks.truncate(prev_committed);
+        self.blocks.extend(d.committed_delta);
+        self.blocks.extend(d.provisional);
+        self.post_splice(d.changed_from);
+        self.metrics = d.metrics.footer();
+        self.footer_segs = d.metrics.footer_segments();
+    }
+
+    /// Shared post-splice bookkeeping over `self.blocks`: re-derive fold defaults for the
+    /// changed tail, overlay the user's explicit fold gestures (#61 — position-keyed, the
+    /// same heuristic the HTML client uses), and mark geometry dirty FROM `d` only — the
+    /// next layout re-measures the changed tail (heights + text index), keeping a live poll
+    /// O(tail), not O(session).
+    fn post_splice(&mut self, d: usize) {
+        let d = d.min(self.blocks.len());
+        let tail = self.fold.collapsed_for(&self.blocks[d..]);
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
-        // Re-apply the user's explicit fold gestures over the re-derived tail (#61):
-        // without this, a live update snaps a block the user expanded back to the
-        // policy default. Position-keyed — a reshaped tail maps by index (the same
-        // heuristic the HTML client uses; ids there are position-derived too).
         for (&i, &c) in &self.user_folds {
             if i >= d
-                && new_blocks.get(i).map(render::foldable).unwrap_or(false)
+                && self.blocks.get(i).map(render::foldable).unwrap_or(false)
                 && i < self.collapsed.len()
             {
                 self.collapsed[i] = c;
             }
         }
-        self.blocks = new_blocks;
-        // Geometry for the unchanged prefix [0..d] survives; the next layout re-measures only
-        // the changed tail (heights + text index), keeping a live poll O(tail), not O(session).
         self.dirty_from = Some(self.dirty_from.map_or(d, |cur| cur.min(d)));
-        self.invalidate_wrap();
     }
 
     fn status_line(&self) -> Line<'static> {
@@ -1872,6 +1947,47 @@ mod tests {
         );
     }
 
+    /// The single-owner `apply_handoff` (#76) yields the exact same view state as the
+    /// scan-based `update` for the same session evolution — same rendered lines, same
+    /// per-block fold state, and a preserved fold toggle on the unchanged prefix — while
+    /// the View splices deltas instead of swapping whole vectors. Also covers the
+    /// commit-shaped delta (prefix moves from open to committed).
+    #[test]
+    fn apply_handoff_equals_update_scan() {
+        let a = blocks(10);
+        let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        v1.collapsed[2] = true;
+        v2.collapsed[2] = true;
+        let b = blocks(13);
+        let d = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        v1.update(b.clone());
+        // Simulate the handoff shape: the first 11 blocks committed (blocks 10.. newly so —
+        // the delta hands over 11-10=… everything past the View's prior committed frontier of
+        // 8), the last 2 provisional. The splice must land identically to the full scan.
+        let committed_len = 11usize;
+        let prev_committed = 8usize; // pretend 8 were already handed over
+        v2.apply_handoff(crate::follow::HandoffDelta {
+            reset: false,
+            committed_delta: b[prev_committed..committed_len].to_vec(),
+            committed_len,
+            provisional: b[committed_len..].to_vec(),
+            user_times: Vec::new(),
+            metrics: Metrics::default(),
+            changed_from: d,
+        });
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");
+        assert_eq!(v1.block_kinds(), v2.block_kinds(), "same blocks");
+        assert!(
+            v1.is_collapsed(2) && v2.is_collapsed(2),
+            "fold toggle on the unchanged prefix survived both paths"
+        );
+    }
+
     /// The `t` task/todo panel (#15): renders the fed TaskList — status glyphs, the
     /// selected task highlighted with its description in the details region — and
     /// j/k moves the selection (TestBackend, no TTY).
@@ -1994,7 +2110,7 @@ mod tests {
             .blocks();
         let _ = std::fs::remove_file(&path);
         assert!(!blocks.is_empty(), "parsed an agent spawn");
-        let pol = FoldPolicy::from_args(&crate::Args::default());
+        let pol = crate::Args::default().fold_policy();
         assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");
     }
 
@@ -2006,6 +2122,56 @@ mod tests {
 
     fn row(buf: &Buffer, y: u16) -> String {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// #75 sidecar roundtrip: an evicted view's derived state (geometry + search index +
+    /// folds + scroll) re-adopts onto a fresh view of the same blocks — the first layout at
+    /// the same width skips the measure pass and the interaction state is intact. A view of a
+    /// DIFFERENT shape refuses the sidecar (fresh measure instead of corrupt geometry).
+    #[test]
+    fn sidecar_roundtrips_geometry_and_interaction_state() {
+        let blocks = vec![
+            Block::UserText("go".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "ls -la".into(),
+                diffs: Vec::new(),
+                output: Some("a\nb\nc".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::AssistantText("done with a fairly long line that wraps at ten".into()),
+        ];
+        let mut v = View::new(blocks.clone(), "t", false, FoldPolicy::default());
+        let _ = draw(&mut v, 10, 8); // layout at width 10 → measure
+        v.toggle_block(1);
+        v.scroll_by(2);
+        let (heights, scroll, folded) = (v.heights.clone(), v.scroll, v.is_collapsed(1));
+        let sc = v.into_sidecar();
+
+        let mut v2 = View::new(blocks.clone(), "t", false, FoldPolicy::default());
+        assert!(v2.adopt_sidecar(sc), "same shape ⇒ adopts");
+        assert_eq!(v2.heights, heights, "measure pass reused");
+        assert_eq!(v2.scroll, scroll, "scroll restored");
+        assert_eq!(v2.is_collapsed(1), folded, "fold gesture restored");
+        assert!(
+            v2.dirty_from.is_none(),
+            "geometry valid — no pending re-measure"
+        );
+        let _ = draw(&mut v2, 10, 8); // same width: layout must keep the adopted geometry
+        assert_eq!(
+            v2.heights, heights,
+            "same-width layout did not re-measure differently"
+        );
+
+        // Shape mismatch: a grown session refuses the sidecar.
+        let mut v3 = View::new(blocks[..2].to_vec(), "t", false, FoldPolicy::default());
+        let _ = draw(&mut v3, 10, 8);
+        let sc2 = v2.into_sidecar();
+        assert!(
+            !v3.adopt_sidecar(sc2),
+            "different block count ⇒ fresh measure"
+        );
     }
 
     /// A drag across two lines extracts the spanning text and paints the selection
@@ -3068,7 +3234,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, false)),
+            args_with(None, None, false).fold_policy(),
         );
         assert!(v.is_collapsed(0), "read should be folded by default");
         assert!(v.is_collapsed(1), "tool_result should be folded by default");
@@ -3082,7 +3248,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, Some("read,tool_result"), false)),
+            args_with(None, Some("read,tool_result"), false).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "read unfolded");
         assert!(!v.is_collapsed(1), "tool_result unfolded");
@@ -3095,7 +3261,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(Some("edit"), Some("read"), false)),
+            args_with(Some("edit"), Some("read"), false).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "read unfolded (--unfold)");
         assert!(v.is_collapsed(1), "tool_result still default-folded");
@@ -3220,7 +3386,7 @@ mod tests {
             }],
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, true)),
+            args_with(None, None, true).fold_policy(),
         );
         assert!(!v.is_collapsed(0), "--full should expand thinking");
     }
@@ -3231,7 +3397,7 @@ mod tests {
             policy_blocks(),
             "t",
             false,
-            FoldPolicy::from_args(&args_with(None, None, true)),
+            args_with(None, None, true).fold_policy(),
         );
         assert!(!v.is_collapsed(0) && !v.is_collapsed(1) && !v.is_collapsed(2));
     }

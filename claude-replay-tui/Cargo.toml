@@ -1,0 +1,20 @@
+[package]
+name = "claude-replay-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The ratatui terminal frontend of claude-replay: viewer state machine + draw, renderer, markdown, fuzzy session picker, clipboard."
+
+[dependencies]
+claude-replay-core = { path = "../claude-replay-core" }
+claude-replay-present = { path = "../claude-replay-present" }
+anyhow = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
+nucleo = "0.5"
+# System clipboard for mouse-select auto-copy (falls back to an OSC 52 escape when
+# no clipboard/display is available, e.g. over SSH). Linux backend is pure-Rust.
+arboard = { version = "3", default-features = false }

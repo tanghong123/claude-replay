@@ -250,6 +250,7 @@
   function postMat(e) {
     buildStripsIn(e);
     applyWrapIn(e);
+    reapplySmallMore(e);
     if (searchNeedle) {
       markHits(e, searchNeedle, searchNeedle.length);
       // The current hit survives rematerialization (#66) — same id-keyed idea as
@@ -424,6 +425,35 @@
   // Every record entering the stream re-applies the user's overrides, keyed by
   // block id (stable across re-emission; stale ids simply never match again).
   var userFolds = {};
+  // Small "⋯ N more lines" expansions survive rematerialization (#67): a block just
+  // over the display cap keeps its expansion (recorded by record-id + the button's
+  // ordinal within the block — stable, since re-renders are deterministic from the
+  // records); LARGE expansions stay ephemeral by design (a reset is welcome there).
+  var MAX_BUFFER_LINES = 200;
+  var smallMore = {}; // "recId:ordinal" -> true
+  function hiddenLineCount(hidden) {
+    var rows = hidden.querySelectorAll(".nrow").length;
+    if (rows) return rows;
+    var t = hidden.textContent || "";
+    return t.split("\n").length;
+  }
+  function expandMore(btn) {
+    var hidden = $(btn.dataset.more);
+    if (hidden) hidden.classList.add("shown");
+    btn.remove();
+  }
+  // Stamp stable ordinals on a fresh element's expand buttons (indices computed at
+  // click time would shift as earlier buttons get removed), then re-apply recorded
+  // small expansions.
+  function reapplySmallMore(e) {
+    var recId = e.id;
+    if (!recId) return;
+    var btns = Array.prototype.slice.call(e.querySelectorAll(".morebtn:not(.clampbtn)"));
+    for (var k = btns.length - 1; k >= 0; k--) {
+      btns[k].dataset.ord = k;
+      if (smallMore[recId + ":" + k]) expandMore(btns[k]);
+    }
+  }
   function applyUserFolds(b) {
     if (b.id && userFolds[b.id] !== undefined && isFoldRec(b)) b.open = userFolds[b.id];
     (b.body || []).forEach(function (p) {
@@ -751,21 +781,30 @@
     renderAgentMenu(m.children, inTree);
   }
 
-  // The session's task/todo panel (#15): a sidebar section fed by the meta record
-  // (op-log state merged with the live task files server-side). Each row: status
-  // glyph + #id + subject (activeForm for the in-progress one); click toggles the
-  // description + dependency details inline. Hidden when the session has no tasks.
+  // The session's task/todo panel (#15, a topbar dropdown since #70 — the sidebar
+  // slot was too small to read): fed by the meta record (op-log state merged with
+  // the live task files server-side). Each row: status glyph + #id + subject
+  // (activeForm for the in-progress one); click toggles the description +
+  // dependency details inline. The whole control hides when the session has no
+  // tasks; the panel's open state and expanded rows survive live meta refreshes
+  // (only the box's children are rebuilt).
   function renderTasks(tasks) {
-    var box = $("taskbox");
-    if (!box) return;
-    if (!tasks || !tasks.length) { box.style.display = "none"; box.textContent = ""; return; }
+    var wrap = $("tasknav"), box = $("taskbox"), btn = $("btn-tasks");
+    if (!wrap || !box || !btn) return;
+    if (!tasks || !tasks.length) {
+      wrap.style.display = "none";
+      taskMenu(false);
+      box.textContent = "";
+      return;
+    }
     // Preserve which details are expanded across live meta refreshes.
     var openIds = {};
     all("#taskbox .task-item.open").forEach(function (t) { openIds[t.dataset.tid] = 1; });
-    box.style.display = "";
+    wrap.style.display = "";
     box.textContent = "";
     var open = tasks.filter(function (t) { return t.status !== "Completed"; }).length;
-    box.appendChild(el("div", "side-head", "Tasks (" + open + " open)"));
+    var label = btn.querySelector(".tf-label");
+    if (label) label.textContent = "Tasks (" + open + " open) ▾";
     tasks.forEach(function (t) {
       var item = el("div", "task-item" + (openIds[t.id] ? " open" : ""));
       item.dataset.tid = t.id;
@@ -814,13 +853,16 @@
   // The "Agents ▾" menu: this session's sub-agents, **active first then done**, each in
   // launch order (the server ships `children` in spawn order with a `running` flag). The
   // box is **always present** — a leaf sub-agent (no children of its own) shows it grayed
-  // and non-interactive, so the control never appears/disappears between views. Each item
-  // navigates to that agent's stream (click = this tab; the ⧉ icon = a new tab).
+  // and non-interactive, so the control never appears/disappears between views. In a LIVE
+  // session it shows even before any agent exists (#70): a spawn can arrive at any moment,
+  // and a control materializing out of nowhere is more surprising than a grayed one.
+  // Each item navigates to that agent's stream (click = this tab; the ⧉ icon = a new tab).
   function renderAgentMenu(children, inTree) {
     var wrap = $("agentnav"), items = $("agentitems"), btn = $("btn-agents");
     if (!wrap || !items || !btn) return;
-    wrap.style.display = inTree ? "" : "none";
-    if (!inTree) return;
+    var show = inTree || !!document.body.dataset.poll;
+    wrap.style.display = show ? "" : "none";
+    if (!show) return;
     var n = (children && children.length) || 0;
     btn.classList.toggle("disabled", n === 0);
     var label = btn.querySelector(".tf-label");
@@ -1017,6 +1059,7 @@
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
   function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }
+  function taskMenu(open) { var m = $("taskmenu"); if (m) m.classList.toggle("on", open); }
 
   // Does record `b` (or a nested item) match the filter selector's meaning? The two
   // selector shapes the menu emits are '.fold[data-tool="X"]' / '.fold[data-kind="k"]'.
@@ -1545,6 +1588,9 @@
   // file://, where navigator.clipboard is refused — so fall back to a hidden-textarea
   // execCommand and resolve success only when one path actually works. Never a false ✓.
   function copyText(text) {
+    // Nothing to copy is a FAILURE, not a success: `writeText("")` resolves ok, which
+    // turned a missing meta path into a false "copied transcript path" flash (#81).
+    if (!text) return Promise.resolve(false);
     function legacy() {
       try {
         var ta = document.createElement("textarea");
@@ -1611,9 +1657,16 @@
       if (!$("btn-agents").classList.contains("disabled")) agentMenu(!$("agentmenu").classList.contains("on"));
       return;
     }
+    // ── tasks menu (#70) ── the button toggles; clicks inside the panel fall through
+    // to the task-row expander below without closing it.
+    if (e.target.closest("#btn-tasks")) {
+      taskMenu(!$("taskmenu").classList.contains("on"));
+      return;
+    }
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);
+    if (!e.target.closest("#taskmenu")) taskMenu(false);
 
     var sid = e.target.closest("#sid");
     if (sid) {
@@ -1661,9 +1714,15 @@
     }
     var more = e.target.closest(".morebtn");
     if (more) {
-      var hidden = $(more.dataset.more);
-      if (hidden) hidden.classList.add("shown");
-      more.remove();
+      // #67: a SMALL expansion (content within MAX_BUFFER_LINES) is recorded by
+      // record-id + ordinal so it survives rematerialization; large ones reset.
+      var blk67 = more.closest(".blk");
+      var hidden67 = $(more.dataset.more);
+      if (blk67 && blk67.id && hidden67 && more.dataset.ord != null
+          && hiddenLineCount(hidden67) <= MAX_BUFFER_LINES) {
+        smallMore[blk67.id + ":" + more.dataset.ord] = true;
+      }
+      expandMore(more);
       return;
     }
     // §8.4 the `#` anchor COPIES a deep link — no scroll, no hash write, no fold
@@ -1882,6 +1941,8 @@
     if (e.key === "/") { e.preventDefault(); q.focus(); return; }
     if (e.key === "Escape") {
       toolMenu(false);
+      agentMenu(false);
+      taskMenu(false);
       if (filter) { setFilter(null); return; }
       if (document.activeElement) document.activeElement.blur();
       return;

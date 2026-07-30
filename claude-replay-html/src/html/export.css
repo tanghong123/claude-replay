@@ -126,14 +126,15 @@ input::placeholder { color: var(--faint); }
 #btn-tools.active .tf-prev, #btn-tools.active .tf-next { display: inline; }
 .tf-prev:hover, .tf-next:hover { opacity: 1; }
 #btn-agents.active { color: var(--kw); border-color: var(--kw); }
-#toolmenu, #agentmenu {
+#toolmenu, #agentmenu, #taskmenu {
   display: none; position: absolute; top: 34px; left: 0; min-width: 190px; z-index: 40;
   max-height: 60vh; overflow-y: auto; overscroll-behavior: contain;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); padding: 6px; flex-direction: column; gap: 1px;
 }
 #agentmenu { min-width: 260px; }
-#toolmenu.on, #agentmenu.on { display: flex; }
+#taskmenu { min-width: 340px; max-width: min(560px, 90vw); }
+#toolmenu.on, #agentmenu.on, #taskmenu.on { display: flex; }
 .menu-head {
   flex: none; position: sticky; top: 0; background: var(--bg);
   font: 600 10px var(--sans); letter-spacing: 0.08em; text-transform: uppercase;
@@ -248,14 +249,12 @@ a.crumb:hover { text-decoration: underline; }
 }
 .usage { display: flex; flex-direction: column; gap: 5px; }
 .usage .side-head { padding: 0 0 2px; }
-/* #15 the session task/todo panel — a sidebar section fed by the meta record. */
+/* #15 the session task/todo panel — a topbar dropdown since #70. */
 .tasks {
-  padding: 10px; border-top: 1px solid var(--border);
-  font: 11px var(--mono); color: var(--muted);
+  padding: 2px 4px 4px;
+  font: 11.5px var(--mono); color: var(--muted);
   display: flex; flex-direction: column; gap: 2px;
-  max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
 }
-.tasks .side-head { padding: 0 0 4px; }
 .task-row { display: flex; gap: 5px; cursor: pointer; border-radius: 4px; padding: 1px 2px; }
 .task-row:hover { background: var(--hover); }
 .task-row.done { color: var(--faint); }

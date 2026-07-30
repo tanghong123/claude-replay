@@ -43,6 +43,23 @@ impl Tick {
 /// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
 /// works for any store — a live server follows with a tier-b store so committed content lives on
 /// disk; the `Session`-assembling polls (`poll*`) stay on the in-memory default.
+/// One handoff tick's payload (#76): the committed delta (each block handed out exactly
+/// once), the finalized open turn, and the splice math a sole-owner consumer needs.
+pub struct HandoffDelta {
+    pub reset: bool,
+    /// Newly-committed blocks since the last poll — drained from the store, never resent.
+    pub committed_delta: Vec<Block>,
+    /// Total committed after this delta; the consumer splices at
+    /// `committed_len - committed_delta.len()`.
+    pub committed_len: usize,
+    /// The finalized open turn — replaces everything past the committed frontier.
+    pub provisional: Vec<Block>,
+    pub user_times: Vec<Option<EpochSeconds>>,
+    pub metrics: Metrics,
+    /// First index (in the joined `committed ++ open` view) the consumer must re-derive.
+    pub changed_from: usize,
+}
+
 pub struct FollowParser<S: BlockStore = InMemoryStore> {
     agent: Agent,
     path: PathBuf,
@@ -58,6 +75,51 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
 /// Length of the shared prefix of two block slices — O(min(len)) block-equality.
 fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+impl FollowParser<crate::engine::HandoffStore> {
+    /// The **handoff** poll (#76): the single-consumer streaming surface. Committed blocks
+    /// arrive exactly once (drained from the [`HandoffStore`](crate::engine::HandoffStore) that
+    /// queued them at commit) and the open turn replaces the tail — so the CONSUMER owns the
+    /// only copy of the session's blocks and a poll is O(delta), never an O(session) rebuild.
+    /// `None` on an idle tick. `changed_from` has [`poll_delta`](Self::poll_delta) semantics
+    /// (first differing index in the consumer's joined view), computed O(turn).
+    pub fn poll_handoff(&mut self) -> std::io::Result<Option<HandoffDelta>> {
+        let tick = self.advance_from_source()?;
+        if !tick.advanced {
+            return Ok(None);
+        }
+        let committed_delta = self.builder.store_mut().drain();
+        let r = self.builder.open_read();
+        let committed_len = self.builder.committed_len();
+        let prev_committed = committed_len - committed_delta.len();
+        let changed_from = if tick.reset {
+            0 // truncation/rewrite ⇒ everything changed
+        } else {
+            // Blocks below the prior committed length are unchanged (append-only). The exact
+            // common prefix beyond it — whether the old open turn appended, back-patched, or
+            // finalized into the new committed tail — is one comparison of the previous open
+            // region against `committed_delta ++ provisional`: O(turn).
+            let stable = self
+                .prev_provisional
+                .iter()
+                .zip(committed_delta.iter().chain(r.provisional.iter()))
+                .take_while(|(a, b)| a == b)
+                .count();
+            prev_committed + stable
+        };
+        self.prev_committed = committed_len;
+        self.prev_provisional = r.provisional.clone();
+        Ok(Some(HandoffDelta {
+            reset: tick.reset,
+            committed_delta,
+            committed_len,
+            provisional: r.provisional,
+            user_times: r.user_times,
+            metrics: r.metrics,
+            changed_from,
+        }))
+    }
 }
 
 impl FollowParser<InMemoryStore> {
@@ -119,7 +181,10 @@ impl<S: BlockStore> FollowParser<S> {
     #[allow(clippy::type_complexity)]
     pub fn poll(
         &mut self,
-    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>> {
+    ) -> std::io::Result<Option<(Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)>>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         Ok(self
             .advance_from_source()?
             .advanced
@@ -139,7 +204,10 @@ impl<S: BlockStore> FollowParser<S> {
         self.builder.tasks().clone()
     }
 
-    pub fn poll_delta(&mut self) -> std::io::Result<Option<PollDelta>> {
+    pub fn poll_delta(&mut self) -> std::io::Result<Option<PollDelta>>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         let tick = self.advance_from_source()?;
         if !tick.advanced {
             return Ok(None);
@@ -183,12 +251,24 @@ impl<S: BlockStore> FollowParser<S> {
 
     /// The delta-sized read for one pull (see [`StreamRead`]): `committed[from..]` + the open turn +
     /// times + metrics + the live header, from a single finalize. Copies only the committed tail.
-    pub fn stream_read(&self, from: usize) -> StreamRead {
+    pub fn stream_read(&self, from: usize) -> StreamRead
+    where
+        S: crate::engine::session::BlockRead,
+    {
         self.builder.stream_read(from)
     }
 
+    /// [`stream_read`](Self::stream_read) without the committed content — O(turn) and
+    /// store-agnostic (a projection-store session serves committed from its own form, #74).
+    pub fn open_read(&self) -> StreamRead {
+        self.builder.open_read()
+    }
+
     /// `committed[from..]` as owned blocks — O(delta), never the whole committed prefix.
-    pub fn committed_tail(&self, from: usize) -> Vec<Block> {
+    pub fn committed_tail(&self, from: usize) -> Vec<Block>
+    where
+        S: crate::engine::session::BlockRead,
+    {
         self.builder.committed_tail(from)
     }
 

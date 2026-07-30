@@ -284,19 +284,21 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
 /// sessions** — no global fallback (so a session for an unrelated directory never
 /// leaks into another directory's picker).
 pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    candidates_scoped_in(&sessions_dir(), cwd)
+    candidates_scoped_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
 }
 
-/// The **nearest ancestor of `cwd`** (walking up the directory chain) that owns any Codex
-/// sessions, and its sessions — the "no global fallback" scoping every scoped lookup shares.
-/// Returns those sessions (newest-first, borrowed from `sessions`) plus whether the match was
-/// `cwd` itself (exact — used for picker affinity). Empty if no ancestor up to the root owns one.
+/// The **nearest ancestor of `cwd`** (walking up the directory chain, strictly inside
+/// `home` — #69) that owns any Codex sessions, and its sessions — the "no global fallback"
+/// scoping every scoped lookup shares. Returns those sessions (newest-first, borrowed from
+/// `sessions`) plus whether the match was `cwd` itself (exact — used for picker affinity).
+/// Empty if no ancestor inside home owns one.
 fn nearest_ancestor_sessions<'a>(
     sessions: &'a [CodexSession],
     cwd: &Path,
+    home: Option<&Path>,
 ) -> (Vec<&'a CodexSession>, bool) {
     let cwd_n = normalized(cwd);
-    for anc in crate::discover::ancestors_of(cwd) {
+    for anc in crate::discover::ancestors_below(cwd, home) {
         let anc_n = normalized(&anc);
         let matched: Vec<&CodexSession> = sessions
             .iter()
@@ -314,16 +316,17 @@ fn nearest_ancestor_sessions<'a>(
 /// stale-confirm picker, which needs the id to resume the chosen one.
 pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
     let sessions = sessions_in(&sessions_dir()); // newest-first
-    let (matched, _) = nearest_ancestor_sessions(&sessions, cwd);
+    let (matched, _) =
+        nearest_ancestor_sessions(&sessions, cwd, crate::discover::home_dir().as_deref());
     matched
         .into_iter()
         .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
         .collect()
 }
 
-fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
+fn candidates_scoped_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Vec<Candidate> {
     let sessions = sessions_in(root); // newest-first
-    let (matched, is_exact) = nearest_ancestor_sessions(&sessions, cwd);
+    let (matched, is_exact) = nearest_ancestor_sessions(&sessions, cwd, home);
     matched
         .into_iter()
         .map(|s| {
@@ -401,13 +404,13 @@ pub fn session_id_with_marker(marker: &str) -> Option<String> {
 /// directory with no Codex history fails cleanly instead of hijacking some other
 /// project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
-    latest_for_cwd_in(&sessions_dir(), cwd)
+    latest_for_cwd_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
 }
 
-fn latest_for_cwd_in(root: &Path, cwd: &Path) -> Option<CodexSession> {
+fn latest_for_cwd_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Option<CodexSession> {
     let sessions = sessions_in(root); // newest-first
                                       // The nearest ancestor's matches are newest-first, so the first is the latest.
-    nearest_ancestor_sessions(&sessions, cwd)
+    nearest_ancestor_sessions(&sessions, cwd, home)
         .0
         .first()
         .map(|s| (*s).clone())
@@ -665,13 +668,15 @@ mod tests {
         // A session only for repo_a.
         fixture.rollout("2026/07/20", "sa", &repo_a, "codex-tui");
 
-        // From repo_b (and its ancestors), repo_a's session must NOT show.
+        // From repo_b (and its ancestors), repo_a's session must NOT show. The fixture
+        // root stands in for $HOME (#69: probes never leave it).
+        let home = Some(fixture.root.as_path());
         assert!(
-            candidates_scoped_in(&fixture.sessions, &repo_b).is_empty(),
+            candidates_scoped_in(&fixture.sessions, &repo_b, home).is_empty(),
             "a sibling dir's session leaked in"
         );
         // From repo_a itself, it shows (exact cwd → affinity).
-        let here = candidates_scoped_in(&fixture.sessions, &repo_a);
+        let here = candidates_scoped_in(&fixture.sessions, &repo_a, home);
         assert_eq!(here.len(), 1);
         assert!(here[0].cwd_affinity);
     }
@@ -687,14 +692,16 @@ mod tests {
         fixture.rollout("2026/07/20", "sa", &repo_a, "codex-tui");
 
         // From repo_b (no session of its own, no ancestor with one under the root),
-        // the resume target must be None — NOT repo_a's session.
+        // the resume target must be None — NOT repo_a's session. The fixture root
+        // stands in for $HOME (#69).
+        let home = Some(fixture.root.as_path());
         assert!(
-            latest_for_cwd_in(&fixture.sessions, &repo_b).is_none(),
+            latest_for_cwd_in(&fixture.sessions, &repo_b, home).is_none(),
             "leaked a sibling dir's session as the resume target"
         );
         // From repo_a itself it resolves.
         assert_eq!(
-            latest_for_cwd_in(&fixture.sessions, &repo_a).map(|s| s.id),
+            latest_for_cwd_in(&fixture.sessions, &repo_a, home).map(|s| s.id),
             Some("sa".to_string())
         );
     }

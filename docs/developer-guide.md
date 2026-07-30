@@ -1,8 +1,13 @@
 # claude-replay — Developer Guide
 
-Practical guidance for working on `claude-replay`: how to build and test it, how to reuse the
-engine as a library, and how to add support for a new agent. For the system design behind all
-of this, see [Architecture](architecture.md).
+> A standalone, visual render of this guide lives at
+> [`docs/developer-guide.html`](developer-guide.html); the architecture companion at
+> [`docs/architecture.html`](architecture.html).
+
+Practical guidance for working on — and building on — the `claude-replay` workspace: how to
+build and test it, which crate to depend on for which job, how to add an agent, and how to
+build a new presentation on the shared layers. For the system design behind all of this, see
+[Architecture](architecture.md).
 
 ---
 
@@ -10,7 +15,7 @@ of this, see [Architecture](architecture.md).
 
 ```sh
 cargo build --workspace
-cargo test  --workspace       # deterministic; no terminal needed
+cargo test  --workspace       # deterministic; every crate; no terminal needed
 ```
 
 **Gate every change on** (CI enforces these):
@@ -18,8 +23,16 @@ cargo test  --workspace       # deterministic; no terminal needed
 ```sh
 cargo fmt --check
 cargo clippy --all-targets    # no new warnings
-cargo test                    # default suite is deterministic
+cargo test                    # workspace default-members = all five crates
+scripts/gate/gate.sh          # byte-identical frozen-fixture diff → must print PASS
 ```
+
+The byte gate renders a frozen transcript set through `--dump`, `--dump-html`, and the
+bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, default
+`/tmp/sc-gate`). Engine refactors must be output-preserving; intentional output changes are
+verified line-by-line and re-baselined — see [`scripts/gate/README.md`](../scripts/gate/README.md).
+Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`parse_lines`
+oracles (`#[cfg(test)]` equivalence gates in `claude_model`/`codex_model`).
 
 ## 2. Testing a TUI with no terminal
 
@@ -29,62 +42,75 @@ terminal". Three levels:
 1. **Deterministic (preferred).** Drive `view::View` under ratatui's `TestBackend`: render to
    an in-memory buffer, call the view's methods, assert cells. All viewer state lives in
    `View` (separate from the terminal wiring in `app.rs`) precisely so this works. See the
-   `#[cfg(test)]` tests in `src/view.rs`. **Add a `TestBackend` test for any new interactive
-   behavior.**
+   `#[cfg(test)]` tests in `claude-replay-tui/src/view.rs`. **Add a `TestBackend` test for
+   any new interactive behavior.**
 2. **End-to-end.** `tests/tmux_smoke.rs` runs the real binary inside a private `tmux -L`
    server with no controlling TTY, driving it via `send-keys`/`capture-pane`. It's
    `#[ignore]`d; run `cargo test --test tmux_smoke -- --ignored`.
 3. **Quick plain check.** `claude-replay <path|--latest> --dump -` renders the transcript to
    stdout with no TUI — good for eyeballing parsing/markdown/diffs in a pipe.
 
-### The byte-identical gate (for engine refactors)
+## 3. The crates and their responsibilities
 
-Any change that reorganizes the parser must be **output-preserving**. Two safety nets:
+Pick your dependency by the job (details: [Architecture §2](architecture.md#2-the-workspace-five-crates-three-levels-of-reuse)):
 
-- The streaming parse is asserted bit-identical to frozen `parse_main`/`parse_lines` oracles
-  (`#[cfg(test)]` in `claude_model`/`codex_model`).
-- Before/after a refactor, diff `--dump`/`--dump-html` output on frozen Claude **and** Codex
-  transcripts:
+| you want to… | depend on | you get |
+|---|---|---|
+| analyze transcripts (stats, ETL, CI checks) | `claude-replay-core` | parse/follow/discover, `Block`/`Session`/`Metrics` — deps: `serde_json` + `anyhow` |
+| build your own frontend | + `claude-replay-present` | `SessionCache`, the pull protocol (both halves), fold policy, summaries, highlighting, `Args` |
+| embed the existing UIs | + `claude-replay-tui` / `claude-replay-html` | the terminal viewer / the HTML exporter + live server |
 
-  ```sh
-  claude-replay frozen.jsonl        --dump - --full --width 100 > before.txt
-  # …refactor…
-  claude-replay frozen.jsonl        --dump - --full --width 100 > after.txt
-  diff before.txt after.txt         # must be empty
-  claude-replay frozen.jsonl        --dump-html - > after.html   # and the HTML path
-  ```
+The sections below are one worked example of each level — and every example is how **our own
+binaries actually consume the layers**, so they can't rot into pseudo-code.
 
-## 3. Using the engine as a library
+## 4. Level 1 — core alone: transcript analysis
 
-`claude-replay-core` is a standalone crate (`serde_json` + `anyhow` only). The public surface
-is small and curated — a consumer never reaches through module paths.
+`claude-replay-core` is sans-io and presentation-free. The one-shot surface:
 
 ```rust
-use claude_replay_core::{parse_session, FollowParser, Block};
+use claude_replay_core::{parse_session, Block};
 
-// One-shot: parse a whole transcript into an agent-neutral Session.
-let session = parse_session(std::path::Path::new("session.jsonl"))?;
-println!("{} blocks · {} turns · {}", session.blocks.len(),
+let session = parse_session(std::path::Path::new("session.jsonl"))?;  // agent auto-detected
+println!("{} blocks · {} turns · {}", session.blocks().len(),
          session.index.turns.len(), session.metrics.footer());
-for block in &session.blocks {
-    match block {
-        Block::AssistantText(t) => { /* render markdown */ }
-        Block::ToolUse { name, target, .. } => { /* render a tool line */ }
-        _ => {}
-    }
-}
-
-// Live tail: fold only appended bytes each poll (call on a timer).
-let mut follower = FollowParser::open(session.agent, path);
-while let Some((blocks, _times, metrics)) = follower.poll()? {
-    // re-render from `blocks`; `poll()` returns None when the file hasn't grown
+for block in session.blocks().iter() {
+    if let Block::ToolUse { name, target, .. } = block { /* tally tool usage… */ }
 }
 ```
 
-The complete curated API: `parse_session` / `parse_session_as` / `parse_session_enriched[_as]`,
-`Session`, `SessionIndex` (+ `TurnEntry`/`AgentEntry`/`ToolEntry`/`ToolCount`/`AttachmentEntry`),
-`FollowParser`, `Metrics`, `Block` (+ `Attachment`/`AttachmentContent`/`SubAgent`/`AgentStatus`/
-`Hunk`), and `Agent`. A runnable example lives at
+For anything incremental — or any I/O the library shouldn't dictate — drop one level to the
+**sans-io [`SessionAccumulator`]** and push lines yourself:
+
+```rust
+use claude_replay_core::{engine::SessionAccumulator, Agent};
+
+let mut acc = SessionAccumulator::new(Agent::Claude);
+let mut offset = 0u64;
+for line in my_source_of_lines() {            // a file, a socket, a decompressor, a test
+    acc.advance_at(offset, &line);            // one line resident at a time
+    offset += line.len() as u64 + 1;
+}
+println!("committed {} blocks, {} in the open turn",
+         acc.committed_len(), acc.provisional_len());
+let session = acc.snapshot();
+```
+
+This is not a side door — it is the *only* fold in the workspace. Batch parsing feeds it from
+a file reader; the live [`FollowParser`] feeds it appended bytes each `poll()`
+(`FollowParser::open(agent, path)` bundles the byte-offset tail + the accumulator, and
+`poll_delta()` additionally reports `changed_from`, the first index that differs — O(turn),
+not O(session)). Two performance levers worth knowing:
+
+- **Storage injection:** `SessionAccumulator::with_store(agent, TierBStore::file(path)?)`
+  spills committed block *content* to disk as it folds — RAM stays O(open turn) + a
+  12-byte-per-block locator table. `snapshot()` then yields a `Session<Deferred>`; read
+  blocks back through the `BlockAccess` trait. This is one instance of the **`BlockStore`
+  seam** — see [Choosing your `BV`](#choosing-your-bv-the-blockstore-seam) for the general
+  mechanism (the live HTML server takes it further: its store *renders* at put time).
+- **Delta reads:** `acc.stream_read(from)` returns `committed[from..]` + the open turn +
+  O(turn) metadata — the primitive under the pull protocol; never clones the whole session.
+
+A runnable example lives at
 [`claude-replay-core/examples/parse.rs`](../claude-replay-core/examples/parse.rs):
 
 ```sh
@@ -93,130 +119,239 @@ cargo run -p claude-replay-core --example parse -- <transcript.jsonl> [--follow]
 
 ### The API reference (auto-generated, always in sync)
 
-For the **exhaustive per-object reference** — every struct, enum, trait, and function with its
-signature and doc, across both crates — use **rustdoc**. It is generated from the source and
-the doc comments, so it never drifts from the code. A `cargo` alias builds it:
+For the **exhaustive per-object reference** across all five crates, use rustdoc — generated
+from source + doc comments, so it never drifts:
 
 ```sh
-cargo apidoc          # build the reference into target/doc/
-cargo apidoc --open   # …and open it in a browser
+cargo apidoc          # build the reference into target/doc/  (alias in .cargo/config.toml)
+cargo apidoc --open
 ```
 
-`apidoc` (defined in [`.cargo/config.toml`](../.cargo/config.toml)) is
-`doc --workspace --no-deps --document-private-items`, so the manual documents **internal**
-objects (the `TranscriptAdapter` trait, the `Replayer` fold, the per-agent tokenizers, …) as
-well as the public API — everything a contributor needs, not just what a library consumer
-sees. Start at the `claude_replay_core` crate page for the engine, or `claude_replay` for the
-viewer/HTML/`agent-jdi`. This is the reference manual; the sections above and
-[Architecture](architecture.md) are the *guided* overview of it.
+It documents internal items too (`TranscriptAdapter`, the `Replayer`, the tokenizers) — the
+reference manual behind this guided overview.
 
-## 4. Adding an agent
+## 5. Level 2 — build your own frontend on core + present
 
-This is the payoff of the [three-layer design](architecture.md#3-the-three-layer-engine):
-a new agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter`
-row** — the shared engine is never touched. Say we're adding `Gemini`.
+`claude-replay-present` is the layer that makes a *new* presentation cheap — say a native
+macOS app (SwiftUI shell over a Rust core), an egui viewer, or a bot that posts session
+summaries. What it hands you, and where our own frontends use exactly the same thing:
+
+| entity | what it does for you | real consumer in this repo |
+|---|---|---|
+| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, HandoffStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
+| `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
+| `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
+| `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
+| `present` + core's `summary` | spawn chips, edit summaries, tool display names, activity/turn phrasing — the *voice* of the product | TUI `render.rs` and the HTML emitter, so wording can't drift |
+| `highlight` | syntect highlighting returning spans (ratatui types, no terminal backend) | TUI styles them directly; the HTML exporter adapts them to `<span>`s |
+| `sys` | `deduce_stem`, `reveal_in_file_manager` | the dump stem + the ⏎-on-a-path affordance in both UIs |
+| `SessionCache` aux slot | per-session **presentation sidecar** — derived view state (put-once can't hold it; the consumer owns validity) | the TUI parks evicted frames' `ViewSidecar` (heights, search index, folds, scroll) and re-adopts on reload |
+| `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
+
+**The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
+tick, never spawn a follower thread — and with the `HandoffStore` follow tier (#76), your
+view is the process's ONLY copy of the session's blocks (the follower drains committed
+blocks to you exactly once; a tick costs O(delta), not an O(session) rebuild):
+
+```rust
+type MyCache = SessionCache<TierBStore /*pull: unused*/, HandoffStore, MySidecar>;
+let cache = MyCache::new();
+cache.register(&id, Transcript::open(agent, path));
+loop {
+    if no_input_for_250ms() {
+        if let Some(Ok(d)) = cache.poll_handoff(&id) {
+            // splice: keep [0..frontier), append d.committed_delta + d.provisional,
+            // re-derive from d.changed_from — see View::apply_handoff for the real one
+            view.splice(d);
+        }
+    }
+    cache.reap(30_000);   // idle residents fall back to cheap registrations
+}
+```
+
+(Prefer whole-`Session` values instead? Use `F = InMemoryStore` and `poll`/`poll_delta` —
+the capability bounds pick the menu for you; see the protocol table in
+[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a).)
+
+**The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
+`PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
+client owns the cursor; the server stays per-client stateless — N windows work for free.
+
+```rust
+// server side (any transport):            // client side:
+let ss = SharedSession::open(agent, path); let mut pc = PullClient::new();
+ss.advance()?;                             let applied = pc.apply(&reply);
+let reply = ss.pull(request_cursor);       if let Some(d) = applied.first_changed {
+/* send `reply` */                             rerender_from(pc.blocks(), d);
+                                           } // next request carries pc.cursor()
+```
+
+For the macOS-app sketch specifically: the Rust side is those ~10 lines behind a small FFI
+(or a local socket); SwiftUI renders `pc.blocks()` and re-draws from `first_changed`. Fold
+defaults come from `FoldPolicy`, block styling classes from `model::block_kind`, summaries
+from `core::summary` — your app speaks the same visual language as the TUI/HTML for free.
+Keep the rendered-window discipline (only materialize views near the viewport;
+[`design/dom-virtualization.md`](../design/dom-virtualization.md) is the transferable
+technique doc).
+
+### Choosing your `BV` (the `BlockStore` seam)
+
+`Session<BV>` is generic over what it stores per block, and **the presentation layer decides
+what `BV` is**: the `Block` itself, auxiliary per-block state your renderer needs, an
+explicit pointer into a file you maintain, a deferred block locator, or any combination —
+the one constraint is that a `BV` is written **once**, as its block commits, so it must not
+depend on interactively-changing view parameters (the TUI's wrapped heights depend on width
+and fold state, which is why they live in an invalidatable view cache instead).
+
+Implement `BlockStore` and inject it (`SessionAccumulator::with_store`,
+`SharedSession::with_store`, `SessionCache<YourStore>`):
+
+```rust
+impl BlockStore for MyStore {
+    type Bv = MyPerBlockValue;                       // what Session.committed holds
+    fn put(&mut self, b: Block, at: BlockIndex,
+           user_times: &[Option<EpochSeconds>]) -> Self::Bv {
+        // called exactly once per block as it crosses the durability frontier;
+        // `user_times` is the session's per-turn clock (render-at-put stores index it)
+    }
+    fn reset(&mut self) { /* source truncated: discard, the session rebuilds */ }
+}
+```
+
+Two optional capabilities refine what your store can feed:
+
+- **`BlockRead`** — implement it iff your `Bv` can reconstruct its `Block` (lossless stores:
+  identity, serde bytes). Everything that rebuilds block streams — `snapshot()`, `poll()`,
+  `committed_tail`, `SharedSession::pull` — bounds on it, so the compiler tells you exactly
+  which consumers a one-way projection store can't feed (and keeps them off it).
+- **`PersistentStore`** (present) — `backing_len`/`reopen` + optional hibernate-state hooks,
+  so `SharedSession` can hibernate/restore around your backing across cache evictions.
+
+Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
+`HandoffStore` (`BV = ()` — committed blocks are QUEUED for the consumer instead of retained,
+making the poller the sole owner; the TUI live path, #76), and the richest one,
+`claude-replay-html`'s `RecordStore`
+(`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
+`put` **renders the committed block to its wire-format JSON record** as the side effect and
+returns the pointer — the `Session` itself captures the session in the exact form the
+frontend serves, `/pull` answers committed zones as pointers clients range-read directly,
+and no second representation exists. It implements `BlockStore` + `PersistentStore` but
+deliberately **not** `BlockRead` (a wire record is a one-way projection) — the type system
+then keeps every committed consumer on the pointer path. See the
+[architecture showcase](architecture.md#showcase-sessionbv-in-the-live-html-server) for the
+serving-CPU consequence.
+
+## 6. Level 3 — embed the finished presenters
+
+Both frontends are libraries with small public surfaces:
+
+```rust
+// The terminal viewer (claude-replay-tui):
+claude_replay_tui::app::run(&args, &path)?;          // one session, full TUI
+claude_replay_tui::app::run_interactive(&args)?;     // picker ↔ viewer flow
+// …or drive `view::View` directly under TestBackend/your own terminal loop.
+
+// The HTML frontend (claude-replay-html):
+claude_replay_html::dump_html(&args, &path)?;        // one self-contained .html
+claude_replay_html::dump_all_html(&args, &path)?;    // offline bundle, full agent tree
+claude_replay_html::serve(&args, &path)?;            // loopback live server (pull protocol)
+```
+
+`Args` is plain data (`Default` + struct literal) unless you enable the `cli` feature for
+clap parsing — a headless service can call `dump_all_html` with a hand-built `Args` and never
+link clap. The root `claude-replay` crate is itself just this: ~60 lines of CLI dispatch over
+the two frontends (`src/lib.rs::run_viewer`).
+
+## 7. Adding an agent
+
+The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
+agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter` row**
+— the shared engine is never touched. Calibrate the cost by the three existing adapters:
+Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
+Claude's decoder wholesale — its whole adapter is discovery + a `sniff`). Say we're adding
+`Gemini`.
 
 ### Step 1 — register the agent
 
 Add the variant + labels in `claude-replay-core/src/agent.rs`:
 
 ```rust
-pub enum Agent { Claude, Codex, Gemini }
+pub enum Agent { Claude, Codex, QoderWork, Gemini }
 // …extend label() / from_label() with "gemini".
 ```
 
 ### Step 2 — Layer 1: the decoder (`gemini_model.rs`)
 
-This is the only place that knows Gemini's raw line format. Provide:
+The only place that knows Gemini's raw line format. Provide:
 
 - **`decode_line(line, cwd, out)`** — map one raw JSONL line to 0+ canonical
-  [`Message`](../claude-replay-core/src/engine/message.rs)s (`UserText`, `AssistantText`,
-  `Thinking`, `ToolUse`, `ToolResult`, …). This is where Gemini's field names get mapped onto
-  the shared vocabulary. Thread `cwd` across lines if the format carries it in a header.
+  [`Message`](../claude-replay-core/src/engine/message.rs)s. Thread `cwd` across lines if the
+  format carries it in a header.
 - **`scan_join_ids(lines)`** — the pass-1 pre-scan: collect the tool-call ids a later result
-  will join onto. Reuse the shared skeleton: `engine::replay::scan_ids(lines, |v, ids| { …pull
-  Gemini's call ids… })`.
-- **`GEMINI_SHAPING: Shaping`** — the four L2 hooks: `build_tool` (raw tool fields → a `Block`,
-  incl. any agent-specific tool-name normalization), `join_result` (attach a result onto its
-  `ToolUse`), `keep_orphan` (keep a resultless output?), `finish_turns` (final grouping, or
-  identity). Model it on `codex_model` (the simpler of the two).
+  joins onto (reuse `engine::replay::scan_ids`).
+- **`GEMINI_SHAPING: Shaping`** — the four L2 hooks: `build_tool` (raw tool fields → a
+  `Block`, including tool-name normalization onto the canonical vocabulary — this is what
+  makes the shared summaries/folding classify your agent correctly), `join_result`,
+  `keep_orphan`, `finish_turns` (`coalesce_spans` for Claude-style grouping, or identity).
+  Model it on `codex_model` (the simpler one).
 
-> Everything else about parsing — the fold, back-patching, turn grouping, the queue lifecycle,
-> streaming — is shared and already done. You are writing a *decoder*, not a parser.
+> Everything else about parsing — the fold, back-patching, turn grouping, the queue
+> lifecycle, streaming, the live follower — is shared and already done. You are writing a
+> *decoder*, not a parser.
 
-### Step 3 — Layer: metrics (`gemini_metrics.rs`)
+### Step 3 — metrics (`gemini_metrics.rs`)
 
-A small accumulator implementing the crate-internal `MetricsAccumulator` (push a line's
-token usage, `finish()` into [`Metrics`]). Reuse `metrics::TimeSpan` for the duration and
-`metrics::estimate_cost` for pricing. See `codex_metrics.rs`.
+A small `MetricsAccumulator` impl (push a line's token usage, `finish()` into [`Metrics`]).
+See `codex_metrics.rs`.
 
 ### Step 4 — discovery (`gemini_discover.rs`)
 
-Where Gemini keeps its transcripts on disk. Provide `candidates_scoped(cwd)` (sessions for a
-directory, scoped to the nearest ancestor that has any — reuse `discover::ancestors_of`) and
-`resolve_id(id)` (id → path). If Gemini has sub-agents, also a `subagent_source`.
+Where Gemini keeps its transcripts. Provide `candidates_scoped(cwd)` — scope with
+`discover::ancestors_below(cwd, home)`: auto-discovery must stay strictly inside `$HOME`
+(see [Architecture §9](architecture.md#9-discovery)) — and `resolve_id(id)`. If Gemini has
+sub-agents, also `subagent_source`; if it records a task list, `load_tasks`.
 
 ### Step 5 — wire it up (`adapter.rs`)
 
-Implement `TranscriptAdapter` for a `GeminiAdapter` unit struct, delegating each hook to the
-modules above:
+Implement `TranscriptAdapter` for a `GeminiAdapter` unit struct delegating to the modules
+above. Two hooks deserve thought:
 
 ```rust
-pub(crate) struct GeminiAdapter;
-impl TranscriptAdapter for GeminiAdapter {
-    fn agent(&self) -> Agent { Agent::Gemini }
-    fn sniff(&self, head: &Value) -> bool { /* recognize a Gemini head */ }
-    fn scan_join_ids(&self, path: &Path) -> io::Result<HashSet<String>> {
-        // open + stream lines to gemini_model::scan_join_ids
-    }
-    fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        crate::gemini_model::decode_line(line, cwd, out)
-    }
-    fn shaping(&self) -> &'static Shaping { &crate::gemini_model::GEMINI_SHAPING }
-    fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> { Box::new(GeminiMetricsAcc::default()) }
-    fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> { crate::gemini_discover::candidates_scoped(cwd) }
-    fn resolve_id(&self, id: &str) -> Option<PathBuf> { crate::gemini_discover::resolve_id(id) }
-    // enrich / subagent_source / parse_path_timed / parse_reader: inherit the defaults
+fn sniff(&self, head: &Value) -> SniffClaim {
+    // Owns     — an unmistakable format marker of YOURS (Codex's rollout head)
+    // CanParse — the format is readable but not proof of origin (Claude's generic shape)
+    // No       — not mine
+}
+fn store_contains(&self, path: &Path) -> bool {
+    // provenance: paths inside ~/.gemini/… are yours even if the format is generic —
+    // this + sniff drives ownership vs the picker's "compatible (gemini)" badge
 }
 ```
 
-Then add the one registry row (both places):
+Then add the one registry row in `adapter()`/`adapters()` and declare the modules in
+`lib.rs`. Discovery, detection, the picker, the follower, and both frontends pick the agent
+up with no further changes.
 
-```rust
-pub(crate) fn adapter(agent: Agent) -> &'static dyn TranscriptAdapter {
-    match agent { Agent::Claude => &ClaudeAdapter, Agent::Codex => &CodexAdapter,
-                  Agent::Gemini => &GeminiAdapter }
-}
-pub(crate) fn adapters() -> &'static [&'static dyn TranscriptAdapter] {
-    &[&ClaudeAdapter, &CodexAdapter, &GeminiAdapter]
-}
-```
+### Step 6 — test it
 
-Declare the new modules in `claude-replay-core/src/lib.rs` (`pub(crate) mod gemini_model;`
-etc.).
+- An equivalence gate in `gemini_model` (frozen fixture → expected block list), mirroring
+  `replay_tokenize_matches_*`.
+- A `FollowParser` round-trip: incremental output == full re-parse at each append.
+- The full gate (§1), including `scripts/gate/gate.sh`.
 
-### Step 6 — that's it (what you did NOT touch)
+## 8. Repo conventions
 
-You wrote three small per-agent files + one adapter impl. You did **not** touch: the fold
-(`engine::replay`), the `Block` model, `Session`/`SessionIndex`, discovery's facade
-(`detect_agent`/`resolve_any` pick up the new `sniff`/registry automatically), the live
-follower, or any presenter. `sniff` makes `detect_agent` recognize the format; the registry
-row makes it reachable everywhere.
+- **Layout & module map:** [Architecture §11](architecture.md#11-where-things-live).
+- **Design notes** for specific subsystems live under `design/` — e.g. the CC span rules
+  (`cc-activity-coalescing.md`), the fold/coalesce/summarize extensibility study, the DOM
+  virtualization technique — and `src/jdi/DESIGN.md` for the supervisor.
+- Keep the per-agent modules **symmetric** (same shape + naming across agents); reviews
+  check for drift.
+- One workspace version: bump `[workspace.package] version` in the root `Cargo.toml` only.
 
-### Step 7 — test it
-
-- Add an equivalence gate in `gemini_model` (a frozen fixture: assert
-  `replay(tokenize(x))` matches a hand-checked expected block list), mirroring the
-  `replay_tokenize_matches_*` tests.
-- Add a `FollowParser` round-trip: the follower's incremental output must equal a full
-  `parse_session_as` at each append (see `follow.rs`'s `assert_follow`).
-- Run the full gate (`fmt` / `clippy` / `test`).
-
-## 5. Repo conventions
-
-- **Layout & module map:** [Architecture §10](architecture.md#10-where-things-live).
-- **Design notes** for specific subsystems live under `design/` (e.g. the queued-message
-  lifecycle, transcript-source formats, the deferred agent-agnostic-supervisor plan) and
-  `src/jdi/DESIGN.md` for the supervisor.
-- Keep the per-agent pairs **symmetric** (same shape + naming on the Claude and Codex sides);
-  the reviews check for drift.
+[`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
+[`FollowParser`]: ../claude-replay-core/src/follow.rs
+[`Metrics`]: ../claude-replay-core/src/metrics.rs
+[`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
+[`SessionCache<P, F, A>`]: ../claude-replay-present/src/cache/mod.rs
+[`PullClient`]: ../claude-replay-present/src/cache/stream.rs

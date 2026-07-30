@@ -1,10 +1,10 @@
-//! `FoldPolicy` — which block types start collapsed. Derived from the CLI (`--fold`/
+//! `FoldPolicy` — which block types start collapsed. Derived from the CLI flags (`--fold`/
 //! `--unfold`/`--full`) and consumed by BOTH presenters: the TUI (`View`) and the headless
-//! HTML export (`data-open`). It's shared display *policy*, not view state, so it lives in
-//! its own neutral module rather than inside the ratatui `view`.
+//! HTML export (`data-open`). It's shared display *policy* keyed on the core's own block
+//! classification (`model::fold_key`) — not view state — so it lives in the core beside
+//! the vocabulary it indexes.
 
 use crate::model::Block;
-use crate::Args;
 use std::collections::HashSet;
 
 /// The canonical block-type keys (see `model::fold_key`).
@@ -82,16 +82,14 @@ impl FoldPolicy {
         }
     }
 
-    pub fn from_args(args: &Args) -> Self {
-        let mut p = if args.full {
-            Self::none()
-        } else {
-            Self::default()
-        };
-        for k in parse_keys(args.fold.as_deref()) {
+    /// Build from plain flag values (`--full` / `--fold` / `--unfold` CSVs) — the
+    /// clap-free constructor. CLI callers go through `Args::fold_policy`.
+    pub fn from_flags(full: bool, fold: Option<&str>, unfold: Option<&str>) -> Self {
+        let mut p = if full { Self::none() } else { Self::default() };
+        for k in parse_keys(fold) {
             p.folded.insert(k);
         }
-        for k in parse_keys(args.unfold.as_deref()) {
+        for k in parse_keys(unfold) {
             p.folded.remove(k); // --unfold wins over --fold and the defaults
         }
         p
@@ -104,7 +102,7 @@ impl FoldPolicy {
     }
 
     /// Initial per-block fold state for a block list under this policy.
-    pub(crate) fn collapsed_for(&self, blocks: &[Block]) -> Vec<bool> {
+    pub fn collapsed_for(&self, blocks: &[Block]) -> Vec<bool> {
         blocks.iter().map(|b| self.collapses(b)).collect()
     }
 }

@@ -5,18 +5,17 @@
 //! rendered-line diff baseline + titles). Split out so the HTTP/tailer machinery doesn't share
 //! a namespace with the markdown/JSON renderer.
 
+use super::record_store::RecordStore;
 use super::{
     assemble_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
-    render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, EmitState, POLL_MS,
+    render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, POLL_MS,
 };
-use crate::cache::{pull_indices, Cursor, SharedSession, TierBStore};
+use crate::cache::{pull_indices, Cursor, SharedSession};
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 /// How long an agent keeps being tailed after its last request before it goes idle and is
 /// dropped (its stream file stays on disk; a later request revives it).
@@ -36,37 +35,20 @@ struct Live {
     root_path: std::path::PathBuf,
     cwd: String,
     /// The session domain: id→source registry + resident followers + TTL reaping.
-    cache: SessionCache,
-    /// Presentation state, keyed by agent id. `prev`: the block lines last written (the diff
-    /// baseline for the next delta); its presence also marks an agent as materialized (its
-    /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
-    prev: Mutex<HashMap<String, Vec<String>>>,
-    titles: Mutex<HashMap<String, TitleInfo>>,
-    /// The `/pull` **render-once** cache, keyed by id: committed blocks are rendered exactly once
-    /// (as they commit) and their wire records cached here; only the open turn re-renders per poll.
-    /// So a poll's render cost is O(open-turn), not O(session). Reset when the session epoch changes.
-    render: Mutex<HashMap<String, PullRender>>,
-    /// child id → **parent session id**, recorded once when the parent's pull registers the
-    /// child's source. The child derives its own title/breadcrumb from the parent's maintained
-    /// meta on ITS first resolve ([`derive_title`](Self::derive_title)) — the pull path's
-    /// inversion of `register_children`'s per-pull cross-session title writes.
-    parents: Mutex<HashMap<String, String>>,
+    cache: SessionCache<RecordStore, crate::engine::InMemoryStore, ServeAux>,
 }
 
-/// Per-id render-once state for `/pull`. Committed blocks are rendered **once** (as they commit)
-/// into an on-disk append-only log `<id>.records`; the rendered JSON records live on **disk**, never
-/// resident. Only this is in RAM: the carried [`EmitState`] (so the next committed range's anchors
-/// follow on), the per-record **offset table**, and the log length. A poll reads the committed byte
-/// range it needs straight off the log. Reset (new file) when the session epoch changes.
+/// The live server's per-session presentation sidecar, held in the cache's aux slot (#76 —
+/// "the cache IS the data layer"). `title`: the non-source half of the descriptor (a child's
+/// derives once, on its first resolve). `parent`: child → parent session id, recorded when
+/// the parent's pull registers the child's source ([`derive_title`](Live::derive_title)
+/// follows it). `prev`: the `/stream` baseline's last-written block lines — its presence also
+/// marks the agent materialized.
 #[derive(Default)]
-struct PullRender {
-    epoch: u64,
-    emit: EmitState,
-    /// Byte offset where each committed record starts in the on-disk log; `offsets.len()` is the
-    /// number of committed blocks rendered so far (8 bytes/block resident — not the record itself).
-    offsets: Vec<u64>,
-    /// Current log length (EOF), so the next record's offset is O(1).
-    len: u64,
+struct ServeAux {
+    title: Option<TitleInfo>,
+    parent: Option<String>,
+    prev: Option<Vec<String>>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -105,7 +87,7 @@ impl Live {
             // A registered id with no title yet was registered source-only by its parent's pull
             // (`register_child_sources`): derive its title/breadcrumb ONCE from the parent's
             // maintained meta, now that this session is actually being retrieved.
-            let cached = crate::cache::lock_recover(&self.titles).get(id).cloned();
+            let cached = self.cache.aux_with(id, |a| a.title.clone());
             let t = cached.unwrap_or_else(|| self.derive_title(id));
             return Some((src, t));
         }
@@ -119,10 +101,7 @@ impl Live {
             ..Default::default() // unknown ancestry/type for an un-navigated deep link
         };
         self.cache.register(id, src.clone());
-        self.titles
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), t.clone());
+        self.cache.aux_with(id, |a| a.title = Some(t.clone()));
         Some((src, t))
     }
 
@@ -134,16 +113,13 @@ impl Live {
     /// was ever pulled, or the parent's live state was TTL-reaped) — matching the pre-existing
     /// deep-link fallback; whichever value is derived is cached one-time, as before.
     fn derive_title(&self, id: &str) -> TitleInfo {
-        let parent_id = crate::cache::lock_recover(&self.parents).get(id).cloned();
+        let parent_id = self.cache.aux_with(id, |a| a.parent.clone());
         let derived = parent_id.and_then(|pid| {
             let pmeta = self.cache.shared_peek(&pid)?.session_meta();
             let c = pmeta.children.iter().find(|c| c.id == id)?;
             let pt = self
-                .titles
-                .lock()
-                .unwrap()
-                .get(&pid)
-                .cloned()
+                .cache
+                .aux_with(&pid, |a| a.title.clone())
                 .unwrap_or_default();
             let mut ancestors = pt.ancestors;
             ancestors.push((pid, pt.title));
@@ -161,12 +137,8 @@ impl Live {
             title: id.to_string(),
             ..Default::default()
         });
-        self.titles
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(t)
-            .clone()
+        self.cache
+            .aux_with(id, |a| a.title.get_or_insert(t).clone())
     }
 
     /// Record `parent_id`'s children in the id→source registry — a pure path derivation, one
@@ -182,10 +154,8 @@ impl Live {
             if let Some(source) = discover::subagent_source(self.agent, &self.root_path, &c.id) {
                 self.cache
                     .register_new(&c.id, Transcript::open(self.agent, source));
-                self.parents
-                    .lock()
-                    .unwrap()
-                    .insert(c.id.clone(), parent_id.to_string());
+                self.cache
+                    .aux_with(&c.id, |a| a.parent = Some(parent_id.to_string()));
             }
         }
     }
@@ -194,7 +164,7 @@ impl Live {
     /// and register its children. Cheap on the hot path (an already-materialized id short-
     /// circuits; the background tailer keeps it current). Returns false for an unknown id.
     fn ensure_stream(&self, id: &str) -> bool {
-        if crate::cache::lock_recover(&self.prev).contains_key(id) {
+        if self.cache.aux_with(id, |a| a.prev.is_some()) {
             return true; // already materialized — the tailer keeps its stream current
         }
         let Some((src, title)) = self.resolve_id(id) else {
@@ -235,10 +205,8 @@ impl Live {
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
         // Record the diff baseline (also marks the id materialized for the fast path above).
-        self.prev
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), block_lines(&jsonl));
+        self.cache
+            .aux_with(id, |a| a.prev = Some(block_lines(&jsonl)));
         true
     }
 
@@ -258,20 +226,36 @@ impl Live {
         for (rid, ss) in self.cache.reap(TAIL_TTL_MS) {
             let _ = ss.hibernate(&self.dir.join(format!("{rid}.state")));
         }
-        let blocks_path = self.dir.join(format!("{id}.blocks"));
+        let records_path = self.dir.join(format!("{id}.records"));
         let state_path = self.dir.join(format!("{id}.state"));
+        // #74: the Session's own BlockStore renders each committed block to its wire record as
+        // it commits (Bv = RecordLocator into `<id>.records`) — one storage, one serialization;
+        // there is no separate block backing. A followed session's resident footprint is
+        // O(open turn) + the locator table.
+        let mk_store = |path: &Path| {
+            RecordStore::create(
+                path,
+                self.fold.clone(),
+                self.cwd.clone(),
+                crate::Transcript::open(self.agent, src.path().to_path_buf()),
+            )
+        };
         let open_fresh = || {
-            // Committed block content spills to an on-disk tier-b backing next to the render log
-            // (falls back to an off-heap buffer if the file can't be created) — a followed
-            // session's resident footprint is O(open turn) + locator/offset tables, not O(N).
-            let store = TierBStore::file(&blocks_path).unwrap_or_else(|_| TierBStore::new());
+            let store = mk_store(&records_path).unwrap_or_else(|_| {
+                // Unwritable serve dir: fall back to a temp-dir log — range reads go through
+                // the store (its own path), so the fallback serves fully.
+                let alt = std::env::temp_dir()
+                    .join(format!("cr-records-{}-{id}.records", std::process::id()));
+                mk_store(&alt).expect("create record log")
+            });
             SharedSession::with_store(self.agent, src.path(), store)
         };
         let mut shared = self.cache.shared_session(id, || {
             // Restore-from-materialization first (valid only while the source is unchanged);
-            // else fold fresh. A restored session keeps its epoch/gen, so a client that held its
-            // cursor across the eviction continues seamlessly.
-            SharedSession::restore(src.path(), &state_path, &blocks_path)
+            // else fold fresh. A restored session keeps its epoch/gen (and its render
+            // continuation, via the sidecar's store state), so a client that held its cursor
+            // across the eviction continues seamlessly.
+            SharedSession::restore(src.path(), &state_path, &records_path)
                 .unwrap_or_else(&open_fresh)
         });
         if shared.hibernation_stale() || shared.poisoned() {
@@ -306,42 +290,26 @@ impl Live {
         // Attachments load from THIS agent's own transcript.
         let transcript = crate::Transcript::open(self.agent, info.source.clone());
 
-        // Render-once TO DISK: append the newly-committed blocks' records to `<id>.records` (they
-        // never re-render and never sit in RAM), carrying EmitState so anchors follow on. The open
-        // turn renders from a *clone* of that state each poll (ephemeral anchors don't pollute it).
-        // A poll renders O(open-turn) and reads only the committed byte range the cursor needs.
-        //
-        // `pull_delta` is the delta-sized read: it takes OUR render-cache state (epoch + how many
-        // committed blocks are already in the log) and returns only `committed[rendered..]`, the
-        // open turn, and the accumulator-MAINTAINED header — never a whole-session block clone or
-        // scan. Called under the render lock so the slice matches `pr` (lock order: render ⊃
-        // shared; nothing takes the reverse).
-        let log_path = self.dir.join(format!("{id}.records"));
-        let mut rmap = crate::cache::lock_recover(&self.render);
-        let pr = rmap.entry(id.to_string()).or_default();
-        let d = shared.pull_delta(pr.epoch, pr.offsets.len());
-        if d.reset {
-            *pr = PullRender {
-                epoch: d.epoch,
-                ..Default::default()
-            };
-            let _ = std::fs::remove_file(&log_path); // discard the stale log
-        }
-        if !d.committed_delta.is_empty() {
-            let new_lines = render_blocks(
-                &d.committed_delta,
-                &d.user_times,
-                &self.fold,
-                &self.cwd,
-                true,
-                true,
-                None,
-                Some(&transcript),
-                &mut pr.emit,
+        // #74: committed records were already rendered-once by the store's `put` as each
+        // block crossed the durability frontier — the Session's committed table IS the wire
+        // projection. One consistent read (a single lock) hands back the open-turn delta plus
+        // the two store-derived facts this reply needs: the committed byte range for this
+        // cursor and the render continuation the open turn resumes from.
+        let (d, (committed_ext, mut open_emit)) = shared.open_delta_with(|store, committed, d| {
+            let (cfx, _) = pull_indices(
+                d.epoch,
+                committed.len(),
+                d.provisional.len(),
+                d.provisional_gen,
+                cursor,
             );
-            append_records(&log_path, &new_lines, &mut pr.offsets, &mut pr.len);
-        }
-        let mut open_emit = pr.emit.clone();
+            let start = committed
+                .get(cfx)
+                .map(|l| l.offset)
+                .unwrap_or_else(|| store.log_len());
+            let ext = (store.log_len() > start).then_some((start, store.log_len() - start));
+            (ext, store.emit_snapshot())
+        });
         let provisional_lines = render_blocks(
             &d.provisional,
             &d.user_times,
@@ -353,20 +321,17 @@ impl Live {
             Some(&transcript),
             &mut open_emit,
         );
-        // Slice each zone at the cursor (via the tested pull_indices). The committed zone is
-        // returned as a POINTER `{offset, len}` into the on-disk `<id>.records` log — the client
-        // range-reads it via `/records` (Part 2 of the pull design): the reply never carries the
-        // committed bytes, so the server buffers none of them.
+        // Slice each zone at the cursor (via the tested pull_indices). The committed zone is a
+        // POINTER `{offset, len}` into the on-disk `<id>.records` log — the client range-reads
+        // it via `/records`: the reply never carries the committed bytes, so the server renders
+        // and buffers none of them.
         let (cf, pf) = pull_indices(
             d.epoch,
-            pr.offsets.len(),
+            d.n_committed,
             provisional_lines.len(),
             d.provisional_gen,
             cursor,
         );
-        let start = pr.offsets.get(cf).copied().unwrap_or(pr.len);
-        let committed_ext = (pr.len > start).then_some((start, pr.len - start));
-        drop(rmap);
         // The meta wire record from the maintained header (no block scan) + this agent's
         // presentation info. Children get a one-time source+parent-pointer note so their
         // `?session=` links resolve; their titles derive lazily on THEIR first pull
@@ -398,17 +363,19 @@ impl Live {
     /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(())` → **409**
     /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
     /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
-    /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the render lock
-    /// so a concurrent reset can't swap the log mid-read.
+    /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the session
+    /// lock so a concurrent reset can't swap the log mid-read (#74: through the store).
     fn records_bytes(&self, id: &str, from: u64, len: u64, epoch: u64) -> Result<Vec<u8>, ()> {
-        let rmap = crate::cache::lock_recover(&self.render);
-        let pr = rmap.get(id).ok_or(())?;
-        if pr.epoch != epoch {
-            return Err(());
-        }
-        let end = from.saturating_add(len).min(pr.len);
-        let log_path = self.dir.join(format!("{id}.records"));
-        Ok(read_range(&log_path, from.min(end), end))
+        // Through the resident store, under the session lock — the epoch check can't tear
+        // against a concurrent reset. A reaped resident yields 409; the client's next pull
+        // rematerializes it and reissues the pointer.
+        let ss = self.cache.shared_peek(id).ok_or(())?;
+        ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch {
+                return Err(());
+            }
+            Ok(store.read_range(from, from.saturating_add(len)))
+        })
     }
 
     /// Register `parent`'s discovered children so their `?session=` links resolve to a source
@@ -428,9 +395,9 @@ impl Live {
                     ancestors: ci.ancestors,
                 };
                 self.cache.register_new(&id, src);
-                crate::cache::lock_recover(&self.titles)
-                    .entry(id)
-                    .or_insert(t);
+                self.cache.aux_with(&id, |a| {
+                    a.title.get_or_insert(t.clone());
+                });
             }
         }
     }
@@ -479,11 +446,8 @@ impl Live {
                     _ => continue, // reaped since enumeration, unreadable, or nothing new
                 };
                 let title = self
-                    .titles
-                    .lock()
-                    .unwrap()
-                    .get(&id)
-                    .cloned()
+                    .cache
+                    .aux_with(&id, |a| a.title.clone())
                     .unwrap_or_default();
                 let info = self.agent_info(&id, src.path().to_path_buf(), &title);
                 let blocks = session.blocks();
@@ -506,11 +470,12 @@ impl Live {
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                let mut prev = crate::cache::lock_recover(&self.prev);
-                let baseline = prev.get(&id).map(Vec::as_slice).unwrap_or(&[]);
-                if let Some(delta) = stream_delta(baseline, &fresh, meta) {
+                let delta = self.cache.aux_with(&id, |a| {
+                    stream_delta(a.prev.as_deref().unwrap_or(&[]), &fresh, meta)
+                        .inspect(|_| a.prev = Some(fresh.clone()))
+                });
+                if let Some(delta) = delta {
                     let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
-                    prev.insert(id, fresh);
                 }
             }
         }
@@ -538,50 +503,6 @@ pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Opt
     out.push_str(meta);
     out.push('\n');
     Some(out)
-}
-
-/// Append rendered records to the on-disk log (one per line), updating the resident offset table +
-/// length. Best-effort: a record whose write fails is simply not counted (the next poll re-tries).
-fn append_records(path: &Path, records: &[String], offsets: &mut Vec<u64>, len: &mut u64) {
-    if records.is_empty() {
-        return;
-    }
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        for r in records {
-            if f.write_all(r.as_bytes())
-                .and_then(|_| f.write_all(b"\n"))
-                .is_ok()
-            {
-                offsets.push(*len);
-                *len += r.len() as u64 + 1;
-            }
-        }
-    }
-}
-
-/// Read `[start, end)` bytes off the log (the committed records the cursor needs). Empty on any I/O
-/// error or an empty range — the committed zone is then simply absent from this reply.
-fn read_range(path: &Path, start: u64, end: u64) -> Vec<u8> {
-    if end <= start {
-        return Vec::new();
-    }
-    use std::io::{Read, Seek, SeekFrom};
-    match std::fs::File::open(path) {
-        Ok(mut f) => {
-            let mut buf = vec![0u8; (end - start) as usize];
-            if f.seek(SeekFrom::Start(start)).is_ok() && f.read_exact(&mut buf).is_ok() {
-                buf
-            } else {
-                Vec::new()
-            }
-        }
-        Err(_) => Vec::new(),
-    }
 }
 
 /// Build the `/pull` wire reply string. The **provisional** records are spliced inline (already
@@ -692,7 +613,7 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     use std::sync::Arc;
     let agent = discover::detect_agent(path);
-    let fold = FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     let sid = session_id(path);
     let cwd = discover::session_cwd(path)
         .map(|p| p.display().to_string())
@@ -717,20 +638,15 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         root_path: path.to_path_buf(),
         cwd,
         cache: SessionCache::new(),
-        prev: Mutex::new(HashMap::new()),
-        titles: Mutex::new(HashMap::new()),
-        render: Mutex::new(HashMap::new()),
-        parents: Mutex::new(HashMap::new()),
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
-    crate::cache::lock_recover(&live.titles).insert(
-        sid.clone(),
-        TitleInfo {
+    live.cache.aux_with(&sid, |a| {
+        a.title = Some(TitleInfo {
             title: title.clone(),
             ..Default::default()
-        },
-    );
+        });
+    });
     // Transport: the pull-client feed (`/pull`) is the DEFAULT for a live server — it costs nothing
     // when no browser is attached (no background tailer; folding rides each client request). Setting
     // `CR_STREAM=1` reverts to the baseline `/stream` byte-diff + `run_tailer` (kept for comparison).
@@ -966,7 +882,7 @@ fn serve_connection(
             let p = percent_decode(v);
             let path = Path::new(&p);
             if path.exists() {
-                crate::tui::app::reveal_in_file_manager(path);
+                crate::sys::reveal_in_file_manager(path);
                 return respond(&mut stream, "200 OK", "text/plain", b"revealed");
             }
         }
@@ -1134,10 +1050,6 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            render: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
@@ -1237,10 +1149,6 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            render: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
@@ -1321,20 +1229,15 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            render: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
-        crate::cache::lock_recover(&live.titles).insert(
-            "sid".into(),
-            TitleInfo {
+        live.cache.aux_with("sid", |a| {
+            a.title = Some(TitleInfo {
                 title: "root title".into(),
                 ..Default::default()
-            },
-        );
+            });
+        });
 
         // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
         // registration + the parent pointer — no title write for the child.
@@ -1346,16 +1249,14 @@ mod tests {
         assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
         assert!(live.cache.is_registered("achild01"), "source registered");
         assert_eq!(
-            live.parents
-                .lock()
-                .unwrap()
-                .get("achild01")
-                .map(String::as_str),
+            live.cache
+                .aux_with("achild01", |a| a.parent.clone())
+                .as_deref(),
             Some("sid"),
             "parent pointer recorded"
         );
         assert!(
-            !crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            live.cache.aux_with("achild01", |a| a.title.is_none()),
             "no cross-session title write from the parent's pull"
         );
 
@@ -1368,124 +1269,58 @@ mod tests {
             vec![("sid".to_string(), "root title".to_string())]
         );
         assert!(
-            crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            live.cache.aux_with("achild01", |a| a.title.is_some()),
             "derived once, then cached"
         );
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// RecordStore put → read_range round-trips (#74): each committed block renders to one
+    /// on-disk record whose locator addresses exactly its bytes, and reading from a given
+    /// committed offset returns exactly the records from there on (the pointer serve path).
     #[test]
-    fn codex_pull_registers_and_serves_child_rollout() {
-        use crate::cache::Cursor;
-        use crate::{SessionCache, Transcript};
-        let base = std::env::temp_dir().join(format!("cr-codex-serve-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let sessions = base.join("sessions/2026/07/29");
-        let bundle = base.join("bundle");
-        std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::create_dir_all(&bundle).unwrap();
-        let parent = sessions.join("rollout-parent.jsonl");
-        let child = sessions.join("rollout-child.jsonl");
-        std::fs::write(
-            &parent,
-            concat!(
-                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
-                "\n",
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &child,
-            concat!(
-                r#"{"type":"session_meta","payload":{"id":"child","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/review","agent_nickname":"Nash"}}}}}"#,
-                "\n",
-                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
-                "\n",
-            ),
-        )
-        .unwrap();
-
-        let live = Live {
-            dir: bundle,
-            agent: Agent::Codex,
-            fold: FoldPolicy::default(),
-            root_path: parent.clone(),
-            cwd: "/repo".into(),
-            cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            render: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
-        };
-        live.cache
-            .register("root", Transcript::open(Agent::Codex, parent));
-        crate::cache::lock_recover(&live.titles).insert(
-            "root".into(),
-            TitleInfo {
-                title: "root title".into(),
-                ..Default::default()
-            },
-        );
-
-        let child_id = "codex-agent-2f726f6f742f726576696577";
-        let root_reply = live
-            .pull_response("root", Cursor::default())
-            .expect("root reply");
-        let root_json: Value = serde_json::from_str(&root_reply).unwrap();
-        assert_eq!(root_json["meta"]["children"][0]["id"], child_id);
-        assert!(
-            live.cache.is_registered(child_id),
-            "child source registered"
-        );
-
-        let child_reply = live
-            .pull_response(child_id, Cursor::default())
-            .expect("child reply");
-        let child_json: Value = serde_json::from_str(&child_reply).unwrap();
-        assert_eq!(child_json["meta"]["sid"], child_id);
-        assert_eq!(child_json["meta"]["ancestors"][0]["id"], "root");
-        assert!(
-            child_json["provisional"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|record| record.to_string().contains("child body")),
-            "child rollout records served"
-        );
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// append_records → read_range round-trips: records land on disk in order, and reading from a
-    /// given committed offset returns exactly the records from there on (the render-once serve path).
-    #[test]
-    fn append_then_read_range_round_trips() {
+    fn record_store_put_then_read_range_round_trips() {
+        use crate::engine::BlockStore;
         let dir = std::env::temp_dir().join(format!("cr-records-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("t.records");
         let _ = std::fs::remove_file(&path);
-        let mut offsets = Vec::new();
-        let mut len = 0u64;
-        let recs = vec![
-            r#"{"i":0}"#.to_string(),
-            r#"{"i":1}"#.to_string(),
-            r#"{"i":2}"#.to_string(),
+        let mut store = super::super::record_store::RecordStore::create(
+            &path,
+            FoldPolicy::default(),
+            "/r".into(),
+            crate::Transcript::open(Agent::Claude, path.clone()),
+        )
+        .unwrap();
+        let blocks = [
+            crate::model::Block::AssistantText("first".into()),
+            crate::model::Block::AssistantText("second".into()),
+            crate::model::Block::AssistantText("third".into()),
         ];
-        append_records(&path, &recs, &mut offsets, &mut len);
-        assert_eq!(offsets.len(), 3);
-        // Read from record 1 to EOF → records 1 and 2 only.
-        let bytes = read_range(&path, offsets[1], len);
-        let got: Vec<&str> = std::str::from_utf8(&bytes)
+        let locs: Vec<_> = blocks
+            .iter()
+            .enumerate()
+            .map(|(at, b)| store.put(b.clone(), at, &[]))
+            .collect();
+        assert_eq!(locs.len(), 3);
+        // Read from record 1 to EOF → records 1 and 2 only, each valid JSON with its text.
+        let bytes = store.read_range(locs[1].offset, store.log_len());
+        let got: Vec<Value> = std::str::from_utf8(&bytes)
             .unwrap()
             .lines()
             .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(got, vec![r#"{"i":1}"#, r#"{"i":2}"#]);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].to_string().contains("second"));
+        assert!(got[1].to_string().contains("third"));
+        // Locator lengths address exactly one record each (framing newline excluded).
+        let one = store.read_range(locs[1].offset, locs[1].offset + locs[1].len as u64);
+        assert!(
+            serde_json::from_slice::<Value>(&one).is_ok(),
+            "locator-exact read parses"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

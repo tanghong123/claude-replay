@@ -31,7 +31,7 @@ use std::time::Duration;
 )]
 struct Cli {
     /// Force a specific agent instead of auto-detecting from the directory.
-    #[arg(long, value_parser = crate::parse_agent, global = true)]
+    #[arg(long, value_parser = claude_replay_present::args::parse_agent, global = true)]
     agent: Option<Agent>,
 
     /// Print what a command would do and exit — no spawn, kill, or state change.
@@ -163,7 +163,7 @@ enum Command {
         interval: Option<u64>,
         #[arg(long)]
         max_attempts: Option<u32>,
-        #[arg(long, value_parser = crate::parse_agent)]
+        #[arg(long, value_parser = claude_replay_present::args::parse_agent)]
         agent: Option<Agent>,
         /// The session was sent SIGTERM — escalate to SIGKILL if it ignores it.
         #[arg(long)]
@@ -453,6 +453,91 @@ fn latest_tree_activity(transcript: &Path) -> Option<std::time::SystemTime> {
         }
     }
     latest
+}
+
+/// Whether the transcript's TAIL holds an **in-flight tool call** — a `tool_use` (Claude)
+/// or `function_call` (Codex) with no matching result yet. Mid-tool is BUSY BY
+/// CONSTRUCTION even when every file mtime is stale: transcripts are only written when a
+/// result LANDS, so during a long `cargo build`/test run the whole tree sits untouched
+/// (#82 — the gap in #32's quiet-tree signal that got working sessions SIGKILLed).
+/// Scans the last [`INFLIGHT_TAIL_BYTES`] only; a use whose result predates the window
+/// can't appear dangling (uses are collected from within the window, results may close
+/// them from anywhere in it). Covers sub-agent work too: while a child runs, the parent's
+/// spawning `tool_use` is itself unresolved in the ROOT tail.
+/// Append one timestamped line to `<home>/handoff.log` — the armed-handoff watcher's
+/// decision trail (#82: the era's escalations were invisible; every kill/hold is now
+/// recorded). Best-effort: logging never affects the watch.
+fn handoff_log(config: &Config, msg: &str) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(config.home.join("handoff.log"))
+    {
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
+const INFLIGHT_TAIL_BYTES: u64 = 262_144;
+
+fn inflight_tool_in_tail(transcript: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(transcript) else {
+        return false;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(INFLIGHT_TAIL_BYTES);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buf = String::new();
+    if f.read_to_string(&mut buf).is_err() {
+        return false; // a seek into a multi-byte char etc. — treat as unknown/idle
+    }
+    let mut uses: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Field-level extraction: `key":"value"` occurrences on each line. Claude marks calls
+    // as `"type":"tool_use"` with `"id":"toolu_…"` and results via `"tool_use_id"`; Codex
+    // marks calls as `"type":"function_call"` and results as `"function_call_output"`,
+    // both carrying `"call_id"`.
+    fn field_values<'a>(line: &'a str, key: &str) -> impl Iterator<Item = &'a str> {
+        let pat = format!("\"{key}\":\"");
+        let mut rest = line;
+        let mut out = Vec::new();
+        while let Some(i) = rest.find(&pat) {
+            let v = &rest[i + pat.len()..];
+            if let Some(end) = v.find('"') {
+                out.push(&v[..end]);
+                rest = &v[end..];
+            } else {
+                break;
+            }
+        }
+        out.into_iter()
+    }
+    for line in buf.lines() {
+        if line.contains("\"type\":\"tool_use\"") {
+            uses.extend(
+                field_values(line, "id")
+                    .filter(|v| v.starts_with("toolu"))
+                    .map(str::to_string),
+            );
+        }
+        if line.contains("\"tool_use_id\"") {
+            results.extend(field_values(line, "tool_use_id").map(str::to_string));
+        }
+        if line.contains("\"type\":\"function_call\"") {
+            uses.extend(field_values(line, "call_id").map(str::to_string));
+        }
+        if line.contains("\"type\":\"function_call_output\"") {
+            results.extend(field_values(line, "call_id").map(str::to_string));
+        }
+    }
+    uses.iter().any(|u| !results.contains(u))
 }
 
 /// Seconds after which the newest session is "stale" enough to double-check (env
@@ -1083,7 +1168,7 @@ fn cmd_status(config: &Config, id: Option<&str>) -> Result<()> {
     if let Some(a) = agent {
         if let Some(q) = agent::adapter(a).task_queue() {
             println!("\n── task queue (live) ──");
-            println!("{}", q.render(&sid));
+            println!("{}", q.render(&sid, &cwd));
         }
     }
 
@@ -1932,7 +2017,9 @@ fn cmd_handoff_wait(
     // liveness is judged on the whole transcript TREE (root + its subagents/ dir).
     // Escalate only once the tree has been quiet for the grace period; a busy
     // session keeps its SIGTERM pending and exits at the next boundary.
-    const GRACE_SECS: u64 = 10;
+    // Tool-scale, not chat-scale (#82): transcripts are only written when a result LANDS,
+    // so a session mid-`cargo build` has a stale tree for minutes while working flat out.
+    const GRACE_SECS: u64 = 120;
     let activity_root = agent
         .zip(session)
         .and_then(|(a, sid)| agent::adapter(a).transcript_path(sid, cwd));
@@ -1942,13 +2029,26 @@ fn cmd_handoff_wait(
             break;
         }
         if escalate && !killed && elapsed >= GRACE_SECS {
-            let busy = activity_root
+            // Busy = the tree was written recently OR a tool call is in flight in the
+            // transcript tail (#82 — mid-tool is busy by construction even with every
+            // mtime stale; never SIGKILL a session that is actively working).
+            let tree_recent = activity_root
                 .as_deref()
                 .and_then(latest_tree_activity)
                 .and_then(|t| t.elapsed().ok())
                 .map(|idle| idle.as_secs() < GRACE_SECS)
                 .unwrap_or(false);
-            if !busy {
+            let inflight = activity_root
+                .as_deref()
+                .map(inflight_tool_in_tail)
+                .unwrap_or(false);
+            if !tree_recent && !inflight {
+                handoff_log(
+                    config,
+                    &format!(
+                        "escalating SIGKILL to pid {watch_pid} after {elapsed}s: tree quiet ≥{GRACE_SECS}s, no in-flight tool call"
+                    ),
+                );
                 std::process::Command::new("kill")
                     .arg("-KILL")
                     .arg(watch_pid.to_string())
@@ -1957,6 +2057,13 @@ fn cmd_handoff_wait(
                     .status()
                     .ok();
                 killed = true;
+            } else if elapsed % 60 == 0 {
+                handoff_log(
+                    config,
+                    &format!(
+                        "pid {watch_pid} still busy at {elapsed}s (tree_recent={tree_recent}, inflight={inflight}) — SIGTERM stays pending"
+                    ),
+                );
             }
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -2279,6 +2386,92 @@ mod tests {
         assert!(!session.cargs_path().exists());
         assert_eq!(permission_status_line(&session), None);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// #82: a transcript tail whose last tool call has NO result yet is "in flight" —
+    /// busy by construction, even with every mtime stale — for both agents' shapes; a
+    /// closed call is not. This is the signal that stops the armed-handoff watcher from
+    /// SIGKILLing a session mid-`cargo build` (the gap in #32's quiet-tree fix).
+    #[test]
+    fn inflight_tool_call_in_tail_is_detected_per_agent() {
+        let dir = std::env::temp_dir().join(format!("jdi-inflight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        // Claude: dangling tool_use → in flight; with its tool_result → closed.
+        let c_open = w(
+            "c-open.jsonl",
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A1","name":"Bash","input":{"command":"cargo build"}}]}}"#,
+                "
+"
+            ),
+        );
+        let c_closed = w(
+            "c-closed.jsonl",
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A1","name":"Bash","input":{"command":"cargo build"}}]}}"#,
+                "
+",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A1","content":"ok"}]}}"#,
+                "
+",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#,
+                "
+"
+            ),
+        );
+        assert!(inflight_tool_in_tail(&c_open), "dangling claude tool_use");
+        assert!(!inflight_tool_in_tail(&c_closed), "closed claude tool_use");
+        // Parallel calls on ONE line: one closed, one still out → in flight.
+        let c_par = w(
+            "c-par.jsonl",
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_P1","name":"Read","input":{}},{"type":"tool_use","id":"toolu_P2","name":"Bash","input":{}}]}}"#,
+                "
+",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_P1","content":"ok"}]}}"#,
+                "
+"
+            ),
+        );
+        assert!(
+            inflight_tool_in_tail(&c_par),
+            "one of two parallel calls still out"
+        );
+        // Codex: dangling function_call → in flight; with its output → closed.
+        let x_open = w(
+            "x-open.jsonl",
+            concat!(
+                r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","call_id":"call_9","name":"shell"}}"#,
+                "
+"
+            ),
+        );
+        let x_closed = w(
+            "x-closed.jsonl",
+            concat!(
+                r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","call_id":"call_9","name":"shell"}}"#,
+                "
+",
+                r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","call_id":"call_9","output":"ok"}}"#,
+                "
+"
+            ),
+        );
+        assert!(
+            inflight_tool_in_tail(&x_open),
+            "dangling codex function_call"
+        );
+        assert!(
+            !inflight_tool_in_tail(&x_closed),
+            "closed codex function_call"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

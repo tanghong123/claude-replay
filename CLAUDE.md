@@ -27,16 +27,19 @@ the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PA
 changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
 ## Layout
-A Cargo **workspace** with two crates. The viewer refers to core modules by their original
-paths (`crate::model`, `crate::engine`, …) via re-exports in `src/lib.rs`, so the split is
-mostly transparent when reading viewer code.
+A Cargo **workspace** with five crates, layered for multi-level reuse (#71):
+core → present → {tui, html} → the root binary crate. Each crate re-exports the
+lower layers' modules at its root (`crate::model`, `crate::present`, …), so moved
+code reads unchanged. One shared version: bump `[workspace.package] version` in the
+root Cargo.toml — the single spot per release.
 
 **`claude-replay-core/`** — the agent-agnostic parser/replay engine. **No** TUI/HTML/CLI deps
-(only `serde_json` + `anyhow`); the crate boundary enforces "core is presentation-agnostic".
+(only `serde`/`serde_json` + `anyhow`); the crate boundary enforces "core is presentation-agnostic".
 - **Shared engine** (agent-neutral): `model.rs` the `Block` data-model vocabulary + block
   classification (`block_kind`/`fold_key`) · `engine/` `replay` (the L2 `Replayer`/`Shaping`
   fold + `parse_stream` driver that *builds* blocks) · `message` (L1↔L2 log) ·
-  `session`/`index` (`Session`/`SessionIndex`) · `store` (`SessionStore` tiers) · `path`/`time` ·
+  `session`/`index` (`Session<BV>`/`BlockStore`/`BlockAccess`/`SessionIndex`) · `tier_b`
+  (off-heap/on-disk block backing) · `tasks` · `builder` (`SessionAccumulator`) · `path`/`time` ·
   `metrics.rs` the `Metrics` value + pricing · `discover.rs` the `Candidate` type +
   `detect_agent`/`session_cwd`/`session_id`/`subagent_source`/`resolve_any` ·
   `follow.rs` incremental `FollowParser` · `tail.rs` byte-offset tail · `agent.rs` the `Agent` enum ·
@@ -50,25 +53,33 @@ mostly transparent when reading viewer code.
   in `claude_model`/`codex_model`); `model`'s tests are the agent-neutral ones only
   (`block_kind`/`fold_key`, `relativize`).
 
-**`claude-replay`** (root crate) — the ratatui viewer + HTML export + clap CLI + `agent-jdi`.
-Shared modules sit at the top level (used by both frontends): `present.rs` the plain-text summary
-formatters (spawn chips, activity/turn summaries, tool display names, edit summaries), `fold.rs`
-the `FoldPolicy`, and `highlight.rs` the syntect highlighter (returns ratatui `Span`s; the HTML
-exporter adapts them). The agent-neutral diff-row model
-(`DiffKind`/`DiffRow`/`DiffGroup`/`diff_row_groups`/`line_diff` + `base64_decode`) lives in
-`claude-replay-core::diff` (re-exported as `crate::diff`).
-- `tui/` the terminal frontend: `view.rs` state machine + draw (TestBackend-testable) ·
-  `app.rs` terminal + input · `render.rs` blocks → styled ratatui lines · `markdown.rs` md →
-  ratatui lines · `wrap.rs` wrapping · `theme.rs` styles · `picker.rs` fuzzy session picker ·
-  `clipboard.rs`. Only `app`/`view` are public. `render` calls `crate::diff` + `crate::present`
-  + `crate::highlight`.
-- `html_export/` (`mod.rs` render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline
-  writers · `serve.rs` the `--html` live server) `--dump-html` (write files) / `--html` (open
-  browser; `-f` serves live over a loopback HTTP server since a `file://` page can't `fetch`) →
-  one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust emits an
-  append-only JSON block stream, the JS renders it; `-f` writes a companion `<stem>.jsonl` the
-  page polls). Its shared deps are `model` + `fold` + `crate::diff` + `present` + `highlight`.
-- `jdi/` the **`agent-jdi`** binary (unattended-run supervisor); see `src/jdi/DESIGN.md`
+Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free
+`from_flags`; the CLI bridge is `Args::fold_policy`) and the agent-neutral diff-row model
+`diff` (`DiffKind`/`DiffRow`/`DiffGroup`/`diff_row_groups`/`line_diff` + `base64_decode`).
+
+**`claude-replay-present/`** — presentation SUPPORT, frontend-agnostic: `cache/` the session
+residency cache (`SessionCache` registry + TTL reaping, `SharedSession` + the cursor-pull
+protocol, tier-b spill wiring) · `present.rs` the plain-text summary formatters (spawn chips,
+tool display names, edit summaries; re-exports core's `summary` phrasing) · `highlight.rs` the
+syntect highlighter (returns ratatui `Span`s — the shared span vocabulary; ratatui is a
+types-only dep here, no terminal backend) · `sys.rs` (`deduce_stem`, `reveal_in_file_manager`) ·
+`args.rs` the shared `Args` options type (plain data; the `cli` feature adds the clap derive —
+library consumers stay clap-free).
+
+**`claude-replay-tui/`** — the terminal frontend: `view.rs` state machine + draw
+(TestBackend-testable) · `app.rs` terminal + input · `render.rs` blocks → styled ratatui lines ·
+`markdown.rs` md → ratatui lines · `wrap.rs` wrapping · `theme.rs` styles · `picker.rs` fuzzy
+session picker · `clipboard.rs`. Only `app`/`view` are public.
+
+**`claude-replay-html/`** — the HTML frontend, no terminal deps: `html_export/` (`mod.rs`
+render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline writers · `serve.rs` the
+`--html` live server; `-f` serves live over a loopback HTTP server since a `file://` page can't
+`fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
+emits an append-only JSON block stream, the JS renders it).
+
+**`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
+**`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat
+re-exports so `claude_replay::model`, `claude_replay::tui::app`, … keep their old paths.
 
 The viewer's phased plan (P0–P8) is **built** — see `DESIGN.md` for the design
 notes and the open backlog. Borrowed ideas are credited in `ATTRIBUTION.md`.

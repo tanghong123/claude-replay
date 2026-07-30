@@ -128,7 +128,13 @@ fn esc_returns_from_viewer_to_session_list() {
             "120",
             "-y",
             "30",
-            &format!("CLAUDE_PROJECTS_DIR={} {bin}", dir.display()),
+            // HOME = the fixture root: cwd auto-discovery is scoped strictly inside the
+            // home directory (#69), so the pane's cwd must sit under a home we control.
+            &format!(
+                "HOME={} CLAUDE_PROJECTS_DIR={} {bin}",
+                work.parent().unwrap().display(),
+                dir.display()
+            ),
         ],
     );
     assert!(out.status.success(), "tmux new-session failed (no TTY?)");
@@ -194,7 +200,13 @@ fn s_opens_session_switcher_on_latest() {
     }
     let bin = env!("CARGO_BIN_EXE_claude-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-slatest-{}", std::process::id()));
-    let proj = dir.join("-tmp-proj");
+    // Sessions for a work dir INSIDE the fixture home (#69: discovery only probes strictly
+    // inside $HOME); canonicalize — the process resolves /var → /private/var.
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let work = std::fs::canonicalize(&work).unwrap();
+    let work_str = work.to_string_lossy().to_string();
+    let proj = dir.join(work_str.replace(['/', '.'], "-"));
     std::fs::create_dir_all(&proj).unwrap();
     let write = |name: &str, marker: &str| {
         std::fs::write(
@@ -216,11 +228,18 @@ fn s_opens_session_switcher_on_latest() {
         &[
             "new-session",
             "-d",
+            "-c",
+            &work_str, // --latest is cwd-scoped: launch in the sessions' work dir
             "-x",
             "120",
             "-y",
             "30",
-            &format!("CLAUDE_PROJECTS_DIR={} {bin} --latest", dir.display()),
+            // HOME = the fixture root (#69 home-scoped discovery — see above).
+            &format!(
+                "HOME={} CLAUDE_PROJECTS_DIR={} {bin} --latest",
+                work.parent().unwrap().display(),
+                dir.display()
+            ),
         ],
     );
     assert!(out.status.success(), "tmux new-session failed (no TTY?)");
@@ -336,7 +355,8 @@ fn picker_merges_claude_and_codex_sessions() {
             "-y",
             "30",
             &format!(
-                "CLAUDE_PROJECTS_DIR={} CODEX_SESSIONS_DIR={} {bin}",
+                "HOME={} CLAUDE_PROJECTS_DIR={} CODEX_SESSIONS_DIR={} {bin}",
+                work.parent().unwrap().display(),
                 claude_root.display(),
                 codex_root.display()
             ),

@@ -1,6 +1,15 @@
 //! Terminal wiring + input loop. All view state/drawing lives in `view::View`
 //! (testable headless via ratatui's TestBackend).
 
+use crate::sys::{deduce_stem, reveal_in_file_manager};
+
+/// The TUI's cache instantiation: default block store, [`ViewSidecar`](crate::view::ViewSidecar)
+/// in the aux slot — evicted frames park their derived view state there (#75).
+pub(crate) type TuiCache = claude_replay_present::SessionCache<
+    claude_replay_present::cache::TierBStore, // pull tier: unused by the TUI
+    claude_replay_core::engine::HandoffStore, // follow tier: single-owner streaming (#76)
+    crate::view::ViewSidecar,                 // aux slot: evicted frames' derived state (#75)
+>;
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
 use crate::{discover, Agent, Args};
@@ -151,6 +160,11 @@ struct Frame {
     /// The live follower itself lives in the [`SessionCache`](crate::SessionCache) — the frame
     /// keeps only presentation state.
     id: String,
+    /// The sidecar key (#75): the child's agent id when it has one, else a stable
+    /// path+spawn-index composite — non-empty for every evictable frame, unlike `id`
+    /// (which is empty when the frame has no followable source). Empty only for the root
+    /// (pinned, never evicted).
+    sc_key: String,
     agent: Agent,
     path: PathBuf,
     from: crate::model::BlockIndex,
@@ -171,7 +185,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     let mut tick: u64 = 0;
     // The session domain (live followers + their residency) lives in the cache; frames keep only
     // presentation state. `s`-switching to a different session replaces the cache wholesale.
-    let mut cache = crate::SessionCache::new();
+    let mut cache = TuiCache::new();
     let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
@@ -219,6 +233,13 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             // cursor on the spawn block we came from — without touching its fold state (§2.2).
             Outcome::Ascend if descended => {
                 let popped = stack.pop().expect("descended ⇒ non-root");
+                // Park the child's derived state (#75): a later re-descend into the same
+                // child re-adopts its folds/scroll/measure instead of starting cold.
+                if let Some(view) = popped.view {
+                    if !popped.sc_key.is_empty() {
+                        cache.aux_put(&popped.sc_key, view.into_sidecar());
+                    }
+                }
                 let ni = stack.len() - 1;
                 ensure_loaded(args, &cache, &mut stack, ni)?;
                 if let Some(parent) = stack.last_mut() {
@@ -243,12 +264,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 /// Ensure `stack[i]` is loaded, re-parsing it (and any evicted ancestors it depends on) on demand.
 /// A hollow sub-agent frame is rebuilt from its parent's loaded view via [`build_child_frame`]; the
 /// recursion bottoms out at the pinned root (always loaded). No-op if already loaded.
-fn ensure_loaded(
-    args: &Args,
-    cache: &crate::SessionCache,
-    stack: &mut [Frame],
-    i: usize,
-) -> Result<()> {
+fn ensure_loaded(args: &Args, cache: &TuiCache, stack: &mut [Frame], i: usize) -> Result<()> {
     if stack[i].view.is_some() {
         return Ok(());
     }
@@ -276,7 +292,7 @@ fn ensure_loaded(
 /// Evict least-recently-viewed loaded sub-agent frames until at most [`MAX_RESIDENT_SUBAGENTS`]
 /// remain loaded. The root (index 0) is pinned and never counted/evicted; the current top is never
 /// evicted (it's being viewed).
-fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
+fn enforce_cap(cache: &TuiCache, stack: &mut [Frame]) {
     let top = stack.len() - 1;
     loop {
         let loaded: Vec<usize> = (1..stack.len())
@@ -291,7 +307,15 @@ fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
             .filter(|&i| i != top)
             .min_by_key(|&i| stack[i].last_used);
         match victim {
-            Some(v) => stack[v].view = None,
+            Some(v) => {
+                // Park the derived view state in the cache's aux slot (#75): heights/search
+                // index + fold/scroll survive the eviction; the blocks (the heavy part) drop.
+                if let Some(view) = stack[v].view.take() {
+                    if !stack[v].sc_key.is_empty() {
+                        cache.aux_put(&stack[v].sc_key, view.into_sidecar());
+                    }
+                }
+            }
             None => break, // only the top is loaded — can't evict it
         }
     }
@@ -304,7 +328,7 @@ fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
 fn build_frame(
     args: &Args,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     path: &Path,
     can_go_back: bool,
     from: crate::model::BlockIndex,
@@ -317,7 +341,7 @@ fn build_frame(
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
     // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
     // the tail (the event loop's `poll_delta`). Non-live: one plain streaming parse — the cache
@@ -326,13 +350,20 @@ fn build_frame(
     let id = title.clone();
     let (blocks, cwd, metrics, oplog_tasks) = if args.follow {
         cache.register(&id, transcript.clone());
-        match cache.poll(&id) {
-            Some(Ok(s)) => (
-                s.blocks(),
-                s.cwd.clone(),
-                s.metrics.clone(),
-                s.tasks.clone(),
-            ),
+        // The follower's FIRST handoff folds the whole current file and hands over every
+        // committed block exactly once (#76): from here on the View is the sole owner of
+        // the session's blocks — the follower retains only the open turn.
+        match cache.poll_handoff(&id) {
+            Some(Ok(d)) => {
+                let mut blocks = d.committed_delta;
+                blocks.extend(d.provisional);
+                (
+                    blocks,
+                    discover::session_cwd(path),
+                    d.metrics,
+                    cache.follower_tasks(&id).unwrap_or_default(),
+                )
+            }
             _ => (
                 Vec::new(),
                 discover::session_cwd(path),
@@ -362,6 +393,7 @@ fn build_frame(
     Ok(Frame {
         view: Some(view),
         id,
+        sc_key: String::new(), // root: pinned, never evicted
         agent,
         path: path.to_path_buf(),
         from,
@@ -377,7 +409,7 @@ fn build_frame(
 /// evicted frame from just its parent's loaded view.
 fn build_child_frame(
     args: &Args,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     parent_view: &View,
     agent: Agent,
     root_path: &Path,
@@ -424,8 +456,20 @@ fn build_child_frame(
             child_transcript.clone().expect("live ⇒ transcript"),
         );
     }
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    // The sidecar key (#75): stable across evict/reload cycles of this same child.
+    let sc_key = if agent_id.is_empty() {
+        format!("{}#{idx}", root_path.display())
+    } else {
+        agent_id.clone()
+    };
+    let fold = args.fold_policy();
     let mut view = View::new(blocks, title, live, fold);
+    // Re-adopt a parked sidecar from a previous eviction of this child: the measure pass and
+    // the user's fold/scroll state come back for free (discarded if the session changed shape;
+    // a width change re-measures via the layout sentinel).
+    if let Some(sc) = cache.aux_take(&sc_key) {
+        let _ = view.adopt_sidecar(sc);
+    }
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
@@ -448,6 +492,7 @@ fn build_child_frame(
     Some(Frame {
         view: Some(view),
         id: if live { agent_id } else { String::new() },
+        sc_key,
         agent,
         path: root_path.to_path_buf(),
         from: idx,
@@ -476,7 +521,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     args: &Args,
     _path: &Path,
     view: &mut View,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     id: &str,
     descended: bool,
 ) -> Result<Outcome> {
@@ -492,8 +537,8 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Only a registered id has a follower (registration happens in `-f` mode only); an
             // evicted follower silently re-materializes from the registry inside the cache.
             if !id.is_empty() {
-                if let Some(Ok((blocks, _times, metrics, changed_from))) = cache.poll_delta(id) {
-                    view.apply_poll(blocks, &metrics, changed_from);
+                if let Some(Ok(d)) = cache.poll_handoff(id) {
+                    view.apply_handoff(d);
                     // Keep the task panel's op-log side current (#15); the on-disk
                     // side refreshes when the panel opens.
                     if let Some(t) = cache.follower_tasks(id) {
@@ -713,34 +758,6 @@ fn event_loop<B: ratatui::backend::Backend>(
     }
 }
 
-/// Reveal a path in the OS file manager (a benign, read-only side effect from an
-/// explicit click). macOS: `open -R <file>` selects it in Finder / `open <dir>`
-/// for a directory. Linux: `xdg-open` the containing directory. Spawned detached
-/// so it never blocks or disturbs the TUI; failures are ignored (no file manager).
-pub(crate) fn reveal_in_file_manager(path: &Path) {
-    let is_dir = path.is_dir();
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = std::process::Command::new("open");
-        if is_dir {
-            cmd.arg(path);
-        } else {
-            cmd.arg("-R").arg(path);
-        }
-        let _ = cmd.spawn();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // No generic reveal-and-select on Linux/other; open the folder itself.
-        let dir = if is_dir {
-            path
-        } else {
-            path.parent().unwrap_or(path)
-        };
-        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-    }
-}
-
 /// Run the picker's input loop against an already-set-up terminal. Returns the
 /// chosen transcript path, or None if the user pressed Esc/Ctrl-c (quit).
 fn pick_loop<B: ratatui::backend::Backend>(
@@ -794,7 +811,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.
     // Fold with the same policy as the TUI (default-folded thinking/reads/tools…),
     // so the dump reflects what the viewer actually shows; `--full` expands it all.
-    let fold = crate::fold::FoldPolicy::from_args(args);
+    let fold = args.fold_policy();
     let mut view = View::new(blocks, "dump", false, fold);
     let lines = view.rendered_lines(width as u16);
 
@@ -918,39 +935,6 @@ fn color_sgr(c: ratatui::style::Color, fg: bool) -> Vec<String> {
     }
 }
 
-/// Deduce the default dump stem: `<basename>-<pathhash>-<sessionid>-<width>` where
-/// basename/pathhash come from the session's project cwd, sessionid is its first 6
-/// chars, and width is the render width. cwd/sessionId are read from the transcript via
-/// the agent-neutral `discover` helpers (so a Codex rollout — whose cwd/id live under
-/// `payload` — deduces a correct stem, not the `"session"` fallback a Claude-only scan gave).
-pub(crate) fn deduce_stem(path: &Path, width: Option<usize>) -> String {
-    use std::hash::{Hash, Hasher};
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let basename = Path::new(&cwd)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("session");
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    cwd.hash(&mut h);
-    let pathhash: String = format!("{:016x}", h.finish())[..6].to_string();
-    let sid = discover::session_id(path).unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string()
-    });
-    let sid6: String = sid.chars().take(6).collect();
-    // `--dump` suffixes the render width (its output is width-specific); the HTML
-    // export reflows in the browser, so it passes `None` and omits it.
-    match width {
-        Some(w) => format!("{basename}-{pathhash}-{sid6}-{w}"),
-        None => format!("{basename}-{pathhash}-{sid6}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,6 +948,7 @@ mod tests {
     fn lru_caps_subagents_pinning_root_and_top() {
         fn frame(last_used: u64) -> Frame {
             Frame {
+                sc_key: String::new(),
                 view: Some(View::new(
                     Vec::new(),
                     "t",
@@ -981,7 +966,7 @@ mod tests {
         let n = MAX_RESIDENT_SUBAGENTS + 2;
         let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
         let top = stack.len() - 1;
-        enforce_cap(&crate::SessionCache::new(), &mut stack);
+        enforce_cap(&TuiCache::new(), &mut stack);
 
         let loaded: Vec<usize> = (1..stack.len())
             .filter(|&i| stack[i].view.is_some())

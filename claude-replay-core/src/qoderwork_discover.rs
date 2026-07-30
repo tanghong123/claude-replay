@@ -22,7 +22,12 @@ pub(crate) fn projects_dir() -> PathBuf {
 /// QoderWork sessions scoped strictly to `cwd` or its nearest ancestor that has sessions —
 /// the same no-global-fallback scoping as the Claude store.
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    crate::claude_discover::candidates_scoped_in(&projects_dir(), Agent::QoderWork, cwd)
+    crate::claude_discover::candidates_scoped_in(
+        &projects_dir(),
+        Agent::QoderWork,
+        cwd,
+        crate::discover::home_dir().as_deref(),
+    )
 }
 
 /// Find a QoderWork transcript by session id (`<id>.jsonl`) anywhere under its projects dir.
@@ -85,9 +90,21 @@ mod tests {
 
         // Env-scoped: the override is process-global, so serialize against other env users.
         std::env::set_var("QODERWORK_PROJECTS_DIR", &root);
-        let cands = candidates_scoped(cwd);
+        // #69: through the PUBLIC surface (env $HOME), a cwd outside the real home
+        // discovers nothing — even though its slug exists in the store.
+        assert!(
+            candidates_scoped(cwd).is_empty(),
+            "cwd outside $HOME must not auto-discover"
+        );
         let by_id = transcript_by_id("abc123");
         std::env::remove_var("QODERWORK_PROJECTS_DIR");
+        // With the matching home bound, the store discovers and scopes normally.
+        let cands = crate::claude_discover::candidates_scoped_in(
+            &root,
+            Agent::QoderWork,
+            cwd,
+            Some(Path::new("/Users/dev")),
+        );
 
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].agent, Agent::QoderWork);

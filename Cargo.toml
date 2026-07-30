@@ -1,21 +1,39 @@
 [package]
 name = "claude-replay"
-version = "1.7.5"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 default-run = "claude-replay"
 description = "Interactive, read-only viewer for Claude Code session transcripts (like `claude --resume`, but you can't type)."
-license = "MIT"
-repository = "https://github.com/tanghong123/claude-replay"
 homepage = "https://github.com/tanghong123/claude-replay"
 readme = "README.md"
 keywords = ["claude", "tui", "ratatui", "transcript", "viewer"]
 categories = ["command-line-utilities"]
 
 [workspace]
-members = ["claude-replay-core"]
-# `cargo test` from the repo root must run BOTH crates (#63) — without this it
-# silently tested only the root crate, skipping the core's suite.
-default-members = [".", "claude-replay-core"]
+members = [
+    "claude-replay-core",
+    "claude-replay-present",
+    "claude-replay-tui",
+    "claude-replay-html",
+]
+# `cargo test` from the repo root must run EVERY crate (#63) — without this it
+# silently tested only the root crate, skipping the library suites.
+default-members = [
+    ".",
+    "claude-replay-core",
+    "claude-replay-present",
+    "claude-replay-tui",
+    "claude-replay-html",
+]
+
+# One version for the whole workspace, bumped in ONE place per release (#71).
+[workspace.package]
+version = "1.15.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/tanghong123/claude-replay"
 
 [lib]
 name = "claude_replay"
@@ -38,22 +56,13 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
 [dependencies]
-claude-replay-core = { path = "claude-replay-core", version = "1.7.5" }
+claude-replay-core = { path = "claude-replay-core" }
+claude-replay-present = { path = "claude-replay-present", features = ["cli"] }
+claude-replay-tui = { path = "claude-replay-tui" }
+claude-replay-html = { path = "claude-replay-html" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-unicode-width = "0.2"
-ratatui = "0.29"
-crossterm = "0.28"
-pulldown-cmark = { version = "0.13", default-features = false }
-# fancy-regex backend keeps syntect pure-Rust (no oniguruma/C build).
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
-nucleo = "0.5"
-notify = "7"
-# System clipboard for mouse-select auto-copy (falls back to an OSC 52 escape when
-# no clipboard/display is available, e.g. over SSH). Linux backend is pure-Rust.
-arboard = { version = "3", default-features = false }
 
 [profile.release]
 opt-level = 2
