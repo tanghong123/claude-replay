@@ -235,7 +235,12 @@ fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Ve
             Span::styled(format!("{:>gutter$} ", i + 1), theme::dim()),
         ];
         match hl.get(i) {
-            Some(line_spans) if !line_spans.is_empty() => spans.extend(line_spans.iter().cloned()),
+            Some(line_spans) if !line_spans.is_empty() => spans.extend(
+                line_spans
+                    .iter()
+                    .cloned()
+                    .map(|sp| theme::hl_span(sp, |s| s)),
+            ),
             _ => spans.push(Span::raw(l.to_string())),
         }
         out.push(Line::from(spans));
@@ -284,9 +289,8 @@ fn diff_row(
     // +/- rows, dim on context).
     spans.push(Span::styled(format!("{gutter} "), patch(marker_style)));
     spans.push(Span::styled(marker.to_string(), patch(marker_style)));
-    for mut sp in highlight::highlight_one(text, token) {
-        sp.style = patch(sp.style);
-        spans.push(sp);
+    for sp in highlight::highlight_one(text, token) {
+        spans.push(theme::hl_span(sp, patch));
     }
     Line::from(spans)
 }

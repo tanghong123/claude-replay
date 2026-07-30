@@ -1,6 +1,8 @@
 //! Colors/styles, tuned to read like Claude Code's transcript.
 
+use crate::highlight::HlSpan;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
 
 pub fn user() -> Style {
     Style::default()
@@ -134,6 +136,17 @@ pub fn status() -> Style {
 /// Table box-drawing borders — Claude Code draws them in the default fg (no colour).
 pub fn table_border() -> Style {
     Style::default()
+}
+
+/// The one place a toolkit-neutral [`HlSpan`] (text + xterm-256 fg index) becomes a
+/// ratatui `Span`. `patch` composes extra styling (e.g. a diff row's background)
+/// over the syntax colour.
+pub fn hl_span(sp: HlSpan, patch: impl Fn(Style) -> Style) -> Span<'static> {
+    let base = match sp.fg {
+        Some(i) => Style::default().fg(Color::Indexed(i)),
+        None => Style::default(),
+    };
+    Span::styled(sp.text, patch(base))
 }
 
 #[cfg(test)]

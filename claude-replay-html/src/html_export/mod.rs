@@ -69,15 +69,14 @@ fn esc(s: &str) -> String {
 /// Map the shared Claude-Code palette (as 256-colour indices from `highlight`)
 /// onto the four `--kw/--str/--fn/--com` token classes. Default text gets no
 /// span so it inherits the surrounding colour.
-fn syntax_class(color: ratatui::style::Color) -> Option<&'static str> {
-    use ratatui::style::Color;
-    match color {
-        Color::Indexed(81) => Some("kw"),   // keyword / storage
-        Color::Indexed(141) => Some("kw"),  // number / constant (purple)
-        Color::Indexed(197) => Some("kw"),  // self / language variable
-        Color::Indexed(148) => Some("fn"),  // function / macro
-        Color::Indexed(186) => Some("str"), // string
-        Color::Indexed(242) => Some("com"), // comment
+fn syntax_class(fg: u8) -> Option<&'static str> {
+    match fg {
+        81 => Some("kw"),   // keyword / storage
+        141 => Some("kw"),  // number / constant (purple)
+        197 => Some("kw"),  // self / language variable
+        148 => Some("fn"),  // function / macro
+        186 => Some("str"), // string
+        242 => Some("com"), // comment
         _ => None,
     }
 }
@@ -89,8 +88,8 @@ fn highlight_lines(code: &str, token: &str) -> Vec<String> {
         .map(|spans| {
             let mut out = String::new();
             for s in spans {
-                let text = esc(&s.content);
-                match s.style.fg.and_then(syntax_class) {
+                let text = esc(&s.text);
+                match s.fg.and_then(syntax_class) {
                     Some(c) => out.push_str(&format!("<span class=\"{c}\">{text}</span>")),
                     None => out.push_str(&text),
                 }

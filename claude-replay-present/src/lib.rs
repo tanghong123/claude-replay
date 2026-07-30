@@ -2,8 +2,8 @@
 //! the actual frontends (#71). What lives here is everything that makes *building* a
 //! presentation easier without being one: the session residency [`cache`] (registry + TTL
 //! reaping + the pull-servable [`cache::SharedSession`]), the shared plain-text formatters
-//! ([`present`]), the syntect [`highlight`]er (returns ratatui `Span`s — the shared span
-//! vocabulary both frontends consume; ratatui is a types-only dependency here, no terminal
+//! ([`present`]), the syntect [`highlight`]er (returns toolkit-neutral `HlSpan`s — text +
+//! xterm-256 fg index — the shared span vocabulary both frontends map onto their own output
 //! backend), small OS/path helpers ([`sys`]), and the viewer options type ([`Args`],
 //! clap-free unless the `cli` feature is on).
 
