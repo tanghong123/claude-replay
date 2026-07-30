@@ -252,8 +252,9 @@ resolved through a tiny registry (`adapter(agent)` / `adapters()`). The hooks:
 
 Everything agent-neutral reaches per-agent behavior *only* through the registry — there is no
 `match agent` scattered across the engine. Three adapters exist today and demonstrate the
-cost floor: Claude (full), Codex (no sub-agent tree ⇒ omits those hooks), QoderWork (delegates
-decoding to Claude's modules entirely; its adapter is discovery + identity).
+cost floor: Claude (flat sub-agent directory), Codex (operation-scoped child rollouts),
+QoderWork (delegates decoding to Claude's modules entirely; its adapter is discovery +
+identity).
 
 > The `agent-jdi` supervisor mirrors this with its own `jdi::agent::AgentAdapter` registry.
 

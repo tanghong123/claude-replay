@@ -424,9 +424,9 @@ cache: SessionCache&lt;
     <h2>Adding an agent</h2>
     <p class="kicker">Everything that varies by agent sits behind one trait
       (<code>TranscriptAdapter</code>) in a tiny registry. A new agent is three small files and one
-      impl — the shared engine is never touched. Calibrate by the three that exist: Claude (full),
-      Codex (no sub-agent tree), QoderWork (its format matches Claude's, so its whole adapter is
-      discovery plus a sniff — <em>zero</em> new parsing code).</p>
+      impl — the shared engine is never touched. Calibrate by the three that exist: Claude (flat
+      sub-agent directory), Codex (operation-scoped child rollouts), QoderWork (its format matches
+      Claude's, so its whole adapter is discovery plus a sniff — <em>zero</em> new parsing code).</p>
     <ol class="steps">
       <li><b>agent.rs</b> <span class="d">— add the variant and its labels.</span></li>
       <li><b>gemini_model.rs</b> <span class="d">— the decoder: raw lines → canonical messages, plus a 4-hook <code>Shaping</code>. You are writing a decoder, not a parser.</span></li>
