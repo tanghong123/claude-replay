@@ -100,8 +100,9 @@ not O(session)). Two performance levers worth knowing:
 - **Storage injection:** `SessionAccumulator::with_store(agent, TierBStore::file(path)?)`
   spills committed block *content* to disk as it folds — RAM stays O(open turn) + a
   12-byte-per-block locator table. `snapshot()` then yields a `Session<Deferred>`; read
-  blocks back through the `BlockAccess` trait. (This is exactly how the live HTML server
-  keeps million-line sessions cheap.)
+  blocks back through the `BlockAccess` trait. This is one instance of the **`BlockStore`
+  seam** — see [Choosing your `BV`](#choosing-your-bv-the-blockstore-seam) for the general
+  mechanism (the live HTML server takes it further: its store *renders* at put time).
 - **Delta reads:** `acc.stream_read(from)` returns `committed[from..]` + the open turn +
   O(turn) metadata — the primitive under the pull protocol; never clones the whole session.
 
@@ -140,6 +141,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `present` + core's `summary` | spawn chips, edit summaries, tool display names, activity/turn phrasing — the *voice* of the product | TUI `render.rs` and the HTML emitter, so wording can't drift |
 | `highlight` | syntect highlighting returning spans (ratatui types, no terminal backend) | TUI styles them directly; the HTML exporter adapts them to `<span>`s |
 | `sys` | `deduce_stem`, `reveal_in_file_manager` | the dump stem + the ⏎-on-a-path affordance in both UIs |
+| `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
 tick, never spawn a follower thread.
@@ -178,6 +180,50 @@ from `core::summary` — your app speaks the same visual language as the TUI/HTM
 Keep the rendered-window discipline (only materialize views near the viewport;
 [`design/dom-virtualization.md`](../design/dom-virtualization.md) is the transferable
 technique doc).
+
+### Choosing your `BV` (the `BlockStore` seam)
+
+`Session<BV>` is generic over what it stores per block, and **the presentation layer decides
+what `BV` is**: the `Block` itself, auxiliary per-block state your renderer needs, an
+explicit pointer into a file you maintain, a deferred block locator, or any combination —
+the one constraint is that a `BV` is written **once**, as its block commits, so it must not
+depend on interactively-changing view parameters (the TUI's wrapped heights depend on width
+and fold state, which is why they live in an invalidatable view cache instead).
+
+Implement `BlockStore` and inject it (`SessionAccumulator::with_store`,
+`SharedSession::with_store`, `SessionCache<YourStore>`):
+
+```rust
+impl BlockStore for MyStore {
+    type Bv = MyPerBlockValue;                       // what Session.committed holds
+    fn put(&mut self, b: Block, at: BlockIndex,
+           user_times: &[Option<EpochSeconds>]) -> Self::Bv {
+        // called exactly once per block as it crosses the durability frontier;
+        // `user_times` is the session's per-turn clock (render-at-put stores index it)
+    }
+    fn reset(&mut self) { /* source truncated: discard, the session rebuilds */ }
+}
+```
+
+Two optional capabilities refine what your store can feed:
+
+- **`BlockRead`** — implement it iff your `Bv` can reconstruct its `Block` (lossless stores:
+  identity, serde bytes). Everything that rebuilds block streams — `snapshot()`, `poll()`,
+  `committed_tail`, `SharedSession::pull` — bounds on it, so the compiler tells you exactly
+  which consumers a one-way projection store can't feed (and keeps them off it).
+- **`PersistentStore`** (present) — `backing_len`/`reopen` + optional hibernate-state hooks,
+  so `SharedSession` can hibernate/restore around your backing across cache evictions.
+
+The in-repo dog-food is `claude-replay-html`'s `RecordStore`
+(`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
+`put` **renders the committed block to its wire-format JSON record** as the side effect and
+returns the pointer — the `Session` itself captures the session in the exact form the
+frontend serves, `/pull` answers committed zones as pointers clients range-read directly,
+and no second representation exists. It implements `BlockStore` + `PersistentStore` but
+deliberately **not** `BlockRead` (a wire record is a one-way projection) — the type system
+then keeps every committed consumer on the pointer path. See the
+[architecture showcase](architecture.md#showcase-sessionbv-in-the-live-html-server) for the
+serving-CPU consequence.
 
 ## 6. Level 3 — embed the finished presenters
 
