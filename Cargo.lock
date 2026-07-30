@@ -195,7 +195,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-replay"
-version = "1.20.0"
+version = "1.20.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-core"
-version = "1.20.0"
+version = "1.20.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-html"
-version = "1.20.0"
+version = "1.20.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-present"
-version = "1.20.0"
+version = "1.20.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-tui"
-version = "1.20.0"
+version = "1.20.1"
 dependencies = [
  "anyhow",
  "arboard",
