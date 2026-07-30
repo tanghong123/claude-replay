@@ -141,6 +141,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `present` + core's `summary` | spawn chips, edit summaries, tool display names, activity/turn phrasing — the *voice* of the product | TUI `render.rs` and the HTML emitter, so wording can't drift |
 | `highlight` | syntect highlighting returning spans (ratatui types, no terminal backend) | TUI styles them directly; the HTML exporter adapts them to `<span>`s |
 | `sys` | `deduce_stem`, `reveal_in_file_manager` | the dump stem + the ⏎-on-a-path affordance in both UIs |
+| `SessionCache` aux slot | per-session **presentation sidecar** — derived view state (put-once can't hold it; the consumer owns validity) | the TUI parks evicted frames' `ViewSidecar` (heights, search index, folds, scroll) and re-adopts on reload |
 | `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle

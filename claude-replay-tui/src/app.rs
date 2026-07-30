@@ -2,6 +2,13 @@
 //! (testable headless via ratatui's TestBackend).
 
 use crate::sys::{deduce_stem, reveal_in_file_manager};
+
+/// The TUI's cache instantiation: default block store, [`ViewSidecar`](crate::view::ViewSidecar)
+/// in the aux slot — evicted frames park their derived view state there (#75).
+pub(crate) type TuiCache = claude_replay_present::SessionCache<
+    claude_replay_present::cache::TierBStore,
+    crate::view::ViewSidecar,
+>;
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
 use crate::{discover, Agent, Args};
@@ -152,6 +159,11 @@ struct Frame {
     /// The live follower itself lives in the [`SessionCache`](crate::SessionCache) — the frame
     /// keeps only presentation state.
     id: String,
+    /// The sidecar key (#75): the child's agent id when it has one, else a stable
+    /// path+spawn-index composite — non-empty for every evictable frame, unlike `id`
+    /// (which is empty when the frame has no followable source). Empty only for the root
+    /// (pinned, never evicted).
+    sc_key: String,
     agent: Agent,
     path: PathBuf,
     from: crate::model::BlockIndex,
@@ -172,7 +184,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     let mut tick: u64 = 0;
     // The session domain (live followers + their residency) lives in the cache; frames keep only
     // presentation state. `s`-switching to a different session replaces the cache wholesale.
-    let mut cache = crate::SessionCache::new();
+    let mut cache = TuiCache::new();
     let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
@@ -220,6 +232,13 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             // cursor on the spawn block we came from — without touching its fold state (§2.2).
             Outcome::Ascend if descended => {
                 let popped = stack.pop().expect("descended ⇒ non-root");
+                // Park the child's derived state (#75): a later re-descend into the same
+                // child re-adopts its folds/scroll/measure instead of starting cold.
+                if let Some(view) = popped.view {
+                    if !popped.sc_key.is_empty() {
+                        cache.aux_put(&popped.sc_key, view.into_sidecar());
+                    }
+                }
                 let ni = stack.len() - 1;
                 ensure_loaded(args, &cache, &mut stack, ni)?;
                 if let Some(parent) = stack.last_mut() {
@@ -244,12 +263,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 /// Ensure `stack[i]` is loaded, re-parsing it (and any evicted ancestors it depends on) on demand.
 /// A hollow sub-agent frame is rebuilt from its parent's loaded view via [`build_child_frame`]; the
 /// recursion bottoms out at the pinned root (always loaded). No-op if already loaded.
-fn ensure_loaded(
-    args: &Args,
-    cache: &crate::SessionCache,
-    stack: &mut [Frame],
-    i: usize,
-) -> Result<()> {
+fn ensure_loaded(args: &Args, cache: &TuiCache, stack: &mut [Frame], i: usize) -> Result<()> {
     if stack[i].view.is_some() {
         return Ok(());
     }
@@ -277,7 +291,7 @@ fn ensure_loaded(
 /// Evict least-recently-viewed loaded sub-agent frames until at most [`MAX_RESIDENT_SUBAGENTS`]
 /// remain loaded. The root (index 0) is pinned and never counted/evicted; the current top is never
 /// evicted (it's being viewed).
-fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
+fn enforce_cap(cache: &TuiCache, stack: &mut [Frame]) {
     let top = stack.len() - 1;
     loop {
         let loaded: Vec<usize> = (1..stack.len())
@@ -292,7 +306,15 @@ fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
             .filter(|&i| i != top)
             .min_by_key(|&i| stack[i].last_used);
         match victim {
-            Some(v) => stack[v].view = None,
+            Some(v) => {
+                // Park the derived view state in the cache's aux slot (#75): heights/search
+                // index + fold/scroll survive the eviction; the blocks (the heavy part) drop.
+                if let Some(view) = stack[v].view.take() {
+                    if !stack[v].sc_key.is_empty() {
+                        cache.aux_put(&stack[v].sc_key, view.into_sidecar());
+                    }
+                }
+            }
             None => break, // only the top is loaded — can't evict it
         }
     }
@@ -305,7 +327,7 @@ fn enforce_cap(cache: &crate::SessionCache, stack: &mut [Frame]) {
 /// with cwd/metrics/picker wiring, and open a tail reader when following.
 fn build_frame(
     args: &Args,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     path: &Path,
     can_go_back: bool,
     from: crate::model::BlockIndex,
@@ -363,6 +385,7 @@ fn build_frame(
     Ok(Frame {
         view: Some(view),
         id,
+        sc_key: String::new(), // root: pinned, never evicted
         agent,
         path: path.to_path_buf(),
         from,
@@ -378,7 +401,7 @@ fn build_frame(
 /// evicted frame from just its parent's loaded view.
 fn build_child_frame(
     args: &Args,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     parent_view: &View,
     agent: Agent,
     root_path: &Path,
@@ -425,8 +448,20 @@ fn build_child_frame(
             child_transcript.clone().expect("live ⇒ transcript"),
         );
     }
+    // The sidecar key (#75): stable across evict/reload cycles of this same child.
+    let sc_key = if agent_id.is_empty() {
+        format!("{}#{idx}", root_path.display())
+    } else {
+        agent_id.clone()
+    };
     let fold = args.fold_policy();
     let mut view = View::new(blocks, title, live, fold);
+    // Re-adopt a parked sidecar from a previous eviction of this child: the measure pass and
+    // the user's fold/scroll state come back for free (discarded if the session changed shape;
+    // a width change re-measures via the layout sentinel).
+    if let Some(sc) = cache.aux_take(&sc_key) {
+        let _ = view.adopt_sidecar(sc);
+    }
     // A child descends further; `Esc` there ascends (never Back), so it isn't "go back".
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
@@ -449,6 +484,7 @@ fn build_child_frame(
     Some(Frame {
         view: Some(view),
         id: if live { agent_id } else { String::new() },
+        sc_key,
         agent,
         path: root_path.to_path_buf(),
         from: idx,
@@ -477,7 +513,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     args: &Args,
     _path: &Path,
     view: &mut View,
-    cache: &crate::SessionCache,
+    cache: &TuiCache,
     id: &str,
     descended: bool,
 ) -> Result<Outcome> {
@@ -904,6 +940,7 @@ mod tests {
     fn lru_caps_subagents_pinning_root_and_top() {
         fn frame(last_used: u64) -> Frame {
             Frame {
+                sc_key: String::new(),
                 view: Some(View::new(
                     Vec::new(),
                     "t",
@@ -921,7 +958,7 @@ mod tests {
         let n = MAX_RESIDENT_SUBAGENTS + 2;
         let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
         let top = stack.len() - 1;
-        enforce_cap(&crate::SessionCache::new(), &mut stack);
+        enforce_cap(&TuiCache::new(), &mut stack);
 
         let loaded: Vec<usize> = (1..stack.len())
             .filter(|&i| stack[i].view.is_some())

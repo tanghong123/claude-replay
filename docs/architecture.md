@@ -303,9 +303,16 @@ And the residency *cache* around all of it — [`SessionCache`] (`present::cache
 | (a) resident | an open `FollowParser` | O(turn) + tables | `poll`ed recently; reaped to (c) after 30 s idle |
 | (a′) pull-resident | a `SharedSession` | O(turn) + tables + disk backing | same reap policy; on eviction it **hibernates** its serving state to a sidecar, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
 
+The cache also carries a per-session **presentation sidecar** slot (#75) — the home for
+derived, view-parameter-*dependent* state that `put`-once storage can't hold: the TUI parks
+an evicted frame's measured heights/prefix, search index, fold toggles, and scroll there
+(`ViewSidecar`), and re-adopts them when the frame reloads — same width and shape means no
+re-measure, and the user's interaction state survives the eviction. The slot is opaque to
+the cache; the consumer owns validity.
+
 The TUI applies the same thinking one level up: sub-agent frames you drill into are kept
 under an LRU cap of 4 (`MAX_RESIDENT_SUBAGENTS`); ancestors evict to registrations and
-reload on demand.
+reload on demand — with the sidecar, an eviction now drops only the blocks.
 
 ## 8. Lean CPU: borrowed threads and delta-only protocols
 

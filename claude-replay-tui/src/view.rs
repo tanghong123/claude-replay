@@ -241,6 +241,22 @@ pub enum PopupClick {
     None,
 }
 
+/// Derived per-session view state that outlives an evicted frame (#75): the measure pass's
+/// outputs + the user's interaction state, keyed in the [`SessionCache`](crate::SessionCache)
+/// aux slot. Deliberately NOT in the session's `BlockStore::Bv`: geometry is a function of
+/// (width, fold state), which change interactively — put-once storage can't hold it, an
+/// invalidatable cache-level sidecar can.
+pub struct ViewSidecar {
+    width: u16,
+    heights: Vec<usize>,
+    prefix: Vec<usize>,
+    search_text: Vec<String>,
+    collapsed: Vec<bool>,
+    user_folds: std::collections::HashMap<crate::model::BlockIndex, bool>,
+    scroll: usize,
+    follow: bool,
+}
+
 pub struct View {
     blocks: Vec<Block>,
     collapsed: Vec<bool>, // per-block fold state
@@ -712,6 +728,44 @@ impl View {
     /// Force a re-wrap on the next layout (after a resize or new content).
     pub fn invalidate_wrap(&mut self) {
         self.width = 0;
+    }
+
+    /// Extract this view's **sidecar** (#75): the expensive measure pass's outputs (heights,
+    /// prefix sums, the search-text index) plus the user's interaction state (fold toggles,
+    /// scroll, follow) — everything worth keeping when the frame LRU evicts the view. Stored
+    /// in the `SessionCache`'s aux slot; re-installed by [`adopt_sidecar`](Self::adopt_sidecar).
+    pub fn into_sidecar(self) -> ViewSidecar {
+        ViewSidecar {
+            width: self.width,
+            heights: self.heights,
+            prefix: self.prefix,
+            search_text: self.search_text,
+            collapsed: self.collapsed,
+            user_folds: self.user_folds,
+            scroll: self.scroll,
+            follow: self.follow,
+        }
+    }
+
+    /// Re-install an evicted frame's sidecar onto a freshly-rebuilt view of the same session.
+    /// Valid only while the geometry's inputs still match: the block count must equal the
+    /// sidecar's (a session that grew while evicted re-measures instead). Width validity is
+    /// free: the sidecar's width is installed, so the first `layout()` at any OTHER width
+    /// takes the width-changed path and re-measures — the existing sentinel mechanics.
+    pub fn adopt_sidecar(&mut self, sc: ViewSidecar) -> bool {
+        if sc.heights.len() != self.blocks.len() || sc.collapsed.len() != self.blocks.len() {
+            return false; // the session changed shape while evicted — fresh measure
+        }
+        self.width = sc.width;
+        self.heights = sc.heights;
+        self.prefix = sc.prefix;
+        self.search_text = sc.search_text;
+        self.collapsed = sc.collapsed;
+        self.user_folds = sc.user_folds;
+        self.scroll = sc.scroll;
+        self.follow = sc.follow;
+        self.dirty_from = None; // geometry is valid as adopted
+        true
     }
 
     /// Compute geometry for a given area (call before scroll math in handlers).
@@ -2006,6 +2060,56 @@ mod tests {
 
     fn row(buf: &Buffer, y: u16) -> String {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// #75 sidecar roundtrip: an evicted view's derived state (geometry + search index +
+    /// folds + scroll) re-adopts onto a fresh view of the same blocks — the first layout at
+    /// the same width skips the measure pass and the interaction state is intact. A view of a
+    /// DIFFERENT shape refuses the sidecar (fresh measure instead of corrupt geometry).
+    #[test]
+    fn sidecar_roundtrips_geometry_and_interaction_state() {
+        let blocks = vec![
+            Block::UserText("go".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "ls -la".into(),
+                diffs: Vec::new(),
+                output: Some("a\nb\nc".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::AssistantText("done with a fairly long line that wraps at ten".into()),
+        ];
+        let mut v = View::new(blocks.clone(), "t", false, FoldPolicy::default());
+        let _ = draw(&mut v, 10, 8); // layout at width 10 → measure
+        v.toggle_block(1);
+        v.scroll_by(2);
+        let (heights, scroll, folded) = (v.heights.clone(), v.scroll, v.is_collapsed(1));
+        let sc = v.into_sidecar();
+
+        let mut v2 = View::new(blocks.clone(), "t", false, FoldPolicy::default());
+        assert!(v2.adopt_sidecar(sc), "same shape ⇒ adopts");
+        assert_eq!(v2.heights, heights, "measure pass reused");
+        assert_eq!(v2.scroll, scroll, "scroll restored");
+        assert_eq!(v2.is_collapsed(1), folded, "fold gesture restored");
+        assert!(
+            v2.dirty_from.is_none(),
+            "geometry valid — no pending re-measure"
+        );
+        let _ = draw(&mut v2, 10, 8); // same width: layout must keep the adopted geometry
+        assert_eq!(
+            v2.heights, heights,
+            "same-width layout did not re-measure differently"
+        );
+
+        // Shape mismatch: a grown session refuses the sidecar.
+        let mut v3 = View::new(blocks[..2].to_vec(), "t", false, FoldPolicy::default());
+        let _ = draw(&mut v3, 10, 8);
+        let sc2 = v2.into_sidecar();
+        assert!(
+            !v3.adopt_sidecar(sc2),
+            "different block count ⇒ fresh measure"
+        );
     }
 
     /// A drag across two lines extracts the spanning text and paints the selection

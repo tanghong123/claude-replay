@@ -66,7 +66,7 @@ struct Resident {
 /// A keyed cache of sessions in two residency tiers (see the module docs). Owns the session
 /// domain — the followers, the materialized [`Session`]s, and the pull-servable
 /// [`SharedSession`]s — so its consumer (the live server) keeps only presentation state.
-pub struct SessionCache<P: BlockStore = TierBStore> {
+pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// Tier (c): every known session → its [`Transcript`] source handle.
     registry: Mutex<HashMap<String, Transcript>>,
     /// Tier (a): the currently-resident subset → (last polled, open follower).
@@ -76,25 +76,45 @@ pub struct SessionCache<P: BlockStore = TierBStore> {
     /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
     /// followers, but under the same owner and the same [`reap`](Self::reap) policy.
     pull_residents: Mutex<HashMap<String, PullResident<P>>>,
+    /// The per-session **presentation sidecar** slot (#75): derived, view-parameter-DEPENDENT
+    /// state a frontend associates with a session (e.g. the TUI's measured block heights +
+    /// fold/scroll state) — the cache-level home for what `BlockStore::put`'s put-once
+    /// contract forbids in `Bv`. Opaque to the cache; **the consumer owns validity** (the
+    /// cache can't know about resizes — a sidecar carries its own validity key and the
+    /// adopter discards on mismatch). Registry-lifetime: reaping a resident does NOT drop
+    /// its sidecar.
+    aux: Mutex<HashMap<String, A>>,
 }
 
 /// A pull-servable resident: its idle clock + the shared session. Tier-b-backed — the committed
 /// block content of a followed session lives in the store's on-disk backing, not RAM.
 type PullResident<P> = (Instant, std::sync::Arc<SharedSession<P>>);
 
-impl<P: BlockStore> Default for SessionCache<P> {
+impl<P: BlockStore, A> Default for SessionCache<P, A> {
     fn default() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
             residents: Mutex::new(HashMap::new()),
             pull_residents: Mutex::new(HashMap::new()),
+            aux: Mutex::new(HashMap::new()),
         }
     }
 }
 
-impl<P: BlockStore> SessionCache<P> {
+impl<P: BlockStore, A> SessionCache<P, A> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Store `id`'s presentation sidecar (see the field docs — consumer-owned validity).
+    pub fn aux_put(&self, id: &str, a: A) {
+        lock_recover(&self.aux).insert(id.to_string(), a);
+    }
+
+    /// Take `id`'s presentation sidecar out (move semantics: the adopter re-installs on its
+    /// next eviction, so a sidecar is never stale-shared).
+    pub fn aux_take(&self, id: &str) -> Option<A> {
+        lock_recover(&self.aux).remove(id)
     }
 
     /// Register (or overwrite) a session's tier-(c) source.
