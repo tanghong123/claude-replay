@@ -65,9 +65,9 @@ pub(crate) trait TranscriptAdapter: Sync {
     fn sniff(&self, head: &Value) -> SniffClaim;
 
     // ── whole-file parse ──
-    /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
-    /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
-    /// enrich. Backs [`crate::parse_session_enriched`].
+    /// Load sub-agent child transcripts into their `SubAgent.blocks`. Default no-op —
+    /// agents with no sub-agent tree do not enrich. Backs
+    /// [`crate::parse_session_enriched`].
     fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
@@ -112,9 +112,10 @@ pub(crate) trait TranscriptAdapter: Sync {
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
     /// The source transcript of sub-agent `child_id` spawned under the session at `root`,
-    /// if it exists. Default `None` — an agent with no sub-agent tree (Codex) has none;
-    /// Claude resolves its flat `<root-stem>/subagents/agent-<id>.jsonl` layout. Backs the
-    /// presentation layer's descend-into-child and per-child HTML streams.
+    /// if it exists. Default `None` for agents with no sub-agent tree. Claude resolves its
+    /// flat `<root-stem>/subagents/agent-<id>.jsonl` layout; Codex resolves the child rollout
+    /// reachable through the root operation's parent-thread chain. Backs the presentation
+    /// layer's descend-into-child and per-child HTML streams.
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
     }
@@ -230,6 +231,9 @@ impl TranscriptAdapter for CodexAdapter {
             SniffClaim::No
         }
     }
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        crate::codex_model::enrich_tree(path, blocks)
+    }
     fn shaping(&self) -> &'static Shaping {
         &crate::codex_model::CODEX_SHAPING
     }
@@ -244,6 +248,9 @@ impl TranscriptAdapter for CodexAdapter {
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         crate::codex_discover::resolve(Some(id), false).ok()
+    }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        crate::codex_discover::subagent_source(root, child_id)
     }
 }
 

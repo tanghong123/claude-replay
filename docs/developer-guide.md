@@ -267,7 +267,8 @@ the two frontends (`src/lib.rs::run_viewer`).
 The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
 agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter` row**
 — the shared engine is never touched. Calibrate the cost by the three existing adapters:
-Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
+Claude (flat sub-agent directory), Codex (operation-scoped child rollouts), QoderWork
+(format matches Claude's, so it reuses
 Claude's decoder wholesale — its whole adapter is discovery + a `sniff`). Say we're adding
 `Gemini`.
 
