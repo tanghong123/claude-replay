@@ -1,10 +1,11 @@
 # claude-replay — Architecture
 
 > This Markdown is the maintained source of the architecture narrative (it renders inline on
-> GitHub). The **standalone, graphics-rich HTML render** at
-> [`docs/architecture.html`](architecture.html) (pipeline diagram, block-glyph legend, diff
-> sample) predates the five-crate split and may lag this text. For the exhaustive per-object
-> API, generate the reference with `cargo apidoc` (see the
+> GitHub). A **standalone, graphics-rich HTML render** of the same material lives at
+> [`docs/architecture.html`](architecture.html) (and the guide at
+> [`docs/developer-guide.html`](developer-guide.html)) — open locally or host; regenerate when
+> the architecture changes. For the exhaustive per-object API, generate the reference with
+> `cargo apidoc` (see the
 > [Developer Guide](developer-guide.md#the-api-reference-auto-generated-always-in-sync)).
 
 A developer-facing design document for the `claude-replay` workspace: the reusable transcript

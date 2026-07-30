@@ -1,5 +1,9 @@
 # claude-replay — Developer Guide
 
+> A standalone, visual render of this guide lives at
+> [`docs/developer-guide.html`](developer-guide.html); the architecture companion at
+> [`docs/architecture.html`](architecture.html).
+
 Practical guidance for working on — and building on — the `claude-replay` workspace: how to
 build and test it, which crate to depend on for which job, how to add an agent, and how to
 build a new presentation on the shared layers. For the system design behind all of this, see
