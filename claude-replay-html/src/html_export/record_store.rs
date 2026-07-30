@@ -29,7 +29,7 @@ pub struct RecordLocator {
 
 /// What `put` needs to render: the serve run's presentation parameters plus the resumable
 /// [`EmitState`] (anchors/turn numbering follow on across ranges). Absent on a
-/// [`reopen`](PersistentStore::reopen)ed store until [`restore_state`] rehydrates the emit
+/// [`reopen`](PersistentStore::reopen)ed store until [`restore_state`](PersistentStore::restore_state) rehydrates the emit
 /// state — a hibernated body never `put`s, but its emit state still seeds the open-turn render.
 struct RenderCx {
     fold: FoldPolicy,

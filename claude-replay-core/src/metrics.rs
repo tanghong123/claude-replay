@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 /// agent's accumulator folds keys into it (via its `bump` helper) exactly like the typed
 /// counters. Data-only (the standard `footer` shows the typed fields), and it makes a brand-new
 /// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
-/// through the [`MetricsAccumulator`](crate::adapter) interface and ready to use; no agent
+/// through the `MetricsAccumulator` interface and ready to use; no agent
 /// currently populates it, so `extra` is empty in practice.
 /// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)

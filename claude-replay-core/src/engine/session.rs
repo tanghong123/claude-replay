@@ -195,7 +195,7 @@ impl Session<Block> {
 /// fold is untouched): one [`SubAgentMeta`] per spawn [`Block::SubAgent`] with a non-empty
 /// `agent_id`, with `done_at` back-filled from the matching completion [`Block::AgentDone`].
 /// `transcript` is left `None` here — the path-aware parse fills it (see
-/// [`populate_sub_agent_transcripts`]). An unmatched `AgentDone` (no spawn) is ignored, mirroring
+/// `populate_sub_agent_transcripts`). An unmatched `AgentDone` (no spawn) is ignored, mirroring
 /// the retired `SessionIndex.agents`.
 /// Build the per-session sub-agent index from a block list: one entry per spawn, keyed by
 /// agent id, with status derived from the two durable events (spawn → running/async; a later

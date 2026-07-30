@@ -1227,7 +1227,7 @@ pub(super) fn agent_meta(
     (meta, child_refs)
 }
 
-/// Assemble the `/pull` meta wire record from the engine's **maintained** [`SessionMeta`]
+/// Assemble the `/pull` meta wire record from the engine's **maintained** `SessionMeta`
 /// (turn/tool counts + children, kept current by the accumulator as the tail advances) +
 /// presentation info (title / ancestry / agent label) + metrics — the trivial transform from
 /// engine facts to the html client's shape. Produces the same JSON [`agent_meta`] derives by

@@ -98,8 +98,8 @@ impl SessionIndex {
     }
 
     /// Fold ONE more block (at its flat [`BlockIndex`] `at`) into the index — the incremental
-    /// unit [`build`](Self::build) is a loop over. `turn_time` is this block's timestamp **iff** it
-    /// is a user turn (`UserText`/`Command`), in the same order [`stamp_user_turns`] emits them;
+    /// unit `build` is a loop over. `turn_time` is this block's timestamp **iff** it
+    /// is a user turn (`UserText`/`Command`), in the same order `stamp_user_turns` emits them;
     /// pass `None` for any other block. Lets the accumulator maintain the index as durable blocks
     /// are emitted, so the full `Vec<Block>` need never be resident to (re)build it — the emit-and-
     /// drop / tier-b path. Proven equal to `build` block-for-block (see the test).

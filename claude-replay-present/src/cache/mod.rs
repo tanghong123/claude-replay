@@ -1,35 +1,33 @@
-//! **A residency cache for incrementally-followed sessions** — the concrete session-domain
-//! owner the live HTML server sits on. It absorbs the retired generic `SessionStore`'s
-//! mechanism (a keyed registry + a TTL-reaped resident set behind two independent mutexes) as
-//! concrete types, and additionally **owns the session domain**: each resident holds an open
-//! incremental [`FollowParser`], and [`poll`](SessionCache::poll) returns an OWNED, current
-//! [`Session`] equal to a full [`parse_session_as`](crate::engine::parse_session_as) of the source's
-//! current bytes. The caller (the server) keeps only presentation state (diff baselines,
-//! titles) — the follower and the `Session` live here.
+//! **The unified data layer** — one keyed cache owning every followed session's single
+//! full in-memory presentation copy (#84/#85), shared by both frontends.
 //!
-//! ## Residency tiers
-//! - **(c) registered** — a keyed [`Transcript`] (agent + transcript path): we know where a
-//!   session lives, but hold no follower. Costs nothing; the common case for a large sub-agent
-//!   tree whose children were discovered but never opened.
-//! - **(a) resident** — a registered session [`poll`](SessionCache::poll)ed recently: it holds
-//!   an open `FollowParser` and a `last_seen` clock. [`reap`](SessionCache::reap) evicts
-//!   residents idle past a TTL back down to tier (c); a later `poll` re-materializes from the
-//!   registry (a fresh follower folds the whole current file).
+//! [`SessionCache<P, A>`] holds, per session id:
+//! - **registered** — a keyed [`Transcript`] source handle: we know where
+//!   the session lives, but hold nothing else. Costs nothing; the common case for a large
+//!   sub-agent tree whose children were discovered but never opened.
+//! - **resident** — a [`SharedSession<P>`] (see [`shared_session`](SessionCache::shared_session)):
+//!   an open incremental follower plus the committed store `P` — the ONE live tier every
+//!   consumer shares. The TUI ticks it in-process via [`poll_view`](SessionCache::poll_view)
+//!   (a [`ViewDelta`] splice against `P = ArcStore`, blocks shared by `Arc` — the cache keeps
+//!   the authoritative copy, views hold clones of the pointers); the HTML server serves any
+//!   number of stateless clients from the same resident via the cursor [`pull`] protocol
+//!   (`P = RecordStore`, committed blocks living as wire-format pointers on disk).
+//! - **hibernated** — [`reap`](SessionCache::reap) evicts residents idle past a TTL and hands
+//!   them back for hibernation; a [`PersistentStore`]'s backing (plus its
+//!   [`hibernate_state`](PersistentStore::hibernate_state) sidecar) survives, so a later open
+//!   [`restore`](SharedSession::restore)s without re-folding the whole transcript.
 //!
-//! - **(a′) pull-resident** — a [`SharedSession`] a `/pull` client is following (see
-//!   [`shared_session`](SessionCache::shared_session)): the same registry + reap policy, serving
-//!   the cursor-pull protocol instead of `poll`.
+//! The `A` parameter is an opaque per-session **presentation sidecar** slot
+//! ([`aux_put`](SessionCache::aux_put)/[`aux_take`](SessionCache::aux_take)): view-parameter-
+//! dependent state (the TUI's measured heights, the server's titles/parents) lives with the
+//! session it belongs to, with registry lifetime and consumer-owned validity.
 //!
-//! The maps are guarded by independent mutexes and never locked simultaneously, so the
-//! cache can't self-deadlock. The expensive work — rendering — happens in the caller *between*
-//! cache calls; the only work under a cache lock is the brief O(delta) follower read in `poll`.
-
-#[allow(dead_code)]
-// wired into serve.rs when the pull path replaces stream_delta (Phase C step 4/5)
+//! The maps are guarded by independent mutexes and never locked simultaneously, so the cache
+//! can't self-deadlock. Rendering happens in the caller *between* cache calls; the only work
+//! under a cache lock is the brief O(delta) follower advance.
+// The 4-member-cursor pull protocol (Cursor/PullReply + the executable-spec PullClient).
 mod stream;
-// SharedSession: the pull-servable live state (present-layer). Wired into serve.rs with the pull
-// path; the Arc/lock-free concurrency wrapper joins it there (real concurrent clients).
-#[allow(dead_code)]
+// SharedSession: the one live tier — the follower + store both frontends share.
 mod shared;
 #[allow(unused_imports)]
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
@@ -55,15 +53,14 @@ pub fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 use crate::Transcript;
 
-/// A keyed cache of sessions in two residency tiers (see the module docs). Owns the session
-/// domain — the followers, the materialized [`Session`]s, and the pull-servable
-/// [`SharedSession`]s — so its consumer (the live server) keeps only presentation state.
+/// A keyed cache of sessions (see the module docs for the residency lifecycle). Owns the
+/// session domain — every followed session's single full presentation copy, held by its
+/// [`SharedSession`] — so consumers keep only presentation state.
 pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
-    /// Tier (c): every known session → its [`Transcript`] source handle.
+    /// Registered: every known session → its [`Transcript`] source handle.
     registry: Mutex<HashMap<String, Transcript>>,
-    /// Tier (a): the currently-resident subset → (last polled, open follower).
-    /// Tier (a′): the **pull-servable** residents — one [`SharedSession`] per id a `/pull` client
-    /// is following (`Arc` so any number of request threads share it). A resident kind of its own
+    /// Resident: one [`SharedSession`] per id a consumer is following (`Arc` so any number
+    /// of request threads share it). A resident kind of its own
     /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
     /// followers, but under the same owner and the same [`reap`](Self::reap) policy.
     pull_residents: Mutex<HashMap<String, PullResident<P>>>,

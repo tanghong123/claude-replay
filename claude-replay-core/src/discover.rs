@@ -168,7 +168,7 @@ pub fn session_id(path: &Path) -> Option<String> {
 }
 
 /// Auto-detect which agent wrote a transcript by sniffing its first lines — asking
-/// each registered adapter's `sniff` claim (#59). An [`Owns`](crate::adapter::SniffClaim)
+/// each registered adapter's `sniff` claim (#59). An `Owns`
 /// claim (a distinctive head: Codex's `session_meta`, QoderWork's `runtime-config`)
 /// wins immediately; a mere `CanParse` (Claude's adapter can parse any Claude-format
 /// lines, including derived agents') is remembered and only wins if NO adapter owns

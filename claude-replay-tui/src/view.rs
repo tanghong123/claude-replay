@@ -1324,7 +1324,7 @@ impl View {
     }
 
     /// The **single** live-update entry the event loop calls (finding #7): the engine
-    /// ([`FollowParser::poll_delta`](crate::FollowParser)) hands the new blocks, the metrics, and the
+    /// (`FollowParser::poll_delta`) hands the new blocks, the metrics, and the
     /// exact `changed_from` boundary — so this needs **no** O(N) prefix scan (finding #4) — and it
     /// refreshes the footer in the same call, so a block update can never drift out of sync with the
     /// cost/token footer.

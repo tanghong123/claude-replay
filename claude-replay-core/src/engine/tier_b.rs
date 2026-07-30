@@ -37,7 +37,7 @@ pub struct Deferred {
 /// byte buffer** ([`new`](Self::new) — tests / batch) or a real **on-disk file**
 /// ([`file`](Self::file) — the live server's residents, so committed content never sits in RAM).
 /// Hand the finished [`into_backing`](Self::into_backing) to a [`TierBSession`] to read blocks
-/// back, or read them through the store's own [`get`](BlockStore::get).
+/// back, or read them through the store's own [`get`](crate::engine::BlockRead::get).
 pub struct TierBStore {
     backing: Backing,
 }
@@ -70,7 +70,7 @@ impl TierBStore {
     }
 
     /// A fresh **file-backed** store at `path` (created/truncated): committed block content goes
-    /// straight to disk, and [`get`](BlockStore::get) reads it back positionally — nothing
+    /// straight to disk, and [`get`](crate::engine::BlockRead::get) reads it back positionally — nothing
     /// resident beyond the locators the caller holds.
     pub fn file(path: &Path) -> io::Result<Self> {
         let file = std::fs::OpenOptions::new()
@@ -220,7 +220,7 @@ impl crate::engine::session::BlockRead for TierBStore {
 
 /// A `Session<Deferred>` paired with its tier-b backing — the client-side handle that can actually
 /// read block content. Implements [`BlockAccess`] by seeking to each locator and decoding on demand;
-/// the [`SessionIndex`](crate::engine::SessionIndex) / metrics / `sub_agents` come free from the
+/// the [`SessionIndex`] / metrics / `sub_agents` come free from the
 /// session and never touch the backing.
 pub struct TierBSession {
     /// The offset-table session (`blocks: Vec<Deferred>`) + the `Bv`-free index/metrics/sub_agents.

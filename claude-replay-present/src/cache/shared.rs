@@ -17,7 +17,7 @@
 //! [`pull`](SharedSession::pull) then answers any client [`Cursor`] against the current zones.
 //!
 //! Concurrency (§9a): the state is interior-mutable behind one `Mutex`, so a `SharedSession` wraps
-//! in an `Arc` and any number of client threads call [`pull`](SharedSession::pull) / [`advance`]
+//! in an `Arc` and any number of client threads call [`pull`](SharedSession::pull) / [`advance`](SharedSession::advance)
 //! (SharedSession::advance) on `&self`. Advancing is **borrow-to-tail**: the thread that folds new
 //! source lines is a client's own (the HTTP `/pull` handler calls `advance` then `pull`) — the
 //! cache owns no background thread. A pull is O(delta): fold (idle-cheap when nothing new) + a
@@ -99,7 +99,7 @@ struct Inner<S: BlockStore> {
     epoch: u64,
     /// The current open-turn generation — see the module docs / `super::stream`.
     provisional_gen: u64,
-    /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`]
+    /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`](SharedSession::counters)
     /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
     /// the open window on every quiet poll.
     n_provisional: usize,
@@ -114,7 +114,7 @@ struct Inner<S: BlockStore> {
 
 /// Where a session's state comes from: a **live** follower folding the source, or a
 /// **hibernated** materialization reloaded from disk (an evicted resident whose source hasn't
-/// changed since it was persisted — see [`SharedSession::hibernate`]/[`restore`]
+/// changed since it was persisted — see [`SharedSession::hibernate`]/[`SharedSession::restore`]
 /// (SharedSession::restore)). A hibernated body serves every read from restored state and never
 /// folds; if its source later changes, [`hibernation_stale`](SharedSession::hibernation_stale)
 /// reports it and the owner replaces the whole session with a fresh live one (the epoch change
@@ -435,7 +435,7 @@ impl<S: BlockStore> SharedSession<S> {
 
     /// The protocol counters only — `(epoch, provisional_gen, n_committed, n_provisional)` — an
     /// O(1) read (no block clone, no open-window finalize) so the `/pull` handler can decide
-    /// idleness via [`pull_indices`](super::stream::pull_indices) before paying
+    /// idleness via [`pull_indices`] before paying
     /// [`pull_delta`](Self::pull_delta)'s delta read + render.
     pub fn counters(&self) -> (u64, u64, usize, usize) {
         let g = super::lock_recover(&self.inner);
@@ -564,7 +564,7 @@ pub trait PersistentStore: BlockStore + Sized {
     fn hibernate_state(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// Restore the [`hibernate_state`](Self::hibernate_state) payload after [`reopen`].
+    /// Restore the [`hibernate_state`](Self::hibernate_state) payload after [`reopen`](Self::reopen).
     fn restore_state(&mut self, _v: serde_json::Value) {}
 }
 

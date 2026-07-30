@@ -913,7 +913,7 @@ pub fn assemble(bodies: Vec<Vec<Line<'static>>>) -> Rendered {
     }
 }
 
-/// ONE block's share of [`assemble`]'s output, computed in isolation — the windowed viewer's
+/// ONE block's share of `assemble`'s output, computed in isolation — the windowed viewer's
 /// unit (render only what's visible, measure the rest). `carry_in` is the one cross-block fact
 /// the flat pass threads: whether the line before this block's first is blank — which, by
 /// `assemble`'s own invariant, is exactly "any earlier block emitted at least one line" (every

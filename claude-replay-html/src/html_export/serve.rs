@@ -1,7 +1,7 @@
 //! The `--html` live server: a loopback HTTP server + the per-agent live tailer.
 //! Renders via `super`'s block/stream helpers; the session domain (the id→source registry, the
 //! resident incremental followers, and the materialized `Session`s) is owned by core's
-//! [`SessionCache`](crate::SessionCache) — the server keeps only *presentation* state (the
+//! [`SessionCache`] — the server keeps only *presentation* state (the
 //! rendered-line diff baseline + titles). Split out so the HTTP/tailer machinery doesn't share
 //! a namespace with the markdown/JSON renderer.
 
@@ -25,9 +25,8 @@ const TAIL_TTL_MS: u128 = 30_000;
 /// each cycle — the rest cost nothing (tier (c) in the cache), which is the CPU fix vs
 /// re-parsing the whole tree. The session domain (the id→source registry + the resident
 /// incremental followers + the materialized `Session`s + idle reaping) is owned by
-/// [`SessionCache`](crate::SessionCache); `Live` keeps only the *presentation* state — the
-/// per-agent titles and parent pointers, the materialized `<id>.jsonl`
-/// (tier (b)), and the `/stream` byte cursor — layered over it.
+/// [`SessionCache`]; `Live` keeps only the *presentation* state — the
+/// per-agent titles, parent pointers, and cached open-turn renders — layered over it.
 struct Live {
     dir: std::path::PathBuf,
     agent: Agent,
@@ -82,8 +81,7 @@ impl Live {
     /// from spawn events); else resolve the source directly — every agent shares the flat
     /// `subagents/` dir, so a valid id resolves even if its parent was never navigated (deep links)
     /// — with a plain title until its parent's spawn supplies the description, registering the
-    /// fallback into the cache/titles so later lookups find it. `None` for an unknown id. Shared by
-    /// [`ensure_stream`](Self::ensure_stream) (the `/stream` path) and
+    /// fallback into the cache/titles so later lookups find it. `None` for an unknown id. Used by
     /// [`pull_response`](Self::pull_response) (the `/pull` path).
     fn resolve_id(&self, id: &str) -> Option<(Transcript, TitleInfo)> {
         if let Some(src) = self.cache.resolve(id) {

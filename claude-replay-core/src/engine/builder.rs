@@ -4,7 +4,7 @@
 //!
 //! Incremental parsing is first-class; one-shot is derived: the whole-file batch parse
 //! ([`parse_session_as`](crate::parse_session_as) /
-//! [`parse_path_timed_for`](crate::engine::replay::parse_path_timed_for)) feeds this builder
+//! `parse_path_timed_for`) feeds this builder
 //! line-by-line (one line resident, no whole-file `Vec<String>`), and the live
 //! [`FollowParser`](crate::FollowParser) feeds it the appended lines each poll — so batch and
 //! live share exactly one line loop. The output is proven byte-identical to the retired
@@ -107,7 +107,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// The single per-line unit shared by the batch parse ([`advance_reader`](Self::advance_reader))
     /// and the live follower.
     ///
-    /// Returns the replayer's back-patch signal (see [`Replayer::apply`]): the min raw-logical index
+    /// Returns the replayer's back-patch signal (see `Replayer::apply`): the min raw-logical index
     /// of any already-emitted provisional block this line mutated in place, or `None` if it only
     /// appended. The streaming layer's pull (§9a) bumps the provisional generation when it is `Some`;
     /// batch callers ([`advance_reader`](Self::advance_reader)) ignore it. (A coincident commit — the
@@ -198,7 +198,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     }
 
     /// How many blocks have crossed the durability frontier into `committed` — i.e. the split point
-    /// between the append-only committed prefix and the open provisional turn in [`fold`](Self::fold)'s
+    /// between the append-only committed prefix and the open provisional turn in `fold`'s
     /// block list. Lets a live consumer locate the settled/in-flight boundary in O(1) instead of
     /// re-deriving it by scanning blocks.
     pub fn committed_len(&self) -> usize {
