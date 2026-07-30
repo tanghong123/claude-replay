@@ -20,7 +20,7 @@ pub use builder::{SessionAccumulator, StreamRead};
 pub use index::SessionIndex;
 pub use session::{
     build_sub_agents, parse_session, parse_session_as, parse_session_enriched,
-    parse_session_enriched_as, BlockAccess, BlockRead, BlockStore, ChildMeta, InMemoryStore,
-    Session, SessionMeta,
+    parse_session_enriched_as, BlockAccess, BlockRead, BlockStore, ChildMeta, HandoffStore,
+    InMemoryStore, Session, SessionMeta,
 };
 pub use tasks::{TaskItem, TaskList, TaskStatus};

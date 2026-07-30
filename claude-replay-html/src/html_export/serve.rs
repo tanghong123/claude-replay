@@ -15,9 +15,7 @@ use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 /// How long an agent keeps being tailed after its last request before it goes idle and is
 /// dropped (its stream file stays on disk; a later request revives it).
@@ -37,17 +35,20 @@ struct Live {
     root_path: std::path::PathBuf,
     cwd: String,
     /// The session domain: id→source registry + resident followers + TTL reaping.
-    cache: SessionCache<RecordStore>,
-    /// Presentation state, keyed by agent id. `prev`: the block lines last written (the diff
-    /// baseline for the next delta); its presence also marks an agent as materialized (its
-    /// `<id>.jsonl` exists). `titles`: the non-source half of the old descriptor.
-    prev: Mutex<HashMap<String, Vec<String>>>,
-    titles: Mutex<HashMap<String, TitleInfo>>,
-    /// child id → **parent session id**, recorded once when the parent's pull registers the
-    /// child's source. The child derives its own title/breadcrumb from the parent's maintained
-    /// meta on ITS first resolve ([`derive_title`](Self::derive_title)) — the pull path's
-    /// inversion of `register_children`'s per-pull cross-session title writes.
-    parents: Mutex<HashMap<String, String>>,
+    cache: SessionCache<RecordStore, crate::engine::InMemoryStore, ServeAux>,
+}
+
+/// The live server's per-session presentation sidecar, held in the cache's aux slot (#76 —
+/// "the cache IS the data layer"). `title`: the non-source half of the descriptor (a child's
+/// derives once, on its first resolve). `parent`: child → parent session id, recorded when
+/// the parent's pull registers the child's source ([`derive_title`](Live::derive_title)
+/// follows it). `prev`: the `/stream` baseline's last-written block lines — its presence also
+/// marks the agent materialized.
+#[derive(Default)]
+struct ServeAux {
+    title: Option<TitleInfo>,
+    parent: Option<String>,
+    prev: Option<Vec<String>>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -86,7 +87,7 @@ impl Live {
             // A registered id with no title yet was registered source-only by its parent's pull
             // (`register_child_sources`): derive its title/breadcrumb ONCE from the parent's
             // maintained meta, now that this session is actually being retrieved.
-            let cached = crate::cache::lock_recover(&self.titles).get(id).cloned();
+            let cached = self.cache.aux_with(id, |a| a.title.clone());
             let t = cached.unwrap_or_else(|| self.derive_title(id));
             return Some((src, t));
         }
@@ -100,10 +101,7 @@ impl Live {
             ..Default::default() // unknown ancestry/type for an un-navigated deep link
         };
         self.cache.register(id, src.clone());
-        self.titles
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), t.clone());
+        self.cache.aux_with(id, |a| a.title = Some(t.clone()));
         Some((src, t))
     }
 
@@ -115,16 +113,13 @@ impl Live {
     /// was ever pulled, or the parent's live state was TTL-reaped) — matching the pre-existing
     /// deep-link fallback; whichever value is derived is cached one-time, as before.
     fn derive_title(&self, id: &str) -> TitleInfo {
-        let parent_id = crate::cache::lock_recover(&self.parents).get(id).cloned();
+        let parent_id = self.cache.aux_with(id, |a| a.parent.clone());
         let derived = parent_id.and_then(|pid| {
             let pmeta = self.cache.shared_peek(&pid)?.session_meta();
             let c = pmeta.children.iter().find(|c| c.id == id)?;
             let pt = self
-                .titles
-                .lock()
-                .unwrap()
-                .get(&pid)
-                .cloned()
+                .cache
+                .aux_with(&pid, |a| a.title.clone())
                 .unwrap_or_default();
             let mut ancestors = pt.ancestors;
             ancestors.push((pid, pt.title));
@@ -142,12 +137,8 @@ impl Live {
             title: id.to_string(),
             ..Default::default()
         });
-        self.titles
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(t)
-            .clone()
+        self.cache
+            .aux_with(id, |a| a.title.get_or_insert(t).clone())
     }
 
     /// Record `parent_id`'s children in the id→source registry — a pure path derivation, one
@@ -163,10 +154,8 @@ impl Live {
             if let Some(source) = discover::subagent_source(self.agent, &self.root_path, &c.id) {
                 self.cache
                     .register_new(&c.id, Transcript::open(self.agent, source));
-                self.parents
-                    .lock()
-                    .unwrap()
-                    .insert(c.id.clone(), parent_id.to_string());
+                self.cache
+                    .aux_with(&c.id, |a| a.parent = Some(parent_id.to_string()));
             }
         }
     }
@@ -175,7 +164,7 @@ impl Live {
     /// and register its children. Cheap on the hot path (an already-materialized id short-
     /// circuits; the background tailer keeps it current). Returns false for an unknown id.
     fn ensure_stream(&self, id: &str) -> bool {
-        if crate::cache::lock_recover(&self.prev).contains_key(id) {
+        if self.cache.aux_with(id, |a| a.prev.is_some()) {
             return true; // already materialized — the tailer keeps its stream current
         }
         let Some((src, title)) = self.resolve_id(id) else {
@@ -216,10 +205,8 @@ impl Live {
         let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
         self.register_children(&info, children);
         // Record the diff baseline (also marks the id materialized for the fast path above).
-        self.prev
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), block_lines(&jsonl));
+        self.cache
+            .aux_with(id, |a| a.prev = Some(block_lines(&jsonl)));
         true
     }
 
@@ -408,9 +395,9 @@ impl Live {
                     ancestors: ci.ancestors,
                 };
                 self.cache.register_new(&id, src);
-                crate::cache::lock_recover(&self.titles)
-                    .entry(id)
-                    .or_insert(t);
+                self.cache.aux_with(&id, |a| {
+                    a.title.get_or_insert(t.clone());
+                });
             }
         }
     }
@@ -459,11 +446,8 @@ impl Live {
                     _ => continue, // reaped since enumeration, unreadable, or nothing new
                 };
                 let title = self
-                    .titles
-                    .lock()
-                    .unwrap()
-                    .get(&id)
-                    .cloned()
+                    .cache
+                    .aux_with(&id, |a| a.title.clone())
                     .unwrap_or_default();
                 let info = self.agent_info(&id, src.path().to_path_buf(), &title);
                 let blocks = session.blocks();
@@ -486,11 +470,12 @@ impl Live {
                 self.register_children(&info, children);
                 let fresh = block_lines(&jsonl);
                 let meta = jsonl.lines().next().unwrap_or("{}");
-                let mut prev = crate::cache::lock_recover(&self.prev);
-                let baseline = prev.get(&id).map(Vec::as_slice).unwrap_or(&[]);
-                if let Some(delta) = stream_delta(baseline, &fresh, meta) {
+                let delta = self.cache.aux_with(&id, |a| {
+                    stream_delta(a.prev.as_deref().unwrap_or(&[]), &fresh, meta)
+                        .inspect(|_| a.prev = Some(fresh.clone()))
+                });
+                if let Some(delta) = delta {
                     let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
-                    prev.insert(id, fresh);
                 }
             }
         }
@@ -653,19 +638,15 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
         root_path: path.to_path_buf(),
         cwd,
         cache: SessionCache::new(),
-        prev: Mutex::new(HashMap::new()),
-        titles: Mutex::new(HashMap::new()),
-        parents: Mutex::new(HashMap::new()),
     });
     live.cache
         .register(&sid, Transcript::open(agent, path.to_path_buf()));
-    crate::cache::lock_recover(&live.titles).insert(
-        sid.clone(),
-        TitleInfo {
+    live.cache.aux_with(&sid, |a| {
+        a.title = Some(TitleInfo {
             title: title.clone(),
             ..Default::default()
-        },
-    );
+        });
+    });
     // Transport: the pull-client feed (`/pull`) is the DEFAULT for a live server — it costs nothing
     // when no browser is attached (no background tailer; folding rides each client request). Setting
     // `CR_STREAM=1` reverts to the baseline `/stream` byte-diff + `run_tailer` (kept for comparison).
@@ -1069,9 +1050,6 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
@@ -1171,9 +1149,6 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
@@ -1254,19 +1229,15 @@ mod tests {
             root_path: sess.clone(),
             cwd: "/r".into(),
             cache: SessionCache::new(),
-            prev: Mutex::new(HashMap::new()),
-            titles: Mutex::new(HashMap::new()),
-            parents: Mutex::new(HashMap::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::Claude, sess.clone()));
-        crate::cache::lock_recover(&live.titles).insert(
-            "sid".into(),
-            TitleInfo {
+        live.cache.aux_with("sid", |a| {
+            a.title = Some(TitleInfo {
                 title: "root title".into(),
                 ..Default::default()
-            },
-        );
+            });
+        });
 
         // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
         // registration + the parent pointer — no title write for the child.
@@ -1278,16 +1249,14 @@ mod tests {
         assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
         assert!(live.cache.is_registered("achild01"), "source registered");
         assert_eq!(
-            live.parents
-                .lock()
-                .unwrap()
-                .get("achild01")
-                .map(String::as_str),
+            live.cache
+                .aux_with("achild01", |a| a.parent.clone())
+                .as_deref(),
             Some("sid"),
             "parent pointer recorded"
         );
         assert!(
-            !crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            live.cache.aux_with("achild01", |a| a.title.is_none()),
             "no cross-session title write from the parent's pull"
         );
 
@@ -1300,7 +1269,7 @@ mod tests {
             vec![("sid".to_string(), "root title".to_string())]
         );
         assert!(
-            crate::cache::lock_recover(&live.titles).contains_key("achild01"),
+            live.cache.aux_with("achild01", |a| a.title.is_some()),
             "derived once, then cached"
         );
 

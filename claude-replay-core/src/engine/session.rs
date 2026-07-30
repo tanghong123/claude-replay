@@ -82,6 +82,39 @@ impl BlockRead for InMemoryStore {
     }
 }
 
+/// The single-consumer **streaming** store (#76): committed blocks are handed to the consumer
+/// exactly once instead of being retained — `put` queues, the consumer drains. The `Session`'s
+/// committed table stores `()` (the accumulator keeps only counts), so the CONSUMER — e.g. the
+/// TUI `View` — is the sole owner of committed content: one copy in the whole process, and a
+/// poll costs O(delta), not an O(session) rebuild. Not [`BlockRead`] (the content is gone once
+/// drained), so the type system keeps whole-session consumers (`snapshot`, `poll`) off it.
+#[derive(Default)]
+pub struct HandoffStore {
+    pending: Vec<Block>,
+}
+
+impl HandoffStore {
+    /// Take everything committed since the last drain — each block exactly once.
+    pub fn drain(&mut self) -> Vec<Block> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+impl BlockStore for HandoffStore {
+    type Bv = ();
+    fn put(
+        &mut self,
+        b: Block,
+        _at: BlockIndex,
+        _user_times: &[Option<crate::model::EpochSeconds>],
+    ) {
+        self.pending.push(b);
+    }
+    fn reset(&mut self) {
+        self.pending.clear();
+    }
+}
+
 /// Content access gated behind a trait, so most code works on the `Bv`-free [`SessionIndex`] and
 /// never names `BV`. Trivial (a borrow) for the in-memory `Session<Block>`; a disk read for a
 /// future on-disk store.

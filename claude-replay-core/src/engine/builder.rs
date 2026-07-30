@@ -232,6 +232,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
         &self.store
     }
 
+    /// Mutable store access — the handoff drain (#76).
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// `committed[from..]` as owned [`Block`]s — the newly-committed tail past what a live consumer
     /// already rendered. O(delta): it copies only the tail, never the whole committed prefix (the
     /// step off the per-poll O(N) clone). `from` is clamped to the committed length. Requires a

@@ -33,7 +33,7 @@ mod stream;
 mod shared;
 #[allow(unused_imports)]
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
-use crate::engine::BlockStore;
+use crate::engine::{BlockStore, InMemoryStore};
 #[allow(unused_imports)]
 pub use shared::{PersistentStore, PullDelta, SharedSession};
 #[allow(unused_imports)]
@@ -59,18 +59,18 @@ use crate::Transcript;
 
 /// A resident session: an open incremental follower over its source. Its idle clock lives in
 /// the residents map alongside it.
-struct Resident {
-    follower: FollowParser,
+struct Resident<F: BlockStore> {
+    follower: FollowParser<F>,
 }
 
 /// A keyed cache of sessions in two residency tiers (see the module docs). Owns the session
 /// domain — the followers, the materialized [`Session`]s, and the pull-servable
 /// [`SharedSession`]s — so its consumer (the live server) keeps only presentation state.
-pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
+pub struct SessionCache<P: BlockStore = TierBStore, F: BlockStore = InMemoryStore, A = ()> {
     /// Tier (c): every known session → its [`Transcript`] source handle.
     registry: Mutex<HashMap<String, Transcript>>,
     /// Tier (a): the currently-resident subset → (last polled, open follower).
-    residents: Mutex<HashMap<String, (Instant, Resident)>>,
+    residents: Mutex<HashMap<String, (Instant, Resident<F>)>>,
     /// Tier (a′): the **pull-servable** residents — one [`SharedSession`] per id a `/pull` client
     /// is following (`Arc` so any number of request threads share it). A resident kind of its own
     /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
@@ -90,7 +90,7 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
 /// block content of a followed session lives in the store's on-disk backing, not RAM.
 type PullResident<P> = (Instant, std::sync::Arc<SharedSession<P>>);
 
-impl<P: BlockStore, A> Default for SessionCache<P, A> {
+impl<P: BlockStore, F: BlockStore, A> Default for SessionCache<P, F, A> {
     fn default() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
@@ -101,7 +101,7 @@ impl<P: BlockStore, A> Default for SessionCache<P, A> {
     }
 }
 
-impl<P: BlockStore, A> SessionCache<P, A> {
+impl<P: BlockStore, F: BlockStore + Default, A> SessionCache<P, F, A> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -115,6 +115,16 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// next eviction, so a sidecar is never stale-shared).
     pub fn aux_take(&self, id: &str) -> Option<A> {
         lock_recover(&self.aux).remove(id)
+    }
+
+    /// Read/mutate `id`'s sidecar in place (created default on first touch) — the shape for
+    /// always-on per-session presentation state (the live server's titles/parents/diff
+    /// baselines), as opposed to the park-and-take shape of eviction sidecars.
+    pub fn aux_with<R>(&self, id: &str, f: impl FnOnce(&mut A) -> R) -> R
+    where
+        A: Default,
+    {
+        f(lock_recover(&self.aux).entry(id.to_string()).or_default())
     }
 
     /// Register (or overwrite) a session's tier-(c) source.
@@ -140,29 +150,6 @@ impl<P: BlockStore, A> SessionCache<P, A> {
         lock_recover(&self.registry).get(id).cloned()
     }
 
-    /// Materialize on the first call (open a [`FollowParser`] on the source and fold its current
-    /// bytes), tail on later calls (fold only appended bytes), and return an OWNED current
-    /// [`Session`] equal to a full [`parse_session_as`](crate::engine::parse_session_as) of the current
-    /// file. Returns `None` when the source hasn't grown since the last poll (idle) or when `id`
-    /// is unregistered; `Some(Err)` when the source is unreadable. Bumps the resident's idle
-    /// clock.
-    pub fn poll(&self, id: &str) -> Option<std::io::Result<Session>> {
-        let src = self.resolve(id)?;
-        let mut residents = lock_recover(&self.residents);
-        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
-            (
-                Instant::now(),
-                Resident {
-                    follower: src.follow(),
-                },
-            )
-        });
-        *last_seen = Instant::now();
-        // `poll_session` returns a fully-assembled Session (cwd + sub-agent transcripts filled),
-        // so the cache needs no core internals — the step toward moving it into the present layer.
-        resident.follower.poll_session().transpose()
-    }
-
     /// Like [`poll`](Self::poll), but through the follower's **delta** surface: additionally
     /// returns `changed_from` — the first block index that differs from the previous poll — so a
     /// windowed/render-caching consumer (the TUI) keeps its fold state and rendered lines for the
@@ -179,14 +166,17 @@ impl<P: BlockStore, A> SessionCache<P, A> {
             crate::metrics::Metrics,
             usize,
         )>,
-    > {
+    >
+    where
+        F: crate::engine::BlockRead,
+    {
         let src = self.resolve(id)?;
         let mut residents = lock_recover(&self.residents);
         let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
             (
                 Instant::now(),
                 Resident {
-                    follower: src.follow(),
+                    follower: FollowParser::with_store(src.agent(), src.path(), F::default()),
                 },
             )
         });
@@ -283,6 +273,58 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// The ids currently resident (tier (a)) — the set the caller polls each cycle.
     pub fn resident_ids(&self) -> Vec<String> {
         lock_recover(&self.residents).keys().cloned().collect()
+    }
+}
+
+/// The `Session`-assembling poll — only on the in-memory follow tier, whose `Bv` **is**
+/// `Block` (see `FollowParser::poll_session`). Delta consumers use `poll_delta`; the
+/// single-owner TUI path uses `poll_handoff` below.
+impl<P: BlockStore, A> SessionCache<P, InMemoryStore, A> {
+    /// Poll `id`, materializing its follower on first call (folds the whole current file;
+    /// later calls fold only appended bytes), and return an OWNED current [`Session`] equal
+    /// to a full `parse_session_as` of the current file. `None` when idle/unregistered;
+    /// `Some(Err)` when unreadable. Bumps the resident's idle clock.
+    pub fn poll(&self, id: &str) -> Option<std::io::Result<Session>> {
+        let src = self.resolve(id)?;
+        let mut residents = lock_recover(&self.residents);
+        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
+            (
+                Instant::now(),
+                Resident {
+                    follower: FollowParser::with_store(src.agent(), src.path(), InMemoryStore),
+                },
+            )
+        });
+        *last_seen = Instant::now();
+        // `poll_session` returns a fully-assembled Session (cwd + sub-agent transcripts filled),
+        // so the cache needs no core internals — the step toward moving it into the present layer.
+        resident.follower.poll_session().transpose()
+    }
+}
+
+/// The **handoff** surface (#76) — only on a cache whose follow tier is the single-consumer
+/// [`HandoffStore`](crate::engine::HandoffStore): committed blocks flow to the poller exactly
+/// once, so the poller (the TUI `View`) is the sole owner of the session's blocks and a poll
+/// costs O(delta). Same lifecycle as `poll_delta` (materialize on first call, `None` when
+/// idle/unregistered, bumps the idle clock).
+impl<P: BlockStore, A> SessionCache<P, crate::engine::HandoffStore, A> {
+    pub fn poll_handoff(&self, id: &str) -> Option<std::io::Result<crate::follow::HandoffDelta>> {
+        let src = self.resolve(id)?;
+        let mut residents = lock_recover(&self.residents);
+        let (last_seen, resident) = residents.entry(id.to_string()).or_insert_with(|| {
+            (
+                Instant::now(),
+                Resident {
+                    follower: FollowParser::with_store(
+                        src.agent(),
+                        src.path(),
+                        crate::engine::HandoffStore::default(),
+                    ),
+                },
+            )
+        });
+        *last_seen = Instant::now();
+        resident.follower.poll_handoff().transpose()
     }
 }
 

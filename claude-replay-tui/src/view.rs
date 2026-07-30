@@ -1281,26 +1281,47 @@ impl View {
         if !self.follow {
             self.new_count += new_blocks.len().saturating_sub(self.blocks.len());
         }
-        let tail = self.fold.collapsed_for(&new_blocks[d..]);
+        self.blocks = new_blocks;
+        self.post_splice(d);
+    }
+
+    /// The **handoff** apply (#76): splice the delta in place — keep `[0..frontier)`, append
+    /// the newly-committed blocks and the fresh open turn. The View is the session's sole
+    /// block owner (the follower drained its copy), so a live tick costs O(delta) allocation,
+    /// not an O(session) vector swap.
+    pub fn apply_handoff(&mut self, d: crate::follow::HandoffDelta) {
+        let prev_committed = (d.committed_len - d.committed_delta.len()).min(self.blocks.len());
+        let joined = d.committed_len + d.provisional.len();
+        if !self.follow {
+            self.new_count += joined.saturating_sub(self.blocks.len());
+        }
+        self.blocks.truncate(prev_committed);
+        self.blocks.extend(d.committed_delta);
+        self.blocks.extend(d.provisional);
+        self.post_splice(d.changed_from);
+        self.metrics = d.metrics.footer();
+        self.footer_segs = d.metrics.footer_segments();
+    }
+
+    /// Shared post-splice bookkeeping over `self.blocks`: re-derive fold defaults for the
+    /// changed tail, overlay the user's explicit fold gestures (#61 — position-keyed, the
+    /// same heuristic the HTML client uses), and mark geometry dirty FROM `d` only — the
+    /// next layout re-measures the changed tail (heights + text index), keeping a live poll
+    /// O(tail), not O(session).
+    fn post_splice(&mut self, d: usize) {
+        let d = d.min(self.blocks.len());
+        let tail = self.fold.collapsed_for(&self.blocks[d..]);
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
-        // Re-apply the user's explicit fold gestures over the re-derived tail (#61):
-        // without this, a live update snaps a block the user expanded back to the
-        // policy default. Position-keyed — a reshaped tail maps by index (the same
-        // heuristic the HTML client uses; ids there are position-derived too).
         for (&i, &c) in &self.user_folds {
             if i >= d
-                && new_blocks.get(i).map(render::foldable).unwrap_or(false)
+                && self.blocks.get(i).map(render::foldable).unwrap_or(false)
                 && i < self.collapsed.len()
             {
                 self.collapsed[i] = c;
             }
         }
-        self.blocks = new_blocks;
-        // Geometry for the unchanged prefix [0..d] survives; the next layout re-measures only
-        // the changed tail (heights + text index), keeping a live poll O(tail), not O(session).
         self.dirty_from = Some(self.dirty_from.map_or(d, |cur| cur.min(d)));
-        self.invalidate_wrap();
     }
 
     fn status_line(&self) -> Line<'static> {
@@ -1916,6 +1937,47 @@ mod tests {
         let d = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
         v1.update(b.clone());
         v2.apply_poll(b.clone(), &Metrics::default(), d);
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");
+        assert_eq!(v1.block_kinds(), v2.block_kinds(), "same blocks");
+        assert!(
+            v1.is_collapsed(2) && v2.is_collapsed(2),
+            "fold toggle on the unchanged prefix survived both paths"
+        );
+    }
+
+    /// The single-owner `apply_handoff` (#76) yields the exact same view state as the
+    /// scan-based `update` for the same session evolution — same rendered lines, same
+    /// per-block fold state, and a preserved fold toggle on the unchanged prefix — while
+    /// the View splices deltas instead of swapping whole vectors. Also covers the
+    /// commit-shaped delta (prefix moves from open to committed).
+    #[test]
+    fn apply_handoff_equals_update_scan() {
+        let a = blocks(10);
+        let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
+        v1.layout(80, 24);
+        v2.layout(80, 24);
+        v1.collapsed[2] = true;
+        v2.collapsed[2] = true;
+        let b = blocks(13);
+        let d = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        v1.update(b.clone());
+        // Simulate the handoff shape: the first 11 blocks committed (blocks 10.. newly so —
+        // the delta hands over 11-10=… everything past the View's prior committed frontier of
+        // 8), the last 2 provisional. The splice must land identically to the full scan.
+        let committed_len = 11usize;
+        let prev_committed = 8usize; // pretend 8 were already handed over
+        v2.apply_handoff(crate::follow::HandoffDelta {
+            reset: false,
+            committed_delta: b[prev_committed..committed_len].to_vec(),
+            committed_len,
+            provisional: b[committed_len..].to_vec(),
+            user_times: Vec::new(),
+            metrics: Metrics::default(),
+            changed_from: d,
+        });
         v1.layout(80, 24);
         v2.layout(80, 24);
         assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");

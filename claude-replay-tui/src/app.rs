@@ -6,8 +6,9 @@ use crate::sys::{deduce_stem, reveal_in_file_manager};
 /// The TUI's cache instantiation: default block store, [`ViewSidecar`](crate::view::ViewSidecar)
 /// in the aux slot — evicted frames park their derived view state there (#75).
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
-    claude_replay_present::cache::TierBStore,
-    crate::view::ViewSidecar,
+    claude_replay_present::cache::TierBStore, // pull tier: unused by the TUI
+    claude_replay_core::engine::HandoffStore, // follow tier: single-owner streaming (#76)
+    crate::view::ViewSidecar,                 // aux slot: evicted frames' derived state (#75)
 >;
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
@@ -349,13 +350,20 @@ fn build_frame(
     let id = title.clone();
     let (blocks, cwd, metrics, oplog_tasks) = if args.follow {
         cache.register(&id, transcript.clone());
-        match cache.poll(&id) {
-            Some(Ok(s)) => (
-                s.blocks(),
-                s.cwd.clone(),
-                s.metrics.clone(),
-                s.tasks.clone(),
-            ),
+        // The follower's FIRST handoff folds the whole current file and hands over every
+        // committed block exactly once (#76): from here on the View is the sole owner of
+        // the session's blocks — the follower retains only the open turn.
+        match cache.poll_handoff(&id) {
+            Some(Ok(d)) => {
+                let mut blocks = d.committed_delta;
+                blocks.extend(d.provisional);
+                (
+                    blocks,
+                    discover::session_cwd(path),
+                    d.metrics,
+                    cache.follower_tasks(&id).unwrap_or_default(),
+                )
+            }
             _ => (
                 Vec::new(),
                 discover::session_cwd(path),
@@ -529,8 +537,8 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Only a registered id has a follower (registration happens in `-f` mode only); an
             // evicted follower silently re-materializes from the registry inside the cache.
             if !id.is_empty() {
-                if let Some(Ok((blocks, _times, metrics, changed_from))) = cache.poll_delta(id) {
-                    view.apply_poll(blocks, &metrics, changed_from);
+                if let Some(Ok(d)) = cache.poll_handoff(id) {
+                    view.apply_handoff(d);
                     // Keep the task panel's op-log side current (#15); the on-disk
                     // side refreshes when the panel opens.
                     if let Some(t) = cache.follower_tasks(id) {
