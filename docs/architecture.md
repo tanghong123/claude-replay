@@ -440,7 +440,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 | `claude-replay-present/src/cache/{mod,shared,stream}.rs` | `SessionCache` tiers · `SharedSession` (+hibernation) · the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) |
 | `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter · OS/path helpers · shared `Args` (`cli` feature) |
 | `claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs` | the terminal viewer |
-| `claude-replay-html/src/html_export/{mod,bundle,serve}.rs` + `src/html/` | HTML render core · offline writers · live server · embedded CSS/JS |
+| `claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs` + `src/html/` | HTML render core · offline writers · live server · the wire-projection `RecordStore` (#74) · embedded CSS/JS |
 | `src/jdi/` | the `agent-jdi` supervisor (see `src/jdi/DESIGN.md`) |
 
 [`Block`]: ../claude-replay-core/src/model.rs
