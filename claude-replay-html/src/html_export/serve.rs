@@ -7,8 +7,8 @@
 
 use super::record_store::RecordStore;
 use super::{
-    assemble_meta, block_lines, build_shell, child_info, display_title, render_agent_stream,
-    render_blocks, render_snapshot, session_id, AgentInfo, ChildRef, POLL_MS,
+    assemble_meta, block_lines, build_shell, display_title, render_blocks, render_snapshot,
+    session_id, AgentInfo, POLL_MS,
 };
 use crate::cache::{pull_indices, Cursor, SharedSession};
 use crate::fold::FoldPolicy;
@@ -26,7 +26,7 @@ const TAIL_TTL_MS: u128 = 30_000;
 /// re-parsing the whole tree. The session domain (the id→source registry + the resident
 /// incremental followers + the materialized `Session`s + idle reaping) is owned by
 /// [`SessionCache`](crate::SessionCache); `Live` keeps only the *presentation* state — the
-/// per-agent titles, the rendered-line diff baseline (`prev`), the materialized `<id>.jsonl`
+/// per-agent titles and parent pointers, the materialized `<id>.jsonl`
 /// (tier (b)), and the `/stream` byte cursor — layered over it.
 struct Live {
     dir: std::path::PathBuf,
@@ -42,13 +42,11 @@ struct Live {
 /// "the cache IS the data layer"). `title`: the non-source half of the descriptor (a child's
 /// derives once, on its first resolve). `parent`: child → parent session id, recorded when
 /// the parent's pull registers the child's source ([`derive_title`](Live::derive_title)
-/// follows it). `prev`: the `/stream` baseline's last-written block lines — its presence also
-/// marks the agent materialized.
+/// follows it).
 #[derive(Default)]
 struct ServeAux {
     title: Option<TitleInfo>,
     parent: Option<String>,
-    prev: Option<Vec<String>>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -158,56 +156,6 @@ impl Live {
                     .aux_with(&c.id, |a| a.parent = Some(parent_id.to_string()));
             }
         }
-    }
-
-    /// Ensure `<id>.jsonl` exists (generate it from the agent's own source on first request)
-    /// and register its children. Cheap on the hot path (an already-materialized id short-
-    /// circuits; the background tailer keeps it current). Returns false for an unknown id.
-    fn ensure_stream(&self, id: &str) -> bool {
-        if self.cache.aux_with(id, |a| a.prev.is_some()) {
-            return true; // already materialized — the tailer keeps its stream current
-        }
-        let Some((src, title)) = self.resolve_id(id) else {
-            return false;
-        };
-        if !src.path().exists() {
-            return false;
-        }
-        // Initial materialization via the cache's first poll (folds the whole source once;
-        // subsequent polls in `run_tailer` fold only appended deltas). `None` == an empty
-        // source; a read error drops the request.
-        let session = match self.cache.poll(id) {
-            Some(Ok(s)) => Some(s),
-            Some(Err(_)) => return false,
-            None => None,
-        };
-        let info = self.agent_info(id, src.path().to_path_buf(), &title);
-        let empty_metrics = crate::metrics::Metrics::default();
-        let blocks_owned = session.as_ref().map(|s| s.blocks());
-        let (blocks, times, metrics) = match &session {
-            Some(s) => (
-                blocks_owned.as_deref().unwrap_or(&[]),
-                s.user_times.as_slice(),
-                &s.metrics,
-            ),
-            None => (&[][..], &[][..], &empty_metrics),
-        };
-        let tasks = crate::engine::tasks::merged(
-            session
-                .as_ref()
-                .map(|s| &s.tasks)
-                .unwrap_or(&Default::default()),
-            crate::discover::session_tasks(self.agent, src.path()),
-        );
-        let (jsonl, children) = render_agent_stream(
-            self.agent, &self.fold, &self.cwd, true, &info, blocks, times, metrics, &tasks, None,
-        );
-        let _ = std::fs::write(self.dir.join(format!("{id}.jsonl")), format!("{jsonl}\n"));
-        self.register_children(&info, children);
-        // Record the diff baseline (also marks the id materialized for the fast path above).
-        self.cache
-            .aux_with(id, |a| a.prev = Some(block_lines(&jsonl)));
-        true
     }
 
     /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. The session
@@ -377,109 +325,6 @@ impl Live {
             Ok(store.read_range(from, from.saturating_add(len)))
         })
     }
-
-    /// Register `parent`'s discovered children so their `?session=` links resolve to a source
-    /// later — carrying the ancestry (parent's + parent) for their breadcrumb. Splits each
-    /// child's `AgentInfo` into a cache source + a `titles` entry.
-    fn register_children(&self, parent: &AgentInfo, children: Vec<ChildRef>) {
-        for c in children {
-            if self.cache.is_registered(&c.id) {
-                continue;
-            }
-            if let Some(ci) = child_info(self.agent, &self.root_path, parent, c) {
-                let id = ci.id.clone();
-                let src = Transcript::open(self.agent, ci.source);
-                let t = TitleInfo {
-                    title: ci.title,
-                    agent_type: ci.agent_type,
-                    ancestors: ci.ancestors,
-                };
-                self.cache.register_new(&id, src);
-                self.cache.aux_with(&id, |a| {
-                    a.title.get_or_insert(t.clone());
-                });
-            }
-        }
-    }
-
-    /// Serve `<id>.jsonl` bytes from byte offset `from` (clamped past-EOF → empty),
-    /// truncated to the last newline so the client's cursor always lands on a line
-    /// boundary — never mid-record, even if a tailer append is in flight.
-    /// `(start, bytes)` — the served chunk AND the **absolute byte offset it begins at**
-    /// (the requested `from` clamped to EOF). The client uses `start` to place the chunk
-    /// idempotently: it discards any prefix it already has and sets its cursor to
-    /// `start + bytes.len()`, so a re-fetch or a past-EOF request can't desync it.
-    fn stream_bytes(
-        &self,
-        id: &str,
-        from: crate::model::ByteOffset,
-    ) -> (crate::model::ByteOffset, Vec<u8>) {
-        match std::fs::read(self.dir.join(format!("{id}.jsonl"))) {
-            Ok(bytes) => {
-                let start = (from as usize).min(bytes.len());
-                (
-                    start as u64,
-                    line_aligned_tail(&bytes, from as usize).to_vec(),
-                )
-            }
-            Err(_) => (from, Vec::new()),
-        }
-    }
-
-    /// The single background tailer thread: each cycle, re-parse ONLY the agents requested
-    /// within the TTL (usually just the one on screen), diff, and append their deltas. Idle
-    /// agents are dropped. No whole-tree re-parse — this is the CPU fix.
-    fn run_tailer(self: std::sync::Arc<Self>) {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-            self.cache.reap(TAIL_TTL_MS); // drop residents idle past the TTL → tier (c)
-            for id in self.cache.resident_ids() {
-                let Some(src) = self.cache.resolve(&id) else {
-                    continue;
-                };
-                // Fold ONLY the newly-appended lines through this agent's persistent follower
-                // (the cache's `poll` returns `None` when the source hasn't grown — the skip
-                // that turns a constant re-parse of a huge transcript into O(delta) work). The
-                // follower read runs under the cache's residents lock; rendering is out here.
-                let session = match self.cache.poll(&id) {
-                    Some(Ok(s)) => s,
-                    _ => continue, // reaped since enumeration, unreadable, or nothing new
-                };
-                let title = self
-                    .cache
-                    .aux_with(&id, |a| a.title.clone())
-                    .unwrap_or_default();
-                let info = self.agent_info(&id, src.path().to_path_buf(), &title);
-                let blocks = session.blocks();
-                let tasks = crate::engine::tasks::merged(
-                    &session.tasks,
-                    crate::discover::session_tasks(self.agent, src.path()),
-                );
-                let (jsonl, children) = render_agent_stream(
-                    self.agent,
-                    &self.fold,
-                    &self.cwd,
-                    true,
-                    &info,
-                    &blocks,
-                    &session.user_times,
-                    &session.metrics,
-                    &tasks,
-                    None,
-                );
-                self.register_children(&info, children);
-                let fresh = block_lines(&jsonl);
-                let meta = jsonl.lines().next().unwrap_or("{}");
-                let delta = self.cache.aux_with(&id, |a| {
-                    stream_delta(a.prev.as_deref().unwrap_or(&[]), &fresh, meta)
-                        .inspect(|_| a.prev = Some(fresh.clone()))
-                });
-                if let Some(delta) = delta {
-                    let _ = append_line(&self.dir.join(format!("{id}.jsonl")), delta.trim_end());
-                }
-            }
-        }
-    }
 }
 
 /// The append chunk to bring a stream from `prev` block lines to `fresh`: a
@@ -647,21 +492,14 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
             ..Default::default()
         });
     });
-    // Transport: the pull-client feed (`/pull`) is the DEFAULT for a live server — it costs nothing
-    // when no browser is attached (no background tailer; folding rides each client request). Setting
-    // `CR_STREAM=1` reverts to the baseline `/stream` byte-diff + `run_tailer` (kept for comparison).
-    let pull_mode = args.follow && std::env::var_os("CR_STREAM").is_none();
-
-    // The shell up-front so the first page load is instant. In pull mode the page carries
-    // `data-pull` and drives `/pull`; the baseline pre-materializes the root `/stream` file.
+    // ONE transport (#85): every server-backed page — static or live — is a pull client
+    // (a static page pulls once; a live page keeps polling). One protocol exercised by all
+    // traffic, protected by one test suite, folded on the requester's own thread.
     std::fs::write(
         dir.join("index.html"),
-        build_shell(&title, &sid, args.follow, pull_mode),
+        build_shell(&title, &sid, args.follow, true),
     )
     .with_context(|| "write index.html")?;
-    if !pull_mode {
-        live.ensure_stream(&sid); // baseline: pre-render the root stream (the tailer keeps it current)
-    }
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
     let url = format!("http://127.0.0.1:{port}/index.html?session={sid}");
@@ -674,16 +512,10 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     open_in_browser(&url);
     println!("{url}");
 
-    if args.follow && !pull_mode {
-        live.run_tailer(); // baseline `/stream`: background-tail the requested agents until Ctrl-C
-        Ok(())
-    } else {
-        // Pull mode (client-driven — no background tailer, zero cost when idle) OR static: keep
-        // serving so navigation + reveal keep working. Streams are folded on demand (per `/pull`
-        // request, or lazily on first `/stream` request for a static bundle).
-        loop {
-            std::thread::park();
-        }
+    // Client-driven (no background thread, zero cost when idle): keep serving so
+    // navigation + reveal keep working; sessions materialize on their first `/pull`.
+    loop {
+        std::thread::park();
     }
 }
 
@@ -720,17 +552,6 @@ fn spawn_http_server(root: std::path::PathBuf, live: Option<std::sync::Arc<Live>
         }
     });
     Ok(port)
-}
-
-/// The bytes of `data` from byte offset `from` (clamped past-EOF → empty), truncated to
-/// the last newline so a served chunk never ends mid-record — the client's byte cursor
-/// stays line-aligned even if a tailer append is in flight.
-pub(super) fn line_aligned_tail(data: &[u8], from: usize) -> &[u8] {
-    let slice = &data[from.min(data.len())..];
-    match slice.iter().rposition(|&b| b == b'\n') {
-        Some(nl) => &slice[..=nl],
-        None => &[], // no complete line past the cursor yet
-    }
 }
 
 /// Parse a `k=v&…` query string value for `key` (already past the `?`).
@@ -785,38 +606,6 @@ fn serve_connection(
             .write_all(head.as_bytes())
             .and_then(|_| stream.write_all(body))
     };
-    // `/stream?session=<id>&from=<byte>` — the live feed. Generate the agent's stream on
-    // first request (lazy), keep it tailed, and serve ONLY the bytes past the client's
-    // cursor (so a poll transfers just the new delta, not the whole transcript).
-    if name == "stream" {
-        let Some(live) = live else {
-            return respond(
-                &mut stream,
-                "404 Not Found",
-                "text/plain",
-                b"no live server",
-            );
-        };
-        let id = query_get(query, "session").unwrap_or("");
-        let from: u64 = query_get(query, "from")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        if id.is_empty() || id.contains('/') || id.contains("..") || !live.ensure_stream(id) {
-            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
-        }
-        // Include the delta's ABSOLUTE start offset so the client can place it
-        // idempotently (discard overlap, snap its cursor to `start + len`).
-        let (start, bytes) = live.stream_bytes(id, from);
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\
-             X-Offset: {start}\r\nContent-Length: {}\r\nAccess-Control-Expose-Headers: X-Offset\r\n\
-             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-            bytes.len()
-        );
-        return stream
-            .write_all(head.as_bytes())
-            .and_then(|_| stream.write_all(&bytes));
-    }
     // `/pull?session=<id>&cursor=<epoch.committed.gen.index>` — the pull-client feed. Materialize
     // the id on first pull, borrow this thread to tail it, and return the self-describing PullReply
     // JSON (committed append + provisional truncate/extend). Costs nothing when no client pulls.

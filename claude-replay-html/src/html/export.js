@@ -1270,11 +1270,11 @@
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
     renderedSession = sess;
-    // Transport: the server sets data-pull when it serves the pull feed by default; `?transport=`
-    // overrides it either way (pull|stream) for side-by-side comparison.
-    var transport = new URLSearchParams(location.search).get("transport");
-    var usePull = transport === "pull" || (document.body.dataset.pull === "1" && transport !== "stream");
-    if (pollMs > 0 && usePull) {
+    // Transport: ONE pattern for every server-backed page (#85) — the pull protocol. A
+    // static page is a pull client that pulls once (pollMs 0); a live page keeps polling.
+    // Only the offline bundle (no server) fetches its flat `<id>.jsonl` instead.
+    var usePull = document.body.dataset.pull === "1";
+    if (usePull) {
       // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
       // drives the tail (the server folds on our request), so an idle page costs the server nothing.
       // Committed arrives as a POINTER (`committed_ext: {offset, len}`) into the server's on-disk
@@ -1327,47 +1327,7 @@
           .finally(function () { inflightP = false; });
       };
       pullTick();
-      setInterval(pullTick, pollMs);
-    } else if (pollMs > 0) {
-      // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
-      // the bytes past the cursor (the new delta), never the whole transcript. We keep the
-      // accumulated text and hand it to `consume`, which dedups records + applies resets.
-      // The cursor is the ABSOLUTE byte offset we've processed up to. Each `/stream`
-      // response carries `X-Offset` (where its bytes begin); we discard any prefix we
-      // already have and snap the cursor to `start + len`, so the client is idempotent
-      // even under overlap / a past-EOF request. The in-flight guard prevents overlap in
-      // the first place — the initial `from=0` fetch can transfer many MB and outlast the
-      // poll interval; without the guard the next tick would fire a second `from=0` fetch,
-      // double-rendering every block and overshooting the cursor past EOF (the freeze).
-      var cursor = 0, inflight = false;
-      var pull = function () {
-        if (inflight) return;
-        inflight = true;
-        fetch("stream?session=" + encodeURIComponent(sess) + "&from=" + cursor, { cache: "no-store" })
-          .then(function (r) {
-            var off = parseInt(r.headers.get("X-Offset") || "0", 10);
-            return r.arrayBuffer().then(function (b) { return { off: off, bytes: new Uint8Array(b) }; });
-          })
-          .then(function (d) {
-            var end = d.off + d.bytes.length;
-            if (d.off > cursor || end <= cursor) return; // a gap (retry) or already-seen
-            var skip = cursor - d.off; // bytes we already have (server may overlap)
-            var wasAtBottom = atBottom();
-            var before = records.length;
-            consumeDelta(new TextDecoder().decode(d.bytes.subarray(skip)));
-            cursor = end;
-            var added = records.length - before;
-            if (added > 0) {
-              if (wasAtBottom) { toBottom(false); clearNew(); }
-              else showNew(added);
-              spy();
-            }
-          })
-          .catch(function () { /* server gone / mid-write — retry next tick */ })
-          .finally(function () { inflight = false; });
-      };
-      pull();
-      setInterval(pull, pollMs);
+      if (pollMs > 0) setInterval(pullTick, pollMs);
     } else {
       // Static bundle (served by any file server): fetch the whole stream file once.
       fetch(sess + ".jsonl", { cache: "no-store" })

@@ -795,13 +795,11 @@ fn build_page(
             } else {
                 String::new()
             };
-            // `data-pull` selects the pull-client transport (poll `/pull?cursor=`) over the
-            // default `/stream` byte-diff; only meaningful when served live.
-            let pull_attr = if live_multi && pull {
-                " data-pull=\"1\""
-            } else {
-                ""
-            };
+            // `data-pull` selects the pull-client transport (#85: ONE transport for every
+            // server-backed page — a static page pulls once, a live page keeps polling; only
+            // the offline bundle, served flat by any file server, omits it and fetches
+            // `<id>.jsonl` directly).
+            let pull_attr = if pull { " data-pull=\"1\"" } else { "" };
             format!(
                 " data-multi=\"1\" data-root=\"{}\"{poll}{pull_attr}",
                 esc(root)
@@ -1369,7 +1367,7 @@ impl AssetSink {
 
 #[cfg(test)]
 mod tests {
-    use super::serve::{line_aligned_tail, percent_decode, query_get, stream_delta};
+    use super::serve::{percent_decode, query_get, stream_delta};
     use super::*;
     use crate::model::Hunk;
 
@@ -1703,19 +1701,6 @@ mod tests {
         assert_eq!(h3, "assets/shot.png");
         assert_eq!(std::fs::read(base.join("assets/shot.png")).unwrap(), b"hi");
         let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// The `/stream` byte cursor: serve from an offset, clamp past-EOF to empty, and never
-    /// end a chunk mid-record (truncate to the last newline).
-    #[test]
-    fn line_aligned_tail_clamps_and_aligns() {
-        let data = b"a\nbb\nccc\n";
-        assert_eq!(line_aligned_tail(data, 0), b"a\nbb\nccc\n");
-        assert_eq!(line_aligned_tail(data, 2), b"bb\nccc\n"); // from mid-file, line-aligned
-        assert_eq!(line_aligned_tail(data, 9), b""); // at EOF → empty
-        assert_eq!(line_aligned_tail(data, 999), b""); // past EOF → clamped empty
-                                                       // A trailing partial line (mid-append) is withheld until its newline arrives.
-        assert_eq!(line_aligned_tail(b"a\nbb\npart", 2), b"bb\n");
     }
 
     #[test]
