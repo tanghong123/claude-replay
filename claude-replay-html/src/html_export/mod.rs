@@ -1222,7 +1222,10 @@ pub(super) fn agent_meta(
         count_tools(blocks),
         usage_json(m, true),
         tasks,
-        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+        json!({
+            "agent_type": &info.agent_type, "ancestors": ancestors, "children": children,
+            "path": info.source.display().to_string(),
+        }),
     );
     (meta, child_refs)
 }
@@ -1267,7 +1270,10 @@ pub(super) fn assemble_meta(
         sm.tools,
         usage_json(m, true),
         tasks,
-        json!({ "agent_type": &info.agent_type, "ancestors": ancestors, "children": children }),
+        json!({
+            "agent_type": &info.agent_type, "ancestors": ancestors, "children": children,
+            "path": info.source.display().to_string(),
+        }),
     )
 }
 
@@ -1934,6 +1940,16 @@ mod tests {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .collect();
         assert_eq!(recs[0]["sid"], json!("a1"), "child meta sid");
+        // #81: every live/bundle meta carries its transcript path — the header's
+        // click-to-copy writes THIS (an absent path used to flash "copied" over an
+        // empty clipboard write).
+        assert!(
+            recs[0]["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with(".jsonl")),
+            "child meta path: {:?}",
+            recs[0]["path"]
+        );
         assert_eq!(
             recs[0]["ancestors"],
             json!([{ "id": "sess", "title": "sess · compatible (claude)" }]),

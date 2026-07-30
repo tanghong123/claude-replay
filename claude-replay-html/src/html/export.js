@@ -1588,6 +1588,9 @@
   // file://, where navigator.clipboard is refused — so fall back to a hidden-textarea
   // execCommand and resolve success only when one path actually works. Never a false ✓.
   function copyText(text) {
+    // Nothing to copy is a FAILURE, not a success: `writeText("")` resolves ok, which
+    // turned a missing meta path into a false "copied transcript path" flash (#81).
+    if (!text) return Promise.resolve(false);
     function legacy() {
       try {
         var ta = document.createElement("textarea");
