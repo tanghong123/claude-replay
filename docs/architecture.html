@@ -253,7 +253,7 @@
         <div class="arrow"><span class="token">Session</span><span class="line">→</span></div>
         <div class="layer">
           <div class="lname">④ cache → present</div>
-          <div class="lwhat">The residency cache feeds the TUI (handoff deltas) and HTML (cursor pulls).</div>
+          <div class="lwhat">The residency cache feeds the TUI (Arc-clone deltas) and HTML (cursor pulls).</div>
           <div class="lmods">SessionCache · view · html_export</div>
         </div>
       </div>
@@ -303,7 +303,7 @@
         <tr><td>② fold</td><td class="role">back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — once, for every agent</td><td><code>engine::replay::Replayer</code> + per-agent <code>Shaping</code></td></tr>
         <tr><td>③ accumulate</td><td class="role">the durability frontier: finished turns drained <em>put-once</em> into a <code>BlockStore</code>; index, metrics and tasks folded alongside</td><td><code>engine::builder::SessionAccumulator</code></td></tr>
         <tr><td>④ cache</td><td class="role">registered → resident → hibernated residency for live sessions; the data layer both frontends stand on</td><td><code>present::cache::SessionCache</code></td></tr>
-        <tr><td>⑤ present</td><td class="role">TUI: splice-shaped handoff deltas. HTML: cursor pulls answered with byte-range pointers.</td><td><code>poll_handoff</code> · <code>SharedSession::pull</code></td></tr>
+        <tr><td>⑤ present</td><td class="role">TUI: splice-shaped deltas of <code>Arc</code> clones. HTML: cursor pulls answered with byte-range pointers.</td><td><code>poll_arc</code> · <code>SharedSession::pull</code></td></tr>
       </tbody>
     </table></div>
   </section>
@@ -339,7 +339,7 @@ acc.advance_at(byte_offset, &line);                      <span class="c">// push
     <div class="cards">
       <div class="card"><h4>InMemoryStore</h4><p><code>BV = Block</code> — identity. Batch parsing and owned <code>Session</code> snapshots.</p></div>
       <div class="card"><h4>TierBStore</h4><p><code>BV = Deferred</code> — a 12-byte locator; serde bytes spill append-only to disk. Lossless (<code>BlockRead</code>).</p></div>
-      <div class="card"><h4>HandoffStore</h4><p><code>BV = ()</code> — committed blocks are <em>queued for the consumer</em>, handed over exactly once. The TUI live path: one copy in the whole process.</p></div>
+      <div class="card"><h4>ArcStore</h4><p><code>BV = Arc&lt;Block&gt;</code> — the cache retains the one authoritative copy; readers hold references. The TUI live path: single-copy content, resync served from memory.</p></div>
       <div class="card"><h4>RecordStore <span class="badge def">html</span></h4><p><code>BV = RecordLocator</code> — <code>put</code> <em>renders</em> the block to its wire-format JSON record as the side effect. The Session <em>is</em> the projection.</p></div>
     </div>
     <div class="callout"><b>The showcase.</b> The live HTML server's committed zone is stored exactly
@@ -363,7 +363,7 @@ acc.advance_at(byte_offset, &line);                      <span class="c">// push
       <tbody>
         <tr><td><code>poll</code></td><td class="role">owned <code>Session</code> snapshot</td><td><code>F = InMemoryStore</code></td><td>2</td><td>O(session)</td></tr>
         <tr><td><code>poll_delta</code></td><td class="role">full blocks + <code>changed_from</code></td><td><code>F: BlockRead</code></td><td>2 + transient</td><td>O(session) alloc</td></tr>
-        <tr><td><code>poll_handoff</code></td><td class="role">splice-shaped delta</td><td><code>F = HandoffStore</code></td><td><b>1 — consumer-owned</b></td><td><b>O(delta)</b></td></tr>
+        <tr><td><code>poll_arc</code></td><td class="role">splice-shaped <code>Arc</code> delta</td><td><code>F = ArcStore</code></td><td><b>1 — cache-owned, view-referenced</b></td><td><b>O(delta)</b></td></tr>
         <tr><td><code>pull</code> (cursor)</td><td class="role">zones + byte-range pointers</td><td>any <code>P</code></td><td>1 (0 in RAM w/ <code>RecordStore</code>)</td><td>O(open turn)</td></tr>
       </tbody>
     </table></div>
@@ -371,7 +371,7 @@ acc.advance_at(byte_offset, &line);                      <span class="c">// push
 <pre><span class="c">// the TUI's instantiation (app.rs)</span>
 <span class="k">type</span> TuiCache = SessionCache&lt;
     TierBStore,     <span class="c">// pull tier: unused</span>
-    HandoffStore,   <span class="c">// View = sole block owner</span>
+    ArcStore,       <span class="c">// cache owns; View references</span>
     ViewSidecar,    <span class="c">// evicted frames park heights,</span>
 &gt;;                  <span class="c">//   folds, scroll — warm reloads</span></pre>
 <pre><span class="c">// the HTML server's (serve.rs)</span>
@@ -407,8 +407,9 @@ cache: SessionCache&lt;
         server folds on the <em>client's request thread</em> — an idle page is an idle server, and a
         closed page costs nothing after the 30&nbsp;s reap (evicted residents hibernate and restore
         without re-folding).</li>
-      <li><b>Every consumer speaks deltas.</b> In-process, <code>poll_handoff</code> hands each committed
-        block over exactly once with an O(turn) <code>changed_from</code>. Cross-process, the 4-tuple
+      <li><b>Every consumer speaks deltas.</b> In-process, <code>poll_arc</code> hands the view
+        <code>Arc</code> clones of each committed block with an O(turn) <code>changed_from</code> —
+        content stored once, cache-owned, search runs over it. Cross-process, the 4-tuple
         cursor travels with each request, so the server is per-client stateless — N windows read one
         shared log at their own pace. Both halves of that protocol ship in Rust
         (<code>pull</code> / <code>PullClient</code>), and the pull client is the executable spec the

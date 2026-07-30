@@ -138,7 +138,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, HandoffStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
+| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -149,19 +149,19 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
-tick, never spawn a follower thread — and with the `HandoffStore` follow tier (#76), your
-view is the process's ONLY copy of the session's blocks (the follower drains committed
-blocks to you exactly once; a tick costs O(delta), not an O(session) rebuild):
+tick, never spawn a follower thread — and with the `ArcStore` follow tier (#84), the cache
+retains the ONE authoritative copy of the blocks while your view holds `Arc` references
+(a tick costs O(delta) refcount bumps; a resync-from-zero is served from memory):
 
 ```rust
-type MyCache = SessionCache<TierBStore /*pull: unused*/, HandoffStore, MySidecar>;
+type MyCache = SessionCache<TierBStore /*pull: unused*/, ArcStore, MySidecar>;
 let cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
-        if let Some(Ok(d)) = cache.poll_handoff(&id) {
-            // splice: keep [0..frontier), append d.committed_delta + d.provisional,
-            // re-derive from d.changed_from — see View::apply_handoff for the real one
+        if let Some(Ok(d)) = cache.poll_arc(&id) {
+            // splice: keep [0..frontier), append Arc clones of d.committed_delta +
+            // d.provisional, re-derive from d.changed_from — see View::apply_arc
             view.splice(d);
         }
     }
@@ -228,8 +228,8 @@ Two optional capabilities refine what your store can feed:
   so `SharedSession` can hibernate/restore around your backing across cache evictions.
 
 Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
-`HandoffStore` (`BV = ()` — committed blocks are QUEUED for the consumer instead of retained,
-making the poller the sole owner; the TUI live path, #76), and the richest one,
+`ArcStore` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers
+hold references; the TUI live path, #84), and the richest one,
 `claude-replay-html`'s `RecordStore`
 (`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
 `put` **renders the committed block to its wire-format JSON record** as the side effect and

@@ -1415,10 +1415,12 @@ impl View {
             };
             return Line::styled(
                 format!(
-                    " search '{}'  {}/{}  (n/N next/prev · Esc-then-/ to clear) ",
+                    " search '{}'  block {}/{} · {} hit{}  (n/N next/prev · Esc-then-/ to clear) ",
                     self.query,
                     cur,
-                    self.matches.len()
+                    self.matches.len(),
+                    self.occurrences,
+                    if self.occurrences == 1 { "" } else { "s" }
                 ),
                 theme::status(),
             );

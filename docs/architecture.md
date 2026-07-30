@@ -97,7 +97,7 @@ flowchart TB
   MSG  -->|"② fold — join results onto calls, group turns, coalesce spans"| BLK
   BLK  -->|"③ accumulate — commit finished turns, index, meter"| SES
   SES  -->|"④ cache — keep live sessions current, evictable, shareable"| CACHE
-  CACHE -->|"⑤a handoff — in-process delta, blocks handed over once"| TUI
+  CACHE -->|"⑤a shared-copy poll — Arc-clone deltas, content stored once"| TUI
   CACHE -->|"⑤b pull — cross-process delta (4-tuple Cursor)"| HTMLR
   TUI  -->|"⑥a render — wrap + highlight, windowed"| TERM
   HTMLR -->|"⑥b render — records → virtualized DOM"| DOM
@@ -111,7 +111,7 @@ flowchart TB
 | ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queue lifecycle | `core::engine::replay` — `Replayer`, parameterized by the agent's `Shaping` (4 fn-pointers) |
 | ③ accumulate | maintain the durability frontier: finished turns drained **put-once** into a `BlockStore`, `SessionIndex`/`Metrics`/tasks folded alongside; `snapshot()` yields a `Session` | `core::engine::builder::SessionAccumulator` (sans-io — §4) |
 | ④ cache | residency for live sessions: register cheaply, materialize a follower on demand, reap idle, hibernate/restore | `present::cache::SessionCache`; residents kept current by `core::FollowParser` (batch parsing skips this stage — `parse_session` drives ①–③ directly) |
-| ⑤a handoff | in-process consumption: a splice-shaped delta — newly-committed blocks (each handed over exactly once, #76), the fresh open turn, and `changed_from` | `core::FollowParser::poll_handoff` → `tui::View::apply_handoff` (the generic `poll`/`poll_delta` remain for `BlockRead` stores) |
+| ⑤a shared-copy poll | in-process consumption: a splice-shaped delta of `Arc` clones — the accumulator RETAINS the authoritative committed copy (#84), the view holds references | `core::FollowParser::poll_arc` → `tui::View::apply_arc` (the generic `poll`/`poll_delta` remain for `BlockRead` stores) |
 | ⑤b pull | cross-process consumption: per-client stateless replies against a client-held cursor | `present::cache::stream` — `SharedSession::pull`, `Cursor`, `PullClient` (§8) |
 | ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render`/`markdown`/`wrap` + `present::highlight`; the `hot` window (§7) |
 | ⑥b render | blocks → JSON records → a windowed DOM | `html_export` emits records; `html/export.js` virtualizes (§7) |
@@ -162,9 +162,9 @@ not baked in:
 - `TierBStore` (`engine/tier_b.rs`) — committed *content* serialized append-only to an
   off-heap buffer or an on-disk file; `Bv = Deferred { offset, size }`, a 12-byte locator.
   Reading a block back is a positional read + decode, dropped after use.
-- `HandoffStore` (#76) — committed blocks are QUEUED for a single consumer and handed over
-  exactly once (`Bv = ()`): the consumer becomes the sole owner. Not `BlockRead` — the type
-  system keeps whole-session readers off it.
+- `ArcStore` (#84) — committed blocks live behind `Arc` (`Bv = Arc<Block>`): the accumulator
+  retains the authoritative copy, and handing a block to a reader is a refcount bump. The
+  store behind the one-copy/source-of-truth principles (§7).
 - …or the presentation's own: the html crate's `RecordStore` renders each block to its wire
   record at `put` time (`Bv = RecordLocator` — the §5 showcase).
 
@@ -272,8 +272,8 @@ a *window*, not the session:
   Block — committed                          resident: policy! InMemoryStore = RAM ·
       │                                        TierBStore = 12-byte locators, content on disk ·
       │                                        RecordStore = wire-record locators (#74) ·
-      │                                        HandoffStore = NOTHING (handed to the consumer
-      │                                        exactly once — the TUI View is the sole owner, #76)
+      │                                        ArcStore = Arc-shared content, ONE copy that the
+      │                                        cache owns and every reader references (#84)
       │  presentation shaping (fold policy, summaries, records/lines)
   presentation-friendly form                 TUI: heights+prefix (O(N) small ints);
       │                                        HTML: JSON records (client), record log (server)
@@ -306,6 +306,18 @@ expensive rendered output:
 
 ### The unified data layer: `SessionCache<P, F, A>`
 
+Five principles govern this layer (settled in #84, and worth stating because every seam
+below follows from them): **(1)** at most ONE full in-memory presentation copy per client
+application instance — it exists to make search fast, and search runs over it; **(2)** the
+`SessionCache` owns the SOURCE OF TRUTH of that copy — ownership, not storage medium: the
+TUI's is the RAM blocks the in-process view references, the HTML server's is the on-disk
+wire-record log its browser clients resync from; **(3)** therefore views never own blocks
+(else principle 1+2 would force a wasteful disk mirror for the in-process case); **(4)** the
+presentation format is each frontend's fastest-final-render form — `Block`s for the TUI,
+DOM-loadable wire JSON for HTML — chosen at the `BlockStore` seam; **(5)** only FINAL
+rendered results (and viewport neighbors) live under a view: the hot window / DOM window,
+plus small derived indexes (geometry, fold state) in the aux sidecar.
+
 Everything above meets in one owner. [`SessionCache`] is **the data layer a presentation
 builds on** — it answers "which sessions exist, which are materialized, in what
 representation, with what derived state attached" — and its three type parameters are the
@@ -314,7 +326,7 @@ three decisions a frontend gets to make without losing generality *or* efficienc
 | seam | decides | the menu |
 |---|---|---|
 | `P: BlockStore` | the **pull tier's** committed representation | `TierBStore` (lossless spill) · the html crate's `RecordStore` (the wire projection itself, #74) |
-| `F: BlockStore` | the **follow tier's** committed representation | `InMemoryStore` (owned `Session` snapshots) · `HandoffStore` (single-owner streaming, #76) |
+| `F: BlockStore` | the **follow tier's** committed representation | `InMemoryStore` (owned `Session` snapshots) · `ArcStore` (cache-owned shared copy, #84) |
 | `A` | the per-session **presentation sidecar** | any type — park-and-take (`aux_put`/`aux_take`) or in-place (`aux_with`) |
 
 The residency tiers under it:
@@ -332,7 +344,7 @@ And the consumption protocols, each matched to a representation by the type syst
 |---|---|---|---|---|
 | `poll(id) → Session` | whole-session snapshot | `F = InMemoryStore` | 2 (follower + snapshot) | O(session) |
 | `poll_delta(id)` | full blocks + `changed_from` | `F: BlockRead` | 2 + a transient rebuild | O(session) alloc, O(turn) diff |
-| `poll_handoff(id)` | splice-shaped delta (#76) | `F = HandoffStore` | **1 — the consumer owns them** | **O(delta)** |
+| `poll_arc(id)` | splice-shaped `Arc`-clone delta (#84) | `F = ArcStore` | **1 — cache-owned, view-referenced** | **O(delta)** |
 | `shared_session(id)` + pull | cursor zones / wire pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
 
 Both frontends instantiate the same type — that is the "unified without losing generality"
@@ -340,7 +352,7 @@ claim made concrete:
 
 ```rust
 // TUI (app.rs):  the View is the sole block owner; evicted frames park their derived state
-type TuiCache = SessionCache<TierBStore /*unused*/, HandoffStore, ViewSidecar>;
+type TuiCache = SessionCache<TierBStore /*unused*/, ArcStore, ViewSidecar>;
 // HTML server (serve.rs):  committed IS the wire projection; per-id serve state lives in aux
 cache: SessionCache<RecordStore, InMemoryStore, ServeAux>
 ```
@@ -365,7 +377,7 @@ wait.** Two mechanisms:
 **Borrowed-thread tailing.** Neither frontend runs a follower thread:
 
 - The **TUI** pumps the live tail on its *input event loop*: when `event::poll(250 ms)` times
-  out with no keystroke, the idle tick calls `cache.poll_handoff(id)` — so tailing costs zero
+  out with no keystroke, the idle tick calls `cache.poll_arc(id)` — so tailing costs zero
   threads and zero work while the user is interacting flat-out, and at most 4 polls/s idle.
 - The **HTML server** (pull mode, the default) has **no background tailer at all**: the fold
   advances on the *client's request thread* (`/pull` → `SharedSession.advance()` → reply).
@@ -376,13 +388,12 @@ wait.** Two mechanisms:
 **Delta-only protocols, at both distances.** The committed/open split (§4) makes "what
 changed?" answerable in O(turn), and both consumption protocols exploit it:
 
-- In-process: [`FollowParser::poll_handoff`] hands the TUI a splice-shaped delta — the
-  newly-committed blocks (drained from the `HandoffStore`, each exactly once), the fresh
-  open turn, and `changed_from` (the first differing index, computed against the prior
-  committed length plus a `common_prefix` over the small open-turn region — O(turn)).
-  `View::apply_handoff` splices in place and re-derives only the tail (`dirty_from`), so a
-  live tick is O(delta) in BOTH allocation and re-measure — and the View is the process's
-  only copy of the blocks (#76).
+- In-process: [`FollowParser::poll_arc`] hands the TUI a splice-shaped delta of `Arc`
+  clones — the accumulator RETAINS the authoritative committed vector (the cache-owned
+  source of truth), plus the fresh open turn and `changed_from` (O(turn)).
+  `View::apply_arc` splices pointers in place and re-derives only the tail (`dirty_from`):
+  a live tick is O(delta) in refcount bumps and re-measure, content lives ONCE, and a
+  fresh consumer or a resync-from-zero is served from memory, never by re-parse (#84).
 - Cross-process: the **4-tuple cursor protocol** (`present::cache::stream`) — `Cursor
   { epoch, committed_id, provisional_gen, provisional_index }`. The cursor travels with each
   request, so the server is **per-client stateless** and N tabs/windows each read at their
@@ -452,7 +463,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 [`SessionIndex`]: ../claude-replay-core/src/engine/index.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`FollowParser::poll_handoff`]: ../claude-replay-core/src/follow.rs
+[`FollowParser::poll_arc`]: ../claude-replay-core/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`pull`]: ../claude-replay-present/src/cache/stream.rs
