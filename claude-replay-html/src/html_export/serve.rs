@@ -47,6 +47,11 @@ struct Live {
 struct ServeAux {
     title: Option<TitleInfo>,
     parent: Option<String>,
+    /// Rendered open-turn records, keyed by `(epoch, gen, len)` (#85): within a gen the
+    /// finalized provisional is append-only and the committed prefix frozen, so an equal
+    /// key ⇒ identical records — concurrent clients (or fast re-pulls) reuse the render
+    /// instead of re-running markdown + highlighting over the whole open turn.
+    prov_render: Option<((u64, u64, usize), Vec<String>)>,
 }
 
 /// The presentation half of an agent's descriptor — everything `render_agent_stream` needs for
@@ -258,17 +263,29 @@ impl Live {
             let ext = (store.log_len() > start).then_some((start, store.log_len() - start));
             (ext, store.emit_snapshot())
         });
-        let provisional_lines = render_blocks(
-            &d.provisional,
-            &d.user_times,
-            &self.fold,
-            &self.cwd,
-            true,
-            true,
-            None,
-            Some(&transcript),
-            &mut open_emit,
-        );
+        let prov_key = (d.epoch, d.provisional_gen, d.provisional.len());
+        let cached = self.cache.aux_with(id, |a| {
+            a.prov_render
+                .as_ref()
+                .filter(|(k, _)| *k == prov_key)
+                .map(|(_, l)| l.clone())
+        });
+        let provisional_lines = cached.unwrap_or_else(|| {
+            let lines = render_blocks(
+                &d.provisional,
+                &d.user_times,
+                &self.fold,
+                &self.cwd,
+                true,
+                true,
+                None,
+                Some(&transcript),
+                &mut open_emit,
+            );
+            self.cache
+                .aux_with(id, |a| a.prov_render = Some((prov_key, lines.clone())));
+            lines
+        });
         // Slice each zone at the cursor (via the tested pull_indices). The committed zone is a
         // POINTER `{offset, len}` into the on-disk `<id>.records` log — the client range-reads
         // it via `/records`: the reply never carries the committed bytes, so the server renders

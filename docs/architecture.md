@@ -97,7 +97,7 @@ flowchart TB
   MSG  -->|"② fold — join results onto calls, group turns, coalesce spans"| BLK
   BLK  -->|"③ accumulate — commit finished turns, index, meter"| SES
   SES  -->|"④ cache — keep live sessions current, evictable, shareable"| CACHE
-  CACHE -->|"⑤a shared-copy poll — Arc-clone deltas, content stored once"| TUI
+  CACHE -->|"⑤a poll_view — one call: Arc-clone delta + chrome state"| TUI
   CACHE -->|"⑤b pull — cross-process delta (4-tuple Cursor)"| HTMLR
   TUI  -->|"⑥a render — wrap + highlight, windowed"| TERM
   HTMLR -->|"⑥b render — records → virtualized DOM"| DOM
@@ -111,7 +111,7 @@ flowchart TB
 | ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queue lifecycle | `core::engine::replay` — `Replayer`, parameterized by the agent's `Shaping` (4 fn-pointers) |
 | ③ accumulate | maintain the durability frontier: finished turns drained **put-once** into a `BlockStore`, `SessionIndex`/`Metrics`/tasks folded alongside; `snapshot()` yields a `Session` | `core::engine::builder::SessionAccumulator` (sans-io — §4) |
 | ④ cache | residency for live sessions: register cheaply, materialize a follower on demand, reap idle, hibernate/restore | `present::cache::SessionCache`; residents kept current by `core::FollowParser` (batch parsing skips this stage — `parse_session` drives ①–③ directly) |
-| ⑤a shared-copy poll | in-process consumption: a splice-shaped delta of `Arc` clones — the accumulator RETAINS the authoritative committed copy (#84), the view holds references | `core::FollowParser::poll_arc` → `tui::View::apply_arc` (the generic `poll`/`poll_delta` remain for `BlockRead` stores) |
+| ⑤a poll_view | in-process consumption: ONE call — advance, splice-shaped `Arc` delta, times/metrics/tasks; the change boundary comes from the same reshape comparison that drives the wire gen bumps (#85) | `SharedSession::poll_view` → `tui::View::apply_view` |
 | ⑤b pull | cross-process consumption: per-client stateless replies against a client-held cursor | `present::cache::stream` — `SharedSession::pull`, `Cursor`, `PullClient` (§8) |
 | ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render`/`markdown`/`wrap` + `present::highlight`; the `hot` window (§7) |
 | ⑥b render | blocks → JSON records → a windowed DOM | `html_export` emits records; `html/export.js` virtualizes (§7) |
@@ -325,36 +325,37 @@ three decisions a frontend gets to make without losing generality *or* efficienc
 
 | seam | decides | the menu |
 |---|---|---|
-| `P: BlockStore` | the **pull tier's** committed representation | `TierBStore` (lossless spill) · the html crate's `RecordStore` (the wire projection itself, #74) |
-| `F: BlockStore` | the **follow tier's** committed representation | `InMemoryStore` (owned `Session` snapshots) · `ArcStore` (cache-owned shared copy, #84) |
+| `P: BlockStore` | the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles) | `ArcStore` (cache-owned shared copy — the TUI) · the html crate's `RecordStore` (the wire projection itself, #74) · `TierBStore` (lossless spill) |
 | `A` | the per-session **presentation sidecar** | any type — park-and-take (`aux_put`/`aux_take`) or in-place (`aux_with`) |
 
-The residency tiers under it:
+The residency tiers under it (#85: ONE live tier — the same resident serves the in-process
+view and the wire protocol):
 
 | tier | holds | cost | transition |
 |---|---|---|---|
 | (c) registered | agent + path | ~nothing | the default for a discovered-but-unopened session (a large sub-agent tree stays here) |
-| (a) resident | an open `FollowParser<F>` | O(turn) + tables | polled recently; reaped to (c) after 30 s idle |
-| (a′) pull-resident | a `SharedSession<P>` | O(turn) + tables + disk backing | same reap policy; on eviction it **hibernates** its serving state to a sidecar, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
+| (a) live resident | a `SharedSession<P>` | O(turn) + tables (+ disk backing per `P`) | polled recently; reaped to (c) after 30 s idle — a `PersistentStore` resident **hibernates** its serving state on eviction, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
 
 And the consumption protocols, each matched to a representation by the type system
 (a capability bound, not a convention):
 
 | protocol | shape | requires | copies of committed blocks | per-tick cost |
 |---|---|---|---|---|
-| `poll(id) → Session` | whole-session snapshot | `F = InMemoryStore` | 2 (follower + snapshot) | O(session) |
-| `poll_delta(id)` | full blocks + `changed_from` | `F: BlockRead` | 2 + a transient rebuild | O(session) alloc, O(turn) diff |
-| `poll_arc(id)` | splice-shaped `Arc`-clone delta (#84) | `F = ArcStore` | **1 — cache-owned, view-referenced** | **O(delta)** |
-| `shared_session(id)` + pull | cursor zones / wire pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
+| `poll_view(id)` — in-process | ONE call: advance + splice-shaped `Arc` delta + times/metrics/tasks | `P = ArcStore` | **1 — cache-owned, view-referenced** | **O(delta)** |
+| `shared_session(id)` + `pull` — wire | cursor zones / byte-range pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
+
+(Whole-`Session` consumers use the core's own follower — `FollowParser::poll`/`poll_delta`
+— or batch `parse_session`; the cache's job is live residency, and its two protocols share
+one resident and ONE implementation of "what changed since last tick".)
 
 Both frontends instantiate the same type — that is the "unified without losing generality"
 claim made concrete:
 
 ```rust
 // TUI (app.rs):  the View is the sole block owner; evicted frames park their derived state
-type TuiCache = SessionCache<TierBStore /*unused*/, ArcStore, ViewSidecar>;
+type TuiCache = SessionCache<ArcStore, ViewSidecar>;   // every parameter doing chosen work
 // HTML server (serve.rs):  committed IS the wire projection; per-id serve state lives in aux
-cache: SessionCache<RecordStore, InMemoryStore, ServeAux>
+cache: SessionCache<RecordStore, ServeAux>
 ```
 
 The **sidecar slot** (#75) completes the story: it is the home for derived,
@@ -377,7 +378,7 @@ wait.** Two mechanisms:
 **Borrowed-thread tailing.** Neither frontend runs a follower thread:
 
 - The **TUI** pumps the live tail on its *input event loop*: when `event::poll(250 ms)` times
-  out with no keystroke, the idle tick calls `cache.poll_arc(id)` — so tailing costs zero
+  out with no keystroke, the idle tick calls `cache.poll_view(id)` — so tailing costs zero
   threads and zero work while the user is interacting flat-out, and at most 4 polls/s idle.
 - The **HTML server** (pull mode, the default) has **no background tailer at all**: the fold
   advances on the *client's request thread* (`/pull` → `SharedSession.advance()` → reply).
@@ -388,12 +389,13 @@ wait.** Two mechanisms:
 **Delta-only protocols, at both distances.** The committed/open split (§4) makes "what
 changed?" answerable in O(turn), and both consumption protocols exploit it:
 
-- In-process: [`FollowParser::poll_arc`] hands the TUI a splice-shaped delta of `Arc`
-  clones — the accumulator RETAINS the authoritative committed vector (the cache-owned
-  source of truth), plus the fresh open turn and `changed_from` (O(turn)).
-  `View::apply_arc` splices pointers in place and re-derives only the tail (`dirty_from`):
-  a live tick is O(delta) in refcount bumps and re-measure, content lives ONCE, and a
-  fresh consumer or a resync-from-zero is served from memory, never by re-parse (#84).
+- In-process: `SharedSession::poll_view` hands the TUI everything in ONE call — a
+  splice-shaped delta of `Arc` clones (the resident RETAINS the authoritative committed
+  vector — the cache-owned source of truth), the fresh open turn, `changed_from`, and the
+  chrome state (times/metrics/tasks). `View::apply_view` splices pointers in place and
+  re-derives only the tail: O(delta) refcount bumps and re-measure, content stored ONCE,
+  resync-from-zero served from memory (#84/#85). The change boundary and the wire
+  protocol's gen bumps come from the SAME reshape comparison — one implementation.
 - Cross-process: the **4-tuple cursor protocol** (`present::cache::stream`) — `Cursor
   { epoch, committed_id, provisional_gen, provisional_index }`. The cursor travels with each
   request, so the server is **per-client stateless** and N tabs/windows each read at their
@@ -463,7 +465,6 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 [`SessionIndex`]: ../claude-replay-core/src/engine/index.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`FollowParser::poll_arc`]: ../claude-replay-core/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`pull`]: ../claude-replay-present/src/cache/stream.rs

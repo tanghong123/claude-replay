@@ -138,7 +138,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
+| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -159,7 +159,7 @@ let cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
-        if let Some(Ok(d)) = cache.poll_arc(&id) {
+        if let Some(Ok(d)) = cache.poll_view(&id) {
             // splice: keep [0..frontier), append Arc clones of d.committed_delta +
             // d.provisional, re-derive from d.changed_from — see View::apply_arc
             view.splice(d);
@@ -169,8 +169,9 @@ loop {
 }
 ```
 
-(Prefer whole-`Session` values instead? Use `F = InMemoryStore` and `poll`/`poll_delta` —
-the capability bounds pick the menu for you; see the protocol table in
+(Prefer whole-`Session` values instead? Use the core's own follower —
+`FollowParser::poll`/`poll_delta` — or batch `parse_session`; the cache's job is live
+residency, and its two protocols share one resident. See the protocol table in
 [Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
