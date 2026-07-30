@@ -132,9 +132,18 @@ pub enum TurnOutcome {
 /// Codex doesn't, so it leaves this unimplemented and the done-signal falls back to
 /// the exit code.
 pub trait TaskQueue {
-    /// Open (non-completed) task count; `None` = unknown (missing dir / parse fail),
-    /// which callers treat as "trust the exit code" rather than "zero left".
-    fn open_count(&self, session_id: &str) -> Option<usize>;
+    /// **Actionable** task count — open tasks that are neither explicitly parked
+    /// (`deferred`/`paused`) nor blocked by a non-completed task (#79: a queue holding
+    /// only parked/blocked work must classify as DONE, not spawn retry rounds forever).
+    /// `None` = unknown (missing dir / parse fail), which callers treat as "trust the
+    /// exit code" rather than "zero left".
+    fn actionable_count(&self, session_id: &str) -> Option<usize>;
+    /// A stable fingerprint of the queue's `(id, status)` pairs — the task half of the
+    /// supervisor's no-progress detection (#79). `None` = unknown.
+    fn fingerprint(&self, session_id: &str) -> Option<u64> {
+        let _ = session_id;
+        None
+    }
     /// Human-readable rendering for `status`.
     fn render(&self, session_id: &str) -> String;
 }

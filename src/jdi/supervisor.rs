@@ -120,6 +120,14 @@ fn run_loop_body(session: &Session) -> Result<()> {
     const MAX_IDENTICAL_FAILURES: u32 = 3;
     let mut identical_failures: u32 = 0;
     let mut last_failure = String::new();
+    // No-forward-progress detection (#79): a Retry round that changes NOTHING meaningful
+    // — task statuses, git HEAD, the worktree — did no work and will do none next time
+    // (the knack/claude-replay storms: 10-13 no-op relaunches, ending in context
+    // exhaustion). Capture text is deliberately NOT part of this fingerprint: the storms
+    // evaded `failure_signature` because captures differ superficially every round.
+    const MAX_NO_PROGRESS: u32 = 2;
+    let mut no_progress: u32 = 0;
+    let mut last_state_fp: Option<u64> = None;
     // Entered directly in a backlog mode (`agent-jdi backlog --drain`, or a relaunch
     // that died mid-drain): claim the items up front so the first turn sees them.
     if draining {
@@ -258,6 +266,35 @@ fn run_loop_body(session: &Session) -> Result<()> {
                     session.meta_set("exit_code", &rc.to_string()).ok();
                     return Ok(());
                 }
+                // #79: meaningful-state fingerprint. Unchanged across consecutive Retry
+                // rounds ⇒ the remaining open tasks are blocked/deferred or an external
+                // step is required — relaunching burns context (each resume re-ingests
+                // the whole session; the storms died of "Prompt is too long") for zero
+                // work. Stop and hand back.
+                let fp = state_fingerprint(adapter.as_ref(), &session_id, cwd_path);
+                if fp.is_some() && fp == last_state_fp {
+                    no_progress += 1;
+                } else {
+                    no_progress = 0;
+                    last_state_fp = fp;
+                }
+                if no_progress >= MAX_NO_PROGRESS {
+                    log(
+                        session,
+                        &format!(
+                            "no forward progress across {MAX_NO_PROGRESS} consecutive turns (task statuses, git HEAD, and worktree all unchanged) — remaining open work is blocked/deferred or needs an external step; stopping (resume with `agent-jdi resume` once unblocked)"
+                        ),
+                    );
+                    session.meta_set("state", "idle").ok();
+                    session.meta_set("exit_code", &rc.to_string()).ok();
+                    session
+                        .meta_set(
+                            "last_reason",
+                            "no forward progress — open work is blocked/deferred or external",
+                        )
+                        .ok();
+                    return Ok(());
+                }
                 let sig = failure_signature(rc, &capture);
                 if sig == last_failure {
                     identical_failures += 1;
@@ -287,6 +324,41 @@ fn run_loop_body(session: &Session) -> Result<()> {
             }
         }
     }
+}
+
+/// The meaningful-state fingerprint behind the no-progress guard (#79): the task
+/// queue's `(id, status)` pairs (via the adapter), git `HEAD`, and a hash of
+/// `git status --porcelain` — the things a turn that did real work MUST have moved.
+/// `None` when nothing is measurable (no task queue AND not a git repo) — the guard
+/// then never trips (unknown ≠ unchanged).
+fn state_fingerprint(
+    adapter: &dyn agent::AgentAdapter,
+    session_id: &str,
+    cwd: &Path,
+) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let tasks_fp = adapter.task_queue().and_then(|q| q.fingerprint(session_id));
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    let head = git(&["rev-parse", "HEAD"]);
+    let dirty = git(&["status", "--porcelain"]);
+    if tasks_fp.is_none() && head.is_none() {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tasks_fp.hash(&mut h);
+    head.hash(&mut h);
+    dirty.hash(&mut h);
+    Some(h.finish())
 }
 
 /// A normalized fingerprint of a failed turn — the exit code + the capture's tail with
