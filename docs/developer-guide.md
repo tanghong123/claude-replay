@@ -32,7 +32,7 @@ bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, defa
 `/tmp/sc-gate`). Engine refactors must be output-preserving; intentional output changes are
 verified line-by-line and re-baselined — see [`scripts/gate/README.md`](../scripts/gate/README.md).
 Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`parse_lines`
-oracles (`#[cfg(test)]` equivalence gates in `claude_model`/`codex_model`).
+oracles (`#[cfg(test)]` equivalence gates in the `agents/{claude,codex}/model.rs` families).
 
 ## 2. Testing a TUI with no terminal
 
@@ -266,7 +266,7 @@ the two frontends (`src/lib.rs::run_viewer`).
 ## 7. Adding an agent
 
 The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
-agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter` row**
+agent is **a `model` / `metrics` / `discover` family under `agents/<agent>/` + one `impl TranscriptAdapter` row**
 — the shared engine is never touched. Calibrate the cost by the three existing adapters:
 Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
 Claude's decoder wholesale — its whole adapter is discovery + a `sniff`). Say we're adding
@@ -281,7 +281,7 @@ pub enum Agent { Claude, Codex, QoderWork, Gemini }
 // …extend label() / from_label() with "gemini".
 ```
 
-### Step 2 — Layer 1: the decoder (`gemini_model.rs`)
+### Step 2 — Layer 1: the decoder (`agents/gemini/model.rs`)
 
 The only place that knows Gemini's raw line format. Provide:
 
@@ -294,18 +294,18 @@ The only place that knows Gemini's raw line format. Provide:
   `Block`, including tool-name normalization onto the canonical vocabulary — this is what
   makes the shared summaries/folding classify your agent correctly), `join_result`,
   `keep_orphan`, `finish_turns` (`coalesce_spans` for Claude-style grouping, or identity).
-  Model it on `codex_model` (the simpler one).
+  Model it on `agents/codex/model.rs` (the simpler one). Import only from `crate::engine::seam` — the audited adapter contract (#87).
 
 > Everything else about parsing — the fold, back-patching, turn grouping, the queue
 > lifecycle, streaming, the live follower — is shared and already done. You are writing a
 > *decoder*, not a parser.
 
-### Step 3 — metrics (`gemini_metrics.rs`)
+### Step 3 — metrics (`agents/gemini/metrics.rs`)
 
 A small `MetricsAccumulator` impl (push a line's token usage, `finish()` into [`Metrics`]).
-See `codex_metrics.rs`.
+See `agents/codex/metrics.rs`.
 
-### Step 4 — discovery (`gemini_discover.rs`)
+### Step 4 — discovery (`agents/gemini/discover.rs`)
 
 Where Gemini keeps its transcripts. Provide `candidates_scoped(cwd)` — scope with
 `discover::ancestors_below(cwd, home)`: auto-discovery must stay strictly inside `$HOME`
@@ -335,7 +335,7 @@ up with no further changes.
 
 ### Step 6 — test it
 
-- An equivalence gate in `gemini_model` (frozen fixture → expected block list), mirroring
+- An equivalence gate in `agents/gemini/model.rs` (frozen fixture → expected block list), mirroring
   `replay_tokenize_matches_*`.
 - A `FollowParser` round-trip: incremental output == full re-parse at each append.
 - The full gate (§1), including `scripts/gate/gate.sh`.
@@ -355,4 +355,4 @@ up with no further changes.
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
-[`PullClient`]: ../claude-replay-present/src/cache/stream.rs
+[`PullClient`]: ../claude-replay-present/src/pull.rs

@@ -25,8 +25,6 @@
 //! The maps are guarded by independent mutexes and never locked simultaneously, so the cache
 //! can't self-deadlock. Rendering happens in the caller *between* cache calls; the only work
 //! under a cache lock is the brief O(delta) follower advance.
-// The 4-member-cursor pull protocol (Cursor/PullReply + the executable-spec PullClient).
-mod stream;
 // SharedSession: the one live tier — the follower + store both frontends share.
 mod shared;
 #[allow(unused_imports)]
@@ -34,8 +32,8 @@ pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 use crate::engine::BlockStore;
 #[allow(unused_imports)]
 pub use shared::{PersistentStore, PullDelta, SharedSession, ViewDelta};
-#[allow(unused_imports)]
-pub use stream::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
+// The pull protocol moved to [`crate::pull`] (#87); these aliases keep the old paths.
+pub use crate::pull::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};

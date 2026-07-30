@@ -44,13 +44,15 @@ root Cargo.toml — the single spot per release.
   `detect_agent`/`session_cwd`/`session_id`/`subagent_source`/`resolve_any` ·
   `follow.rs` incremental `FollowParser` · `tail.rs` byte-offset tail · `agent.rs` the `Agent` enum ·
   `adapter.rs` the `TranscriptAdapter` trait + `adapter()`/`adapters()` registry (the one per-agent seam)
-- **Per-agent L1 adapters** (symmetric, each feeds the shared engine): `claude_model.rs` /
-  `codex_model.rs` (tokenizer + `Shaping`) · `claude_metrics.rs` / `codex_metrics.rs` (token/cost
-  folding) · `claude_discover.rs` / `codex_discover.rs` (that agent's transcript store). A new
-  agent = a `*_model`/`*_metrics`/`*_discover` trio + one `impl TranscriptAdapter` row in
-  `adapter.rs`; the shared engine is
-  never touched. Each adapter owns its test suite (the byte-identical equivalence gates live
-  in `claude_model`/`codex_model`); `model`'s tests are the agent-neutral ones only
+- **Per-agent adapter families** (`agents/<agent>/`, symmetric, each feeds the shared engine):
+  `agents/{claude,codex}/model.rs` (tokenizer + `Shaping`) · `agents/{claude,codex}/metrics.rs`
+  (token/cost folding) · `agents/{claude,codex,qoderwork}/discover.rs` (that agent's transcript
+  store). A new agent = a `model`/`metrics`/`discover` family under `agents/<agent>/` + one
+  `impl TranscriptAdapter` row in `adapter.rs`; the shared engine is never touched. Agent code
+  may reach the rest of the crate ONLY through `engine/seam.rs` — the audited adapter contract
+  (`agents_import_only_the_seam`); anything an adapter newly needs is added to the seam
+  deliberately (#87). Each adapter owns its test suite (the byte-identical equivalence gates
+  live in the `model` families); `model`'s tests are the agent-neutral ones only
   (`block_kind`/`fold_key`, `relativize`).
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free

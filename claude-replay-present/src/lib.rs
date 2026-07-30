@@ -11,6 +11,7 @@ pub mod args;
 pub mod cache;
 pub mod highlight;
 pub mod present;
+pub mod pull;
 pub mod sys;
 
 pub use args::Args;

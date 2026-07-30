@@ -32,12 +32,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use super::stream::{pull_indices, Cursor, PullReply};
 use crate::engine::session::{BlockRead, BlockStore, InMemoryStore};
 use crate::engine::{SessionMeta, StreamRead};
 use crate::follow::FollowParser;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
+use crate::pull::{pull_indices, Cursor, PullReply};
 use crate::Agent;
 
 /// A consistent, delta-sized read of everything one `/pull` render needs, taken under a single
@@ -343,7 +343,7 @@ impl<S: BlockStore> SharedSession<S> {
     }
 
     /// Serve a client's [`Cursor`] against the current state — the same reply the free
-    /// [`pull`](super::stream::pull) computes, built from the accumulator's zones without cloning
+    /// [`pull`](crate::pull::pull) computes, built from the accumulator's zones without cloning
     /// the whole committed prefix (only `committed[committed_from..]` is copied). Does **not**
     /// advance; a client that wants the freshest tail calls [`advance`](Self::advance) first (the
     /// `/pull` handler does).
@@ -457,11 +457,11 @@ impl<S: BlockStore> SharedSession<S> {
 
     /// The cursor a fully caught-up client of this session would hold — the current epoch/gen
     /// with both zone lengths as the positions. By definition `pull(end_cursor())` is idle; a
-    /// same-process consumer bootstrapping a [`PullClient`](super::stream::PullClient) tail
+    /// same-process consumer bootstrapping a [`PullClient`](crate::pull::PullClient) tail
     /// (skipping the initial snapshot it obtained elsewhere) starts here.
-    pub fn end_cursor(&self) -> super::stream::Cursor {
+    pub fn end_cursor(&self) -> crate::pull::Cursor {
         let (epoch, provisional_gen, committed_id, provisional_index) = self.counters();
-        super::stream::Cursor {
+        crate::pull::Cursor {
             epoch,
             committed_id,
             provisional_gen,

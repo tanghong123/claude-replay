@@ -487,7 +487,7 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 - **Agent-agnostic everything above L1** — no presenter or shared-engine code matches on
   `Agent` for behavior; it routes through the adapter registry.
 - **Byte-identical refactors** — the streaming parse is proven identical to frozen oracles
-  (`#[cfg(test)]` equivalence gates in `claude_model`/`codex_model`), the follower to a full
+  (`#[cfg(test)]` equivalence gates in the agent `model` families), the follower to a full
   re-parse at every append, and every change runs `scripts/gate/gate.sh` — a frozen-fixture
   `--dump`/`--dump-html`/bundle diff that must print `BYTE-IDENTICAL: PASS`.
 - **One classifier / one fold / one phrasing** — block classification, the L2 fold, and the
@@ -507,11 +507,13 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 | `claude-replay-core/src/engine/builder.rs` | `SessionAccumulator` (sans-io fold) + `StreamRead` |
 | `claude-replay-core/src/engine/{message,session,index,tasks,tier_b,path,time}.rs` | canonical log · `Session<BV>`/`BlockStore`/`BlockAccess` · rollups · task model · tier-b backing · helpers |
 | `claude-replay-core/src/adapter.rs` | `TranscriptAdapter` trait + registry + `SniffClaim` |
-| `claude-replay-core/src/{claude,codex}_model.rs` | L1 tokenizers + `Shaping` |
-| `claude-replay-core/src/{claude,codex}_metrics.rs` | token/cost folding |
-| `claude-replay-core/src/{claude,codex,qoderwork}_discover.rs` | per-agent transcript stores |
+| `claude-replay-core/src/agents/{claude,codex}/model.rs` | L1 tokenizers + `Shaping` |
+| `claude-replay-core/src/agents/{claude,codex}/metrics.rs` | token/cost folding |
+| `claude-replay-core/src/agents/{claude,codex,qoderwork}/discover.rs` | per-agent transcript stores |
+| `claude-replay-core/src/engine/seam.rs` | the audited adapter contract — all `agents/**` may import (#87) |
 | `claude-replay-core/src/{discover,metrics,follow,tail,agent,fold,summary,diff}.rs` | discovery facade · metrics · live follower · byte-offset tail · `Agent` · fold policy · span phrasing · diff-row model |
-| `claude-replay-present/src/cache/{mod,shared,stream}.rs` | `SessionCache` tiers · `SharedSession` (+hibernation) · the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) |
+| `claude-replay-present/src/cache/{mod,shared}.rs` | `SessionCache` residency · `SharedSession` (+hibernation) |
+| `claude-replay-present/src/pull.rs` | the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) (#87) |
 | `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter · OS/path helpers · shared `Args` (`cli` feature) |
 | `claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs` | the terminal viewer |
 | `claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs` + `src/html/` | HTML render core · offline writers · live server · the wire-projection `RecordStore` (#74) · embedded CSS/JS |
@@ -527,5 +529,5 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
-[`pull`]: ../claude-replay-present/src/cache/stream.rs
-[`PullClient`]: ../claude-replay-present/src/cache/stream.rs
+[`pull`]: ../claude-replay-present/src/pull.rs
+[`PullClient`]: ../claude-replay-present/src/pull.rs

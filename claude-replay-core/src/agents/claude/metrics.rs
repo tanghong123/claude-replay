@@ -1,13 +1,13 @@
 //! **Claude's token/cost metrics adapter** — the Claude half of the shared `metrics`
 //! engine (mirrors `codex_metrics`). Folds each Claude transcript line's `/message/usage`
 //! into a running [`MetricsAcc`]; the agent-neutral [`Metrics`] value, pricing, and footer
-//! formatting live in [`crate::metrics`].
+//! formatting live in [`crate::engine::seam`].
 
-use crate::metrics::{estimate_cost, parse_ts, Metrics, TimeSpan};
+use crate::engine::seam::{estimate_cost, parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Claude's per-line token/cost accumulator, folded through the shared
-/// [`MetricsAccumulator`](crate::adapter::MetricsAccumulator) seam — so the streaming engine
+/// `MetricsAccumulator` seam — so the streaming engine
 /// (`model::parse_stream`, M10) folds metrics in the same pass that builds blocks, and the
 /// metrics-only reader path (`metrics::parse_reader_for`) reuses it. `push` sums each line's
 /// `/message/usage`; `finish` prices it.
@@ -79,12 +79,15 @@ impl MetricsAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{human_tokens, parse_reader_for};
+    use crate::engine::seam::{human_tokens, parse_reader_for};
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
     /// default path with Claude's accumulator.
     fn parse_reader(jsonl: &str) -> Metrics {
-        parse_reader_for(crate::Agent::Claude, std::io::Cursor::new(jsonl))
+        parse_reader_for(
+            crate::engine::seam::Agent::Claude,
+            std::io::Cursor::new(jsonl),
+        )
     }
 
     /// The agent-specific extension seam: `bump` accumulates by key and `finish` emits the bag.

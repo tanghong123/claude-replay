@@ -1,6 +1,11 @@
 # Core layout study: agent adapters out of core + namespace audit (#87)
 
-**Status: PROPOSAL — awaiting sign-off. No code moves in this task.**
+**Status: SIGNED OFF 2026-07-31. Part A step 1 and Part B are EXECUTED (v1.20.0):
+`agents/<agent>/{model,metrics,discover}.rs` families, `engine/seam.rs` as the audited
+adapter contract (`agents_import_only_the_seam` enforces seam-only imports),
+`reader` → `engine`, `cache/stream.rs` → `present::pull` (old paths aliased).
+Steps 2–3 (open `Agent`, engine/agents/facade crate split) remain scheduled for after
+the fold vocabulary has been quiet for a few tasks.**
 
 The engine's goal is to be broadly usable, and its own layout is part of that surface:
 a consumer (or a new-agent author) should be able to tell *where things live and why*

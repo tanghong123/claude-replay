@@ -6,12 +6,7 @@
 //! `Replayer` / `replay` fold, the `SessionAccumulator` driver, and the shared message-handling
 //! helpers — lives in [`crate::model`]. `parse_main` is the frozen `#[cfg(test)]` reference parser.
 
-use crate::engine::message::{Message, QueueOpKind};
-use crate::engine::path::relativize;
-use crate::engine::replay::*;
-use crate::engine::time::epoch_secs;
-use crate::model::*;
-use crate::Agent;
+use crate::engine::seam::*;
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -156,8 +151,8 @@ fn push_injected(s: &str, out: &mut Vec<Block>) {
 /// L1-only extraction (the built `ToolUse` block doesn't retain inputs). Any other
 /// tool → `None`. Field names follow the harness's task-tool schema; `blockedBy` on
 /// an update is treated as additive alongside `addBlockedBy`.
-fn task_op(name: &str, id: &str, input: &Value) -> Option<crate::engine::tasks::TaskOp> {
-    use crate::engine::tasks::TaskOp;
+fn task_op(name: &str, id: &str, input: &Value) -> Option<crate::engine::seam::TaskOp> {
+    use crate::engine::seam::TaskOp;
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(String::from);
     let list = |k: &str| -> Vec<String> {
         input
@@ -301,7 +296,7 @@ pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
 }
 
 // (Turn grouping is the shared, agent-neutral span coalescer now — see
-// `crate::model::coalesce_spans` and `design/cc-activity-coalescing.md` (#57). The
+// `crate::engine::seam::coalesce_spans` and `design/cc-activity-coalescing.md` (#57). The
 // former per-assistant-message `group_turns`/`coalesce_activity_runs` pair rendered
 // far more summary lines than Claude Code and was subsumed by it.)
 
@@ -416,7 +411,7 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     // Stream through the shared incremental fold in a single pass, one line resident, and keep
     // only the blocks (this sub-agent path doesn't need times or metrics).
-    let mut b = crate::engine::builder::SessionAccumulator::new(Agent::Claude);
+    let mut b = crate::engine::seam::SessionAccumulator::new(Agent::Claude);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?;
     Ok(b.fold().0)
@@ -472,7 +467,7 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
 /// rolled-up costs. `None` when neither is known.
 fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<UsdCost> {
     let own = std::fs::File::open(child_path).ok().and_then(|f| {
-        crate::metrics::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
+        crate::engine::seam::parse_reader_for(Agent::Claude, std::io::BufReader::new(f)).cost_usd
     });
     let desc: UsdCost = child_blocks
         .iter()
@@ -756,7 +751,7 @@ fn claude_keep_orphan(t: &str) -> bool {
     !is_boilerplate(t)
 }
 fn claude_finish(blocks: Vec<Block>) -> Vec<Block> {
-    crate::model::coalesce_spans(blocks)
+    crate::engine::seam::coalesce_spans(blocks)
 }
 
 /// Claude's `build_tool`: an `Agent`/`Task` spawn becomes a launched `SubAgent` block;
@@ -1269,7 +1264,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             keep
         });
     }
-    crate::model::coalesce_spans(out)
+    crate::engine::seam::coalesce_spans(out)
 }
 
 /// Build an [`Attachment`] from a `type:"attachment"` event's inner `attachment`
@@ -1674,11 +1669,11 @@ mod tests {
         let Block::Attachment(a) = &blocks[1] else {
             panic!("expected the plan attachment: {blocks:?}");
         };
-        assert_eq!(a.kind, crate::model::AttachmentKind::Plan);
+        assert_eq!(a.kind, crate::engine::seam::AttachmentKind::Plan);
         assert_eq!(a.name, "plan.md");
         // The body loads back from the raw line (what the builder's stamped locator does).
         match nth_loaded_attachment(line, 0) {
-            Some(crate::model::LoadedAttachment::Text(t)) => {
+            Some(crate::engine::seam::LoadedAttachment::Text(t)) => {
                 assert_eq!(t, "# The plan\n1. do the thing");
             }
             other => panic!("plan body did not load: {other:?}"),
@@ -2156,7 +2151,7 @@ mod tests {
         );
         // The terminal status is DERIVED by the sub_agents index from the AgentDone (finish)
         // event superseding the spawn — not by mutating the spawn block (two durable events).
-        let map = crate::engine::build_sub_agents(&blocks);
+        let map = crate::engine::seam::build_sub_agents(&blocks);
         assert_eq!(
             map["aXYZ1234"].status,
             AgentStatus::Completed,

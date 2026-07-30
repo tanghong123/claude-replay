@@ -1,8 +1,8 @@
-use crate::metrics::{parse_ts, Metrics, TimeSpan};
+use crate::engine::seam::{parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Codex's per-line token/cost accumulator, folded through the shared
-/// [`MetricsAccumulator`](crate::adapter::MetricsAccumulator) seam. Unlike Claude, Codex
+/// `MetricsAccumulator` seam. Unlike Claude, Codex
 /// reports a *cumulative* `total_token_usage`, so each `token_count` event overwrites
 /// (keeping the newest total), not sums.
 #[derive(Default, Clone)]
@@ -53,8 +53,13 @@ impl CodexMetricsAcc {
 
     pub(crate) fn finish(self) -> Metrics {
         // Codex has no cache-write tier; cached input bills at the read discount.
-        let cost_usd =
-            crate::metrics::estimate_cost(&self.model, self.input, 0, self.cached, self.output);
+        let cost_usd = crate::engine::seam::estimate_cost(
+            &self.model,
+            self.input,
+            0,
+            self.cached,
+            self.output,
+        );
         Metrics {
             input_tokens: self.input,
             cache_creation_tokens: 0,
@@ -71,12 +76,15 @@ impl CodexMetricsAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::parse_reader_for;
+    use crate::engine::seam::parse_reader_for;
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
     /// default path with Codex's accumulator.
     fn parse_codex_reader(jsonl: &str) -> Metrics {
-        parse_reader_for(crate::Agent::Codex, std::io::Cursor::new(jsonl))
+        parse_reader_for(
+            crate::engine::seam::Agent::Codex,
+            std::io::Cursor::new(jsonl),
+        )
     }
 
     #[test]

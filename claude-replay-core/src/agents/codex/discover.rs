@@ -1,5 +1,4 @@
-use crate::discover::Candidate;
-use crate::Agent;
+use crate::engine::seam::{Agent, Candidate};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::fs::File;
@@ -126,7 +125,7 @@ fn first_user_snippet(path: &Path) -> String {
             .flatten()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
             .filter_map(|item| item.get("text").and_then(Value::as_str))
-            .filter(|text| !crate::codex_model::is_host_context(text))
+            .filter(|text| !super::model::is_host_context(text))
             .collect::<Vec<_>>()
             .join(" ");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -199,7 +198,11 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
 /// sessions** — no global fallback (so a session for an unrelated directory never
 /// leaks into another directory's picker).
 pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    candidates_scoped_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
+    candidates_scoped_in(
+        &sessions_dir(),
+        cwd,
+        crate::engine::seam::home_dir().as_deref(),
+    )
 }
 
 /// The **nearest ancestor of `cwd`** (walking up the directory chain, strictly inside
@@ -213,7 +216,7 @@ fn nearest_ancestor_sessions<'a>(
     home: Option<&Path>,
 ) -> (Vec<&'a CodexSession>, bool) {
     let cwd_n = normalized(cwd);
-    for anc in crate::discover::ancestors_below(cwd, home) {
+    for anc in crate::engine::seam::ancestors_below(cwd, home) {
         let anc_n = normalized(&anc);
         let matched: Vec<&CodexSession> = sessions
             .iter()
@@ -232,7 +235,7 @@ fn nearest_ancestor_sessions<'a>(
 pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
     let sessions = sessions_in(&sessions_dir()); // newest-first
     let (matched, _) =
-        nearest_ancestor_sessions(&sessions, cwd, crate::discover::home_dir().as_deref());
+        nearest_ancestor_sessions(&sessions, cwd, crate::engine::seam::home_dir().as_deref());
     matched
         .into_iter()
         .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
@@ -319,7 +322,11 @@ pub fn session_id_with_marker(marker: &str) -> Option<String> {
 /// directory with no Codex history fails cleanly instead of hijacking some other
 /// project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
-    latest_for_cwd_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
+    latest_for_cwd_in(
+        &sessions_dir(),
+        cwd,
+        crate::engine::seam::home_dir().as_deref(),
+    )
 }
 
 fn latest_for_cwd_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Option<CodexSession> {

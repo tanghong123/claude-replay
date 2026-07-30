@@ -148,17 +148,17 @@ pub(crate) fn adapters() -> &'static [&'static dyn TranscriptAdapter] {
 }
 
 // ── MetricsAccumulator impls (the two accumulators are structurally identical) ──
-impl MetricsAccumulator for crate::claude_metrics::MetricsAcc {
+impl MetricsAccumulator for crate::agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
-        crate::claude_metrics::MetricsAcc::push(self, v)
+        crate::agents::claude::metrics::MetricsAcc::push(self, v)
     }
     fn finish(&self) -> Metrics {
         self.clone().finish()
     }
 }
-impl MetricsAccumulator for crate::codex_metrics::CodexMetricsAcc {
+impl MetricsAccumulator for crate::agents::codex::metrics::CodexMetricsAcc {
     fn push(&mut self, v: &Value) {
-        crate::codex_metrics::CodexMetricsAcc::push(self, v)
+        crate::agents::codex::metrics::CodexMetricsAcc::push(self, v)
     }
     fn finish(&self) -> Metrics {
         self.clone().finish()
@@ -182,34 +182,34 @@ impl TranscriptAdapter for ClaudeAdapter {
         }
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        crate::claude_model::enrich_tree(path, blocks)
+        crate::agents::claude::model::enrich_tree(path, blocks)
     }
     fn shaping(&self) -> &'static Shaping {
-        &crate::claude_model::CLAUDE_SHAPING
+        &crate::agents::claude::model::CLAUDE_SHAPING
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        crate::claude_model::decode_line(line, cwd, out)
+        crate::agents::claude::model::decode_line(line, cwd, out)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(crate::claude_metrics::MetricsAcc::default())
+        Box::new(crate::agents::claude::metrics::MetricsAcc::default())
     }
     fn load_attachment(&self, line: &str, index: usize) -> Option<crate::model::LoadedAttachment> {
-        crate::claude_model::nth_loaded_attachment(line, index)
+        crate::agents::claude::model::nth_loaded_attachment(line, index)
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
-        crate::claude_discover::candidates_scoped(cwd)
+        crate::agents::claude::discover::candidates_scoped(cwd)
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
-        crate::claude_discover::transcript_by_id(id)
+        crate::agents::claude::discover::transcript_by_id(id)
     }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        crate::claude_model::subagent_file(root, child_id)
+        crate::agents::claude::model::subagent_file(root, child_id)
     }
     fn load_tasks(&self, path: &Path) -> Option<crate::engine::tasks::TaskList> {
-        crate::claude_discover::load_tasks(path)
+        crate::agents::claude::discover::load_tasks(path)
     }
     fn store_contains(&self, path: &Path) -> bool {
-        path.starts_with(crate::claude_discover::projects_dir())
+        path.starts_with(crate::agents::claude::discover::projects_dir())
     }
 }
 
@@ -231,19 +231,19 @@ impl TranscriptAdapter for CodexAdapter {
         }
     }
     fn shaping(&self) -> &'static Shaping {
-        &crate::codex_model::CODEX_SHAPING
+        &crate::agents::codex::model::CODEX_SHAPING
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        crate::codex_model::decode_line(line, cwd, out)
+        crate::agents::codex::model::decode_line(line, cwd, out)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(crate::codex_metrics::CodexMetricsAcc::default())
+        Box::new(crate::agents::codex::metrics::CodexMetricsAcc::default())
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
-        crate::codex_discover::candidates_scoped(cwd)
+        crate::agents::codex::discover::candidates_scoped(cwd)
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
-        crate::codex_discover::resolve(Some(id), false).ok()
+        crate::agents::codex::discover::resolve(Some(id), false).ok()
     }
 }
 
@@ -266,30 +266,30 @@ impl TranscriptAdapter for QoderWorkAdapter {
         }
     }
     fn store_contains(&self, path: &Path) -> bool {
-        path.starts_with(crate::qoderwork_discover::projects_dir())
+        path.starts_with(crate::agents::qoderwork::discover::projects_dir())
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        crate::claude_model::enrich_tree(path, blocks)
+        crate::agents::claude::model::enrich_tree(path, blocks)
     }
     fn shaping(&self) -> &'static Shaping {
-        &crate::claude_model::CLAUDE_SHAPING
+        &crate::agents::claude::model::CLAUDE_SHAPING
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        crate::claude_model::decode_line(line, cwd, out)
+        crate::agents::claude::model::decode_line(line, cwd, out)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(crate::claude_metrics::MetricsAcc::default())
+        Box::new(crate::agents::claude::metrics::MetricsAcc::default())
     }
     fn load_attachment(&self, line: &str, index: usize) -> Option<crate::model::LoadedAttachment> {
-        crate::claude_model::nth_loaded_attachment(line, index)
+        crate::agents::claude::model::nth_loaded_attachment(line, index)
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
-        crate::qoderwork_discover::candidates_scoped(cwd)
+        crate::agents::qoderwork::discover::candidates_scoped(cwd)
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
-        crate::qoderwork_discover::transcript_by_id(id)
+        crate::agents::qoderwork::discover::transcript_by_id(id)
     }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        crate::claude_model::subagent_file(root, child_id)
+        crate::agents::claude::model::subagent_file(root, child_id)
     }
 }

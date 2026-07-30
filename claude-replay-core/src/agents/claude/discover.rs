@@ -5,8 +5,7 @@
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in [`crate::discover`].
 
-use crate::discover::Candidate;
-use crate::Agent;
+use crate::engine::seam::{Agent, Candidate};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -79,7 +78,7 @@ fn nearest_project_transcripts(
     cwd: &Path,
     home: Option<&Path>,
 ) -> Vec<(SystemTime, PathBuf)> {
-    crate::discover::ancestors_below(cwd, home)
+    crate::engine::seam::ancestors_below(cwd, home)
         .into_iter()
         .map(|dir| transcripts_in_project(root, &slug_for(&dir)))
         .find(|t| !t.is_empty())
@@ -93,7 +92,7 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
         &projects_dir(),
         Agent::Claude,
         cwd,
-        crate::discover::home_dir().as_deref(),
+        crate::engine::seam::home_dir().as_deref(),
     )
 }
 
@@ -158,8 +157,11 @@ fn first_user_snippet(path: &Path) -> String {
 /// target, so `resume` in a directory with no history fails cleanly rather than
 /// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    let mut ts =
-        nearest_project_transcripts(&projects_dir(), cwd, crate::discover::home_dir().as_deref());
+    let mut ts = nearest_project_transcripts(
+        &projects_dir(),
+        cwd,
+        crate::engine::seam::home_dir().as_deref(),
+    );
     ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     ts.into_iter().next().map(|(m, p)| {
         let id = p
@@ -214,7 +216,7 @@ fn tasks_root() -> PathBuf {
 /// missing or nothing parses — the caller then falls back to the transcript's op-log.
 /// This is Claude's half of `discover::session_tasks` (the `TranscriptAdapter::load_tasks`
 /// hook); files may be pruned/gc'd, which the op-log merge backfills.
-pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::tasks::TaskList> {
+pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::seam::TaskList> {
     let id = path.file_stem()?.to_str()?;
     let dir = tasks_root().join(id);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -237,11 +239,11 @@ pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::tasks::TaskList> 
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        if let Some(t) = crate::engine::tasks::task_from_json(&v) {
+        if let Some(t) = crate::engine::seam::task_from_json(&v) {
             items.push(t);
         }
     }
-    (!items.is_empty()).then_some(crate::engine::tasks::TaskList { items })
+    (!items.is_empty()).then_some(crate::engine::seam::TaskList { items })
 }
 
 #[cfg(test)]

@@ -10,7 +10,9 @@ pub(crate) mod builder; // the single incremental fold orchestrator (batch + liv
 pub mod index;
 pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `Block`, never `Message`
 pub(crate) mod path; // relativize helpers — internal to the parsers + HTML path rendering
+pub(crate) mod reader; // the follower's byte-offset line reader (tail + resume) — machinery (#87)
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)
+pub(crate) mod seam; // the audited adapter contract — everything `crate::agents` may use (#87)
 pub mod session;
 pub mod tasks; // the agent-neutral task/todo model + op-log fold (#15)
 pub mod tier_b;

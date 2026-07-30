@@ -14,12 +14,7 @@
 
 mod adapter;
 mod agent;
-pub mod claude_discover; // pub: the viewer's `--dump` stem + jdi's Claude supervisor use it
-pub(crate) mod claude_metrics; // internal: reached via the adapter / metrics dispatch
-pub(crate) mod claude_model; // internal: L1 tokenizer, reached via the adapter registry
-pub mod codex_discover; // pub: jdi's Codex supervisor uses it
-pub(crate) mod codex_metrics; // internal
-pub(crate) mod codex_model; // internal: reached via the adapter registry
+pub(crate) mod agents; // the per-agent families (#87) — seam-only imports, audited
 pub mod diff;
 pub mod discover;
 pub mod engine;
@@ -27,8 +22,6 @@ pub mod fold; // display fold POLICY keyed on `model::fold_key` (#71 — core, b
 pub mod follow;
 pub mod metrics;
 pub mod model;
-pub mod qoderwork_discover;
-pub(crate) mod reader; // internal: the follower's byte-offset line reader (tail + resume)
 pub mod summary; // span phrasing (#68) — shared by all presenters
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
@@ -38,6 +31,10 @@ pub mod transcript; // the canonical `Transcript` source handle (parse/follow/at
 // tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
 // is re-exported here so a consumer never has to reach through module paths.
 pub use agent::Agent;
+// The per-agent discovery modules keep their pre-#87 public paths.
+pub use agents::claude::discover as claude_discover;
+pub use agents::codex::discover as codex_discover;
+pub use agents::qoderwork::discover as qoderwork_discover;
 pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
 pub use engine::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,

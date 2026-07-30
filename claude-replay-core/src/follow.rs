@@ -7,10 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
+use crate::engine::reader::LineReader;
 use crate::engine::session::{BlockStore, InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
-use crate::reader::LineReader;
 use crate::Agent;
 
 /// One `poll_delta` tick's payload: `(blocks, user_times, metrics, changed_from)`.

@@ -490,7 +490,7 @@ mod tests {
             "codex head is sniff-owned anywhere"
         );
         // Store provenance: the same Claude-format bytes inside the Claude store.
-        let in_store = crate::claude_discover::projects_dir()
+        let in_store = crate::agents::claude::discover::projects_dir()
             .join("own-test-proj")
             .join("own-in-store.jsonl");
         if std::fs::create_dir_all(in_store.parent().unwrap()).is_ok()

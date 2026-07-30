@@ -1,7 +1,4 @@
-use crate::engine::message::Message;
-use crate::engine::path::relativize;
-use crate::engine::time::epoch_secs;
-use crate::model::Block;
+use crate::engine::seam::{epoch_secs, relativize, Block, Message};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -11,7 +8,7 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (the shared `SessionAccumulator`) also runs on the engine now, per line
     // via `decode_line` + `Replayer` (M9).
-    crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
+    crate::engine::seam::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
@@ -43,7 +40,7 @@ fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Bloc
 }
 
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
-pub(crate) const CODEX_SHAPING: crate::engine::replay::Shaping = crate::engine::replay::Shaping {
+pub(crate) const CODEX_SHAPING: crate::engine::seam::Shaping = crate::engine::seam::Shaping {
     build_tool: codex_build_tool,
     join_result: apply_output_shaping,
     keep_orphan: codex_keep_orphan,
@@ -176,14 +173,14 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 #[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
+    user_times: &mut Vec<Option<crate::engine::seam::EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
     // See `model::parse_main`: stamp the previous event's user turns on the next
     // iteration so an early `continue` can't drop them.
-    let mut pending_ts: Option<crate::model::EpochSeconds> = None;
+    let mut pending_ts: Option<crate::engine::seam::EpochSeconds> = None;
     let mut stamped = 0usize;
-    let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
+    let mut slots: HashMap<String, crate::engine::seam::BlockIndex> = HashMap::new();
     let mut cwd = String::new();
     // The previous line's ts — CC's thinking clock (#57): a thinking's duration is
     // `its ts − this` (mirrors the engine's `prev_ts`).
@@ -197,7 +194,7 @@ fn parse_lines<S: AsRef<str>>(
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
-        crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+        crate::engine::seam::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
         if pending_ts.is_some() {
             prev_ts = pending_ts;
         }
@@ -283,7 +280,7 @@ fn parse_lines<S: AsRef<str>>(
             _ => {}
         }
     }
-    crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    crate::engine::seam::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     out
 }
 
@@ -489,7 +486,7 @@ fn apply_output(block: &mut Block, output: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Block;
+    use crate::engine::seam::Block;
 
     #[test]
     fn parses_canonical_response_items_without_event_duplicates() {
@@ -546,7 +543,8 @@ not json
         std::fs::write(&path, jsonl).unwrap();
         // Through the public dispatcher (the adapter's default `parse_path_timed`).
         let (actual, _, _) =
-            crate::engine::replay::parse_path_timed_for(crate::Agent::Codex, &path).unwrap();
+            crate::engine::seam::parse_path_timed_for(crate::engine::seam::Agent::Codex, &path)
+                .unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert!(matches!(
@@ -567,7 +565,7 @@ not json
             let mut ut_lines = Vec::new();
             let via_lines = parse_lines(jsonl.lines(), &mut ut_lines);
             let mut ut_replay = Vec::new();
-            let via_replay = crate::engine::replay::replay(
+            let via_replay = crate::engine::seam::replay(
                 &tokenize(jsonl.lines()),
                 &mut ut_replay,
                 &CODEX_SHAPING,
