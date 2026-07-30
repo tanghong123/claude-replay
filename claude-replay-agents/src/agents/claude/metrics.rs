@@ -1,9 +1,9 @@
 //! **Claude's token/cost metrics adapter** — the Claude half of the shared `metrics`
 //! engine (mirrors `codex_metrics`). Folds each Claude transcript line's `/message/usage`
 //! into a running [`MetricsAcc`]; the agent-neutral [`Metrics`] value, pricing, and footer
-//! formatting live in [`crate::engine::seam`].
+//! formatting live in [`claude_replay_engine::seam`].
 
-use crate::engine::seam::{estimate_cost, parse_ts, Metrics, TimeSpan};
+use claude_replay_engine::seam::{estimate_cost, parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Claude's per-line token/cost accumulator, folded through the shared
@@ -63,31 +63,28 @@ impl MetricsAcc {
             self.cache_read,
             self.output,
         );
-        Metrics {
-            input_tokens: self.input,
-            cache_creation_tokens: self.cache_creation,
-            cache_read_tokens: self.cache_read,
-            output_tokens: self.output,
-            model: self.model,
-            duration_secs,
-            cost_usd,
-            extra: self.extra,
-        }
+        let mut m = Metrics::default();
+        m.input_tokens = self.input;
+        m.cache_creation_tokens = self.cache_creation;
+        m.cache_read_tokens = self.cache_read;
+        m.output_tokens = self.output;
+        m.model = self.model;
+        m.duration_secs = duration_secs;
+        m.cost_usd = cost_usd;
+        m.extra = self.extra;
+        m
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::seam::{human_tokens, parse_reader_for};
+    use claude_replay_engine::seam::{human_tokens, parse_reader_with};
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
     /// default path with Claude's accumulator.
     fn parse_reader(jsonl: &str) -> Metrics {
-        parse_reader_for(
-            crate::engine::seam::Agent::CLAUDE,
-            std::io::Cursor::new(jsonl),
-        )
+        parse_reader_with(&crate::adapters::ClaudeAdapter, std::io::Cursor::new(jsonl))
     }
 
     /// The agent-specific extension seam: `bump` accumulates by key and `finish` emits the bag.

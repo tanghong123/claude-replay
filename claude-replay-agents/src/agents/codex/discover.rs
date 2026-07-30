@@ -1,5 +1,5 @@
-use crate::engine::seam::{Agent, Candidate};
 use anyhow::{anyhow, Result};
+use claude_replay_engine::seam::{Agent, Candidate};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -201,7 +201,7 @@ pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     candidates_scoped_in(
         &sessions_dir(),
         cwd,
-        crate::engine::seam::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     )
 }
 
@@ -216,7 +216,7 @@ fn nearest_ancestor_sessions<'a>(
     home: Option<&Path>,
 ) -> (Vec<&'a CodexSession>, bool) {
     let cwd_n = normalized(cwd);
-    for anc in crate::engine::seam::ancestors_below(cwd, home) {
+    for anc in claude_replay_engine::seam::ancestors_below(cwd, home) {
         let anc_n = normalized(&anc);
         let matched: Vec<&CodexSession> = sessions
             .iter()
@@ -234,8 +234,11 @@ fn nearest_ancestor_sessions<'a>(
 /// stale-confirm picker, which needs the id to resume the chosen one.
 pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
     let sessions = sessions_in(&sessions_dir()); // newest-first
-    let (matched, _) =
-        nearest_ancestor_sessions(&sessions, cwd, crate::engine::seam::home_dir().as_deref());
+    let (matched, _) = nearest_ancestor_sessions(
+        &sessions,
+        cwd,
+        claude_replay_engine::seam::home_dir().as_deref(),
+    );
     matched
         .into_iter()
         .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
@@ -325,7 +328,7 @@ pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
     latest_for_cwd_in(
         &sessions_dir(),
         cwd,
-        crate::engine::seam::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     )
 }
 

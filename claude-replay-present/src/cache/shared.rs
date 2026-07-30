@@ -222,7 +222,11 @@ impl<S: BlockStore> SharedSession<S> {
     pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                body: Body::Live(Box::new(FollowParser::with_store(agent, path, store))),
+                body: Body::Live(Box::new(FollowParser::with_store(
+                    claude_replay_core::adapter(agent),
+                    path,
+                    store,
+                ))),
                 epoch: 1,
                 provisional_gen: 0,
                 n_provisional: 0,

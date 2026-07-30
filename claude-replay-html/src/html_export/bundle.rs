@@ -22,7 +22,7 @@ fn build_stream(
     reveal: bool,
 ) -> Result<(String, Vec<(String, String)>)> {
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
-    let s = crate::engine::parse_session_as(agent, path)
+    let s = crate::parse_session_as(agent, path)
         .with_context(|| format!("read transcript {}", path.display()))?;
     let cwd = s
         .cwd
@@ -129,7 +129,7 @@ fn agent_stream(
     // Parse via the canonical `parse_session_as` — the same entry `build_stream` uses, so both
     // HTML paths go through one place. `cwd` stays the caller-supplied session cwd (every agent
     // in a tree shares the root's, which a sub-agent transcript may not itself record).
-    let s = crate::engine::parse_session_as(agent, &info.source)
+    let s = crate::parse_session_as(agent, &info.source)
         .with_context(|| format!("read transcript {}", info.source.display()))?;
     let blocks = s.blocks();
     // The task panel's state (#15): op-log from the transcript, overlaid by the live

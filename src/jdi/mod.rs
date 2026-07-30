@@ -1225,7 +1225,7 @@ fn recent_commits(cwd: &Path, n: usize) -> Vec<String> {
 /// is currently doing. Best-effort — silently skips on a parse/read error.
 fn print_live_progress(agent: Agent, path: &Path) {
     // Dogfood the library entry point (the whole transcript incl. sub-agent tree).
-    let Ok(session) = crate::engine::parse_session_enriched_as(agent, path) else {
+    let Ok(session) = crate::parse_session_enriched_as(agent, path) else {
         return;
     };
     let blocks = session.blocks();

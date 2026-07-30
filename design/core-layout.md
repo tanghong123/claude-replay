@@ -4,8 +4,12 @@
 `agents/<agent>/{model,metrics,discover}.rs` families, `engine/seam.rs` as the audited
 adapter contract (`agents_import_only_the_seam` enforces seam-only imports),
 `reader` → `engine`, `cache/stream.rs` → `present::pull` (old paths aliased).
-Steps 2–3 (open `Agent`, engine/agents/facade crate split) remain scheduled for after
-the fold vocabulary has been quiet for a few tasks.**
+Steps 2–3 EXECUTED (v1.22.0, user-directed): `Agent` is an open interned id (constants +
+`Agent::new`; serde as the label; the 4 match sites open-world), and the crate split is
+real — `claude-replay-engine` (machinery + public seam + trait), `claude-replay-agents`
+(families + `REGISTRY` + the engine-integration tests), `claude-replay-core` (the wired
+facade, same API). Engine internals take adapters (`SessionAccumulator::new(adapter)`,
+`FollowParser::open(adapter, path)`); the facade curries via `adapter(agent)`.**
 
 The engine's goal is to be broadly usable, and its own layout is part of that surface:
 a consumer (or a new-agent author) should be able to tell *where things live and why*

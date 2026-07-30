@@ -2249,7 +2249,7 @@ mod tests {
         // per-agent internals — so the viewer stays off `claude_model`.
         let path = std::env::temp_dir().join(format!("cr-fold-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let blocks = crate::engine::parse_session_as(crate::Agent::CLAUDE, &path)
+        let blocks = claude_replay_core::parse_session_as(crate::Agent::CLAUDE, &path)
             .unwrap()
             .blocks();
         let _ = std::fs::remove_file(&path);

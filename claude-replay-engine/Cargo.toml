@@ -1,0 +1,20 @@
+[package]
+name = "claude-replay-engine"
+version.workspace = true
+edition = "2021"
+description = "The agent-free transcript replay machinery behind claude-replay: the block model, the L2 fold, sessions/stores, and the public adapter seam a new agent implements."
+license = "MIT"
+repository = "https://github.com/tanghong123/claude-replay"
+keywords = ["claude", "codex", "transcript", "parser"]
+categories = ["parser-implementations"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+# Dev-only closure of the split (#87): the machinery's own tests exercise it with the
+# REAL built-in adapters (and the facade's dispatchers). A legal dev-dependency cycle.
+[dev-dependencies]
+claude-replay-agents = { path = "../claude-replay-agents" }
+claude-replay-core = { path = "../claude-replay-core" }

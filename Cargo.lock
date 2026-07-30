@@ -207,10 +207,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-replay-agents"
+version = "1.21.0"
+dependencies = [
+ "anyhow",
+ "claude-replay-core",
+ "claude-replay-engine",
+ "serde_json",
+]
+
+[[package]]
 name = "claude-replay-core"
 version = "1.21.0"
 dependencies = [
  "anyhow",
+ "claude-replay-agents",
+ "claude-replay-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "claude-replay-engine"
+version = "1.21.0"
+dependencies = [
+ "anyhow",
+ "claude-replay-agents",
+ "claude-replay-core",
  "serde",
  "serde_json",
 ]

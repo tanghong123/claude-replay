@@ -13,8 +13,8 @@ pub use claude_replay_html::html_export;
 pub use claude_replay_tui as tui;
 
 pub use claude_replay_core::{
-    claude_discover, codex_discover, diff, discover, engine, fold, follow, metrics, model, summary,
-    Agent, Transcript,
+    claude_discover, codex_discover, diff, discover, engine, fold, follow, metrics, model,
+    parse_session_as, parse_session_enriched_as, summary, Agent, Transcript,
 };
 pub use claude_replay_present::{cache, highlight, present, sys, Args, SessionCache};
 

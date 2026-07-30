@@ -413,7 +413,7 @@ pub(super) fn follow_and_append(
     // Incremental follower (M16): fold only the newly-appended lines each poll instead of
     // re-parsing the whole file. `open` starts at byte 0, so the first poll folds the file
     // to the current state (== the initial export → no diff), then only deltas thereafter.
-    let mut follower = crate::follow::FollowParser::open(agent, path);
+    let mut follower = crate::follow::FollowParser::open(claude_replay_core::adapter(agent), path);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
         let polled = match follower.poll() {

@@ -1,50 +1,38 @@
-//! **claude-replay-core** — the agent-agnostic transcript parser/replay engine.
+//! **claude-replay-core** — the FACADE: the agent-free machinery
+//! (`claude-replay-engine`) wired to the built-in adapters (`claude-replay-agents`),
+//! presenting the same API this crate always had (#87 step 3). Consumers keep
+//! importing from here; a third party composing its own agent set builds on the
+//! engine crate directly and brings its own registry.
 //!
-//! This is the L1/L2 half of the three-layer engine: the per-agent tokenizers (Claude +
-//! Codex → a canonical `engine::message` log), the shared stateful `Replayer` fold (in
-//! `engine::replay`), session assembly ([`Session`] / [`SessionIndex`]), transcript discovery,
-//! incremental follow ([`FollowParser`]). It
-//! carries **no** TUI / HTML / CLI dependencies — only
-//! `serde_json` and `anyhow` — so it can be reused by any frontend. The `claude-replay`
-//! binary crate depends on it and adds the ratatui viewer, the HTML export, and the clap CLI.
+//! What lives HERE (everything that consults the wired registry): the
+//! [`adapter()`](adapter())/[`adapters`] lookup, registry-driven [`discover`]y
+//! (`detect_agent`/`resolve_any`/`candidates_all`), the [`Transcript`] source handle,
+//! and the `parse_session*` dispatchers. Everything else re-exports from the engine.
 //!
-//! The split is enforced by the crate boundary: nothing here can reach ratatui/syntect/clap,
-//! which guarantees the "core is presentation-agnostic" invariant that was previously only a
-//! convention.
+//! No TUI / HTML / CLI dependencies — the crate boundary still enforces
+//! "core is presentation-agnostic".
 
 mod adapter;
-mod agent;
-pub(crate) mod agents; // the per-agent families (#87) — seam-only imports, audited
-pub mod diff;
 pub mod discover;
-pub mod engine;
-pub mod fold; // display fold POLICY keyed on `model::fold_key` (#71 — core, beside its vocabulary)
-pub mod follow;
-pub mod metrics;
-pub mod model;
-pub mod summary; // span phrasing (#68) — shared by all presenters
+mod session_entry;
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
+
+pub use adapter::{adapter, adapters, MetricsAccumulator, SniffClaim, TranscriptAdapter};
+pub use claude_replay_agents::{claude_discover, codex_discover, qoderwork_discover};
+pub use claude_replay_engine::{diff, engine, fold, follow, metrics, model, seam, summary};
+pub use session_entry::{
+    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
+};
 
 // ── Public API ────────────────────────────────────────────────────────────────────────
 // The intended surface for a library consumer. [`parse_session`] is THE entry point: it
 // returns a [`Session`] (blocks + index + metrics + cwd) for a transcript path. For a live
 // tail, [`FollowParser`] folds only appended bytes each poll. Everything a `Session` exposes
 // is re-exported here so a consumer never has to reach through module paths.
-pub use agent::Agent;
-// The per-agent discovery modules keep their pre-#87 public paths.
-pub use agents::claude::discover as claude_discover;
-pub use agents::codex::discover as codex_discover;
-pub use agents::qoderwork::discover as qoderwork_discover;
-pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};
-pub use engine::{
-    parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
-    BlockAccess, BlockStore, ChildMeta, InMemoryStore, Session, SessionAccumulator, SessionIndex,
-    SessionMeta,
-};
-pub use follow::FollowParser;
-pub use metrics::Metrics;
-pub use model::{
-    AgentId, AgentStatus, Attachment, AttachmentContent, Block, Hunk, LoadedAttachment, SubAgent,
-    SubAgentMeta,
+pub use claude_replay_engine::{
+    Agent, AgentId, AgentStatus, Attachment, AttachmentContent, AttachmentEntry, Block,
+    BlockAccess, BlockStore, ChildMeta, FollowParser, Hunk, InMemoryStore, LoadedAttachment,
+    Metrics, Session, SessionAccumulator, SessionIndex, SessionMeta, SubAgent, SubAgentMeta,
+    ToolCount, ToolEntry, TurnEntry,
 };
 pub use transcript::Transcript;

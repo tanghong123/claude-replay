@@ -803,7 +803,7 @@ pub fn dump(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
     // Dogfood the library entry point: one `parse_session_enriched_as` yields the full block
     // tree (incl. sub-agents). `--dump` only needs the blocks here.
-    let blocks = crate::engine::parse_session_enriched_as(agent, path)?.blocks();
+    let blocks = crate::parse_session_enriched_as(agent, path)?.blocks();
     let width = dump_width(args);
     // Render through the same pipeline as the live TUI (wrap + per-row background
     // fill + diff inset) so the dump matches the on-screen render byte-for-byte.

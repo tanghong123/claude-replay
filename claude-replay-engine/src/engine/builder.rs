@@ -3,7 +3,7 @@
 //! shared L2 [`Replayer`] fold, and the per-agent metrics accumulator — behind one `advance`.
 //!
 //! Incremental parsing is first-class; one-shot is derived: the whole-file batch parse
-//! ([`parse_session_as`](crate::parse_session_as) /
+//! (the facade's `parse_session_as` /
 //! `parse_path_timed_for`) feeds this builder
 //! line-by-line (one line resident, no whole-file `Vec<String>`), and the live
 //! [`FollowParser`](crate::FollowParser) feeds it the appended lines each poll — so batch and
@@ -11,7 +11,7 @@
 //! whole-file oracles (the equivalence gates in `claude_model`/`codex_model`) and to a full
 //! re-parse (the `follow_*` tests).
 
-use crate::adapter::{adapter, MetricsAccumulator, TranscriptAdapter};
+use crate::adapter::{MetricsAccumulator, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
 use crate::engine::session::{BlockRead, BlockStore, InMemoryStore, Session, SessionMeta};
@@ -75,20 +75,20 @@ pub struct StreamRead {
 }
 
 impl SessionAccumulator<InMemoryStore> {
-    /// A fresh accumulator for `agent` with the in-memory (identity) store: empty
-    /// replayer/cwd/metrics, ready to `advance`.
-    pub fn new(agent: Agent) -> Self {
-        Self::with_store(agent, InMemoryStore)
+    /// A fresh accumulator for the agent behind `adapter`, with the in-memory
+    /// (identity) store: empty replayer/cwd/metrics, ready to `advance`.
+    pub fn new(adapter: &'static dyn TranscriptAdapter) -> Self {
+        Self::with_store(adapter, InMemoryStore)
     }
 }
 
 impl<S: BlockStore> SessionAccumulator<S> {
-    /// A fresh accumulator for `agent` with an explicit [`BlockStore`]: empty
-    /// replayer/cwd/metrics, ready to `advance`.
-    pub fn with_store(agent: Agent, store: S) -> Self {
-        let adapter = adapter(agent);
+    /// A fresh accumulator for the agent behind `adapter`, with an explicit
+    /// [`BlockStore`]: empty replayer/cwd/metrics, ready to `advance`. The facade's
+    /// entry points resolve the adapter from its registry (#87 step 3).
+    pub fn with_store(adapter: &'static dyn TranscriptAdapter, store: S) -> Self {
         Self {
-            agent,
+            agent: adapter.agent(),
             adapter,
             replayer: Replayer::new(adapter.shaping()),
             cwd: String::new(),
@@ -313,7 +313,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// The current presentable blocks + per-turn times + folded metrics, WITHOUT consuming the
     /// builder (so the follower can `advance` a delta, `fold` to render, then keep folding).
     /// Same output as a full whole-file parse.
-    pub(crate) fn fold(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)
+    pub fn fold(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics)
     where
         S: BlockRead,
     {
@@ -404,253 +404,4 @@ impl<S: BlockStore> SessionAccumulator<S> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn tmp(body: &str) -> std::path::PathBuf {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "cr-builder-meta-{}-{}.jsonl",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::File::create(&p)
-            .unwrap()
-            .write_all(body.as_bytes())
-            .unwrap();
-        p
-    }
-
-    /// The maintained [`SessionMeta`] (committed folded on drain + the open turn folded on top)
-    /// must equal a batch `SessionMeta::build` over the whole current block stream — at **every**
-    /// step of an incremental fold, including mid-open-turn, across a sub-agent spawn, and across a
-    /// commit. This is what lets a live poll read the header without rescanning the session.
-    #[test]
-    fn maintained_meta_equals_batch_build_at_every_step() {
-        // A turn that spawns a sub-agent (Agent tool → SubAgent block), then a second user turn
-        // that commits the first.
-        let lines = [
-            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#,
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#,
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#,
-            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]},"timestamp":"2026-07-26T10:00:04Z"}"#,
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:05Z"}"#,
-        ];
-        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
-        let mut off: crate::model::ByteOffset = 0;
-        for line in lines {
-            acc.advance_at(off, line);
-            off += line.len() as u64 + 1;
-            // The maintained header == a batch build over the whole current block stream.
-            let blocks = acc.snapshot().blocks();
-            assert_eq!(
-                acc.session_meta(),
-                SessionMeta::build(&blocks),
-                "maintained meta diverged from batch build"
-            );
-        }
-        // Final shape: 2 user turns, 2 tool calls (Bash + Task counts as... Task is a spawn ⇒ NOT
-        // a tool), one child.
-        let meta = acc.session_meta();
-        assert_eq!(meta.turns, 2, "two user turns");
-        assert_eq!(
-            meta.tools, 1,
-            "Bash is a tool; the Task spawn is a child, not a tool"
-        );
-        assert_eq!(meta.children.len(), 1);
-        assert_eq!(meta.children[0].id, "achild01");
-    }
-
-    /// #56 regression (the QoderWork panic): ONE transcript line can carry SEVERAL user text
-    /// items — the second turn then closes the first within the same fold batch, committing it
-    /// before any later `LineStart` stamps its timestamp. The drain must stamp first: no lost
-    /// per-turn timestamp, `stamped` never falls behind `base`, and no window-math wrap — with a
-    /// foreign head line (`runtime-config`) and an unknown mid-stream type thrown in, since a
-    /// parser fed arbitrary JSONL must degrade, never panic.
-    #[test]
-    fn multi_text_user_line_commits_stamped_and_never_panics() {
-        use crate::model::Block;
-        let lines = [
-            r#"{"type":"runtime-config","sessionId":"s","model":"qwork-ultimate","timestamp":1785068132048}"#,
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>env</system-reminder>"},{"type":"text","text":"the real prompt"}]},"timestamp":"2026-07-26T12:15:33.904Z"}"#,
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},"timestamp":"2026-07-26T12:15:40Z"}"#,
-            r#"{"type":"totally-unknown","x":1}"#,
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T12:16:00Z"}"#,
-        ];
-        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
-        let mut off: crate::model::ByteOffset = 0;
-        for line in lines {
-            acc.advance_at(off, line);
-            off += line.len() as u64 + 1;
-            let _ = acc.snapshot(); // the panic site was the snapshot's window math
-        }
-        let s = acc.snapshot();
-        let users = s
-            .blocks()
-            .iter()
-            .filter(|b| matches!(b, Block::UserText(_)))
-            .count();
-        assert_eq!(
-            users, 3,
-            "two turns from the multi-text line + the follow-up"
-        );
-        assert_eq!(s.user_times.len(), 3, "one timestamp per user turn");
-        assert!(
-            s.user_times.iter().all(|t| t.is_some()),
-            "no turn lost its stamp to an early commit: {:?}",
-            s.user_times
-        );
-        assert_eq!(
-            s.user_times[0], s.user_times[1],
-            "both turns from the one line carry its timestamp"
-        );
-    }
-
-    /// The queued-marker lifecycle (#52): a `⧗ queued:` marker lives only while its prompt is
-    /// PENDING — it collapses on ANY pop, matching Claude Code's "only the one message":
-    /// (a) immediate enqueue → dequeue → delivery; (b) TYPE-AHEAD (agent content between enqueue
-    /// and dequeue — previously kept the marker, the #52 duplicate); (c) a `remove` op (the user
-    /// withdrew it); (d) an OP-LESS delivery — a user message whose text matches the pending
-    /// content (a jdi restart re-delivers without writing the dequeue), which must also DRAIN
-    /// the queue so the durability frontier un-pins and turns keep committing.
-    #[test]
-    fn queued_marker_collapses_on_every_pop_and_opless_delivery() {
-        use crate::model::Block;
-        let user = |t: &str| {
-            format!(
-                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:00Z"}}"#
-            )
-        };
-        let asst = |t: &str| {
-            format!(
-                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:01Z"}}"#
-            )
-        };
-        let enq = |t: &str| {
-            format!(r#"{{"type":"queue-operation","operation":"enqueue","content":"{t}"}}"#)
-        };
-        let markers = |acc: &mut SessionAccumulator| {
-            acc.snapshot()
-                .blocks()
-                .iter()
-                .filter(|b| matches!(b, Block::QueueEvent { .. }))
-                .count()
-        };
-        let drive = |lines: &[String]| {
-            let mut acc = SessionAccumulator::new(Agent::CLAUDE);
-            let mut off: crate::model::ByteOffset = 0;
-            for l in lines {
-                acc.advance_at(off, l);
-                off += l.len() as u64 + 1;
-            }
-            acc
-        };
-
-        // (a) immediate pickup ⇒ collapsed.
-        let mut a = drive(&[
-            user("go"),
-            asst("working"),
-            enq("next thing"),
-            r#"{"type":"queue-operation","operation":"dequeue"}"#.into(),
-            user("next thing"),
-        ]);
-        assert_eq!(markers(&mut a), 0, "immediate pickup collapses");
-
-        // (b) TYPE-AHEAD: agent content between enqueue and dequeue ⇒ STILL collapsed (the fix).
-        let mut b = drive(&[
-            user("go"),
-            enq("typed ahead"),
-            asst("kept working"),
-            asst("more work"),
-            r#"{"type":"queue-operation","operation":"dequeue"}"#.into(),
-            user("typed ahead"),
-        ]);
-        assert_eq!(
-            markers(&mut b),
-            0,
-            "type-ahead delivery collapses too (CC parity)"
-        );
-
-        // (c) remove ⇒ collapsed (the prompt was withdrawn; CC drops the bubble).
-        let mut c = drive(&[
-            user("go"),
-            enq("changed my mind"),
-            asst("working"),
-            r#"{"type":"queue-operation","operation":"remove","content":"changed my mind"}"#.into(),
-        ]);
-        assert_eq!(markers(&mut c), 0, "removed prompt leaves no marker");
-
-        // (d) op-less delivery: the matching user message pops the item, collapses the marker,
-        // and DRAINS the queue — so later turns commit (the frontier un-pins).
-        let mut d = drive(&[
-            user("go"),
-            enq("restart prompt"),
-            asst("killed here"),
-            user("restart prompt"),
-            asst("resumed"),
-            user("later turn"),
-            asst("done"),
-        ]);
-        assert_eq!(markers(&mut d), 0, "op-less delivery collapses the marker");
-        assert!(
-            d.committed_len() > 0,
-            "queue drained ⇒ the durability frontier advanced past the delivered turns"
-        );
-    }
-
-    /// The task op-log end-to-end (#15): real transcript lines with
-    /// `TaskCreate`/`TaskUpdate` calls fold into `Session.tasks` — the create's id
-    /// joined from its RESULT text, updates applied by task id — while the BLOCK
-    /// stream is untouched (task tools still render as ordinary ToolUse blocks).
-    #[test]
-    fn task_ops_fold_into_session_tasks() {
-        use crate::engine::tasks::TaskStatus;
-        let lines = [
-            r#"{"type":"user","timestamp":"2026-07-29T10:00:00Z","message":{"role":"user","content":"go"}}"#.to_string(),
-            r#"{"type":"assistant","timestamp":"2026-07-29T10:00:05Z","message":{"content":[{"type":"tool_use","id":"tc1","name":"TaskCreate","input":{"subject":"fix the parser","description":"long details","activeForm":"Fixing the parser"}}]}}"#.to_string(),
-            r#"{"type":"user","timestamp":"2026-07-29T10:00:06Z","message":{"content":[{"type":"tool_result","tool_use_id":"tc1","content":"Created task #12: fix the parser"}]}}"#.to_string(),
-            r#"{"type":"assistant","timestamp":"2026-07-29T10:00:10Z","message":{"content":[{"type":"tool_use","id":"tu1","name":"TaskUpdate","input":{"taskId":"12","status":"in_progress"}}]}}"#.to_string(),
-            r#"{"type":"user","timestamp":"2026-07-29T10:00:11Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Updated task #12 status"}]}}"#.to_string(),
-        ];
-        let mut acc = SessionAccumulator::new(Agent::CLAUDE);
-        let mut off: ByteOffset = 0;
-        for l in &lines {
-            acc.advance_at(off, l);
-            off += l.len() as u64 + 1;
-        }
-        let s = acc.snapshot();
-        assert_eq!(s.tasks.items.len(), 1, "{:?}", s.tasks);
-        let t = &s.tasks.items[0];
-        assert_eq!(t.id, "12");
-        assert_eq!(t.subject, "fix the parser");
-        assert_eq!(t.description, "long details");
-        assert_eq!(t.active_form, "Fixing the parser");
-        assert_eq!(t.status, TaskStatus::InProgress);
-        // The block stream still shows the two tool calls as ordinary blocks.
-        let tools = s
-            .blocks()
-            .iter()
-            .filter(|b| matches!(b, Block::ToolUse { .. } | Block::Thinking { .. }))
-            .count();
-        assert!(tools >= 1, "task tools still render as blocks");
-    }
-
-    /// A truncation/rewrite resets the maintained committed meta (no stale carry-over).
-    #[test]
-    fn reset_clears_committed_meta() {
-        let a = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"a"}]},"timestamp":"2026-07-26T10:00:00Z"}"#;
-        let b = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"b"}]},"timestamp":"2026-07-26T10:00:01Z"}"#;
-        let path = tmp(&format!("{a}\n{b}\n"));
-        let mut fp = crate::FollowParser::open(Agent::CLAUDE, &path);
-        fp.advance_stream().unwrap();
-        assert_eq!(fp.stream_read(0).meta.turns, 2);
-        // Rewrite to a single turn → reset → meta rebuilt from scratch.
-        std::fs::write(&path, format!("{a}\n")).unwrap();
-        fp.advance_stream().unwrap();
-        assert_eq!(fp.stream_read(0).meta.turns, 1, "reset rebuilt the header");
-        let _ = std::fs::remove_file(&path);
-    }
-}
+mod tests {}

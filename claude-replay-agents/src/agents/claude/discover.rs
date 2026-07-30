@@ -3,14 +3,14 @@
 //! `~/.claude/projects/<slug>/<id>.jsonl`, scoped to the cwd or its nearest ancestor with
 //! sessions. The agent-neutral pieces — the [`Candidate`] type, `ancestors_below`,
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
-//! dispatchers — live in [`crate::discover`].
+//! dispatchers — live in the facade crate's `discover`.
 
-use crate::engine::seam::{Agent, Candidate};
+use claude_replay_engine::seam::{Agent, Candidate};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Root under which Claude Code writes per-project transcript dirs.
-pub(crate) fn projects_dir() -> PathBuf {
+pub fn projects_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CLAUDE_PROJECTS_DIR") {
         return PathBuf::from(p);
     }
@@ -78,7 +78,7 @@ fn nearest_project_transcripts(
     cwd: &Path,
     home: Option<&Path>,
 ) -> Vec<(SystemTime, PathBuf)> {
-    crate::engine::seam::ancestors_below(cwd, home)
+    claude_replay_engine::seam::ancestors_below(cwd, home)
         .into_iter()
         .map(|dir| transcripts_in_project(root, &slug_for(&dir)))
         .find(|t| !t.is_empty())
@@ -92,7 +92,7 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
         &projects_dir(),
         Agent::CLAUDE,
         cwd,
-        crate::engine::seam::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     )
 }
 
@@ -160,7 +160,7 @@ pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
     let mut ts = nearest_project_transcripts(
         &projects_dir(),
         cwd,
-        crate::engine::seam::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     );
     ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     ts.into_iter().next().map(|(m, p)| {
@@ -216,7 +216,7 @@ fn tasks_root() -> PathBuf {
 /// missing or nothing parses — the caller then falls back to the transcript's op-log.
 /// This is Claude's half of `discover::session_tasks` (the `TranscriptAdapter::load_tasks`
 /// hook); files may be pruned/gc'd, which the op-log merge backfills.
-pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::seam::TaskList> {
+pub(crate) fn load_tasks(path: &Path) -> Option<claude_replay_engine::seam::TaskList> {
     let id = path.file_stem()?.to_str()?;
     let dir = tasks_root().join(id);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -239,11 +239,11 @@ pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::seam::TaskList> {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        if let Some(t) = crate::engine::seam::task_from_json(&v) {
+        if let Some(t) = claude_replay_engine::seam::task_from_json(&v) {
             items.push(t);
         }
     }
-    (!items.is_empty()).then_some(crate::engine::seam::TaskList { items })
+    (!items.is_empty()).then_some(claude_replay_engine::seam::TaskList { items })
 }
 
 #[cfg(test)]

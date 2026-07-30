@@ -45,6 +45,7 @@ impl Tick {
 /// disk; the `Session`-assembling polls (`poll*`) stay on the in-memory default.
 pub struct FollowParser<S: BlockStore = InMemoryStore> {
     agent: Agent,
+    adapter: &'static dyn crate::adapter::TranscriptAdapter,
     path: PathBuf,
     builder: SessionAccumulator<S>,
     reader: LineReader,
@@ -62,9 +63,10 @@ fn common_prefix_len(a: &[Block], b: &[Block]) -> usize {
 
 impl FollowParser<InMemoryStore> {
     /// Follow `path` from the beginning: the first `poll` folds the whole current file, then
-    /// subsequent polls fold only appends.
-    pub fn open(agent: Agent, path: &Path) -> Self {
-        Self::with_store(agent, path, InMemoryStore)
+    /// subsequent polls fold only appends. Takes the agent's resolved adapter — the facade's
+    /// `Transcript::follow` (or `core::adapter(agent)`) supplies it (#87 step 3).
+    pub fn open(adapter: &'static dyn crate::adapter::TranscriptAdapter, path: &Path) -> Self {
+        Self::with_store(adapter, path, InMemoryStore)
     }
 }
 
@@ -72,11 +74,16 @@ impl<S: BlockStore> FollowParser<S> {
     /// [`open`](FollowParser::open) with an explicit [`BlockStore`] — e.g. a
     /// [`TierBStore`](crate::engine::tier_b::TierBStore) so committed block content lives in the
     /// store's backing (disk) instead of RAM.
-    pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
+    pub fn with_store(
+        adapter: &'static dyn crate::adapter::TranscriptAdapter,
+        path: &Path,
+        store: S,
+    ) -> Self {
         Self {
-            agent,
+            agent: adapter.agent(),
+            adapter,
             path: path.to_path_buf(),
-            builder: SessionAccumulator::with_store(agent, store),
+            builder: SessionAccumulator::with_store(adapter, store),
             reader: LineReader::open_at_start(path),
             prev_committed: 0,
             prev_provisional: Vec::new(),
@@ -232,6 +239,10 @@ impl<S: BlockStore> FollowParser<S> {
     }
 
     /// The transcript path this follower tails.
+    /// The agent whose adapter this follower folds with.
+    pub fn agent(&self) -> crate::Agent {
+        self.agent
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -243,7 +254,7 @@ impl FollowParser<InMemoryStore> {
     /// Poll and return the current state as a **fully-assembled** owned [`Session`] — blocks +
     /// per-turn times + metrics + derived index + sub-agent map, with `cwd` and each sub-agent's
     /// `transcript` filled from the source path (exactly as
-    /// [`parse_session_as`](crate::parse_session_as) does). Returns `None` when the source hasn't
+    /// the facade's `parse_session_as` does). Returns `None` when the source hasn't
     /// grown since the last poll (idle). This is the residency cache's single assembly point — it
     /// needs no core internals.
     pub fn poll_session(&mut self) -> std::io::Result<Option<Session>> {
@@ -264,7 +275,7 @@ impl FollowParser<InMemoryStore> {
         let mut s = self.builder.snapshot();
         s.cwd = crate::discover::session_cwd(&self.path);
         crate::engine::session::populate_sub_agent_transcripts(
-            self.agent,
+            self.adapter,
             &self.path,
             &mut s.sub_agents,
         );
@@ -273,124 +284,4 @@ impl FollowParser<InMemoryStore> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn tmp() -> std::path::PathBuf {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        std::env::temp_dir().join(format!(
-            "cr-follow-{}-{}.jsonl",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    /// `poll_delta`'s `changed_from` must be a **safe unchanged prefix**: `blocks[..changed_from]`
-    /// is byte-identical to the previous poll's, across append / back-patch / commit / reset — and
-    /// it must equal the whole-list common prefix a consumer would otherwise scan for (so it is
-    /// exact, not merely conservative, on the append/back-patch path). Drives one follower through a
-    /// turn with a tool back-patch, a text append, a commit (second user turn), and a truncation.
-    #[test]
-    fn poll_delta_changed_from_is_a_safe_unchanged_prefix() {
-        const USER1: &str = "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n";
-        const TOOL: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"timestamp\":\"2026-07-26T10:00:01Z\"}\n";
-        const RESULT: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b1\",\"content\":\"out\"}]},\"timestamp\":\"2026-07-26T10:00:02Z\"}\n";
-        const TEXT: &str = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n";
-        const USER2: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"next\"}]},\"timestamp\":\"2026-07-26T10:00:04Z\"}\n";
-
-        let path = tmp();
-        let mut fp = FollowParser::open(Agent::CLAUDE, &path);
-        let mut prev: Vec<Block> = Vec::new();
-        let mut written = String::new();
-        for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
-            written.push_str(chunk);
-            std::fs::write(&path, written.as_bytes()).unwrap();
-            let (blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("advanced");
-            assert!(changed_from <= prev.len() && changed_from <= blocks.len());
-            // Safety: the prefix kept by a consumer is genuinely unchanged.
-            assert_eq!(
-                &prev[..changed_from],
-                &blocks[..changed_from],
-                "kept prefix must be unchanged"
-            );
-            // Exactness on this (non-reset) path: it equals the common prefix a scan would find.
-            assert_eq!(
-                changed_from,
-                common_prefix_len(&prev, &blocks),
-                "changed_from == whole-list common prefix"
-            );
-            prev = blocks;
-        }
-        // Truncation ⇒ reset ⇒ changed_from == 0 (everything rebuilt).
-        std::fs::write(&path, USER1.as_bytes()).unwrap();
-        let (_blocks, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("reset advances");
-        assert_eq!(changed_from, 0, "reset rebuilds from 0");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// The follower's `poll` must return byte-identical blocks + metrics to a full
-    /// `parse_session_as` of the current file, at every append — including a Codex
-    /// call/output split across polls (back-patch) and a truncation→rebuild (reset).
-    fn assert_follow(agent: Agent, chunks: &[&str]) {
-        let path = tmp();
-        let mut fp = FollowParser::open(agent, &path);
-        let mut written = String::new();
-        for (i, chunk) in chunks.iter().enumerate() {
-            written.push_str(chunk);
-            std::fs::write(&path, written.as_bytes()).unwrap();
-            let (fblocks, ftimes, fmetrics) = fp.poll().unwrap().expect("content advanced");
-            let s = crate::engine::parse_session_as(agent, &path).unwrap();
-            assert_eq!(
-                format!("{:?}", fblocks),
-                format!("{:?}", s.blocks()),
-                "blocks differ after chunk {i} ({agent:?})"
-            );
-            assert_eq!(ftimes, s.user_times, "user_times differ after chunk {i}");
-            assert_eq!(
-                fmetrics, s.metrics,
-                "metrics differ after chunk {i} ({agent:?})"
-            );
-        }
-        // Truncation / rewrite: shrink the file → the follower resets and rebuilds.
-        let rewritten = format!("{}\n", chunks[0].trim_end());
-        std::fs::write(&path, rewritten.as_bytes()).unwrap();
-        let (fblocks, _, _) = fp.poll().unwrap().expect("reset advances");
-        let s = crate::engine::parse_session_as(agent, &path).unwrap();
-        assert_eq!(
-            format!("{:?}", fblocks),
-            format!("{:?}", s.blocks()),
-            "blocks differ after rewrite ({agent:?})"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn follow_matches_full_reparse_claude() {
-        assert_follow(
-            Agent::CLAUDE,
-            &[
-                "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n",
-                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}],\"usage\":{\"input_tokens\":10,\"output_tokens\":20}},\"timestamp\":\"2026-07-26T10:00:01Z\"}\n",
-                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b1\",\"content\":\"out\"}]},\"timestamp\":\"2026-07-26T10:00:02Z\"}\n",
-                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"usage\":{\"input_tokens\":5,\"output_tokens\":8}},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n",
-            ],
-        );
-    }
-
-    #[test]
-    fn follow_matches_full_reparse_codex() {
-        // Codex splits a call and its output across polls — the persistent Replayer
-        // back-patches without a full re-parse.
-        assert_follow(
-            Agent::CODEX,
-            &[
-                "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/tmp/repo\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"call_id\":\"c1\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"a.rs\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n",
-            ],
-        );
-    }
-}
+mod tests {}

@@ -27,14 +27,29 @@ the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PA
 changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
 ## Layout
-A Cargo **workspace** with five crates, layered for multi-level reuse (#71):
-core → present → {tui, html} → the root binary crate. Each crate re-exports the
-lower layers' modules at its root (`crate::model`, `crate::present`, …), so moved
-code reads unchanged. One shared version: bump `[workspace.package] version` in the
-root Cargo.toml — the single spot per release.
+A Cargo **workspace** with seven crates, layered for multi-level reuse (#71, #87):
+engine → agents → core (facade) → present → {tui, html} → the root binary crate. Each
+crate re-exports the lower layers' modules at its root (`crate::model`, `crate::present`,
+…), so moved code reads unchanged. One shared version: bump `[workspace.package] version`
+in the root Cargo.toml — the single spot per release.
 
-**`claude-replay-core/`** — the agent-agnostic parser/replay engine. **No** TUI/HTML/CLI deps
-(only `serde`/`serde_json` + `anyhow`); the crate boundary enforces "core is presentation-agnostic".
+**`claude-replay-engine/`** — the agent-FREE machinery (#87 step 3): the data model, the
+fold, sessions/stores, the follower, the discovery vocabulary, the `TranscriptAdapter`
+trait, and `seam` — the audited contract adapter code builds on. A third party adds an
+agent against this crate alone.
+
+**`claude-replay-agents/`** — the built-in adapter families (`agents/{claude,codex,
+qoderwork}/{model,metrics,discover}.rs`), their `TranscriptAdapter` impls, and the
+`REGISTRY` slice. The crate boundary + the `agents_import_only_the_seam` audit keep
+family code on the seam. The machinery-with-real-adapters integration tests live in
+`tests/engine_integration.rs` (a dev-dep cycle would compile two engines inside engine).
+
+**`claude-replay-core/`** — the FACADE: engine wired to the agents' registry, presenting
+the same API core always had (`adapter()`/`adapters()`, registry-driven discovery
+(`detect_agent`/`resolve_any`/`candidates_all`), `Transcript`, the `parse_session*`
+dispatchers; everything else re-exported from the engine). **No** TUI/HTML/CLI deps
+(only `serde`/`serde_json` + `anyhow`); the crate boundary enforces "core is
+presentation-agnostic".
 - **Shared engine** (agent-neutral): `model.rs` the `Block` data-model vocabulary + block
   classification (`block_kind`/`fold_key`) · `engine/` `replay` (the L2 `Replayer`/`Shaping`
   fold + `parse_stream` driver that *builds* blocks) · `message` (L1↔L2 log) ·

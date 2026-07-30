@@ -235,8 +235,8 @@ impl<A> SessionCache<crate::engine::ArcStore, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::parse_session_as;
     use crate::Agent;
+    use claude_replay_core::parse_session_as;
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};

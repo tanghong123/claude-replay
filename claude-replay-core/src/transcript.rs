@@ -76,14 +76,18 @@ impl Transcript {
         // `SessionAccumulator` line-by-line (one line resident, so a multi-gigabyte transcript never
         // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
         // one file read.
-        let mut b = crate::engine::builder::SessionAccumulator::new(self.agent);
+        let mut b = crate::SessionAccumulator::new(crate::adapter::adapter(self.agent));
         let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
         let mut s = b.into_session();
         s.cwd = crate::discover::session_cwd(&self.path); // the builder leaves cwd None; fill it
                                                           // The builder can't resolve child transcript paths (it has no file path); now that we
                                                           // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.
-        populate_sub_agent_transcripts(self.agent, &self.path, &mut s.sub_agents);
+        populate_sub_agent_transcripts(
+            crate::adapter::adapter(self.agent),
+            &self.path,
+            &mut s.sub_agents,
+        );
         Ok(s)
     }
 
@@ -107,7 +111,7 @@ impl Transcript {
     /// [`FollowParser::open`](crate::FollowParser::open) is equivalent; this is the handle-based
     /// entry point.
     pub fn follow(&self) -> FollowParser {
-        FollowParser::open(self.agent, &self.path)
+        FollowParser::open(crate::adapter::adapter(self.agent), &self.path)
     }
 
     /// Load the content embedded at byte offset `at`, `index`-th content-bearing attachment on
@@ -174,7 +178,7 @@ mod tests {
         let body = format!("{l0}\n{l1}\n{l2}\n{l3}\n");
         let path = tmp(&body);
 
-        let s = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
+        let s = crate::parse_session_as(Agent::CLAUDE, &path).unwrap();
         let blocks = s.blocks();
         let atts: Vec<&Block> = blocks
             .iter()
@@ -217,7 +221,7 @@ mod tests {
     fn multiple_images_on_one_line_get_distinct_indices() {
         let line = r##"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA="}},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BBB="}}]}}"##;
         let path = tmp(&format!("{line}\n"));
-        let s = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
+        let s = crate::parse_session_as(Agent::CLAUDE, &path).unwrap();
         let blocks = s.blocks();
         let locs: Vec<(ByteOffset, usize)> = blocks.iter().filter_map(deferred).collect();
         assert_eq!(locs, vec![(0, 0), (0, 1)], "{blocks:?}");
@@ -257,11 +261,11 @@ mod tests {
         assert_eq!(detected.path(), path.as_path());
 
         let via_handle = Transcript::open(Agent::CLAUDE, &path).parse().unwrap();
-        let via_free = crate::engine::parse_session_as(Agent::CLAUDE, &path).unwrap();
+        let via_free = crate::parse_session_as(Agent::CLAUDE, &path).unwrap();
         assert_eq!(format!("{via_handle:?}"), format!("{via_free:?}"));
 
         let enriched_handle = detected.parse_enriched().unwrap();
-        let enriched_free = crate::engine::parse_session_enriched(&path).unwrap();
+        let enriched_free = crate::parse_session_enriched(&path).unwrap();
         assert_eq!(format!("{enriched_handle:?}"), format!("{enriched_free:?}"));
 
         // `follow`'s first poll folds the whole file → equals a full parse.
