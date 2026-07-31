@@ -7,9 +7,10 @@ use claude_replay_engine::adapter::{MetricsAccumulator, SniffClaim, TranscriptAd
 use claude_replay_engine::discover::Candidate;
 use claude_replay_engine::metrics::Metrics;
 use claude_replay_engine::model::Block;
-use claude_replay_engine::seam::{Message, Shaping};
+use claude_replay_engine::seam::{AgentId, Message, Shaping, SubAgentMeta};
 use claude_replay_engine::Agent;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Every built-in adapter, in the stable order detection iterates.
@@ -102,6 +103,9 @@ impl TranscriptAdapter for CodexAdapter {
             SniffClaim::No
         }
     }
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        agents::codex::model::enrich_tree(path, blocks)
+    }
     fn shaping(&self) -> &'static Shaping {
         &agents::codex::model::CODEX_SHAPING
     }
@@ -116,6 +120,16 @@ impl TranscriptAdapter for CodexAdapter {
     }
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         agents::codex::discover::resolve(Some(id), false).ok()
+    }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        agents::codex::discover::subagent_source(root, child_id)
+    }
+    fn populate_sub_agent_transcripts(
+        &self,
+        root: &Path,
+        map: &mut BTreeMap<AgentId, SubAgentMeta>,
+    ) {
+        agents::codex::discover::populate_sub_agent_transcripts(root, map)
     }
 }
 

@@ -138,7 +138,7 @@ fn agent_stream(
         &s.tasks,
         crate::discover::session_tasks(agent, &info.source),
     );
-    Ok(render_agent_stream(
+    let (jsonl, mut children) = render_agent_stream(
         agent,
         fold,
         cwd,
@@ -149,7 +149,14 @@ fn agent_stream(
         &s.metrics,
         &tasks,
         assets,
-    ))
+    );
+    for child in &mut children {
+        child.source = s
+            .sub_agents
+            .get(&child.id)
+            .and_then(|meta| meta.transcript.clone());
+    }
+    Ok((jsonl, children))
 }
 
 /// `--dump-all-html`: write an offline **directory bundle** — a shared `index.html` shell

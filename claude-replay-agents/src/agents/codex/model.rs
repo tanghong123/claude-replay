@@ -1,14 +1,46 @@
-use claude_replay_engine::seam::{epoch_secs, relativize, Block, Message};
+use claude_replay_engine::seam::{
+    epoch_secs, parse_path_timed_for, relativize, AgentStatus, Block, Message, Metrics, Shaping,
+    SubAgent, UsdCost,
+};
+#[cfg(test)]
+use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
+const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
+
+pub(crate) fn encode_agent_path(path: &str) -> String {
+    let encoded = path
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{AGENT_PATH_KEY_PREFIX}{encoded}")
+}
+
+pub(crate) fn decode_agent_path(key: &str) -> Option<String> {
+    let encoded = key.strip_prefix(AGENT_PATH_KEY_PREFIX)?;
+    if encoded.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..encoded.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&encoded[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
 
 #[cfg(test)]
 fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (the shared `SessionAccumulator`) also runs on the engine now, per line
     // via `decode_line` + `Replayer` (M9).
-    claude_replay_engine::seam::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
+    replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
@@ -17,17 +49,41 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
     apply_output(block, text.to_string());
 }
-fn codex_keep_orphan(_t: &str) -> bool {
-    true // Codex keeps every non-empty orphan output (no boilerplate filter)
+fn codex_keep_orphan(text: &str) -> bool {
+    // A child rollout id arrives as a Codex-only activity event. It is shaped as a
+    // ToolResult so the shared Replayer can join it to the spawn call, but an event
+    // mirrored into a child transcript has no matching call and must stay invisible.
+    !text.starts_with(SUBAGENT_THREAD_RESULT_PREFIX)
 }
 fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
     blocks // identity — Codex does no turn grouping
 }
 
-/// Codex's `build_tool`: normalize the tool name and shape the target/diffs via
-/// `call_details` (Codex has no `SubAgent` spawns, so `id` is unused). The raw `input` was
-/// already extracted by `call_input` in the tokenizer. (Lifted to L2 in M14.)
-fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+/// Codex's `build_tool`: collaboration spawns use the shared sub-agent block; every
+/// other call follows the ordinary Codex tool shaping.
+fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
+    if raw_name == "spawn_agent" {
+        let field = |name| {
+            input
+                .get(name)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let description = field("task_name");
+        return Block::SubAgent(SubAgent {
+            agent_id: String::new(),
+            tool_use_id: id.to_string(),
+            agent_type: "agent".to_string(),
+            description,
+            prompt: field("message"),
+            status: AgentStatus::Running,
+            result: None,
+            output_file: None,
+            blocks: Vec::new(),
+            subtree_cost: None,
+        });
+    }
     let (name, target, diffs) = call_details(raw_name, input, cwd);
     Block::ToolUse {
         name,
@@ -40,13 +96,12 @@ fn codex_build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Bloc
 }
 
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
-pub(crate) const CODEX_SHAPING: claude_replay_engine::seam::Shaping =
-    claude_replay_engine::seam::Shaping {
-        build_tool: codex_build_tool,
-        join_result: apply_output_shaping,
-        keep_orphan: codex_keep_orphan,
-        finish_turns: codex_finish,
-    };
+pub(crate) const CODEX_SHAPING: Shaping = Shaping {
+    build_tool: codex_build_tool,
+    join_result: apply_output_shaping,
+    keep_orphan: codex_keep_orphan,
+    finish_turns: codex_finish,
+};
 
 /// **Layer 1 — Codex tokenize.** Map Codex's `response_item` line shapes to the canonical
 /// message log (design §3.2). Pure line-shaping — no back-patch / grouping (that is the
@@ -74,7 +129,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(epoch_secs);
-    msgs.push(Message::LineStart(ts));
+    // Codex writes event_msg mirrors immediately before their canonical response_item
+    // records, often at the exact same timestamp. Only canonical timeline records may
+    // advance the replay clock; otherwise every reasoning duration is measured from its
+    // duplicate agent_reasoning event and rounds down to 0s.
+    if is_timeline_event(&value) {
+        msgs.push(Message::LineStart(ts));
+    }
     match value.get("type").and_then(Value::as_str) {
         Some("session_meta") => {
             if cwd.is_empty() {
@@ -164,8 +225,95 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 _ => {}
             }
         }
+        Some("event_msg") => {
+            let Some(payload) = value.get("payload") else {
+                return;
+            };
+            if payload.get("type").and_then(Value::as_str) == Some("sub_agent_activity")
+                && payload.get("kind").and_then(Value::as_str) == Some("started")
+            {
+                let call_id = payload
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let thread_id = payload
+                    .get("agent_thread_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !call_id.is_empty() && !thread_id.is_empty() {
+                    msgs.push(Message::ToolResult {
+                        tool_use_id: call_id.to_string(),
+                        text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
+                        tur: Value::Null,
+                    });
+                }
+            }
+        }
         _ => {}
     }
+}
+
+fn is_timeline_event(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("session_meta" | "response_item")
+    )
+}
+
+pub(crate) fn enrich_tree(path: &Path, blocks: &mut [Block]) {
+    let mut seen = HashSet::new();
+    seen.insert(normalized_path(path));
+    let Some(relationships) = crate::agents::codex::discover::CodexRelationshipIndex::load(path)
+    else {
+        return;
+    };
+    enrich_descendants(path, blocks, &relationships, &mut seen);
+}
+
+fn enrich_descendants(
+    root: &Path,
+    blocks: &mut [Block],
+    relationships: &crate::agents::codex::discover::CodexRelationshipIndex,
+    seen: &mut HashSet<PathBuf>,
+) {
+    for block in blocks {
+        let Block::SubAgent(agent) = block else {
+            continue;
+        };
+        let Some(child_path) = relationships.subagent_source(root, &agent.agent_id) else {
+            continue;
+        };
+        if !seen.insert(normalized_path(&child_path)) {
+            continue;
+        }
+        let Ok((mut child_blocks, _, metrics)) =
+            parse_path_timed_for(&crate::adapters::CodexAdapter, &child_path)
+        else {
+            continue;
+        };
+        enrich_descendants(&child_path, &mut child_blocks, relationships, seen);
+        agent.subtree_cost = subtree_cost(&metrics, &child_blocks);
+        agent.blocks = child_blocks;
+    }
+}
+
+fn subtree_cost(metrics: &Metrics, blocks: &[Block]) -> Option<UsdCost> {
+    let descendants: UsdCost = blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::SubAgent(agent) => agent.subtree_cost,
+            _ => None,
+        })
+        .sum();
+    match metrics.cost_usd {
+        Some(own) => Some(own + descendants),
+        None if descendants > 0.0 => Some(descendants),
+        None => None,
+    }
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// **Frozen golden reference** (M9): production parses Codex through the streaming engine;
@@ -174,17 +322,17 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 #[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    user_times: &mut Vec<Option<claude_replay_engine::seam::EpochSeconds>>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
-    // See `model::parse_main`: stamp the previous event's user turns on the next
-    // iteration so an early `continue` can't drop them.
-    let mut pending_ts: Option<claude_replay_engine::seam::EpochSeconds> = None;
+    // Stamp the previous canonical event's user turns on the next canonical event
+    // so an ignored event_msg mirror cannot move the replay timeline.
+    let mut pending_ts: Option<EpochSeconds> = None;
     let mut stamped = 0usize;
-    let mut slots: HashMap<String, claude_replay_engine::seam::BlockIndex> = HashMap::new();
+    let mut slots: HashMap<String, BlockIndex> = HashMap::new();
     let mut cwd = String::new();
-    // The previous line's ts — CC's thinking clock (#57): a thinking's duration is
-    // `its ts − this` (mirrors the engine's `prev_ts`).
+    // The previous canonical event's ts: a thinking's duration is `its ts − this`
+    // (mirrors the engine's `prev_ts` after `decode_line` filters LineStart events).
     let mut prev_ts = None;
 
     for line in lines {
@@ -195,11 +343,13 @@ fn parse_lines<S: AsRef<str>>(
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
-        claude_replay_engine::seam::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
-        if pending_ts.is_some() {
-            prev_ts = pending_ts;
+        if is_timeline_event(&value) {
+            stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+            if pending_ts.is_some() {
+                prev_ts = pending_ts;
+            }
+            pending_ts = timestamp;
         }
-        pending_ts = timestamp;
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 if cwd.is_empty() {
@@ -281,7 +431,7 @@ fn parse_lines<S: AsRef<str>>(
             _ => {}
         }
     }
-    claude_replay_engine::seam::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     out
 }
 
@@ -474,13 +624,51 @@ fn output_text(value: &Value) -> String {
 }
 
 fn apply_output(block: &mut Block, output: String) {
-    if let Block::ToolUse {
-        name, output: slot, ..
-    } = block
-    {
-        if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() {
+    match block {
+        Block::SubAgent(agent) => {
+            if let Some(thread_id) = output.strip_prefix(SUBAGENT_THREAD_RESULT_PREFIX) {
+                agent.agent_id = thread_id.to_string();
+                return;
+            }
+            let value = serde_json::from_str::<Value>(&output).ok();
+            if let Some(agent_id) = value
+                .as_ref()
+                .and_then(|value| value.get("agent_id"))
+                .and_then(Value::as_str)
+            {
+                agent.agent_id = agent_id.to_string();
+                return;
+            }
+            if let Some(task_name) = value
+                .as_ref()
+                .and_then(|value| value.get("task_name"))
+                .and_then(Value::as_str)
+            {
+                if agent.agent_id.is_empty() {
+                    // Older/copy-trimmed rollouts may lack the activity event. Preserve
+                    // the previous path-key fallback, but never overwrite a real thread id.
+                    agent.agent_id = encode_agent_path(task_name);
+                }
+                return;
+            }
+            if agent.agent_id.is_empty() && !output.trim().is_empty() {
+                let target = agent.description.clone();
+                *block = Block::ToolUse {
+                    name: "spawn_agent".to_string(),
+                    target,
+                    diffs: Vec::new(),
+                    output: Some(output),
+                    patch: None,
+                    read_lines: None,
+                };
+            }
+        }
+        Block::ToolUse {
+            name, output: slot, ..
+        } if !matches!(name.as_str(), "Edit" | "Write") && !output.trim().is_empty() => {
             *slot = Some(output);
         }
+        _ => {}
     }
 }
 
@@ -488,6 +676,131 @@ fn apply_output(block: &mut Block, output: String) {
 mod tests {
     use super::*;
     use claude_replay_engine::seam::Block;
+
+    #[test]
+    fn agent_path_key_is_safe_and_reversible() {
+        let path = "/root/spec_review/standards_axis";
+        let key = encode_agent_path(path);
+
+        assert_eq!(
+            key,
+            "codex-agent-2f726f6f742f737065635f7265766965772f7374616e64617264735f61786973"
+        );
+        assert!(!key.contains('/'));
+        assert_eq!(decode_agent_path(&key).as_deref(), Some(path));
+        assert_eq!(decode_agent_path("other-2f726f6f74"), None);
+        assert_eq!(decode_agent_path("codex-agent-f"), None);
+        assert_eq!(decode_agent_path("codex-agent-zz"), None);
+        assert_eq!(decode_agent_path("codex-agent-ff"), None);
+    }
+
+    #[test]
+    fn subagent_activity_uses_thread_id_and_final_answer_is_not_terminal() {
+        let jsonl = concat!(
+            r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"spec_review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/spec_review","kind":"started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/spec_review\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/spec_review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::SubAgent(agent)
+                if agent.agent_id == "child-thread"
+                    && agent.tool_use_id == "spawn-1"
+                    && agent.description == "spec_review"
+                    && agent.prompt == "review it"
+                    && agent.status == AgentStatus::Running
+        )));
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::AgentDone { .. })),
+            "FINAL_ANSWER completes one interaction, not the persistent Codex agent"
+        );
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::ToolResult(_))),
+            "the identity-correlation event is adapter metadata, not visible output"
+        );
+    }
+
+    #[test]
+    fn plain_text_spawn_output_preserves_resolved_subagent() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/review","kind":"started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"spawned agent child-thread"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::SubAgent(agent)
+                if agent.agent_id == "child-thread"
+                    && agent.tool_use_id == "spawn-1"
+                    && agent.description == "review"
+        )));
+        assert!(!blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolUse { name, .. } if name == "spawn_agent")));
+    }
+
+    #[test]
+    fn failed_spawn_is_not_a_navigable_subagent() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"collab spawn failed: agent thread limit reached"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::SubAgent(_))),
+            "a failed spawn created no child rollout to navigate"
+        );
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse {
+                name,
+                target,
+                output: Some(output),
+                ..
+            } if name == "spawn_agent"
+                && target == "review"
+                && output == "collab spawn failed: agent thread limit reached"
+        )));
+    }
+
+    #[test]
+    fn legacy_spawn_output_uses_agent_id() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"legacy-child\",\"nickname\":\"Nash\"}"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::SubAgent(agent) if agent.agent_id == "legacy-child"
+        )));
+    }
 
     #[test]
     fn parses_canonical_response_items_without_event_duplicates() {
@@ -531,6 +844,30 @@ not json
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn ignored_event_messages_do_not_zero_reasoning_duration() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-07-18T01:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix it"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fix it"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:05.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"Inspect parser"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-18T01:00:05.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect parser"}]}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Thinking {
+                text,
+                duration_secs: Some(5),
+                ..
+            } if text == "Inspect parser"
+        )));
     }
 
     #[test]

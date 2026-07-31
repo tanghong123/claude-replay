@@ -1080,6 +1080,104 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn codex_pull_registers_distinct_threads_with_the_same_agent_path() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!(
+            "cr-serve-codex-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let sessions = base.join("sessions/2026/07/29");
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&bundle).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"first\"}"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-a","agent_path":"/root/review","kind":"started"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"spawn-2","arguments":"{\"task_name\":\"review\",\"message\":\"second\"}"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-2","agent_thread_id":"child-b","agent_path":"/root/review","kind":"started"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-2","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        for child_id in ["child-a", "child-b"] {
+            std::fs::write(
+                sessions.join(format!("rollout-{child_id}.jsonl")),
+                format!(
+                    "{}\n",
+                    json!({
+                        "type": "session_meta",
+                        "payload": {
+                            "id": child_id,
+                            "cwd": "/repo",
+                            "source": {
+                                "subagent": {
+                                    "thread_spawn": {
+                                        "parent_thread_id": "parent",
+                                        "agent_path": "/root/review"
+                                    }
+                                }
+                            }
+                        }
+                    })
+                ),
+            )
+            .unwrap();
+        }
+
+        let live = Live {
+            dir: bundle,
+            agent: Agent::CODEX,
+            fold: FoldPolicy::default(),
+            root_path: parent.clone(),
+            cwd: "/repo".into(),
+            cache: SessionCache::new(),
+        };
+        live.cache
+            .register("parent", Transcript::open(Agent::CODEX, parent));
+
+        let reply = live
+            .pull_response("parent", Cursor::default())
+            .expect("parent reply");
+        let value: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(
+            value["meta"]["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|child| child["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["child-a", "child-b"]
+        );
+        for child_id in ["child-a", "child-b"] {
+            assert!(live.cache.is_registered(child_id));
+            let (source, _) = live.resolve_id(child_id).expect("child resolves");
+            assert!(source
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(child_id));
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// RecordStore put → read_range round-trips (#74): each committed block renders to one
     /// on-disk record whose locator addresses exactly its bytes, and reading from a given
     /// committed offset returns exactly the records from there on (the pointer serve path).
