@@ -197,6 +197,12 @@
   .kv{font-family:var(--mono);font-size:12px;color:var(--faint)}
   .lede b{color:var(--ink)}
 </style>
+<style>
+  /* additions for the seven-crate layout (#87): the agents crate is a shade of the
+     engine's colour — same layer, the pluggable half. */
+  .layer.agents{background:color-mix(in srgb,var(--accent) 7%,var(--surface));border-color:color-mix(in srgb,var(--accent) 26%,var(--line))}
+  .layer.agents .lname{color:var(--accent-ink)}
+</style>
 
 </head>
 <body>
@@ -206,11 +212,11 @@
     <nav>
       <a href="#crates">Crates</a>
       <a href="#pipeline">Pipeline</a>
+      <a href="#seam">Seam</a>
       <a href="#sansio">Sans-io</a>
-      <a href="#bv">Storage</a>
-      <a href="#cache">Data layer</a>
+      <a href="#model">Model</a>
       <a href="#lean">Leanness</a>
-      <a href="#extend">Add an agent</a>
+      <a href="#map">Map</a>
     </nav>
     <button class="toggle" id="themer" aria-label="Toggle colour theme">◐ theme</button>
   </div>
@@ -226,7 +232,7 @@
       <b>lean by design</b> — a live million-line session costs the server O(open&nbsp;turn)
       RAM and each frontend a viewport's worth of rendered state.</p>
     <div class="meta">
-      <span class="chip"><b>Rust</b> workspace · 5 crates</span>
+      <span class="chip"><b>Rust</b> workspace · 7 crates</span>
       <span class="chip"><b>3</b> agents · Claude · Codex · QoderWork</span>
       <span class="chip"><b>2</b> frontends · TUI · HTML</span>
       <span class="chip"><b>Headless</b>-testable · byte-identical gate</span>
@@ -235,16 +241,16 @@
     <div class="pipe" role="img" aria-label="The pipeline: raw JSONL is decoded to canonical messages, folded to blocks, accumulated into a session, cached, and presented.">
       <div class="pipe-head"><span>THE PIPELINE</span><span>one job per stage · agent-specifics confined to decode</span></div>
       <div class="flow5">
-        <div class="layer">
+        <div class="layer agents">
           <div class="lname">① decode</div>
           <div class="lwhat">One agent's raw JSONL lines → a canonical message vocabulary.</div>
-          <div class="lmods">claude_model · codex_model</div>
+          <div class="lmods">TranscriptAdapter::decode_line · claude-replay-agents</div>
         </div>
         <div class="arrow"><span class="token">Message</span><span class="line">→</span></div>
         <div class="layer core">
           <div class="lname">② fold — shared</div>
           <div class="lwhat">One <code>Replayer</code>: join results onto calls, group turns, coalesce spans.</div>
-          <div class="lmods">engine::replay</div>
+          <div class="lmods">engine::replay · claude-replay-engine</div>
         </div>
         <div class="arrow"><span class="token">Block</span><span class="line">→</span></div>
         <div class="layer core">
@@ -261,10 +267,15 @@
       </div>
     </div>
     <p class="col" style="color:var(--muted);font-size:14px;margin-top:14px">
-      The colour maps stages to layers — <b style="color:var(--accent-ink)">engine</b> (the
-      shared fold and durability frontier, written once for every agent),
-      <b style="color:var(--add)">presentation support</b> (the live data layer), and the
-      frontends' windows. Agent-specific code exists only at <b>①</b>; a dashed back-edge
+      The colour maps stages to crates — <b style="color:var(--accent-ink)">engine</b>
+      (<code>claude-replay-engine</code>: the shared fold and durability frontier, written once
+      for every agent), <b style="color:var(--accent-ink)">agents</b>
+      (<code>claude-replay-agents</code>: the per-agent L1, deliberately a shade of the
+      engine's colour — same layer, the pluggable half), and
+      <b style="color:var(--add)">presentation support</b> (the live data layer) feeding the
+      frontends' windows. Stage ⓪'s registry-driven discovery is the <b>core facade</b>'s
+      (<code>claude-replay-core</code>) — the third crate of the engine layer, which wires the
+      other two together. Agent-specific code exists only at <b>①</b>; a dashed back-edge
       closes the loop — a parsed <code>SubAgent</code> block names a child transcript, which
       runs the same pipeline recursively.</p>
   </div>
@@ -272,182 +283,581 @@
 
 <div class="wrap">
 
-  <section id="crates">
+  <section id="what">
     <div class="eyebrow">§1</div>
-    <h2>Five crates, three levels of reuse</h2>
-    <p class="kicker">Every boundary is enforced by the dependency graph, not by review —
-      so each claim below is a compile-time fact.</p>
+    <h2>What it is</h2>
+    <p><code>claude-replay</code> reads an AI coding-agent's <b>session transcript</b> (a JSONL
+      log — Claude Code, Codex, or QoderWork) and replays it as a readable, foldable stream of
+      blocks: user turns, assistant prose, thinking, tool calls with their results and diffs,
+      sub-agent spawns, attachments, slash commands. It is <b>read-only</b> and <b>fully
+      testable headless</b> — no TTY required.</p>
+    <p>Two design goals shape everything below:</p>
+    <ul class="clean">
+      <li><b>Modularity as compiler-enforced layering.</b> The engine is agent-agnostic and
+        presentation-agnostic; adding an agent is one small adapter, and adding a
+        <em>presentation</em> is a new crate on top of the shared support layer — in both
+        directions, no shared code is touched.</li>
+      <li><b>Leanness as a design discipline.</b> Memory is bounded by keeping each
+        representation no longer than it must live (§8), and CPU is bounded by doing only delta
+        work on borrowed threads (§10). A live session with a million-line transcript costs
+        O(open turn) RAM on the server and O(viewport) rendered state in either frontend.</li>
+    </ul>
+  </section>
+
+  <section id="crates">
+    <div class="eyebrow">§2</div>
+    <h2>The workspace: four layers, seven crates</h2>
+<pre>layer 1 · ENGINE          claude-replay-engine    the agent-FREE machinery: model, fold,
+          (three crates,          ▲               sessions/stores, follower, the adapter seam
+          one seam)       claude-replay-agents    the built-in adapter families (claude/
+                                  ▲               codex/qoderwork) + the REGISTRY slice
+                          claude-replay-core      the FACADE: machinery wired to the registry
+                                  ▲               — parse, follow, discover, one API
+layer 2 · PRESENTATION    claude-replay-present   session cache, sync protocol, text/highlight
+          SUPPORT                 ▲                helpers, the shared Args — frontend-agnostic
+                             ┌────┴────┐
+layer 3 · REUSABLE      claude-replay-tui   claude-replay-html    two independent, embeddable
+          FRONTENDS          └────┬────┘                          presenters
+                                  ▲
+layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + agent-jdi</pre>
+    <p>Each boundary is a <b>compiler-enforced invariant</b>, not a convention:</p>
     <div class="tblwrap"><table>
-      <thead><tr><th>crate</th><th>what it is</th><th>hard dependency ceiling</th></tr></thead>
+      <thead><tr><th>crate</th><th>may depend on</th><th>must NOT contain</th></tr></thead>
       <tbody>
-        <tr><td><code>claude-replay-core</code></td><td class="role">the sans-io engine: parse, fold, follow, discover, fold policy, diff model</td><td><code>serde</code> + <code>serde_json</code> + <code>anyhow</code> — no I/O policy, no UI</td></tr>
-        <tr><td><code>claude-replay-present</code></td><td class="role">presentation support: session cache, pull protocol (both halves), text/highlight helpers, shared <code>Args</code></td><td>core + syntect; ratatui <em>types only</em>; clap only behind the opt-in <code>cli</code> feature</td></tr>
-        <tr><td><code>claude-replay-tui</code></td><td class="role">the terminal frontend (TestBackend-testable end to end)</td><td>+ ratatui / crossterm</td></tr>
-        <tr><td><code>claude-replay-html</code></td><td class="role">exports, offline bundles, the live loopback server</td><td><b>zero</b> terminal deps — verified in its dependency tree</td></tr>
-        <tr><td><code>claude-replay</code></td><td class="role">the thin assembly binary: CLI + the <code>agent-jdi</code> supervisor</td><td>everything above</td></tr>
+        <tr><td><code>claude-replay-engine</code></td><td class="role"><code>serde</code>/<code>serde_json</code>, <code>anyhow</code></td><td class="role">any adapter implementation, any I/O policy, ratatui, syntect, clap, HTML</td></tr>
+        <tr><td><code>claude-replay-agents</code></td><td class="role">engine — and only through <code>seam</code> (audited, §4)</td><td class="role">machinery internals, presentation deps</td></tr>
+        <tr><td><code>claude-replay-core</code></td><td class="role">engine + agents</td><td class="role">any TUI/HTML/CLI dep — the same ceiling the old single core crate had</td></tr>
+        <tr><td><code>claude-replay-present</code></td><td class="role">core + syntect (the highlighter returns toolkit-neutral <code>HlSpan</code>s — no ratatui)</td><td class="role">a terminal, an HTTP server, clap (unless the <code>cli</code> feature is on)</td></tr>
+        <tr><td><code>claude-replay-tui</code></td><td class="role">core + present + ratatui/crossterm</td><td class="role">HTML</td></tr>
+        <tr><td><code>claude-replay-html</code></td><td class="role">core + present</td><td class="role">any terminal dep (verified: zero crossterm/nucleo/arboard in its tree)</td></tr>
       </tbody>
     </table></div>
+    <p style="margin-top:18px">The three levels of reuse this buys (each is a real, supported
+      consumer story — worked examples in the Developer Guide §4–6):</p>
     <div class="cards">
       <div class="card"><h4>Level 1 · core alone</h4><p>Parse and analyze transcripts in any program. The whole dependency bill is <code>serde_json</code> + <code>anyhow</code>.</p></div>
-      <div class="card"><h4>Level 2 · core + present</h4><p>Build a <em>new</em> frontend — native app, service, notebook. Cache, protocols, folding, summaries and highlighting come ready-made.</p></div>
-      <div class="card"><h4>Level 3 · the finished UIs</h4><p>Embed the TUI (<code>app::run</code>) or the HTML exporter/server (<code>dump_html</code> · <code>dump_all_html</code> · <code>serve</code>) from your own binary.</p></div>
+      <div class="card"><h4>Level 2 · core + present</h4><p>Build a <em>new</em> frontend — native app, web service, notebook widget: the session cache, the incremental pull protocol with both halves implemented, fold policy, summaries and highlighting come ready-made.</p></div>
+      <div class="card"><h4>Level 3 · the finished UIs</h4><p>Embed the TUI (<code>app::run</code>, or drive <code>View</code> directly) or the HTML exporter/server (<code>dump_html</code> · <code>dump_all_html</code> · <code>serve</code>) from your own binary.</p></div>
     </div>
+    <div class="callout"><b>A fourth, outermost story</b> exists for agent authors: build on
+      <code>claude-replay-engine</code> alone — implement <code>TranscriptAdapter</code> against
+      its <code>seam</code> and bring your own registry slice — without compiling any built-in
+      adapter. §4 spells it out.</div>
+    <p>Internally, each crate re-exports the layers below it at its own root
+      (<code>crate::model</code>, <code>crate::present</code>, …) — the same transparency trick
+      at every boundary, so moved code reads as if the split weren't there. One workspace
+      version, bumped in one place.</p>
   </section>
 
   <section id="pipeline">
-    <div class="eyebrow">§2</div>
-    <h2>Stages, precisely</h2>
-    <p class="kicker">Arrows are actions; here is each action's contract and address.</p>
+    <div class="eyebrow">§3</div>
+    <h2>The pipeline</h2>
+    <p class="kicker">Everything in the workspace is a stage on one data path (or a cache beside
+      it) — the hero diagram above. A stage's <em>machinery</em> lives in its colour's crate
+      even where its types come from below. The dashed back-edge is what makes sub-agent trees
+      work: a parsed session can name further raw transcripts, which run the same pipeline
+      recursively. Arrows are actions; here is each action's contract and address.</p>
     <div class="tblwrap"><table>
       <thead><tr><th>stage</th><th>contract</th><th>code</th></tr></thead>
       <tbody>
-        <tr><td>⓪ discover</td><td class="role">find transcripts by path / id / cwd — and resolve a <code>SubAgent</code> block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside <code>$HOME</code>.</td><td><code>core::discover</code></td></tr>
-        <tr><td>① decode</td><td class="role">one raw line → 0+ canonical <code>Message</code>s; the only stage that knows an agent's field names</td><td><code>TranscriptAdapter::decode_line</code></td></tr>
-        <tr><td>② fold</td><td class="role">back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — once, for every agent</td><td><code>engine::replay::Replayer</code> + per-agent <code>Shaping</code></td></tr>
-        <tr><td>③ accumulate</td><td class="role">the durability frontier: finished turns drained <em>put-once</em> into a <code>BlockStore</code>; index, metrics and tasks folded alongside</td><td><code>engine::builder::SessionAccumulator</code></td></tr>
-        <tr><td>④ cache</td><td class="role">registered → resident → hibernated residency for live sessions; the data layer both frontends stand on</td><td><code>present::cache::SessionCache</code></td></tr>
-        <tr><td>⑤ present</td><td class="role">TUI: <code>poll_view</code> — one call: <code>Arc</code>-clone delta + times/metrics/tasks. HTML: cursor pulls answered with byte-range pointers. One resident serves both.</td><td><code>SharedSession::poll_view</code> · <code>::pull</code></td></tr>
+        <tr><td>⓪ discover</td><td class="role">find transcripts by path / id / cwd — and resolve a <code>SubAgent</code> block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside <code>$HOME</code>.</td><td><code>core::discover</code> <span class="role">(registry-driven, in the facade)</span></td></tr>
+        <tr><td>① decode</td><td class="role">one raw line → 0+ canonical <code>Message</code>s; the only stage that knows an agent's field names ("L1")</td><td><code>TranscriptAdapter::decode_line</code> <span class="role">(each family in <code>claude-replay-agents</code>)</span></td></tr>
+        <tr><td>② fold</td><td class="role">the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — §5 below</td><td><code>engine::replay::Replayer</code> + per-agent <code>Shaping</code></td></tr>
+        <tr><td>③ accumulate</td><td class="role">the durability frontier: finished turns drained <em>put-once</em> into a <code>BlockStore</code>; index, metrics and tasks folded alongside — §6 below</td><td><code>engine::builder::SessionAccumulator</code></td></tr>
+        <tr><td>④ cache</td><td class="role">ONE live resident kind per session, serving both consumption styles; registered → resident → hibernated residency</td><td><code>present::cache::SessionCache</code></td></tr>
+        <tr><td>⑤a poll_view</td><td class="role">in-process: ONE call — advance, splice-shaped <code>Arc</code> delta, times/metrics/tasks</td><td><code>SharedSession::poll_view</code> → <code>tui::View::apply_view</code></td></tr>
+        <tr><td>⑤b pull</td><td class="role">cross-process: per-client stateless replies against a client-held 4-member cursor — §9 below</td><td><code>SharedSession::pull</code> · <code>PullClient</code></td></tr>
+        <tr><td>⑥a render</td><td class="role">blocks → styled wrapped lines, materialized only near the viewport</td><td><code>tui::render</code> + <code>present::highlight</code>; the <code>hot</code> window</td></tr>
+        <tr><td>⑥b render</td><td class="role">wire records → a windowed DOM</td><td><code>html/export.js</code> virtualizes</td></tr>
       </tbody>
     </table></div>
+  </section>
+
+  <section id="seam">
+    <div class="eyebrow">§4</div>
+    <h2>The per-agent seam</h2>
+    <p class="kicker">Everything that varies by agent is behind <b>one trait</b>,
+      <code>TranscriptAdapter</code> (<code>claude-replay-engine/src/adapter.rs</code>), and one
+      audited helper surface, the <b><code>seam</code></b> module (<code>engine/seam.rs</code>) —
+      the complete, curated set of engine items adapter code may build on.</p>
+    <p>Three mechanisms enforce the seam, in escalating strength:</p>
+    <ol class="steps">
+      <li><b>The trait</b> <span class="d">— the engine calls per-agent behavior only through <code>TranscriptAdapter</code>.</span></li>
+      <li><b>The crate boundary</b> <span class="d">— the built-in families live in <code>claude-replay-agents</code>, which depends on the engine crate alone; the facade (<code>claude-replay-core</code>) is what wires them together.</span></li>
+      <li><b>The audit</b> <span class="d">— the <code>agents_import_only_the_seam</code> test (<code>claude-replay-agents/src/agents/mod.rs</code>) fails any adapter import that isn't <code>claude_replay_engine::seam</code>; anything an adapter newly needs is added to the seam <em>deliberately</em>, never reached ad hoc.</span></li>
+    </ol>
+    <p style="margin-top:18px">The registry is the facade's curry: <code>adapter(agent)</code> /
+      <code>adapters()</code> (<code>claude-replay-core/src/adapter.rs</code>) resolve over
+      <code>claude_replay_agents::REGISTRY</code>, and every dispatching entry point in core
+      consults them. <b>Adding an agent</b> is therefore: implement
+      <code>TranscriptAdapter</code> over the seam — in your own crate with your own registry
+      slice handed to the engine's entry points, or as one more family + <code>REGISTRY</code>
+      row in <code>claude-replay-agents</code>. The shared machinery is never touched. The
+      trait's hooks:</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>hook</th><th>role</th><th>default</th></tr></thead>
+      <tbody>
+        <tr><td><code>agent()</code></td><td class="role">which <code>Agent</code></td><td>—</td></tr>
+        <tr><td><code>sniff(head)</code></td><td class="role"><code>SniffClaim::{Owns, CanParse, No}</code> — format <em>ownership</em> vs mere compatibility (drives <code>detect_agent</code> and the picker's "compatible" badge)</td><td>—</td></tr>
+        <tr><td><code>store_contains(path)</code></td><td class="role">provenance: is this path inside my on-disk store? (ownership without a format marker)</td><td><code>false</code></td></tr>
+        <tr><td><code>decode_line(line, cwd, out)</code></td><td class="role"><b>L1</b>: raw line → 0+ canonical <code>Message</code>s</td><td>—</td></tr>
+        <tr><td><code>shaping()</code></td><td class="role">the L2 <code>Shaping</code> const (4 fn-pointers)</td><td>—</td></tr>
+        <tr><td><code>metrics_acc()</code></td><td class="role">a fresh token/cost accumulator</td><td>—</td></tr>
+        <tr><td><code>load_attachment(line, index)</code></td><td class="role">a deferred attachment locator's bytes from ONE raw line</td><td><code>None</code></td></tr>
+        <tr><td><code>candidates_scoped(cwd)</code></td><td class="role">discovery: sessions for a cwd</td><td>—</td></tr>
+        <tr><td><code>resolve_id(id)</code></td><td class="role">discovery: id → transcript path</td><td>—</td></tr>
+        <tr><td><code>load_tasks(path)</code></td><td class="role">the session's task/todo list from the agent's store</td><td><code>None</code></td></tr>
+        <tr><td><code>parse_reader(reader)</code></td><td class="role">metrics-only fold</td><td><b>provided</b></td></tr>
+        <tr><td><code>enrich(path, blocks)</code></td><td class="role">load the sub-agent tree</td><td><b>no-op</b></td></tr>
+        <tr><td><code>subagent_source(root, id)</code></td><td class="role">a child transcript's path</td><td><b>None</b></td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:14px">(The whole-file parse is not a hook: the facade's
+      <code>Transcript::parse</code> drives the shared <code>SessionAccumulator</code> with the
+      adapter — one fold, composed from the hooks above.)</p>
+    <p><code>Agent</code> itself is an <b>open interned id</b>, not a closed enum:
+      <code>pub struct Agent(&amp;'static str)</code> with
+      <code>Agent::CLAUDE</code>/<code>CODEX</code>/<code>QODERWORK</code> as associated
+      constants and <code>Agent::new("gemini")</code> for third parties, serialized as its
+      label. The engine never enumerates agents — the id is only the <em>name</em> that keys
+      the registry, so a new agent mints its own with no variant to add and nothing to fork.</p>
+    <p>Everything agent-neutral reaches per-agent behavior <em>only</em> through the registry —
+      there is no <code>match agent</code> scattered across the engine. Three adapters exist
+      today and demonstrate the cost floor: Claude (full), Codex (no sub-agent tree ⇒ omits
+      those hooks), QoderWork (delegates decoding to Claude's family entirely; its adapter is
+      discovery + identity).</p>
+    <div class="callout"><b>Mirror.</b> The <code>agent-jdi</code> supervisor mirrors this with
+      its own <code>jdi::agent::AgentAdapter</code> registry.</div>
+    <h3 id="discovery">Discovery, precisely</h3>
+    <p>Discovery splits along the same seam. The engine's <code>discover</code> module is the
+      agent-free <em>vocabulary</em> — the <code>Candidate</code> type,
+      <code>session_cwd</code>/<code>session_id</code> (transcript-head readers), and the
+      <code>ancestors_below</code>/<code>home_dir</code> scoping. The facade's
+      <code>discover</code> (<code>claude-replay-core/src/discover.rs</code>, which re-exports
+      the vocabulary so <code>core::discover</code> stays the ONE module) is the
+      registry-driven front door: <code>detect_agent</code> (sniff + store provenance →
+      ownership, so a merely-<em>compatible</em> file is labeled, not mislabeled),
+      <code>candidates_all</code> (the cross-agent picker list), <code>resolve_any</code>
+      (id/path/latest → a path), <code>session_tasks</code>, and
+      <code>subagent_source</code>.</p>
+    <p>Cwd-based auto-discovery is scoped <b>strictly inside <code>$HOME</code></b>
+      (<code>ancestors_below</code>): a cwd outside it probes nothing, and the probe never
+      reaches <code>$HOME</code>'s own slug — so stores polluted by misbehaving agents
+      (sessions recorded against <code>$HOME</code> or <code>/</code>) can never leak into an
+      unrelated directory's picker. Explicit paths and ids are never scoped.</p>
+  </section>
+
+  <section id="fold">
+    <div class="eyebrow">§5</div>
+    <h2>The fold: what the Replayer actually does</h2>
+    <p class="kicker">Stage ② looks like one arrow; it is where most of the engine's hard-won
+      correctness lives. A transcript is not a clean event log — results arrive out of order,
+      turns interleave, and what an agent's own UI <em>shows</em> differs from what it
+      <em>records</em>. The <code>Replayer</code> reconciles all of it, once, for every agent:</p>
+    <ul class="clean">
+      <li><b>Result joining &amp; back-patching.</b> A tool's result lands as a separate later
+        event — the fold attaches it to its call <em>in place</em>, even when the call was
+        emitted in an earlier poll (the follower back-patches across polls without
+        re-parsing).</li>
+      <li><b>Turn grouping &amp; span coalescing.</b> Consecutive thinking bursts and "activity"
+        tool calls between two visible outputs fold into ONE work-span block, with summed
+        durations and Claude-Code-faithful phrasing — an empirically derived rule set
+        (<code>design/cc-activity-coalescing.md</code>) that agents opt into per adapter
+        (<code>Shaping::finish_turns</code>). MCP tool calls coalesce into the same spans,
+        phrased per server (<code>called &lt;server&gt; N times</code> —
+        <code>summary.rs</code>).</li>
+      <li><b>The queued-prompt lifecycle.</b> A mid-turn human prompt is recorded when
+        <em>submitted</em> but displayed when <em>picked up</em>; the fold runs that little
+        state machine (suppressing the marker when pickup is immediate).</li>
+      <li><b>The committed/open split.</b> The fold maintains a <b>durability frontier</b>:
+        blocks of finished turns are final and never touched again; only the open turn is
+        re-derived as events arrive. Every incremental surface in the workspace —
+        <code>changed_from</code>, the cursor protocol's generations, the put-once stores —
+        leans on this invariant.</li>
+      <li><b>Reshape detection.</b> A raw-level pure append can still REWRITE the finalized
+        open turn's prefix (a new tool joins a span and absorbs earlier blocks). The live layer
+        diffs the finalized view per tick to catch exactly this — it is why the sync protocol
+        has a <em>generation</em> member, not just an append cursor.</li>
+    </ul>
+    <p style="margin-top:16px">The proof obligations are pinned in tests: the streaming fold is
+      byte-identical to frozen whole-file oracles, and the follower to a full re-parse at every
+      append.</p>
   </section>
 
   <section id="sansio">
-    <div class="eyebrow">§3</div>
-    <h2>The sans-io heart</h2>
-    <p class="kicker">The engine's core does no I/O. <code>SessionAccumulator</code> is a push-based
-      fold — <em>you</em> acquire bytes however you like and push lines in; every parse path in the
-      workspace is this same fold, differing only in who feeds it.</p>
-<pre><span class="c">// the one seam every path shares</span>
-<span class="k">let mut</span> acc = SessionAccumulator::new(Agent::Claude);   <span class="c">// or ::with_store(agent, store)</span>
-acc.advance_at(byte_offset, &line);                      <span class="c">// push one line — that's the I/O boundary</span>
-<span class="k">let</span> session = acc.snapshot();                            <span class="c">// the current Session, any time</span></pre>
+    <div class="eyebrow">§6</div>
+    <h2>The sans-io accumulator — one fold, every acquisition mode</h2>
+    <p class="kicker">The engine's heart deliberately does <b>no I/O</b>.
+      <code>SessionAccumulator</code> (<code>engine/builder.rs</code>) is a push-based fold: the
+      <em>caller</em> acquires bytes however it likes and pushes lines in; the accumulator
+      threads them through L1 → L2 → metrics behind one method:</p>
+<pre><span class="k">let mut</span> acc = SessionAccumulator::new(adapter);   <span class="c">// or ::with_store(adapter, store)</span>
+acc.advance_at(byte_offset, &line);               <span class="c">// push one line — that's the I/O seam</span>
+<span class="k">let</span> session = acc.into_session();                 <span class="c">// finish: takes the Session BY MOVE</span></pre>
+    <p>(<code>adapter</code> is a <code>&amp;'static dyn TranscriptAdapter</code> — the engine's
+      constructors take the adapter itself; the facade curries the agent id for you,
+      <code>claude_replay_core::adapter(agent)</code>.)</p>
+    <p><code>byte_offset</code> is the line's position in the raw transcript — the fold stamps
+      it into <b>locators</b> for content it deliberately does <em>not</em> inline (an
+      attachment's bytes, a sub-agent's file), so presenters can lazy-load from the raw
+      transcript later instead of the parse carrying everything. And the ending is a
+      <b>move</b>: <code>into_session()</code> transfers the committed values out and borrows
+      content only to build the derived index — zero block clones for the in-memory and
+      <code>Arc</code> stores. (<code>snapshot()</code> exists too, as the <em>mid-flight</em>
+      copy for a fold that keeps going — the live follower's surface, not the one-shot
+      ending.)</p>
+    <p>Under the hood, each pushed line runs the whole per-line pipeline: decode (L1) → fold
+      (L2) → drain any turns that crossed the durability frontier <b>put-once</b> into the
+      <code>BlockStore</code> → fold the same blocks into the maintained live header
+      (<code>SessionMeta</code>) and the metrics/task accumulators. Nothing is rescanned later:
+      <code>into_session</code>/<code>snapshot</code> assemble the <code>Session</code> from
+      state the fold maintained as it went — the derived <code>SessionIndex</code> is the only
+      end-of-parse pass.</p>
+    <p>Because byte acquisition is the caller's job, <b>every parse path in the workspace is
+      the same fold</b>, differing only in who feeds it:</p>
     <div class="tblwrap"><table>
-      <thead><tr><th>consumer</th><th>who pushes the lines</th><th>why it matters</th></tr></thead>
+      <thead><tr><th>consumer</th><th>who pushes lines</th><th>why it matters</th></tr></thead>
       <tbody>
-        <tr><td><code>parse_session</code></td><td class="role">a file reader, one line resident</td><td class="role">whole-file parse never builds a <code>Vec&lt;String&gt;</code></td></tr>
-        <tr><td><code>FollowParser</code></td><td class="role">a byte-offset tail — appended bytes only</td><td class="role">O(delta) per poll; proven byte-identical to a full re-parse</td></tr>
-        <tr><td><code>SharedSession</code></td><td class="role">the follower, on a <em>client's request thread</em></td><td class="role">the live server has no polling loop at all</td></tr>
+        <tr><td><code>parse_session_as</code> (batch)</td><td class="role">a file reader, one line resident</td><td class="role">whole-file parse never builds a <code>Vec&lt;String&gt;</code></td></tr>
+        <tr><td><code>FollowParser</code> (live tail)</td><td class="role">the byte-offset line reader (<code>engine/reader.rs</code>), only appended bytes</td><td class="role">O(delta) per poll; proven byte-identical to a full re-parse</td></tr>
+        <tr><td><code>SharedSession</code> (live server)</td><td class="role">the follower, on a <em>client's request thread</em></td><td class="role">see §10 — no server-side polling loop</td></tr>
         <tr><td><b>your code</b></td><td class="role">a socket, an mmap, a test vector, a decompressor</td><td class="role">the library never dictates your I/O</td></tr>
       </tbody>
     </table></div>
-  </section>
-
-  <section id="bv">
-    <div class="eyebrow">§4</div>
-    <h2>Your frontend decides what a block <em>is</em></h2>
-    <p class="kicker"><code>Session&lt;BV&gt;</code> is generic over its per-block value, and the
-      <code>BlockStore</code> seam hands that decision to the presentation layer: the block itself,
-      a locator, auxiliary state, a pointer into a file you maintain — anything written once, as
-      the block commits.</p>
+    <p style="margin-top:18px">The accumulator also owns the <b>durability frontier</b> that the
+      whole leanness story hangs on: as each turn completes, its blocks are drained
+      <b>put-once</b> into a pluggable <code>BlockStore</code> <code>S</code>
+      (<code>committed: Vec&lt;S::Bv&gt;</code>), while the replayer retains only the <b>open
+      turn</b> — so the fold's resident content is O(turn) regardless of session length.
+      Storage policy is injected, not baked in:</p>
     <div class="cards">
-      <div class="card"><h4>InMemoryStore</h4><p><code>BV = Block</code> — identity. Batch parsing and owned <code>Session</code> snapshots.</p></div>
-      <div class="card"><h4>TierBStore</h4><p><code>BV = Deferred</code> — a 12-byte locator; serde bytes spill append-only to disk. Lossless (<code>BlockRead</code>).</p></div>
-      <div class="card"><h4>ArcStore</h4><p><code>BV = Arc&lt;Block&gt;</code> — the cache retains the one authoritative copy; readers hold references. The TUI live path: single-copy content, resync served from memory.</p></div>
-      <div class="card"><h4>RecordStore <span class="badge def">html</span></h4><p><code>BV = RecordLocator</code> — <code>put</code> <em>renders</em> the block to its wire-format JSON record as the side effect. The Session <em>is</em> the projection.</p></div>
+      <div class="card"><h4>InMemoryStore <span class="badge def">default</span></h4><p>Committed blocks resident in RAM (<code>Bv = Block</code>).</p></div>
+      <div class="card"><h4>TierBStore</h4><p>(<code>engine/tier_b.rs</code>) Committed <em>content</em> serialized append-only to an off-heap buffer or an on-disk file; <code>Bv = Deferred { offset, size }</code>, a 12-byte locator. Reading a block back is a positional read + decode, dropped after use.</p></div>
+      <div class="card"><h4>ArcStore <span class="badge def">#84</span></h4><p>Committed blocks live behind <code>Arc</code> (<code>Bv = Arc&lt;Block&gt;</code>): the accumulator retains the authoritative copy, and handing a block to a reader is a refcount bump. The store behind the one-copy/source-of-truth principles (§8).</p></div>
+      <div class="card"><h4>…or the presentation's own</h4><p>The html crate's <code>RecordStore</code> renders each block to its wire record at <code>put</code> time (<code>Bv = RecordLocator</code> — the §7 showcase).</p></div>
     </div>
-    <div class="callout"><b>The showcase.</b> The live HTML server's committed zone is stored exactly
-      once — as rendered wire records. A <code>/pull</code> renders only the open turn; everything
-      committed is answered with a <code>{offset,&nbsp;len}</code> pointer that clients range-read
-      straight off the log. A thousand committed blocks and a three-block open turn cost a poll
-      three blocks of render and the client one <code>pread</code>. And because a wire record is a
-      one-way projection, <code>RecordStore</code> deliberately does <em>not</em> implement
-      <code>BlockRead</code> — the type system keeps every whole-session consumer off it.</div>
+    <p style="margin-top:18px">Incremental facts are maintained the same way:
+      <code>session_meta()</code> folds the live header (turns/tools/children) once per
+      committed block on drain, and <code>stream_read(from)</code> hands a live consumer
+      <code>committed[from..]</code> + the open turn — O(delta), never an O(N) rescan.</p>
   </section>
 
-  <section id="cache">
-    <div class="eyebrow">§5</div>
-    <h2>One data layer, both frontends</h2>
-    <p class="kicker"><code>SessionCache&lt;P,&nbsp;F,&nbsp;A&gt;</code> answers “which sessions exist,
-      which are materialized, in what representation, with what derived state attached” — and its
-      three parameters are the three choices a frontend makes without giving up generality
-      <em>or</em> efficiency.</p>
+  <section id="model">
+    <div class="eyebrow">§7</div>
+    <h2>The data model</h2>
+    <p class="kicker">The presenter-facing vocabulary lives in <code>model.rs</code>
+      (<code>claude-replay-engine</code>, re-exported by every layer above) and is the stable
+      public API.</p>
+    <ul class="clean">
+      <li><b><code>Block</code></b> — one render unit. Variants: <code>UserText</code>,
+        <code>AssistantText</code>, <code>Thinking { text, duration_secs, tools }</code>,
+        <code>ToolUse { name, target, diffs, output, patch, read_lines }</code>,
+        <code>ToolResult</code>, <code>Attachment</code>, <code>SubAgent</code>,
+        <code>AgentDone</code>, <code>Command</code>, <code>QueueEvent</code>. Tool results are
+        already joined onto their calls; nothing is dropped or truncated (what shows collapsed
+        is a <em>view</em> decision, not a parse decision).</li>
+      <li><b><code>Session&lt;BV = Block&gt;</code></b> — the whole parse: <code>{ agent, cwd,
+        blocks, user_times, metrics, index, tasks }</code>. Generic over the block
+        representation: <code>Session&lt;Block&gt;</code> is fully resident;
+        <code>Session&lt;Deferred&gt;</code> holds only the locator table (content in a tier-b
+        backing) and reads blocks back through the <code>BlockAccess</code> trait.</li>
+      <li><b><code>SessionIndex</code></b> — derived within-session rollups (turns, sub-agents,
+        tool counts, attachments) computed in one scan, so presenters don't re-walk the
+        blocks.</li>
+      <li><b><code>Metrics</code></b> — token/cost tally + a formatted footer.</li>
+      <li><b>Classification</b> — <code>block_kind(&amp;Block) -&gt; BlockKind</code>, projected
+        to a coarse <code>fold_key</code> (fold grouping — and the key of core's
+        <code>FoldPolicy</code>) and a fine <code>BlockKind::html</code> (styling). One
+        classifier, two projections — the TUI and HTML can't disagree on what a block
+        <em>is</em>.</li>
+    </ul>
+    <h3 id="showcase">Showcase: <code>Session&lt;BV&gt;</code> in the live HTML server</h3>
+    <p><b>The presentation layer decides what lives in <code>BV</code></b> — the block itself,
+      auxiliary per-block state the presentation needs, a pointer into a file the presentation
+      maintains, a deferred block locator, or any combination. The live server is the full
+      expression of that principle (#74): its <code>BlockStore</code> is the HTML crate's own
+      <code>RecordStore</code>, whose <code>put</code> renders each committed block to its
+      <b>wire-format JSON record</b> exactly once — as it crosses the durability frontier —
+      appends it to <code>&lt;id&gt;.records</code>, and returns the locator. The
+      <code>Session</code>'s committed table <em>is</em> the wire projection:</p>
+<pre>SharedSession&lt;RecordStore&gt;  <span class="c">(present, parameterized by the html crate)</span>
+  Session&lt;RecordLocator&gt;
+    committed: Vec&lt;RecordLocator{offset,len}&gt; ──▶  &lt;id&gt;.records
+                                                   <span class="c">(rendered wire JSON, one record per line —
+                                                    the ONLY committed storage)</span></pre>
+    <ul class="clean">
+      <li><b>One storage, one serialization.</b> Nothing is stored twice: there is no separate
+        block backing and no parallel render cache — the store and the session are one object,
+        so they cannot desync. Read-back is deliberately impossible (<code>RecordStore</code>
+        implements <code>BlockStore</code> but not <code>BlockRead</code> — a wire record is a
+        one-way projection), and the type system keeps every committed consumer on the pointer
+        path. The TUI/batch side instantiates the same parameter with <code>BV = Block</code>
+        (<code>InMemoryStore</code>); a lossless spill store (<code>TierBStore</code>,
+        <code>BV = Deferred</code>) remains available to any consumer that needs
+        <code>Block</code>s back.</li>
+      <li><b>Clients read the projection directly; the serving path burns no CPU on it.</b>
+        A <code>/pull</code> reply renders <b>only the open turn</b>; the committed zone is
+        answered with a pointer — <code>committed_ext: {offset, len}</code> — and the client
+        range-reads the wire JSON straight off <code>&lt;id&gt;.records</code> via
+        <code>/records</code>. The main serving function never re-renders, re-serializes, or
+        even copies committed content: a session with a thousand committed blocks and a
+        three-block open turn costs a poll three blocks of render and the client one
+        <code>pread</code>.</li>
+      <li><b>Hibernation carries the projection.</b> An evicted resident's sidecar stores the
+        locator table plus the store's render continuation (<code>EmitState</code>); restore
+        reopens the log read-only — no re-render, no re-fold, and outstanding client cursors
+        stay valid.</li>
+    </ul>
+  </section>
+
+  <section id="lean">
+    <div class="eyebrow">§8</div>
+    <h2>Lean memory: a ladder of representations, each windowed</h2>
+    <p class="kicker">The memory design is one idea applied five times: <b>every representation
+      is kept only as long, and only as wide, as its consumer needs</b>. Data climbs this
+      ladder, and each rung holds a <em>window</em>, not the session:</p>
+    <div class="stack" role="img" aria-label="The memory ladder from transcript bytes to rendered output, each rung windowed.">
+      <div class="rung"><span class="rn">transcript bytes</span><span class="rw">resident: none — the byte-offset tail reads deltas (agent's store, disk)</span></div>
+      <div class="rung"><span class="rn">canonical Message</span><span class="rw">resident: ~1 line's worth, transient (L1 decode, one line at a time)</span></div>
+      <div class="rung"><span class="rn">Block · open turn</span><span class="rw">resident: O(turn) in the accumulator (L2 fold, Replayer)</span></div>
+      <div class="rung hot"><span class="rn">Block · committed</span><span class="rw">resident: policy! InMemoryStore = RAM · TierBStore = 12-byte locators, content on disk · RecordStore = wire-record locators (#74) · ArcStore = Arc-shared content, ONE copy that the cache owns and every reader references (#84)</span></div>
+      <div class="rung"><span class="rn">presentation form</span><span class="rw">TUI: heights + prefix (O(N) small ints) · HTML: JSON records (client), record log (server) — via fold policy, summaries, records/lines</span></div>
+      <div class="rung"><span class="rn">rendered result</span><span class="rw">TUI: <code>hot</code> window ≈ 96 blocks near the viewport · HTML: DOM window ≈ viewport ± 1500px</span></div>
+    </div>
+    <p style="margin-top:22px">The windows at the top rung deserve emphasis, because both
+      frontends independently converged on the same structure — an O(N) <em>index</em> of cheap
+      integers plus an O(viewport) cache of expensive rendered output:</p>
+    <ul class="clean">
+      <li><b>TUI</b> (<code>view.rs</code>): <code>heights: Vec&lt;usize&gt;</code> (wrapped
+        height per block at the current width and fold state) + <code>prefix</code> sums make
+        scroll math a binary search — but <b>rendered styled lines are NOT retained per
+        block</b>. The only styled-line residency is <code>hot</code>, a bounded map (cap 96
+        blocks, evicted by distance from the viewport ± 8) filled on demand. A deliberate
+        asymmetry: <code>search_text</code> keeps plain text for ALL wrapped lines
+        (content-sized, cheap, and search must see everything) while styling stays
+        windowed.</li>
+      <li><b>HTML client</b> (<code>html/export.js</code>): the JSON <code>records[]</code>
+        array is the source of truth; the DOM holds only records within ~1500px of the viewport
+        between two spacer <code>&lt;div&gt;</code>s whose heights are estimated then measured
+        (prefix sums + binary search again). Eviction is lossless because interaction state
+        (folds, search cursor, expansions) lives in id-keyed maps beside the records,
+        re-applied on re-materialization. The full technique write-up:
+        <code>design/dom-virtualization.md</code>.</li>
+      <li><b>HTML server</b> (<code>serve.rs</code> + <code>cache/</code>): a followed session's
+        resident footprint is O(open turn) + a locator table — the <code>Session</code>'s own
+        <code>RecordStore</code> renders each committed block to its wire record put-once (#74,
+        §7 showcase), and the committed zone is served as a <b>pointer</b>
+        (<code>committed_ext: {offset, len}</code>) that clients range-read from the
+        append-only record log at their own pace (one serialization on disk, zero in RAM, N
+        readers).</li>
+    </ul>
+    <h3 id="cache">The unified data layer: <code>SessionCache&lt;P, A&gt;</code></h3>
+    <p>Five principles govern this layer (settled in #84, and worth stating because every seam
+      below follows from them): <b>(1)</b> at most ONE full in-memory presentation copy per
+      client application instance — it exists to make search fast, and search runs over it;
+      <b>(2)</b> the <code>SessionCache</code> owns the SOURCE OF TRUTH of that copy —
+      ownership, not storage medium: the TUI's is the RAM blocks the in-process view
+      references, the HTML server's is the on-disk wire-record log its browser clients resync
+      from; <b>(3)</b> therefore views never own blocks (else principle 1+2 would force a
+      wasteful disk mirror for the in-process case); <b>(4)</b> the presentation format is each
+      frontend's fastest-final-render form — <code>Block</code>s for the TUI, DOM-loadable wire
+      JSON for HTML — chosen at the <code>BlockStore</code> seam; <b>(5)</b> only FINAL
+      rendered results (and viewport neighbors) live under a view: the hot window / DOM window,
+      plus small derived indexes (geometry, fold state) in the aux sidecar.</p>
+    <p>Everything above meets in one owner. <code>SessionCache</code> is <b>the data layer a
+      presentation builds on</b> — it answers "which sessions exist, which are materialized, in
+      what representation, with what derived state attached" — and its two type parameters are
+      the two decisions a frontend gets to make without losing generality <em>or</em>
+      efficiency:</p>
     <div class="tblwrap"><table>
-      <thead><tr><th>protocol</th><th>shape</th><th>requires</th><th>committed copies</th><th>per tick</th></tr></thead>
+      <thead><tr><th>seam</th><th>decides</th><th>the menu</th></tr></thead>
       <tbody>
-        <tr><td><code>poll_view</code></td><td class="role">ONE call: <code>Arc</code> delta + chrome state</td><td><code>P = ArcStore</code></td><td><b>1 — cache-owned, view-referenced</b></td><td><b>O(delta)</b></td></tr>
-        <tr><td><code>pull</code> (cursor)</td><td class="role">zones + byte-range pointers</td><td>any <code>P</code></td><td>1 (0 in RAM w/ <code>RecordStore</code>)</td><td>O(open turn)</td></tr>
+        <tr><td><code>P: BlockStore</code></td><td class="role">the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles)</td><td class="role"><code>ArcStore</code> (cache-owned shared copy — the TUI) · the html crate's <code>RecordStore</code> (the wire projection itself, #74) · <code>TierBStore</code> (lossless spill)</td></tr>
+        <tr><td><code>A</code></td><td class="role">the per-session <b>presentation sidecar</b></td><td class="role">any type — park-and-take (<code>aux_put</code>/<code>aux_take</code>) or in-place (<code>aux_with</code>)</td></tr>
       </tbody>
     </table></div>
+    <p style="margin-top:14px">The residency tiers under it (#85: ONE live tier — the same
+      resident serves the in-process view and the wire protocol):</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>tier</th><th>holds</th><th>cost</th><th>transition</th></tr></thead>
+      <tbody>
+        <tr><td>(c) registered</td><td class="role">agent + path</td><td class="role">~nothing</td><td class="role">the default for a discovered-but-unopened session (a large sub-agent tree stays here)</td></tr>
+        <tr><td>(a) live resident</td><td class="role">a <code>SharedSession&lt;P&gt;</code></td><td class="role">O(turn) + tables (+ disk backing per <code>P</code>)</td><td class="role">polled recently; reaped to (c) after 30 s idle — a <code>PersistentStore</code> resident <b>hibernates</b> its serving state on eviction, so revisiting an <em>unchanged</em> session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:14px">And the consumption protocols, each matched to a representation
+      by the type system (a capability bound, not a convention):</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>protocol</th><th>shape</th><th>requires</th><th>copies of committed blocks</th><th>per-tick cost</th></tr></thead>
+      <tbody>
+        <tr><td><code>poll_view(id)</code> — in-process</td><td class="role">ONE call: advance + splice-shaped <code>Arc</code> delta + times/metrics/tasks</td><td><code>P = ArcStore</code></td><td><b>1 — cache-owned, view-referenced</b></td><td><b>O(delta)</b></td></tr>
+        <tr><td><code>shared_session(id)</code> + <code>pull</code> — wire</td><td class="role">cursor zones / byte-range pointers</td><td>any <code>P</code></td><td>1 (or 0 in RAM with <code>RecordStore</code>)</td><td>O(open turn)</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:14px">(Whole-<code>Session</code> consumers use the core's own
+      follower — <code>FollowParser::poll</code>/<code>poll_delta</code> — or batch
+      <code>parse_session</code>; the cache's job is live residency, and its two protocols
+      share one resident and ONE implementation of "what changed since last tick".)</p>
+    <p>Both frontends instantiate the same type — that is the "unified without losing
+      generality" claim made concrete:</p>
 <div class="duo">
-<pre><span class="c">// the TUI's instantiation (app.rs)</span>
+<pre><span class="c">// TUI (app.rs): the View is the sole block</span>
+<span class="c">// owner; evicted frames park derived state</span>
 <span class="k">type</span> TuiCache = SessionCache&lt;
     ArcStore,       <span class="c">// cache owns; View references</span>
     ViewSidecar,    <span class="c">// evicted frames park heights,</span>
 &gt;;                  <span class="c">//   folds, scroll — warm reloads</span></pre>
-<pre><span class="c">// the HTML server's (serve.rs)</span>
+<pre><span class="c">// HTML server (serve.rs): committed IS the wire</span>
+<span class="c">// projection; per-id serve state lives in aux</span>
 cache: SessionCache&lt;
     RecordStore,    <span class="c">// committed IS the wire form</span>
-    ServeAux,       <span class="c">// titles · parents · render reuse</span>
+    ServeAux,       <span class="c">// titles · parents · baselines</span>
 &gt;</pre>
 </div>
-    <p style="margin-top:14px">The <b>aux slot</b> is the third seam: a per-session home for derived,
-      view-parameter-<em>dependent</em> state that put-once storage can’t hold. The TUI parks an
-      evicted frame’s measured geometry and interaction state there and re-adopts it on return —
-      same width and shape means no re-measure, and your fold/scroll state survives. The cache
-      stays opaque; <b>the consumer owns validity</b>.</p>
+    <p style="margin-top:14px">The <b>sidecar slot</b> (#75) completes the story: it is the home
+      for derived, view-parameter-<em>dependent</em> state that <code>put</code>-once storage
+      can't hold. The TUI parks an evicted frame's measured heights/prefix, search index, fold
+      toggles, and scroll there (<code>ViewSidecar</code>) and re-adopts them when the frame
+      reloads — same width and shape means no re-measure, and the user's interaction state
+      survives the eviction. The HTML server keeps its per-session titles, parent pointers, and
+      stream-diff baselines there (<code>ServeAux</code>, #76). The slot is opaque to the
+      cache; <b>the consumer owns validity</b>.</p>
+    <p>The TUI applies the same thinking one level up: sub-agent frames you drill into are kept
+      under an LRU cap of 4 (<code>MAX_RESIDENT_SUBAGENTS</code>); ancestors evict to
+      registrations and reload on demand — with the sidecar, an eviction now drops only the
+      blocks.</p>
   </section>
 
-  <section id="lean">
-    <div class="eyebrow">§6</div>
-    <h2>Lean, twice over</h2>
-    <p class="kicker"><b>Memory</b> is one idea applied at every level: each representation lives
-      only as long, and only as wide, as its consumer needs. <b>CPU</b> is two ideas: borrowed
-      threads, and delta-only protocols.</p>
-    <div class="stack" role="img" aria-label="The memory ladder from transcript bytes to rendered output, each rung windowed.">
-      <div class="rung"><span class="rn">transcript bytes</span><span class="rw">resident: none — a byte-offset tail reads only deltas</span></div>
-      <div class="rung"><span class="rn">canonical Message</span><span class="rw">~one line's worth, transient</span></div>
-      <div class="rung"><span class="rn">Block · open turn</span><span class="rw">O(turn) in the accumulator</span></div>
-      <div class="rung hot"><span class="rn">Block · committed</span><span class="rw">your store's choice: RAM · disk locators · rendered wire records · handed off entirely</span></div>
-      <div class="rung"><span class="rn">presentation form</span><span class="rw">TUI: heights + prefix sums (O(N) small ints) · HTML: JSON records + an on-disk record log</span></div>
-      <div class="rung"><span class="rn">rendered result</span><span class="rw">TUI: ~96 styled blocks near the viewport · HTML: DOM window of viewport ± 1500px</span></div>
-    </div>
-    <ul class="clean" style="margin-top:22px">
-      <li><b>No thread waits for work.</b> The TUI tails on its input loop's idle tick; the HTML
-        server folds on the <em>client's request thread</em> — an idle page is an idle server, and a
-        closed page costs nothing after the 30&nbsp;s reap (evicted residents hibernate and restore
-        without re-folding).</li>
-      <li><b>Every consumer speaks deltas.</b> In-process, <code>poll_view</code> hands the view
-        <code>Arc</code> clones of each committed block with an O(turn) <code>changed_from</code> —
-        one call carries the delta AND the chrome state; content stored once, cache-owned,
-        search runs over it. One resident kind serves this and the wire protocol (#85). Cross-process, the 4-tuple
-        cursor travels with each request, so the server is per-client stateless — N windows read one
-        shared log at their own pace. Both halves of that protocol ship in Rust
-        (<code>pull</code> / <code>PullClient</code>), and the pull client is the executable spec the
-        embedded JS mirrors.</li>
-      <li><b>Refactors can't drift.</b> The streaming parse is pinned byte-identical to frozen
-        oracles, the follower to a full re-parse at every append, and every change runs a
-        frozen-fixture gate that must print <code>BYTE-IDENTICAL: PASS</code>.</li>
-    </ul>
-  </section>
-
-  <section id="extend">
-    <div class="eyebrow">§7</div>
-    <h2>Adding an agent</h2>
-    <p class="kicker">Everything that varies by agent sits behind one trait
-      (<code>TranscriptAdapter</code>) in a tiny registry. A new agent is three small files and one
-      impl — the shared engine is never touched. Calibrate by the three that exist: Claude (full),
-      Codex (no sub-agent tree), QoderWork (its format matches Claude's, so its whole adapter is
-      discovery plus a sniff — <em>zero</em> new parsing code).</p>
-    <ol class="steps">
-      <li><b>agent.rs</b> <span class="d">— add the variant and its labels.</span></li>
-      <li><b>gemini_model.rs</b> <span class="d">— the decoder: raw lines → canonical messages, plus a 4-hook <code>Shaping</code>. You are writing a decoder, not a parser.</span></li>
-      <li><b>gemini_metrics.rs</b> <span class="d">— a small token/cost accumulator.</span></li>
-      <li><b>gemini_discover.rs</b> <span class="d">— where its transcripts live on disk (home-scoped, like the rest).</span></li>
-      <li><b>adapter.rs</b> <span class="d">— one <code>impl TranscriptAdapter</code> row; <code>sniff</code> returns <em>ownership</em> (Owns / CanParse / No), so a merely-compatible file is labeled, never mislabeled.</span></li>
-    </ol>
-    <p style="margin-top:18px">Detection, the picker, live following, both frontends, and the
-      byte-identical equivalence gates pick the new agent up with no further changes.</p>
-  </section>
-
-  <section id="reference">
-    <div class="eyebrow">§8</div>
-    <h2>Where to go deeper</h2>
+  <section id="protocol">
+    <div class="eyebrow">§9</div>
+    <h2>The sync protocol: a 4-member cursor</h2>
+    <p class="kicker">The wire half of the data layer is a client-server sync protocol designed
+      so the <b>server keeps no per-client state</b>: the client's whole position travels with
+      each request as four numbers — <code>Cursor { epoch, committed_id, provisional_gen,
+      provisional_index }</code>:</p>
     <ul class="clean">
-      <li><b>The written narrative</b> — <code>docs/architecture.md</code> (this page's maintained source)
-        and <code>docs/developer-guide.md</code> (hands-on; also rendered as
-        <a href="developer-guide.html">developer-guide.html</a>).</li>
-      <li><b>The encyclopaedia</b> — rustdoc over all five crates, including internals:</li>
+      <li><b><code>committed_id</code></b> — how far into the append-only committed log the
+        client has read. Committed content is sent once, ever — and as a <b>byte-range
+        pointer</b> into the on-disk wire-record log, which the client range-reads itself.</li>
+      <li><b><code>provisional_gen</code> / <code>provisional_index</code></b> — the open turn's
+        <em>generation</em> and the client's position within it. Within a generation the served
+        open turn is append-only; a back-patch or a finalization reshape bumps the gen, telling
+        the client to replace the whole (small) zone. This is the reshape-detection invariant
+        from §5 surfacing on the wire.</li>
+      <li><b><code>epoch</code></b> — session validity: a truncation/rewrite bumps it, and any
+        stale cursor resyncs from zero — served from the cache's retained copy, never by
+        re-parsing.</li>
     </ul>
+    <p style="margin-top:16px">The client applies one rule per zone — <em>truncate to
+      <code>from</code>, then extend</em> — and both halves ship in Rust: <code>pull</code>
+      (server) and <code>PullClient</code> (the executable specification, walked through every
+      transition by its tests; the embedded JS client mirrors it one for one). N windows, laggy
+      tabs, and fresh joiners all work against one shared log at their own pace.</p>
+  </section>
+
+  <section id="cpu">
+    <div class="eyebrow">§10</div>
+    <h2>Lean CPU: borrowed threads and delta-only protocols</h2>
+    <p class="kicker"><b>No dedicated work happens when nothing changed, and almost no thread
+      exists solely to wait.</b> Two mechanisms:</p>
+    <h3>Borrowed-thread tailing</h3>
+    <p>Neither frontend runs a follower thread:</p>
+    <ul class="clean">
+      <li>The <b>TUI</b> pumps the live tail on its <em>input event loop</em>: when
+        <code>event::poll(250 ms)</code> times out with no keystroke, the idle tick calls
+        <code>cache.poll_view(id)</code> — so tailing costs zero threads and zero work while
+        the user is interacting flat-out, and at most 4 polls/s idle.</li>
+      <li>The <b>HTML server</b> (pull mode, the default) has <b>no background tailer at
+        all</b>: the fold advances on the <em>client's request thread</em> (<code>/pull</code>
+        → <code>SharedSession.advance()</code> → reply). An idle page = an idle server; a
+        closed page costs nothing until the 30 s reap tidies the resident. The accept loop is
+        one detached thread; connections are thread-per-request on loopback.</li>
+    </ul>
+    <h3>Delta-only protocols, at both distances</h3>
+    <p>The committed/open split (§5) makes "what changed?" answerable in O(turn), and both
+      consumption protocols exploit it:</p>
+    <ul class="clean">
+      <li><b>In-process:</b> <code>SharedSession::poll_view</code> hands the TUI everything in
+        ONE call — a splice-shaped delta of <code>Arc</code> clones (the resident RETAINS the
+        authoritative committed vector — the cache-owned source of truth), the fresh open turn,
+        <code>changed_from</code>, and the chrome state (times/metrics/tasks).
+        <code>View::apply_view</code> splices pointers in place and re-derives only the tail:
+        O(delta) refcount bumps and re-measure, content stored ONCE, resync-from-zero served
+        from memory (#84/#85). The change boundary and the wire protocol's gen bumps come from
+        the SAME reshape comparison — one implementation.</li>
+      <li><b>Cross-process:</b> the <b>4-tuple cursor protocol</b> (<code>present::pull</code>)
+        — <code>Cursor { epoch, committed_id, provisional_gen, provisional_index }</code>. The
+        cursor travels with each request, so the server is <b>per-client stateless</b> and N
+        tabs/windows each read at their own pace; committed data is a pure append (sent once,
+        or range-read from the record log), and only the open turn ever re-sends (gen bump).
+        Both halves are implemented in Rust: <code>pull</code> (server) and
+        <code>PullClient</code> (client — the executable specification the JS client mirrors
+        transition-for-transition, and the ready-made consumer for a future decoupled TUI). A
+        caught-up client's pull is idle: one <code>pull_indices</code> length-check, no clone,
+        no render.</li>
+    </ul>
+    <p style="margin-top:16px">The same discipline shows up smaller: <code>put</code>-once into
+      the block store (never re-serialize committed content); <code>session_meta</code> folded
+      per commit rather than rescanned; the HTML emitter diffs block lines and re-sends only
+      from the first divergence; the DOM reconciler batches reads/writes to avoid layout
+      thrash.</p>
+  </section>
+
+  <section id="invariants">
+    <div class="eyebrow">§11</div>
+    <h2>Invariants the codebase holds itself to</h2>
+    <ul class="clean">
+      <li><b>Crate boundaries</b> — the §2 table is enforced by the dependency graph, not
+        review.</li>
+      <li><b>Agent-agnostic everything above L1</b> — no presenter or shared-engine code matches
+        on <code>Agent</code> for behavior; it routes through the adapter registry.</li>
+      <li><b>Byte-identical refactors</b> — the streaming parse is proven identical to frozen
+        oracles (<code>#[cfg(test)]</code> equivalence gates in
+        <code>claude-replay-agents</code>' <code>model</code> families), the follower to a full
+        re-parse at every append, and every change runs <code>scripts/gate/gate.sh</code> — a
+        frozen-fixture <code>--dump</code>/<code>--dump-html</code>/bundle diff that must print
+        <code>BYTE-IDENTICAL: PASS</code>.</li>
+      <li><b>One classifier / one fold / one phrasing</b> — block classification, the L2 fold,
+        and the summary vocabulary (the engine's <code>summary.rs</code>, re-exported as
+        <code>core::summary</code>) exist once; per-agent difference lives only in
+        <code>decode_line</code> + <code>Shaping</code> (see
+        <code>design/fold-coalesce-summarize-extensibility.md</code>).</li>
+      <li><b>Protocol equivalence</b> — <code>SharedSession</code> pulls are asserted identical
+        across storage backings (RAM vs tier-b), and <code>PullClient</code> is walked through
+        every protocol transition against the server half.</li>
+    </ul>
+  </section>
+
+  <section id="map">
+    <div class="eyebrow">§12</div>
+    <h2>Where things live</h2>
+    <div class="tblwrap"><table>
+      <thead><tr><th>path</th><th>what</th></tr></thead>
+      <tbody>
+        <tr><td><code>claude-replay-engine/src/model.rs</code></td><td class="role"><code>Block</code> model + classification</td></tr>
+        <tr><td><code>claude-replay-engine/src/engine/replay.rs</code></td><td class="role">L2 <code>Replayer</code>/<code>Shaping</code> (+ the frozen <code>replay</code> reference driver)</td></tr>
+        <tr><td><code>claude-replay-engine/src/engine/builder.rs</code></td><td class="role"><code>SessionAccumulator</code> (sans-io fold) + <code>StreamRead</code></td></tr>
+        <tr><td><code>claude-replay-engine/src/engine/{message,session,index,tasks,tier_b,reader,path,time}.rs</code></td><td class="role">canonical log · <code>Session&lt;BV&gt;</code>/<code>BlockStore</code>/<code>BlockAccess</code>/<code>ArcStore</code> · rollups · task model · tier-b backing · byte-offset line reader (tail + resume) · helpers</td></tr>
+        <tr><td><code>claude-replay-engine/src/adapter.rs</code></td><td class="role">the <code>TranscriptAdapter</code> trait + <code>SniffClaim</code> (the contract — the registry lives in the facade)</td></tr>
+        <tr><td><code>claude-replay-engine/src/engine/seam.rs</code></td><td class="role">the audited adapter contract — all adapter code may import (#87)</td></tr>
+        <tr><td><code>claude-replay-engine/src/{discover,metrics,follow,agent,fold,summary,diff}.rs</code></td><td class="role">discovery vocabulary · metrics · live follower · the open <code>Agent</code> id · fold policy · span phrasing · diff-row model</td></tr>
+        <tr><td><code>claude-replay-agents/src/agents/{claude,codex}/model.rs</code></td><td class="role">L1 tokenizers + <code>Shaping</code></td></tr>
+        <tr><td><code>claude-replay-agents/src/agents/{claude,codex}/metrics.rs</code></td><td class="role">token/cost folding</td></tr>
+        <tr><td><code>claude-replay-agents/src/agents/{claude,codex,qoderwork}/discover.rs</code></td><td class="role">per-agent transcript stores</td></tr>
+        <tr><td><code>claude-replay-agents/src/adapters.rs</code></td><td class="role">the built-in <code>TranscriptAdapter</code> impls + the <code>REGISTRY</code> slice</td></tr>
+        <tr><td><code>claude-replay-agents/src/agents/mod.rs</code></td><td class="role">the family tree + the <code>agents_import_only_the_seam</code> audit</td></tr>
+        <tr><td><code>claude-replay-agents/tests/engine_integration.rs</code></td><td class="role">machinery-with-real-adapters integration tests (a dev-dep cycle would compile two engines inside engine)</td></tr>
+        <tr><td><code>claude-replay-core/src/{adapter,discover,session_entry,transcript}.rs</code></td><td class="role">the wired <code>adapter()</code>/<code>adapters()</code> registry · registry-driven discovery · the <code>parse_session*</code> dispatchers · the <code>Transcript</code> source handle</td></tr>
+        <tr><td><code>claude-replay-present/src/cache/{mod,shared}.rs</code></td><td class="role"><code>SessionCache</code> residency · <code>SharedSession</code> (+hibernation)</td></tr>
+        <tr><td><code>claude-replay-present/src/pull.rs</code></td><td class="role">the pull protocol (<code>Cursor</code>/<code>PullReply</code>/<code>pull</code>/<code>PullClient</code>) (#87)</td></tr>
+        <tr><td><code>claude-replay-present/src/{present,highlight,sys,args}.rs</code></td><td class="role">text formatters · syntect highlighter (<code>HlSpan</code>) · OS/path helpers · shared <code>Args</code> (<code>cli</code> feature)</td></tr>
+        <tr><td><code>claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs</code></td><td class="role">the terminal viewer</td></tr>
+        <tr><td><code>claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs</code> + <code>src/html/</code></td><td class="role">HTML render core · offline writers · live server · the wire-projection <code>RecordStore</code> (#74) · embedded CSS/JS</td></tr>
+        <tr><td><code>src/jdi/</code></td><td class="role">the <code>agent-jdi</code> supervisor (see <code>src/jdi/DESIGN.md</code>)</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:18px">For the exhaustive per-object reference across all seven crates
+      (internals included):</p>
 <pre>cargo apidoc --open
 <span class="c"># alias for: cargo doc --workspace --no-deps --document-private-items</span></pre>
   </section>

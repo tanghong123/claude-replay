@@ -23,7 +23,7 @@ cargo test  --workspace       # deterministic; every crate; no terminal needed
 ```sh
 cargo fmt --check
 cargo clippy --all-targets    # no new warnings
-cargo test                    # workspace default-members = all five crates
+cargo test                    # workspace default-members = all seven crates
 scripts/gate/gate.sh          # byte-identical frozen-fixture diff → must print PASS
 ```
 
@@ -32,7 +32,8 @@ bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, defa
 `/tmp/sc-gate`). Engine refactors must be output-preserving; intentional output changes are
 verified line-by-line and re-baselined — see [`scripts/gate/README.md`](../scripts/gate/README.md).
 Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`parse_lines`
-oracles (`#[cfg(test)]` equivalence gates in the `agents/{claude,codex}/model.rs` families).
+oracles (`#[cfg(test)]` equivalence gates in `claude-replay-agents`'
+`agents/{claude,codex}/model.rs` families).
 
 ## 2. Testing a TUI with no terminal
 
@@ -52,11 +53,12 @@ terminal". Three levels:
 
 ## 3. The crates and their responsibilities
 
-Pick your dependency by the job (details: [Architecture §2](architecture.md#2-the-workspace-five-crates-three-levels-of-reuse)):
+Pick your dependency by the job (details: [Architecture §2](architecture.md#2-the-workspace-four-layers-seven-crates)):
 
 | you want to… | depend on | you get |
 |---|---|---|
 | analyze transcripts (stats, ETL, CI checks) | `claude-replay-core` | parse/follow/discover, `Block`/`Session`/`Metrics` — deps: `serde_json` + `anyhow` |
+| bring your own agent set | `claude-replay-engine` | the agent-free machinery + `TranscriptAdapter` + the `seam` — you supply the adapters and the registry slice (the built-ins live in `claude-replay-agents`) |
 | build your own frontend | + `claude-replay-present` | `SessionCache`, the pull protocol (both halves), fold policy, summaries, highlighting, `Args` |
 | embed the existing UIs | + `claude-replay-tui` / `claude-replay-html` | the terminal viewer / the HTML exporter + live server |
 
@@ -82,9 +84,9 @@ For anything incremental — or any I/O the library shouldn't dictate — drop o
 **sans-io [`SessionAccumulator`]** and push lines yourself:
 
 ```rust
-use claude_replay_core::{engine::SessionAccumulator, Agent};
+use claude_replay_core::{adapter, engine::SessionAccumulator, Agent};
 
-let mut acc = SessionAccumulator::new(Agent::Claude);
+let mut acc = SessionAccumulator::new(adapter(Agent::CLAUDE));
 let mut offset = 0u64;
 for line in my_source_of_lines() {            // a file, a socket, a decompressor, a test
     acc.advance_at(offset, &line);            // one line resident at a time
@@ -95,13 +97,16 @@ println!("committed {} blocks, {} in the open turn",
 let session = acc.snapshot();
 ```
 
-This is not a side door — it is the *only* fold in the workspace. Batch parsing feeds it from
+This is not a side door — it is the *only* fold in the workspace. The engine's constructors
+take the adapter itself (`&'static dyn TranscriptAdapter`); the facade's
+`adapter(agent)` curries the id, and `Transcript::open(agent, path).follow()` hides even
+that. Batch parsing feeds the fold from
 a file reader; the live [`FollowParser`] feeds it appended bytes each `poll()`
-(`FollowParser::open(agent, path)` bundles the byte-offset tail + the accumulator, and
+(`FollowParser::open(adapter, path)` bundles the byte-offset tail + the accumulator, and
 `poll_delta()` additionally reports `changed_from`, the first index that differs — O(turn),
 not O(session)). Two performance levers worth knowing:
 
-- **Storage injection:** `SessionAccumulator::with_store(agent, TierBStore::file(path)?)`
+- **Storage injection:** `SessionAccumulator::with_store(adapter, TierBStore::file(path)?)`
   spills committed block *content* to disk as it folds — RAM stays O(open turn) + a
   12-byte-per-block locator table. `snapshot()` then yields a `Session<Deferred>`; read
   blocks back through the `BlockAccess` trait. This is one instance of the **`BlockStore`
@@ -119,7 +124,7 @@ cargo run -p claude-replay-core --example parse -- <transcript.jsonl> [--follow]
 
 ### The API reference (auto-generated, always in sync)
 
-For the **exhaustive per-object reference** across all five crates, use rustdoc — generated
+For the **exhaustive per-object reference** across all seven crates, use rustdoc — generated
 from source + doc comments, so it never drifts:
 
 ```sh
@@ -143,25 +148,25 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
 | `present` + core's `summary` | spawn chips, edit summaries, tool display names, activity/turn phrasing — the *voice* of the product | TUI `render.rs` and the HTML emitter, so wording can't drift |
-| `highlight` | syntect highlighting returning spans (ratatui types, no terminal backend) | TUI styles them directly; the HTML exporter adapts them to `<span>`s |
+| `highlight` | syntect highlighting returning toolkit-neutral `HlSpan`s (text + xterm-256 color index — no ratatui dep) | the TUI maps them to ratatui spans; the HTML exporter to `<span>`s |
 | `sys` | `deduce_stem`, `reveal_in_file_manager` | the dump stem + the ⏎-on-a-path affordance in both UIs |
 | `SessionCache` aux slot | per-session **presentation sidecar** — derived view state (put-once can't hold it; the consumer owns validity) | the TUI parks evicted frames' `ViewSidecar` (heights, search index, folds, scroll) and re-adopts on reload |
 | `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
-tick, never spawn a follower thread — and with the `ArcStore` follow tier (#84), the cache
+tick, never spawn a follower thread — and with an `ArcStore` live store (#84/#85), the cache
 retains the ONE authoritative copy of the blocks while your view holds `Arc` references
 (a tick costs O(delta) refcount bumps; a resync-from-zero is served from memory):
 
 ```rust
-type MyCache = SessionCache<TierBStore /*pull: unused*/, ArcStore, MySidecar>;
+type MyCache = SessionCache<ArcStore, MySidecar>;
 let cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
         if let Some(Ok(d)) = cache.poll_view(&id) {
             // splice: keep [0..frontier), append Arc clones of d.committed_delta +
-            // d.provisional, re-derive from d.changed_from — see View::apply_arc
+            // d.provisional, re-derive from d.changed_from — see View::apply_view
             view.splice(d);
         }
     }
@@ -265,36 +270,40 @@ the two frontends (`src/lib.rs::run_viewer`).
 
 ## 7. Adding an agent
 
-The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
-agent is **a `model` / `metrics` / `discover` family under `agents/<agent>/` + one `impl TranscriptAdapter` row**
-— the shared engine is never touched. Calibrate the cost by the three existing adapters:
+The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new agent is **an
+`impl TranscriptAdapter` over `claude-replay-engine`'s `seam`** — either in your own crate
+with your own registry slice, or (for a built-in) a `model` / `metrics` / `discover` family
+under `claude-replay-agents/src/agents/<agent>/` + one `REGISTRY` row. The shared engine is
+never touched. Calibrate the cost by the three existing adapters:
 Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
 Claude's decoder wholesale — its whole adapter is discovery + a `sniff`). Say we're adding
-`Gemini`.
+`Gemini` as a built-in.
 
-### Step 1 — register the agent
+### Step 1 — mint the agent id
 
-Add the variant + labels in `claude-replay-core/src/agent.rs`:
+`Agent` is an open interned id, not an enum — nothing to extend, nothing to fork:
 
 ```rust
-pub enum Agent { Claude, Codex, QoderWork, Gemini }
-// …extend label() / from_label() with "gemini".
+const GEMINI: Agent = Agent::new("gemini");   // the id doubles as the display label
 ```
+
+(The three built-ins are `Agent::CLAUDE`/`CODEX`/`QODERWORK`, associated constants on the
+same type — `claude-replay-engine/src/agent.rs`.)
 
 ### Step 2 — Layer 1: the decoder (`agents/gemini/model.rs`)
 
 The only place that knows Gemini's raw line format. Provide:
 
 - **`decode_line(line, cwd, out)`** — map one raw JSONL line to 0+ canonical
-  [`Message`](../claude-replay-core/src/engine/message.rs)s. Thread `cwd` across lines if the
+  [`Message`](../claude-replay-engine/src/engine/message.rs)s. Thread `cwd` across lines if the
   format carries it in a header.
-- **`scan_join_ids(lines)`** — the pass-1 pre-scan: collect the tool-call ids a later result
-  joins onto (reuse `engine::replay::scan_ids`).
 - **`GEMINI_SHAPING: Shaping`** — the four L2 hooks: `build_tool` (raw tool fields → a
   `Block`, including tool-name normalization onto the canonical vocabulary — this is what
   makes the shared summaries/folding classify your agent correctly), `join_result`,
   `keep_orphan`, `finish_turns` (`coalesce_spans` for Claude-style grouping, or identity).
-  Model it on `agents/codex/model.rs` (the simpler one). Import only from `crate::engine::seam` — the audited adapter contract (#87).
+  Model it on `agents/codex/model.rs` (the simpler one). Import only from
+  `claude_replay_engine::seam` — the audited adapter contract, enforced by the
+  `agents_import_only_the_seam` test (#87).
 
 > Everything else about parsing — the fold, back-patching, turn grouping, the queue
 > lifecycle, streaming, the live follower — is shared and already done. You are writing a
@@ -309,13 +318,13 @@ See `agents/codex/metrics.rs`.
 
 Where Gemini keeps its transcripts. Provide `candidates_scoped(cwd)` — scope with
 `discover::ancestors_below(cwd, home)`: auto-discovery must stay strictly inside `$HOME`
-(see [Architecture §9](architecture.md#9-discovery)) — and `resolve_id(id)`. If Gemini has
+(see [Architecture §4](architecture.md#discovery-precisely)) — and `resolve_id(id)`. If Gemini has
 sub-agents, also `subagent_source`; if it records a task list, `load_tasks`.
 
-### Step 5 — wire it up (`adapter.rs`)
+### Step 5 — wire it up (`adapters.rs`)
 
 Implement `TranscriptAdapter` for a `GeminiAdapter` unit struct delegating to the modules
-above. Two hooks deserve thought:
+above (`claude-replay-agents/src/adapters.rs`). Two hooks deserve thought:
 
 ```rust
 fn sniff(&self, head: &Value) -> SniffClaim {
@@ -329,9 +338,11 @@ fn store_contains(&self, path: &Path) -> bool {
 }
 ```
 
-Then add the one registry row in `adapter()`/`adapters()` and declare the modules in
-`lib.rs`. Discovery, detection, the picker, the follower, and both frontends pick the agent
-up with no further changes.
+Then add the adapter to the `REGISTRY` slice and declare the family in `agents/mod.rs`.
+(A third-party agent skips this crate entirely: the same impl in your own crate, and your
+own slice handed to the engine's entry points in place of the facade's
+`adapters()`.) Discovery, detection, the picker, the follower, and both frontends pick the
+agent up with no further changes.
 
 ### Step 6 — test it
 
@@ -342,7 +353,7 @@ up with no further changes.
 
 ## 8. Repo conventions
 
-- **Layout & module map:** [Architecture §11](architecture.md#11-where-things-live).
+- **Layout & module map:** [Architecture §12](architecture.md#12-where-things-live).
 - **Design notes** for specific subsystems live under `design/` — e.g. the CC span rules
   (`cc-activity-coalescing.md`), the fold/coalesce/summarize extensibility study, the DOM
   virtualization technique — and `src/jdi/DESIGN.md` for the supervisor.
@@ -350,9 +361,9 @@ up with no further changes.
   check for drift.
 - One workspace version: bump `[workspace.package] version` in the root `Cargo.toml` only.
 
-[`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
-[`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`Metrics`]: ../claude-replay-core/src/metrics.rs
+[`SessionAccumulator`]: ../claude-replay-engine/src/engine/builder.rs
+[`FollowParser`]: ../claude-replay-engine/src/follow.rs
+[`Metrics`]: ../claude-replay-engine/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
 [`PullClient`]: ../claude-replay-present/src/pull.rs

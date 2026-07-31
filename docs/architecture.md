@@ -37,11 +37,15 @@ Two design goals shape everything below:
    threads (§10). A live session with a million-line transcript costs O(open turn) RAM on the
    server and O(viewport) rendered state in either frontend.
 
-## 2. The workspace: four layers, five crates
+## 2. The workspace: four layers, seven crates
 
 ```
-layer 1 · ENGINE          claude-replay-core      sans-io: parse, fold, follow, discover
-                                  ▲
+layer 1 · ENGINE          claude-replay-engine    the agent-FREE machinery: model, fold,
+          (three crates,          ▲               sessions/stores, follower, the adapter seam
+          one seam)       claude-replay-agents    the built-in adapter families (claude/
+                                  ▲               codex/qoderwork) + the REGISTRY slice
+                          claude-replay-core      the FACADE: machinery wired to the registry
+                                  ▲               — parse, follow, discover, one API
 layer 2 · PRESENTATION    claude-replay-present   session cache, sync protocol, text/highlight
           SUPPORT                 ▲                helpers, the shared Args — frontend-agnostic
                              ┌────┴────┐
@@ -55,8 +59,10 @@ Each boundary is a **compiler-enforced invariant**, not a convention:
 
 | crate | may depend on | must NOT contain |
 |---|---|---|
-| `claude-replay-core` | `serde`/`serde_json`, `anyhow` | any I/O policy, ratatui, syntect, clap, HTML |
-| `claude-replay-present` | core (+ syntect; ratatui *types only*, no backend) | a terminal, an HTTP server, clap (unless the `cli` feature is on) |
+| `claude-replay-engine` | `serde`/`serde_json`, `anyhow` | any adapter implementation, any I/O policy, ratatui, syntect, clap, HTML |
+| `claude-replay-agents` | engine — and only through `seam` (audited, §4) | machinery internals, presentation deps |
+| `claude-replay-core` | engine + agents | any TUI/HTML/CLI dep — the same ceiling the old single core crate had |
+| `claude-replay-present` | core + syntect (the highlighter returns toolkit-neutral `HlSpan`s — no ratatui) | a terminal, an HTTP server, clap (unless the `cli` feature is on) |
 | `claude-replay-tui` | core + present + ratatui/crossterm | HTML |
 | `claude-replay-html` | core + present | any terminal dep (verified: zero crossterm/nucleo/arboard in its tree) |
 
@@ -71,6 +77,10 @@ examples in the [Developer Guide §4–6](developer-guide.md)):
 3. **The finished presenters** — embed the TUI (`app::run`, or drive `View` directly) or the
    HTML exporter/server (`dump_html`/`dump_all_html`/`serve`) from your own binary.
 
+(A fourth, outermost story exists for **agent authors**: build on `claude-replay-engine`
+alone — implement `TranscriptAdapter` against its `seam` and bring your own registry slice —
+without compiling any built-in adapter. §4 spells it out.)
+
 Internally, each crate re-exports the layers below it at its own root (`crate::model`,
 `crate::present`, …) — the same transparency trick at every boundary, so moved code reads as
 if the split weren't there. One workspace version, bumped in one place.
@@ -78,20 +88,26 @@ if the split weren't there. One workspace version, bumped in one place.
 ## 3. The pipeline
 
 Everything in the workspace is a stage on one data path (or a cache beside it). The colors
-map stages to layers — <span style="color:#b9741f">**engine**</span> (core),
+map stages to crates — <span style="color:#b9741f">**engine**</span>
+(`claude-replay-engine`, the shared machinery),
+<span style="color:#d29a4a">**agents**</span> (`claude-replay-agents`, the per-agent L1 —
+deliberately a shade of the engine's color: same layer, the pluggable half),
 <span style="color:#3f9163">**presentation support**</span> (present),
 <span style="color:#7a5bd0">**frontends**</span> — loosely: a stage's *machinery* lives in
-that layer even where its types come from below. The dashed back-edge is what makes
+that crate even where its types come from below. Stage ⓪'s registry-driven discovery is the
+**core facade**'s (`claude-replay-core`) — the third crate of the engine layer, which wires
+the other two together. The dashed back-edge is what makes
 sub-agent trees work: a parsed session can name further raw transcripts, which run the same
 pipeline recursively.
 
 ```mermaid
 flowchart TB
   classDef engine fill:#f5ead9,stroke:#b9741f,color:#4a3812
+  classDef agents fill:#faf3e3,stroke:#d29a4a,color:#4a3812
   classDef support fill:#e2f0e8,stroke:#3f9163,color:#1d3c2b
   classDef front fill:#e9e3f8,stroke:#7a5bd0,color:#2d2352
   RAW["raw JSONL transcript(s)<br/>(the agent's own on-disk store)"]
-  MSG["canonical Message stream"]:::engine
+  MSG["canonical Message stream"]:::agents
   BLK["Block stream<br/>(committed ++ open turn)"]:::engine
   SES["Session<br/>{ blocks, index, metrics, tasks }"]:::engine
   CACHE["SessionCache<br/>(the live data layer)"]:::support
@@ -113,8 +129,8 @@ flowchart TB
 
 | stage | contract | code |
 |---|---|---|
-| ⓪ discover | find transcripts by path / id / cwd — and resolve a `SubAgent` block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside `$HOME`. | `core::discover` |
-| ① decode | one raw line → 0+ canonical `Message`s; the only stage that knows an agent's field names ("L1") | `TranscriptAdapter::decode_line` |
+| ⓪ discover | find transcripts by path / id / cwd — and resolve a `SubAgent` block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside `$HOME`. | `core::discover` (registry-driven, in the facade) |
+| ① decode | one raw line → 0+ canonical `Message`s; the only stage that knows an agent's field names ("L1") | `TranscriptAdapter::decode_line` (each family in `claude-replay-agents`) |
 | ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — §5 below | `engine::replay::Replayer` + per-agent `Shaping` |
 | ③ accumulate | the durability frontier: finished turns drained *put-once* into a `BlockStore`; index, metrics and tasks folded alongside — §6 below | `engine::builder::SessionAccumulator` |
 | ④ cache | ONE live resident kind per session, serving both consumption styles; registered → resident → hibernated residency | `present::cache::SessionCache` |
@@ -125,38 +141,68 @@ flowchart TB
 
 ## 4. The per-agent seam
 
-Everything that varies by agent is behind **one trait**, `TranscriptAdapter` (`adapter.rs`),
-resolved through a tiny registry (`adapter(agent)` / `adapters()`). The hooks:
+Everything that varies by agent is behind **one trait**, `TranscriptAdapter`
+(`claude-replay-engine/src/adapter.rs`), and one audited helper surface, the **`seam`**
+module (`engine/seam.rs`) — the complete, curated set of engine items adapter code may build
+on. Three mechanisms enforce the seam, in escalating strength:
+
+1. **The trait** — the engine calls per-agent behavior only through `TranscriptAdapter`.
+2. **The crate boundary** — the built-in families live in `claude-replay-agents`, which
+   depends on the engine crate alone; the facade (`claude-replay-core`) is what wires them
+   together.
+3. **The audit** — the `agents_import_only_the_seam` test
+   (`claude-replay-agents/src/agents/mod.rs`) fails any adapter import that isn't
+   `claude_replay_engine::seam`; anything an adapter newly needs is added to the seam
+   *deliberately*, never reached ad hoc.
+
+The registry is the facade's curry: `adapter(agent)` / `adapters()`
+(`claude-replay-core/src/adapter.rs`) resolve over `claude_replay_agents::REGISTRY`, and
+every dispatching entry point in core consults them. **Adding an agent** is therefore:
+implement `TranscriptAdapter` over the seam — in your own crate with your own registry
+slice handed to the engine's entry points, or as one more family + `REGISTRY` row in
+`claude-replay-agents`. The shared machinery is never touched. The trait's hooks:
 
 | Hook | Role | Default |
 |------|------|---------|
 | `agent()` | which `Agent` | — |
 | `sniff(head)` | `SniffClaim::{Owns, CanParse, No}` — format *ownership* vs mere compatibility (drives `detect_agent` and the picker's "compatible" badge) | — |
 | `store_contains(path)` | provenance: is this path inside my on-disk store? (ownership without a format marker) | `false` |
-| `scan_join_ids(path)` | pass-1: the tool-call ids a later result joins onto | — |
 | `decode_line(line, cwd, out)` | **L1**: raw line → 0+ canonical `Message`s | — |
 | `shaping()` | the L2 `Shaping` const (4 fn-pointers) | — |
 | `metrics_acc()` | a fresh token/cost accumulator | — |
+| `load_attachment(line, index)` | a deferred attachment locator's bytes from ONE raw line | `None` |
 | `candidates_scoped(cwd)` | discovery: sessions for a cwd | — |
 | `resolve_id(id)` | discovery: id → transcript path | — |
 | `load_tasks(path)` | the session's task/todo list from the agent's store | `None` |
-| `parse_path_timed(path, times)` | whole-file parse | **provided** (composes the hooks) |
 | `parse_reader(reader)` | metrics-only fold | **provided** |
 | `enrich(path, blocks)` | load the sub-agent tree | **no-op** |
 | `subagent_source(root, id)` | a child transcript's path | **None** |
 
+(The whole-file parse is not a hook: the facade's `Transcript::parse` drives the shared
+`SessionAccumulator` with the adapter — one fold, composed from the hooks above.)
+
+`Agent` itself is an **open interned id**, not a closed enum:
+`pub struct Agent(&'static str)` with `Agent::CLAUDE`/`CODEX`/`QODERWORK` as associated
+constants and `Agent::new("gemini")` for third parties, serialized as its label. The engine
+never enumerates agents — the id is only the *name* that keys the registry, so a new agent
+mints its own with no variant to add and nothing to fork.
+
 Everything agent-neutral reaches per-agent behavior *only* through the registry — there is no
 `match agent` scattered across the engine. Three adapters exist today and demonstrate the
 cost floor: Claude (full), Codex (no sub-agent tree ⇒ omits those hooks), QoderWork (delegates
-decoding to Claude's modules entirely; its adapter is discovery + identity).
+decoding to Claude's family entirely; its adapter is discovery + identity).
 
 > The `agent-jdi` supervisor mirrors this with its own `jdi::agent::AgentAdapter` registry.
 
 ### Discovery, precisely
 
-`discover.rs` is the agent-neutral front door for *finding* transcripts: `detect_agent`
+Discovery splits along the same seam. The engine's `discover` module is the agent-free
+*vocabulary* — the `Candidate` type, `session_cwd`/`session_id` (transcript-head readers),
+and the `ancestors_below`/`home_dir` scoping. The facade's `discover`
+(`claude-replay-core/src/discover.rs`, which re-exports the vocabulary so
+`core::discover` stays the ONE module) is the registry-driven front door: `detect_agent`
 (sniff + store provenance → ownership, so a merely-*compatible* file is labeled, not
-mislabeled), `session_cwd`/`session_id`, `candidates_all` (the cross-agent picker list),
+mislabeled), `candidates_all` (the cross-agent picker list),
 `resolve_any` (id/path/latest → a path), `session_tasks`, and `subagent_source`. Cwd-based
 auto-discovery is scoped **strictly inside `$HOME`** (`ancestors_below`): a cwd outside it
 probes nothing, and the probe never reaches `$HOME`'s own slug — so stores polluted by
@@ -177,7 +223,8 @@ of it, once, for every agent:
   calls between two visible outputs fold into ONE work-span block, with summed durations
   and Claude-Code-faithful phrasing — an empirically derived rule set
   ([`design/cc-activity-coalescing.md`](../design/cc-activity-coalescing.md)) that agents
-  opt into per adapter (`Shaping::finish_turns`).
+  opt into per adapter (`Shaping::finish_turns`). MCP tool calls coalesce into the same
+  spans, phrased per server (`called <server> N times` — `summary.rs`).
 - **The queued-prompt lifecycle.** A mid-turn human prompt is recorded when *submitted* but
   displayed when *picked up*; the fold runs that little state machine (suppressing the
   marker when pickup is immediate).
@@ -200,10 +247,13 @@ The engine's heart deliberately does **no I/O**. [`SessionAccumulator`]
 pushes lines in; the accumulator threads them through L1 → L2 → metrics behind one method:
 
 ```rust
-let mut acc = SessionAccumulator::new(Agent::Claude);   // or ::with_store(agent, store)
+let mut acc = SessionAccumulator::new(adapter);         // or ::with_store(adapter, store)
 acc.advance_at(byte_offset, &line);                     // push one line — that's the I/O seam
 let session = acc.into_session();                       // finish: takes the Session BY MOVE
 ```
+
+(`adapter` is a `&'static dyn TranscriptAdapter` — the engine's constructors take the
+adapter itself; the facade curries the agent id for you, `claude_replay_core::adapter(agent)`.)
 
 `byte_offset` is the line's position in the raw transcript — the fold stamps it into
 **locators** for content it deliberately does *not* inline (an attachment's bytes, a
@@ -226,7 +276,7 @@ fold**, differing only in who feeds it:
 | consumer | who pushes lines | why it matters |
 |---|---|---|
 | `parse_session_as` (batch) | a file reader, one line resident | whole-file parse never builds a `Vec<String>` |
-| [`FollowParser`] (live tail) | the byte-offset `tail::LineReader`, only appended bytes | O(delta) per poll; proven byte-identical to a full re-parse |
+| [`FollowParser`] (live tail) | the byte-offset line reader (`engine/reader.rs`), only appended bytes | O(delta) per poll; proven byte-identical to a full re-parse |
 | `SharedSession` (live server) | the follower, on a *client's request thread* | see §10 — no server-side polling loop |
 | your code | a socket, an mmap, a test vector, a decompressor | the library never dictates your I/O |
 
@@ -252,7 +302,8 @@ live consumer `committed[from..]` + the open turn — O(delta), never an O(N) re
 
 ## 7. The data model
 
-The presenter-facing vocabulary lives in `model.rs` and is the stable public API.
+The presenter-facing vocabulary lives in `model.rs` (`claude-replay-engine`, re-exported by
+every layer above) and is the stable public API.
 
 - **[`Block`]** — one render unit. Variants: `UserText`, `AssistantText`, `Thinking { text,
   duration_secs, tools }`, `ToolUse { name, target, diffs, output, patch, read_lines }`,
@@ -369,8 +420,8 @@ plus small derived indexes (geometry, fold state) in the aux sidecar.
 
 Everything above meets in one owner. [`SessionCache`] is **the data layer a presentation
 builds on** — it answers "which sessions exist, which are materialized, in what
-representation, with what derived state attached" — and its three type parameters are the
-three decisions a frontend gets to make without losing generality *or* efficiency:
+representation, with what derived state attached" — and its two type parameters are the
+two decisions a frontend gets to make without losing generality *or* efficiency:
 
 | seam | decides | the menu |
 |---|---|---|
@@ -467,7 +518,7 @@ changed?" answerable in O(turn), and both consumption protocols exploit it:
   re-derives only the tail: O(delta) refcount bumps and re-measure, content stored ONCE,
   resync-from-zero served from memory (#84/#85). The change boundary and the wire
   protocol's gen bumps come from the SAME reshape comparison — one implementation.
-- Cross-process: the **4-tuple cursor protocol** (`present::cache::stream`) — `Cursor
+- Cross-process: the **4-tuple cursor protocol** (`present::pull`) — `Cursor
   { epoch, committed_id, provisional_gen, provisional_index }`. The cursor travels with each
   request, so the server is **per-client stateless** and N tabs/windows each read at their
   own pace; committed data is a pure append (sent once, or range-read from the record log),
@@ -487,12 +538,12 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 - **Agent-agnostic everything above L1** — no presenter or shared-engine code matches on
   `Agent` for behavior; it routes through the adapter registry.
 - **Byte-identical refactors** — the streaming parse is proven identical to frozen oracles
-  (`#[cfg(test)]` equivalence gates in the agent `model` families), the follower to a full
+  (`#[cfg(test)]` equivalence gates in `claude-replay-agents`' `model` families), the follower to a full
   re-parse at every append, and every change runs `scripts/gate/gate.sh` — a frozen-fixture
   `--dump`/`--dump-html`/bundle diff that must print `BYTE-IDENTICAL: PASS`.
 - **One classifier / one fold / one phrasing** — block classification, the L2 fold, and the
-  summary vocabulary (`core::summary`) exist once; per-agent difference lives only in
-  `decode_line` + `Shaping` (see
+  summary vocabulary (the engine's `summary.rs`, re-exported as `core::summary`) exist once;
+  per-agent difference lives only in `decode_line` + `Shaping` (see
   [`design/fold-coalesce-summarize-extensibility.md`](../design/fold-coalesce-summarize-extensibility.md)).
 - **Protocol equivalence** — `SharedSession` pulls are asserted identical across storage
   backings (RAM vs tier-b), and `PullClient` is walked through every protocol transition
@@ -502,32 +553,36 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 
 | Path | What |
 |------|------|
-| `claude-replay-core/src/model.rs` | `Block` model + classification |
-| `claude-replay-core/src/engine/replay.rs` | L2 `Replayer`/`Shaping`/`parse_stream` |
-| `claude-replay-core/src/engine/builder.rs` | `SessionAccumulator` (sans-io fold) + `StreamRead` |
-| `claude-replay-core/src/engine/{message,session,index,tasks,tier_b,path,time}.rs` | canonical log · `Session<BV>`/`BlockStore`/`BlockAccess` · rollups · task model · tier-b backing · helpers |
-| `claude-replay-core/src/adapter.rs` | `TranscriptAdapter` trait + registry + `SniffClaim` |
-| `claude-replay-core/src/agents/{claude,codex}/model.rs` | L1 tokenizers + `Shaping` |
-| `claude-replay-core/src/agents/{claude,codex}/metrics.rs` | token/cost folding |
-| `claude-replay-core/src/agents/{claude,codex,qoderwork}/discover.rs` | per-agent transcript stores |
-| `claude-replay-core/src/engine/seam.rs` | the audited adapter contract — all `agents/**` may import (#87) |
-| `claude-replay-core/src/{discover,metrics,follow,tail,agent,fold,summary,diff}.rs` | discovery facade · metrics · live follower · byte-offset tail · `Agent` · fold policy · span phrasing · diff-row model |
+| `claude-replay-engine/src/model.rs` | `Block` model + classification |
+| `claude-replay-engine/src/engine/replay.rs` | L2 `Replayer`/`Shaping` (+ the frozen `replay` reference driver) |
+| `claude-replay-engine/src/engine/builder.rs` | `SessionAccumulator` (sans-io fold) + `StreamRead` |
+| `claude-replay-engine/src/engine/{message,session,index,tasks,tier_b,reader,path,time}.rs` | canonical log · `Session<BV>`/`BlockStore`/`BlockAccess`/`ArcStore` · rollups · task model · tier-b backing · byte-offset line reader (tail + resume) · helpers |
+| `claude-replay-engine/src/adapter.rs` | the `TranscriptAdapter` trait + `SniffClaim` (the contract — the registry lives in the facade) |
+| `claude-replay-engine/src/engine/seam.rs` | the audited adapter contract — all adapter code may import (#87) |
+| `claude-replay-engine/src/{discover,metrics,follow,agent,fold,summary,diff}.rs` | discovery vocabulary · metrics · live follower · the open `Agent` id · fold policy · span phrasing · diff-row model |
+| `claude-replay-agents/src/agents/{claude,codex}/model.rs` | L1 tokenizers + `Shaping` |
+| `claude-replay-agents/src/agents/{claude,codex}/metrics.rs` | token/cost folding |
+| `claude-replay-agents/src/agents/{claude,codex,qoderwork}/discover.rs` | per-agent transcript stores |
+| `claude-replay-agents/src/adapters.rs` | the built-in `TranscriptAdapter` impls + the `REGISTRY` slice |
+| `claude-replay-agents/src/agents/mod.rs` | the family tree + the `agents_import_only_the_seam` audit |
+| `claude-replay-agents/tests/engine_integration.rs` | machinery-with-real-adapters integration tests (a dev-dep cycle would compile two engines inside engine) |
+| `claude-replay-core/src/{adapter,discover,session_entry,transcript}.rs` | the wired `adapter()`/`adapters()` registry · registry-driven discovery · the `parse_session*` dispatchers · the `Transcript` source handle |
 | `claude-replay-present/src/cache/{mod,shared}.rs` | `SessionCache` residency · `SharedSession` (+hibernation) |
 | `claude-replay-present/src/pull.rs` | the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) (#87) |
-| `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter · OS/path helpers · shared `Args` (`cli` feature) |
+| `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter (`HlSpan`) · OS/path helpers · shared `Args` (`cli` feature) |
 | `claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs` | the terminal viewer |
 | `claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs` + `src/html/` | HTML render core · offline writers · live server · the wire-projection `RecordStore` (#74) · embedded CSS/JS |
 | `src/jdi/` | the `agent-jdi` supervisor (see `src/jdi/DESIGN.md`) |
 
-[`Block`]: ../claude-replay-core/src/model.rs
-[`Message`]: ../claude-replay-core/src/engine/message.rs
-[`Session<BV = Block>`]: ../claude-replay-core/src/engine/session.rs
-[`BlockAccess`]: ../claude-replay-core/src/engine/session.rs
-[`BlockStore`]: ../claude-replay-core/src/engine/session.rs
-[`SessionIndex`]: ../claude-replay-core/src/engine/index.rs
-[`Metrics`]: ../claude-replay-core/src/metrics.rs
-[`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
+[`Block`]: ../claude-replay-engine/src/model.rs
+[`Message`]: ../claude-replay-engine/src/engine/message.rs
+[`Session<BV = Block>`]: ../claude-replay-engine/src/engine/session.rs
+[`BlockAccess`]: ../claude-replay-engine/src/engine/session.rs
+[`BlockStore`]: ../claude-replay-engine/src/engine/session.rs
+[`SessionIndex`]: ../claude-replay-engine/src/engine/index.rs
+[`Metrics`]: ../claude-replay-engine/src/metrics.rs
+[`FollowParser`]: ../claude-replay-engine/src/follow.rs
+[`SessionAccumulator`]: ../claude-replay-engine/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`pull`]: ../claude-replay-present/src/pull.rs
 [`PullClient`]: ../claude-replay-present/src/pull.rs
