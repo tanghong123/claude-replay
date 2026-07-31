@@ -88,7 +88,10 @@
 
   /* ── pipeline diagram (the thesis) ──────────────────────────────────────── */
   .pipe{margin:36px 0 6px;border:1px solid var(--line);border-radius:14px;background:var(--surface);
-    box-shadow:var(--shadow);overflow:hidden}
+    box-shadow:var(--shadow);overflow:hidden;
+    /* four stages need more than the text column: break out, centered */
+    position:relative;left:50%;transform:translateX(-50%);width:min(1240px,calc(100vw - 48px))}
+  @media(max-width:1000px){.pipe{width:100%;left:0;transform:none}}
   .pipe-head{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;
     border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em}
   .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;padding:22px}
@@ -132,7 +135,7 @@
   th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
   thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
   tbody tr:last-child td{border-bottom:none}
-  td code{white-space:nowrap}
+  td code{white-space:normal;overflow-wrap:anywhere}
   td .role{color:var(--muted)}
   .badge{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
   .badge.ext{color:var(--add);border-color:color-mix(in srgb,var(--add) 45%,var(--line))}
@@ -181,6 +184,9 @@
 <style>
   /* additions for the v1.15 pages */
   .flow5{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:stretch;gap:0;padding:22px}
+  .flow5 .layer{min-width:0}
+  .flow5 .lmods{overflow-wrap:anywhere}
+  .flow5 .arrow{min-width:56px;padding:0 4px}
   @media(max-width:900px){.flow5{grid-template-columns:1fr;gap:6px}.flow5 .arrow{flex-direction:row;min-width:0;padding:4px 0;transform:rotate(90deg)}}
   .stack{display:flex;flex-direction:column;gap:0;margin-top:14px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow)}
   .rung{display:grid;grid-template-columns:230px 1fr;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);font-size:14px}

@@ -129,7 +129,7 @@
   th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
   thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
   tbody tr:last-child td{border-bottom:none}
-  td code{white-space:nowrap}
+  td code{white-space:normal;overflow-wrap:anywhere}
   td .role{color:var(--muted)}
   .badge{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
   .badge.ext{color:var(--add);border-color:color-mix(in srgb,var(--add) 45%,var(--line))}
@@ -343,9 +343,9 @@ println!(<span class="c">"committed {} blocks, {} in the open turn"</span>,
         <code>committed[from..]</code> + the open turn + O(turn) metadata — the primitive under
         the pull protocol; never clones the whole session.</li>
     </ul>
-    <p style="margin-top:16px">Runnable:
-      <code>cargo run -p claude-replay-core --example parse -- &lt;transcript.jsonl&gt; [--follow]</code>
-      (<code>claude-replay-core/examples/parse.rs</code>)</p>
+    <p style="margin-top:16px">Runnable — from
+      <code>claude-replay-core/examples/parse.rs</code>:</p>
+    <pre>cargo run -p claude-replay-core --example parse -- &lt;transcript.jsonl&gt; [--follow]</pre>
     <h3>The API reference (auto-generated, always in sync)</h3>
     <p>For the <b>exhaustive per-object reference</b> across all seven crates, use rustdoc —
       generated from source + doc comments, so it never drifts. It documents internal items too
