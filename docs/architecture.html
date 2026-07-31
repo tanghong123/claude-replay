@@ -183,6 +183,40 @@
 </style>
 <style>
   /* additions for the v1.15 pages */
+  /* §2 vertical pipeline: layer-band rail + stage stack */
+  .vpipe{margin-top:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+    box-shadow:var(--shadow);overflow:hidden}
+  .vband{display:grid;grid-template-columns:220px 1fr;border-bottom:1px solid var(--line)}
+  .vband:last-child{border-bottom:none}
+  .vrail{padding:16px 16px 16px 18px;border-right:1px solid var(--line);display:flex;
+    flex-direction:column;gap:7px;border-left:4px solid transparent}
+  .rail-engine{border-left-color:var(--accent);background:var(--accent-wash)}
+  .rail-agents{border-left-color:color-mix(in srgb,var(--accent) 55%,var(--surface));
+    background:color-mix(in srgb,var(--accent-wash) 55%,var(--surface))}
+  .rail-support{border-left-color:var(--add);background:color-mix(in srgb,var(--add) 10%,var(--surface))}
+  .rail-front{border-left-color:var(--thinking);background:color-mix(in srgb,var(--thinking) 8%,var(--surface))}
+  .rail-shell{border-left-color:var(--line-strong)}
+  .vlayer{font-family:var(--mono);font-size:11px;letter-spacing:.05em;color:var(--faint)}
+  .vcrates{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);line-height:1.5}
+  .vrole{font-family:var(--sans);font-size:12px;font-weight:400;color:var(--muted)}
+  .vstages{padding:14px 18px;display:flex;flex-direction:column;gap:0}
+  .vstage{border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:var(--surface-2);
+    display:flex;flex-direction:column;gap:5px}
+  .vstage.core{background:var(--accent-wash);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+  .vstage.agents{background:color-mix(in srgb,var(--accent-wash) 55%,var(--surface));
+    border-color:color-mix(in srgb,var(--accent) 28%,var(--line))}
+  .vstage.support{background:color-mix(in srgb,var(--add) 12%,var(--surface));border-color:color-mix(in srgb,var(--add) 45%,var(--line))}
+  .vstage.front{background:color-mix(in srgb,var(--thinking) 10%,var(--surface));border-color:color-mix(in srgb,var(--thinking) 40%,var(--line))}
+  .vname{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
+  .vwhat{font-size:13.5px;color:var(--muted);line-height:1.55}
+  .vback{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink);white-space:nowrap}
+  .vmods{font-family:var(--mono);font-size:11px;color:var(--faint);overflow-wrap:anywhere}
+  .vtok{display:flex;align-items:center;gap:9px;padding:7px 4px 7px 14px}
+  .vtok .token{font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--surface);
+    border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+  .varr{font-family:var(--mono);color:var(--line-strong);font-size:15px}
+  .vshell{font-size:13px;color:var(--faint);padding:4px 2px;font-style:italic}
+  @media(max-width:820px){.vband{grid-template-columns:1fr}.vrail{border-right:none;border-bottom:1px dashed var(--line)}}
   .flow5{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:stretch;gap:0;padding:22px}
   .flow5 .layer{min-width:0}
   .flow5 .lmods{overflow-wrap:anywhere}
@@ -216,7 +250,6 @@
   <div class="wrap">
     <span class="brand"><span class="dot">⏺</span>claude&#8288;-replay</span>
     <nav>
-      <a href="#crates">Crates</a>
       <a href="#pipeline">Pipeline</a>
       <a href="#seam">Seam</a>
       <a href="#sansio">Sans-io</a>
@@ -244,46 +277,7 @@
       <span class="chip"><b>Headless</b>-testable · byte-identical gate</span>
     </div>
 
-    <div class="pipe" role="img" aria-label="The pipeline: raw JSONL is decoded to canonical messages, folded to blocks, accumulated into a session, cached, and presented.">
-      <div class="pipe-head"><span>THE PIPELINE</span><span>one job per stage · agent-specifics confined to decode</span></div>
-      <div class="flow5">
-        <div class="layer agents">
-          <div class="lname">① decode</div>
-          <div class="lwhat">One agent's raw JSONL lines → a canonical message vocabulary.</div>
-          <div class="lmods">TranscriptAdapter::decode_line · claude-replay-agents</div>
-        </div>
-        <div class="arrow"><span class="token">Message</span><span class="line">→</span></div>
-        <div class="layer core">
-          <div class="lname">② fold — shared</div>
-          <div class="lwhat">One <code>Replayer</code>: join results onto calls, group turns, coalesce spans.</div>
-          <div class="lmods">engine::replay · claude-replay-engine</div>
-        </div>
-        <div class="arrow"><span class="token">Block</span><span class="line">→</span></div>
-        <div class="layer core">
-          <div class="lname">③ accumulate</div>
-          <div class="lwhat">Commit finished turns <em>put-once</em> into a pluggable store; keep only the open turn.</div>
-          <div class="lmods">SessionAccumulator</div>
-        </div>
-        <div class="arrow"><span class="token">Session</span><span class="line">→</span></div>
-        <div class="layer support">
-          <div class="lname">④ cache → ⑤ present</div>
-          <div class="lwhat">ONE live resident per session feeds the TUI (<code>poll_view</code>) and HTML (4-member-cursor pulls); the frontends render windows.</div>
-          <div class="lmods">SessionCache · view · html_export</div>
-        </div>
-      </div>
-    </div>
-    <p class="col" style="color:var(--muted);font-size:14px;margin-top:14px">
-      The colour maps stages to crates — <b style="color:var(--accent-ink)">engine</b>
-      (<code>claude-replay-engine</code>: the shared fold and durability frontier, written once
-      for every agent), <b style="color:var(--accent-ink)">agents</b>
-      (<code>claude-replay-agents</code>: the per-agent L1, deliberately a shade of the
-      engine's colour — same layer, the pluggable half), and
-      <b style="color:var(--add)">presentation support</b> (the live data layer) feeding the
-      frontends' windows. Stage ⓪'s registry-driven discovery is the <b>core facade</b>'s
-      (<code>claude-replay-core</code>) — the third crate of the engine layer, which wires the
-      other two together. Agent-specific code exists only at <b>①</b>; a dashed back-edge
-      closes the loop — a parsed <code>SubAgent</code> block names a child transcript, which
-      runs the same pipeline recursively.</p>
+
   </div>
 </div>
 
@@ -304,34 +298,98 @@
         <em>presentation</em> is a new crate on top of the shared support layer — in both
         directions, no shared code is touched.</li>
       <li><b>Leanness as a design discipline.</b> Memory is bounded by keeping each
-        representation no longer than it must live (§8), and CPU is bounded by doing only delta
-        work on borrowed threads (§10). A live session with a million-line transcript costs
+        representation no longer than it must live (§7), and CPU is bounded by doing only delta
+        work on borrowed threads (§9). A live session with a million-line transcript costs
         O(open turn) RAM on the server and O(viewport) rendered state in either frontend.</li>
     </ul>
   </section>
 
-  <section id="crates">
+  <section id="pipeline">
     <div class="eyebrow">§2</div>
-    <h2>The workspace: four layers, seven crates</h2>
-<pre>layer 1 · ENGINE          claude-replay-engine    the agent-FREE machinery: model, fold,
-          (three crates,          ▲               sessions/stores, follower, the adapter seam
-          one seam)       claude-replay-agents    the built-in adapter families (claude/
-                                  ▲               codex/qoderwork) + the REGISTRY slice
-                          claude-replay-core      the FACADE: machinery wired to the registry
-                                  ▲               — parse, follow, discover, one API
-layer 2 · PRESENTATION    claude-replay-present   session cache, sync protocol, text/highlight
-          SUPPORT                 ▲                helpers, the shared Args — frontend-agnostic
-                             ┌────┴────┐
-layer 3 · REUSABLE      claude-replay-tui   claude-replay-html    two independent, embeddable
-          FRONTENDS          └────┬────┘                          presenters
-                                  ▲
-layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + agent-jdi</pre>
-    <p>Each boundary is a <b>compiler-enforced invariant</b>, not a convention:</p>
+    <h2>The pipeline — and where it lives</h2>
+    <p class="kicker">Everything in the workspace is a stage on <b>one data path</b> (or a cache
+      beside it). Read it top to bottom: the left rail names the <b>layer and crate</b> a
+      stage's machinery lives in — so this one diagram is also the crate map. Agent-specific
+      code exists only at ①; the dashed return at ⓪ is what makes sub-agent trees work — a
+      parsed <code>SubAgent</code> block names a child transcript, which runs the same pipeline
+      recursively.</p>
+
+    <div class="vpipe" role="img" aria-label="The vertical pipeline: discover, decode, fold, accumulate, cache, sync, render — with the layer and crate each stage lives in.">
+      <div class="vband">
+        <div class="vrail rail-engine"><span class="vlayer">layer 1 · ENGINE</span>
+          <span class="vcrates">claude-replay-core<br><span class="vrole">the facade — registry-wired entry&nbsp;points</span></span></div>
+        <div class="vstages">
+          <div class="vstage core"><span class="vname">⓪ discover</span><span class="vwhat">find transcripts by path / id / cwd; resolve a <code>SubAgent</code> block to its child transcript <span class="vback">↩ the recursive back-edge</span></span><span class="vmods">core::discover · Transcript</span></div>
+          <div class="vtok"><span class="token">raw JSONL, one line at a time</span><span class="varr">↓</span></div>
+        </div>
+      </div>
+      <div class="vband">
+        <div class="vrail rail-agents"><span class="vlayer">&nbsp;</span>
+          <span class="vcrates">claude-replay-agents<br><span class="vrole">the pluggable half — one family per agent, seam-only imports</span></span></div>
+        <div class="vstages">
+          <div class="vstage agents"><span class="vname">① decode</span><span class="vwhat">one raw line → 0+ canonical <code>Message</code>s; the <em>only</em> stage that knows an agent's field names ("L1")</span><span class="vmods">TranscriptAdapter::decode_line</span></div>
+          <div class="vtok"><span class="token">Message</span><span class="varr">↓</span></div>
+        </div>
+      </div>
+      <div class="vband">
+        <div class="vrail rail-engine"><span class="vlayer">&nbsp;</span>
+          <span class="vcrates">claude-replay-engine<br><span class="vrole">the agent-free machinery + the public <code>seam</code></span></span></div>
+        <div class="vstages">
+          <div class="vstage core"><span class="vname">② fold — shared</span><span class="vwhat">one <code>Replayer</code> for every agent ("L2"): join results onto calls, group turns, coalesce spans, run the queued-prompt lifecycle — §4</span><span class="vmods">engine::replay + per-agent Shaping</span></div>
+          <div class="vtok"><span class="token">Block</span><span class="varr">↓</span></div>
+          <div class="vstage core"><span class="vname">③ accumulate</span><span class="vwhat">the durability frontier: finished turns drained <em>put-once</em> into a pluggable <code>BlockStore</code>; only the open turn stays in the fold — §5</span><span class="vmods">SessionAccumulator&lt;S: BlockStore&gt;</span></div>
+          <div class="vtok"><span class="token">Session — a value, materialized on demand</span><span class="varr">↓</span></div>
+        </div>
+      </div>
+      <div class="vband">
+        <div class="vrail rail-support"><span class="vlayer">layer 2 · PRESENTATION SUPPORT</span>
+          <span class="vcrates">claude-replay-present<br><span class="vrole">frontend-agnostic: cache, sync protocol, highlighting</span></span></div>
+        <div class="vstages">
+          <div class="vstage support"><span class="vname">④ cache</span><span class="vwhat">ONE live resident per session (registered → resident → hibernated); the single full presentation copy both frontends share — §7</span><span class="vmods">SessionCache&lt;P, A&gt; · SharedSession</span></div>
+          <div class="vtok"><span class="token">delta, never the whole session</span><span class="varr">↓</span></div>
+          <div class="vstage support"><span class="vname">⑤ sync</span><span class="vwhat"><b>⑤a poll_view</b> — in-process: ONE call, splice-shaped <code>Arc</code> delta&nbsp;&nbsp;·&nbsp;&nbsp;<b>⑤b pull</b> — cross-process: stateless replies against a client-held 4-member cursor — §8</span><span class="vmods">SharedSession::poll_view · present::pull</span></div>
+          <div class="vtok"><span class="token">ViewDelta&nbsp;/&nbsp;PullReply</span><span class="varr">↓</span></div>
+        </div>
+      </div>
+      <div class="vband">
+        <div class="vrail rail-front"><span class="vlayer">layer 3 · FRONTENDS</span>
+          <span class="vcrates">claude-replay-tui · claude-replay-html<br><span class="vrole">two independent, embeddable presenters</span></span></div>
+        <div class="vstages">
+          <div class="vstage front"><span class="vname">⑥ render</span><span class="vwhat"><b>⑥a</b> blocks → styled wrapped lines, materialized only near the viewport (the <code>hot</code> window)&nbsp;&nbsp;·&nbsp;&nbsp;<b>⑥b</b> wire records → a virtualized DOM window</span><span class="vmods">tui::render + present::highlight · html/export.js</span></div>
+          <div class="vtok"><span class="token">terminal cells&nbsp;·&nbsp;browser DOM</span></div>
+        </div>
+      </div>
+      <div class="vband">
+        <div class="vrail rail-shell"><span class="vlayer">layer 4 · APP SHELL</span>
+          <span class="vcrates">claude-replay<br><span class="vrole">the thin binary: clap CLI + agent-jdi</span></span></div>
+        <div class="vstages"><div class="vshell">wires a CLI in front of all of the above — and is deliberately the least interesting crate in the workspace.</div></div>
+      </div>
+    </div>
+
+    <h3>Each stage's contract, precisely</h3>
+    <div class="tblwrap"><table>
+      <thead><tr><th>stage</th><th>contract</th><th>code</th></tr></thead>
+      <tbody>
+        <tr><td>⓪ discover</td><td class="role">find transcripts by path / id / cwd — and resolve a <code>SubAgent</code> block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside <code>$HOME</code>.</td><td><code>core::discover</code> <span class="role">(registry-driven, in the facade)</span></td></tr>
+        <tr><td>① decode</td><td class="role">one raw line → 0+ canonical <code>Message</code>s; the only stage that knows an agent's field names ("L1")</td><td><code>TranscriptAdapter::decode_line</code> <span class="role">(each family in <code>claude-replay-agents</code>)</span></td></tr>
+        <tr><td>② fold</td><td class="role">the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — §4 below</td><td><code>engine::replay::Replayer</code> + per-agent <code>Shaping</code></td></tr>
+        <tr><td>③ accumulate</td><td class="role">the durability frontier: finished turns drained <em>put-once</em> into a <code>BlockStore</code>; index, metrics and tasks folded alongside — §5 below</td><td><code>engine::builder::SessionAccumulator</code></td></tr>
+        <tr><td>④ cache</td><td class="role">ONE live resident kind per session, serving both consumption styles; registered → resident → hibernated residency</td><td><code>present::cache::SessionCache</code></td></tr>
+        <tr><td>⑤a poll_view</td><td class="role">in-process: ONE call — advance, splice-shaped <code>Arc</code> delta, times/metrics/tasks</td><td><code>SharedSession::poll_view</code> → <code>tui::View::apply_view</code></td></tr>
+        <tr><td>⑤b pull</td><td class="role">cross-process: per-client stateless replies against a client-held 4-member cursor — §8 below</td><td><code>SharedSession::pull</code> · <code>PullClient</code></td></tr>
+        <tr><td>⑥a render</td><td class="role">blocks → styled wrapped lines, materialized only near the viewport</td><td><code>tui::render</code> + <code>present::highlight</code>; the <code>hot</code> window</td></tr>
+        <tr><td>⑥b render</td><td class="role">wire records → a windowed DOM</td><td><code>html/export.js</code> virtualizes</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>The boundaries are compiler-enforced</h3>
+    <p>The layering above is not a convention — each crate's manifest makes the arrows the only
+      ones that exist:</p>
     <div class="tblwrap"><table>
       <thead><tr><th>crate</th><th>may depend on</th><th>must NOT contain</th></tr></thead>
       <tbody>
         <tr><td><code>claude-replay-engine</code></td><td class="role"><code>serde</code>/<code>serde_json</code>, <code>anyhow</code></td><td class="role">any adapter implementation, any I/O policy, ratatui, syntect, clap, HTML</td></tr>
-        <tr><td><code>claude-replay-agents</code></td><td class="role">engine — and only through <code>seam</code> (audited, §4)</td><td class="role">machinery internals, presentation deps</td></tr>
+        <tr><td><code>claude-replay-agents</code></td><td class="role">engine — and only through <code>seam</code> (audited, §3)</td><td class="role">machinery internals, presentation deps</td></tr>
         <tr><td><code>claude-replay-core</code></td><td class="role">engine + agents</td><td class="role">any TUI/HTML/CLI dep — the same ceiling the old single core crate had</td></tr>
         <tr><td><code>claude-replay-present</code></td><td class="role">core + syntect (the highlighter returns toolkit-neutral <code>HlSpan</code>s — no ratatui)</td><td class="role">a terminal, an HTTP server, clap (unless the <code>cli</code> feature is on)</td></tr>
         <tr><td><code>claude-replay-tui</code></td><td class="role">core + present + ratatui/crossterm</td><td class="role">HTML</td></tr>
@@ -348,39 +406,16 @@ layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + a
     <div class="callout"><b>A fourth, outermost story</b> exists for agent authors: build on
       <code>claude-replay-engine</code> alone — implement <code>TranscriptAdapter</code> against
       its <code>seam</code> and bring your own registry slice — without compiling any built-in
-      adapter. §4 spells it out.</div>
+      adapter. §3 spells it out.</div>
     <p>Internally, each crate re-exports the layers below it at its own root
       (<code>crate::model</code>, <code>crate::present</code>, …) — the same transparency trick
       at every boundary, so moved code reads as if the split weren't there. One workspace
       version, bumped in one place.</p>
-  </section>
-
-  <section id="pipeline">
-    <div class="eyebrow">§3</div>
-    <h2>The pipeline</h2>
-    <p class="kicker">Everything in the workspace is a stage on one data path (or a cache beside
-      it) — the hero diagram above. A stage's <em>machinery</em> lives in its colour's crate
-      even where its types come from below. The dashed back-edge is what makes sub-agent trees
-      work: a parsed session can name further raw transcripts, which run the same pipeline
-      recursively. Arrows are actions; here is each action's contract and address.</p>
-    <div class="tblwrap"><table>
-      <thead><tr><th>stage</th><th>contract</th><th>code</th></tr></thead>
-      <tbody>
-        <tr><td>⓪ discover</td><td class="role">find transcripts by path / id / cwd — and resolve a <code>SubAgent</code> block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside <code>$HOME</code>.</td><td><code>core::discover</code> <span class="role">(registry-driven, in the facade)</span></td></tr>
-        <tr><td>① decode</td><td class="role">one raw line → 0+ canonical <code>Message</code>s; the only stage that knows an agent's field names ("L1")</td><td><code>TranscriptAdapter::decode_line</code> <span class="role">(each family in <code>claude-replay-agents</code>)</span></td></tr>
-        <tr><td>② fold</td><td class="role">the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — §5 below</td><td><code>engine::replay::Replayer</code> + per-agent <code>Shaping</code></td></tr>
-        <tr><td>③ accumulate</td><td class="role">the durability frontier: finished turns drained <em>put-once</em> into a <code>BlockStore</code>; index, metrics and tasks folded alongside — §6 below</td><td><code>engine::builder::SessionAccumulator</code></td></tr>
-        <tr><td>④ cache</td><td class="role">ONE live resident kind per session, serving both consumption styles; registered → resident → hibernated residency</td><td><code>present::cache::SessionCache</code></td></tr>
-        <tr><td>⑤a poll_view</td><td class="role">in-process: ONE call — advance, splice-shaped <code>Arc</code> delta, times/metrics/tasks</td><td><code>SharedSession::poll_view</code> → <code>tui::View::apply_view</code></td></tr>
-        <tr><td>⑤b pull</td><td class="role">cross-process: per-client stateless replies against a client-held 4-member cursor — §9 below</td><td><code>SharedSession::pull</code> · <code>PullClient</code></td></tr>
-        <tr><td>⑥a render</td><td class="role">blocks → styled wrapped lines, materialized only near the viewport</td><td><code>tui::render</code> + <code>present::highlight</code>; the <code>hot</code> window</td></tr>
-        <tr><td>⑥b render</td><td class="role">wire records → a windowed DOM</td><td><code>html/export.js</code> virtualizes</td></tr>
-      </tbody>
-    </table></div>
+    <div id="crates"></div>
   </section>
 
   <section id="seam">
-    <div class="eyebrow">§4</div>
+    <div class="eyebrow">§3</div>
     <h2>The per-agent seam</h2>
     <p class="kicker">Everything that varies by agent is behind <b>one trait</b>,
       <code>TranscriptAdapter</code> (<code>claude-replay-engine/src/adapter.rs</code>), and one
@@ -454,7 +489,7 @@ layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + a
   </section>
 
   <section id="fold">
-    <div class="eyebrow">§5</div>
+    <div class="eyebrow">§4</div>
     <h2>The fold: what the Replayer actually does</h2>
     <p class="kicker">Stage ② looks like one arrow; it is where most of the engine's hard-won
       correctness lives. A transcript is not a clean event log — results arrive out of order,
@@ -491,34 +526,65 @@ layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + a
   </section>
 
   <section id="sansio">
-    <div class="eyebrow">§6</div>
+    <div class="eyebrow">§5</div>
     <h2>The sans-io accumulator — one fold, every acquisition mode</h2>
     <p class="kicker">The engine's heart deliberately does <b>no I/O</b>.
       <code>SessionAccumulator</code> (<code>engine/builder.rs</code>) is a push-based fold: the
       <em>caller</em> acquires bytes however it likes and pushes lines in; the accumulator
       threads them through L1 → L2 → metrics behind one method:</p>
-<pre><span class="k">let mut</span> acc = SessionAccumulator::new(adapter);   <span class="c">// or ::with_store(adapter, store)</span>
-acc.advance_at(byte_offset, &line);               <span class="c">// push one line — that's the I/O seam</span>
-<span class="k">let</span> session = acc.into_session();                 <span class="c">// finish: takes the Session BY MOVE</span></pre>
+<pre><span class="c">// The REAL signature: the sink is a type parameter, chosen by the consumer.</span>
+<span class="k">struct</span> SessionAccumulator&lt;S: BlockStore = InMemoryStore&gt; { <span class="c">/* … */</span> }
+
+<span class="k">let mut</span> acc = SessionAccumulator::with_store(adapter, store); <span class="c">// ::new(adapter) = identity store</span>
+<span class="k">loop</span> {
+    acc.advance_at(byte_offset, &line);  <span class="c">// push one line — that's the I/O seam.</span>
+                                         <span class="c">// INSIDE this call, any turn that just finished</span>
+                                         <span class="c">// crosses the durability frontier and is `put`</span>
+                                         <span class="c">// into S — once, right now, not at the end.</span>
+    <span class="c">// …read at ANY moment, while the fold keeps going (all O(open turn)):</span>
+    acc.session_meta();                  <span class="c">// the live header — maintained, never rescanned</span>
+    acc.stream_read(from);               <span class="c">// committed[from..] + the finalized open turn</span>
+    acc.snapshot();                      <span class="c">// a point-in-time Session VALUE (fold continues)</span>
+}
+<span class="k">let</span> session = acc.into_session();        <span class="c">// the one-shot ENDING: consumes the accumulator</span></pre>
     <p>(<code>adapter</code> is a <code>&amp;'static dyn TranscriptAdapter</code> — the engine's
       constructors take the adapter itself; the facade curries the agent id for you,
-      <code>claude_replay_core::adapter(agent)</code>.)</p>
-    <p><code>byte_offset</code> is the line's position in the raw transcript — the fold stamps
-      it into <b>locators</b> for content it deliberately does <em>not</em> inline (an
-      attachment's bytes, a sub-agent's file), so presenters can lazy-load from the raw
-      transcript later instead of the parse carrying everything. And the ending is a
-      <b>move</b>: <code>into_session()</code> transfers the committed values out and borrows
-      content only to build the derived index — zero block clones for the in-memory and
-      <code>Arc</code> stores. (<code>snapshot()</code> exists too, as the <em>mid-flight</em>
-      copy for a fold that keeps going — the live follower's surface, not the one-shot
-      ending.)</p>
-    <p>Under the hood, each pushed line runs the whole per-line pipeline: decode (L1) → fold
-      (L2) → drain any turns that crossed the durability frontier <b>put-once</b> into the
-      <code>BlockStore</code> → fold the same blocks into the maintained live header
-      (<code>SessionMeta</code>) and the metrics/task accumulators. Nothing is rescanned later:
-      <code>into_session</code>/<code>snapshot</code> assemble the <code>Session</code> from
-      state the fold maintained as it went — the derived <code>SessionIndex</code> is the only
-      end-of-parse pass.</p>
+      <code>claude_replay_core::adapter(agent)</code>. <code>byte_offset</code> is the line's
+      position in the raw transcript — the fold stamps it into <b>locators</b> for content it
+      deliberately does <em>not</em> inline, so presenters can lazy-load attachments from the
+      raw file later.)</p>
+    <p>The lifecycle question this answers: a <code>Session</code> is a <b>value materialized at
+      a moment</b>, not an object the accumulator manages. The accumulator owns the running
+      state — <code>committed: Vec&lt;S::Bv&gt;</code>, the replayer's open window, the
+      maintained header/metrics/tasks — and there are three ways to read it:</p>
+    <ul class="clean">
+      <li><b>Maintained live reads</b> — <code>session_meta()</code> /
+        <code>open_read()</code> / <code>stream_read(from)</code>: O(open turn), no
+        <code>Session</code> built at all. This is what the live stack actually uses per poll;
+        the header is folded forward one block at a time as turns commit, never recomputed.</li>
+      <li><b><code>snapshot(&amp;mut self)</code></b> — materialize a whole point-in-time
+        <code>Session</code>; <em>the fold keeps going</em>. It clones the committed values —
+        which is content for a plain in-memory store but only refcount bumps under
+        <code>ArcStore</code> (that is precisely why <code>ArcStore</code> exists).</li>
+      <li><b><code>into_session(self)</code></b> — the batch ending, BY MOVE: transfers the
+        committed values out, zero block clones for the RAM/<code>Arc</code> stores. After
+        this the accumulator is gone; it is what <code>Transcript::parse</code> calls once at
+        end-of-file, never the tailing surface.</li>
+    </ul>
+    <p>The derived <code>SessionIndex</code> (per-turn/tool/attachment rollups) is built only
+      <em>inside</em> the two materializers, as a pass over that snapshot's point-in-time view —
+      the live path doesn't carry a full index; its incremental complement is the maintained
+      <code>SessionMeta</code>. Everything else the materializers assemble was maintained as
+      the fold went; nothing rescans the committed prefix.</p>
+    <p>And this is all <code>SessionCache</code> is, one level up — a keyed map of exactly this
+      loop, wrapped for sharing:</p>
+<pre><span class="c">// SharedSession ≈ Mutex&lt;FollowParser&lt;S&gt;&gt;, and FollowParser ≈ (LineReader + SessionAccumulator&lt;S&gt;):</span>
+<span class="c">// on each poll/pull, ON THE CALLER'S THREAD:</span>
+<span class="k">while let</span> Some((offset, line)) = reader.next_appended_line()? {
+    acc.advance_at(offset, &line);            <span class="c">// fold ONLY the appended bytes</span>
+}
+reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view's Arc-delta splice —</span>
+                                              <span class="c">// no whole-Session materialization per tick</span></pre>
     <p>Because byte acquisition is the caller's job, <b>every parse path in the workspace is
       the same fold</b>, differing only in who feeds it:</p>
     <div class="tblwrap"><table>
@@ -526,7 +592,7 @@ acc.advance_at(byte_offset, &line);               <span class="c">// push one li
       <tbody>
         <tr><td><code>parse_session_as</code> (batch)</td><td class="role">a file reader, one line resident</td><td class="role">whole-file parse never builds a <code>Vec&lt;String&gt;</code></td></tr>
         <tr><td><code>FollowParser</code> (live tail)</td><td class="role">the byte-offset line reader (<code>engine/reader.rs</code>), only appended bytes</td><td class="role">O(delta) per poll; proven byte-identical to a full re-parse</td></tr>
-        <tr><td><code>SharedSession</code> (live server)</td><td class="role">the follower, on a <em>client's request thread</em></td><td class="role">see §10 — no server-side polling loop</td></tr>
+        <tr><td><code>SharedSession</code> (live server)</td><td class="role">the follower, on a <em>client's request thread</em></td><td class="role">see §9 — no server-side polling loop</td></tr>
         <tr><td><b>your code</b></td><td class="role">a socket, an mmap, a test vector, a decompressor</td><td class="role">the library never dictates your I/O</td></tr>
       </tbody>
     </table></div>
@@ -539,8 +605,8 @@ acc.advance_at(byte_offset, &line);               <span class="c">// push one li
     <div class="cards">
       <div class="card"><h4>InMemoryStore <span class="badge def">default</span></h4><p>Committed blocks resident in RAM (<code>Bv = Block</code>).</p></div>
       <div class="card"><h4>TierBStore</h4><p>(<code>engine/tier_b.rs</code>) Committed <em>content</em> serialized append-only to an off-heap buffer or an on-disk file; <code>Bv = Deferred { offset, size }</code>, a 12-byte locator. Reading a block back is a positional read + decode, dropped after use.</p></div>
-      <div class="card"><h4>ArcStore <span class="badge def">#84</span></h4><p>Committed blocks live behind <code>Arc</code> (<code>Bv = Arc&lt;Block&gt;</code>): the accumulator retains the authoritative copy, and handing a block to a reader is a refcount bump. The store behind the one-copy/source-of-truth principles (§8).</p></div>
-      <div class="card"><h4>…or the presentation's own</h4><p>The html crate's <code>RecordStore</code> renders each block to its wire record at <code>put</code> time (<code>Bv = RecordLocator</code> — the §7 showcase).</p></div>
+      <div class="card"><h4>ArcStore <span class="badge def">#84</span></h4><p>Committed blocks live behind <code>Arc</code> (<code>Bv = Arc&lt;Block&gt;</code>): the accumulator retains the authoritative copy, and handing a block to a reader is a refcount bump. The store behind the one-copy/source-of-truth principles (§7).</p></div>
+      <div class="card"><h4>…or the presentation's own</h4><p>The html crate's <code>RecordStore</code> renders each block to its wire record at <code>put</code> time (<code>Bv = RecordLocator</code> — the §6 showcase).</p></div>
     </div>
     <p style="margin-top:18px">Incremental facts are maintained the same way:
       <code>session_meta()</code> folds the live header (turns/tools/children) once per
@@ -549,7 +615,7 @@ acc.advance_at(byte_offset, &line);               <span class="c">// push one li
   </section>
 
   <section id="model">
-    <div class="eyebrow">§7</div>
+    <div class="eyebrow">§6</div>
     <h2>The data model</h2>
     <p class="kicker">The presenter-facing vocabulary lives in <code>model.rs</code>
       (<code>claude-replay-engine</code>, re-exported by every layer above) and is the stable
@@ -617,7 +683,7 @@ acc.advance_at(byte_offset, &line);               <span class="c">// push one li
   </section>
 
   <section id="lean">
-    <div class="eyebrow">§8</div>
+    <div class="eyebrow">§7</div>
     <h2>Lean memory: a ladder of representations, each windowed</h2>
     <p class="kicker">The memory design is one idea applied five times: <b>every representation
       is kept only as long, and only as wide, as its consumer needs</b>. Data climbs this
@@ -652,7 +718,7 @@ acc.advance_at(byte_offset, &line);               <span class="c">// push one li
       <li><b>HTML server</b> (<code>serve.rs</code> + <code>cache/</code>): a followed session's
         resident footprint is O(open turn) + a locator table — the <code>Session</code>'s own
         <code>RecordStore</code> renders each committed block to its wire record put-once (#74,
-        §7 showcase), and the committed zone is served as a <b>pointer</b>
+        §6 showcase), and the committed zone is served as a <b>pointer</b>
         (<code>committed_ext: {offset, len}</code>) that clients range-read from the
         append-only record log at their own pace (one serialization on disk, zero in RAM, N
         readers).</li>
@@ -735,7 +801,7 @@ cache: SessionCache&lt;
   </section>
 
   <section id="protocol">
-    <div class="eyebrow">§9</div>
+    <div class="eyebrow">§8</div>
     <h2>The sync protocol: a 4-member cursor</h2>
     <p class="kicker">The wire half of the data layer is a client-server sync protocol designed
       so the <b>server keeps no per-client state</b>: the client's whole position travels with
@@ -749,7 +815,7 @@ cache: SessionCache&lt;
         <em>generation</em> and the client's position within it. Within a generation the served
         open turn is append-only; a back-patch or a finalization reshape bumps the gen, telling
         the client to replace the whole (small) zone. This is the reshape-detection invariant
-        from §5 surfacing on the wire.</li>
+        from §4 surfacing on the wire.</li>
       <li><b><code>epoch</code></b> — session validity: a truncation/rewrite bumps it, and any
         stale cursor resyncs from zero — served from the cache's retained copy, never by
         re-parsing.</li>
@@ -762,7 +828,7 @@ cache: SessionCache&lt;
   </section>
 
   <section id="cpu">
-    <div class="eyebrow">§10</div>
+    <div class="eyebrow">§9</div>
     <h2>Lean CPU: borrowed threads and delta-only protocols</h2>
     <p class="kicker"><b>No dedicated work happens when nothing changed, and almost no thread
       exists solely to wait.</b> Two mechanisms:</p>
@@ -780,7 +846,7 @@ cache: SessionCache&lt;
         one detached thread; connections are thread-per-request on loopback.</li>
     </ul>
     <h3>Delta-only protocols, at both distances</h3>
-    <p>The committed/open split (§5) makes "what changed?" answerable in O(turn), and both
+    <p>The committed/open split (§4) makes "what changed?" answerable in O(turn), and both
       consumption protocols exploit it:</p>
     <ul class="clean">
       <li><b>In-process:</b> <code>SharedSession::poll_view</code> hands the TUI everything in
@@ -810,7 +876,7 @@ cache: SessionCache&lt;
   </section>
 
   <section id="invariants">
-    <div class="eyebrow">§11</div>
+    <div class="eyebrow">§10</div>
     <h2>Invariants the codebase holds itself to</h2>
     <ul class="clean">
       <li><b>Crate boundaries</b> — the §2 table is enforced by the dependency graph, not
@@ -835,7 +901,7 @@ cache: SessionCache&lt;
   </section>
 
   <section id="map">
-    <div class="eyebrow">§12</div>
+    <div class="eyebrow">§11</div>
     <h2>Where things live</h2>
     <div class="tblwrap"><table>
       <thead><tr><th>path</th><th>what</th></tr></thead>
