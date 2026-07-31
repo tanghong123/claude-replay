@@ -201,12 +201,13 @@
   <div class="wrap">
     <span class="brand"><span class="dot">⏺</span>claude&#8288;-replay</span>
     <nav>
-      <a href="#start">Start</a>
+      <a href="#build">Build</a>
+      <a href="#testing">Testing</a>
+      <a href="#crates">Crates</a>
       <a href="#level1">Core</a>
       <a href="#level2">Your frontend</a>
       <a href="#level3">Embed</a>
       <a href="#agent">Add an agent</a>
-      <a href="#testing">Testing</a>
     </nav>
     <button class="toggle" id="themer" aria-label="Toggle colour theme">◐ theme</button>
   </div>
@@ -231,26 +232,73 @@
 
 <div class="wrap">
 
-  <section id="start">
+  <section id="build">
     <div class="eyebrow">§1</div>
-    <h2>Build, test, gate</h2>
+    <h2>Build &amp; test</h2>
     <p class="kicker">The workspace is fully testable headless — no TTY anywhere in the default
-      suite. Four checks gate every change:</p>
+      suite. Four checks gate every change (CI enforces these):</p>
 <pre>cargo build --workspace
 cargo fmt --check
 cargo clippy --all-targets      <span class="c"># no new warnings</span>
-cargo test  --workspace         <span class="c"># deterministic; every crate</span>
+cargo test  --workspace         <span class="c"># deterministic; workspace default-members = all seven crates</span>
 scripts/gate/gate.sh            <span class="c"># frozen-fixture diff → must print BYTE-IDENTICAL: PASS</span></pre>
-    <p>The gate renders a frozen transcript set through <code>--dump</code>, <code>--dump-html</code>
-      and the bundle writer and diffs against a baseline — engine refactors must be
-      output-preserving, and intentional changes are reviewed line-by-line then re-baselined.</p>
+    <p>The byte gate renders a frozen transcript set through <code>--dump</code>,
+      <code>--dump-html</code> and the bundle writer and diffs against a baseline (fixture data
+      in <code>$SC_GATE_DIR</code>, default <code>/tmp/sc-gate</code>). Engine refactors must be
+      output-preserving; intentional output changes are verified line-by-line and re-baselined
+      — see <code>scripts/gate/README.md</code>. Underneath, the streaming parse is
+      additionally pinned to frozen <code>parse_main</code>/<code>parse_lines</code> oracles
+      (<code>#[cfg(test)]</code> equivalence gates in <code>claude-replay-agents</code>'
+      <code>agents/{claude,codex}/model.rs</code> families).</p>
+  </section>
+
+  <section id="testing">
+    <div class="eyebrow">§2</div>
+    <h2>Testing a TUI with no terminal</h2>
+    <p class="kicker">The viewer is <b>fully testable headless</b> — never skip or stub a
+      feature "because it needs a terminal". Three levels:</p>
+    <ul class="clean">
+      <li><b>Deterministic (preferred).</b> Drive <code>view::View</code> under ratatui's
+        <code>TestBackend</code>: render to an in-memory buffer, call the view's methods, assert
+        cells. All viewer state lives in <code>View</code> (separate from the terminal wiring in
+        <code>app.rs</code>) precisely so this works. See the <code>#[cfg(test)]</code> tests in
+        <code>claude-replay-tui/src/view.rs</code>. <b>Add a <code>TestBackend</code> test for
+        any new interactive behavior.</b></li>
+      <li><b>End-to-end.</b> <code>tests/tmux_smoke.rs</code> runs the real binary inside a
+        private <code>tmux -L</code> server with no controlling TTY, driving it via
+        <code>send-keys</code>/<code>capture-pane</code>. It's <code>#[ignore]</code>d; run
+        <code>cargo test --test tmux_smoke -- --ignored</code>.</li>
+      <li><b>Quick plain check.</b> <code>claude-replay &lt;path|--latest&gt; --dump -</code>
+        renders the transcript to stdout with no TUI — good for eyeballing
+        parsing/markdown/diffs in a pipe.</li>
+    </ul>
+  </section>
+
+  <section id="crates">
+    <div class="eyebrow">§3</div>
+    <h2>The crates and their responsibilities</h2>
+    <p class="kicker">Pick your dependency by the job (details:
+      <a href="architecture.html#crates">Architecture §2</a>):</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>you want to…</th><th>depend on</th><th>you get</th></tr></thead>
+      <tbody>
+        <tr><td class="role">analyze transcripts (stats, ETL, CI checks)</td><td><code>claude-replay-core</code></td><td class="role">parse/follow/discover, <code>Block</code>/<code>Session</code>/<code>Metrics</code> — deps: <code>serde_json</code> + <code>anyhow</code></td></tr>
+        <tr><td class="role">bring your own agent set</td><td><code>claude-replay-engine</code></td><td class="role">the agent-free machinery + <code>TranscriptAdapter</code> + the <code>seam</code> — you supply the adapters and the registry slice (the built-ins live in <code>claude-replay-agents</code>)</td></tr>
+        <tr><td class="role">build your own frontend</td><td>+ <code>claude-replay-present</code></td><td class="role"><code>SessionCache</code>, the pull protocol (both halves), fold policy, summaries, highlighting, <code>Args</code></td></tr>
+        <tr><td class="role">embed the existing UIs</td><td>+ <code>claude-replay-tui</code> / <code>claude-replay-html</code></td><td class="role">the terminal viewer / the HTML exporter + live server</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:14px">The sections below are one worked example of each level — and
+      every example is how <b>our own binaries actually consume the layers</b>, so they can't
+      rot into pseudo-code.</p>
   </section>
 
   <section id="level1">
-    <div class="eyebrow">§2 · level 1</div>
-    <h2>Core alone: read transcripts as data</h2>
-    <p class="kicker">One call parses any supported agent's session into an agent-neutral
-      <code>Session</code> — blocks, per-turn times, token/cost metrics, and a derived index.</p>
+    <div class="eyebrow">§4 · level 1</div>
+    <h2>Core alone: transcript analysis</h2>
+    <p class="kicker"><code>claude-replay-core</code> is sans-io and presentation-free. One call
+      parses any supported agent's session into an agent-neutral <code>Session</code> — blocks,
+      per-turn times, token/cost metrics, and a derived index:</p>
 <pre><span class="k">use</span> claude_replay_core::{parse_session, Block};
 
 <span class="k">let</span> session = parse_session(Path::new(<span class="c">"session.jsonl"</span>))?;   <span class="c">// agent auto-detected</span>
@@ -259,53 +307,100 @@ println!(<span class="c">"{} blocks · {} turns · {}"</span>,
 <span class="k">for</span> block <span class="k">in</span> session.blocks().iter() {
     <span class="k">if let</span> Block::ToolUse { name, target, .. } = block { <span class="c">/* tally tool usage… */</span> }
 }</pre>
-    <p>For anything incremental — or any I/O the library shouldn't dictate — drop one level to the
-      sans-io <code>SessionAccumulator</code> and push lines yourself, from a file, a socket, an
-      mmap, or a test vector:</p>
-<pre><span class="k">let mut</span> acc = SessionAccumulator::new(Agent::Claude);
+    <p>For anything incremental — or any I/O the library shouldn't dictate — drop one level to
+      the sans-io <code>SessionAccumulator</code> and push lines yourself, from a file, a
+      socket, an mmap, or a test vector:</p>
+<pre><span class="k">use</span> claude_replay_core::{adapter, engine::SessionAccumulator, Agent};
+
+<span class="k">let mut</span> acc = SessionAccumulator::new(adapter(Agent::CLAUDE));
+<span class="k">let mut</span> offset = 0u64;
 <span class="k">for</span> line <span class="k">in</span> my_source_of_lines() {
     acc.advance_at(offset, &line);        <span class="c">// one line resident at a time</span>
+    offset += line.len() <span class="k">as</span> u64 + 1;
 }
+println!(<span class="c">"committed {} blocks, {} in the open turn"</span>,
+         acc.committed_len(), acc.provisional_len());
 <span class="k">let</span> session = acc.snapshot();</pre>
+    <p>This is not a side door — it is the <em>only</em> fold in the workspace. The engine's
+      constructors take the adapter itself (<code>&amp;'static dyn TranscriptAdapter</code>);
+      the facade's <code>adapter(agent)</code> curries the id, and
+      <code>Transcript::open(agent, path).follow()</code> hides even that. Batch parsing feeds
+      the fold from a file reader; the live <code>FollowParser</code> feeds it appended bytes
+      each <code>poll()</code> (<code>FollowParser::open(adapter, path)</code> bundles the
+      byte-offset tail + the accumulator, and <code>poll_delta()</code> additionally reports
+      <code>changed_from</code>, the first index that differs — O(turn), not O(session)). Two
+      performance levers worth knowing:</p>
     <ul class="clean">
-      <li><b>Storage injection.</b> <code>with_store(agent, TierBStore::file(path)?)</code> spills
-        committed content to disk as it folds — RAM stays O(open&nbsp;turn) plus a 12-byte-per-block
-        locator table; read blocks back through <code>BlockAccess</code>.</li>
-      <li><b>Delta reads.</b> <code>stream_read(from)</code> hands a live consumer
-        <code>committed[from..]</code> + the open turn — never an O(N) rescan.</li>
-      <li><b>Live tail.</b> <code>FollowParser::open(agent, path)</code> bundles a byte-offset tail
-        with the accumulator; <code>poll_delta()</code> reports <code>changed_from</code> so your
-        renderer re-derives only the tail.</li>
+      <li><b>Storage injection.</b>
+        <code>SessionAccumulator::with_store(adapter, TierBStore::file(path)?)</code> spills
+        committed block <em>content</em> to disk as it folds — RAM stays O(open&nbsp;turn) + a
+        12-byte-per-block locator table. <code>snapshot()</code> then yields a
+        <code>Session&lt;Deferred&gt;</code>; read blocks back through the
+        <code>BlockAccess</code> trait. This is one instance of the <b><code>BlockStore</code>
+        seam</b> — see <a href="#bv">Choosing your <code>BV</code></a> for the general mechanism
+        (the live HTML server takes it further: its store <em>renders</em> at put time).</li>
+      <li><b>Delta reads.</b> <code>acc.stream_read(from)</code> returns
+        <code>committed[from..]</code> + the open turn + O(turn) metadata — the primitive under
+        the pull protocol; never clones the whole session.</li>
     </ul>
-    <p style="margin-top:16px">Runnable: <code>cargo run -p claude-replay-core --example parse -- &lt;transcript&gt; [--follow]</code></p>
+    <p style="margin-top:16px">Runnable:
+      <code>cargo run -p claude-replay-core --example parse -- &lt;transcript.jsonl&gt; [--follow]</code>
+      (<code>claude-replay-core/examples/parse.rs</code>)</p>
+    <h3>The API reference (auto-generated, always in sync)</h3>
+    <p>For the <b>exhaustive per-object reference</b> across all seven crates, use rustdoc —
+      generated from source + doc comments, so it never drifts. It documents internal items too
+      (<code>TranscriptAdapter</code>, the <code>Replayer</code>, the tokenizers) — the
+      reference manual behind this guided overview.</p>
+<pre>cargo apidoc          <span class="c"># build the reference into target/doc/  (alias in .cargo/config.toml)</span>
+cargo apidoc --open</pre>
   </section>
 
   <section id="level2">
-    <div class="eyebrow">§3 · level 2</div>
-    <h2>Your own frontend, on the shared data layer</h2>
-    <p class="kicker"><code>claude-replay-present</code> is the layer that makes a new presentation
-      cheap. Its centre is <code>SessionCache&lt;P,&nbsp;F,&nbsp;A&gt;</code> — pick the pull tier's
-      block representation, the follow tier's, and your sidecar type; the capability bounds then
-      pick your protocol menu for you.</p>
+    <div class="eyebrow">§5 · level 2</div>
+    <h2>Build your own frontend on core + present</h2>
+    <p class="kicker"><code>claude-replay-present</code> is the layer that makes a <em>new</em>
+      presentation cheap — say a native macOS app (SwiftUI shell over a Rust core), an egui
+      viewer, or a bot that posts session summaries. What it hands you, and where our own
+      frontends use exactly the same thing:</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>entity</th><th>what it does for you</th><th>real consumer in this repo</th></tr></thead>
+      <tbody>
+        <tr><td><code>SessionCache&lt;P, A&gt;</code></td><td class="role"><b>the unified data layer</b> (<a href="architecture.html#cache">Architecture §8</a>): keyed residency + your choices — the live store <code>P</code> (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type <code>A</code>; 30 s TTL reaps idle residents</td><td class="role">TUI: <code>SessionCache&lt;ArcStore, ViewSidecar&gt;</code> · HTML server: <code>SessionCache&lt;RecordStore, ServeAux&gt;</code> — same type, both frontends</td></tr>
+        <tr><td><code>SharedSession</code></td><td class="role">a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions</td><td class="role"><code>serve.rs</code> builds one per followed session, tier-b backed</td></tr>
+        <tr><td><code>Cursor</code>/<code>pull</code>/<code>PullClient</code></td><td class="role">the incremental wire protocol, both halves in Rust</td><td class="role">the <code>/pull</code> route serves it; the embedded JS mirrors <code>PullClient</code> transition-for-transition</td></tr>
+        <tr><td><code>fold</code> (core) + <code>Args</code></td><td class="role">which block types start collapsed; the shared options type (clap only behind the <code>cli</code> feature)</td><td class="role">both frontends call <code>args.fold_policy()</code></td></tr>
+        <tr><td><code>present</code> + core's <code>summary</code></td><td class="role">spawn chips, edit summaries, tool display names, activity/turn phrasing — the <em>voice</em> of the product</td><td class="role">TUI <code>render.rs</code> and the HTML emitter, so wording can't drift</td></tr>
+        <tr><td><code>highlight</code></td><td class="role">syntect highlighting returning toolkit-neutral <code>HlSpan</code>s (text + xterm-256 color index — no ratatui dep)</td><td class="role">the TUI maps them to ratatui spans; the HTML exporter to <code>&lt;span&gt;</code>s</td></tr>
+        <tr><td><code>sys</code></td><td class="role"><code>deduce_stem</code>, <code>reveal_in_file_manager</code></td><td class="role">the dump stem + the ⏎-on-a-path affordance in both UIs</td></tr>
+        <tr><td><code>SessionCache</code> aux slot</td><td class="role">per-session <b>presentation sidecar</b> — derived view state (put-once can't hold it; the consumer owns validity)</td><td class="role">the TUI parks evicted frames' <code>ViewSidecar</code> (heights, search index, folds, scroll) and re-adopts on reload</td></tr>
+        <tr><td><code>BlockStore</code>/<code>BlockRead</code> (core)</td><td class="role"><b>your frontend decides what the <code>Session</code> stores per block</b> — see the walkthrough below</td><td class="role"><code>InMemoryStore</code> (TUI/batch: <code>BV = Block</code>), <code>TierBStore</code> (<code>BV = Deferred</code>, serde bytes on disk), the html crate's <code>RecordStore</code> (<code>BV = RecordLocator</code>, rendered wire JSON)</td></tr>
+      </tbody>
+    </table></div>
 
     <h3>the in-process shape — what the TUI does</h3>
-    <p>Borrow your UI's idle tick; never spawn a follower thread. With the
-      <code>ArcStore</code> follow tier, the cache retains the <b>one</b> authoritative copy of the
-      blocks and your view holds <code>Arc</code> references — a tick costs O(delta) refcount
-      bumps, and a resync-from-zero is served from memory:</p>
+    <p>Borrow your UI's idle tick (<code>app.rs</code>, simplified); never spawn a follower
+      thread. With an <code>ArcStore</code> live store (#84/#85), the cache retains the
+      <b>one</b> authoritative copy of the blocks and your view holds <code>Arc</code>
+      references — a tick costs O(delta) refcount bumps, and a resync-from-zero is served from
+      memory:</p>
 <pre><span class="k">type</span> MyCache = SessionCache&lt;ArcStore, MySidecar&gt;;
 <span class="k">let</span> cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 <span class="k">loop</span> {
     <span class="k">if</span> no_input_for_250ms() {
         <span class="k">if let</span> Some(Ok(d)) = cache.poll_view(&id) {
-            view.splice(d);            <span class="c">// keep [0..frontier), append delta + open turn,</span>
-        }                              <span class="c">//   re-derive from d.changed_from</span>
-    }
+            view.splice(d);            <span class="c">// keep [0..frontier), append Arc clones of</span>
+        }                              <span class="c">//   d.committed_delta + d.provisional,</span>
+    }                                  <span class="c">//   re-derive from d.changed_from — View::apply_view</span>
     cache.reap(30_000);                <span class="c">// idle residents fall back to registrations</span>
 }</pre>
+    <p>(Prefer whole-<code>Session</code> values instead? Use the core's own follower —
+      <code>FollowParser::poll</code>/<code>poll_delta</code> — or batch
+      <code>parse_session</code>; the cache's job is live residency, and its two protocols
+      share one resident. See the protocol table in
+      <a href="architecture.html#cache">Architecture §8</a>.)</p>
 
-    <h3>the decoupled shape — a thread or a network away</h3>
+    <h3>the decoupled shape — a worker thread, a subprocess, or a network hop away</h3>
     <p>Serve <code>PullReply</code>s from a <code>SharedSession</code> on one side; hold a
       <code>PullClient</code> on the other. The client owns the cursor, so the server is
       per-client stateless — N windows work for free:</p>
@@ -322,83 +417,163 @@ ss.advance()?;                <span class="c">// borrow-to-tail</span>
     rerender_from(pc.blocks(), d);
 }   <span class="c">// next request carries pc.cursor()</span></pre>
 </div>
+    <p style="margin-top:14px">For the macOS-app sketch specifically: the Rust side is those ~10
+      lines behind a small FFI (or a local socket); SwiftUI renders <code>pc.blocks()</code> and
+      re-draws from <code>first_changed</code>. Fold defaults come from
+      <code>FoldPolicy</code>, block styling classes from <code>model::block_kind</code>,
+      summaries from <code>core::summary</code> — your app speaks the same visual language as
+      the TUI/HTML for free. Keep the rendered-window discipline (only materialize views near
+      the viewport; <code>design/dom-virtualization.md</code> is the transferable technique
+      doc).</p>
 
-    <h3>choose your BV — the BlockStore seam</h3>
-    <p>The presentation decides what the <code>Session</code> stores per block. The one constraint:
-      a <code>BV</code> is written <em>once</em>, as its block commits — so it must not depend on
-      interactively-changing view parameters (measured heights belong in the cache's aux sidecar
-      instead, which is invalidatable).</p>
+    <h3 id="bv">choosing your BV — the BlockStore seam</h3>
+    <p><code>Session&lt;BV&gt;</code> is generic over what it stores per block, and <b>the
+      presentation layer decides what <code>BV</code> is</b>: the <code>Block</code> itself,
+      auxiliary per-block state your renderer needs, an explicit pointer into a file you
+      maintain, a deferred block locator, or any combination — the one constraint is that a
+      <code>BV</code> is written <b>once</b>, as its block commits, so it must not depend on
+      interactively-changing view parameters (the TUI's wrapped heights depend on width and
+      fold state, which is why they live in an invalidatable view cache instead).</p>
+    <p>Implement <code>BlockStore</code> and inject it
+      (<code>SessionAccumulator::with_store</code>, <code>SharedSession::with_store</code>,
+      <code>SessionCache&lt;YourStore&gt;</code>):</p>
 <pre><span class="k">impl</span> BlockStore <span class="k">for</span> MyStore {
-    <span class="k">type</span> Bv = MyPerBlockValue;                    <span class="c">// what Session.committed holds</span>
+    <span class="k">type</span> Bv = MyPerBlockValue;                       <span class="c">// what Session.committed holds</span>
     <span class="k">fn</span> put(&mut <span class="k">self</span>, b: Block, at: BlockIndex,
-           user_times: &[Option&lt;EpochSeconds&gt;]) -&gt; Self::Bv { <span class="c">/* once per commit */</span> }
-    <span class="k">fn</span> reset(&mut <span class="k">self</span>) { <span class="c">/* source truncated */</span> }
+           user_times: &[Option&lt;EpochSeconds&gt;]) -&gt; Self::Bv {
+        <span class="c">// called exactly once per block as it crosses the durability frontier;</span>
+        <span class="c">// `user_times` is the session's per-turn clock (render-at-put stores index it)</span>
+    }
+    <span class="k">fn</span> reset(&mut <span class="k">self</span>) { <span class="c">/* source truncated: discard, the session rebuilds */</span> }
 }</pre>
+    <p>Two optional capabilities refine what your store can feed:</p>
     <ul class="clean">
-      <li><b><code>BlockRead</code></b> — implement iff your <code>Bv</code> can reconstruct its
-        <code>Block</code>. Everything that rebuilds block streams bounds on it, so the compiler
-        tells you exactly which consumers a one-way projection can't feed.</li>
-      <li><b><code>PersistentStore</code></b> — backing length + reopen (+ optional state hooks), so
-        <code>SharedSession</code> can hibernate/restore around your backing across evictions.</li>
-      <li><b>The worked example</b> — the HTML crate's <code>RecordStore</code> renders each
-        committed block to its wire record <em>at put time</em>; <code>/pull</code> then answers
-        committed zones with byte-range pointers and the serving path renders only the open turn.</li>
+      <li><b><code>BlockRead</code></b> — implement it iff your <code>Bv</code> can reconstruct
+        its <code>Block</code> (lossless stores: identity, serde bytes). Everything that
+        rebuilds block streams — <code>snapshot()</code>, <code>poll()</code>,
+        <code>committed_tail</code>, <code>SharedSession::pull</code> — bounds on it, so the
+        compiler tells you exactly which consumers a one-way projection store can't feed (and
+        keeps them off it).</li>
+      <li><b><code>PersistentStore</code></b> (present) — <code>backing_len</code>/<code>reopen</code>
+        + optional hibernate-state hooks, so <code>SharedSession</code> can hibernate/restore
+        around your backing across cache evictions.</li>
     </ul>
+    <p>Three in-repo stores calibrate the design space: <code>InMemoryStore</code> (identity —
+      <code>BV = Block</code>), <code>ArcStore</code> (<code>BV = Arc&lt;Block&gt;</code> — the
+      cache retains the one authoritative copy and readers hold references; the TUI live path,
+      #84), and the richest one, <code>claude-replay-html</code>'s <code>RecordStore</code>
+      (<code>html_export/record_store.rs</code>):
+      <code>Bv = RecordLocator{offset, len}</code> into <code>&lt;id&gt;.records</code>;
+      <code>put</code> <b>renders the committed block to its wire-format JSON record</b> as the
+      side effect and returns the pointer — the <code>Session</code> itself captures the
+      session in the exact form the frontend serves, <code>/pull</code> answers committed zones
+      as pointers clients range-read directly, and no second representation exists. It
+      implements <code>BlockStore</code> + <code>PersistentStore</code> but deliberately
+      <b>not</b> <code>BlockRead</code> (a wire record is a one-way projection) — the type
+      system then keeps every committed consumer on the pointer path. See the
+      <a href="architecture.html#showcase">architecture showcase</a> for the serving-CPU
+      consequence.</p>
   </section>
 
   <section id="level3">
-    <div class="eyebrow">§4 · level 3</div>
-    <h2>Embed the finished frontends</h2>
+    <div class="eyebrow">§6 · level 3</div>
+    <h2>Embed the finished presenters</h2>
+    <p class="kicker">Both frontends are libraries with small public surfaces:</p>
     <div class="duo">
-<pre><span class="c">// the terminal viewer</span>
+<pre><span class="c">// the terminal viewer (claude-replay-tui)</span>
 claude_replay_tui::app::run(&args, &path)?;
 claude_replay_tui::app::run_interactive(&args)?;
 <span class="c">// or drive view::View under TestBackend</span></pre>
-<pre><span class="c">// the HTML frontend</span>
+<pre><span class="c">// the HTML frontend (claude-replay-html)</span>
 claude_replay_html::dump_html(&args, &path)?;
 claude_replay_html::dump_all_html(&args, &path)?;
 claude_replay_html::serve(&args, &path)?;</pre>
     </div>
     <p style="margin-top:14px"><code>Args</code> is plain data (<code>Default</code> + struct
-      literal) unless you enable the <code>cli</code> feature for clap parsing — a headless service
-      can call <code>dump_all_html</code> with a hand-built <code>Args</code> and never link clap.
-      The shipped <code>claude-replay</code> binary is itself just ~60 lines of dispatch over these
-      calls.</p>
+      literal) unless you enable the <code>cli</code> feature for clap parsing — a headless
+      service can call <code>dump_all_html</code> with a hand-built <code>Args</code> and never
+      link clap. The root <code>claude-replay</code> crate is itself just this: ~60 lines of
+      CLI dispatch over the two frontends (<code>src/lib.rs::run_viewer</code>).</p>
   </section>
 
   <section id="agent">
-    <div class="eyebrow">§5</div>
-    <h2>Add an agent</h2>
-    <p class="kicker">A new agent is a decoder, not a parser: three small files + one adapter impl,
-      and the shared engine is never touched.</p>
+    <div class="eyebrow">§7</div>
+    <h2>Adding an agent</h2>
+    <p class="kicker">The payoff of the pipeline design: a new agent is <b>an
+      <code>impl TranscriptAdapter</code> over <code>claude-replay-engine</code>'s
+      <code>seam</code></b> — either in your own crate with your own registry slice, or (for a
+      built-in) a <code>model</code>/<code>metrics</code>/<code>discover</code> family under
+      <code>claude-replay-agents/src/agents/&lt;agent&gt;/</code> + one <code>REGISTRY</code>
+      row. The shared engine is never touched. Calibrate the cost by the three existing
+      adapters: Claude (flat sub-agent directory), Codex (operation-scoped child rollouts),
+      QoderWork (format matches Claude's, so it reuses Claude's decoder wholesale — its whole adapter is discovery + a
+      <code>sniff</code>). Say we're adding <code>Gemini</code> as a built-in.</p>
     <ol class="steps">
-      <li><b>register</b> <span class="d">— the <code>Agent</code> variant and its labels.</span></li>
-      <li><b>decode</b> <span class="d">— map raw lines onto the canonical <code>Message</code> vocabulary; wire the 4-hook <code>Shaping</code> (tool build, result join, orphan policy, turn grouping).</span></li>
-      <li><b>meter</b> <span class="d">— a small token/cost accumulator.</span></li>
-      <li><b>discover</b> <span class="d">— where transcripts live on disk; scope cwd probes with <code>ancestors_below</code> (strictly inside <code>$HOME</code>).</span></li>
-      <li><b>wire</b> <span class="d">— one <code>impl TranscriptAdapter</code> row. <code>sniff</code> returns ownership (<code>Owns</code> / <code>CanParse</code> / <code>No</code>) and <code>store_contains</code> adds provenance, so compatible-but-foreign files get labeled, never claimed.</span></li>
-      <li><b>test</b> <span class="d">— a frozen-fixture equivalence gate + a follower round-trip (incremental == full re-parse at every append).</span></li>
+      <li><b>mint the agent id</b> <span class="d">— <code>Agent</code> is an open interned id,
+        not an enum: <code>const GEMINI: Agent = Agent::new("gemini")</code> — nothing to
+        extend, nothing to fork. (The built-ins are
+        <code>Agent::CLAUDE</code>/<code>CODEX</code>/<code>QODERWORK</code>, associated
+        constants on the same type — <code>claude-replay-engine/src/agent.rs</code>.)</span></li>
+      <li><b>decode</b> <span class="d">— (<code>agents/gemini/model.rs</code>) the only place
+        that knows Gemini's raw line format: <code>decode_line(line, cwd, out)</code> maps one
+        raw JSONL line onto 0+ canonical <code>Message</code>s (thread <code>cwd</code> across
+        lines if the format carries it in a header), and
+        <code>GEMINI_SHAPING: Shaping</code> wires the four L2 hooks (<code>build_tool</code>
+        with tool-name normalization onto the canonical vocabulary — this is what makes the
+        shared summaries/folding classify your agent correctly — <code>join_result</code>,
+        <code>keep_orphan</code>, <code>finish_turns</code>: <code>coalesce_spans</code> for
+        Claude-style grouping, or identity). Model it on <code>agents/codex/model.rs</code>
+        (the simpler one); import only from <code>claude_replay_engine::seam</code> — the
+        audited adapter contract, enforced by <code>agents_import_only_the_seam</code> (#87).
+        Everything else about parsing — the fold, back-patching, turn grouping, the queue
+        lifecycle, streaming, the live follower — is shared and already done. You are writing a
+        <em>decoder</em>, not a parser.</span></li>
+      <li><b>meter</b> <span class="d">— (<code>agents/gemini/metrics.rs</code>) a small
+        <code>MetricsAccumulator</code> impl: push a line's token usage, <code>finish()</code>
+        into <code>Metrics</code>. See <code>agents/codex/metrics.rs</code>.</span></li>
+      <li><b>discover</b> <span class="d">— (<code>agents/gemini/discover.rs</code>) where
+        Gemini keeps its transcripts: <code>candidates_scoped(cwd)</code>, scoped with
+        <code>discover::ancestors_below(cwd, home)</code> (auto-discovery must stay strictly
+        inside <code>$HOME</code> — see
+        <a href="architecture.html#discovery">Architecture §4</a>), and
+        <code>resolve_id(id)</code>. If Gemini has sub-agents, also
+        <code>subagent_source</code>; if it records a task list, <code>load_tasks</code>.</span></li>
+      <li><b>wire it up</b> <span class="d">— (<code>claude-replay-agents/src/adapters.rs</code>)
+        an <code>impl TranscriptAdapter</code> for a <code>GeminiAdapter</code> unit struct
+        delegating to the modules above. <code>sniff</code> returns ownership
+        (<code>Owns</code> / <code>CanParse</code> / <code>No</code>) and
+        <code>store_contains</code> adds provenance, so compatible-but-foreign files get
+        labeled, never claimed. Add the adapter to the <code>REGISTRY</code> slice and declare
+        the family in <code>agents/mod.rs</code>. (A third-party agent skips this crate
+        entirely: the same impl in your own crate, and your own slice handed to the engine's
+        entry points in place of the facade's <code>adapters()</code>.) Discovery, detection,
+        the picker, the follower, and both frontends pick the agent up with no further
+        changes.</span></li>
+      <li><b>test it</b> <span class="d">— an equivalence gate in
+        <code>agents/gemini/model.rs</code> (frozen fixture → expected block list), mirroring
+        <code>replay_tokenize_matches_*</code>; a <code>FollowParser</code> round-trip
+        (incremental output == full re-parse at each append); the full gate (§1), including
+        <code>scripts/gate/gate.sh</code>.</span></li>
     </ol>
     <div class="callout"><b>Cost floor.</b> QoderWork's format matches Claude's, so its entire
       adapter is discovery plus a sniff — zero new parsing code. That is the design working as
       intended.</div>
   </section>
 
-  <section id="testing">
-    <div class="eyebrow">§6</div>
-    <h2>Testing a TUI with no terminal</h2>
+  <section id="conventions">
+    <div class="eyebrow">§8</div>
+    <h2>Repo conventions</h2>
     <ul class="clean">
-      <li><b>Deterministic (preferred).</b> Drive <code>view::View</code> under ratatui's
-        <code>TestBackend</code>: render to an in-memory buffer, call the view's methods, assert
-        cells. All viewer state lives in <code>View</code>, separate from terminal wiring, precisely
-        so this works.</li>
-      <li><b>End-to-end.</b> A private <code>tmux -L</code> server drives the real binary with
-        <code>send-keys</code>/<code>capture-pane</code> — opt-in via
-        <code>cargo test --test tmux_smoke -- --ignored</code>.</li>
-      <li><b>Quick plain check.</b> <code>claude-replay &lt;path&gt; --dump -</code> renders the whole
-        transcript to stdout through the same View pipeline — ideal in a pipe.</li>
+      <li><b>Layout &amp; module map:</b> <a href="architecture.html#map">Architecture §12</a>.</li>
+      <li><b>Design notes</b> for specific subsystems live under <code>design/</code> — e.g. the
+        CC span rules (<code>cc-activity-coalescing.md</code>), the fold/coalesce/summarize
+        extensibility study, the DOM virtualization technique — and
+        <code>src/jdi/DESIGN.md</code> for the supervisor.</li>
+      <li>Keep the per-agent modules <b>symmetric</b> (same shape + naming across agents);
+        reviews check for drift.</li>
+      <li>One workspace version: bump <code>[workspace.package] version</code> in the root
+        <code>Cargo.toml</code> only.</li>
     </ul>
-<pre>cargo apidoc --open   <span class="c"># the per-object reference, internals included — never drifts from source</span></pre>
   </section>
 
 </div>

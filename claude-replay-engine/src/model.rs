@@ -1,9 +1,9 @@
 //! The **agent-neutral render-block vocabulary**: the [`Block`] data model (+ [`Attachment`],
 //! [`SubAgent`], [`AgentStatus`], …) and its classification — [`block_kind`] and the coarse
 //! [`fold_key`] / fine [`BlockKind::html`] projections that drive folding and styling. The
-//! machinery that *builds* these blocks — the Layer-2 `Replayer` fold, its `Shaping` seam, the
-//! `parse_stream` driver — lives in `engine::replay`; each agent's Layer-1 tokenizer in
-//! `claude_model` / `codex_model` (all crate-internal). Nothing here is dropped or truncated;
+//! machinery that *builds* these blocks — the Layer-2 `Replayer` fold and its `Shaping`
+//! seam — lives in `engine::replay`; each agent's Layer-1 tokenizer in the
+//! `claude-replay-agents` families. Nothing here is dropped or truncated;
 //! what shows collapsed is a fold-policy decision made in `view`.
 
 use serde::{Deserialize, Serialize};

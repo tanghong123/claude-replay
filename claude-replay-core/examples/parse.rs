@@ -2,7 +2,7 @@
 //!
 //! Shows the two entry points a third-party program uses:
 //!   - `parse_session(path)` — parse a whole transcript into a `Session` (one shot).
-//!   - `FollowParser::open(agent, path).poll()` — fold only newly-appended bytes for a live
+//!   - `FollowParser::open(adapter, path).poll()` — fold only newly-appended bytes for a live
 //!     tail (call `poll()` on a timer; it returns `None` when the file hasn't grown).
 //!
 //! Run: `cargo run -p claude-replay-core --example parse -- <transcript.jsonl> [--follow]`
