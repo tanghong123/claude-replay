@@ -17,7 +17,7 @@
 //! [`pull`](SharedSession::pull) then answers any client [`Cursor`] against the current zones.
 //!
 //! Concurrency (§9a): the state is interior-mutable behind one `Mutex`, so a `SharedSession` wraps
-//! in an `Arc` and any number of client threads call [`pull`](SharedSession::pull) / [`advance`]
+//! in an `Arc` and any number of client threads call [`pull`](SharedSession::pull) / [`advance`](SharedSession::advance)
 //! (SharedSession::advance) on `&self`. Advancing is **borrow-to-tail**: the thread that folds new
 //! source lines is a client's own (the HTTP `/pull` handler calls `advance` then `pull`) — the
 //! cache owns no background thread. A pull is O(delta): fold (idle-cheap when nothing new) + a
@@ -32,12 +32,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use super::stream::{pull_indices, Cursor, PullReply};
 use crate::engine::session::{BlockRead, BlockStore, InMemoryStore};
 use crate::engine::{SessionMeta, StreamRead};
 use crate::follow::FollowParser;
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
+use crate::pull::{pull_indices, Cursor, PullReply};
 use crate::Agent;
 
 /// A consistent, delta-sized read of everything one `/pull` render needs, taken under a single
@@ -68,6 +68,26 @@ pub struct PullDelta {
     pub tasks: crate::engine::TaskList,
 }
 
+/// One in-process tick's payload (#85): the splice-shaped delta an interactive view
+/// applies, plus the chrome state (times, metrics, tasks) — everything a frontend's tick
+/// needs from ONE call. Committed blocks are `Arc` clones of the cache-owned copy.
+pub struct ViewDelta {
+    pub reset: bool,
+    /// `committed[prev..]` as `Arc` clones — shared content, cheap to hand over.
+    pub committed_delta: Vec<std::sync::Arc<Block>>,
+    /// Total committed after this delta; the consumer splices at
+    /// `committed_len - committed_delta.len()`.
+    pub committed_len: usize,
+    /// The finalized open turn, freshly wrapped (O(turn) small allocations per tick).
+    pub provisional: Vec<std::sync::Arc<Block>>,
+    /// First index (in the joined `committed ++ open` view) the consumer must re-derive.
+    pub changed_from: usize,
+    pub user_times: Vec<Option<EpochSeconds>>,
+    pub metrics: Metrics,
+    /// The session's task op-log state (#15) — refreshed with the same tick.
+    pub tasks: crate::engine::TaskList,
+}
+
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
 /// The block state lives **in the body** (the committed prefix is owned by the follower's
 /// accumulator — or by a restored materialization — and never cloned whole); this adds only the
@@ -79,7 +99,7 @@ struct Inner<S: BlockStore> {
     epoch: u64,
     /// The current open-turn generation — see the module docs / `super::stream`.
     provisional_gen: u64,
-    /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`]
+    /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`](SharedSession::counters)
     /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
     /// the open window on every quiet poll.
     n_provisional: usize,
@@ -94,7 +114,7 @@ struct Inner<S: BlockStore> {
 
 /// Where a session's state comes from: a **live** follower folding the source, or a
 /// **hibernated** materialization reloaded from disk (an evicted resident whose source hasn't
-/// changed since it was persisted — see [`SharedSession::hibernate`]/[`restore`]
+/// changed since it was persisted — see [`SharedSession::hibernate`]/[`SharedSession::restore`]
 /// (SharedSession::restore)). A hibernated body serves every read from restored state and never
 /// folds; if its source later changes, [`hibernation_stale`](SharedSession::hibernation_stale)
 /// reports it and the owner replaces the whole session with a fresh live one (the epoch change
@@ -202,7 +222,11 @@ impl<S: BlockStore> SharedSession<S> {
     pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                body: Body::Live(Box::new(FollowParser::with_store(agent, path, store))),
+                body: Body::Live(Box::new(FollowParser::with_store(
+                    claude_replay_core::adapter(agent),
+                    path,
+                    store,
+                ))),
                 epoch: 1,
                 provisional_gen: 0,
                 n_provisional: 0,
@@ -253,8 +277,77 @@ impl<S: BlockStore> SharedSession<S> {
         Ok(true)
     }
 
+    /// The in-process consumer's ONE tick call (#85): borrow-to-tail advance plus the
+    /// splice-shaped delta plus everything the frontend's chrome needs (times, metrics,
+    /// tasks) — under a single lock, with the change boundary and the wire protocol's
+    /// epoch/gen updates derived from the SAME reshape comparison (one implementation of
+    /// "what changed since last tick" for both consumption styles). `Ok(None)` on idle.
+    /// Committed blocks arrive as `Arc` clones of the RETAINED authoritative vector: one
+    /// content copy in the process, shared by reference.
+    pub fn poll_view(&self) -> std::io::Result<Option<ViewDelta>>
+    where
+        S: BlockStore<Bv = std::sync::Arc<Block>>,
+    {
+        let mut g = super::lock_recover(&self.inner);
+        let Body::Live(follower) = &mut g.body else {
+            return Ok(None);
+        };
+        let prev_committed = follower.committed_len();
+        let Some((reset, patch_floor)) = follower.advance_stream()? else {
+            return Ok(None);
+        };
+        let committed_len = follower.committed_len();
+        let committed_grew = committed_len > prev_committed;
+        let r = follower.open_read();
+        let committed_delta: Vec<std::sync::Arc<Block>> =
+            follower.committed()[prev_committed.min(committed_len)..].to_vec();
+        // Same reshape/gen accounting as [`advance`](Self::advance) — see its comments.
+        let prefix_intact = g.prev_provisional.len() <= r.provisional.len()
+            && g.prev_provisional
+                .iter()
+                .zip(&r.provisional)
+                .all(|(a, b)| a == b);
+        if reset {
+            g.epoch += 1;
+            g.provisional_gen += 1;
+        } else if committed_grew || patch_floor.is_some() || !prefix_intact {
+            g.provisional_gen += 1;
+        }
+        let changed_from = if reset {
+            0 // truncation/rewrite ⇒ everything changed
+        } else {
+            // Blocks below the prior committed length are unchanged (append-only); one
+            // O(turn) comparison of the previous open region against the new tail finds
+            // the exact boundary.
+            let stable = g
+                .prev_provisional
+                .iter()
+                .zip(
+                    committed_delta
+                        .iter()
+                        .map(|a| a.as_ref())
+                        .chain(r.provisional.iter()),
+                )
+                .take_while(|(a, b)| a == b)
+                .count();
+            prev_committed + stable
+        };
+        g.n_provisional = r.provisional.len();
+        g.prev_provisional = r.provisional.clone();
+        Ok(Some(ViewDelta {
+            reset,
+            committed_delta,
+            committed_len,
+            provisional: r.provisional.into_iter().map(std::sync::Arc::new).collect(),
+            changed_from,
+            user_times: r.user_times,
+            metrics: r.metrics,
+            tasks: r.tasks,
+        }))
+    }
+
     /// Serve a client's [`Cursor`] against the current state — the same reply the free
-    /// [`pull`](super::stream::pull) computes, built from the accumulator's zones without cloning
+    /// [`pull`](crate::pull::pull) computes, built from the accumulator's zones without cloning
     /// the whole committed prefix (only `committed[committed_from..]` is copied). Does **not**
     /// advance; a client that wants the freshest tail calls [`advance`](Self::advance) first (the
     /// `/pull` handler does).
@@ -346,7 +439,7 @@ impl<S: BlockStore> SharedSession<S> {
 
     /// The protocol counters only — `(epoch, provisional_gen, n_committed, n_provisional)` — an
     /// O(1) read (no block clone, no open-window finalize) so the `/pull` handler can decide
-    /// idleness via [`pull_indices`](super::stream::pull_indices) before paying
+    /// idleness via [`pull_indices`] before paying
     /// [`pull_delta`](Self::pull_delta)'s delta read + render.
     pub fn counters(&self) -> (u64, u64, usize, usize) {
         let g = super::lock_recover(&self.inner);
@@ -368,11 +461,11 @@ impl<S: BlockStore> SharedSession<S> {
 
     /// The cursor a fully caught-up client of this session would hold — the current epoch/gen
     /// with both zone lengths as the positions. By definition `pull(end_cursor())` is idle; a
-    /// same-process consumer bootstrapping a [`PullClient`](super::stream::PullClient) tail
+    /// same-process consumer bootstrapping a [`PullClient`](crate::pull::PullClient) tail
     /// (skipping the initial snapshot it obtained elsewhere) starts here.
-    pub fn end_cursor(&self) -> super::stream::Cursor {
+    pub fn end_cursor(&self) -> crate::pull::Cursor {
         let (epoch, provisional_gen, committed_id, provisional_index) = self.counters();
-        super::stream::Cursor {
+        crate::pull::Cursor {
             epoch,
             committed_id,
             provisional_gen,
@@ -388,6 +481,16 @@ impl<S: BlockStore> SharedSession<S> {
         match &g.body {
             Body::Live(fp) => f(g.epoch, fp.store()),
             Body::Hibernated(h) => f(g.epoch, &h.store),
+        }
+    }
+
+    /// The session's task op-log state (#15) — live from the fold, or the hibernated
+    /// sidecar. Cheap (a clone of the maintained list, no session assembly).
+    pub fn tasks(&self) -> crate::engine::TaskList {
+        let g = super::lock_recover(&self.inner);
+        match &g.body {
+            Body::Live(f) => f.tasks(),
+            Body::Hibernated(h) => h.tasks.clone(),
         }
     }
 
@@ -465,7 +568,7 @@ pub trait PersistentStore: BlockStore + Sized {
     fn hibernate_state(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// Restore the [`hibernate_state`](Self::hibernate_state) payload after [`reopen`].
+    /// Restore the [`hibernate_state`](Self::hibernate_state) payload after [`reopen`](Self::reopen).
     fn restore_state(&mut self, _v: serde_json::Value) {}
 }
 
@@ -606,7 +709,7 @@ mod tests {
     #[test]
     fn gen_and_epoch_track_append_backpatch_commit_reset() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         assert_eq!((ss.epoch(), ss.provisional_gen()), (1, 0));
 
         // Open the turn (append only) — no gen bump.
@@ -652,7 +755,7 @@ mod tests {
     #[test]
     fn pull_serves_resync_append_backpatch_and_commit() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         append(&path, USER1);
         append(&path, TOOL);
         ss.advance().unwrap();
@@ -702,7 +805,7 @@ mod tests {
     #[test]
     fn pull_delta_returns_the_unrendered_tail_and_maintained_meta() {
         let path = tmp();
-        let ss = SharedSession::open(Agent::Claude, &path);
+        let ss = SharedSession::open(Agent::CLAUDE, &path);
         append(&path, USER1);
         append(&path, TOOL);
         ss.advance().unwrap();
@@ -767,9 +870,9 @@ mod tests {
         let backing =
             std::env::temp_dir().join(format!("cr-shared-tb-{}.blocks", std::process::id()));
         let _ = std::fs::remove_file(&backing);
-        let mem = SharedSession::open(Agent::Claude, &path);
+        let mem = SharedSession::open(Agent::CLAUDE, &path);
         let tb = SharedSession::with_store(
-            Agent::Claude,
+            Agent::CLAUDE,
             &path,
             TierBStore::file(&backing).expect("create backing"),
         );
@@ -817,7 +920,7 @@ mod tests {
         let backing = path.with_extension("blocks");
         let sidecar = path.with_extension("state");
         let live =
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::file(&backing).unwrap());
         for chunk in [USER1, TOOL, RESULT, TEXT, USER2] {
             append(&path, chunk);
         }
@@ -873,7 +976,7 @@ mod tests {
         let backing = path.with_extension("blocks");
         let sidecar = path.with_extension("state");
         let live =
-            SharedSession::with_store(Agent::Claude, &path, TierBStore::file(&backing).unwrap());
+            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::file(&backing).unwrap());
         append(&path, USER1);
         live.advance().unwrap();
         live.hibernate(&sidecar).unwrap();
@@ -898,7 +1001,7 @@ mod tests {
         use std::sync::Arc;
         let path = tmp();
         append(&path, USER1);
-        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        let ss = Arc::new(SharedSession::open(Agent::CLAUDE, &path));
         ss.advance().unwrap();
         assert!(!ss.poisoned());
 
@@ -930,7 +1033,7 @@ mod tests {
         use std::sync::Arc;
         let path = tmp();
         std::fs::write(&path, USER1).unwrap();
-        let ss = Arc::new(SharedSession::open(Agent::Claude, &path));
+        let ss = Arc::new(SharedSession::open(Agent::CLAUDE, &path));
         ss.advance().unwrap();
 
         let writer = {

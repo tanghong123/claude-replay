@@ -279,18 +279,19 @@ pub trait AgentAdapter {
 }
 
 /// The adapter registry: the one place that knows every agent. Adding an agent is
-/// a new module + one arm here (and one entry in [`agents`]).
+/// a new module + one arm here (and one entry in [`agents`]). `Agent` is an open id
+/// (#87): the wildcard arm routes any id jdi has no driver for to the same clean
+/// unsupported-at-preflight failure as QoderWork.
 pub fn adapter(agent: Agent) -> Box<dyn AgentAdapter> {
     match agent {
-        Agent::Claude => Box::new(super::claude::ClaudeAdapter),
-        Agent::Codex => Box::new(super::codex::CodexAdapter),
-        // The VIEWER supports QoderWork transcripts; the supervisor does not drive its CLI yet
-        // (resume/flag shape unverified). Detection never yields it (`agents()` lists only the
-        // driveable two); an explicit `--agent qoderwork` reaches the stub below, which fails
-        // cleanly at preflight instead of resuming the wrong binary.
-        Agent::QoderWork => Box::new(UnsupportedAdapter {
-            agent: Agent::QoderWork,
-        }),
+        Agent::CLAUDE => Box::new(super::claude::ClaudeAdapter),
+        Agent::CODEX => Box::new(super::codex::CodexAdapter),
+        // The VIEWER supports QoderWork (and any third-party-registered) transcripts;
+        // the supervisor drives only the two CLIs above. Detection never yields others
+        // (`agents()` lists only the driveable two); an explicit `--agent <other>`
+        // reaches the stub, which fails cleanly at preflight instead of resuming the
+        // wrong binary.
+        other => Box::new(UnsupportedAdapter { agent: other }),
     }
 }
 
@@ -339,7 +340,7 @@ impl AgentAdapter for UnsupportedAdapter {
 /// mirroring the engine's `adapter::adapters()`. Keeps the agent set in one place instead of
 /// hardcoded at each iteration site.
 pub fn agents() -> &'static [Agent] {
-    &[Agent::Claude, Agent::Codex]
+    &[Agent::CLAUDE, Agent::CODEX]
 }
 
 /// Seconds since `mtime` (a session's idle time), clamped to 0 if the clock went backwards.

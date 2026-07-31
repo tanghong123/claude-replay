@@ -41,7 +41,7 @@ fn main() -> std::io::Result<()> {
     // Live tail: fold only the delta each poll. (Here: one extra poll to show the API.)
     if follow {
         println!("\n-- following (Ctrl-C to stop) --");
-        let mut follower = FollowParser::open(session.agent, path);
+        let mut follower = FollowParser::open(claude_replay_core::adapter(session.agent), path);
         loop {
             if let Ok(Some((blocks, _times, metrics))) = follower.poll() {
                 println!("[poll] {} blocks · {}", blocks.len(), metrics.footer());

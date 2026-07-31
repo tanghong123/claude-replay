@@ -37,7 +37,7 @@ pub struct Deferred {
 /// byte buffer** ([`new`](Self::new) — tests / batch) or a real **on-disk file**
 /// ([`file`](Self::file) — the live server's residents, so committed content never sits in RAM).
 /// Hand the finished [`into_backing`](Self::into_backing) to a [`TierBSession`] to read blocks
-/// back, or read them through the store's own [`get`](BlockStore::get).
+/// back, or read them through the store's own [`get`](crate::engine::BlockRead::get).
 pub struct TierBStore {
     backing: Backing,
 }
@@ -70,7 +70,7 @@ impl TierBStore {
     }
 
     /// A fresh **file-backed** store at `path` (created/truncated): committed block content goes
-    /// straight to disk, and [`get`](BlockStore::get) reads it back positionally — nothing
+    /// straight to disk, and [`get`](crate::engine::BlockRead::get) reads it back positionally — nothing
     /// resident beyond the locators the caller holds.
     pub fn file(path: &Path) -> io::Result<Self> {
         let file = std::fs::OpenOptions::new()
@@ -220,7 +220,7 @@ impl crate::engine::session::BlockRead for TierBStore {
 
 /// A `Session<Deferred>` paired with its tier-b backing — the client-side handle that can actually
 /// read block content. Implements [`BlockAccess`] by seeking to each locator and decoding on demand;
-/// the [`SessionIndex`](crate::engine::SessionIndex) / metrics / `sub_agents` come free from the
+/// the [`SessionIndex`] / metrics / `sub_agents` come free from the
 /// session and never touch the backing.
 pub struct TierBSession {
     /// The offset-table session (`blocks: Vec<Deferred>`) + the `Bv`-free index/metrics/sub_agents.
@@ -425,109 +425,6 @@ mod tests {
     // A single-snapshot batch parse routed through a tier-b store must reproduce the in-memory
     // parse block-for-block — the on-disk locators + backing decode back to identical `Block`s, and
     // the `Bv`-free index/metrics/user_times are unchanged (they never touch the store).
-    #[test]
-    fn tier_b_session_matches_in_memory_parse() {
-        use crate::engine::session::BlockAccess;
-        use crate::engine::SessionAccumulator;
-        use crate::Agent;
-        use std::io::Cursor;
-
-        let jsonl = r##"
-{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls"}}]}}
-{"type":"user","toolUseResult":{"stdout":"a\nb"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"a\nb"}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_B","name":"Agent","input":{"subagent_type":"code-reviewer","description":"review","prompt":"review it"}}]}}
-{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"async_launched"}]}}
-{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_B</tool-use-id>\n<status>completed</status>\n<summary>Agent \"review\" finished</summary>\n<result>Two gaps.</result>\n</task-notification>"}
-"##;
-
-        let mut mem = SessionAccumulator::new(Agent::Claude);
-        mem.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
-            .unwrap();
-        let mem_session = mem.snapshot(); // Session<Block>
-
-        let mut tb = SessionAccumulator::with_store(Agent::Claude, TierBStore::new());
-        tb.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
-            .unwrap();
-        let tb_session = tb.snapshot(); // Session<Deferred>
-        let backing = tb.into_store().into_backing();
-        let tb_sess = TierBSession::new(tb_session, backing);
-
-        assert_eq!(
-            mem_session.block_count(),
-            tb_sess.session.block_count(),
-            "same block count"
-        );
-        assert!(
-            mem_session.block_count() >= 5,
-            "fixture produced real blocks"
-        );
-        for i in 0..mem_session.block_count() {
-            assert_eq!(
-                mem_session.block(i),
-                tb_sess.block(i),
-                "block {i} matches in-memory"
-            );
-        }
-        // The Bv-free metadata is store-independent.
-        assert_eq!(mem_session.user_times, tb_sess.session.user_times);
-        assert_eq!(mem_session.sub_agents, tb_sess.session.sub_agents);
-    }
-
-    // Persist a tier-b session to disk and reload it: every block, the rebuilt index, metrics,
-    // user_times, and sub_agents must match the pre-persist session exactly — a restart survives
-    // without re-folding the transcript.
-    #[test]
-    fn persist_then_load_reconstructs_the_session() {
-        use crate::engine::session::BlockAccess;
-        use crate::engine::SessionAccumulator;
-        use crate::Agent;
-        use std::io::Cursor;
-
-        let jsonl = r##"
-{"type":"user","message":{"content":[{"type":"text","text":"start"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"review","prompt":"review it"}}]}}
-{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
-{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"review\" finished</summary>\n<result>Two gaps.</result>\n</task-notification>"}
-{"type":"user","message":{"content":[{"type":"text","text":"thanks"}]}}
-"##;
-
-        let mut acc = SessionAccumulator::with_store(Agent::Claude, TierBStore::new());
-        acc.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
-            .unwrap();
-        let session = acc.snapshot();
-        let backing = acc.into_store().into_backing();
-        let before = TierBSession::new(session, backing);
-
-        let dir = std::env::temp_dir().join(format!("tierb-persist-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        before.persist(&dir).unwrap();
-        let after = TierBSession::load(&dir).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-
-        assert_eq!(before.session.block_count(), after.session.block_count());
-        assert!(before.session.block_count() >= 5);
-        for i in 0..before.session.block_count() {
-            assert_eq!(
-                before.block(i),
-                after.block(i),
-                "block {i} survives persist→load"
-            );
-        }
-        assert_eq!(before.session.agent, after.session.agent);
-        assert_eq!(before.session.cwd, after.session.cwd);
-        assert_eq!(before.session.user_times, after.session.user_times);
-        assert_eq!(before.session.metrics, after.session.metrics);
-        assert_eq!(before.session.sub_agents, after.session.sub_agents);
-        // The index is rebuilt on load — must equal the original (compared via Debug; no PartialEq).
-        assert_eq!(
-            format!("{:?}", before.session.index),
-            format!("{:?}", after.session.index),
-            "rebuilt index equals the persisted session's"
-        );
-    }
 
     /// The file-backed mode: puts append to a real file, gets read back positionally, `reset`
     /// truncates (fresh offsets), and the tracked length equals the file's.
@@ -581,7 +478,7 @@ mod tests {
 
         // Every block decodes byte-for-byte back to what was stored (via BlockAccess).
         let session = Session {
-            agent: crate::Agent::Claude,
+            agent: crate::Agent::CLAUDE,
             cwd: None,
             committed: locators,
             provisional: vec![],

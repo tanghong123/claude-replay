@@ -203,7 +203,7 @@ const PERSISTENCE: &str = "You are running UNATTENDED and headless — the human
 
 impl AgentAdapter for CodexAdapter {
     fn id(&self) -> Agent {
-        Agent::Codex
+        Agent::CODEX
     }
 
     /// Codex has no plan/dump step: `start` is a fresh turn, everything else runs

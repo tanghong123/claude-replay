@@ -183,7 +183,7 @@ mod tests {
             project: project.to_string(),
             snippet: snippet.to_string(),
             cwd_affinity: affinity,
-            agent: crate::Agent::Claude,
+            agent: crate::Agent::CLAUDE,
         }
     }
 

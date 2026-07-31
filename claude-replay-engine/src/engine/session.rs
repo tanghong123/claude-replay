@@ -9,7 +9,6 @@
 //! migrate off the field.
 
 use std::collections::BTreeMap;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::engine::SessionIndex;
@@ -82,36 +81,33 @@ impl BlockRead for InMemoryStore {
     }
 }
 
-/// The single-consumer **streaming** store (#76): committed blocks are handed to the consumer
-/// exactly once instead of being retained — `put` queues, the consumer drains. The `Session`'s
-/// committed table stores `()` (the accumulator keeps only counts), so the CONSUMER — e.g. the
-/// TUI `View` — is the sole owner of committed content: one copy in the whole process, and a
-/// poll costs O(delta), not an O(session) rebuild. Not [`BlockRead`] (the content is gone once
-/// drained), so the type system keeps whole-session consumers (`snapshot`, `poll`) off it.
+/// The shared-ownership store (#84): committed blocks live behind `Arc` — the accumulator
+/// RETAINS the authoritative copy (the cache-owned source of truth every consumer reads),
+/// and handing a block to a reader is a refcount bump, never a content copy. Readers get
+/// `&Block` through the `Arc` (immutable by construction); "mutation" is building a new
+/// block and swapping the slot — though committed blocks never mutate (put-once) and the
+/// open turn is replaced per finalize, so that stays theoretical. This is the store behind
+/// the principles: ONE full in-memory presentation copy per client instance (it exists to
+/// make search fast), owned by the cache, with views keeping only rendered windows and
+/// small derived indexes.
 #[derive(Default)]
-pub struct HandoffStore {
-    pending: Vec<Block>,
-}
+pub struct ArcStore;
 
-impl HandoffStore {
-    /// Take everything committed since the last drain — each block exactly once.
-    pub fn drain(&mut self) -> Vec<Block> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
-impl BlockStore for HandoffStore {
-    type Bv = ();
+impl BlockStore for ArcStore {
+    type Bv = std::sync::Arc<Block>;
     fn put(
         &mut self,
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<crate::model::EpochSeconds>],
-    ) {
-        self.pending.push(b);
+    ) -> std::sync::Arc<Block> {
+        std::sync::Arc::new(b)
     }
-    fn reset(&mut self) {
-        self.pending.clear();
+}
+
+impl BlockRead for ArcStore {
+    fn get<'a>(&'a self, bv: &'a std::sync::Arc<Block>) -> std::borrow::Cow<'a, Block> {
+        std::borrow::Cow::Borrowed(bv)
     }
 }
 
@@ -198,16 +194,18 @@ impl Session<Block> {
 /// fold is untouched): one [`SubAgentMeta`] per spawn [`Block::SubAgent`] with a non-empty
 /// `agent_id`, with `done_at` back-filled from the matching completion [`Block::AgentDone`].
 /// `transcript` is left `None` here — the path-aware parse fills it (see
-/// [`populate_sub_agent_transcripts`]). An unmatched `AgentDone` (no spawn) is ignored, mirroring
+/// `populate_sub_agent_transcripts`). An unmatched `AgentDone` (no spawn) is ignored, mirroring
 /// the retired `SessionIndex.agents`.
 /// Build the per-session sub-agent index from a block list: one entry per spawn, keyed by
 /// agent id, with status derived from the two durable events (spawn → running/async; a later
 /// `AgentDone` → terminal). The authoritative status source for renderers (they compute this
 /// from their own blocks) — the step off reading a mutated spawn block.
-pub fn build_sub_agents(blocks: &[Block]) -> BTreeMap<AgentId, SubAgentMeta> {
+pub fn build_sub_agents<B: std::borrow::Borrow<Block>>(
+    blocks: &[B],
+) -> BTreeMap<AgentId, SubAgentMeta> {
     let mut map: BTreeMap<AgentId, SubAgentMeta> = BTreeMap::new();
     for (at, b) in blocks.iter().enumerate() {
-        push_sub_agent(&mut map, at, b);
+        push_sub_agent(&mut map, at, b.borrow());
     }
     map
 }
@@ -321,120 +319,19 @@ impl SessionMeta {
 /// Fill each entry's `transcript` with its child transcript file (`subagents/agent-<id>.jsonl`)
 /// via the agent's discovery hook. A no-op for an agent without sub-agents, or where the file is
 /// absent (leaves `None`). Called by the path-aware parse, which alone knows the transcript path.
-pub(crate) fn populate_sub_agent_transcripts(
-    agent: Agent,
+pub fn populate_sub_agent_transcripts(
+    adapter: &dyn crate::adapter::TranscriptAdapter,
     path: &Path,
     map: &mut BTreeMap<AgentId, SubAgentMeta>,
 ) {
     for (id, m) in map.iter_mut() {
-        m.transcript = crate::discover::subagent_source(agent, path, id);
+        m.transcript = adapter.subagent_source(path, id);
     }
-}
-
-/// **The entry point.** Auto-detect the agent from the transcript head, then parse the file
-/// into a [`Session`] (blocks + index + metrics + cwd). Streaming — one line resident, so a
-/// multi-gigabyte transcript never balloons into memory. Sub-agent child transcripts are NOT
-/// loaded (`SubAgent.blocks` stays empty); this is the flat top-level session.
-///
-/// ```no_run
-/// let session = claude_replay_core::parse_session(std::path::Path::new("session.jsonl"))?;
-/// println!("{} blocks, {} turns", session.block_count(), session.index.turns.len());
-/// for block in session.blocks() {
-///     // render / analyze `block` — see `claude_replay_core::Block`
-/// }
-/// # Ok::<(), std::io::Error>(())
-/// ```
-///
-/// For a live tail (fold only appended bytes each poll), use [`FollowParser`](crate::FollowParser).
-pub fn parse_session(path: &Path) -> io::Result<Session> {
-    crate::Transcript::detect(path).parse()
-}
-
-/// Like [`parse_session`], but also loads the **sub-agent tree** — each `SubAgent`'s child
-/// transcript (recursively) into its `blocks`, so a consumer can descend into spawned agents
-/// or roll up subtree cost. `parse_session` leaves `SubAgent.blocks` empty (cheaper, flat);
-/// use this when you need the whole tree. Only the nested `SubAgent.blocks` change — the
-/// top-level `blocks`/`index`/`metrics` are identical to `parse_session`.
-pub fn parse_session_enriched(path: &Path) -> io::Result<Session> {
-    crate::Transcript::detect(path).parse_enriched()
-}
-
-/// [`parse_session_enriched`] for a **known** agent (skips detection).
-pub fn parse_session_enriched_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    crate::Transcript::open(agent, path).parse_enriched()
-}
-
-/// Parse for a **known** agent, skipping detection — for a caller that already sniffed.
-///
-/// A thin wrapper over [`Transcript::parse`](crate::Transcript::parse), which holds the real
-/// streaming-fold logic. Kept as a documented, widely-called free-function entry point.
-pub fn parse_session_as(agent: Agent, path: &Path) -> io::Result<Session> {
-    crate::Transcript::open(agent, path).parse()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn tmp(name: &str, body: &str) -> PathBuf {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "cr-session-{}-{}-{name}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::File::create(&p)
-            .unwrap()
-            .write_all(body.as_bytes())
-            .unwrap();
-        p
-    }
-
-    /// `parse_session` must return exactly what the existing entry points return — same
-    /// blocks, same per-turn times, same metrics, same cwd — just bundled. This is the
-    /// byte-identical gate for the wrapper.
-    #[test]
-    fn parse_session_matches_the_existing_entry_points() {
-        let body = concat!(
-            r#"{"type":"user","cwd":"/repo","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":3,"output_tokens":5}},"timestamp":"2026-07-26T10:00:01Z"}"#,
-            "\n",
-        );
-        let path = tmp("claude.jsonl", body);
-
-        let s = parse_session(&path).unwrap();
-        assert_eq!(s.agent, Agent::Claude);
-
-        let (blocks, times, folded_metrics) =
-            crate::engine::replay::parse_path_timed_for(Agent::Claude, &path).unwrap();
-        // The retired separate metrics pass, as the byte-identical reference for the fold.
-        let ref_metrics = crate::metrics::parse_reader_for(
-            Agent::Claude,
-            io::BufReader::new(std::fs::File::open(&path).unwrap()),
-        );
-        // `Block` isn't `PartialEq` (like the other equivalence tests, compare via Debug).
-        assert_eq!(
-            format!("{:?}", s.blocks()),
-            format!("{:?}", blocks),
-            "blocks match the existing parse"
-        );
-        assert_eq!(s.user_times, times, "user_times match");
-        assert_eq!(
-            folded_metrics, ref_metrics,
-            "folded metrics (M10) == the separate parse_reader_for pass"
-        );
-        assert_eq!(
-            s.metrics, ref_metrics,
-            "session metrics == the reference pass"
-        );
-        assert_eq!(s.cwd, crate::discover::session_cwd(&path), "cwd matches");
-        assert_eq!(s.cwd.as_deref(), Some(Path::new("/repo")));
-
-        let _ = std::fs::remove_file(&path);
-    }
 
     /// `build_sub_agents` keys the map by agent id, its `spawn_at`/`done_at` point at the
     /// `SubAgent` spawn and the `AgentDone` completion, and a spawn without a completion has
@@ -612,57 +509,5 @@ mod tests {
             incr.push(b);
         }
         assert_eq!(incr, m, "incremental push == batch build");
-    }
-
-    /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk
-    /// transcript (`<session>/subagents/agent-<id>.jsonl`).
-    #[test]
-    fn enriched_parse_populates_transcript() {
-        let base = std::env::temp_dir().join(format!(
-            "cr-session-tx-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        let sess = base.join("proj").join("sid.jsonl");
-        let sadir = base.join("proj").join("sid").join("subagents");
-        std::fs::create_dir_all(&sadir).unwrap();
-        let parent = concat!(
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}"#,
-            "\n",
-            r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#,
-            "\n",
-        );
-        std::fs::File::create(&sess)
-            .unwrap()
-            .write_all(parent.as_bytes())
-            .unwrap();
-        let child = concat!(
-            r#"{"type":"user","message":{"content":"go"}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#,
-            "\n",
-        );
-        std::fs::File::create(sadir.join("agent-achild01.jsonl"))
-            .unwrap()
-            .write_all(child.as_bytes())
-            .unwrap();
-
-        let s = parse_session_enriched_as(Agent::Claude, &sess).unwrap();
-        let meta = s
-            .sub_agents
-            .get("achild01")
-            .expect("achild01 in sub_agents map");
-        assert_eq!(
-            meta.transcript.as_deref(),
-            Some(sadir.join("agent-achild01.jsonl").as_path()),
-            "child transcript path resolved"
-        );
-        assert!(matches!(s.blocks()[meta.spawn_at], Block::SubAgent(_)));
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

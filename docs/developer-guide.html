@@ -290,14 +290,15 @@ println!(<span class="c">"{} blocks · {} turns · {}"</span>,
 
     <h3>the in-process shape — what the TUI does</h3>
     <p>Borrow your UI's idle tick; never spawn a follower thread. With the
-      <code>HandoffStore</code> follow tier, your view is the process's <b>only</b> copy of the
-      blocks — each committed block is handed over exactly once, and a tick costs O(delta):</p>
-<pre><span class="k">type</span> MyCache = SessionCache&lt;TierBStore, HandoffStore, MySidecar&gt;;
+      <code>ArcStore</code> follow tier, the cache retains the <b>one</b> authoritative copy of the
+      blocks and your view holds <code>Arc</code> references — a tick costs O(delta) refcount
+      bumps, and a resync-from-zero is served from memory:</p>
+<pre><span class="k">type</span> MyCache = SessionCache&lt;ArcStore, MySidecar&gt;;
 <span class="k">let</span> cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 <span class="k">loop</span> {
     <span class="k">if</span> no_input_for_250ms() {
-        <span class="k">if let</span> Some(Ok(d)) = cache.poll_handoff(&id) {
+        <span class="k">if let</span> Some(Ok(d)) = cache.poll_view(&id) {
             view.splice(d);            <span class="c">// keep [0..frontier), append delta + open turn,</span>
         }                              <span class="c">//   re-derive from d.changed_from</span>
     }

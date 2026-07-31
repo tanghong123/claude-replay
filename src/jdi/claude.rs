@@ -47,7 +47,7 @@ const UNRECOVERABLE: &[&str] = &[
 
 impl AgentAdapter for ClaudeAdapter {
     fn id(&self) -> Agent {
-        Agent::Claude
+        Agent::CLAUDE
     }
 
     /// Claude plans then executes: a dump turn enqueues the plan and STOPs, an

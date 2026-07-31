@@ -250,7 +250,6 @@ pub struct ViewSidecar {
     width: u16,
     heights: Vec<usize>,
     prefix: Vec<usize>,
-    search_text: Vec<String>,
     collapsed: Vec<bool>,
     user_folds: std::collections::HashMap<crate::model::BlockIndex, bool>,
     scroll: usize,
@@ -258,7 +257,7 @@ pub struct ViewSidecar {
 }
 
 pub struct View {
-    blocks: Vec<Block>,
+    blocks: Vec<std::sync::Arc<Block>>,
     collapsed: Vec<bool>, // per-block fold state
     /// Explicit user fold gestures by block index (#61) — re-applied over the
     /// policy-derived defaults whenever a live update re-folds the tail, so an
@@ -277,9 +276,6 @@ pub struct View {
     /// Bounded cache of rendered+wrapped lines for the blocks near the viewport — the ONLY
     /// styled-line residency (O(window), not O(session)). Evicted by distance when it grows.
     hot: std::collections::HashMap<crate::model::BlockIndex, Vec<Line<'static>>>,
-    /// Plain text of every wrapped line — the search index (content-sized, no styling; the
-    /// design allows an O(N) text index while styled lines stay windowed).
-    search_text: Vec<String>,
     width: u16,
     view_h: usize, // content rows (area height - 1 status row)
     scroll: usize, // top wrapped-line index
@@ -288,9 +284,14 @@ pub struct View {
     title: String,
     live: bool,
     // search (P6)
-    query: String,                           // current needle (empty = no search)
-    searching: bool,                         // in `/` input mode
-    matches: Vec<usize>,                     // wrapped-line indices containing the needle
+    query: String,   // current needle (empty = no search)
+    searching: bool, // in `/` input mode
+    /// Blocks containing ≥1 query occurrence (#84: block-level, fold-independent).
+    matches: Vec<crate::model::BlockIndex>,
+    /// Total occurrence count across all hit blocks (the status tally).
+    occurrences: usize,
+    /// The transiently peek-expanded hit block, if any (vim `foldopen=search`).
+    peeked: Option<crate::model::BlockIndex>,
     match_pos: usize,                        // index into `matches`
     metrics: String, // footer text (tokens/cost/duration/model) — legacy string
     footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
@@ -318,7 +319,23 @@ pub struct View {
 
 impl View {
     pub fn new(blocks: Vec<Block>, title: impl Into<String>, live: bool, fold: FoldPolicy) -> Self {
-        let collapsed = fold.collapsed_for(&blocks);
+        Self::new_shared(
+            blocks.into_iter().map(std::sync::Arc::new).collect(),
+            title,
+            live,
+            fold,
+        )
+    }
+
+    /// [`new`](Self::new) over already-shared blocks (#84): the live path hands `Arc` clones
+    /// of the cache's authoritative copy — the view holds pointers, content stays single-copy.
+    pub fn new_shared(
+        blocks: Vec<std::sync::Arc<Block>>,
+        title: impl Into<String>,
+        live: bool,
+        fold: FoldPolicy,
+    ) -> Self {
+        let collapsed: Vec<bool> = blocks.iter().map(|b| fold.collapses(b)).collect();
         // Raw is built lazily on the first `layout`, once the real terminal width
         // is known — rendering here (at width 0) would be thrown away and re-done,
         // doubling the (expensive) syntax-highlight pass at startup.
@@ -330,7 +347,6 @@ impl View {
             heights: Vec::new(),
             prefix: vec![0],
             hot: std::collections::HashMap::new(),
-            search_text: Vec::new(),
             width: 0,
             view_h: 0,
             scroll: 0,
@@ -341,6 +357,8 @@ impl View {
             query: String::new(),
             searching: false,
             matches: Vec::new(),
+            occurrences: 0,
+            peeked: None,
             match_pos: 0,
             metrics: String::new(),
             footer_segs: Vec::new(),
@@ -391,7 +409,7 @@ impl View {
             .iter()
             .enumerate()
             .filter(|(_, b)| {
-                matches!(b, Block::SubAgent(sa)
+                matches!(&***b, Block::SubAgent(sa)
                     if !agents.get(&sa.agent_id).map(|m| m.status.is_terminal()).unwrap_or(false))
             })
             .map(|(i, _)| i)
@@ -571,7 +589,6 @@ impl View {
         let d = d.min(self.blocks.len()).min(self.heights.len());
         self.heights.truncate(d);
         self.prefix.truncate(d + 1);
-        self.search_text.truncate(self.prefix[d]);
         self.hot.retain(|&b, _| b < d);
         let mut total = self.prefix[d];
         let mut carry = self.prefix[d] > 0;
@@ -581,10 +598,6 @@ impl View {
             self.heights.push(wrapped.len());
             total += wrapped.len();
             self.prefix.push(total);
-            for l in &wrapped {
-                self.search_text
-                    .push(l.spans.iter().map(|s| s.content.as_ref()).collect());
-            }
         }
     }
 
@@ -652,16 +665,6 @@ impl View {
             self.measure_from(b); // emptiness flip can ripple the blank-carry
             return;
         }
-        let start = self.prefix[b];
-        self.search_text.splice(
-            start..start + old_h,
-            wrapped.iter().map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            }),
-        );
         self.hot.insert(b, wrapped);
         self.heights[b] = new_h;
         if new_h != old_h {
@@ -670,7 +673,6 @@ impl View {
                 *p = (*p as isize + delta) as usize;
             }
         }
-        self.recompute_matches();
     }
 
     /// Mark display geometry stale from block 0 (fold-all / policy changes); the next `layout`
@@ -708,7 +710,10 @@ impl View {
     /// The fold-key of every top-level block (for asserting live-tail grouping).
     #[cfg(test)]
     pub fn block_kinds(&self) -> Vec<&'static str> {
-        self.blocks.iter().map(crate::model::fold_key).collect()
+        self.blocks
+            .iter()
+            .map(|b| crate::model::fold_key(b))
+            .collect()
     }
     /// The source-block index that wrapped line `line` was rendered from.
     #[cfg(test)]
@@ -739,7 +744,6 @@ impl View {
             width: self.width,
             heights: self.heights,
             prefix: self.prefix,
-            search_text: self.search_text,
             collapsed: self.collapsed,
             user_folds: self.user_folds,
             scroll: self.scroll,
@@ -759,7 +763,6 @@ impl View {
         self.width = sc.width;
         self.heights = sc.heights;
         self.prefix = sc.prefix;
-        self.search_text = sc.search_text;
         self.collapsed = sc.collapsed;
         self.user_folds = sc.user_folds;
         self.scroll = sc.scroll;
@@ -840,7 +843,12 @@ impl View {
     // --- fold / expand (P4) ---
     /// Toggle the collapse state of a foldable block by index.
     pub fn toggle_block(&mut self, i: crate::model::BlockIndex) {
-        if self.blocks.get(i).map(render::foldable).unwrap_or(false) {
+        if self
+            .blocks
+            .get(i)
+            .map(|b| render::foldable(b))
+            .unwrap_or(false)
+        {
             if let Some(c) = self.collapsed.get_mut(i) {
                 *c = !*c;
                 // An explicit user gesture (#61): pin it so a live tail re-fold
@@ -857,10 +865,12 @@ impl View {
         // Prefer the focused foldable (set by `[`/`]`/hover); otherwise the first
         // foldable block visible in the viewport. (The block exactly at the top line
         // is usually non-foldable — e.g. assistant text — which made `t` look dead.)
-        if let Some(f) = self
-            .focus
-            .filter(|&i| self.blocks.get(i).map(render::foldable).unwrap_or(false))
-        {
+        if let Some(f) = self.focus.filter(|&i| {
+            self.blocks
+                .get(i)
+                .map(|b| render::foldable(b))
+                .unwrap_or(false)
+        }) {
             self.toggle_block(f);
             return;
         }
@@ -870,7 +880,12 @@ impl View {
             return;
         };
         while b < self.blocks.len() && self.prefix[b] < end {
-            if self.blocks.get(b).map(render::foldable).unwrap_or(false) {
+            if self
+                .blocks
+                .get(b)
+                .map(|b| render::foldable(b))
+                .unwrap_or(false)
+            {
                 self.toggle_block(b);
                 return;
             }
@@ -915,7 +930,7 @@ impl View {
         // A mouse click elsewhere on a spawn / completion header just FOLDS it (only the
         // agent id descends); other blocks do their normal activation.
         if matches!(
-            self.blocks.get(b),
+            self.blocks.get(b).map(|b| &**b),
             Some(Block::SubAgent(_) | Block::AgentDone { .. })
         ) {
             self.toggle_block(b);
@@ -931,7 +946,7 @@ impl View {
         if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return false;
         }
-        let span = match self.blocks.get(b) {
+        let span = match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => render::agent_id_span(sa),
             Some(Block::AgentDone {
                 agent_id,
@@ -949,7 +964,7 @@ impl View {
     /// child **descends** directly (Space still folds it); an [`Attachment`] downloads
     /// (flashed) or reveals its path; any other block toggles its fold.
     fn activate_block(&mut self, b: crate::model::BlockIndex) -> Option<Action> {
-        match self.blocks.get(b) {
+        match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => {
                 if sa.agent_id.is_empty() {
                     self.toggle_block(b); // no id ⇒ nothing to descend into → just fold
@@ -991,7 +1006,7 @@ impl View {
 
     /// The `SubAgent` at block index `b` — the caller descends using its `blocks`.
     pub fn subagent_at(&self, b: crate::model::BlockIndex) -> Option<&crate::model::SubAgent> {
-        match self.blocks.get(b) {
+        match self.blocks.get(b).map(|b| &**b) {
             Some(Block::SubAgent(sa)) => Some(sa),
             _ => None,
         }
@@ -1001,7 +1016,7 @@ impl View {
     /// child `blocks`) OR an `AgentDone` completion (whose child always loads lazily from
     /// its file). `None` for any other block or a missing agent id.
     pub fn descend_ref_at(&self, b: crate::model::BlockIndex) -> Option<DescendRef> {
-        match self.blocks.get(b)? {
+        match &**self.blocks.get(b)? {
             Block::SubAgent(sa) if !sa.agent_id.is_empty() => Some(DescendRef {
                 agent_id: sa.agent_id.clone(),
                 agent_type: sa.agent_type.clone(),
@@ -1045,7 +1060,7 @@ impl View {
         if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return None;
         }
-        let Block::ToolUse { name, target, .. } = self.blocks.get(b)? else {
+        let Block::ToolUse { name, target, .. } = &**self.blocks.get(b)? else {
             return None;
         };
         if target.is_empty() {
@@ -1083,7 +1098,7 @@ impl View {
     fn focusable_blocks(&self) -> Vec<crate::model::BlockIndex> {
         (0..self.blocks.len())
             .filter(|&i| {
-                render::foldable(&self.blocks[i]) || matches!(self.blocks[i], Block::Attachment(_))
+                render::foldable(&self.blocks[i]) || matches!(*self.blocks[i], Block::Attachment(_))
             })
             .collect()
     }
@@ -1175,25 +1190,69 @@ impl View {
     pub fn is_searching(&self) -> bool {
         self.searching
     }
+    /// Source-of-truth search (#84): DISCOVERY scans every block's text content — the one
+    /// shared in-memory copy, which exists precisely to make this fast — so matches inside
+    /// FOLDED blocks are found (the old display-text index was fold-blind). Extraction is
+    /// string-only (no render, no wrap, no styling); position mapping stays lazy (the jump
+    /// target's block start comes from the prefix sums; visible highlighting happens during
+    /// the normal draw of the hot window).
     fn recompute_matches(&mut self) {
         self.matches.clear();
+        self.occurrences = 0;
         if self.query.is_empty() {
             return;
         }
         let q = self.query.to_lowercase();
-        for (i, text) in self.search_text.iter().enumerate() {
-            if text.to_lowercase().contains(&q) {
+        for (i, b) in self.blocks.iter().enumerate() {
+            let n = block_occurrences(b, &q);
+            if n > 0 {
                 self.matches.push(i);
+                self.occurrences += n;
             }
         }
         if self.match_pos >= self.matches.len() {
             self.match_pos = 0;
         }
     }
+
+    /// Navigate to the current hit block. A hit inside a FOLDED block **peek-expands** it
+    /// (vim's `foldopen=search` behaviour): the expansion is transient — stepping away
+    /// re-collapses it unless the user touched it (a toggle records a `user_folds` entry,
+    /// which converts the peek to sticky). `Enter` (keep) also stickies the current peek;
+    /// `Esc` (cancel) restores it.
     fn jump_to_current_match(&mut self) {
-        if let Some(&line) = self.matches.get(self.match_pos) {
+        self.unpeek();
+        let Some(&b) = self.matches.get(self.match_pos) else {
+            return;
+        };
+        if self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]) {
+            self.collapsed[b] = false; // peek — deliberately NOT a user_folds gesture
+            self.peeked = Some(b);
+            self.dirty_from = Some(self.dirty_from.map_or(b, |d| d.min(b)));
+        }
+        // The block's first display line is exact without any wrapping (prefix sums); the
+        // peek expansion only changes heights AFTER this block, so the target is stable.
+        if let Some(&line) = self.prefix.get(b) {
             self.scroll = line.min(self.max_scroll());
             self.follow = false;
+        }
+    }
+
+    /// Restore a transient peek expansion, unless the user made it sticky by toggling it
+    /// (which records a `user_folds` entry).
+    fn unpeek(&mut self) {
+        if let Some(p) = self.peeked.take() {
+            if !self.user_folds.contains_key(&p)
+                && p < self.collapsed.len()
+                && self
+                    .blocks
+                    .get(p)
+                    .map(|b| render::foldable(b))
+                    .unwrap_or(false)
+            {
+                self.collapsed[p] = true;
+                self.dirty_from = Some(self.dirty_from.map_or(p, |d| d.min(p)));
+            }
         }
     }
     pub fn search_start(&mut self) {
@@ -1213,11 +1272,17 @@ impl View {
     }
     pub fn search_confirm(&mut self) {
         self.searching = false; // keep query + highlights
+        if let Some(p) = self.peeked.take() {
+            // Enter = "I want to stay here": the current hit's expansion becomes sticky.
+            self.user_folds.insert(p, false);
+        }
     }
     pub fn search_cancel(&mut self) {
+        self.unpeek();
         self.searching = false;
         self.query.clear();
         self.matches.clear();
+        self.occurrences = 0;
     }
     pub fn search_next(&mut self) {
         if self.matches.is_empty() {
@@ -1253,13 +1318,13 @@ impl View {
             .blocks
             .iter()
             .zip(&new_blocks)
-            .take_while(|(a, b)| a == b)
+            .take_while(|(a, b)| a.as_ref() == *b)
             .count();
         self.apply_from(new_blocks, d);
     }
 
     /// The **single** live-update entry the event loop calls (finding #7): the engine
-    /// ([`FollowParser::poll_delta`](crate::FollowParser)) hands the new blocks, the metrics, and the
+    /// (`FollowParser::poll_delta`) hands the new blocks, the metrics, and the
     /// exact `changed_from` boundary — so this needs **no** O(N) prefix scan (finding #4) — and it
     /// refreshes the footer in the same call, so a block update can never drift out of sync with the
     /// cost/token footer.
@@ -1281,15 +1346,15 @@ impl View {
         if !self.follow {
             self.new_count += new_blocks.len().saturating_sub(self.blocks.len());
         }
-        self.blocks = new_blocks;
+        self.blocks = new_blocks.into_iter().map(std::sync::Arc::new).collect();
         self.post_splice(d);
     }
 
-    /// The **handoff** apply (#76): splice the delta in place — keep `[0..frontier)`, append
-    /// the newly-committed blocks and the fresh open turn. The View is the session's sole
-    /// block owner (the follower drained its copy), so a live tick costs O(delta) allocation,
-    /// not an O(session) vector swap.
-    pub fn apply_handoff(&mut self, d: crate::follow::HandoffDelta) {
+    /// The **shared-copy** apply (#84/#85): splice the delta in place — keep
+    /// `[0..frontier)`, append `Arc` clones of the newly-committed blocks and the fresh
+    /// open turn. Content lives once, in the cache's authoritative copy; a live tick costs
+    /// O(delta) refcount bumps, not an O(session) content move.
+    pub fn apply_view(&mut self, d: claude_replay_present::cache::ViewDelta) {
         let prev_committed = (d.committed_len - d.committed_delta.len()).min(self.blocks.len());
         let joined = d.committed_len + d.provisional.len();
         if !self.follow {
@@ -1310,12 +1375,19 @@ impl View {
     /// O(tail), not O(session).
     fn post_splice(&mut self, d: usize) {
         let d = d.min(self.blocks.len());
-        let tail = self.fold.collapsed_for(&self.blocks[d..]);
+        let tail: Vec<bool> = self.blocks[d..]
+            .iter()
+            .map(|b| self.fold.collapses(b))
+            .collect();
         self.collapsed.truncate(d);
         self.collapsed.extend(tail);
         for (&i, &c) in &self.user_folds {
             if i >= d
-                && self.blocks.get(i).map(render::foldable).unwrap_or(false)
+                && self
+                    .blocks
+                    .get(i)
+                    .map(|b| render::foldable(b))
+                    .unwrap_or(false)
                 && i < self.collapsed.len()
             {
                 self.collapsed[i] = c;
@@ -1343,10 +1415,12 @@ impl View {
             };
             return Line::styled(
                 format!(
-                    " search '{}'  {}/{}  (n/N next/prev · Esc-then-/ to clear) ",
+                    " search '{}'  block {}/{} · {} hit{}  (n/N next/prev · Esc-then-/ to clear) ",
                     self.query,
                     cur,
-                    self.matches.len()
+                    self.matches.len(),
+                    self.occurrences,
+                    if self.occurrences == 1 { "" } else { "s" }
                 ),
                 theme::status(),
             );
@@ -1905,6 +1979,67 @@ fn pretty_home(p: &Path) -> String {
     s
 }
 
+/// Occurrences of the (lowercased) needle in one block's TEXT CONTENT — the search
+/// discovery primitive (#84). String-only: no render, no wrap, no styling; nested blocks
+/// (a thinking span's absorbed tools, a spawn's inline child) recurse so folded and
+/// nested content is searchable. The contract is raw-content search (like vim searching
+/// the source, not the wrapped display).
+fn block_occurrences(b: &Block, needle: &str) -> usize {
+    fn count(hay: &str, needle: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+        hay.to_lowercase().matches(needle).count()
+    }
+    match b {
+        Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
+        Block::QueueEvent { text } => count(text, needle),
+        Block::Thinking { text, tools, .. } => {
+            count(text, needle)
+                + tools
+                    .iter()
+                    .map(|t| block_occurrences(t, needle))
+                    .sum::<usize>()
+        }
+        Block::ToolUse {
+            name,
+            target,
+            diffs,
+            output,
+            ..
+        } => {
+            count(name, needle)
+                + count(target, needle)
+                + output.as_deref().map(|o| count(o, needle)).unwrap_or(0)
+                + diffs
+                    .iter()
+                    .map(|(a, b)| count(a, needle) + count(b, needle))
+                    .sum::<usize>()
+        }
+        Block::Command { name, args, output } => {
+            count(name, needle)
+                + count(args, needle)
+                + output.iter().map(|o| count(o, needle)).sum::<usize>()
+        }
+        Block::SubAgent(sa) => {
+            count(&sa.agent_id, needle)
+                + count(&sa.description, needle)
+                + count(&sa.prompt, needle)
+                + sa.result.as_deref().map(|r| count(r, needle)).unwrap_or(0)
+                + sa.blocks
+                    .iter()
+                    .map(|c| block_occurrences(c, needle))
+                    .sum::<usize>()
+        }
+        Block::AgentDone {
+            agent_id,
+            description,
+            ..
+        } => count(agent_id, needle) + count(description, needle),
+        Block::Attachment(a) => count(&a.name, needle),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1947,13 +2082,13 @@ mod tests {
         );
     }
 
-    /// The single-owner `apply_handoff` (#76) yields the exact same view state as the
+    /// The shared-copy `apply_view` (#84/#85) yields the exact same view state as the
     /// scan-based `update` for the same session evolution — same rendered lines, same
     /// per-block fold state, and a preserved fold toggle on the unchanged prefix — while
     /// the View splices deltas instead of swapping whole vectors. Also covers the
     /// commit-shaped delta (prefix moves from open to committed).
     #[test]
-    fn apply_handoff_equals_update_scan() {
+    fn apply_view_equals_update_scan() {
         let a = blocks(10);
         let mut v1 = View::new(a.clone(), "m", true, FoldPolicy::default());
         let mut v2 = View::new(a.clone(), "m", true, FoldPolicy::default());
@@ -1969,14 +2104,23 @@ mod tests {
         // 8), the last 2 provisional. The splice must land identically to the full scan.
         let committed_len = 11usize;
         let prev_committed = 8usize; // pretend 8 were already handed over
-        v2.apply_handoff(crate::follow::HandoffDelta {
+        v2.apply_view(claude_replay_present::cache::ViewDelta {
             reset: false,
-            committed_delta: b[prev_committed..committed_len].to_vec(),
+            committed_delta: b[prev_committed..committed_len]
+                .iter()
+                .cloned()
+                .map(std::sync::Arc::new)
+                .collect(),
             committed_len,
-            provisional: b[committed_len..].to_vec(),
+            provisional: b[committed_len..]
+                .iter()
+                .cloned()
+                .map(std::sync::Arc::new)
+                .collect(),
+            changed_from: d,
             user_times: Vec::new(),
             metrics: Metrics::default(),
-            changed_from: d,
+            tasks: Default::default(),
         });
         v1.layout(80, 24);
         v2.layout(80, 24);
@@ -2105,7 +2249,7 @@ mod tests {
         // per-agent internals — so the viewer stays off `claude_model`.
         let path = std::env::temp_dir().join(format!("cr-fold-{}.jsonl", std::process::id()));
         std::fs::write(&path, jsonl).unwrap();
-        let blocks = crate::engine::parse_session_as(crate::Agent::Claude, &path)
+        let blocks = claude_replay_core::parse_session_as(crate::Agent::CLAUDE, &path)
             .unwrap()
             .blocks();
         let _ = std::fs::remove_file(&path);
@@ -2172,6 +2316,68 @@ mod tests {
             !v3.adopt_sidecar(sc2),
             "different block count ⇒ fresh measure"
         );
+    }
+
+    /// #84 source-of-truth search: a match INSIDE a collapsed tool output is found
+    /// (the retired display-text index was fold-blind), navigation peek-expands the
+    /// folded hit, stepping away re-collapses it, Esc restores, and Enter makes the
+    /// current peek sticky — vim's foldopen=search semantics.
+    #[test]
+    fn search_finds_folded_content_and_peeks() {
+        let blocks = vec![
+            Block::UserText("go".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "run".into(),
+                diffs: Vec::new(),
+                output: Some("the ZEBRA lives here".into()),
+                patch: None,
+                read_lines: None,
+            },
+            Block::AssistantText("done".into()),
+            Block::ToolUse {
+                name: "Bash".into(),
+                target: "again".into(),
+                diffs: Vec::new(),
+                output: Some("another ZEBRA sighting".into()),
+                patch: None,
+                read_lines: None,
+            },
+        ];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::default());
+        v.layout(80, 24);
+        assert!(
+            v.is_collapsed(1) && v.is_collapsed(3),
+            "bash folds by default"
+        );
+
+        v.search_start();
+        for c in "zebra".chars() {
+            v.search_input(c);
+        }
+        assert_eq!(v.match_count(), 2, "hits inside FOLDED outputs are found");
+        assert!(!v.is_collapsed(1), "navigating peek-expanded the first hit");
+        assert!(v.is_collapsed(3), "the other hit stays folded");
+
+        v.search_next();
+        assert!(v.is_collapsed(1), "stepping away re-collapsed the peek");
+        assert!(!v.is_collapsed(3), "the new current hit peek-expanded");
+
+        // Esc restores the current peek too.
+        v.search_cancel();
+        assert!(v.is_collapsed(3), "cancel restored the peek");
+
+        // Enter (keep) makes the current peek sticky instead.
+        v.search_start();
+        for c in "zebra".chars() {
+            v.search_input(c);
+        }
+        assert!(!v.is_collapsed(1), "peeked again");
+        v.search_confirm();
+        assert!(!v.is_collapsed(1), "Enter kept the current hit expanded");
+        // …and a live update must not snap it back (it is a user_folds entry now).
+        v.layout(80, 24);
+        assert!(!v.is_collapsed(1), "sticky across layout");
     }
 
     /// A drag across two lines extracts the spanning text and paints the selection
@@ -2484,7 +2690,7 @@ mod tests {
             project: "proj".into(),
             snippet: format!("{name} snippet"),
             cwd_affinity: false,
-            agent: crate::Agent::Claude,
+            agent: crate::Agent::CLAUDE,
         };
         let txt = |b: &Buffer| {
             (0..b.area.height)
@@ -2748,7 +2954,7 @@ mod tests {
         // Mouse: a click on the header (not the id) FOLDS/expands; a click on the agent
         // id descends. Locate the spawn's header row + the id column span.
         let row = v.block_start(1).unwrap() as u16;
-        let Block::SubAgent(spawn) = &v.blocks[1] else {
+        let Block::SubAgent(spawn) = &*v.blocks[1] else {
             unreachable!()
         };
         let (ids, ide) = crate::tui::render::agent_id_span(spawn).expect("id span");
@@ -2799,7 +3005,7 @@ mod tests {
         );
         draw(&mut v, 120, 20);
         // The affordance is present even with an empty child.
-        let Block::SubAgent(spawn) = &v.blocks[1] else {
+        let Block::SubAgent(spawn) = &*v.blocks[1] else {
             unreachable!()
         };
         assert!(
@@ -3031,7 +3237,7 @@ mod tests {
             .unwrap()
             .write_all(format!("{l0}\n{l1}\n").as_bytes())
             .unwrap();
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
 
         let off_img = (l0.len() + 1) as u64;
         let text = Attachment {

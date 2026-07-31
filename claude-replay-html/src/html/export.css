@@ -76,6 +76,12 @@ body {
      scroll anchoring fights our own anchoring and bounces programmatic jumps. */
   overflow-anchor: none;
 }
+/* #89: the rule above sat on body only — but the WINDOW's scroll container is the
+   root element, so native anchoring still ran there: every tail rewrite removed
+   the node Chrome anchored on and its fallback yanked the viewport far up. The
+   page owns all anchoring (captureAnchor/restoreAnchor/toBottom); the browser's
+   must be off on the element that actually scrolls. */
+html { overflow-anchor: none; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -102,6 +108,10 @@ input::placeholder { color: var(--faint); }
   border: none; outline: none; background: transparent; color: var(--fg);
   font: 13px var(--sans); width: auto; flex: 1 1 auto; min-width: 0; height: 28px;
 }
+/* Focus cue: `/` and a mouse click land the caret the same way — the box lights up
+   so the eye finds where typing will go. */
+.searchbox:focus-within { border-color: var(--link); box-shadow: 0 0 0 1px var(--link); }
+.searchbox:focus-within .mag { color: var(--link); }
 #qcount { font: 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
 .tbtn {
   font: 12.5px var(--sans); padding: 5px 10px; border: 1px solid var(--border);
@@ -125,6 +135,7 @@ input::placeholder { color: var(--faint); }
 .tf-prev, .tf-next { display: none; margin-left: 6px; padding: 0 3px; opacity: 0.8; }
 #btn-tools.active .tf-prev, #btn-tools.active .tf-next { display: inline; }
 .tf-prev:hover, .tf-next:hover { opacity: 1; }
+.tf-prev.disabled, .tf-next.disabled { opacity: 0.25; pointer-events: none; }
 #btn-agents.active { color: var(--kw); border-color: var(--kw); }
 #toolmenu, #agentmenu, #taskmenu {
   display: none; position: absolute; top: 34px; left: 0; min-width: 190px; z-index: 40;

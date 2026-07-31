@@ -17,18 +17,32 @@ pub fn tool_count(sa: &SubAgent) -> usize {
         .sum()
 }
 
-/// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). The spawn is
-/// the *launch* event and always reads "launched" — the terminal status shows on the
-/// separate `AgentDone` completion event, not here.
+/// The collapsed spawn's chip: `<N> tools · launched` (or just `launched`). An ASYNC
+/// spawn is the *launch* event and always reads "launched" — its terminal status shows
+/// on the separate `AgentDone` completion event. A SYNCHRONOUS spawn (the inline
+/// `result` is right here, and no completion event will ever follow — QoderWork's
+/// `agent-result` shape, #95) shows its terminal verb instead: `<N> tools · done`.
 pub fn spawn_chip(sa: &SubAgent) -> String {
+    use crate::model::AgentStatus;
+    let state = if sa.result.is_some() {
+        match sa.status {
+            AgentStatus::Completed => "done",
+            AgentStatus::Failed => "failed",
+            AgentStatus::Killed => "killed",
+            AgentStatus::Stopped => "stopped",
+            _ => "launched",
+        }
+    } else {
+        "launched"
+    };
     let tools = tool_count(sa);
     if tools > 0 {
         format!(
-            "{tools} tool{} · launched",
+            "{tools} tool{} · {state}",
             if tools == 1 { "" } else { "s" }
         )
     } else {
-        "launched".to_string()
+        state.to_string()
     }
 }
 
@@ -119,7 +133,7 @@ mod tests {
 
         // Parse through the public entry point (enriched = loads the sub-agent tree), the
         // same way a library consumer would — no reach into the core's per-agent internals.
-        let blocks = crate::engine::parse_session_enriched_as(crate::Agent::Claude, &sess)
+        let blocks = claude_replay_core::parse_session_enriched_as(crate::Agent::CLAUDE, &sess)
             .unwrap()
             .blocks();
         let Some(crate::model::Block::SubAgent(sa)) = blocks

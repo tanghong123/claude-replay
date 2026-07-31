@@ -1,8 +1,8 @@
 [package]
-name = "claude-replay-core"
+name = "claude-replay-agents"
 version.workspace = true
 edition = "2021"
-description = "The wired facade of the claude-replay engine: agent-free machinery + built-in adapters, one API. No TUI/HTML/CLI dependencies."
+description = "The built-in agent adapters for claude-replay (Claude Code, Codex, QoderWork) over the claude-replay-engine seam."
 license = "MIT"
 repository = "https://github.com/tanghong123/claude-replay"
 keywords = ["claude", "codex", "transcript", "parser"]
@@ -10,7 +10,8 @@ categories = ["parser-implementations"]
 
 [dependencies]
 claude-replay-engine = { path = "../claude-replay-engine", version = "1" }
-claude-replay-agents = { path = "../claude-replay-agents", version = "1" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+
+[dev-dependencies]
+claude-replay-core = { path = "../claude-replay-core" }

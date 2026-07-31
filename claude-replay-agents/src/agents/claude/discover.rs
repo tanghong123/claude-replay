@@ -3,15 +3,14 @@
 //! `~/.claude/projects/<slug>/<id>.jsonl`, scoped to the cwd or its nearest ancestor with
 //! sessions. The agent-neutral pieces — the [`Candidate`] type, `ancestors_below`,
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
-//! dispatchers — live in [`crate::discover`].
+//! dispatchers — live in the facade crate's `discover`.
 
-use crate::discover::Candidate;
-use crate::Agent;
+use claude_replay_engine::seam::{Agent, Candidate};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Root under which Claude Code writes per-project transcript dirs.
-pub(crate) fn projects_dir() -> PathBuf {
+pub fn projects_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CLAUDE_PROJECTS_DIR") {
         return PathBuf::from(p);
     }
@@ -79,7 +78,7 @@ fn nearest_project_transcripts(
     cwd: &Path,
     home: Option<&Path>,
 ) -> Vec<(SystemTime, PathBuf)> {
-    crate::discover::ancestors_below(cwd, home)
+    claude_replay_engine::seam::ancestors_below(cwd, home)
         .into_iter()
         .map(|dir| transcripts_in_project(root, &slug_for(&dir)))
         .find(|t| !t.is_empty())
@@ -91,9 +90,9 @@ fn nearest_project_transcripts(
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     candidates_scoped_in(
         &projects_dir(),
-        Agent::Claude,
+        Agent::CLAUDE,
         cwd,
-        crate::discover::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     )
 }
 
@@ -158,8 +157,11 @@ fn first_user_snippet(path: &Path) -> String {
 /// target, so `resume` in a directory with no history fails cleanly rather than
 /// grabbing some other project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<(String, PathBuf, SystemTime)> {
-    let mut ts =
-        nearest_project_transcripts(&projects_dir(), cwd, crate::discover::home_dir().as_deref());
+    let mut ts = nearest_project_transcripts(
+        &projects_dir(),
+        cwd,
+        claude_replay_engine::seam::home_dir().as_deref(),
+    );
     ts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
     ts.into_iter().next().map(|(m, p)| {
         let id = p
@@ -214,7 +216,7 @@ fn tasks_root() -> PathBuf {
 /// missing or nothing parses — the caller then falls back to the transcript's op-log.
 /// This is Claude's half of `discover::session_tasks` (the `TranscriptAdapter::load_tasks`
 /// hook); files may be pruned/gc'd, which the op-log merge backfills.
-pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::tasks::TaskList> {
+pub(crate) fn load_tasks(path: &Path) -> Option<claude_replay_engine::seam::TaskList> {
     let id = path.file_stem()?.to_str()?;
     let dir = tasks_root().join(id);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -237,11 +239,11 @@ pub(crate) fn load_tasks(path: &Path) -> Option<crate::engine::tasks::TaskList> 
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        if let Some(t) = crate::engine::tasks::task_from_json(&v) {
+        if let Some(t) = claude_replay_engine::seam::task_from_json(&v) {
             items.push(t);
         }
     }
-    (!items.is_empty()).then_some(crate::engine::tasks::TaskList { items })
+    (!items.is_empty()).then_some(claude_replay_engine::seam::TaskList { items })
 }
 
 #[cfg(test)]
@@ -271,7 +273,7 @@ mod tests {
             std::fs::write(root.join(&slug).join("h1.jsonl"), format!("{line}\n")).unwrap();
         }
         assert!(
-            candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home)).is_empty(),
+            candidates_scoped_in(&root, Agent::QODERWORK, &cwd, Some(home)).is_empty(),
             "home-recorded sessions leaked into a subdir cwd"
         );
         // Sanity: the same store WITH a real project dir for the cwd still discovers it.
@@ -281,7 +283,7 @@ mod tests {
             format!("{line}\n"),
         )
         .unwrap();
-        let cands = candidates_scoped_in(&root, Agent::QoderWork, &cwd, Some(home));
+        let cands = candidates_scoped_in(&root, Agent::QODERWORK, &cwd, Some(home));
         assert_eq!(cands.len(), 1);
         assert!(cands[0].cwd_affinity);
         let _ = std::fs::remove_dir_all(&root);

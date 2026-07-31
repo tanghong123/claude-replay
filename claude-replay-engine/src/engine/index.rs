@@ -75,10 +75,14 @@ impl SessionIndex {
     /// Build the index in one scan over the top-level blocks. `user_times` supplies each
     /// turn's timestamp in order (exactly the order `stamp_user_turns` emits them). Internal:
     /// a consumer always receives an already-built index via [`Session`](crate::Session).
-    pub(crate) fn build(blocks: &[Block], user_times: &[Option<f64>]) -> Self {
+    pub(crate) fn build<B: std::borrow::Borrow<Block>>(
+        blocks: &[B],
+        user_times: &[Option<f64>],
+    ) -> Self {
         let mut idx = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {
+            let b = b.borrow();
             // Advance the user-turn cursor exactly as the incremental caller would: a user turn
             // consumes the next `user_times` entry, everything else passes `None`.
             let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
@@ -94,8 +98,8 @@ impl SessionIndex {
     }
 
     /// Fold ONE more block (at its flat [`BlockIndex`] `at`) into the index — the incremental
-    /// unit [`build`](Self::build) is a loop over. `turn_time` is this block's timestamp **iff** it
-    /// is a user turn (`UserText`/`Command`), in the same order [`stamp_user_turns`] emits them;
+    /// unit `build` is a loop over. `turn_time` is this block's timestamp **iff** it
+    /// is a user turn (`UserText`/`Command`), in the same order `stamp_user_turns` emits them;
     /// pass `None` for any other block. Lets the accumulator maintain the index as durable blocks
     /// are emitted, so the full `Vec<Block>` need never be resident to (re)build it — the emit-and-
     /// drop / tier-b path. Proven equal to `build` block-for-block (see the test).

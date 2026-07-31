@@ -235,7 +235,12 @@ fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Ve
             Span::styled(format!("{:>gutter$} ", i + 1), theme::dim()),
         ];
         match hl.get(i) {
-            Some(line_spans) if !line_spans.is_empty() => spans.extend(line_spans.iter().cloned()),
+            Some(line_spans) if !line_spans.is_empty() => spans.extend(
+                line_spans
+                    .iter()
+                    .cloned()
+                    .map(|sp| theme::hl_span(sp, |s| s)),
+            ),
             _ => spans.push(Span::raw(l.to_string())),
         }
         out.push(Line::from(spans));
@@ -284,9 +289,8 @@ fn diff_row(
     // +/- rows, dim on context).
     spans.push(Span::styled(format!("{gutter} "), patch(marker_style)));
     spans.push(Span::styled(marker.to_string(), patch(marker_style)));
-    for mut sp in highlight::highlight_one(text, token) {
-        sp.style = patch(sp.style);
-        spans.push(sp);
+    for sp in highlight::highlight_one(text, token) {
+        spans.push(theme::hl_span(sp, patch));
     }
     Line::from(spans)
 }
@@ -322,6 +326,22 @@ fn diff_rendered_len(old: &str, new: &str) -> usize {
         }
     }
     n
+}
+
+/// Added/removed counts straight from a `structuredPatch`'s hunk lines (a Write
+/// overwrite has no old/new string pair to line-diff — the patch IS the diff).
+fn patch_counts(hunks: &[crate::model::Hunk]) -> (usize, usize) {
+    let adds = hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| l.starts_with('+'))
+        .count();
+    let dels = hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| l.starts_with('-'))
+        .count();
+    (adds, dels)
 }
 
 /// Render an Edit's diff to styled TUI rows: classify via [`diff_row_groups`], size the
@@ -508,9 +528,13 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
             ..
         } => {
             let token = highlight::token_for_target(target);
-            // A whole-new-file write (Write/NotebookEdit → a single ("", content)
-            // pair) reads better as numbered code than as an all-`+` diff wall.
-            if matches!(name.as_str(), "Write" | "NotebookEdit") {
+            let write_like = matches!(name.as_str(), "Write" | "NotebookEdit");
+            // A Write OVER AN EXISTING FILE carries the harness's structuredPatch
+            // (computed against the pre-write disk content — the transcript never
+            // holds the original); CC renders it as a diff like an Edit (#92). Only
+            // a fresh-file write (empty patch) keeps the numbered-content preview.
+            let overwrite = write_like && patch.as_deref().is_some_and(|h| !h.is_empty());
+            if write_like && !overwrite {
                 out.push(tool_header(name, target, None));
                 let content = write_content(diffs);
                 let n = content.lines().count();
@@ -521,12 +545,16 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 // Expanded: the whole file (folding controls cost). The collapsed
                 // preview caps at WRITE_PREVIEW — see `render_collapsed`.
                 write_numbered(content, token, None, &mut out);
-            } else if matches!(name.as_str(), "Edit" | "MultiEdit") {
+            } else if overwrite || matches!(name.as_str(), "Edit" | "MultiEdit") {
                 out.push(tool_header(name, target, None));
-                let (adds, dels) = diffs
-                    .iter()
-                    .map(|(o, n)| diff_counts(o, n))
-                    .fold((0usize, 0usize), |(a, d), (x, y)| (a + x, d + y));
+                let (adds, dels) = if overwrite {
+                    patch_counts(patch.as_deref().unwrap_or_default())
+                } else {
+                    diffs
+                        .iter()
+                        .map(|(o, n)| diff_counts(o, n))
+                        .fold((0usize, 0usize), |(a, d), (x, y)| (a + x, d + y))
+                };
                 out.push(Line::styled(
                     format!("  ⎿ \u{a0}{}", edit_summary(adds, dels)),
                     theme::result(),
@@ -692,8 +720,11 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             name,
             target,
             diffs,
+            patch,
             ..
-        } if name == "Write" || name == "NotebookEdit" => {
+        } if (name == "Write" || name == "NotebookEdit")
+            && !patch.as_deref().is_some_and(|h| !h.is_empty()) =>
+        {
             let content = write_content(diffs);
             let n = content.lines().count();
             let token = highlight::token_for_target(target);
@@ -829,13 +860,14 @@ fn body_len(b: &Block) -> usize {
             output,
             ..
         } => match name.as_str() {
-            "Write" | "NotebookEdit" => {
+            "Write" | "NotebookEdit" if !patch.as_deref().is_some_and(|h| !h.is_empty()) => {
                 // Expanded height: ⎿ result line + every content line (Write has its
                 // own `render_collapsed` arm, so this feeds only length checks).
                 let content = write_content(diffs);
                 1 + content.lines().count()
             }
-            "Edit" | "MultiEdit" => {
+            // A Write overwrite renders as a diff (#92) — counted like an Edit.
+            "Write" | "NotebookEdit" | "Edit" | "MultiEdit" => {
                 let body: usize = if let Some(hunks) = patch {
                     hunks.iter().map(|h| h.lines.len()).sum()
                 } else {
@@ -909,7 +941,7 @@ pub fn assemble(bodies: Vec<Vec<Line<'static>>>) -> Rendered {
     }
 }
 
-/// ONE block's share of [`assemble`]'s output, computed in isolation — the windowed viewer's
+/// ONE block's share of `assemble`'s output, computed in isolation — the windowed viewer's
 /// unit (render only what's visible, measure the rest). `carry_in` is the one cross-block fact
 /// the flat pass threads: whether the line before this block's first is blank — which, by
 /// `assemble`'s own invariant, is exactly "any earlier block emitted at least one line" (every
@@ -1209,6 +1241,39 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s.style.fg, Some(Color::Indexed(..)))),
             "no syntect fg color on the add row"
+        );
+    }
+
+    /// #92: a Write OVER AN EXISTING FILE carries the harness's structuredPatch and
+    /// renders as a diff like an Edit — `⎿ Added N lines, removed M lines` + hunks —
+    /// while a fresh-file write (no patch) keeps the numbered-content preview.
+    #[test]
+    fn write_overwrite_renders_as_diff() {
+        let block = Block::ToolUse {
+            name: "Write".into(),
+            target: "src/x.rs".into(),
+            diffs: vec![(String::new(), "b\nc\n".into())],
+            output: None,
+            patch: Some(vec![crate::model::Hunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec!["-a".into(), "+b".into(), " c".into()],
+            }]),
+            read_lines: None,
+        };
+        let e = texts(&render_one(&block, 100));
+        let all = e.join("\n");
+        assert!(
+            all.contains("Added 1 line, removed 1 line"),
+            "edit-style summary expected:\n{all}"
+        );
+        assert!(
+            all.contains("- a") || all.contains("-a"),
+            "removed row expected:\n{all}"
+        );
+        assert!(
+            !all.contains("Wrote"),
+            "no write preview on overwrite:\n{all}"
         );
     }
 

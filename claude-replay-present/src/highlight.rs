@@ -3,8 +3,6 @@
 //! `markdown` (fenced code) and `render` (Write/Edit tool bodies) so we don't
 //! load syntect twice.
 
-use ratatui::style::{Color, Style};
-use ratatui::text::Span;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{
@@ -12,6 +10,16 @@ use syntect::highlighting::{
 };
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+
+/// One highlighted token: its text and an optional foreground as an **xterm-256 index**
+/// (the shared Claude-Code palette). Toolkit-neutral (#86): the TUI maps indices onto its
+/// terminal spans, the HTML exporter onto CSS token classes — a new frontend maps onto
+/// whatever it renders with, and this crate names no UI toolkit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HlSpan {
+    pub text: String,
+    pub fg: Option<u8>,
+}
 
 struct Syn {
     ps: SyntaxSet,
@@ -88,7 +96,7 @@ fn syn() -> &'static Syn {
 /// plain text). Returns one `Vec<Span>` per line, with per-token `fg` colors
 /// only (no background). Multi-line state (strings, comments) is preserved
 /// across lines within the call.
-pub fn highlight_spans(code: &str, token: &str) -> Vec<Vec<Span<'static>>> {
+pub fn highlight_spans(code: &str, token: &str) -> Vec<Vec<HlSpan>> {
     let s = syn();
     let syntax = (!token.is_empty())
         .then(|| s.ps.find_syntax_by_token(token))
@@ -102,10 +110,10 @@ pub fn highlight_spans(code: &str, token: &str) -> Vec<Vec<Span<'static>>> {
             .into_iter()
             .map(|(st, text)| {
                 let c = st.foreground;
-                Span::styled(
-                    text.trim_end_matches('\n').to_string(),
-                    Style::default().fg(cc_index(c.r, c.g, c.b)),
-                )
+                HlSpan {
+                    text: text.trim_end_matches('\n').to_string(),
+                    fg: cc_index(c.r, c.g, c.b),
+                }
             })
             .collect();
         out.push(spans);
@@ -116,22 +124,22 @@ pub fn highlight_spans(code: &str, token: &str) -> Vec<Vec<Span<'static>>> {
 /// Map the hand-built syntect palette (RGB) onto Claude Code's 256-colour
 /// indices, so peek emits the same `38;5;N` sequences CC does instead of
 /// truecolor. Unknown colours fall back to the near-white default (231).
-fn cc_index(r: u8, g: u8, b: u8) -> Color {
+fn cc_index(r: u8, g: u8, b: u8) -> Option<u8> {
     match (r, g, b) {
-        (229, 229, 229) => Color::Indexed(231), // default text
-        (129, 213, 251) => Color::Indexed(81),  // keyword / storage
-        (184, 215, 69) => Color::Indexed(148),  // function / macro
-        (216, 216, 146) => Color::Indexed(186), // string
-        (170, 138, 248) => Color::Indexed(141), // number / constant
-        (234, 52, 99) => Color::Indexed(197),   // self / language variable
-        (106, 106, 106) => Color::Indexed(242), // comment
-        _ => Color::Indexed(231),
+        (229, 229, 229) => Some(231), // default text
+        (129, 213, 251) => Some(81),  // keyword / storage
+        (184, 215, 69) => Some(148),  // function / macro
+        (216, 216, 146) => Some(186), // string
+        (170, 138, 248) => Some(141), // number / constant
+        (234, 52, 99) => Some(197),   // self / language variable
+        (106, 106, 106) => Some(242), // comment
+        _ => Some(231),
     }
 }
 
 /// Highlight a single line into styled spans (fg only). Convenience for diff
 /// rows; empty input yields no spans.
-pub fn highlight_one(line: &str, token: &str) -> Vec<Span<'static>> {
+pub fn highlight_one(line: &str, token: &str) -> Vec<HlSpan> {
     highlight_spans(line, token)
         .into_iter()
         .next()
@@ -152,13 +160,12 @@ pub fn token_for_target(target: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// fg color of the first span whose text contains `needle`.
-    fn fg_of(spans: &[Span<'static>], needle: &str) -> Color {
+    /// fg index of the first span whose text contains `needle`.
+    fn fg_of(spans: &[HlSpan], needle: &str) -> u8 {
         spans
             .iter()
-            .find(|s| s.content.contains(needle))
+            .find(|s| s.text.contains(needle))
             .unwrap_or_else(|| panic!("no span with {needle:?} in {spans:?}"))
-            .style
             .fg
             .expect("span has fg")
     }
@@ -167,10 +174,10 @@ mod tests {
     fn subtle_palette_colors_rust_tokens() {
         // Colours map to Claude Code's 256-colour indices (not truecolor).
         let spans = highlight_one("let x = Some(2); // c", "rs");
-        assert_eq!(fg_of(&spans, "let"), Color::Indexed(81), "keyword");
-        assert_eq!(fg_of(&spans, "2"), Color::Indexed(141), "number");
-        assert_eq!(fg_of(&spans, "//"), Color::Indexed(242), "comment");
+        assert_eq!(fg_of(&spans, "let"), 81, "keyword");
+        assert_eq!(fg_of(&spans, "2"), 141, "number");
+        assert_eq!(fg_of(&spans, "//"), 242, "comment");
         // Plain identifiers / operators use the near-white default fg (231).
-        assert_eq!(fg_of(&spans, "x"), Color::Indexed(231), "identifier");
+        assert_eq!(fg_of(&spans, "x"), 231, "identifier");
     }
 }

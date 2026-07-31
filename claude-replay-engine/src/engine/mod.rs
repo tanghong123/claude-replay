@@ -10,7 +10,9 @@ pub(crate) mod builder; // the single incremental fold orchestrator (batch + liv
 pub mod index;
 pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `Block`, never `Message`
 pub(crate) mod path; // relativize helpers — internal to the parsers + HTML path rendering
+pub(crate) mod reader; // the follower's byte-offset line reader (tail + resume) — machinery (#87)
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)
+pub mod seam; // the audited adapter contract — everything `crate::agents` may use (#87)
 pub mod session;
 pub mod tasks; // the agent-neutral task/todo model + op-log fold (#15)
 pub mod tier_b;
@@ -19,8 +21,7 @@ pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metric
 pub use builder::{SessionAccumulator, StreamRead};
 pub use index::SessionIndex;
 pub use session::{
-    build_sub_agents, parse_session, parse_session_as, parse_session_enriched,
-    parse_session_enriched_as, BlockAccess, BlockRead, BlockStore, ChildMeta, HandoffStore,
-    InMemoryStore, Session, SessionMeta,
+    build_sub_agents, populate_sub_agent_transcripts, ArcStore, BlockAccess, BlockRead, BlockStore,
+    ChildMeta, InMemoryStore, Session, SessionMeta,
 };
 pub use tasks::{TaskItem, TaskList, TaskStatus};

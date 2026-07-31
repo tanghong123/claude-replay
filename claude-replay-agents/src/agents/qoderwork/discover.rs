@@ -6,8 +6,7 @@
 //! (see the `QoderWorkAdapter` in `adapter.rs`); the one format difference is the
 //! `runtime-config` head line, which drives detection.
 
-use crate::discover::Candidate;
-use crate::Agent;
+use claude_replay_engine::seam::{Agent, Candidate};
 use std::path::{Path, PathBuf};
 
 /// Root under which QoderWork writes per-project transcript dirs.
@@ -22,17 +21,17 @@ pub(crate) fn projects_dir() -> PathBuf {
 /// QoderWork sessions scoped strictly to `cwd` or its nearest ancestor that has sessions —
 /// the same no-global-fallback scoping as the Claude store.
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    crate::claude_discover::candidates_scoped_in(
+    crate::agents::claude::discover::candidates_scoped_in(
         &projects_dir(),
-        Agent::QoderWork,
+        Agent::QODERWORK,
         cwd,
-        crate::discover::home_dir().as_deref(),
+        claude_replay_engine::seam::home_dir().as_deref(),
     )
 }
 
 /// Find a QoderWork transcript by session id (`<id>.jsonl`) anywhere under its projects dir.
 pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
-    crate::claude_discover::transcript_by_id_in(&projects_dir(), id)
+    crate::agents::claude::discover::transcript_by_id_in(&projects_dir(), id)
 }
 
 #[cfg(test)]
@@ -57,8 +56,8 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-07-26T12:15:41Z"}"#, "
 ",
         )).unwrap();
-        let qw = crate::engine::parse_session_as(Agent::QoderWork, &f).unwrap();
-        let cl = crate::engine::parse_session_as(Agent::Claude, &f).unwrap();
+        let qw = claude_replay_core::parse_session_as(Agent::QODERWORK, &f).unwrap();
+        let cl = claude_replay_core::parse_session_as(Agent::CLAUDE, &f).unwrap();
         assert_eq!(
             format!("{:?}", qw.blocks()),
             format!("{:?}", cl.blocks()),
@@ -68,7 +67,7 @@ mod tests {
         assert_eq!(qw.metrics, cl.metrics);
         assert_eq!(
             qw.agent,
-            Agent::QoderWork,
+            Agent::QODERWORK,
             "identity is the only difference"
         );
         let _ = std::fs::remove_file(&f);
@@ -99,15 +98,15 @@ mod tests {
         let by_id = transcript_by_id("abc123");
         std::env::remove_var("QODERWORK_PROJECTS_DIR");
         // With the matching home bound, the store discovers and scopes normally.
-        let cands = crate::claude_discover::candidates_scoped_in(
+        let cands = crate::agents::claude::discover::candidates_scoped_in(
             &root,
-            Agent::QoderWork,
+            Agent::QODERWORK,
             cwd,
             Some(Path::new("/Users/dev")),
         );
 
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].agent, Agent::QoderWork);
+        assert_eq!(cands[0].agent, Agent::QODERWORK);
         assert!(cands[0].cwd_affinity, "scoped to the cwd's own slug");
         assert_eq!(
             by_id.as_deref(),

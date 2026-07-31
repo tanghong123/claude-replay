@@ -32,7 +32,7 @@ bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, defa
 `/tmp/sc-gate`). Engine refactors must be output-preserving; intentional output changes are
 verified line-by-line and re-baselined — see [`scripts/gate/README.md`](../scripts/gate/README.md).
 Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`parse_lines`
-oracles (`#[cfg(test)]` equivalence gates in `claude_model`/`codex_model`).
+oracles (`#[cfg(test)]` equivalence gates in the `agents/{claude,codex}/model.rs` families).
 
 ## 2. Testing a TUI with no terminal
 
@@ -138,7 +138,7 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, F, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a)): keyed residency + your three choices — the pull tier's store `P`, the follow tier's store `F`, the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<TierBStore, HandoffStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, InMemoryStore, ServeAux>` — same type, both frontends |
+| [`SessionCache<P, A>`] | **the unified data layer** ([Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a)): keyed residency + your choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -149,19 +149,19 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 | `BlockStore`/`BlockRead` (core) | **your frontend decides what the `Session` stores per block** — see the walkthrough below | `InMemoryStore` (TUI/batch: `BV = Block`), `TierBStore` (`BV = Deferred`, serde bytes on disk), the html crate's `RecordStore` (`BV = RecordLocator`, rendered wire JSON) |
 
 **The in-process shape** (what the TUI does — `app.rs`, simplified): borrow your UI's idle
-tick, never spawn a follower thread — and with the `HandoffStore` follow tier (#76), your
-view is the process's ONLY copy of the session's blocks (the follower drains committed
-blocks to you exactly once; a tick costs O(delta), not an O(session) rebuild):
+tick, never spawn a follower thread — and with the `ArcStore` follow tier (#84), the cache
+retains the ONE authoritative copy of the blocks while your view holds `Arc` references
+(a tick costs O(delta) refcount bumps; a resync-from-zero is served from memory):
 
 ```rust
-type MyCache = SessionCache<TierBStore /*pull: unused*/, HandoffStore, MySidecar>;
+type MyCache = SessionCache<TierBStore /*pull: unused*/, ArcStore, MySidecar>;
 let cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
-        if let Some(Ok(d)) = cache.poll_handoff(&id) {
-            // splice: keep [0..frontier), append d.committed_delta + d.provisional,
-            // re-derive from d.changed_from — see View::apply_handoff for the real one
+        if let Some(Ok(d)) = cache.poll_view(&id) {
+            // splice: keep [0..frontier), append Arc clones of d.committed_delta +
+            // d.provisional, re-derive from d.changed_from — see View::apply_arc
             view.splice(d);
         }
     }
@@ -169,9 +169,10 @@ loop {
 }
 ```
 
-(Prefer whole-`Session` values instead? Use `F = InMemoryStore` and `poll`/`poll_delta` —
-the capability bounds pick the menu for you; see the protocol table in
-[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-f-a).)
+(Prefer whole-`Session` values instead? Use the core's own follower —
+`FollowParser::poll`/`poll_delta` — or batch `parse_session`; the cache's job is live
+residency, and its two protocols share one resident. See the protocol table in
+[Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
 `PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
@@ -228,8 +229,8 @@ Two optional capabilities refine what your store can feed:
   so `SharedSession` can hibernate/restore around your backing across cache evictions.
 
 Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
-`HandoffStore` (`BV = ()` — committed blocks are QUEUED for the consumer instead of retained,
-making the poller the sole owner; the TUI live path, #76), and the richest one,
+`ArcStore` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers
+hold references; the TUI live path, #84), and the richest one,
 `claude-replay-html`'s `RecordStore`
 (`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
 `put` **renders the committed block to its wire-format JSON record** as the side effect and
@@ -265,7 +266,7 @@ the two frontends (`src/lib.rs::run_viewer`).
 ## 7. Adding an agent
 
 The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new
-agent is **a `*_model` / `*_metrics` / `*_discover` trio + one `impl TranscriptAdapter` row**
+agent is **a `model` / `metrics` / `discover` family under `agents/<agent>/` + one `impl TranscriptAdapter` row**
 — the shared engine is never touched. Calibrate the cost by the three existing adapters:
 Claude (flat sub-agent directory), Codex (operation-scoped child rollouts), QoderWork
 (format matches Claude's, so it reuses Claude's decoder wholesale — its whole adapter is
@@ -280,7 +281,7 @@ pub enum Agent { Claude, Codex, QoderWork, Gemini }
 // …extend label() / from_label() with "gemini".
 ```
 
-### Step 2 — Layer 1: the decoder (`gemini_model.rs`)
+### Step 2 — Layer 1: the decoder (`agents/gemini/model.rs`)
 
 The only place that knows Gemini's raw line format. Provide:
 
@@ -293,18 +294,18 @@ The only place that knows Gemini's raw line format. Provide:
   `Block`, including tool-name normalization onto the canonical vocabulary — this is what
   makes the shared summaries/folding classify your agent correctly), `join_result`,
   `keep_orphan`, `finish_turns` (`coalesce_spans` for Claude-style grouping, or identity).
-  Model it on `codex_model` (the simpler one).
+  Model it on `agents/codex/model.rs` (the simpler one). Import only from `crate::engine::seam` — the audited adapter contract (#87).
 
 > Everything else about parsing — the fold, back-patching, turn grouping, the queue
 > lifecycle, streaming, the live follower — is shared and already done. You are writing a
 > *decoder*, not a parser.
 
-### Step 3 — metrics (`gemini_metrics.rs`)
+### Step 3 — metrics (`agents/gemini/metrics.rs`)
 
 A small `MetricsAccumulator` impl (push a line's token usage, `finish()` into [`Metrics`]).
-See `codex_metrics.rs`.
+See `agents/codex/metrics.rs`.
 
-### Step 4 — discovery (`gemini_discover.rs`)
+### Step 4 — discovery (`agents/gemini/discover.rs`)
 
 Where Gemini keeps its transcripts. Provide `candidates_scoped(cwd)` — scope with
 `discover::ancestors_below(cwd, home)`: auto-discovery must stay strictly inside `$HOME`
@@ -334,7 +335,7 @@ up with no further changes.
 
 ### Step 6 — test it
 
-- An equivalence gate in `gemini_model` (frozen fixture → expected block list), mirroring
+- An equivalence gate in `agents/gemini/model.rs` (frozen fixture → expected block list), mirroring
   `replay_tokenize_matches_*`.
 - A `FollowParser` round-trip: incremental output == full re-parse at each append.
 - The full gate (§1), including `scripts/gate/gate.sh`.
@@ -353,5 +354,5 @@ up with no further changes.
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
-[`SessionCache<P, F, A>`]: ../claude-replay-present/src/cache/mod.rs
-[`PullClient`]: ../claude-replay-present/src/cache/stream.rs
+[`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
+[`PullClient`]: ../claude-replay-present/src/pull.rs

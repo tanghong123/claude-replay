@@ -1,6 +1,5 @@
-use crate::discover::Candidate;
-use crate::Agent;
 use anyhow::{anyhow, Result};
+use claude_replay_engine::seam::{Agent, Candidate};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
@@ -148,7 +147,7 @@ fn containing_sessions_dir(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn subagent_source(root: &Path, child_id: &str) -> Option<PathBuf> {
-    let agent_path = crate::codex_model::decode_agent_path(child_id)?;
+    let agent_path = crate::agents::codex::model::decode_agent_path(child_id)?;
     let root_id = relationship_from_path(root)?.id;
     let sessions = containing_sessions_dir(root)?;
     let nodes: Vec<_> = jsonl_files(&sessions)
@@ -211,7 +210,7 @@ fn first_user_snippet(path: &Path) -> String {
             .flatten()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
             .filter_map(|item| item.get("text").and_then(Value::as_str))
-            .filter(|text| !crate::codex_model::is_host_context(text))
+            .filter(|text| !super::model::is_host_context(text))
             .collect::<Vec<_>>()
             .join(" ");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -268,7 +267,7 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
                 project,
                 snippet: first_user_snippet(&session.path),
                 cwd_affinity,
-                agent: Agent::Codex,
+                agent: Agent::CODEX,
             }
         })
         .collect();
@@ -284,7 +283,11 @@ pub(crate) fn candidates_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
 /// sessions** — no global fallback (so a session for an unrelated directory never
 /// leaks into another directory's picker).
 pub(crate) fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    candidates_scoped_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
+    candidates_scoped_in(
+        &sessions_dir(),
+        cwd,
+        claude_replay_engine::seam::home_dir().as_deref(),
+    )
 }
 
 /// The **nearest ancestor of `cwd`** (walking up the directory chain, strictly inside
@@ -298,7 +301,7 @@ fn nearest_ancestor_sessions<'a>(
     home: Option<&Path>,
 ) -> (Vec<&'a CodexSession>, bool) {
     let cwd_n = normalized(cwd);
-    for anc in crate::discover::ancestors_below(cwd, home) {
+    for anc in claude_replay_engine::seam::ancestors_below(cwd, home) {
         let anc_n = normalized(&anc);
         let matched: Vec<&CodexSession> = sessions
             .iter()
@@ -316,8 +319,11 @@ fn nearest_ancestor_sessions<'a>(
 /// stale-confirm picker, which needs the id to resume the chosen one.
 pub fn sessions_for_cwd(cwd: &Path) -> Vec<(String, SystemTime, String)> {
     let sessions = sessions_in(&sessions_dir()); // newest-first
-    let (matched, _) =
-        nearest_ancestor_sessions(&sessions, cwd, crate::discover::home_dir().as_deref());
+    let (matched, _) = nearest_ancestor_sessions(
+        &sessions,
+        cwd,
+        claude_replay_engine::seam::home_dir().as_deref(),
+    );
     matched
         .into_iter()
         .map(|s| (s.id.clone(), s.mtime, first_user_snippet(&s.path)))
@@ -342,7 +348,7 @@ fn candidates_scoped_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Vec<Can
                 project,
                 snippet: first_user_snippet(&s.path),
                 cwd_affinity: is_exact,
-                agent: Agent::Codex,
+                agent: Agent::CODEX,
             }
         })
         .collect()
@@ -404,7 +410,11 @@ pub fn session_id_with_marker(marker: &str) -> Option<String> {
 /// directory with no Codex history fails cleanly instead of hijacking some other
 /// project's session.
 pub fn latest_for_cwd(cwd: &Path) -> Option<CodexSession> {
-    latest_for_cwd_in(&sessions_dir(), cwd, crate::discover::home_dir().as_deref())
+    latest_for_cwd_in(
+        &sessions_dir(),
+        cwd,
+        claude_replay_engine::seam::home_dir().as_deref(),
+    )
 }
 
 fn latest_for_cwd_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Option<CodexSession> {
@@ -539,26 +549,12 @@ mod tests {
         let child_a = fixture.related_rollout("child-a", &cwd, "root-a", "/root/spec_review");
         fixture.related_rollout("child-b", &cwd, "root-b", "/root/spec_review");
 
-        let child_id = crate::codex_model::encode_agent_path("/root/spec_review");
+        let child_id = crate::agents::codex::model::encode_agent_path("/root/spec_review");
         assert_eq!(
             subagent_source(&root_a, &child_id).as_deref(),
             Some(child_a.as_path())
         );
         assert_eq!(subagent_source(&root_a, "not-a-codex-child-key"), None);
-    }
-
-    #[test]
-    fn codex_adapter_exposes_subagent_source() {
-        let fixture = Fixture::new();
-        let cwd = fixture.root.join("repo");
-        let root = fixture.rollout("2026/07/18", "root", &cwd, "codex-tui");
-        let child = fixture.related_rollout("child", &cwd, "root", "/root/review");
-        let child_id = crate::codex_model::encode_agent_path("/root/review");
-
-        assert_eq!(
-            crate::discover::subagent_source(Agent::Codex, &root, &child_id).as_deref(),
-            Some(child.as_path())
-        );
     }
 
     #[test]
@@ -577,7 +573,8 @@ mod tests {
         fixture.related_rollout("cycle-a", &cwd, "cycle-b", "/root/cycle");
         fixture.related_rollout("cycle-b", &cwd, "cycle-a", "/root/cycle-parent");
 
-        let nested_id = crate::codex_model::encode_agent_path("/root/spec_review/standards_axis");
+        let nested_id =
+            crate::agents::codex::model::encode_agent_path("/root/spec_review/standards_axis");
         assert_eq!(
             subagent_source(&root, &nested_id).as_deref(),
             Some(grandchild.as_path())
@@ -585,12 +582,15 @@ mod tests {
         assert_eq!(
             subagent_source(
                 &root,
-                &crate::codex_model::encode_agent_path("/root/broken")
+                &crate::agents::codex::model::encode_agent_path("/root/broken")
             ),
             None
         );
         assert_eq!(
-            subagent_source(&root, &crate::codex_model::encode_agent_path("/root/cycle")),
+            subagent_source(
+                &root,
+                &crate::agents::codex::model::encode_agent_path("/root/cycle")
+            ),
             None
         );
     }

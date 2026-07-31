@@ -333,10 +333,15 @@
       loIdx = lo; hiIdx = hi;
     } else {
       while (loIdx < lo && topPad.nextSibling !== botPad) {
+        // Trim by the element's REAL index (#94): with filter-hidden records the
+        // first DOM child can sit far above loIdx — blindly removing one node per
+        // index step deletes visible elements that belong INSIDE the new window.
+        if (+topPad.nextSibling.dataset.idx >= lo) break; // [loIdx..lo) is all hidden
         topPad.nextSibling.remove();
         loIdx++;
         while (loIdx < lo && loIdx < hiIdx && isHiddenRec(loIdx)) loIdx++;
       }
+      if (loIdx < lo && loIdx < hiIdx) loIdx = lo;
       if (lo < loIdx) {
         var ftop = document.createDocumentFragment();
         for (var a = lo; a < loIdx; a++) {
@@ -349,10 +354,14 @@
         loIdx = lo;
       }
       while (hiIdx > hi && botPad.previousSibling !== topPad) {
+        // Same real-index guard as the top trim (#94): the last DOM child can sit
+        // far below hiIdx when the tail range is filter-hidden.
+        if (+botPad.previousSibling.dataset.idx < hi) break; // [hi..hiIdx) is all hidden
         botPad.previousSibling.remove();
         hiIdx--;
         while (hiIdx > hi && hiIdx > loIdx && isHiddenRec(hiIdx - 1)) hiIdx--;
       }
+      if (hiIdx > hi) hiIdx = hi;
       if (hi > hiIdx) {
         var fbot = document.createDocumentFragment();
         for (var c = hiIdx; c < hi; c++) {
@@ -374,6 +383,12 @@
   // under the viewport so height-measurement drift never visibly jumps the page.
   function updateView() {
     if (!records.length) return;
+    // Fully-rendered filter mode (#94): the whole (small) visible set stays
+    // materialized — no windowing, no estimate churn.
+    if (filter && filterFull) {
+      if (loIdx !== 0 || hiIdx !== records.length) setWindow(0, records.length);
+      return;
+    }
     // Prefer INDEX-anchored windowing (#66): when a materialized element is visible,
     // extend the window around ITS record index by walking effective heights — immune
     // to prefix-estimate drift, which otherwise makes a post-jump updateView compute
@@ -892,9 +907,15 @@
     section("Completed", done);
   }
 
-  // Append one turn to the sidebar (live sessions grow it).
+  // Append one turn to the sidebar (live sessions grow it). Keyed by the turn's
+  // stable id: a record re-emitted through any feed (a provisional resend, a
+  // resync) UPDATES its entry in place, so the sidebar can never show a turn
+  // twice (#88).
   function addTurn(b) {
-    var item = el("div", "side-item", b.turn + " · " + b.label);
+    var label = b.turn + " \u00b7 " + b.label;
+    var exist = turnlist.querySelector('[data-t="' + b.id + '"]');
+    if (exist) { exist.textContent = label; return; }
+    var item = el("div", "side-item", label);
     item.dataset.t = b.id;
     item.tabIndex = 0;
     turnlist.appendChild(item);
@@ -942,26 +963,6 @@
     postRender();
   }
 
-  // Delta-only: the multi-file live feed hands us just the NEW bytes each poll, so we parse
-  // only the new complete lines — never re-splitting the whole accumulated stream — and keep
-  // any trailing partial line in `pending`. A bad line is skipped, not fatal.
-  var pending = "";
-  function consumeDelta(chunk) {
-    pending += chunk;
-    var nl = pending.lastIndexOf("\n");
-    if (nl < 0) return; // no complete line yet
-    var lines = pending.slice(0, nl).split("\n");
-    pending = pending.slice(nl + 1);
-    for (var i = 0; i < lines.length; i++) {
-      var l = lines[i];
-      if (!l.trim()) continue;
-      var obj;
-      try { obj = JSON.parse(l); } catch (e) { continue; }
-      applyRecord(obj);
-    }
-    postRender();
-  }
-
   // Drop records from stream index `from` onward (a rewritten tail), plus their
   // sidebar turn entries, so the re-emitted records rebuild them cleanly.
   function resetFrom(from) {
@@ -999,7 +1000,7 @@
   }
   function consumePull(r) {
     // Idle tick (same epoch, both zones empty): nothing to do.
-    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return;
+    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return false;
     if (r.epoch !== pc.epoch) { resetFrom(0); pc.committed = 0; } // resync
     if (r.meta) renderMeta(r.meta);
     // A commit (or resync): committed grew — drop everything at/after committed_from, then append
@@ -1017,6 +1018,7 @@
     pc.gen = r.provisional_gen;
     pc.index = r.provisional_from + r.provisional.length;
     postRender();
+    return true;
   }
 
   // ── type / tool filter ────────────────────────────────────────────────
@@ -1025,12 +1027,25 @@
   // Command). `filter` is the CSS selector the chosen entry maps to. Rebuilt whenever
   // content changes (live sessions grow types).
   var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command" };
+  // Expanded tree nodes in the dropdown (#94) — survives menu rebuilds on live growth.
+  var mcpOpen = {};
   function buildToolMenu() {
     // Counted from the RECORDS (nested items included), not the DOM — the DOM only
     // holds the materialized window (#50).
     var entries = {}; // selector -> {label, count}
+    // MCP calls group into ONE expandable tree (#94): MCP -> server -> tool, parsed
+    // from mcp__<server>__<tool>; single-child nodes compress into their child.
+    var mcp = { total: 0, servers: {} };
     eachFoldRec(function (b) {
       if (b.tool) {
+        var m = /^mcp__(.+?)__(.+)$/.exec(b.tool);
+        if (m) {
+          mcp.total++;
+          var srv = (mcp.servers[m[1]] = mcp.servers[m[1]] || { count: 0, tools: {} });
+          srv.count++;
+          srv.tools[m[2]] = (srv.tools[m[2]] || 0) + 1;
+          return;
+        }
         var sel = '.fold[data-tool="' + b.tool + '"]';
         (entries[sel] = entries[sel] || { label: b.tool, count: 0 }).count++;
       } else if (b.kind) {
@@ -1043,18 +1058,64 @@
     });
     var box = $("toolitems");
     box.textContent = "";
+    function row(sel, label, count, depth, twKey) {
+      var item = el("div", "tool-item" + (sel === filter ? " active" : "") + (depth ? " tool-sub" + depth : ""));
+      item.dataset.sel = sel;
+      item.dataset.label = label;
+      item.tabIndex = 0;
+      if (twKey) {
+        var tw = el("span", "tool-tw", mcpOpen[twKey] ? "▾" : "▸");
+        tw.dataset.tw = twKey;
+        item.appendChild(tw);
+      } else {
+        item.appendChild(el("span", "dot"));
+      }
+      item.appendChild(el("span", "tname", label));
+      item.appendChild(el("span", "tool-count", String(count)));
+      box.appendChild(item);
+    }
     sels.forEach(function (sel) {
       var e = entries[sel];
-      var item = el("div", "tool-item" + (sel === filter ? " active" : ""));
-      item.dataset.sel = sel;
-      item.dataset.label = e.label;
-      item.tabIndex = 0;
-      item.appendChild(el("span", "dot"));
-      item.appendChild(el("span", "tname", e.label));
-      item.appendChild(el("span", "tool-count", String(e.count)));
-      box.appendChild(item);
+      row(sel, e.label, e.count, 0, null);
     });
-    $("btn-tools").disabled = sels.length === 0;
+    var servers = Object.keys(mcp.servers).sort();
+    if (mcp.total > 0) {
+      var toolSel = function (srv, tool) { return '.fold[data-tool="mcp__' + srv + '__' + tool + '"]'; };
+      var srvSel = function (srv) { return '.fold[data-tool^="mcp__' + srv + '__"]'; };
+      if (servers.length === 1) {
+        var s0 = servers[0], tools0 = Object.keys(mcp.servers[s0].tools).sort();
+        if (tools0.length === 1) {
+          // Fully compressed: one server, one tool — one flat row.
+          row(toolSel(s0, tools0[0]), "MCP/" + s0 + "/" + tools0[0], mcp.total, 0, null);
+        } else {
+          row(srvSel(s0), "MCP/" + s0, mcp.total, 0, "mcp");
+          if (mcpOpen["mcp"]) {
+            tools0.forEach(function (t) {
+              row(toolSel(s0, t), t, mcp.servers[s0].tools[t], 1, null);
+            });
+          }
+        }
+      } else {
+        row('.fold[data-tool^="mcp__"]', "MCP", mcp.total, 0, "mcp");
+        if (mcpOpen["mcp"]) {
+          servers.forEach(function (srv) {
+            var tools = Object.keys(mcp.servers[srv].tools).sort();
+            if (tools.length === 1) {
+              // Server with one tool compresses into the combined row.
+              row(toolSel(srv, tools[0]), srv + "/" + tools[0], mcp.servers[srv].count, 1, null);
+            } else {
+              row(srvSel(srv), srv, mcp.servers[srv].count, 1, "mcp/" + srv);
+              if (mcpOpen["mcp/" + srv]) {
+                tools.forEach(function (t) {
+                  row(toolSel(srv, t), t, mcp.servers[srv].tools[t], 2, null);
+                });
+              }
+            }
+          });
+        }
+      }
+    }
+    $("btn-tools").disabled = sels.length === 0 && mcp.total === 0;
   }
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
@@ -1064,6 +1125,8 @@
   // Does record `b` (or a nested item) match the filter selector's meaning? The two
   // selector shapes the menu emits are '.fold[data-tool="X"]' / '.fold[data-kind="k"]'.
   function parseFilterSel(sel) {
+    var mp = /\[data-tool\^="([^"]+)"\]/.exec(sel);
+    if (mp) return { toolPre: mp[1] }; // MCP tree nodes filter by name prefix (#94)
     var mt = /\[data-tool="([^"]+)"\]/.exec(sel);
     if (mt) return { tool: mt[1] };
     var mk = /\[data-kind="([^"]+)"\]/.exec(sel);
@@ -1071,6 +1134,7 @@
     return {};
   }
   function recMatch(b, want) {
+    if (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) return true;
     if (want.tool && b.tool === want.tool) return true;
     if (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b)) return true;
     var parts = b.body || [];
@@ -1093,9 +1157,31 @@
       if (recHit[i]) openFilterChain(b, want);
       if (isTurnKind(b) && isFoldRec(b)) b.open = 0; // collapse command turns
     }
+    // A SPARSE-hit filter renders its visible set FULLY (#94): with every height
+    // real, P() is exact and a precision jump (the one-hit case that used to land in
+    // blank pads) cannot drift when estimates correct. Dense filters keep normal
+    // windowing — hundreds of force-opened folds would freeze the renderer, and with
+    // hits everywhere the estimate drift is not observable. updateView honors the
+    // flag so scroll-driven windowing can't trim the full render back away.
+    var visible = 0, nhits = 0;
+    for (var fi = 0; fi < records.length; fi++) {
+        if (!isHiddenRec(fi)) visible++;
+        if (recHit[fi]) nhits++;
+    }
+    filterFull = nhits <= 50 && visible <= 400;
+    updateFilterNav();
+  }
+  var filterFull = false;
+  // ‹ › grey out when there is nothing to step between (#94).
+  function updateFilterNav() {
+    var n = filterHitIdxs().length;
+    all(".tf-prev, .tf-next").forEach(function (e) {
+      e.classList.toggle("disabled", n <= 1);
+    });
   }
   function openFilterChain(b, want) {
     var direct = (want.tool && b.tool === want.tool) ||
+      (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) ||
       (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b));
     var containsHit = false;
     (b.body || []).forEach(function (p) {
@@ -1109,9 +1195,11 @@
   // matches directly, plus any nested matching folds.
   function markFilterHit(e) {
     var want = parseFilterSel(filter);
-    var sel = want.tool
-      ? '.fold[data-tool="' + want.tool + '"]'
-      : '.fold[data-kind="' + want.kind + '"]:not([data-tool])';
+    var sel = want.toolPre
+      ? '.fold[data-tool^="' + want.toolPre + '"]'
+      : want.tool
+        ? '.fold[data-tool="' + want.tool + '"]'
+        : '.fold[data-kind="' + want.kind + '"]:not([data-tool])';
     var targets = [];
     if (e.matches(sel)) targets.push(e);
     Array.prototype.forEach.call(e.querySelectorAll(sel), function (m) { targets.push(m); });
@@ -1156,6 +1244,7 @@
   function filterNav(dir) {
     var hits = filterHitIdxs();
     if (!hits.length) return;
+    if (dir !== 0 && hits.length < 2) return; // nothing to step between (#94)
     var pos;
     if (filterCurId != null && idIndex[filterCurId] != null) {
       var cur = idIndex[filterCurId];
@@ -1227,8 +1316,83 @@
   function atBottom() {
     return window.innerHeight + window.scrollY >= document.body.scrollHeight - BOTTOM_SLACK;
   }
-  function toBottom(smooth) {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
+  // pixel proximity each tick (#88): under the virtualizer, materializing the tail
+  // corrects estimated heights and silently moves the true bottom away from the
+  // viewport — proximity-based following then unlatches on its own.
+  //
+  // Who may flip it (#89): ONLY the user. A scroll event within USER_MS of real
+  // input (wheel, keys, pointer — incl. scrollbar drags —, touch) is the user
+  // moving: position decides (at the bottom ⇒ pin, away ⇒ unpin). Every other
+  // scroll — ours, or the BROWSER's own (scroll-anchoring adjustments and
+  // clamp-on-shrink fire the same event with no marker) — carries no intent:
+  // while pinned it is displacement to heal with a re-pin, never a state change.
+  var following = false;
+  var USER_MS = 300;
+  // Sentinel far in the past: performance.now() is small right after load, so a 0
+  // init would classify the load sequence's own scrolls (and the browser's async
+  // scroll restoration) as user input and wrongly unpin the fresh page (#89).
+  var lastUserInput = -1e9;
+  ["pointerdown", "wheel", "keydown", "touchstart", "touchmove"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      // Typing in the search box is not scroll intent.
+      if (ev === "keydown" && e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+      lastUserInput = performance.now();
+    }, { passive: true, capture: true });
+  });
+  function toBottom() {
+    // Two-step: the jump materializes the tail window (real heights replace
+    // estimates, pads shift), so re-read the height and correct. A smooth scroll
+    // is not survivable here — any DOM mutation under it cancels the animation.
+    window.scrollTo({ top: document.body.scrollHeight });
+    updateView();
+    if (!atBottom()) window.scrollTo({ top: document.body.scrollHeight });
+  }
+  // Displacement is a HEIGHT signal, not a scroll signal (#89): late reflows —
+  // fonts arriving, images sizing, estimate-vs-real pad shifts — grow the page
+  // below the viewport WITHOUT firing any scroll event, silently parking a pinned
+  // view above the tail. Observe the body: any size change while pinned that
+  // leaves the bottom is healed on the spot. (toBottom moves scroll, not size —
+  // no feedback loop.)
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      if (following && !atBottom()) toBottom();
+    }).observe(document.body);
+  }
+  // The pre-apply viewport anchor (#89): while unpinned, a content apply must not
+  // shift what the reader is looking at — capture the first on-screen materialized
+  // element, and afterwards put it back at the exact same viewport offset (the tail
+  // rewrite dropped measured heights back to estimates below it; without this the
+  // resulting pad shifts + the browser's own anchoring walk the page around).
+  function captureAnchor() {
+    if (following) return null;
+    var a = null;
+    matEls().some(function (e) {
+      var r = e.getBoundingClientRect();
+      if (r.bottom > 0 && e.id) { a = { id: e.id, top: r.top }; return true; }
+      return false;
+    });
+    return a;
+  }
+  function restoreAnchor(a) {
+    if (!a) return;
+    var e = document.getElementById(a.id);
+    if (!e) return; // the anchor was inside the rewritten tail — nothing stable to hold
+    var d = e.getBoundingClientRect().top - a.top;
+    if (Math.abs(d) > 1) window.scrollBy(0, d);
+  }
+  // Shared apply epilogue: settle the viewport (pin or anchor), then refresh the
+  // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
+  // the sidebar, and without this the active-turn highlight silently vanished.
+  function settleAfterApply(anchor, added) {
+    if (following) {
+      toBottom();
+      clearNew();
+    } else {
+      restoreAnchor(anchor);
+      if (added > 0) showNew(added);
+    }
+    spy();
   }
   var newCount = 0;
   var badge = $("newbadge");
@@ -1241,7 +1405,11 @@
     newCount = 0;
     badge.classList.remove("on");
   }
-  badge.addEventListener("click", function () { toBottom(true); clearNew(); });
+  badge.addEventListener("click", function () {
+    following = true;
+    toBottom();
+    clearNew();
+  });
 
   // Initial render from the inlined snapshot, then drop the inline copy: the
   // rendered DOM is the source of truth now, so keeping ~1× the payload as script
@@ -1250,18 +1418,16 @@
   turnlist.textContent = "";
   var pollMs = parseInt(document.body.dataset.poll || "0", 10);
   var multi = document.body.dataset.multi;
+  var kickFeed = null; // the active feed's poll-now hook (visibility kick, #89)
 
-  // Render freshly consumed content, flagging/following new tail. Shared by every feed.
+  // Render freshly consumed content, following/flagging the new tail. Shared by every
+  // feed. Any change settles through the epilogue — pin or anchor, then spy (#89).
   function ingest(text) {
-    var wasAtBottom = atBottom();
+    var anchor = captureAnchor();
     var before = records.length;
+    var beforeConsumed = consumed;
     consume(text);
-    var added = records.length - before;
-    if (added > 0) {
-      if (wasAtBottom) { toBottom(false); clearNew(); }
-      else showNew(added);
-      spy();
-    }
+    if (consumed > beforeConsumed) settleAfterApply(anchor, records.length - before);
   }
 
   if (multi) {
@@ -1270,11 +1436,11 @@
     if (inline) inline.remove();
     var sess = new URLSearchParams(location.search).get("session") || document.body.dataset.root;
     renderedSession = sess;
-    // Transport: the server sets data-pull when it serves the pull feed by default; `?transport=`
-    // overrides it either way (pull|stream) for side-by-side comparison.
-    var transport = new URLSearchParams(location.search).get("transport");
-    var usePull = transport === "pull" || (document.body.dataset.pull === "1" && transport !== "stream");
-    if (pollMs > 0 && usePull) {
+    // Transport: ONE pattern for every server-backed page (#85) — the pull protocol. A
+    // static page is a pull client that pulls once (pollMs 0); a live page keeps polling.
+    // Only the offline bundle (no server) fetches its flat `<id>.jsonl` instead.
+    var usePull = document.body.dataset.pull === "1";
+    if (usePull) {
       // Pull-client feed: poll `/pull?session=&cursor=` and apply the two-zone reply. The client
       // drives the tail (the server folds on our request), so an idle page costs the server nothing.
       // Committed arrives as a POINTER (`committed_ext: {offset, len}`) into the server's on-disk
@@ -1303,10 +1469,11 @@
               });
           })
           .then(function (reply) {
-            var wasAtBottom = atBottom();
+            var anchor = captureAnchor();
             var before = records.length;
+            var changed = false;
             try {
-              consumePull(reply);
+              changed = consumePull(reply);
             } catch (err) {
               // Self-heal (#54): a torn apply must never leave the page desynced — drop all
               // local state and cursor; the next tick resyncs from the server's canonical
@@ -1316,58 +1483,14 @@
               pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
               return;
             }
-            var added = records.length - before;
-            if (added > 0) {
-              if (wasAtBottom) { toBottom(false); clearNew(); }
-              else showNew(added);
-              spy();
-            }
+            if (changed) settleAfterApply(anchor, records.length - before);
           })
           .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
           .finally(function () { inflightP = false; });
       };
       pullTick();
-      setInterval(pullTick, pollMs);
-    } else if (pollMs > 0) {
-      // Served live: poll `/stream?session=&from=<byte cursor>` — the server returns ONLY
-      // the bytes past the cursor (the new delta), never the whole transcript. We keep the
-      // accumulated text and hand it to `consume`, which dedups records + applies resets.
-      // The cursor is the ABSOLUTE byte offset we've processed up to. Each `/stream`
-      // response carries `X-Offset` (where its bytes begin); we discard any prefix we
-      // already have and snap the cursor to `start + len`, so the client is idempotent
-      // even under overlap / a past-EOF request. The in-flight guard prevents overlap in
-      // the first place — the initial `from=0` fetch can transfer many MB and outlast the
-      // poll interval; without the guard the next tick would fire a second `from=0` fetch,
-      // double-rendering every block and overshooting the cursor past EOF (the freeze).
-      var cursor = 0, inflight = false;
-      var pull = function () {
-        if (inflight) return;
-        inflight = true;
-        fetch("stream?session=" + encodeURIComponent(sess) + "&from=" + cursor, { cache: "no-store" })
-          .then(function (r) {
-            var off = parseInt(r.headers.get("X-Offset") || "0", 10);
-            return r.arrayBuffer().then(function (b) { return { off: off, bytes: new Uint8Array(b) }; });
-          })
-          .then(function (d) {
-            var end = d.off + d.bytes.length;
-            if (d.off > cursor || end <= cursor) return; // a gap (retry) or already-seen
-            var skip = cursor - d.off; // bytes we already have (server may overlap)
-            var wasAtBottom = atBottom();
-            var before = records.length;
-            consumeDelta(new TextDecoder().decode(d.bytes.subarray(skip)));
-            cursor = end;
-            var added = records.length - before;
-            if (added > 0) {
-              if (wasAtBottom) { toBottom(false); clearNew(); }
-              else showNew(added);
-              spy();
-            }
-          })
-          .catch(function () { /* server gone / mid-write — retry next tick */ })
-          .finally(function () { inflight = false; });
-      };
-      pull();
-      setInterval(pull, pollMs);
+      if (pollMs > 0) setInterval(pullTick, pollMs);
+      kickFeed = pullTick;
     } else {
       // Static bundle (served by any file server): fetch the whole stream file once.
       fetch(sess + ".jsonl", { cache: "no-store" })
@@ -1391,14 +1514,21 @@
   var src = document.body.dataset.src;
   if (!multi && src && pollMs > 0) {
     var failedC = false;
-    setInterval(function () {
+    var pollOnce = function () {
       if (failedC) return;
       fetch(src, { cache: "no-store" })
         .then(function (r) { return r.text(); })
         .then(ingest)
         .catch(function () { failedC = true; });
-    }, pollMs);
+    };
+    setInterval(pollOnce, pollMs);
+    kickFeed = pollOnce;
   }
+  // Background tabs throttle timers; on return, poll NOW instead of waiting out
+  // the stretched interval (#89).
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && kickFeed) kickFeed();
+  });
 
   // ── folds ────────────────────────────────────────────────────────────
   function setFold(f, open) {
@@ -1562,6 +1692,10 @@
   function goToId(id) {
     var ti = idIndex[id];
     if (ti == null) return;
+    // Every goToId is user-initiated navigation (sidebar, search, filter) — mark it
+    // as intent so the follow classifier reads the jump's scrolls as the user moving
+    // (position decides the pin), never as displacement to heal (#94).
+    lastUserInput = performance.now();
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
     var y = streamTop() + P()[ti];
     setWindow(idxAt(y - streamTop() - MARGIN_PX), idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
@@ -1581,6 +1715,22 @@
     // A landing at (nearly) the same y fires no scroll event — refresh the window
     // and the scrollspy explicitly.
     updateView();
+    // Re-land exactly (#94): the post-jump measure pass replaces estimated heights
+    // ABOVE the target with real ones — under a filter the shift can be thousands of
+    // px, leaving the viewport in a pad. Correct against the target's REAL rect until
+    // it converges (the region around it is fully measured after a pass or two).
+    for (var gi = 0; gi < 3; gi++) {
+      var t2 = document.getElementById(id);
+      if (!t2) break;
+      var d = t2.getBoundingClientRect().top - GOTO_Y;
+      if (Math.abs(d) <= 2) break;
+      window.scrollBy(0, d);
+      updateView();
+    }
+    // Navigation SETS the pin state directly (#94): in a background tab the jump's
+    // scroll events can deliver long after the intent window, and the classifier
+    // would read them as displacement and yank the view back to the tail.
+    following = atBottom();
     spy();
   }
 
@@ -1628,6 +1778,13 @@
 
   document.addEventListener("click", function (e) {
     // ── type/tool filter controls ──
+    var tw = e.target.closest(".tool-tw");
+    if (tw) {
+      mcpOpen[tw.dataset.tw] = !mcpOpen[tw.dataset.tw];
+      buildToolMenu();
+      toolMenu(true);
+      return;
+    }
     var ti = e.target.closest(".tool-item");
     if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
     if (e.target.closest(".tf-prev")) { filterNav(-1); return; } // ‹ previous hit (#49)
@@ -2034,6 +2191,14 @@
         if (turnTop(i) <= STICKY_Y) cur = records[i];
         else break;
       }
+      // End rule (#89): at the document bottom no further header can ever cross
+      // the sticky line, so the LAST turn could otherwise never become active —
+      // exactly where a pinned live tail sits. At the bottom, the last turn wins.
+      if (atBottom()) {
+        for (var j = records.length - 1; j >= 0; j--) {
+          if (records[j].turn != null) { cur = records[j]; break; }
+        }
+      }
     }
     curTurn = cur;
     var bar = $("stickybar");
@@ -2050,6 +2215,11 @@
   }
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
+    if (performance.now() - lastUserInput < USER_MS) {
+      following = atBottom(); // the user moving: away unpins, to-the-end re-pins
+    } else if (following && !atBottom()) {
+      toBottom(); // browser displacement (anchoring/clamp) while pinned — heal it
+    }
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
@@ -2067,7 +2237,10 @@
     var hid = location.hash.slice(1);
     setTimeout(function () { goToId(hid); }, 150);
   } else {
-    toBottom(false);
-    updateView();
+    // A live page OWNS its landing position (the tail) — stop the browser's async
+    // scroll restoration from yanking the view to a stale offset seconds later (#89).
+    if (pollMs > 0 && "scrollRestoration" in history) history.scrollRestoration = "manual";
+    following = true;
+    toBottom();
   }
 })();

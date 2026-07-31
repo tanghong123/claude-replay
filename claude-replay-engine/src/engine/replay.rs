@@ -10,8 +10,6 @@
 
 use crate::engine::message::{Message, QueueOpKind};
 use crate::model::*;
-#[cfg(test)]
-use crate::Agent;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -24,17 +22,18 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Test-only now: production goes straight through `SessionAccumulator`
 /// ([`parse_session_as`](crate::parse_session_as) drives it directly). This wrapper is retained
-/// as the whole-file reference the equivalence gates compare the builder-driven output against.
-#[cfg(test)]
-pub(crate) fn parse_path_timed_for(
-    agent: Agent,
+/// as the whole-file reference the equivalence gates compare the builder-driven output against
+/// (`#[doc(hidden)]`-pub via the seam so the adapter crates' gates can drive it, #87).
+#[doc(hidden)]
+pub fn parse_path_timed_for(
+    adapter: &'static dyn crate::adapter::TranscriptAdapter,
     path: &std::path::Path,
 ) -> std::io::Result<(
     Vec<Block>,
     Vec<Option<EpochSeconds>>,
     crate::metrics::Metrics,
 )> {
-    let mut b = crate::engine::builder::SessionAccumulator::new(agent);
+    let mut b = crate::engine::builder::SessionAccumulator::new(adapter);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?; // one line resident
     Ok(b.fold())
@@ -48,7 +47,7 @@ pub(crate) fn parse_path_timed_for(
 /// field below) are the only points Claude and Codex differ: `build_tool` (shape a `tool_use`
 /// into a block), `join_result` (attach its result), `keep_orphan` (keep a resultless
 /// result?), and `finish_turns` (final turn shaping).
-pub(crate) struct Shaping {
+pub struct Shaping {
     /// Build the block for a `tool_use` from its raw fields (`id`, `name`, `input`, `cwd`).
     /// This is the block-model lift's L2 hook (M14): the tokenizer emits raw
     /// `Message::ToolUse` fields and the fold shapes the block here, so agent-specific
@@ -83,7 +82,7 @@ pub(crate) struct Shaping {
 /// Single pass: a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an
 /// orphan (forward-references — a result physically before its own tool_use — do not occur in
 /// real transcripts: 0/209 scanned).
-pub(crate) struct Replayer<'a> {
+pub struct Replayer<'a> {
     shaping: &'a Shaping,
     /// The **resident window** of raw (pre-`finish_turns`) blocks: logical indices `base..`. Blocks
     /// before `base` are complete turns that have been finalized (grouped) into `durable` and dropped
@@ -109,6 +108,14 @@ pub(crate) struct Replayer<'a> {
     prev_ts: Option<EpochSeconds>,
     queue: Vec<QueueItem>,
     suppress: Vec<BlockIndex>,
+    /// Adjacency tracker for the queued-prompt pickup dedup (#88): the text of the
+    /// immediately-preceding content message iff it was a `UserText`. Bookkeeping
+    /// messages (`LineStart`/`TaskOp`) don't break adjacency.
+    prev_user_text: Option<String>,
+    /// Contents of popped queue items that were `rendered` — a pickup stamp arriving
+    /// after its dequeue op consumes its note here instead of emitting a second turn.
+    /// Cleared at the next real user turn (staleness bound).
+    delivered_rendered: Vec<String>,
     last_skill: Option<BlockIndex>,
     // Running spawn identity map (tool_use_id **and** agent_id → (agent_id, agent_type)), fed as
     // each `SubAgent` spawn is emitted and refreshed when its result fills `agent_id`. It lets an
@@ -145,7 +152,8 @@ fn note_patch(floor: &mut Option<usize>, logical: usize, frontier: usize) {
 }
 
 impl<'a> Replayer<'a> {
-    pub(crate) fn new(shaping: &'a Shaping) -> Self {
+    #[doc(hidden)]
+    pub fn new(shaping: &'a Shaping) -> Self {
         Replayer {
             shaping,
             out: Vec::new(),
@@ -158,6 +166,8 @@ impl<'a> Replayer<'a> {
             prev_ts: None,
             queue: Vec::new(),
             suppress: Vec::new(),
+            prev_user_text: None,
+            delivered_rendered: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
         }
@@ -171,11 +181,18 @@ impl<'a> Replayer<'a> {
     /// below it changed a block a prior poll may have served ⇒ a gen bump, whereas a mutation to a
     /// block appended *within* this batch is invisible to clients and doesn't count. The fold's
     /// effect on `out` is unchanged — this is a pure observation (keeps `--dump` byte-identical).
-    pub(crate) fn apply(&mut self, messages: &[Message]) -> Option<usize> {
+    #[doc(hidden)]
+    pub fn apply(&mut self, messages: &[Message]) -> Option<usize> {
         let (join_result, keep_orphan) = (self.shaping.join_result, self.shaping.keep_orphan);
         let emitted_frontier = self.base + self.out.len();
         let mut patch_floor: Option<usize> = None;
         for m in messages {
+            // #88 adjacency: content messages consume the tracker (the `UserText` arm
+            // re-arms it); `LineStart`/`TaskOp` are bookkeeping and pass it through.
+            let prev_user = match m {
+                Message::LineStart(_) | Message::TaskOp(_) => self.prev_user_text.clone(),
+                _ => self.prev_user_text.take(),
+            };
             match m {
                 Message::LineStart(ts) => {
                     // Stamp over the resident window; `stamped` is logical, so translate by `base`.
@@ -255,6 +272,8 @@ impl<'a> Replayer<'a> {
                         }
                     }
                     self.out.push(Block::UserText(text.clone()));
+                    self.prev_user_text = Some(text.trim().to_string());
+                    self.delivered_rendered.clear();
                 }
                 Message::SystemNote { text } => {
                     self.out.push(Block::ToolResult(text.clone()));
@@ -296,7 +315,31 @@ impl<'a> Replayer<'a> {
                     }
                 }
                 Message::AttachmentPrompt { text } => {
-                    self.out.push(Block::UserText(text.clone()));
+                    // The pickup stamp of a queued prompt — usually the ONLY record of a
+                    // mid-turn typed prompt, rendered as the user turn right here (its
+                    // chronological pickup point). But when the prompt already rendered as
+                    // a real user turn (see `QueueItem::rendered`), this stamp is redundant
+                    // — emitting it would show the turn twice (#88). Consume the pending
+                    // item (suppressing its marker) or the popped item's note; emit only
+                    // if the prompt is new.
+                    let t = text.trim();
+                    let rendered_before = if let Some(pos) =
+                        self.queue.iter().position(|q| q.content == t)
+                    {
+                        let item = self.queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            self.suppress.push(mi);
+                        }
+                        item.rendered
+                    } else if let Some(pos) = self.delivered_rendered.iter().position(|d| d == t) {
+                        self.delivered_rendered.remove(pos);
+                        true
+                    } else {
+                        false
+                    };
+                    if !rendered_before {
+                        self.out.push(Block::UserText(text.clone()));
+                    }
                 }
                 Message::Attachment(att) => {
                     self.out.push(Block::Attachment(att.clone()));
@@ -335,7 +378,12 @@ impl<'a> Replayer<'a> {
                 Message::QueueOp { op, content, prose } => match op {
                     QueueOpKind::Enqueue => {
                         if let Some(c) = content {
-                            let marker_idx = if *prose {
+                            // Enqueue right after the same text arrived as a real user
+                            // turn: the prompt is already on screen — no `⧗ queued:`
+                            // duplicate below it, and its pickup stamp won't re-render
+                            // it (#88).
+                            let rendered = prev_user.as_deref() == Some(c.trim());
+                            let marker_idx = if *prose && !rendered {
                                 self.out.push(Block::QueueEvent {
                                     text: c.trim().to_string(),
                                 });
@@ -346,6 +394,7 @@ impl<'a> Replayer<'a> {
                             self.queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
+                                rendered,
                             });
                         }
                     }
@@ -367,6 +416,9 @@ impl<'a> Replayer<'a> {
                         if let Some(item) = popped {
                             if let Some(mi) = item.marker_idx {
                                 self.suppress.push(mi);
+                            }
+                            if item.rendered {
+                                self.delivered_rendered.push(item.content);
                             }
                         }
                     }
@@ -455,9 +507,8 @@ impl<'a> Replayer<'a> {
     /// user-turn boundary and `finish_turns` distributes over such boundaries, this equals a single
     /// global finalize of the whole raw stream.
     /// The whole finalized stream (`durable ++ finalize_open(open)`) — the pre-C2 combined view.
-    /// Test-only now: production splits this into [`drain_committed`] + [`open_snapshot`] so the
-    /// replayer never holds the durable prefix. Kept for the equivalence oracles.
-    #[cfg(test)]
+    /// Reference-only now: production splits this into `drain_committed` + `open_snapshot` so
+    /// the replayer never holds the durable prefix. Kept for the equivalence oracles.
     fn assemble(&self, open: Vec<Block>) -> Vec<Block> {
         let mut all = self.durable.clone();
         all.extend(self.finalize_open(open));
@@ -508,7 +559,7 @@ impl<'a> Replayer<'a> {
     }
 
     /// The finalized **open** window (the still-provisional tail) + the full per-turn timestamps
-    /// (pending stamps flushed) — the non-consuming complement to [`drain_committed`]. The
+    /// (pending stamps flushed) — the non-consuming complement to `drain_committed`. The
     /// accumulator's snapshot is `committed ++ open_snapshot().0`.
     /// The per-turn timestamps stamped so far (committed turns final). Borrowed by the
     /// accumulator's drain so a projection store can index times at `put` time (#74).
@@ -528,9 +579,9 @@ impl<'a> Replayer<'a> {
     /// Returns the grouped blocks and the per-turn timestamps. Test-only now — production
     /// finalizes non-consumingly via [`snapshot`](Self::snapshot) (the `SessionAccumulator` folds
     /// incrementally and re-snapshots), so this consuming path is exercised only by the
-    /// equivalence oracles.
-    #[cfg(test)]
-    pub(crate) fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+    /// equivalence oracles (cross-crate via the seam, #87).
+    #[doc(hidden)]
+    pub fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let mut ws = self.window_stamped();
         stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
         self.stamped = self.base + ws;
@@ -540,11 +591,11 @@ impl<'a> Replayer<'a> {
     }
 
     /// Non-consuming finalize: the whole presentable stream + per-turn times over cloned state.
-    /// Test-only now — production drives [`drain_committed`] + [`open_snapshot`] via the
+    /// Reference-only — production drives `drain_committed` + `open_snapshot` via the
     /// `SessionAccumulator` (the replayer never materializes the durable prefix). Kept for the
-    /// direct-replayer incremental tests.
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+    /// direct-replayer incremental tests (cross-crate via the seam, #87).
+    #[doc(hidden)]
+    pub fn snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
         let mut ws = self.window_stamped();
@@ -557,8 +608,8 @@ impl<'a> Replayer<'a> {
 /// Batch L2 fold — `Replayer::new(); apply(all); into_blocks()`. For Claude,
 /// `replay(tokenize(x), &CLAUDE_SHAPING)` is asserted bit-identical to `parse_main(x)`; for
 /// Codex, to `parse_lines(x)`. `user_times` is filled with one entry per emitted user turn.
-#[cfg(test)]
-pub(crate) fn replay(
+#[doc(hidden)]
+pub fn replay(
     messages: &[Message],
     user_times: &mut Vec<Option<f64>>,
     shaping: &Shaping,
@@ -575,16 +626,21 @@ pub(crate) fn replay(
 /// prompt is PENDING: any pop — a dequeue/remove op, or a user message whose text matches the
 /// pending content (an op-less delivery, e.g. a jdi restart) — suppresses it, so the delivered
 /// message renders exactly once, matching Claude Code (#52).
-pub(crate) struct QueueItem {
-    pub(crate) content: String,
-    pub(crate) marker_idx: Option<BlockIndex>,
+pub struct QueueItem {
+    pub content: String,
+    pub marker_idx: Option<BlockIndex>,
+    /// The prompt was ALREADY rendered as a real user turn when it was enqueued (Claude
+    /// Code sometimes writes the standalone `user` event right before the enqueue op —
+    /// both records carry the text). Its pickup stamp (`queued_command` attachment) must
+    /// then NOT render a second turn (#88).
+    pub rendered: bool,
 }
 
 // (queue-operation handling is inlined in `parse_main`'s `Some("queue-operation")`
 // arm — it needs the block list, the pending queue, and `suppress`.)
 
 /// Record `ts` for every user turn in `out[*stamped..]`, advancing `stamped`.
-pub(crate) fn stamp_user_turns(
+pub fn stamp_user_turns(
     out: &[Block],
     stamped: &mut usize,
     ts: Option<EpochSeconds>,

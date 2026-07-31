@@ -33,21 +33,22 @@ Two design goals shape everything below:
    is a new crate on top of the shared support layer — in both directions, no shared code is
    touched.
 2. **Leanness as a design discipline.** Memory is bounded by keeping each representation no
-   longer than it must live (§7), and CPU is bounded by doing only delta work on borrowed
-   threads (§8). A live session with a million-line transcript costs O(open turn) RAM on the
+   longer than it must live (§8), and CPU is bounded by doing only delta work on borrowed
+   threads (§10). A live session with a million-line transcript costs O(open turn) RAM on the
    server and O(viewport) rendered state in either frontend.
 
-## 2. The workspace: five crates, three levels of reuse
+## 2. The workspace: four layers, five crates
 
 ```
-claude-replay-core      the sans-io engine: parse, fold, follow, discover, fold-policy
-        ▲
-claude-replay-present   presentation SUPPORT: session cache, pull protocol, text/highlight
-        ▲                helpers, the shared Args — frontend-agnostic
-   ┌────┴────┐
-claude-replay-tui   claude-replay-html     the two presenters (mutually independent)
-   └────┬────┘
-claude-replay           the thin assembly crate: clap CLI + agent-jdi + compat re-exports
+layer 1 · ENGINE          claude-replay-core      sans-io: parse, fold, follow, discover
+                                  ▲
+layer 2 · PRESENTATION    claude-replay-present   session cache, sync protocol, text/highlight
+          SUPPORT                 ▲                helpers, the shared Args — frontend-agnostic
+                             ┌────┴────┐
+layer 3 · REUSABLE      claude-replay-tui   claude-replay-html    two independent, embeddable
+          FRONTENDS          └────┬────┘                          presenters
+                                  ▲
+layer 4 · APP SHELL       claude-replay           the thin binary: clap CLI + agent-jdi
 ```
 
 Each boundary is a **compiler-enforced invariant**, not a convention:
@@ -76,61 +77,123 @@ if the split weren't there. One workspace version, bumped in one place.
 
 ## 3. The pipeline
 
-Everything in the workspace is a stage on one top-to-bottom data path (or a cache beside
-it). Arrows are the *actions*; the table below maps each action to the module/function that
-implements it. The dashed back-edge is what makes sub-agent trees work: a parsed session can
-name further raw transcripts, which run the same pipeline recursively.
+Everything in the workspace is a stage on one data path (or a cache beside it). The colors
+map stages to layers — <span style="color:#b9741f">**engine**</span> (core),
+<span style="color:#3f9163">**presentation support**</span> (present),
+<span style="color:#7a5bd0">**frontends**</span> — loosely: a stage's *machinery* lives in
+that layer even where its types come from below. The dashed back-edge is what makes
+sub-agent trees work: a parsed session can name further raw transcripts, which run the same
+pipeline recursively.
 
 ```mermaid
 flowchart TB
+  classDef engine fill:#f5ead9,stroke:#b9741f,color:#4a3812
+  classDef support fill:#e2f0e8,stroke:#3f9163,color:#1d3c2b
+  classDef front fill:#e9e3f8,stroke:#7a5bd0,color:#2d2352
   RAW["raw JSONL transcript(s)<br/>(the agent's own on-disk store)"]
-  MSG["canonical Message stream"]
-  BLK["Block stream<br/>(committed ++ open turn)"]
-  SES["Session<br/>{ blocks, index, metrics, tasks }"]
-  CACHE["SessionCache<br/>(tiered residency, kept current)"]
-  TUI["TUI View state"]
-  HTMLR["HTML record stream"]
+  MSG["canonical Message stream"]:::engine
+  BLK["Block stream<br/>(committed ++ open turn)"]:::engine
+  SES["Session<br/>{ blocks, index, metrics, tasks }"]:::engine
+  CACHE["SessionCache<br/>(the live data layer)"]:::support
+  TUI["TUI View state"]:::front
+  HTMLR["HTML record stream"]:::front
   TERM["terminal cells"]
   DOM["browser DOM"]
 
   RAW  -->|"① decode — one raw line → 0+ canonical messages"| MSG
-  MSG  -->|"② fold — join results onto calls, group turns, coalesce spans"| BLK
-  BLK  -->|"③ accumulate — commit finished turns, index, meter"| SES
-  SES  -->|"④ cache — keep live sessions current, evictable, shareable"| CACHE
-  CACHE -->|"⑤a handoff — in-process delta, blocks handed over once"| TUI
-  CACHE -->|"⑤b pull — cross-process delta (4-tuple Cursor)"| HTMLR
+  MSG  -->|"② fold — the Replayer joins, groups, coalesces"| BLK
+  BLK  -->|"③ accumulate — commit finished turns put-once"| SES
+  SES  -->|"④ cache — ONE live resident per session"| CACHE
+  CACHE -->|"⑤a poll_view — Arc-clone delta + chrome state"| TUI
+  CACHE -->|"⑤b pull — 4-member cursor, byte-range pointers"| HTMLR
   TUI  -->|"⑥a render — wrap + highlight, windowed"| TERM
   HTMLR -->|"⑥b render — records → virtualized DOM"| DOM
   SES  -.->|"⓪ discover — a SubAgent block names a child transcript"| RAW
 ```
 
-| action | what it means | code |
+| stage | contract | code |
 |---|---|---|
-| ⓪ discover | find transcripts: by path/id/cwd up front, and the back-edge — a parsed `SubAgent` block resolves to its child's raw transcript, fed through the same pipeline | `core::discover` (`resolve_any`, `candidates_all`, `subagent_source`); `TranscriptAdapter::enrich` loads the tree |
-| ① decode | the only agent-specific stage ("L1" in code comments): raw field names → the shared `Message` vocabulary | `core::adapter::TranscriptAdapter::decode_line`, dispatched to the agent's `*_model` decoder |
-| ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queue lifecycle | `core::engine::replay` — `Replayer`, parameterized by the agent's `Shaping` (4 fn-pointers) |
-| ③ accumulate | maintain the durability frontier: finished turns drained **put-once** into a `BlockStore`, `SessionIndex`/`Metrics`/tasks folded alongside; `snapshot()` yields a `Session` | `core::engine::builder::SessionAccumulator` (sans-io — §4) |
-| ④ cache | residency for live sessions: register cheaply, materialize a follower on demand, reap idle, hibernate/restore | `present::cache::SessionCache`; residents kept current by `core::FollowParser` (batch parsing skips this stage — `parse_session` drives ①–③ directly) |
-| ⑤a handoff | in-process consumption: a splice-shaped delta — newly-committed blocks (each handed over exactly once, #76), the fresh open turn, and `changed_from` | `core::FollowParser::poll_handoff` → `tui::View::apply_handoff` (the generic `poll`/`poll_delta` remain for `BlockRead` stores) |
-| ⑤b pull | cross-process consumption: per-client stateless replies against a client-held cursor | `present::cache::stream` — `SharedSession::pull`, `Cursor`, `PullClient` (§8) |
-| ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render`/`markdown`/`wrap` + `present::highlight`; the `hot` window (§7) |
-| ⑥b render | blocks → JSON records → a windowed DOM | `html_export` emits records; `html/export.js` virtualizes (§7) |
+| ⓪ discover | find transcripts by path / id / cwd — and resolve a `SubAgent` block to its child transcript (the recursive back-edge). Cwd auto-discovery is scoped strictly inside `$HOME`. | `core::discover` |
+| ① decode | one raw line → 0+ canonical `Message`s; the only stage that knows an agent's field names ("L1") | `TranscriptAdapter::decode_line` |
+| ② fold | the shared replay ("L2"): back-patching, turn grouping, span coalescing, the queued-prompt lifecycle — §5 below | `engine::replay::Replayer` + per-agent `Shaping` |
+| ③ accumulate | the durability frontier: finished turns drained *put-once* into a `BlockStore`; index, metrics and tasks folded alongside — §6 below | `engine::builder::SessionAccumulator` |
+| ④ cache | ONE live resident kind per session, serving both consumption styles; registered → resident → hibernated residency | `present::cache::SessionCache` |
+| ⑤a poll_view | in-process: ONE call — advance, splice-shaped `Arc` delta, times/metrics/tasks | `SharedSession::poll_view` → `tui::View::apply_view` |
+| ⑤b pull | cross-process: per-client stateless replies against a client-held 4-member cursor — §9 below | `SharedSession::pull` · `PullClient` |
+| ⑥a render | blocks → styled wrapped lines, materialized only near the viewport | `tui::render` + `present::highlight`; the `hot` window |
+| ⑥b render | wire records → a windowed DOM | `html/export.js` virtualizes |
 
-The **crate layering follows the pipeline**: stages ⓪–③ are `claude-replay-core`; stage ④
-and the ⑤b protocol are `claude-replay-present`; the ⑥ fan-out is `claude-replay-tui` /
-`claude-replay-html`. (`--dump` is ⑥a writing text instead of cells; `--dump-html` is ⑥b
-writing a file instead of serving.)
+## 4. The per-agent seam
 
-**Why a canonical `Message` between ① and ②?** It lets the meaty fold logic (hundreds of
-lines: back-patching, grouping, the queue state machine) be written **once** and shared by
-every agent — a new agent writes a small decoder, not a new fold. (QoderWork demonstrates
-the degenerate case: its format matches Claude's, so its adapter rides Claude's decoder
-wholesale — an agent can cost *zero* new parsing code.) The span-coalescing rules in ② are
-the empirically-derived Claude Code behavior
-([`design/cc-activity-coalescing.md`](../design/cc-activity-coalescing.md)); agents opt in
-or out through `Shaping::finish_turns`.
+Everything that varies by agent is behind **one trait**, `TranscriptAdapter` (`adapter.rs`),
+resolved through a tiny registry (`adapter(agent)` / `adapters()`). The hooks:
 
-## 4. The sans-io accumulator — one fold, every acquisition mode
+| Hook | Role | Default |
+|------|------|---------|
+| `agent()` | which `Agent` | — |
+| `sniff(head)` | `SniffClaim::{Owns, CanParse, No}` — format *ownership* vs mere compatibility (drives `detect_agent` and the picker's "compatible" badge) | — |
+| `store_contains(path)` | provenance: is this path inside my on-disk store? (ownership without a format marker) | `false` |
+| `scan_join_ids(path)` | pass-1: the tool-call ids a later result joins onto | — |
+| `decode_line(line, cwd, out)` | **L1**: raw line → 0+ canonical `Message`s | — |
+| `shaping()` | the L2 `Shaping` const (4 fn-pointers) | — |
+| `metrics_acc()` | a fresh token/cost accumulator | — |
+| `candidates_scoped(cwd)` | discovery: sessions for a cwd | — |
+| `resolve_id(id)` | discovery: id → transcript path | — |
+| `load_tasks(path)` | the session's task/todo list from the agent's store | `None` |
+| `parse_path_timed(path, times)` | whole-file parse | **provided** (composes the hooks) |
+| `parse_reader(reader)` | metrics-only fold | **provided** |
+| `enrich(path, blocks)` | load the sub-agent tree | **no-op** |
+| `subagent_source(root, id)` | a child transcript's path | **None** |
+
+Everything agent-neutral reaches per-agent behavior *only* through the registry — there is no
+`match agent` scattered across the engine. Three adapters exist today and demonstrate the
+cost floor: Claude (flat sub-agent directory), Codex (operation-scoped child rollouts), QoderWork (delegates
+decoding to Claude's modules entirely; its adapter is discovery + identity).
+
+> The `agent-jdi` supervisor mirrors this with its own `jdi::agent::AgentAdapter` registry.
+
+### Discovery, precisely
+
+`discover.rs` is the agent-neutral front door for *finding* transcripts: `detect_agent`
+(sniff + store provenance → ownership, so a merely-*compatible* file is labeled, not
+mislabeled), `session_cwd`/`session_id`, `candidates_all` (the cross-agent picker list),
+`resolve_any` (id/path/latest → a path), `session_tasks`, and `subagent_source`. Cwd-based
+auto-discovery is scoped **strictly inside `$HOME`** (`ancestors_below`): a cwd outside it
+probes nothing, and the probe never reaches `$HOME`'s own slug — so stores polluted by
+misbehaving agents (sessions recorded against `$HOME` or `/`) can never leak into an
+unrelated directory's picker. Explicit paths and ids are never scoped.
+
+## 5. The fold: what the Replayer actually does
+
+Stage ② looks like one arrow; it is where most of the engine's hard-won correctness lives.
+A transcript is not a clean event log — results arrive out of order, turns interleave, and
+what an agent's own UI *shows* differs from what it *records*. The `Replayer` reconciles all
+of it, once, for every agent:
+
+- **Result joining & back-patching.** A tool's result lands as a separate later event — the
+  fold attaches it to its call *in place*, even when the call was emitted in an earlier
+  poll (the follower back-patches across polls without re-parsing).
+- **Turn grouping & span coalescing.** Consecutive thinking bursts and "activity" tool
+  calls between two visible outputs fold into ONE work-span block, with summed durations
+  and Claude-Code-faithful phrasing — an empirically derived rule set
+  ([`design/cc-activity-coalescing.md`](../design/cc-activity-coalescing.md)) that agents
+  opt into per adapter (`Shaping::finish_turns`).
+- **The queued-prompt lifecycle.** A mid-turn human prompt is recorded when *submitted* but
+  displayed when *picked up*; the fold runs that little state machine (suppressing the
+  marker when pickup is immediate).
+- **The committed/open split.** The fold maintains a **durability frontier**: blocks of
+  finished turns are final and never touched again; only the open turn is re-derived as
+  events arrive. Every incremental surface in the workspace — `changed_from`, the cursor
+  protocol's generations, the put-once stores — leans on this invariant.
+- **Reshape detection.** A raw-level pure append can still REWRITE the finalized open
+  turn's prefix (a new tool joins a span and absorbs earlier blocks). The live layer diffs
+  the finalized view per tick to catch exactly this — it is why the sync protocol has a
+  *generation* member, not just an append cursor.
+
+The proof obligations are pinned in tests: the streaming fold is byte-identical to frozen
+whole-file oracles, and the follower to a full re-parse at every append.
+
+## 6. The sans-io accumulator — one fold, every acquisition mode
 
 The engine's heart deliberately does **no I/O**. [`SessionAccumulator`]
 (`engine/builder.rs`) is a push-based fold: the *caller* acquires bytes however it likes and
@@ -139,8 +202,23 @@ pushes lines in; the accumulator threads them through L1 → L2 → metrics behi
 ```rust
 let mut acc = SessionAccumulator::new(Agent::Claude);   // or ::with_store(agent, store)
 acc.advance_at(byte_offset, &line);                     // push one line — that's the I/O seam
-let session = acc.snapshot();                           // the current Session, any time
+let session = acc.into_session();                       // finish: takes the Session BY MOVE
 ```
+
+`byte_offset` is the line's position in the raw transcript — the fold stamps it into
+**locators** for content it deliberately does *not* inline (an attachment's bytes, a
+sub-agent's file), so presenters can lazy-load from the raw transcript later instead of the
+parse carrying everything. And the ending is a **move**: `into_session()` transfers the
+committed values out and borrows content only to build the derived index — zero block
+clones for the in-memory and `Arc` stores. (`snapshot()` exists too, as the *mid-flight*
+copy for a fold that keeps going — the live follower's surface, not the one-shot ending.)
+
+Under the hood, each pushed line runs the whole per-line pipeline: decode (L1) → fold (L2)
+→ drain any turns that crossed the durability frontier **put-once** into the `BlockStore` →
+fold the same blocks into the maintained live header (`SessionMeta`) and the metrics/task
+accumulators. Nothing is rescanned later: `into_session`/`snapshot` assemble the `Session`
+from state the fold maintained as it went — the derived `SessionIndex` is the only
+end-of-parse pass.
 
 Because byte acquisition is the caller's job, **every parse path in the workspace is the same
 fold**, differing only in who feeds it:
@@ -149,7 +227,7 @@ fold**, differing only in who feeds it:
 |---|---|---|
 | `parse_session_as` (batch) | a file reader, one line resident | whole-file parse never builds a `Vec<String>` |
 | [`FollowParser`] (live tail) | the byte-offset `tail::LineReader`, only appended bytes | O(delta) per poll; proven byte-identical to a full re-parse |
-| `SharedSession` (live server) | the follower, on a *client's request thread* | see §8 — no server-side polling loop |
+| `SharedSession` (live server) | the follower, on a *client's request thread* | see §10 — no server-side polling loop |
 | your code | a socket, an mmap, a test vector, a decompressor | the library never dictates your I/O |
 
 The accumulator also owns the **durability frontier** that the whole leanness story hangs on:
@@ -162,17 +240,17 @@ not baked in:
 - `TierBStore` (`engine/tier_b.rs`) — committed *content* serialized append-only to an
   off-heap buffer or an on-disk file; `Bv = Deferred { offset, size }`, a 12-byte locator.
   Reading a block back is a positional read + decode, dropped after use.
-- `HandoffStore` (#76) — committed blocks are QUEUED for a single consumer and handed over
-  exactly once (`Bv = ()`): the consumer becomes the sole owner. Not `BlockRead` — the type
-  system keeps whole-session readers off it.
+- `ArcStore` (#84) — committed blocks live behind `Arc` (`Bv = Arc<Block>`): the accumulator
+  retains the authoritative copy, and handing a block to a reader is a refcount bump. The
+  store behind the one-copy/source-of-truth principles (§8).
 - …or the presentation's own: the html crate's `RecordStore` renders each block to its wire
-  record at `put` time (`Bv = RecordLocator` — the §5 showcase).
+  record at `put` time (`Bv = RecordLocator` — the §7 showcase).
 
 Incremental facts are maintained the same way: `session_meta()` folds the live header
 (turns/tools/children) once per committed block on drain, and `stream_read(from)` hands a
 live consumer `committed[from..]` + the open turn — O(delta), never an O(N) rescan.
 
-## 5. The data model
+## 7. The data model
 
 The presenter-facing vocabulary lives in `model.rs` and is the stable public API.
 
@@ -228,37 +306,7 @@ SharedSession<RecordStore>  (present, parameterized by the html crate)
   table plus the store's render continuation (`EmitState`); restore reopens the log
   read-only — no re-render, no re-fold, and outstanding client cursors stay valid.
 
-## 6. The per-agent seam
-
-Everything that varies by agent is behind **one trait**, `TranscriptAdapter` (`adapter.rs`),
-resolved through a tiny registry (`adapter(agent)` / `adapters()`). The hooks:
-
-| Hook | Role | Default |
-|------|------|---------|
-| `agent()` | which `Agent` | — |
-| `sniff(head)` | `SniffClaim::{Owns, CanParse, No}` — format *ownership* vs mere compatibility (drives `detect_agent` and the picker's "compatible" badge) | — |
-| `store_contains(path)` | provenance: is this path inside my on-disk store? (ownership without a format marker) | `false` |
-| `scan_join_ids(path)` | pass-1: the tool-call ids a later result joins onto | — |
-| `decode_line(line, cwd, out)` | **L1**: raw line → 0+ canonical `Message`s | — |
-| `shaping()` | the L2 `Shaping` const (4 fn-pointers) | — |
-| `metrics_acc()` | a fresh token/cost accumulator | — |
-| `candidates_scoped(cwd)` | discovery: sessions for a cwd | — |
-| `resolve_id(id)` | discovery: id → transcript path | — |
-| `load_tasks(path)` | the session's task/todo list from the agent's store | `None` |
-| `parse_path_timed(path, times)` | whole-file parse | **provided** (composes the hooks) |
-| `parse_reader(reader)` | metrics-only fold | **provided** |
-| `enrich(path, blocks)` | load the sub-agent tree | **no-op** |
-| `subagent_source(root, id)` | a child transcript's path | **None** |
-
-Everything agent-neutral reaches per-agent behavior *only* through the registry — there is no
-`match agent` scattered across the engine. Three adapters exist today and demonstrate the
-cost floor: Claude (flat sub-agent directory), Codex (operation-scoped child rollouts),
-QoderWork (delegates decoding to Claude's modules entirely; its adapter is discovery +
-identity).
-
-> The `agent-jdi` supervisor mirrors this with its own `jdi::agent::AgentAdapter` registry.
-
-## 7. Lean memory: a ladder of representations, each windowed
+## 8. Lean memory: a ladder of representations, each windowed
 
 The memory design is one idea applied five times: **every representation is kept only as
 long, and only as wide, as its consumer needs**. Data climbs this ladder, and each rung holds
@@ -273,8 +321,8 @@ a *window*, not the session:
   Block — committed                          resident: policy! InMemoryStore = RAM ·
       │                                        TierBStore = 12-byte locators, content on disk ·
       │                                        RecordStore = wire-record locators (#74) ·
-      │                                        HandoffStore = NOTHING (handed to the consumer
-      │                                        exactly once — the TUI View is the sole owner, #76)
+      │                                        ArcStore = Arc-shared content, ONE copy that the
+      │                                        cache owns and every reader references (#84)
       │  presentation shaping (fold policy, summaries, records/lines)
   presentation-friendly form                 TUI: heights+prefix (O(N) small ints);
       │                                        HTML: JSON records (client), record log (server)
@@ -301,11 +349,23 @@ expensive rendered output:
   [`design/dom-virtualization.md`](../design/dom-virtualization.md).
 - **HTML server** (`serve.rs` + `cache/`): a followed session's resident footprint is
   O(open turn) + a locator table — the `Session`'s own `RecordStore` renders each committed
-  block to its wire record put-once (#74, §5 showcase), and the committed zone is served as
+  block to its wire record put-once (#74, §7 showcase), and the committed zone is served as
   a **pointer** (`committed_ext: {offset, len}`) that clients range-read from the append-only
   record log at their own pace (one serialization on disk, zero in RAM, N readers).
 
-### The unified data layer: `SessionCache<P, F, A>`
+### The unified data layer: `SessionCache<P, A>`
+
+Five principles govern this layer (settled in #84, and worth stating because every seam
+below follows from them): **(1)** at most ONE full in-memory presentation copy per client
+application instance — it exists to make search fast, and search runs over it; **(2)** the
+`SessionCache` owns the SOURCE OF TRUTH of that copy — ownership, not storage medium: the
+TUI's is the RAM blocks the in-process view references, the HTML server's is the on-disk
+wire-record log its browser clients resync from; **(3)** therefore views never own blocks
+(else principle 1+2 would force a wasteful disk mirror for the in-process case); **(4)** the
+presentation format is each frontend's fastest-final-render form — `Block`s for the TUI,
+DOM-loadable wire JSON for HTML — chosen at the `BlockStore` seam; **(5)** only FINAL
+rendered results (and viewport neighbors) live under a view: the hot window / DOM window,
+plus small derived indexes (geometry, fold state) in the aux sidecar.
 
 Everything above meets in one owner. [`SessionCache`] is **the data layer a presentation
 builds on** — it answers "which sessions exist, which are materialized, in what
@@ -314,36 +374,37 @@ three decisions a frontend gets to make without losing generality *or* efficienc
 
 | seam | decides | the menu |
 |---|---|---|
-| `P: BlockStore` | the **pull tier's** committed representation | `TierBStore` (lossless spill) · the html crate's `RecordStore` (the wire projection itself, #74) |
-| `F: BlockStore` | the **follow tier's** committed representation | `InMemoryStore` (owned `Session` snapshots) · `HandoffStore` (single-owner streaming, #76) |
+| `P: BlockStore` | the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles) | `ArcStore` (cache-owned shared copy — the TUI) · the html crate's `RecordStore` (the wire projection itself, #74) · `TierBStore` (lossless spill) |
 | `A` | the per-session **presentation sidecar** | any type — park-and-take (`aux_put`/`aux_take`) or in-place (`aux_with`) |
 
-The residency tiers under it:
+The residency tiers under it (#85: ONE live tier — the same resident serves the in-process
+view and the wire protocol):
 
 | tier | holds | cost | transition |
 |---|---|---|---|
 | (c) registered | agent + path | ~nothing | the default for a discovered-but-unopened session (a large sub-agent tree stays here) |
-| (a) resident | an open `FollowParser<F>` | O(turn) + tables | polled recently; reaped to (c) after 30 s idle |
-| (a′) pull-resident | a `SharedSession<P>` | O(turn) + tables + disk backing | same reap policy; on eviction it **hibernates** its serving state to a sidecar, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
+| (a) live resident | a `SharedSession<P>` | O(turn) + tables (+ disk backing per `P`) | polled recently; reaped to (c) after 30 s idle — a `PersistentStore` resident **hibernates** its serving state on eviction, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
 
 And the consumption protocols, each matched to a representation by the type system
 (a capability bound, not a convention):
 
 | protocol | shape | requires | copies of committed blocks | per-tick cost |
 |---|---|---|---|---|
-| `poll(id) → Session` | whole-session snapshot | `F = InMemoryStore` | 2 (follower + snapshot) | O(session) |
-| `poll_delta(id)` | full blocks + `changed_from` | `F: BlockRead` | 2 + a transient rebuild | O(session) alloc, O(turn) diff |
-| `poll_handoff(id)` | splice-shaped delta (#76) | `F = HandoffStore` | **1 — the consumer owns them** | **O(delta)** |
-| `shared_session(id)` + pull | cursor zones / wire pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
+| `poll_view(id)` — in-process | ONE call: advance + splice-shaped `Arc` delta + times/metrics/tasks | `P = ArcStore` | **1 — cache-owned, view-referenced** | **O(delta)** |
+| `shared_session(id)` + `pull` — wire | cursor zones / byte-range pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
+
+(Whole-`Session` consumers use the core's own follower — `FollowParser::poll`/`poll_delta`
+— or batch `parse_session`; the cache's job is live residency, and its two protocols share
+one resident and ONE implementation of "what changed since last tick".)
 
 Both frontends instantiate the same type — that is the "unified without losing generality"
 claim made concrete:
 
 ```rust
 // TUI (app.rs):  the View is the sole block owner; evicted frames park their derived state
-type TuiCache = SessionCache<TierBStore /*unused*/, HandoffStore, ViewSidecar>;
+type TuiCache = SessionCache<ArcStore, ViewSidecar>;   // every parameter doing chosen work
 // HTML server (serve.rs):  committed IS the wire projection; per-id serve state lives in aux
-cache: SessionCache<RecordStore, InMemoryStore, ServeAux>
+cache: SessionCache<RecordStore, ServeAux>
 ```
 
 The **sidecar slot** (#75) completes the story: it is the home for derived,
@@ -358,7 +419,29 @@ The TUI applies the same thinking one level up: sub-agent frames you drill into 
 under an LRU cap of 4 (`MAX_RESIDENT_SUBAGENTS`); ancestors evict to registrations and
 reload on demand — with the sidecar, an eviction now drops only the blocks.
 
-## 8. Lean CPU: borrowed threads and delta-only protocols
+## 9. The sync protocol: a 4-member cursor
+
+The wire half of the data layer is a client-server sync protocol designed so the **server
+keeps no per-client state**: the client's whole position travels with each request as four
+numbers — `Cursor { epoch, committed_id, provisional_gen, provisional_index }`:
+
+- **`committed_id`** — how far into the append-only committed log the client has read.
+  Committed content is sent once, ever — and as a **byte-range pointer** into the on-disk
+  wire-record log, which the client range-reads itself.
+- **`provisional_gen` / `provisional_index`** — the open turn's *generation* and the
+  client's position within it. Within a generation the served open turn is append-only; a
+  back-patch or a finalization reshape bumps the gen, telling the client to replace the
+  whole (small) zone. This is the reshape-detection invariant from §5 surfacing on the
+  wire.
+- **`epoch`** — session validity: a truncation/rewrite bumps it, and any stale cursor
+  resyncs from zero — served from the cache's retained copy, never by re-parsing.
+
+The client applies one rule per zone — *truncate to `from`, then extend* — and both halves
+ship in Rust: [`pull`] (server) and [`PullClient`] (the executable specification, walked
+through every transition by its tests; the embedded JS client mirrors it one for one). N
+windows, laggy tabs, and fresh joiners all work against one shared log at their own pace.
+
+## 10. Lean CPU: borrowed threads and delta-only protocols
 
 **No dedicated work happens when nothing changed, and almost no thread exists solely to
 wait.** Two mechanisms:
@@ -366,7 +449,7 @@ wait.** Two mechanisms:
 **Borrowed-thread tailing.** Neither frontend runs a follower thread:
 
 - The **TUI** pumps the live tail on its *input event loop*: when `event::poll(250 ms)` times
-  out with no keystroke, the idle tick calls `cache.poll_handoff(id)` — so tailing costs zero
+  out with no keystroke, the idle tick calls `cache.poll_view(id)` — so tailing costs zero
   threads and zero work while the user is interacting flat-out, and at most 4 polls/s idle.
 - The **HTML server** (pull mode, the default) has **no background tailer at all**: the fold
   advances on the *client's request thread* (`/pull` → `SharedSession.advance()` → reply).
@@ -374,16 +457,16 @@ wait.** Two mechanisms:
   resident. The accept loop is one detached thread; connections are thread-per-request on
   loopback.
 
-**Delta-only protocols, at both distances.** The committed/open split (§4) makes "what
+**Delta-only protocols, at both distances.** The committed/open split (§5) makes "what
 changed?" answerable in O(turn), and both consumption protocols exploit it:
 
-- In-process: [`FollowParser::poll_handoff`] hands the TUI a splice-shaped delta — the
-  newly-committed blocks (drained from the `HandoffStore`, each exactly once), the fresh
-  open turn, and `changed_from` (the first differing index, computed against the prior
-  committed length plus a `common_prefix` over the small open-turn region — O(turn)).
-  `View::apply_handoff` splices in place and re-derives only the tail (`dirty_from`), so a
-  live tick is O(delta) in BOTH allocation and re-measure — and the View is the process's
-  only copy of the blocks (#76).
+- In-process: `SharedSession::poll_view` hands the TUI everything in ONE call — a
+  splice-shaped delta of `Arc` clones (the resident RETAINS the authoritative committed
+  vector — the cache-owned source of truth), the fresh open turn, `changed_from`, and the
+  chrome state (times/metrics/tasks). `View::apply_view` splices pointers in place and
+  re-derives only the tail: O(delta) refcount bumps and re-measure, content stored ONCE,
+  resync-from-zero served from memory (#84/#85). The change boundary and the wire
+  protocol's gen bumps come from the SAME reshape comparison — one implementation.
 - Cross-process: the **4-tuple cursor protocol** (`present::cache::stream`) — `Cursor
   { epoch, committed_id, provisional_gen, provisional_index }`. The cursor travels with each
   request, so the server is **per-client stateless** and N tabs/windows each read at their
@@ -398,24 +481,13 @@ block store (never re-serialize committed content); `session_meta` folded per co
 than rescanned; the HTML emitter diffs block lines and re-sends only from the first
 divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 
-## 9. Discovery
-
-`discover.rs` is the agent-neutral front door for *finding* transcripts: `detect_agent`
-(sniff + store provenance → ownership, so a merely-*compatible* file is labeled, not
-mislabeled), `session_cwd`/`session_id`, `candidates_all` (the cross-agent picker list),
-`resolve_any` (id/path/latest → a path), `session_tasks`, and `subagent_source`. Cwd-based
-auto-discovery is scoped **strictly inside `$HOME`** (`ancestors_below`): a cwd outside it
-probes nothing, and the probe never reaches `$HOME`'s own slug — so stores polluted by
-misbehaving agents (sessions recorded against `$HOME` or `/`) can never leak into an
-unrelated directory's picker. Explicit paths and ids are never scoped.
-
-## 10. Invariants the codebase holds itself to
+## 11. Invariants the codebase holds itself to
 
 - **Crate boundaries** — the §2 table is enforced by the dependency graph, not review.
 - **Agent-agnostic everything above L1** — no presenter or shared-engine code matches on
   `Agent` for behavior; it routes through the adapter registry.
 - **Byte-identical refactors** — the streaming parse is proven identical to frozen oracles
-  (`#[cfg(test)]` equivalence gates in `claude_model`/`codex_model`), the follower to a full
+  (`#[cfg(test)]` equivalence gates in the agent `model` families), the follower to a full
   re-parse at every append, and every change runs `scripts/gate/gate.sh` — a frozen-fixture
   `--dump`/`--dump-html`/bundle diff that must print `BYTE-IDENTICAL: PASS`.
 - **One classifier / one fold / one phrasing** — block classification, the L2 fold, and the
@@ -426,7 +498,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
   backings (RAM vs tier-b), and `PullClient` is walked through every protocol transition
   against the server half.
 
-## 11. Where things live
+## 12. Where things live
 
 | Path | What |
 |------|------|
@@ -435,11 +507,13 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 | `claude-replay-core/src/engine/builder.rs` | `SessionAccumulator` (sans-io fold) + `StreamRead` |
 | `claude-replay-core/src/engine/{message,session,index,tasks,tier_b,path,time}.rs` | canonical log · `Session<BV>`/`BlockStore`/`BlockAccess` · rollups · task model · tier-b backing · helpers |
 | `claude-replay-core/src/adapter.rs` | `TranscriptAdapter` trait + registry + `SniffClaim` |
-| `claude-replay-core/src/{claude,codex}_model.rs` | L1 tokenizers + `Shaping` |
-| `claude-replay-core/src/{claude,codex}_metrics.rs` | token/cost folding |
-| `claude-replay-core/src/{claude,codex,qoderwork}_discover.rs` | per-agent transcript stores |
+| `claude-replay-core/src/agents/{claude,codex}/model.rs` | L1 tokenizers + `Shaping` |
+| `claude-replay-core/src/agents/{claude,codex}/metrics.rs` | token/cost folding |
+| `claude-replay-core/src/agents/{claude,codex,qoderwork}/discover.rs` | per-agent transcript stores |
+| `claude-replay-core/src/engine/seam.rs` | the audited adapter contract — all `agents/**` may import (#87) |
 | `claude-replay-core/src/{discover,metrics,follow,tail,agent,fold,summary,diff}.rs` | discovery facade · metrics · live follower · byte-offset tail · `Agent` · fold policy · span phrasing · diff-row model |
-| `claude-replay-present/src/cache/{mod,shared,stream}.rs` | `SessionCache` tiers · `SharedSession` (+hibernation) · the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) |
+| `claude-replay-present/src/cache/{mod,shared}.rs` | `SessionCache` residency · `SharedSession` (+hibernation) |
+| `claude-replay-present/src/pull.rs` | the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) (#87) |
 | `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter · OS/path helpers · shared `Args` (`cli` feature) |
 | `claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs` | the terminal viewer |
 | `claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs` + `src/html/` | HTML render core · offline writers · live server · the wire-projection `RecordStore` (#74) · embedded CSS/JS |
@@ -453,8 +527,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 [`SessionIndex`]: ../claude-replay-core/src/engine/index.rs
 [`Metrics`]: ../claude-replay-core/src/metrics.rs
 [`FollowParser`]: ../claude-replay-core/src/follow.rs
-[`FollowParser::poll_handoff`]: ../claude-replay-core/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-core/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
-[`pull`]: ../claude-replay-present/src/cache/stream.rs
-[`PullClient`]: ../claude-replay-present/src/cache/stream.rs
+[`pull`]: ../claude-replay-present/src/pull.rs
+[`PullClient`]: ../claude-replay-present/src/pull.rs

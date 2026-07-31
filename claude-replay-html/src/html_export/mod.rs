@@ -69,15 +69,14 @@ fn esc(s: &str) -> String {
 /// Map the shared Claude-Code palette (as 256-colour indices from `highlight`)
 /// onto the four `--kw/--str/--fn/--com` token classes. Default text gets no
 /// span so it inherits the surrounding colour.
-fn syntax_class(color: ratatui::style::Color) -> Option<&'static str> {
-    use ratatui::style::Color;
-    match color {
-        Color::Indexed(81) => Some("kw"),   // keyword / storage
-        Color::Indexed(141) => Some("kw"),  // number / constant (purple)
-        Color::Indexed(197) => Some("kw"),  // self / language variable
-        Color::Indexed(148) => Some("fn"),  // function / macro
-        Color::Indexed(186) => Some("str"), // string
-        Color::Indexed(242) => Some("com"), // comment
+fn syntax_class(fg: u8) -> Option<&'static str> {
+    match fg {
+        81 => Some("kw"),   // keyword / storage
+        141 => Some("kw"),  // number / constant (purple)
+        197 => Some("kw"),  // self / language variable
+        148 => Some("fn"),  // function / macro
+        186 => Some("str"), // string
+        242 => Some("com"), // comment
         _ => None,
     }
 }
@@ -89,8 +88,8 @@ fn highlight_lines(code: &str, token: &str) -> Vec<String> {
         .map(|spans| {
             let mut out = String::new();
             for s in spans {
-                let text = esc(&s.content);
-                match s.style.fg.and_then(syntax_class) {
+                let text = esc(&s.text);
+                match s.fg.and_then(syntax_class) {
                     Some(c) => out.push_str(&format!("<span class=\"{c}\">{text}</span>")),
                     None => out.push_str(&text),
                 }
@@ -107,6 +106,17 @@ fn highlight_lines(code: &str, token: &str) -> Vec<String> {
 /// language label, a copy button, and syntect-highlighted spans. Raw HTML in the
 /// source is **escaped**, never passed through.
 fn md_html(src: &str) -> String {
+    md_html_inner(src, false)
+}
+
+/// [`md_html`] with single newlines kept as line breaks — the USER-turn render (#93):
+/// a typed prompt's line structure is literal (CC preserves it), unlike assistant
+/// markdown where a single newline is a soft wrap.
+fn md_html_user(src: &str) -> String {
+    md_html_inner(src, true)
+}
+
+fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut out = String::new();
     // Fenced-code accumulator: (language token, body).
@@ -192,7 +202,13 @@ fn md_html(src: &str) -> String {
             Event::Text(t) => out.push_str(&esc(&t)),
             // Raw HTML is shown as literal text, not injected.
             Event::Html(t) | Event::InlineHtml(t) => out.push_str(&esc(&t)),
-            Event::SoftBreak => out.push(' '),
+            Event::SoftBreak => {
+                if hard_breaks {
+                    out.push_str("<br>");
+                } else {
+                    out.push(' ');
+                }
+            }
             Event::HardBreak => out.push_str("<br>"),
             Event::Rule => out.push_str("<hr>"),
             _ => {}
@@ -391,7 +407,7 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
-                body.push(json!({ "p": "md", "h": md_html(text) }));
+                body.push(json!({ "p": "md", "h": md_html_user(text) }));
             }
             // A sub-agent spawn (kind "agent") — a fold whose header names the agent
             // and whose body carries the prompt, agent id, and result. Full drill-down
@@ -603,17 +619,39 @@ impl Emitter<'_> {
                         }
                     }
                     "write" => {
-                        let content = write_content(diffs);
-                        let n = content.lines().count();
-                        head.insert(
-                            "chips".into(),
-                            json!([chip_class("add", format!("{n} lines"))]),
+                        // An overwrite carries the harness's structuredPatch — CC
+                        // renders it as a diff like an Edit (#92); only a fresh-file
+                        // write keeps the numbered-content preview.
+                        let overwrite = matches!(
+                            b,
+                            Block::ToolUse { patch: Some(h), .. } if !h.is_empty()
                         );
-                        body.push(json!({
-                            "p": "note",
-                            "x": format!("Wrote {n} lines to {target}"),
-                        }));
-                        body.push(numbered_part(content, token, WRITE_PREVIEW));
+                        if overwrite {
+                            if let Some((part, adds, dels)) = diff_part(b) {
+                                let mut chips = Vec::new();
+                                if adds > 0 {
+                                    chips.push(chip_class("add", format!("+{adds}")));
+                                }
+                                if dels > 0 {
+                                    chips.push(chip_class("del", format!("−{dels}")));
+                                }
+                                head.insert("chips".into(), json!(chips));
+                                body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
+                                body.push(part);
+                            }
+                        } else {
+                            let content = write_content(diffs);
+                            let n = content.lines().count();
+                            head.insert(
+                                "chips".into(),
+                                json!([chip_class("add", format!("{n} lines"))]),
+                            );
+                            body.push(json!({
+                                "p": "note",
+                                "x": format!("Wrote {n} lines to {target}"),
+                            }));
+                            body.push(numbered_part(content, token, WRITE_PREVIEW));
+                        }
                     }
                     "read" => {
                         if let Some(n) = read_lines {
@@ -795,13 +833,11 @@ fn build_page(
             } else {
                 String::new()
             };
-            // `data-pull` selects the pull-client transport (poll `/pull?cursor=`) over the
-            // default `/stream` byte-diff; only meaningful when served live.
-            let pull_attr = if live_multi && pull {
-                " data-pull=\"1\""
-            } else {
-                ""
-            };
+            // `data-pull` selects the pull-client transport (#85: ONE transport for every
+            // server-backed page — a static page pulls once, a live page keeps polling; only
+            // the offline bundle, served flat by any file server, omits it and fetches
+            // `<id>.jsonl` directly).
+            let pull_attr = if pull { " data-pull=\"1\"" } else { "" };
             format!(
                 " data-multi=\"1\" data-root=\"{}\"{poll}{pull_attr}",
                 esc(root)
@@ -1230,7 +1266,7 @@ pub(super) fn agent_meta(
     (meta, child_refs)
 }
 
-/// Assemble the `/pull` meta wire record from the engine's **maintained** [`SessionMeta`]
+/// Assemble the `/pull` meta wire record from the engine's **maintained** `SessionMeta`
 /// (turn/tool counts + children, kept current by the accumulator as the tail advances) +
 /// presentation info (title / ancestry / agent label) + metrics — the trivial transform from
 /// engine facts to the html client's shape. Produces the same JSON [`agent_meta`] derives by
@@ -1369,7 +1405,7 @@ impl AssetSink {
 
 #[cfg(test)]
 mod tests {
-    use super::serve::{line_aligned_tail, percent_decode, query_get, stream_delta};
+    use super::serve::{percent_decode, query_get, stream_delta};
     use super::*;
     use crate::model::Hunk;
 
@@ -1377,6 +1413,14 @@ mod tests {
     /// ranges while carrying `EmitState` produces the EXACT same wire records — and the same sidebar
     /// turns — as rendering it whole. This is what lets the live server render committed blocks once
     /// and the open turn from the carried state, instead of re-rendering everything each poll.
+    /// #93: a typed prompt's single newlines are literal line breaks (CC preserves
+    /// them); assistant markdown keeps the soft-wrap rule.
+    #[test]
+    fn user_prompt_newlines_are_hard_breaks() {
+        assert!(md_html_user("line one\nline two").contains("<br>"));
+        assert!(!md_html("line one\nline two").contains("<br>"));
+    }
+
     #[test]
     fn render_blocks_split_equals_whole() {
         let blocks = vec![
@@ -1523,9 +1567,9 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let (oracle, _children) = agent_meta(Agent::Claude, "/repo", &info, &blocks, &m, &tasks);
+        let (oracle, _children) = agent_meta(Agent::CLAUDE, "/repo", &info, &blocks, &m, &tasks);
         let maintained = crate::engine::SessionMeta::build(&blocks);
-        let got = assemble_meta(Agent::Claude, "/repo", &info, &maintained, &m, &tasks);
+        let got = assemble_meta(Agent::CLAUDE, "/repo", &info, &maintained, &m, &tasks);
         assert_eq!(
             got, oracle,
             "assemble_meta(SessionMeta) == agent_meta(blocks)"
@@ -1703,19 +1747,6 @@ mod tests {
         assert_eq!(h3, "assets/shot.png");
         assert_eq!(std::fs::read(base.join("assets/shot.png")).unwrap(), b"hi");
         let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// The `/stream` byte cursor: serve from an offset, clamp past-EOF to empty, and never
-    /// end a chunk mid-record (truncate to the last newline).
-    #[test]
-    fn line_aligned_tail_clamps_and_aligns() {
-        let data = b"a\nbb\nccc\n";
-        assert_eq!(line_aligned_tail(data, 0), b"a\nbb\nccc\n");
-        assert_eq!(line_aligned_tail(data, 2), b"bb\nccc\n"); // from mid-file, line-aligned
-        assert_eq!(line_aligned_tail(data, 9), b""); // at EOF → empty
-        assert_eq!(line_aligned_tail(data, 999), b""); // past EOF → clamped empty
-                                                       // A trailing partial line (mid-append) is withheld until its newline arrives.
-        assert_eq!(line_aligned_tail(b"a\nbb\npart", 2), b"bb\n");
     }
 
     #[test]
@@ -2300,7 +2331,7 @@ mod tests {
         // A real transcript carrying the `file` body; the block holds only a `Deferred` locator.
         let line = r#"{"type":"attachment","attachment":{"type":"file","filename":"/w/notes.md","displayPath":"notes.md","content":{"type":"text","file":{"filePath":"/w/notes.md","content":"hello"}}}}"#;
         let tpath = att_transcript(line);
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let file = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
@@ -2359,7 +2390,7 @@ mod tests {
         // A real transcript carrying the base64 image; the block holds only a locator.
         let line = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}}"#;
         let tpath = att_transcript(line);
-        let src = Transcript::open(crate::Agent::Claude, &tpath);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let img = Block::Attachment(crate::model::Attachment {
             kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
@@ -2702,7 +2733,7 @@ mod tests {
         .unwrap();
         // Temp-dir files sit outside every store → honestly badged (#66).
         assert_eq!(
-            display_title(Agent::Claude, &uuid),
+            display_title(Agent::CLAUDE, &uuid),
             "knack · compatible (claude)"
         );
 
@@ -2714,7 +2745,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            display_title(Agent::Claude, &named),
+            display_title(Agent::CLAUDE, &named),
             "my-session · compatible (claude)"
         );
 

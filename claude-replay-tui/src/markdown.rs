@@ -311,7 +311,14 @@ fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
     // it to 6 columns.
     highlight::highlight_spans(code, lang)
         .into_iter()
-        .map(Line::from)
+        .map(|spans| {
+            Line::from(
+                spans
+                    .into_iter()
+                    .map(|sp| theme::hl_span(sp, |s| s))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect()
 }
 

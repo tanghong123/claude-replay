@@ -1,8 +1,8 @@
-use crate::metrics::{parse_ts, Metrics, TimeSpan};
+use claude_replay_engine::seam::{parse_ts, Metrics, TimeSpan};
 use serde_json::Value;
 
 /// Codex's per-line token/cost accumulator, folded through the shared
-/// [`MetricsAccumulator`](crate::adapter::MetricsAccumulator) seam. Unlike Claude, Codex
+/// `MetricsAccumulator` seam. Unlike Claude, Codex
 /// reports a *cumulative* `total_token_usage`, so each `token_count` event overwrites
 /// (keeping the newest total), not sums.
 #[derive(Default, Clone)]
@@ -53,30 +53,35 @@ impl CodexMetricsAcc {
 
     pub(crate) fn finish(self) -> Metrics {
         // Codex has no cache-write tier; cached input bills at the read discount.
-        let cost_usd =
-            crate::metrics::estimate_cost(&self.model, self.input, 0, self.cached, self.output);
-        Metrics {
-            input_tokens: self.input,
-            cache_creation_tokens: 0,
-            cache_read_tokens: self.cached,
-            output_tokens: self.output,
-            model: self.model,
-            duration_secs: self.span.duration_secs(),
-            cost_usd,
-            extra: self.extra,
-        }
+        let cost_usd = claude_replay_engine::seam::estimate_cost(
+            &self.model,
+            self.input,
+            0,
+            self.cached,
+            self.output,
+        );
+        let mut m = Metrics::default();
+        m.input_tokens = self.input;
+        m.cache_creation_tokens = 0;
+        m.cache_read_tokens = self.cached;
+        m.output_tokens = self.output;
+        m.model = self.model;
+        m.duration_secs = self.span.duration_secs();
+        m.cost_usd = cost_usd;
+        m.extra = self.extra;
+        m
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::parse_reader_for;
+    use claude_replay_engine::seam::parse_reader_with;
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`
     /// default path with Codex's accumulator.
     fn parse_codex_reader(jsonl: &str) -> Metrics {
-        parse_reader_for(crate::Agent::Codex, std::io::Cursor::new(jsonl))
+        parse_reader_with(&crate::adapters::CodexAdapter, std::io::Cursor::new(jsonl))
     }
 
     #[test]

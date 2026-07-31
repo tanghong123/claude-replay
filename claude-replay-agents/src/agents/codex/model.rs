@@ -1,7 +1,9 @@
-use crate::engine::message::Message;
-use crate::engine::path::relativize;
-use crate::engine::time::epoch_secs;
-use crate::model::{AgentStatus, Block, SubAgent};
+use claude_replay_engine::seam::{
+    epoch_secs, parse_path_timed_for, relativize, AgentStatus, Block, Message, Metrics, Shaping,
+    SubAgent, UsdCost,
+};
+#[cfg(test)]
+use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -37,7 +39,7 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
     // In-memory batch entry on the shared engine (L1 `tokenize` → L2 `replay`). The
     // streaming path (the shared `SessionAccumulator`) also runs on the engine now, per line
     // via `decode_line` + `Replayer` (M9).
-    crate::engine::replay::replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
+    replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CODEX_SHAPING)
 }
 
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
@@ -90,7 +92,7 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
 }
 
 /// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
-pub(crate) const CODEX_SHAPING: crate::engine::replay::Shaping = crate::engine::replay::Shaping {
+pub(crate) const CODEX_SHAPING: Shaping = Shaping {
     build_tool: codex_build_tool,
     join_result: apply_output_shaping,
     keep_orphan: codex_keep_orphan,
@@ -252,24 +254,27 @@ fn enrich_descendants(root: &Path, blocks: &mut [Block], seen: &mut HashSet<Path
         let Block::SubAgent(agent) = block else {
             continue;
         };
-        let Some(child_path) = crate::codex_discover::subagent_source(root, &agent.agent_id) else {
+        let Some(child_path) =
+            crate::agents::codex::discover::subagent_source(root, &agent.agent_id)
+        else {
             continue;
         };
         if !seen.insert(normalized_path(&child_path)) {
             continue;
         }
-        let Ok(session) = crate::engine::parse_session_as(crate::Agent::Codex, &child_path) else {
+        let Ok((mut child_blocks, _, metrics)) =
+            parse_path_timed_for(&crate::adapters::CodexAdapter, &child_path)
+        else {
             continue;
         };
-        let mut child_blocks = session.blocks();
         enrich_descendants(&child_path, &mut child_blocks, seen);
-        agent.subtree_cost = subtree_cost(&session.metrics, &child_blocks);
+        agent.subtree_cost = subtree_cost(&metrics, &child_blocks);
         agent.blocks = child_blocks;
     }
 }
 
-fn subtree_cost(metrics: &crate::Metrics, blocks: &[Block]) -> Option<crate::model::UsdCost> {
-    let descendants: crate::model::UsdCost = blocks
+fn subtree_cost(metrics: &Metrics, blocks: &[Block]) -> Option<UsdCost> {
+    let descendants: UsdCost = blocks
         .iter()
         .filter_map(|block| match block {
             Block::SubAgent(agent) => agent.subtree_cost,
@@ -293,14 +298,14 @@ fn normalized_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 fn parse_lines<S: AsRef<str>>(
     lines: impl Iterator<Item = S>,
-    user_times: &mut Vec<Option<crate::model::EpochSeconds>>,
+    user_times: &mut Vec<Option<EpochSeconds>>,
 ) -> Vec<Block> {
     let mut out = Vec::new();
     // Stamp the previous canonical event's user turns on the next canonical event
     // so an ignored event_msg mirror cannot move the replay timeline.
-    let mut pending_ts: Option<crate::model::EpochSeconds> = None;
+    let mut pending_ts: Option<EpochSeconds> = None;
     let mut stamped = 0usize;
-    let mut slots: HashMap<String, crate::model::BlockIndex> = HashMap::new();
+    let mut slots: HashMap<String, BlockIndex> = HashMap::new();
     let mut cwd = String::new();
     // The previous canonical event's ts: a thinking's duration is `its ts − this`
     // (mirrors the engine's `prev_ts` after `decode_line` filters LineStart events).
@@ -315,7 +320,7 @@ fn parse_lines<S: AsRef<str>>(
             .and_then(Value::as_str)
             .and_then(epoch_secs);
         if is_timeline_event(&value) {
-            crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+            stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
             if pending_ts.is_some() {
                 prev_ts = pending_ts;
             }
@@ -402,7 +407,7 @@ fn parse_lines<S: AsRef<str>>(
             _ => {}
         }
     }
-    crate::engine::replay::stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
+    stamp_user_turns(&out, &mut stamped, pending_ts, user_times);
     out
 }
 
@@ -637,7 +642,7 @@ fn apply_output(block: &mut Block, output: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Block;
+    use claude_replay_engine::seam::Block;
 
     #[test]
     fn agent_path_key_is_safe_and_reversible() {
@@ -678,13 +683,13 @@ mod tests {
                     && agent.tool_use_id == "spawn-1"
                     && agent.description == "spec_review"
                     && agent.prompt == "review it"
-                    && agent.status == crate::AgentStatus::Running
+                    && agent.status == AgentStatus::Running
         )));
         assert!(blocks.iter().any(|block| matches!(
             block,
             Block::AgentDone {
                 agent_id,
-                status: crate::AgentStatus::Completed,
+                status: AgentStatus::Completed,
                 result: Some(result),
                 ..
             } if agent_id == expected_id && result == "PASS"
@@ -770,7 +775,8 @@ not json
         std::fs::write(&path, jsonl).unwrap();
         // Through the public dispatcher (the adapter's default `parse_path_timed`).
         let (actual, _, _) =
-            crate::engine::replay::parse_path_timed_for(crate::Agent::Codex, &path).unwrap();
+            claude_replay_engine::seam::parse_path_timed_for(&crate::adapters::CodexAdapter, &path)
+                .unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert!(matches!(
@@ -791,7 +797,7 @@ not json
             let mut ut_lines = Vec::new();
             let via_lines = parse_lines(jsonl.lines(), &mut ut_lines);
             let mut ut_replay = Vec::new();
-            let via_replay = crate::engine::replay::replay(
+            let via_replay = claude_replay_engine::seam::replay(
                 &tokenize(jsonl.lines()),
                 &mut ut_replay,
                 &CODEX_SHAPING,

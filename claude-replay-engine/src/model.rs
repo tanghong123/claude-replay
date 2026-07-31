@@ -140,7 +140,7 @@ pub enum Block {
 
 /// A file / plan / image the transcript carried. The viewer surfaces it so the reader
 /// can act on it: a [`AttachmentContent::Deferred`] locator ⇒ the bytes are embedded in the
-/// transcript and **downloadable** (loaded on demand via [`crate::Transcript::load_attachment`]);
+/// transcript and **downloadable** (loaded on demand via the facade's `Transcript::load_attachment`);
 /// [`AttachmentContent::None`] ⇒ only a path is known, so the action is **reveal in the file
 /// manager** (`path`). `--dump`/`--dump-html` only ever show the name.
 /// What an [`Attachment`] is — the closed set that drives its header label and how it's
@@ -188,7 +188,7 @@ pub struct Attachment {
 /// A **locator** for an attachment's content — never the bytes. A resident
 /// [`Session`](crate::Session) holds only this per attachment, so a transcript full of
 /// embedded files/images never balloons into memory. Content is loaded on demand — one
-/// attachment at a time — via [`crate::Transcript::load_attachment`] and dropped after use.
+/// attachment at a time — via the facade's `Transcript::load_attachment` and dropped after use.
 ///
 /// "Downloadable" (the old `content.is_some()`) is `matches!(content, AttachmentContent::Deferred { .. })`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,7 +203,7 @@ pub enum AttachmentContent {
 }
 
 /// Attachment content actually loaded into memory (transiently) by
-/// [`crate::Transcript::load_attachment`]. One of these is resident at a time — built,
+/// the facade's `Transcript::load_attachment`. One of these is resident at a time — built,
 /// embedded/written by the caller, then dropped. Never stored on a [`Block`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoadedAttachment {
@@ -440,7 +440,8 @@ pub fn foldable(b: &Block) -> bool {
 /// so the whole skill load reads as one collapsible unit (named by the skill) instead
 /// of a loose result block beside the call. Returns `false` when there's no recent
 /// `Skill` block to attach to — the caller then falls back to a standalone result.
-pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &str) -> bool {
+#[doc(hidden)]
+pub fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &str) -> bool {
     let Some(i) = idx else { return false };
     if let Some(Block::ToolUse { name, output, .. }) = out.get_mut(i) {
         if name == "Skill" {
@@ -469,24 +470,27 @@ pub(crate) fn attach_skill_body(out: &mut [Block], idx: Option<usize>, body: &st
 /// tool a given agent never emits simply never matches. A new agent maps its tools into this
 /// vocabulary in its adapter; the shared classifiers don't grow per-agent arms.
 pub(crate) fn is_activity_tool(name: &str) -> bool {
+    // MCP calls (`mcp__<server>__<tool>`) coalesce too — observed on CC 2.x
+    // (#90): a browser-automation run renders as ONE span line, `Thought for
+    // 1m 33s, called claude-in-chrome 4 times, ran 3 shell commands`.
     matches!(
         name,
         "Bash" | "Read" | "NotebookRead" | "Grep" | "Glob" | "LS"
-    )
+    ) || name.starts_with("mcp__")
 }
 
 /// Coalesce each **span** of consecutive thinking + activity tool calls into one
 /// `Thinking` block — Claude Code's between-outputs rule (#57; the full empirical
 /// derivation is `design/cc-activity-coalescing.md`). Any other block ends the span:
-/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/
-/// MCP/…), and the task-bookkeeping tools (TaskUpdate & co — CC renders them
+/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/…),
+/// and the task-bookkeeping tools (TaskUpdate & co — CC renders them
 /// invisibly but they still split the span; we keep their blocks visible). The one
 /// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
 /// its spans demonstrably carry across one — so they emit in place without flushing
 /// (the span's summary then lands after the attachment, at the span's true end).
 /// Thinking texts join blank-line separated; durations sum; even a LONE activity
 /// tool folds (CC never leaves one expanded).
-pub(crate) fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
+pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
         dur: &mut Option<u64>,
@@ -536,6 +540,41 @@ pub(crate) fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
     // its parse entries + decode helpers now live in `claude_model`.
+
+    /// #90: an MCP call inside a thinking+activity run must JOIN the span, not
+    /// split it (CC folds the whole run into one line).
+    #[test]
+    fn mcp_tools_join_the_coalesced_span() {
+        let t = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: String::new(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
+        let blocks = vec![
+            Block::Thinking {
+                text: "a".into(),
+                duration_secs: Some(3),
+                tools: Vec::new(),
+            },
+            t("mcp__claude-in-chrome__javascript_tool"),
+            Block::Thinking {
+                text: "b".into(),
+                duration_secs: Some(2),
+                tools: Vec::new(),
+            },
+            t("Bash"),
+            Block::AssistantText("done".into()),
+        ];
+        let out = coalesce_spans(blocks);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(
+            matches!(&out[0], Block::Thinking { tools, duration_secs: Some(5), .. } if tools.len() == 2),
+            "{out:?}"
+        );
+    }
 
     #[test]
     fn relativize_uses_cwd_then_home_tilde() {

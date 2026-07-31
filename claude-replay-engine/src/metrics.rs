@@ -2,7 +2,6 @@
 //! duration, model, and a best-effort USD cost estimate.
 
 use crate::model::UsdCost;
-use crate::Agent;
 use std::collections::BTreeMap;
 
 /// A session's token/cost tally.
@@ -21,7 +20,7 @@ use std::collections::BTreeMap;
 /// agent's accumulator folds keys into it (via its `bump` helper) exactly like the typed
 /// counters. Data-only (the standard `footer` shows the typed fields), and it makes a brand-new
 /// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
-/// through the [`MetricsAccumulator`](crate::adapter) interface and ready to use; no agent
+/// through the `MetricsAccumulator` interface and ready to use; no agent
 /// currently populates it, so `extra` is empty in practice.
 /// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
@@ -53,7 +52,7 @@ pub struct Metrics {
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
 /// (integer — sub-second precision is dropped, matching the old byte-offset parser).
 /// Shares the one epoch-seconds converter with the parse layer (`engine::time`).
-pub(crate) fn parse_ts(s: &str) -> Option<i64> {
+pub fn parse_ts(s: &str) -> Option<i64> {
     crate::engine::time::epoch_secs(s).map(|secs| secs as i64)
 }
 
@@ -61,17 +60,17 @@ pub(crate) fn parse_ts(s: &str) -> Option<i64> {
 /// metrics accumulators fold their per-line timestamps through this (each parses the raw
 /// timestamp its own way, then `observe`s the seconds).
 #[derive(Default, Clone)]
-pub(crate) struct TimeSpan {
+pub struct TimeSpan {
     min: Option<i64>,
     max: Option<i64>,
 }
 impl TimeSpan {
-    pub(crate) fn observe(&mut self, secs: i64) {
+    pub fn observe(&mut self, secs: i64) {
         self.min = Some(self.min.map_or(secs, |a| a.min(secs)));
         self.max = Some(self.max.map_or(secs, |a| a.max(secs)));
     }
     /// Elapsed wall-clock seconds (clamped to ≥ 0); `0` if fewer than two timestamps seen.
-    pub(crate) fn duration_secs(&self) -> i64 {
+    pub fn duration_secs(&self) -> i64 {
         match (self.min, self.max) {
             (Some(a), Some(b)) => (b - a).max(0),
             _ => 0,
@@ -100,7 +99,7 @@ fn price(model: &str) -> Option<(f64, f64)> {
 /// Best-effort USD cost from a model name and its token tiers. Cache writes bill
 /// at ~1.25× base input, cache reads at ~0.1× (prompt-caching discount). Returns
 /// `None` when the model isn't in the price table.
-pub(crate) fn estimate_cost(
+pub fn estimate_cost(
     model: &str,
     input: u64,
     cache_creation: u64,
@@ -113,13 +112,17 @@ pub(crate) fn estimate_cost(
     })
 }
 
-/// Metrics via the reader for `agent` — dispatches to each agent's adapter
-/// (`claude_metrics` / `codex_metrics`); the returned [`Metrics`] shape is shared.
-pub(crate) fn parse_reader_for<R: std::io::BufRead>(agent: Agent, mut reader: R) -> Metrics {
-    crate::adapter::adapter(agent).parse_reader(&mut reader)
+/// Metrics via the reader through `adapter` — the engine-side form (the facade's
+/// `parse_reader_for(agent, …)` resolves the adapter and calls this); the returned
+/// [`Metrics`] shape is shared across agents.
+pub fn parse_reader_with<R: std::io::BufRead>(
+    adapter: &dyn crate::adapter::TranscriptAdapter,
+    mut reader: R,
+) -> Metrics {
+    adapter.parse_reader(&mut reader)
 }
 
-pub(crate) fn human_tokens(n: u64) -> String {
+pub fn human_tokens(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}B", n as f64 / 1e9)
     } else if n >= 1_000_000 {
