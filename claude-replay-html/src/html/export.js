@@ -333,10 +333,15 @@
       loIdx = lo; hiIdx = hi;
     } else {
       while (loIdx < lo && topPad.nextSibling !== botPad) {
+        // Trim by the element's REAL index (#94): with filter-hidden records the
+        // first DOM child can sit far above loIdx — blindly removing one node per
+        // index step deletes visible elements that belong INSIDE the new window.
+        if (+topPad.nextSibling.dataset.idx >= lo) break; // [loIdx..lo) is all hidden
         topPad.nextSibling.remove();
         loIdx++;
         while (loIdx < lo && loIdx < hiIdx && isHiddenRec(loIdx)) loIdx++;
       }
+      if (loIdx < lo && loIdx < hiIdx) loIdx = lo;
       if (lo < loIdx) {
         var ftop = document.createDocumentFragment();
         for (var a = lo; a < loIdx; a++) {
@@ -349,10 +354,14 @@
         loIdx = lo;
       }
       while (hiIdx > hi && botPad.previousSibling !== topPad) {
+        // Same real-index guard as the top trim (#94): the last DOM child can sit
+        // far below hiIdx when the tail range is filter-hidden.
+        if (+botPad.previousSibling.dataset.idx < hi) break; // [hi..hiIdx) is all hidden
         botPad.previousSibling.remove();
         hiIdx--;
         while (hiIdx > hi && hiIdx > loIdx && isHiddenRec(hiIdx - 1)) hiIdx--;
       }
+      if (hiIdx > hi) hiIdx = hi;
       if (hi > hiIdx) {
         var fbot = document.createDocumentFragment();
         for (var c = hiIdx; c < hi; c++) {
@@ -374,6 +383,12 @@
   // under the viewport so height-measurement drift never visibly jumps the page.
   function updateView() {
     if (!records.length) return;
+    // Fully-rendered filter mode (#94): the whole (small) visible set stays
+    // materialized — no windowing, no estimate churn.
+    if (filter && filterFull) {
+      if (loIdx !== 0 || hiIdx !== records.length) setWindow(0, records.length);
+      return;
+    }
     // Prefer INDEX-anchored windowing (#66): when a materialized element is visible,
     // extend the window around ITS record index by walking effective heights — immune
     // to prefix-estimate drift, which otherwise makes a post-jump updateView compute
@@ -1012,12 +1027,25 @@
   // Command). `filter` is the CSS selector the chosen entry maps to. Rebuilt whenever
   // content changes (live sessions grow types).
   var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command" };
+  // Expanded tree nodes in the dropdown (#94) — survives menu rebuilds on live growth.
+  var mcpOpen = {};
   function buildToolMenu() {
     // Counted from the RECORDS (nested items included), not the DOM — the DOM only
     // holds the materialized window (#50).
     var entries = {}; // selector -> {label, count}
+    // MCP calls group into ONE expandable tree (#94): MCP -> server -> tool, parsed
+    // from mcp__<server>__<tool>; single-child nodes compress into their child.
+    var mcp = { total: 0, servers: {} };
     eachFoldRec(function (b) {
       if (b.tool) {
+        var m = /^mcp__(.+?)__(.+)$/.exec(b.tool);
+        if (m) {
+          mcp.total++;
+          var srv = (mcp.servers[m[1]] = mcp.servers[m[1]] || { count: 0, tools: {} });
+          srv.count++;
+          srv.tools[m[2]] = (srv.tools[m[2]] || 0) + 1;
+          return;
+        }
         var sel = '.fold[data-tool="' + b.tool + '"]';
         (entries[sel] = entries[sel] || { label: b.tool, count: 0 }).count++;
       } else if (b.kind) {
@@ -1030,18 +1058,64 @@
     });
     var box = $("toolitems");
     box.textContent = "";
+    function row(sel, label, count, depth, twKey) {
+      var item = el("div", "tool-item" + (sel === filter ? " active" : "") + (depth ? " tool-sub" + depth : ""));
+      item.dataset.sel = sel;
+      item.dataset.label = label;
+      item.tabIndex = 0;
+      if (twKey) {
+        var tw = el("span", "tool-tw", mcpOpen[twKey] ? "▾" : "▸");
+        tw.dataset.tw = twKey;
+        item.appendChild(tw);
+      } else {
+        item.appendChild(el("span", "dot"));
+      }
+      item.appendChild(el("span", "tname", label));
+      item.appendChild(el("span", "tool-count", String(count)));
+      box.appendChild(item);
+    }
     sels.forEach(function (sel) {
       var e = entries[sel];
-      var item = el("div", "tool-item" + (sel === filter ? " active" : ""));
-      item.dataset.sel = sel;
-      item.dataset.label = e.label;
-      item.tabIndex = 0;
-      item.appendChild(el("span", "dot"));
-      item.appendChild(el("span", "tname", e.label));
-      item.appendChild(el("span", "tool-count", String(e.count)));
-      box.appendChild(item);
+      row(sel, e.label, e.count, 0, null);
     });
-    $("btn-tools").disabled = sels.length === 0;
+    var servers = Object.keys(mcp.servers).sort();
+    if (mcp.total > 0) {
+      var toolSel = function (srv, tool) { return '.fold[data-tool="mcp__' + srv + '__' + tool + '"]'; };
+      var srvSel = function (srv) { return '.fold[data-tool^="mcp__' + srv + '__"]'; };
+      if (servers.length === 1) {
+        var s0 = servers[0], tools0 = Object.keys(mcp.servers[s0].tools).sort();
+        if (tools0.length === 1) {
+          // Fully compressed: one server, one tool — one flat row.
+          row(toolSel(s0, tools0[0]), "MCP/" + s0 + "/" + tools0[0], mcp.total, 0, null);
+        } else {
+          row(srvSel(s0), "MCP/" + s0, mcp.total, 0, "mcp");
+          if (mcpOpen["mcp"]) {
+            tools0.forEach(function (t) {
+              row(toolSel(s0, t), t, mcp.servers[s0].tools[t], 1, null);
+            });
+          }
+        }
+      } else {
+        row('.fold[data-tool^="mcp__"]', "MCP", mcp.total, 0, "mcp");
+        if (mcpOpen["mcp"]) {
+          servers.forEach(function (srv) {
+            var tools = Object.keys(mcp.servers[srv].tools).sort();
+            if (tools.length === 1) {
+              // Server with one tool compresses into the combined row.
+              row(toolSel(srv, tools[0]), srv + "/" + tools[0], mcp.servers[srv].count, 1, null);
+            } else {
+              row(srvSel(srv), srv, mcp.servers[srv].count, 1, "mcp/" + srv);
+              if (mcpOpen["mcp/" + srv]) {
+                tools.forEach(function (t) {
+                  row(toolSel(srv, t), t, mcp.servers[srv].tools[t], 2, null);
+                });
+              }
+            }
+          });
+        }
+      }
+    }
+    $("btn-tools").disabled = sels.length === 0 && mcp.total === 0;
   }
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
@@ -1051,6 +1125,8 @@
   // Does record `b` (or a nested item) match the filter selector's meaning? The two
   // selector shapes the menu emits are '.fold[data-tool="X"]' / '.fold[data-kind="k"]'.
   function parseFilterSel(sel) {
+    var mp = /\[data-tool\^="([^"]+)"\]/.exec(sel);
+    if (mp) return { toolPre: mp[1] }; // MCP tree nodes filter by name prefix (#94)
     var mt = /\[data-tool="([^"]+)"\]/.exec(sel);
     if (mt) return { tool: mt[1] };
     var mk = /\[data-kind="([^"]+)"\]/.exec(sel);
@@ -1058,6 +1134,7 @@
     return {};
   }
   function recMatch(b, want) {
+    if (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) return true;
     if (want.tool && b.tool === want.tool) return true;
     if (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b)) return true;
     var parts = b.body || [];
@@ -1080,9 +1157,31 @@
       if (recHit[i]) openFilterChain(b, want);
       if (isTurnKind(b) && isFoldRec(b)) b.open = 0; // collapse command turns
     }
+    // A SPARSE-hit filter renders its visible set FULLY (#94): with every height
+    // real, P() is exact and a precision jump (the one-hit case that used to land in
+    // blank pads) cannot drift when estimates correct. Dense filters keep normal
+    // windowing — hundreds of force-opened folds would freeze the renderer, and with
+    // hits everywhere the estimate drift is not observable. updateView honors the
+    // flag so scroll-driven windowing can't trim the full render back away.
+    var visible = 0, nhits = 0;
+    for (var fi = 0; fi < records.length; fi++) {
+        if (!isHiddenRec(fi)) visible++;
+        if (recHit[fi]) nhits++;
+    }
+    filterFull = nhits <= 50 && visible <= 400;
+    updateFilterNav();
+  }
+  var filterFull = false;
+  // ‹ › grey out when there is nothing to step between (#94).
+  function updateFilterNav() {
+    var n = filterHitIdxs().length;
+    all(".tf-prev, .tf-next").forEach(function (e) {
+      e.classList.toggle("disabled", n <= 1);
+    });
   }
   function openFilterChain(b, want) {
     var direct = (want.tool && b.tool === want.tool) ||
+      (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) ||
       (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b));
     var containsHit = false;
     (b.body || []).forEach(function (p) {
@@ -1096,9 +1195,11 @@
   // matches directly, plus any nested matching folds.
   function markFilterHit(e) {
     var want = parseFilterSel(filter);
-    var sel = want.tool
-      ? '.fold[data-tool="' + want.tool + '"]'
-      : '.fold[data-kind="' + want.kind + '"]:not([data-tool])';
+    var sel = want.toolPre
+      ? '.fold[data-tool^="' + want.toolPre + '"]'
+      : want.tool
+        ? '.fold[data-tool="' + want.tool + '"]'
+        : '.fold[data-kind="' + want.kind + '"]:not([data-tool])';
     var targets = [];
     if (e.matches(sel)) targets.push(e);
     Array.prototype.forEach.call(e.querySelectorAll(sel), function (m) { targets.push(m); });
@@ -1143,6 +1244,7 @@
   function filterNav(dir) {
     var hits = filterHitIdxs();
     if (!hits.length) return;
+    if (dir !== 0 && hits.length < 2) return; // nothing to step between (#94)
     var pos;
     if (filterCurId != null && idIndex[filterCurId] != null) {
       var cur = idIndex[filterCurId];
@@ -1590,6 +1692,10 @@
   function goToId(id) {
     var ti = idIndex[id];
     if (ti == null) return;
+    // Every goToId is user-initiated navigation (sidebar, search, filter) — mark it
+    // as intent so the follow classifier reads the jump's scrolls as the user moving
+    // (position decides the pin), never as displacement to heal (#94).
+    lastUserInput = performance.now();
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
     var y = streamTop() + P()[ti];
     setWindow(idxAt(y - streamTop() - MARGIN_PX), idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
@@ -1609,6 +1715,22 @@
     // A landing at (nearly) the same y fires no scroll event — refresh the window
     // and the scrollspy explicitly.
     updateView();
+    // Re-land exactly (#94): the post-jump measure pass replaces estimated heights
+    // ABOVE the target with real ones — under a filter the shift can be thousands of
+    // px, leaving the viewport in a pad. Correct against the target's REAL rect until
+    // it converges (the region around it is fully measured after a pass or two).
+    for (var gi = 0; gi < 3; gi++) {
+      var t2 = document.getElementById(id);
+      if (!t2) break;
+      var d = t2.getBoundingClientRect().top - GOTO_Y;
+      if (Math.abs(d) <= 2) break;
+      window.scrollBy(0, d);
+      updateView();
+    }
+    // Navigation SETS the pin state directly (#94): in a background tab the jump's
+    // scroll events can deliver long after the intent window, and the classifier
+    // would read them as displacement and yank the view back to the tail.
+    following = atBottom();
     spy();
   }
 
@@ -1656,6 +1778,13 @@
 
   document.addEventListener("click", function (e) {
     // ── type/tool filter controls ──
+    var tw = e.target.closest(".tool-tw");
+    if (tw) {
+      mcpOpen[tw.dataset.tw] = !mcpOpen[tw.dataset.tw];
+      buildToolMenu();
+      toolMenu(true);
+      return;
+    }
     var ti = e.target.closest(".tool-item");
     if (ti) { setFilter(ti.dataset.sel, ti.dataset.label); toolMenu(false); return; }
     if (e.target.closest(".tf-prev")) { filterNav(-1); return; } // ‹ previous hit (#49)

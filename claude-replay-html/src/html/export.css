@@ -135,6 +135,7 @@ input::placeholder { color: var(--faint); }
 .tf-prev, .tf-next { display: none; margin-left: 6px; padding: 0 3px; opacity: 0.8; }
 #btn-tools.active .tf-prev, #btn-tools.active .tf-next { display: inline; }
 .tf-prev:hover, .tf-next:hover { opacity: 1; }
+.tf-prev.disabled, .tf-next.disabled { opacity: 0.25; pointer-events: none; }
 #btn-agents.active { color: var(--kw); border-color: var(--kw); }
 #toolmenu, #agentmenu, #taskmenu {
   display: none; position: absolute; top: 34px; left: 0; min-width: 190px; z-index: 40;
