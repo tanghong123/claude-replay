@@ -304,45 +304,107 @@ scripts/gate/gate.sh            <span class="c"># frozen-fixture diff → must p
 <span class="k">let</span> session = parse_session(Path::new(<span class="c">"session.jsonl"</span>))?;   <span class="c">// agent auto-detected</span>
 println!(<span class="c">"{} blocks · {} turns · {}"</span>,
          session.blocks().len(), session.index.turns.len(), session.metrics.footer());
-<span class="k">for</span> block <span class="k">in</span> session.blocks().iter() {
-    <span class="k">if let</span> Block::ToolUse { name, target, .. } = block { <span class="c">/* tally tool usage… */</span> }
+<span class="k">for</span> t <span class="k">in</span> &session.index.tools {            <span class="c">// derived rollups — turns · tools · attachments —</span>
+    tally(&t.name, &t.target);                <span class="c">//   are pre-built; no block scan needed</span>
+}
+<span class="k">for</span> (id, sa) <span class="k">in</span> &session.sub_agents {       <span class="c">// the spawn tree: liveness + rolled-up cost</span>
+    println!(<span class="c">"{id}: {:?} · {:?}"</span>, sa.status, sa.subtree_cost);
 }</pre>
-    <p>For anything incremental — or any I/O the library shouldn't dictate — drop one level to
-      the sans-io <code>SessionAccumulator</code> and push lines yourself, from a file, a
-      socket, an mmap, or a test vector:</p>
+    <p><code>parse_session_enriched</code> is the same call plus the path-aware wrapper: each
+      spawn's child transcript is parsed into its <code>SubAgent::blocks</code> and per-subtree
+      costs roll up — that is the only difference. <code>session.tasks</code> (the task-queue
+      op-log behind the tasks panel) and <code>session.index.attachments</code> come with every
+      parse.</p>
+
+    <h3>Finding sessions — discovery as a library</h3>
+    <p>A real application rarely starts with a path in hand. The facade's
+      <code>discover</code> module scans every registered agent's transcript store and returns
+      ranked <code>Candidate</code>s — the exact list behind the interactive picker:</p>
+<pre><span class="k">use</span> claude_replay_core::discover::{candidates_all, resolve_any};
+
+<span class="k">for</span> c <span class="k">in</span> candidates_all(<span class="k">None</span>) {              <span class="c">// or Some(Agent::CODEX) to filter one store</span>
+    <span class="c">// c.path · c.agent · c.project (the session's repo, as its leaf dir name) ·</span>
+    <span class="c">// c.snippet (first real user prompt, one line) · c.mtime ·</span>
+    <span class="c">// c.cwd_affinity (true = a session of the directory you launched from)</span>
+}
+<span class="k">let</span> latest = resolve_any(<span class="k">None</span>, <span class="k">None</span>, <span class="k">true</span>)?;  <span class="c">// what --latest does; or pass a target</span></pre>
+
+    <h3>Tailing a live session</h3>
+    <p>The follower a real viewer runs on: <code>FollowParser</code> bundles a byte-offset tail
+      with the incremental fold — the first poll folds the whole current file, every later poll
+      folds only appended bytes. <code>poll_delta</code> also hands you
+      <code>changed_from</code>, the first block index that differs, so you keep everything
+      before it and re-render O(turn), not O(session):</p>
+<pre><span class="k">use</span> claude_replay_core::Transcript;
+
+<span class="k">let mut</span> f = Transcript::detect(&path).follow();  <span class="c">// or Transcript::open(agent, path)</span>
+<span class="k">loop</span> {
+    <span class="k">if let</span> Some((blocks, times, metrics, changed_from)) = f.poll_delta()? {
+        rerender_from(&blocks, changed_from);    <span class="c">// keep [0..changed_from) untouched</span>
+    }                                            <span class="c">// None = idle tick — nothing appended</span>
+    wait_for_next_tick();                        <span class="c">// your cadence; the TUI reuses its input tick</span>
+}</pre>
+    <p>Truncation and compaction are absorbed for you: the tail detects the rewritten prefix,
+      the fold rebuilds, and the same <code>changed_from</code> tells you how much of your
+      render survived (on a rewrite: none — it comes back <code>0</code>).
+      <code>f.tasks()</code> refreshes a task panel from the same poll, no session assembly.</p>
+
+    <h3>Bring your own I/O — the sans-io accumulator</h3>
+    <p>That follower is just <code>LineReader + SessionAccumulator</code>. When the lines come
+      from somewhere the library shouldn't dictate — a socket, an mmap, a test vector — drive
+      the fold yourself, and <em>read it while it runs</em>
+      (<a href="architecture.html#sansio">Architecture §5</a> is the deep dive):</p>
 <pre><span class="k">use</span> claude_replay_core::{adapter, engine::SessionAccumulator, Agent};
 
 <span class="k">let mut</span> acc = SessionAccumulator::new(adapter(Agent::CLAUDE));
-<span class="k">let mut</span> offset = 0u64;
+<span class="k">let</span> (<span class="k">mut</span> offset, <span class="k">mut</span> rendered) = (0u64, 0usize);
 <span class="k">for</span> line <span class="k">in</span> my_source_of_lines() {
-    acc.advance_at(offset, &line);        <span class="c">// one line resident at a time</span>
+    acc.advance_at(offset, &line);           <span class="c">// one line resident at a time</span>
     offset += line.len() <span class="k">as</span> u64 + 1;
+    <span class="k">let</span> sr = acc.stream_read(rendered);      <span class="c">// committed[rendered..] + the open turn —</span>
+    rendered += sr.committed_delta.len();    <span class="c">//   the delta read; never clones the session</span>
+    show(acc.session_meta());                <span class="c">// maintained O(turn) header, readable any time</span>
 }
-println!(<span class="c">"committed {} blocks, {} in the open turn"</span>,
-         acc.committed_len(), acc.provisional_len());
-<span class="k">let</span> session = acc.snapshot();</pre>
+<span class="k">let</span> session = acc.into_session();            <span class="c">// batch ending — consumes; the live readers</span>
+                                             <span class="c">//   above never needed it</span></pre>
     <p>This is not a side door — it is the <em>only</em> fold in the workspace. The engine's
       constructors take the adapter itself (<code>&amp;'static dyn TranscriptAdapter</code>);
-      the facade's <code>adapter(agent)</code> curries the id, and
-      <code>Transcript::open(agent, path).follow()</code> hides even that. Batch parsing feeds
-      the fold from a file reader; the live <code>FollowParser</code> feeds it appended bytes
-      each <code>poll()</code> (<code>FollowParser::open(adapter, path)</code> bundles the
-      byte-offset tail + the accumulator, and <code>poll_delta()</code> additionally reports
-      <code>changed_from</code>, the first index that differs — O(turn), not O(session)). Two
+      the facade's <code>adapter(agent)</code> curries the id. <code>parse_session</code>, the
+      follower, and this loop all feed the same fold — only the I/O around it differs. Two
       performance levers worth knowing:</p>
     <ul class="clean">
       <li><b>Storage injection.</b>
         <code>SessionAccumulator::with_store(adapter, TierBStore::file(path)?)</code> spills
         committed block <em>content</em> to disk as it folds — RAM stays O(open&nbsp;turn) + a
-        12-byte-per-block locator table. <code>snapshot()</code> then yields a
+        12-byte-per-block locator table. <code>into_session()</code> then yields a
         <code>Session&lt;Deferred&gt;</code>; read blocks back through the
         <code>BlockAccess</code> trait. This is one instance of the <b><code>BlockStore</code>
         seam</b> — see <a href="#bv">Choosing your <code>BV</code></a> for the general mechanism
         (the live HTML server takes it further: its store <em>renders</em> at put time).</li>
-      <li><b>Delta reads.</b> <code>acc.stream_read(from)</code> returns
-        <code>committed[from..]</code> + the open turn + O(turn) metadata — the primitive under
-        the pull protocol; never clones the whole session.</li>
+      <li><b>Random access.</b> <code>acc.committed_tail(from)</code> materializes <em>any</em>
+        committed range back out of the store on demand (it bounds on <code>BlockRead</code>) —
+        the scroll-back complement to the <code>stream_read</code> delta above, and the reason a
+        spilled store costs no resident RAM to re-read.</li>
     </ul>
+
+    <h3>Attachments load lazily</h3>
+    <p>Embedded files and images never balloon a resident <code>Session</code>: an
+      <code>Attachment</code> block holds a <b>locator</b>, never the bytes.
+      <code>session.index.attachments</code> lists them (<code>kind · name · at</code>); load
+      one on demand through the source handle, use it, drop it:</p>
+<pre><span class="k">use</span> claude_replay_core::{Block, LoadedAttachment, Transcript, model::AttachmentContent};
+
+<span class="k">let</span> transcript = Transcript::detect(&path);      <span class="c">// the same handle that parsed it</span>
+<span class="k">let</span> entry = &session.index.attachments[i];       <span class="c">// picked from the rollup</span>
+<span class="k">if let</span> Block::Attachment(a) = &session.blocks()[entry.at] {
+    <span class="k">if let</span> AttachmentContent::Deferred { at, index } = a.content {
+        <span class="k">match</span> transcript.load_attachment(at, index)? {  <span class="c">// re-reads ONE transcript line</span>
+            Some(LoadedAttachment::Text(body)) =&gt; save(&a.name, &body),
+            Some(LoadedAttachment::Base64 { mime, b64 }) =&gt; embed(&mime, &b64),
+            <span class="k">None</span> =&gt; {}                              <span class="c">// stale locator — nothing loadable</span>
+        }
+    }   <span class="c">// AttachmentContent::None = path-only: offer reveal-in-file-manager instead</span>
+}</pre>
     <p style="margin-top:16px">Runnable — from
       <code>claude-replay-core/examples/parse.rs</code>:</p>
     <pre>cargo run -p claude-replay-core --example parse -- &lt;transcript.jsonl&gt; [--follow]</pre>
@@ -426,6 +488,34 @@ ss.advance()?;                <span class="c">// borrow-to-tail</span>
       the viewport; <code>design/dom-virtualization.md</code> is the transferable technique
       doc).</p>
 
+    <h3>the shared voice — folds, summaries, diffs, highlighting</h3>
+    <p>Everything that makes the product's <em>wording and default shape</em> sits behind a
+      handful of small calls; a new frontend inherits the voice instead of re-inventing it:</p>
+<pre><span class="c">// which blocks start collapsed — the default the TUI and HTML both apply</span>
+<span class="k">let</span> policy = FoldPolicy::from_flags(<span class="k">false</span>, <span class="k">None</span>, <span class="k">None</span>);  <span class="c">// (--full, --fold, --unfold)</span>
+<span class="k">if</span> policy.collapses(&block) { <span class="c">/* render folded, expand on demand */</span> }
+
+<span class="c">// the phrasing — turn headlines, activity strips, chips, tool labels</span>
+summary::turn_summary(duration_secs, &tools);  <span class="c">// the turn's one-line headline</span>
+summary::activities(&tools);                   <span class="c">// "3 edits · 2 reads · 1 command…"</span>
+present::spawn_chip(&sub_agent);               <span class="c">// "12 tools · done" (sync + async aware)</span>
+present::edit_summary(adds, dels);             <span class="c">// "Added 12 lines, removed 3 lines"</span>
+present::display_name(name);                   <span class="c">// Edit/MultiEdit → "Update", MCP names kept</span>
+
+<span class="c">// diffs — agent-neutral rows from the transcript's own structuredPatch (never the</span>
+<span class="c">// working tree, which may have moved on since the session ran)</span>
+<span class="k">let</span> groups = diff::diff_row_groups(&diffs, patch);  <span class="c">// Vec&lt;DiffGroup{rows, max_line}&gt;</span>
+<span class="k">for</span> g <span class="k">in</span> &groups {                                  <span class="c">// one group per hunk; max_line</span>
+    <span class="k">for</span> row <span class="k">in</span> &g.rows { <span class="c">/* row.kind (Ctx/Add/Del) · row.num · row.text */</span> }
+}                                                   <span class="c">//   sizes your line-number gutter</span>
+
+<span class="c">// syntax highlighting — toolkit-neutral spans (text + xterm-256 color index)</span>
+<span class="k">let</span> lines: Vec&lt;Vec&lt;HlSpan&gt;&gt; = highlight_spans(code, lang_token);</pre>
+    <p>The TUI maps <code>HlSpan</code>s to ratatui spans, the HTML exporter to
+      <code>&lt;span class="hl-…"&gt;</code>s; both phrase chips and headlines through these
+      same functions — which is why the frontends can never drift apart in wording, numbering,
+      or fold defaults, and neither will yours.</p>
+
     <h3 id="bv">choosing your BV — the BlockStore seam</h3>
     <p><code>Session&lt;BV&gt;</code> is generic over what it stores per block, and <b>the
       presentation layer decides what <code>BV</code> is</b>: the <code>Block</code> itself,
@@ -491,9 +581,12 @@ claude_replay_html::serve(&args, &path)?;</pre>
     </div>
     <p style="margin-top:14px"><code>Args</code> is plain data (<code>Default</code> + struct
       literal) unless you enable the <code>cli</code> feature for clap parsing — a headless
-      service can call <code>dump_all_html</code> with a hand-built <code>Args</code> and never
-      link clap. The root <code>claude-replay</code> crate is itself just this: ~60 lines of
-      CLI dispatch over the two frontends (<code>src/lib.rs::run_viewer</code>).</p>
+      service never links clap:</p>
+<pre><span class="c">// e.g. a CI job exporting every session it just produced:</span>
+<span class="k">let</span> args = Args { width: Some(100), full: <span class="k">true</span>, ..Args::default() };
+claude_replay_html::dump_all_html(&args, &transcript_path)?;  <span class="c">// dir bundle: index.html + assets/</span></pre>
+    <p>The root <code>claude-replay</code> crate is itself just this: ~60 lines of CLI dispatch
+      over the two frontends (<code>src/lib.rs::run_viewer</code>).</p>
   </section>
 
   <section id="agent">

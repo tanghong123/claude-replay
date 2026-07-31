@@ -41,48 +41,49 @@ Two design goals shape everything below:
 
 Everything in the workspace is a stage on **one data path** (or a cache beside it). Read it
 top to bottom: the left rail names the **layer and crate** a stage's machinery lives in — so
-this one diagram is also the crate map. Agent-specific code exists only at ①; the return
-edge at ⓪ is what makes sub-agent trees work — a parsed `SubAgent` block names a child
-transcript, which runs the same pipeline recursively.
+this one diagram is also the crate map. Agent-specific code exists only in the decode
+stage; the return edge into discover is what makes sub-agent trees work — a parsed
+`SubAgent` block names a child transcript, which runs the same pipeline recursively.
 
 ```
  layer · crate                        stage
 ──────────────────────────────────────────────────────────────────────────────────────
- 1 FOUNDATION                        │                                              ▲╌╌ SubAgent id
-    claude-replay-core               │ ⓪ discover    find transcripts by path/id/   ╎
-    (the facade: registry-wired      │               cwd; resolve a SubAgent block  ╎
-    entry points)                    │               to its child transcript        ╎
-                                     │      ↓ raw JSONL, one line at a time         ╎
-    claude-replay-agents             │ ① decode      one raw line → 0+ canonical    ╎
-    (the pluggable half —            │               Messages; the ONLY stage that  ╎
-    seam-only imports)               │               knows an agent's field names   ╎
-                                     │      ↓ Message                               ╎
-    claude-replay-engine             │ ② fold        one Replayer for every agent:  ╎
-    (agent-free machinery            │               join results onto calls, group ╎
-    + the public seam)               │               turns, coalesce spans — §4     ╎
-                                     │      ↓ Block                                 ╎
-                                     │ ③ accumulate  the durability frontier:       ╎
-                                     │               finished turns drained         ╎
-                                     │               put-once into a BlockStore;    ╎
-                                     │               only the open turn stays in    ╎
-                                     │               the fold — §5  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
+ 1 FOUNDATION                        │
+    claude-replay-core               │ discover     find transcripts by path/id/  ◀──┐
+    (the facade: registry-wired      │              cwd; resolve a SubAgent block    │
+    entry points)                    │              to its child transcript          │
+                                     │      ↓ raw JSONL, one line at a time          │
+    claude-replay-agents             │ decode       one raw line → 0+ canonical      │
+    (the pluggable half —            │              Messages; the ONLY stage that    │ ↑ SubAgent id
+    seam-only imports)               │              knows an agent's field names     │
+                                     │      ↓ Message                                │
+    claude-replay-engine             │ fold         one Replayer for every agent:    │
+    (agent-free machinery            │              join results onto calls, group   │
+    + the public seam)               │              turns, coalesce spans — §4       │
+                                     │      ↓ Block                                  │
+                                     │ accumulate   the durability frontier:         │
+                                     │              finished turns drained           │
+                                     │              put-once into a BlockStore;      │
+                                     │              only the open turn stays in      │
+                                     │              the fold — §5  ──────────────────┘
                                      │      ↓ Session — a value, materialized on demand
- 2 SUPPORT                           │ ④ cache       ONE live resident per session; the single
-    claude-replay-present            │               full presentation copy both frontends
-    (frontend-agnostic)              │               share — §7
+ 2 SUPPORT                           │ cache        ONE live resident per session; the single
+    claude-replay-present            │              full presentation copy both frontends
+    (frontend-agnostic)              │              share — §7
                                      │      ↓ delta, never the whole session
-                                     │ ⑤ sync        in-process:            cross-process:
-                                     │               ONE call, a splice-    stateless replies
-                                     │               shaped Arc delta — §8  against a client-held
-                                     │                                     4-member cursor — §8
-                                     │                 ↓ ViewDelta            ↓ PullReply
- 3 FRONTENDS                         │ ⑥ render      blocks → styled        wire records →
-    claude-replay-tui                │               wrapped lines (the     a virtualized
-    claude-replay-html               │               hot window)            DOM window
-                                     │                 ↓ terminal cells       ↓ browser DOM
- 4 APP SHELL                         │               TUI app                HTTP server ·
-    claude-replay                    │                                      client-side artifacts
-                                     │               (wires a CLI in front of all of the above)
+                                     │ sync         in-process:            cross-process:
+                                     │              ONE call, a splice-    stateless replies
+                                     │              shaped Arc delta — §8  against a client-held
+                                     │                                    4-member cursor — §8
+                                     │                ↓ ViewDelta            ↓ PullReply
+ 3 FRONTENDS                         │              render — TUI:          render — HTML:
+    claude-replay-tui                │              blocks → styled        wire records →
+    claude-replay-html               │              wrapped lines (the     a virtualized
+                                     │              hot window)            DOM window
+                                     │                ↓ terminal cells       ↓ browser DOM
+ 4 APP SHELL                         │              TUI app                HTTP server ·
+    claude-replay                    │                                     client-side artifacts
+                                     │              (wires a CLI in front of all of the above)
 ```
 
 ### The boundaries are compiler-enforced
@@ -190,7 +191,7 @@ unrelated directory's picker. Explicit paths and ids are never scoped.
 
 ## 4. The fold: what the Replayer actually does
 
-Stage ② looks like one arrow; it is where most of the engine's hard-won correctness lives.
+The fold stage looks like one arrow; it is where most of the engine's hard-won correctness lives.
 A transcript is not a clean event log — results arrive out of order, turns interleave, and
 what an agent's own UI *shows* differs from what it *records*. The `Replayer` reconciles all
 of it, once, for every agent:
@@ -236,11 +237,14 @@ loop {
                                          // INSIDE this call, any turn that just finished
                                          // crosses the durability frontier and is `put`
                                          // into S — once, right now, not at the end.
-    // …read at ANY moment, while the fold keeps going (all O(open turn)):
+    // …read at ANY moment, while the fold keeps going:
     acc.session_meta();                  // the live header — maintained, never rescanned
-    acc.committed_tail(from);            // ANY committed range, re-read from S on demand
-    acc.stream_read(from);               // …that plus the finalized open turn, in one call
-    acc.snapshot();                      // a point-in-time Session VALUE (fold continues)
+    acc.open_read();                     // StreamRead: the open turn + times + metrics +
+                                         //   header — O(turn), NO committed content
+    acc.committed_tail(from);            // Vec<Block>: committed[from..] — any range,
+                                         //   materialized back out of S on demand
+    acc.stream_read(from);               // the two combined into one StreamRead — what
+                                         //   a live consumer polls
 }
 let session = acc.into_session();        // the one-shot ENDING: consumes the accumulator
 ```
@@ -256,15 +260,22 @@ not an object the accumulator manages. The accumulator owns the running state �
 Vec<S::Bv>`, the replayer's open window, the maintained header/metrics/tasks — and there
 are three ways to read it:
 
-- **Maintained live reads** — `session_meta()` / `open_read()` / `stream_read(from)`:
-  O(open turn), no `Session` built at all. This is what the live stack actually uses per
-  poll; the header is folded forward one block at a time as turns commit, never recomputed.
-  Arbitrary *committed* blocks are read back with `committed_tail(from)` (any range,
-  materialized from the store on demand — it needs `S: BlockRead`, so a write-only
-  projection store opts out at the type level).
+- **Maintained live reads** — no `Session` built at all; what the live stack actually uses
+  per poll. They come as a **pair covering the two zones**: `open_read()` returns a
+  `StreamRead` carrying everything O(open turn) — the finalized open turn, per-turn times,
+  metrics, the maintained header — and **no committed content**; it is store-agnostic (no
+  `BlockRead` bound). `committed_tail(from)` covers the other zone: `committed[from..]` as
+  owned `Block`s, any range, materialized back out of the store on demand — it is the call
+  that *does* need `S: BlockRead`, so a write-only projection store opts out at the type
+  level and serves its committed zone from its own representation instead.
+  `stream_read(from)` is literally the two composed: one `StreamRead` whose
+  `committed_delta` is that tail. And `session_meta()` is the cheapest cut — just the
+  header, folded forward one block at a time as turns commit, never recomputed.
 - **`snapshot(&mut self)`** — materialize a whole point-in-time `Session`; *the fold keeps
-  going*. It clones the committed values — which is content for a plain in-memory store but
-  only refcount bumps under `ArcStore` (that is precisely why `ArcStore` exists).
+  going*. It clones the committed values — content for a plain in-memory store, only
+  refcount bumps under `ArcStore`. A one-shot inspection tool (a test assertion, a debug
+  dump) — **not** a tailing surface: a live consumer reads the deltas above instead of
+  re-materializing per poll, which is why it appears nowhere in the loop.
 - **`into_session(self)`** — the batch ending, BY MOVE: transfers the committed values out,
   zero block clones for the RAM/`Arc` stores. After this the accumulator is gone; it is
   what `Transcript::parse` calls once at end-of-file, never the tailing surface.
