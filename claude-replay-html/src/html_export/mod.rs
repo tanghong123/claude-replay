@@ -602,17 +602,39 @@ impl Emitter<'_> {
                         }
                     }
                     "write" => {
-                        let content = write_content(diffs);
-                        let n = content.lines().count();
-                        head.insert(
-                            "chips".into(),
-                            json!([chip_class("add", format!("{n} lines"))]),
+                        // An overwrite carries the harness's structuredPatch — CC
+                        // renders it as a diff like an Edit (#92); only a fresh-file
+                        // write keeps the numbered-content preview.
+                        let overwrite = matches!(
+                            b,
+                            Block::ToolUse { patch: Some(h), .. } if !h.is_empty()
                         );
-                        body.push(json!({
-                            "p": "note",
-                            "x": format!("Wrote {n} lines to {target}"),
-                        }));
-                        body.push(numbered_part(content, token, WRITE_PREVIEW));
+                        if overwrite {
+                            if let Some((part, adds, dels)) = diff_part(b) {
+                                let mut chips = Vec::new();
+                                if adds > 0 {
+                                    chips.push(chip_class("add", format!("+{adds}")));
+                                }
+                                if dels > 0 {
+                                    chips.push(chip_class("del", format!("−{dels}")));
+                                }
+                                head.insert("chips".into(), json!(chips));
+                                body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
+                                body.push(part);
+                            }
+                        } else {
+                            let content = write_content(diffs);
+                            let n = content.lines().count();
+                            head.insert(
+                                "chips".into(),
+                                json!([chip_class("add", format!("{n} lines"))]),
+                            );
+                            body.push(json!({
+                                "p": "note",
+                                "x": format!("Wrote {n} lines to {target}"),
+                            }));
+                            body.push(numbered_part(content, token, WRITE_PREVIEW));
+                        }
                     }
                     "read" => {
                         if let Some(n) = read_lines {
