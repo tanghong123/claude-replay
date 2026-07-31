@@ -876,10 +876,6 @@ fn build_page(
   </div>
   <div class="toolfilter" id="tasknav" style="display:none">
     <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
-    <div id="taskmenu">
-      <div class="menu-head">Session tasks</div>
-      <div class="tasks" id="taskbox"></div>
-    </div>
   </div>
   <div class="searchbox">
     <span class="mag">⌕</span>
@@ -890,6 +886,14 @@ fn build_page(
   <button id="btn-col" class="tbtn" data-full="Collapse all">Collapse all</button>
   <button id="btn-wide" class="tbtn" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔ Wide</button>
   <button id="btn-theme" class="tbtn">◐ Dark</button>
+</div>
+<div id="taskpanel">
+  <div class="taskpanel-head">
+    <span class="tp-title" id="tp-title">Session tasks</span>
+    <span class="tp-center autofocus" title="Auto-center on running tasks">⌖</span>
+    <span class="tp-x" title="Close">✕</span>
+  </div>
+  <div class="tasks" id="taskbox"></div>
 </div>
 <div class="layout" id="layout">
   <nav id="sidebar">

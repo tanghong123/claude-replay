@@ -260,7 +260,34 @@ a.crumb:hover { text-decoration: underline; }
 }
 .usage { display: flex; flex-direction: column; gap: 5px; }
 .usage .side-head { padding: 0 0 2px; }
-/* #15 the session task/todo panel — a topbar dropdown since #70. */
+/* #83 the session task panel — a FLOATING panel below the top bar, top-right.
+   Sections: finished → running → pending (IDs ascending); the viewport auto-centers
+   on the middle of the running section until the user scrolls, and ⌖ re-engages. */
+#taskpanel {
+  display: none; position: fixed; z-index: 60;
+  top: 56px; right: 12px; width: min(420px, 92vw);
+  max-height: min(64vh, 680px);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18);
+  flex-direction: column;
+}
+#taskpanel.on { display: flex; }
+#taskpanel .tasks { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
+.taskpanel-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font: 12px var(--sans); color: var(--muted); flex: none;
+}
+.taskpanel-head .tp-title { flex: 1 1 auto; }
+.tp-center, .tp-x { cursor: pointer; padding: 0 4px; user-select: none; }
+.tp-center:hover, .tp-x:hover { color: var(--fg); }
+.tp-center.autofocus { color: var(--tool); }
+.task-sec {
+  font: 10.5px var(--sans); text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--faint); padding: 7px 2px 2px; position: sticky; top: 0;
+  background: var(--panel);
+}
+/* (formerly a topbar dropdown, #70) */
 .tasks {
   padding: 2px 4px 4px;
   font: 11.5px var(--mono); color: var(--muted);
