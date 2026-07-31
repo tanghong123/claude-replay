@@ -14,6 +14,7 @@ use crate::model::Block;
 pub fn turn_summary(duration_secs: Option<u64>, tools: &[Block]) -> String {
     let thought = match duration_secs {
         Some(d) if d >= 60 => format!("thought for {}m {}s", d / 60, d % 60),
+        Some(0) => "thought for <1s".to_string(),
         Some(d) => format!("thought for {d}s"),
         None => "thought".to_string(),
     };
@@ -379,5 +380,10 @@ mod tests {
             "Ran 1 shell command",
             "activity-only span capitalizes the first clause"
         );
+    }
+
+    #[test]
+    fn zero_second_duration_renders_as_subsecond() {
+        assert_eq!(turn_summary(Some(0), &[]), "Thought for <1s");
     }
 }

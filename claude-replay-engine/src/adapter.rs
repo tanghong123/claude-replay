@@ -12,9 +12,10 @@ use crate::discover::Candidate;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::Block;
+use crate::model::{AgentId, Block, SubAgentMeta};
 use crate::Agent;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +39,7 @@ pub trait MetricsAccumulator: Send {
 /// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
 /// which both the whole-file batch parse and the live follower feed, so batch and live share
 /// one seam. Discovery (`candidates_scoped`/`resolve_id`) and the optional
-/// `enrich`/`subagent_source` round it out.
+/// `enrich`/`subagent_source`/`populate_sub_agent_transcripts` round it out.
 /// An adapter's claim strength on a sniffed transcript head (#59). Ordering matters
 /// to the facade's `detect_agent`: `Owns` beats `CanParse` beats `No`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,9 +66,9 @@ pub trait TranscriptAdapter: Sync {
     fn sniff(&self, head: &Value) -> SniffClaim;
 
     // ── whole-file parse ──
-    /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
-    /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
-    /// enrich. Backs the facade's `parse_session_enriched`.
+    /// Load sub-agent child transcripts into their `SubAgent.blocks`. Default no-op for
+    /// adapters whose source has no resolvable sub-agent tree. Backs the facade's
+    /// `parse_session_enriched`.
     fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
@@ -112,11 +113,23 @@ pub trait TranscriptAdapter: Sync {
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
     /// The source transcript of sub-agent `child_id` spawned under the session at `root`,
-    /// if it exists. Default `None` — an agent with no sub-agent tree (Codex) has none;
-    /// Claude resolves its flat `<root-stem>/subagents/agent-<id>.jsonl` layout. Backs the
-    /// presentation layer's descend-into-child and per-child HTML streams.
+    /// if it exists. Default `None` for adapters whose source has no resolvable child
+    /// transcript. Backs the presentation layer's descend-into-child and per-child HTML
+    /// streams.
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
+    }
+    /// Fill all known child transcript paths for one parent parse. The default delegates
+    /// to [`TranscriptAdapter::subagent_source`] once per child; adapters backed by a
+    /// relationship store may override this operation-scoped hook to scan that store once.
+    fn populate_sub_agent_transcripts(
+        &self,
+        root: &Path,
+        map: &mut BTreeMap<AgentId, SubAgentMeta>,
+    ) {
+        for (id, meta) in map {
+            meta.transcript = self.subagent_source(root, id);
+        }
     }
     /// Is `path` inside this agent's OWN transcript store (#66)? Store provenance
     /// proves ownership even without an in-band marker — a file in

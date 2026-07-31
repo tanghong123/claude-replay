@@ -1098,6 +1098,7 @@ pub(super) struct ChildRef {
     pub(super) id: String,
     pub(super) description: String,
     pub(super) agent_type: String,
+    pub(super) source: Option<std::path::PathBuf>,
     /// The spawn's own terminal status — set for a **synchronous** `Agent` spawn, whose
     /// result (and `status: "completed"`) lands inline on its `tool_use` rather than as a
     /// later `<task-notification>`. Async `Task` completion instead shows up as a separate
@@ -1119,6 +1120,7 @@ fn collect_child_refs(blocks: &[Block]) -> Vec<ChildRef> {
                 id: sa.agent_id.clone(),
                 description: sa.description.clone(),
                 agent_type: sa.agent_type.clone(),
+                source: None,
                 terminal: agents
                     .get(&sa.agent_id)
                     .map(|m| m.status.is_terminal())
@@ -1325,7 +1327,9 @@ pub(super) fn child_info(
     parent: &AgentInfo,
     c: ChildRef,
 ) -> Option<AgentInfo> {
-    let source = discover::subagent_source(agent, root_path, &c.id)?;
+    let source = c
+        .source
+        .or_else(|| discover::subagent_source(agent, root_path, &c.id))?;
     let title = if c.description.is_empty() {
         c.agent_type.clone()
     } else {
@@ -1997,6 +2001,149 @@ mod tests {
             "child transcript rendered: {recs:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn dump_all_html_keeps_reused_codex_agent_paths_distinct() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-codex-bundle-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let sessions = base.join("sessions/2026/07/29");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let parent = sessions.join("rollout-parent.jsonl");
+        let child_a = sessions.join("rollout-child-a.jsonl");
+        let child_b = sessions.join("rollout-child-b.jsonl");
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review first\"}"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-a","agent_path":"/root/review","kind":"started"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"agent_message","author":"/root/review","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nPASS"}]}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-2","arguments":"{\"task_name\":\"review\",\"message\":\"review second\"}"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-2","agent_thread_id":"child-b","agent_path":"/root/review","kind":"started"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-2","output":"{\"task_name\":\"/root/review\"}"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        for (child, id, body) in [
+            (&child_a, "child-a", "first child body"),
+            (&child_b, "child-b", "second child body"),
+        ] {
+            std::fs::write(
+                child,
+                format!(
+                    "{}\n{}\n",
+                    json!({
+                        "type": "session_meta",
+                        "payload": {
+                            "id": id,
+                            "cwd": "/repo",
+                            "source": {
+                                "subagent": {
+                                    "thread_spawn": {
+                                        "parent_thread_id": "parent",
+                                        "agent_path": "/root/review",
+                                        "agent_nickname": "Nash"
+                                    }
+                                }
+                            }
+                        }
+                    }),
+                    json!({
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": body}]
+                        }
+                    })
+                ),
+            )
+            .unwrap();
+        }
+
+        let out = base.join("bundle");
+        use clap::Parser as _;
+        let args = crate::Args::parse_from([
+            "claude-replay",
+            parent.to_str().unwrap(),
+            "--dump-all-html",
+            out.to_str().unwrap(),
+        ]);
+        dump_all_html(&args, &parent).unwrap();
+
+        assert!(out.join("index.html").is_file());
+        assert!(out.join("rollout-parent.jsonl").is_file());
+        assert!(out.join("child-a.jsonl").is_file());
+        assert!(out.join("child-b.jsonl").is_file());
+
+        let root = std::fs::read_to_string(out.join("rollout-parent.jsonl")).unwrap();
+        let root_meta: Value = serde_json::from_str(root.lines().next().unwrap()).unwrap();
+        assert_eq!(root_meta["agent"], json!("codex"));
+        assert_eq!(
+            root_meta["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|child| child["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["child-a", "child-b"]
+        );
+        assert!(
+            root_meta["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|child| child["running"] == json!(true)),
+            "persistent Codex agents have no terminal lifecycle event"
+        );
+        let links = root
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|record| record["head"]["badge"] == json!("Agent"))
+            .filter_map(|record| record["head"]["child"].as_str().map(str::to_string))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            links,
+            [
+                "?session=child-a".to_string(),
+                "?session=child-b".to_string()
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        for (child_id, body) in [
+            ("child-a", "first child body"),
+            ("child-b", "second child body"),
+        ] {
+            let child_stream =
+                std::fs::read_to_string(out.join(format!("{child_id}.jsonl"))).unwrap();
+            let child_meta: Value =
+                serde_json::from_str(child_stream.lines().next().unwrap()).unwrap();
+            assert_eq!(child_meta["sid"], json!(child_id));
+            assert_eq!(child_meta["ancestors"][0]["id"], json!("rollout-parent"));
+            assert!(
+                child_stream.contains(body),
+                "{child_id} transcript rendered"
+            );
+        }
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     /// Regression: a **synchronous** `Agent` spawn signals completion *inline* on its
