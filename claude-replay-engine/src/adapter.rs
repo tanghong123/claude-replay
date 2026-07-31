@@ -65,9 +65,9 @@ pub trait TranscriptAdapter: Sync {
     fn sniff(&self, head: &Value) -> SniffClaim;
 
     // ── whole-file parse ──
-    /// Load sub-agent child transcripts into their `SubAgent.blocks` (Claude's flat
-    /// `subagents/` dir). Default no-op — an agent with no sub-agent tree (Codex) doesn't
-    /// enrich. Backs the facade's `parse_session_enriched`.
+    /// Load sub-agent child transcripts into their `SubAgent.blocks`. Default no-op for
+    /// adapters whose source has no resolvable sub-agent tree. Backs the facade's
+    /// `parse_session_enriched`.
     fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
@@ -112,9 +112,9 @@ pub trait TranscriptAdapter: Sync {
     /// Resolve a bare session id to its transcript path in this agent's store.
     fn resolve_id(&self, id: &str) -> Option<PathBuf>;
     /// The source transcript of sub-agent `child_id` spawned under the session at `root`,
-    /// if it exists. Default `None` — an agent with no sub-agent tree (Codex) has none;
-    /// Claude resolves its flat `<root-stem>/subagents/agent-<id>.jsonl` layout. Backs the
-    /// presentation layer's descend-into-child and per-child HTML streams.
+    /// if it exists. Default `None` for adapters whose source has no resolvable child
+    /// transcript. Backs the presentation layer's descend-into-child and per-child HTML
+    /// streams.
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
     }

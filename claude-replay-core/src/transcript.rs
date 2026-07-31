@@ -298,6 +298,8 @@ mod tests {
                 "\n",
                 r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
                 "\n",
+                r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child","agent_path":"/root/review","kind":"started"}}"#,
+                "\n",
                 r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
                 "\n",
             ),
@@ -319,7 +321,7 @@ mod tests {
         .unwrap();
 
         let transcript = Transcript::open(Agent::CODEX, &parent);
-        let child_id = "codex-agent-2f726f6f742f726576696577";
+        let child_id = "child";
         let flat = transcript.parse().unwrap();
         assert_eq!(
             flat.sub_agents

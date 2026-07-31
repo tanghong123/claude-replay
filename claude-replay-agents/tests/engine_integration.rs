@@ -531,7 +531,7 @@ fn follow_matches_full_reparse_codex() {
 }
 
 #[test]
-fn codex_follow_tracks_spawn_source_and_completion() {
+fn codex_follow_tracks_thread_source_without_closing_on_reply() {
     let base = std::env::temp_dir().join(format!(
         "cr-codex-follow-tree-{}-{}",
         std::process::id(),
@@ -564,12 +564,22 @@ fn codex_follow_tracks_spawn_source_and_completion() {
     follow.poll_session().unwrap().expect("spawn poll");
 
     written.push_str(concat!(
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child","agent_path":"/root/review","kind":"started"}}"#,
+        "\n",
+    ));
+    std::fs::write(&parent, written.as_bytes()).unwrap();
+    let running = follow.poll_session().unwrap().expect("activity poll");
+    let child_id = "child";
+    let meta = running.sub_agents.get(child_id).expect("running child");
+    assert_eq!(meta.transcript.as_deref(), Some(child.as_path()));
+    assert_eq!(meta.status, AgentStatus::Running);
+
+    written.push_str(concat!(
         r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}"#,
         "\n",
     ));
     std::fs::write(&parent, written.as_bytes()).unwrap();
     let running = follow.poll_session().unwrap().expect("spawn output poll");
-    let child_id = "codex-agent-2f726f6f742f726576696577";
     let meta = running.sub_agents.get(child_id).expect("running child");
     assert_eq!(meta.transcript.as_deref(), Some(child.as_path()));
     assert_eq!(meta.status, AgentStatus::Running);
@@ -579,20 +589,60 @@ fn codex_follow_tracks_spawn_source_and_completion() {
         "\n",
     ));
     std::fs::write(&parent, written.as_bytes()).unwrap();
-    let completed = follow.poll_session().unwrap().expect("completion poll");
-    let meta = completed.sub_agents.get(child_id).expect("completed child");
-    assert_eq!(meta.status, AgentStatus::Completed);
-    assert!(completed.blocks().iter().any(|block| matches!(
-        block,
-        Block::AgentDone {
-            agent_id,
-            status: AgentStatus::Completed,
-            result: Some(result),
-            ..
-        } if agent_id == child_id && result == "PASS"
-    )));
+    let replied = follow.poll_session().unwrap().expect("reply poll");
+    let meta = replied.sub_agents.get(child_id).expect("persistent child");
+    assert_eq!(meta.status, AgentStatus::Running);
+    assert!(
+        !replied
+            .blocks()
+            .iter()
+            .any(|block| matches!(block, Block::AgentDone { .. })),
+        "a Codex FINAL_ANSWER is a reusable agent's reply, not a terminal event"
+    );
 
     std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn codex_follow_removes_failed_spawn_from_child_index() {
+    let path = tmp1(concat!(
+        r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
+        "\n",
+        r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+        "\n",
+    ));
+    let mut follow = FollowParser::open(&CodexAdapter, &path);
+    follow.poll_session().unwrap().expect("spawn poll");
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(
+            concat!(
+                r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"collab spawn failed: agent thread limit reached"}}"#,
+                "\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+    let failed = follow.poll_session().unwrap().expect("failure poll");
+    assert!(
+        failed.sub_agents.is_empty(),
+        "a failed spawn has no child transcript"
+    );
+    assert!(failed.blocks().iter().any(|block| matches!(
+        block,
+        Block::ToolUse {
+            name,
+            output: Some(output),
+            ..
+        } if name == "spawn_agent"
+            && output == "collab spawn failed: agent thread limit reached"
+    )));
+
+    std::fs::remove_file(path).unwrap();
 }
 
 /// An enriched, path-aware parse fills `sub_agents[*].transcript` with the child's on-disk

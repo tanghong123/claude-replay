@@ -147,7 +147,6 @@ fn containing_sessions_dir(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn subagent_source(root: &Path, child_id: &str) -> Option<PathBuf> {
-    let agent_path = crate::agents::codex::model::decode_agent_path(child_id)?;
     let root_id = relationship_from_path(root)?.id;
     let sessions = containing_sessions_dir(root)?;
     let nodes: Vec<_> = jsonl_files(&sessions)
@@ -171,6 +170,18 @@ pub(crate) fn subagent_source(root: &Path, child_id: &str) -> Option<PathBuf> {
         }
         false
     };
+    let mut exact = nodes
+        .iter()
+        .filter(|node| node.id == child_id && reaches_root(node))
+        .map(|node| node.path.clone());
+    let exact_match = exact.next();
+    if exact.next().is_none() && exact_match.is_some() {
+        return exact_match;
+    }
+
+    // Compatibility fallback for old or copy-trimmed rollouts that have no
+    // sub_agent_activity event in the parent and therefore still carry an encoded path key.
+    let agent_path = crate::agents::codex::model::decode_agent_path(child_id)?;
     let mut matches = nodes
         .iter()
         .filter(|node| {
@@ -555,6 +566,20 @@ mod tests {
             Some(child_a.as_path())
         );
         assert_eq!(subagent_source(&root_a, "not-a-codex-child-key"), None);
+    }
+
+    #[test]
+    fn subagent_source_uses_thread_id_when_agent_paths_repeat() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root = fixture.rollout("2026/07/18", "root", &cwd, "codex-tui");
+        fixture.related_rollout("child-a", &cwd, "root", "/root/review");
+        let child_b = fixture.related_rollout("child-b", &cwd, "root", "/root/review");
+
+        assert_eq!(
+            subagent_source(&root, "child-b").as_deref(),
+            Some(child_b.as_path())
+        );
     }
 
     #[test]

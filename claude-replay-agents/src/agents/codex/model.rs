@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
+const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
 
 pub(crate) fn encode_agent_path(path: &str) -> String {
     let encoded = path
@@ -48,8 +49,11 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
     apply_output(block, text.to_string());
 }
-fn codex_keep_orphan(_t: &str) -> bool {
-    true // Codex keeps every non-empty orphan output (no boilerplate filter)
+fn codex_keep_orphan(text: &str) -> bool {
+    // A child rollout id arrives as a Codex-only activity event. It is shaped as a
+    // ToolResult so the shared Replayer can join it to the spawn call, but an event
+    // mirrored into a child transcript has no matching call and must stay invisible.
+    !text.starts_with(SUBAGENT_THREAD_RESULT_PREFIX)
 }
 fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
     blocks // identity — Codex does no turn grouping
@@ -218,18 +222,31 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         tur: Value::Null,
                     });
                 }
-                Some("agent_message") => {
-                    if let Some((author, result)) = final_agent_message(payload) {
-                        msgs.push(Message::Completion {
-                            tool_use_id: String::new(),
-                            task_id: encode_agent_path(author),
-                            status: Some(AgentStatus::Completed),
-                            description: author.rsplit('/').next().unwrap_or(author).to_string(),
-                            result,
-                        });
-                    }
-                }
                 _ => {}
+            }
+        }
+        Some("event_msg") => {
+            let Some(payload) = value.get("payload") else {
+                return;
+            };
+            if payload.get("type").and_then(Value::as_str) == Some("sub_agent_activity")
+                && payload.get("kind").and_then(Value::as_str) == Some("started")
+            {
+                let call_id = payload
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let thread_id = payload
+                    .get("agent_thread_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !call_id.is_empty() && !thread_id.is_empty() {
+                    msgs.push(Message::ToolResult {
+                        tool_use_id: call_id.to_string(),
+                        text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
+                        tur: Value::Null,
+                    });
+                }
             }
         }
         _ => {}
@@ -599,35 +616,44 @@ fn output_text(value: &Value) -> String {
     }
 }
 
-fn final_agent_message(payload: &Value) -> Option<(&str, Option<String>)> {
-    let author = payload.get("author").and_then(Value::as_str)?;
-    let text = payload
-        .get("content")
-        .and_then(Value::as_array)?
-        .iter()
-        .find_map(|item| item.get("text").and_then(Value::as_str))?;
-    let body = text.strip_prefix("Message Type: FINAL_ANSWER")?;
-    let result = body
-        .split_once("Payload:\n")
-        .map(|(_, payload)| payload.trim())
-        .filter(|payload| !payload.is_empty())
-        .map(str::to_string);
-    Some((author, result))
-}
-
 fn apply_output(block: &mut Block, output: String) {
     match block {
         Block::SubAgent(agent) => {
-            if let Some(task_name) = serde_json::from_str::<Value>(&output)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("task_name")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
+            if let Some(thread_id) = output.strip_prefix(SUBAGENT_THREAD_RESULT_PREFIX) {
+                agent.agent_id = thread_id.to_string();
+                return;
+            }
+            let value = serde_json::from_str::<Value>(&output).ok();
+            if let Some(agent_id) = value
+                .as_ref()
+                .and_then(|value| value.get("agent_id"))
+                .and_then(Value::as_str)
             {
-                agent.agent_id = encode_agent_path(&task_name);
+                agent.agent_id = agent_id.to_string();
+                return;
+            }
+            if let Some(task_name) = value
+                .as_ref()
+                .and_then(|value| value.get("task_name"))
+                .and_then(Value::as_str)
+            {
+                if agent.agent_id.is_empty() {
+                    // Older/copy-trimmed rollouts may lack the activity event. Preserve
+                    // the previous path-key fallback, but never overwrite a real thread id.
+                    agent.agent_id = encode_agent_path(task_name);
+                }
+                return;
+            }
+            if !output.trim().is_empty() {
+                let target = agent.description.clone();
+                *block = Block::ToolUse {
+                    name: "spawn_agent".to_string(),
+                    target,
+                    diffs: Vec::new(),
+                    output: Some(output),
+                    patch: None,
+                    read_lines: None,
+                };
             }
         }
         Block::ToolUse {
@@ -662,11 +688,13 @@ mod tests {
     }
 
     #[test]
-    fn spawn_and_final_message_use_shared_lifecycle_blocks() {
+    fn subagent_activity_uses_thread_id_and_final_answer_is_not_terminal() {
         let jsonl = concat!(
             r#"{"type":"session_meta","payload":{"id":"parent","cwd":"/repo","source":"cli"}}"#,
             "\n",
             r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"spec_review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/spec_review","kind":"started"}}"#,
             "\n",
             r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/spec_review\"}"}}"#,
             "\n",
@@ -675,24 +703,71 @@ mod tests {
         );
 
         let blocks = parse_codex(jsonl);
-        let expected_id = "codex-agent-2f726f6f742f737065635f726576696577";
         assert!(blocks.iter().any(|block| matches!(
             block,
             Block::SubAgent(agent)
-                if agent.agent_id == expected_id
+                if agent.agent_id == "child-thread"
                     && agent.tool_use_id == "spawn-1"
                     && agent.description == "spec_review"
                     && agent.prompt == "review it"
                     && agent.status == AgentStatus::Running
         )));
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::AgentDone { .. })),
+            "FINAL_ANSWER completes one interaction, not the persistent Codex agent"
+        );
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::ToolResult(_))),
+            "the identity-correlation event is adapter metadata, not visible output"
+        );
+    }
+
+    #[test]
+    fn failed_spawn_is_not_a_navigable_subagent() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"collab spawn failed: agent thread limit reached"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, Block::SubAgent(_))),
+            "a failed spawn created no child rollout to navigate"
+        );
         assert!(blocks.iter().any(|block| matches!(
             block,
-            Block::AgentDone {
-                agent_id,
-                status: AgentStatus::Completed,
-                result: Some(result),
+            Block::ToolUse {
+                name,
+                target,
+                output: Some(output),
                 ..
-            } if agent_id == expected_id && result == "PASS"
+            } if name == "spawn_agent"
+                && target == "review"
+                && output == "collab spawn failed: agent thread limit reached"
+        )));
+    }
+
+    #[test]
+    fn legacy_spawn_output_uses_agent_id() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"legacy-child\",\"nickname\":\"Nash\"}"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::SubAgent(agent) if agent.agent_id == "legacy-child"
         )));
     }
 
