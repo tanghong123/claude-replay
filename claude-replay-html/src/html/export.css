@@ -238,7 +238,7 @@ a.crumb:hover { text-decoration: underline; }
    list between them scrolls when it can't fit the viewport. */
 #sidebar > .side-head { flex: none; }
 #turnlist {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 2px; padding-right: 4px;
 }
 #sidebar > .usage, #sidebar > .legend { flex: none; }
@@ -272,7 +272,10 @@ a.crumb:hover { text-decoration: underline; }
   flex-direction: column;
 }
 #taskpanel.on { display: flex; }
-#taskpanel .tasks { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
+#taskpanel .tasks {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 4px 8px 8px;
+}
 .taskpanel-head {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   border-bottom: 1px solid var(--border);
