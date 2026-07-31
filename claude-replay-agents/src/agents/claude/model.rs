@@ -512,8 +512,13 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
             if let Some(aid) = tur.get("agentId").and_then(|v| v.as_str()) {
                 sa.agent_id = aid.to_string();
             }
+            // Claude records the launch status under `status`; QoderWork's synchronous
+            // `agent-result` records the TERMINAL state under `state` (#95:
+            // `{kind:"agent-result", state:"completed", terminateReason:"GOAL", …}`) —
+            // accept either, so a QoderWork spawn resolves instead of staying running.
             if let Some(st) = tur
                 .get("status")
+                .or_else(|| tur.get("state"))
                 .and_then(|v| v.as_str())
                 .and_then(status_from_str)
             {
@@ -1841,6 +1846,25 @@ mod tests {
                  pickup is a new prompt: {blocks:?}"
             );
         }
+    }
+
+    /// #95: QoderWork's synchronous spawn result (`{kind:"agent-result",
+    /// state:"completed", …}`) resolves the spawn's terminal status — its transcripts
+    /// are Claude-format, but completion rides `state`, not Claude's `status`.
+    #[test]
+    fn qoderwork_agent_result_state_resolves_status() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-07-27T13:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-07-27T13:00:01.000Z","message":{"content":[{"type":"tool_use","id":"call_1","name":"Agent","input":{"subagent_type":"Explore","description":"find dir","prompt":"search"}}]}}
+{"type":"user","timestamp":"2026-07-27T13:00:02.000Z","toolUseResult":{"kind":"agent-result","agentId":"aExplore-8df2c962","agentType":"Explore","content":"findings","state":"completed","terminateReason":"GOAL"},"message":{"content":[{"type":"tool_result","tool_use_id":"call_1","content":"findings"}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        assert_eq!(sa.agent_id, "aExplore-8df2c962");
+        assert_eq!(sa.status, AgentStatus::Completed, "{blocks:?}");
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:
