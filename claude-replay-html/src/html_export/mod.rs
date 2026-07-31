@@ -106,6 +106,17 @@ fn highlight_lines(code: &str, token: &str) -> Vec<String> {
 /// language label, a copy button, and syntect-highlighted spans. Raw HTML in the
 /// source is **escaped**, never passed through.
 fn md_html(src: &str) -> String {
+    md_html_inner(src, false)
+}
+
+/// [`md_html`] with single newlines kept as line breaks — the USER-turn render (#93):
+/// a typed prompt's line structure is literal (CC preserves it), unlike assistant
+/// markdown where a single newline is a soft wrap.
+fn md_html_user(src: &str) -> String {
+    md_html_inner(src, true)
+}
+
+fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut out = String::new();
     // Fenced-code accumulator: (language token, body).
@@ -191,7 +202,13 @@ fn md_html(src: &str) -> String {
             Event::Text(t) => out.push_str(&esc(&t)),
             // Raw HTML is shown as literal text, not injected.
             Event::Html(t) | Event::InlineHtml(t) => out.push_str(&esc(&t)),
-            Event::SoftBreak => out.push(' '),
+            Event::SoftBreak => {
+                if hard_breaks {
+                    out.push_str("<br>");
+                } else {
+                    out.push(' ');
+                }
+            }
             Event::HardBreak => out.push_str("<br>"),
             Event::Rule => out.push_str("<hr>"),
             _ => {}
@@ -390,7 +407,7 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
-                body.push(json!({ "p": "md", "h": md_html(text) }));
+                body.push(json!({ "p": "md", "h": md_html_user(text) }));
             }
             // A sub-agent spawn (kind "agent") — a fold whose header names the agent
             // and whose body carries the prompt, agent id, and result. Full drill-down
@@ -1396,6 +1413,14 @@ mod tests {
     /// ranges while carrying `EmitState` produces the EXACT same wire records — and the same sidebar
     /// turns — as rendering it whole. This is what lets the live server render committed blocks once
     /// and the open turn from the carried state, instead of re-rendering everything each poll.
+    /// #93: a typed prompt's single newlines are literal line breaks (CC preserves
+    /// them); assistant markdown keeps the soft-wrap rule.
+    #[test]
+    fn user_prompt_newlines_are_hard_breaks() {
+        assert!(md_html_user("line one\nline two").contains("<br>"));
+        assert!(!md_html("line one\nline two").contains("<br>"));
+    }
+
     #[test]
     fn render_blocks_split_equals_whole() {
         let blocks = vec![
