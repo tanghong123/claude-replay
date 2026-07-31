@@ -803,12 +803,18 @@
   // dependency details inline. The whole control hides when the session has no
   // tasks; the panel's open state and expanded rows survive live meta refreshes
   // (only the box's children are rebuilt).
+  // #83 the floating task panel: finished → running → pending, IDs ascending in each
+  // section. While auto-focus is engaged (default; ⌖ re-engages after a manual
+  // scroll), every refresh re-centers the viewport on the MIDDLE of the running
+  // section — so as the agent finishes tasks and picks up new ones, done items
+  // visibly scroll up through the panel.
+  var taskAutoFocus = true;
   function renderTasks(tasks) {
     var wrap = $("tasknav"), box = $("taskbox"), btn = $("btn-tasks");
     if (!wrap || !box || !btn) return;
     if (!tasks || !tasks.length) {
       wrap.style.display = "none";
-      taskMenu(false);
+      taskPanel(false);
       box.textContent = "";
       return;
     }
@@ -820,9 +826,21 @@
     var open = tasks.filter(function (t) { return t.status !== "Completed"; }).length;
     var label = btn.querySelector(".tf-label");
     if (label) label.textContent = "Tasks (" + open + " open) ▾";
-    tasks.forEach(function (t) {
-      var item = el("div", "task-item" + (openIds[t.id] ? " open" : ""));
-      item.dataset.tid = t.id;
+    var title = $("tp-title");
+    if (title) title.textContent = "Session tasks — " + open + " open";
+    var byId = function (a, b) {
+      var na = parseInt(a.id, 10), nb = parseInt(b.id, 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return String(a.id).localeCompare(String(b.id));
+    };
+    var done = tasks.filter(function (t) { return t.status === "Completed"; }).sort(byId);
+    var run = tasks.filter(function (t) { return t.status === "InProgress"; }).sort(byId);
+    var pend = tasks.filter(function (t) {
+      return t.status !== "Completed" && t.status !== "InProgress";
+    }).sort(byId);
+    function item(t) {
+      var it = el("div", "task-item" + (openIds[t.id] ? " open" : ""));
+      it.dataset.tid = t.id;
       var glyph = t.status === "Completed" ? "●" : t.status === "InProgress" ? "◐" : "○";
       var row = el("div", "task-row" + (t.status === "Completed" ? " done" : t.status === "InProgress" ? " active" : ""));
       row.appendChild(el("span", "task-glyph", glyph));
@@ -830,16 +848,42 @@
       var subj = t.subject || "(untitled)";
       if (t.status === "InProgress" && t.active_form) subj += " · " + t.active_form;
       row.appendChild(el("span", "task-subj", subj));
-      item.appendChild(row);
+      it.appendChild(row);
       var det = el("div", "task-det");
       var deps = [];
       if (t.blocked_by && t.blocked_by.length) deps.push("blocked by " + t.blocked_by.join(", "));
       if (t.blocks && t.blocks.length) deps.push("blocks " + t.blocks.join(", "));
       if (deps.length) det.appendChild(el("div", "task-deps", deps.join(" · ")));
       det.appendChild(el("div", "task-desc", t.description || "(no recorded description)"));
-      item.appendChild(det);
-      box.appendChild(item);
-    });
+      it.appendChild(det);
+      return it;
+    }
+    function section(name, list, cls) {
+      if (!list.length) return;
+      box.appendChild(el("div", "task-sec", name));
+      list.forEach(function (t) { box.appendChild(item(t)); });
+    }
+    section("Finished", done);
+    section("Running", run);
+    section("Pending", pend);
+    if (taskAutoFocus) centerTasks();
+  }
+  // Scroll the panel so the middle of the running section sits mid-viewport; with no
+  // running tasks, center the finished/pending boundary (where work will resume).
+  function centerTasks() {
+    var box = $("taskbox");
+    if (!box) return;
+    var rows = all("#taskbox .task-row.active").map(function (r) { return r.parentElement; });
+    var mid;
+    if (rows.length) {
+      var first = rows[0], last = rows[rows.length - 1];
+      mid = (first.offsetTop + last.offsetTop + last.offsetHeight) / 2;
+    } else {
+      var secs = all("#taskbox .task-sec");
+      var pendSec = secs.filter(function (s2) { return s2.textContent === "Pending"; })[0];
+      mid = pendSec ? pendSec.offsetTop : box.scrollHeight;
+    }
+    box.scrollTop = Math.max(0, mid - box.clientHeight / 2);
   }
 
   // The breadcrumb bar: `↑ <parent> › <current>`. Navigation steps up ONE level — to the
@@ -1058,7 +1102,7 @@
     });
     var box = $("toolitems");
     box.textContent = "";
-    function row(sel, label, count, depth, twKey) {
+    function row(sel, label, count, depth, twKey, tint) {
       var item = el("div", "tool-item" + (sel === filter ? " active" : "") + (depth ? " tool-sub" + depth : ""));
       item.dataset.sel = sel;
       item.dataset.label = label;
@@ -1068,59 +1112,58 @@
         tw.dataset.tw = twKey;
         item.appendChild(tw);
       } else {
-        item.appendChild(el("span", "dot"));
+        item.appendChild(el("span", "dot" + (tint ? " dot-" + tint : "")));
       }
       item.appendChild(el("span", "tname", label));
       item.appendChild(el("span", "tool-count", String(count)));
       box.appendChild(item);
     }
-    sels.forEach(function (sel) {
-      var e = entries[sel];
-      row(sel, e.label, e.count, 0, null);
-    });
     var servers = Object.keys(mcp.servers).sort();
-    if (mcp.total > 0) {
-      var toolSel = function (srv, tool) { return '.fold[data-tool="mcp__' + srv + '__' + tool + '"]'; };
-      var srvSel = function (srv) { return '.fold[data-tool^="mcp__' + srv + '__"]'; };
-      if (servers.length === 1) {
-        var s0 = servers[0], tools0 = Object.keys(mcp.servers[s0].tools).sort();
-        if (tools0.length === 1) {
-          // Fully compressed: one server, one tool — one flat row.
-          row(toolSel(s0, tools0[0]), "MCP/" + s0 + "/" + tools0[0], mcp.total, 0, null);
+    var toolSel = function (srv, tool) { return '.fold[data-tool="mcp__' + srv + '__' + tool + '"]'; };
+    var srvSel = function (srv) { return '.fold[data-tool^="mcp__' + srv + '__"]'; };
+    // The MCP root sorts into the flat list by label (#94 follow-ups): one "MCP"
+    // entry, never compressed with its children; expanding walks server rows
+    // (srv-tinted bullets) then tool rows.
+    var renderMcp = function () {
+      row('.fold[data-tool^="mcp__"]', "MCP", mcp.total, 0, "mcp");
+      if (!mcpOpen["mcp"]) return;
+      servers.forEach(function (srv) {
+        var tools = Object.keys(mcp.servers[srv].tools).sort();
+        if (tools.length === 1) {
+          // A server with one tool compresses into a combined child row.
+          row(toolSel(srv, tools[0]), srv + "/" + tools[0], mcp.servers[srv].count, 1, null, "srv");
         } else {
-          row(srvSel(s0), "MCP/" + s0, mcp.total, 0, "mcp");
-          if (mcpOpen["mcp"]) {
-            tools0.forEach(function (t) {
-              row(toolSel(s0, t), t, mcp.servers[s0].tools[t], 1, null);
+          row(srvSel(srv), srv, mcp.servers[srv].count, 1, "mcp/" + srv, "srv");
+          if (mcpOpen["mcp/" + srv]) {
+            tools.forEach(function (t) {
+              row(toolSel(srv, t), t, mcp.servers[srv].tools[t], 2, null, "leaf");
             });
           }
         }
-      } else {
-        row('.fold[data-tool^="mcp__"]', "MCP", mcp.total, 0, "mcp");
-        if (mcpOpen["mcp"]) {
-          servers.forEach(function (srv) {
-            var tools = Object.keys(mcp.servers[srv].tools).sort();
-            if (tools.length === 1) {
-              // Server with one tool compresses into the combined row.
-              row(toolSel(srv, tools[0]), srv + "/" + tools[0], mcp.servers[srv].count, 1, null);
-            } else {
-              row(srvSel(srv), srv, mcp.servers[srv].count, 1, "mcp/" + srv);
-              if (mcpOpen["mcp/" + srv]) {
-                tools.forEach(function (t) {
-                  row(toolSel(srv, t), t, mcp.servers[srv].tools[t], 2, null);
-                });
-              }
-            }
-          });
-        }
-      }
-    }
+      });
+    };
+    var flatRows = sels.map(function (sel) {
+      return { label: entries[sel].label, render: function () { row(sel, entries[sel].label, entries[sel].count, 0, null); } };
+    });
+    if (mcp.total > 0) flatRows.push({ label: "MCP", render: renderMcp });
+    flatRows.sort(function (a, b) { return a.label.localeCompare(b.label); });
+    flatRows.forEach(function (r) { r.render(); });
     $("btn-tools").disabled = sels.length === 0 && mcp.total === 0;
   }
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
   function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }
-  function taskMenu(open) { var m = $("taskmenu"); if (m) m.classList.toggle("on", open); }
+  function taskPanel(open) {
+    var m = $("taskpanel");
+    if (!m) return;
+    m.classList.toggle("on", open);
+    if (open) {
+      // Sit just below the top bar, whatever its current height.
+      var bar = $("topbar");
+      if (bar) m.style.top = Math.round(bar.getBoundingClientRect().bottom + 8) + "px";
+      if (taskAutoFocus) centerTasks();
+    }
+  }
 
   // Does record `b` (or a nested item) match the filter selector's meaning? The two
   // selector shapes the menu emits are '.fold[data-tool="X"]' / '.fold[data-kind="k"]'.
@@ -1504,6 +1547,15 @@
     consume(inline.textContent);
     inline.remove();
   }
+  ["wheel", "touchmove", "pointerdown"].forEach(function (ev) {
+    $("taskbox") && $("taskbox").addEventListener(ev, function () {
+      if (!taskAutoFocus) return;
+      taskAutoFocus = false;
+      var tc = document.querySelector(".tp-center");
+      if (tc) tc.classList.remove("autofocus");
+    }, { passive: true });
+  });
+
   // §8.8/§8.6 apply persisted width mode and size the fixed bar to the window.
   setWide(wide);
   fitBar();
@@ -1817,13 +1869,26 @@
     // ── tasks menu (#70) ── the button toggles; clicks inside the panel fall through
     // to the task-row expander below without closing it.
     if (e.target.closest("#btn-tasks")) {
-      taskMenu(!$("taskmenu").classList.contains("on"));
+      taskPanel(!$("taskpanel").classList.contains("on"));
+      return;
+    }
+    // The floating task panel (#83): ⌖ re-engages auto-centering, ✕ closes; it does
+    // NOT close on outside clicks — it is a persistent panel, not a dropdown.
+    if (e.target.closest(".tp-center")) {
+      taskAutoFocus = true;
+      var tc = document.querySelector(".tp-center");
+      if (tc) tc.classList.add("autofocus");
+      centerTasks();
+      return;
+    }
+    if (e.target.closest(".tp-x")) {
+      taskPanel(false);
       return;
     }
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);
-    if (!e.target.closest("#taskmenu")) taskMenu(false);
+
 
     var sid = e.target.closest("#sid");
     if (sid) {
@@ -2099,7 +2164,7 @@
     if (e.key === "Escape") {
       toolMenu(false);
       agentMenu(false);
-      taskMenu(false);
+      taskPanel(false);
       if (filter) { setFilter(null); return; }
       if (document.activeElement) document.activeElement.blur();
       return;
