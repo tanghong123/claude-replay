@@ -1,7 +1,14 @@
 # Design: an agent-agnostic `agent-jdi` supervisor spine
 
-> **Status:** proposed (not built). Scope is speculative-for-a-third-agent — see
-> [When to build](#when-to-build). Tracked as task #17.
+> **Status:** BUILT (task #17, 2026-08-01, user green-light). The spine now holds only
+> `Box<dyn PermissionPosture>` / trait hooks; `src/jdi/mod.rs` names no concrete agent
+> type and matches no agent identity in application logic. Deltas from the sketch below:
+> `capture_permissions` takes `Option<&str>` (the adapter owns the fail-closed missing-id
+> error); posture RENDERING also moved behind the trait (`persisted_note`/`banner_lines`)
+> so run-banner/meta strings stay byte-identical; `preserves_permissions()` was replaced
+> by `default_permission_note()` (the no-posture-captured meta note doubles as the
+> capability signal); and the cmdline-reverse hook landed as the smaller
+> `resume_id_flags()` vocabulary hook rather than a whole-parse override.
 
 ## Problem
 

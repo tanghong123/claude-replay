@@ -7,8 +7,8 @@
 //! `thread.started` event carrying `thread_id`.
 
 use super::agent::{
-    self, AgentAdapter, Brief, Invocation, Mode, ResumableSession, Trigger, TurnContext,
-    TurnOutcome,
+    self, AgentAdapter, Brief, Invocation, Mode, PermissionPosture, ResumableSession, Trigger,
+    TurnContext, TurnOutcome,
 };
 use crate::{codex_discover, Agent};
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub struct CodexAdapter;
 
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodexSandboxMode {
     ReadOnly,
     WorkspaceWrite,
@@ -31,6 +31,17 @@ impl CodexSandboxMode {
             Self::ReadOnly => "read-only",
             Self::WorkspaceWrite => "workspace-write",
             Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+
+    /// The inverse of [`as_config_value`](Self::as_config_value) — parses the neutral
+    /// `--permission-arg sandbox=<value>` handoff round-trip.
+    pub(crate) fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "read-only" => Some(Self::ReadOnly),
+            "workspace-write" => Some(Self::WorkspaceWrite),
+            "danger-full-access" => Some(Self::DangerFullAccess),
+            _ => None,
         }
     }
 }
@@ -147,6 +158,75 @@ impl CodexPermissionSnapshot {
             (mode, None) => mode.as_config_value().into(),
             _ => unreachable!("constructor enforces the workspace network invariant"),
         }
+    }
+
+    /// Parse the neutral `--permission-arg` values [`handoff_flags`](PermissionPosture::handoff_flags)
+    /// emitted. Fail-closed: an unknown key or malformed value is an error, never a silently
+    /// reduced (or escalated) posture.
+    pub(crate) fn from_handoff_flags(args: &[String]) -> Result<Self> {
+        let mut sandbox = None;
+        let mut workspace_network = None;
+        for arg in args {
+            match arg.split_once('=') {
+                Some(("sandbox", value)) => {
+                    sandbox =
+                        Some(CodexSandboxMode::from_config_value(value).ok_or_else(|| {
+                            anyhow!(
+                                "cannot preserve the current Codex permission context: \
+                             unsupported sandbox mode"
+                            )
+                        })?);
+                }
+                Some(("workspace-network", value)) => {
+                    workspace_network = Some(value.parse::<bool>().map_err(|_| {
+                        anyhow!(
+                            "cannot preserve the current Codex permission context: \
+                             workspace-write network_access is missing or invalid"
+                        )
+                    })?);
+                }
+                _ => bail!(
+                    "cannot preserve the current Codex permission context: \
+                     unrecognized permission arg {arg:?}"
+                ),
+            }
+        }
+        let sandbox = sandbox.ok_or_else(|| {
+            anyhow!("cannot preserve the current Codex permission context: sandbox mode missing")
+        })?;
+        Self::from_handoff_parts(sandbox, workspace_network)
+    }
+}
+
+impl PermissionPosture for CodexPermissionSnapshot {
+    fn config_args(&self) -> Vec<String> {
+        CodexPermissionSnapshot::config_args(self)
+    }
+
+    fn summary(&self) -> String {
+        CodexPermissionSnapshot::summary(self)
+    }
+
+    fn handoff_flags(&self) -> Vec<String> {
+        let mut flags = vec![format!("sandbox={}", self.sandbox.as_config_value())];
+        if let Some(enabled) = self.workspace_network {
+            flags.push(format!("workspace-network={enabled}"));
+        }
+        flags
+    }
+
+    fn persisted_note(&self) -> String {
+        format!("{} (preserved from current Codex turn)", self.summary())
+    }
+
+    fn banner_lines(&self) -> (String, String) {
+        (
+            format!(
+                "permissions: preserving {} from the current Codex turn",
+                self.summary()
+            ),
+            "approvals:   never (unattended)".to_owned(),
+        )
     }
 }
 
@@ -310,8 +390,49 @@ impl AgentAdapter for CodexAdapter {
         false
     }
 
-    fn preserves_permissions(&self) -> bool {
-        true // Codex snapshots its sandbox/approval posture from the rollout and replays it
+    /// Codex snapshots its sandbox/approval posture from the live rollout and replays it.
+    /// Fail-closed: without a pinned session id or a locatable rollout the handoff errors
+    /// instead of silently changing capability.
+    fn capture_permissions(
+        &self,
+        session_id: Option<&str>,
+        transcript: Option<&Path>,
+    ) -> Result<Option<Box<dyn PermissionPosture>>> {
+        let session_id = session_id.ok_or_else(|| {
+            anyhow!(
+                "cannot preserve the current Codex permission context without a pinned session id"
+            )
+        })?;
+        let transcript = transcript.ok_or_else(|| {
+            anyhow!("cannot locate Codex rollout for {session_id}; current session remains active")
+        })?;
+        CodexPermissionSnapshot::from_rollout(transcript)
+            .map(|snapshot| Some(Box::new(snapshot) as Box<dyn PermissionPosture>))
+    }
+
+    fn parse_handoff_permissions(
+        &self,
+        args: &[String],
+    ) -> Result<Option<Box<dyn PermissionPosture>>> {
+        if args.is_empty() {
+            return Ok(None);
+        }
+        CodexPermissionSnapshot::from_handoff_flags(args)
+            .map(|snapshot| Some(Box::new(snapshot) as Box<dyn PermissionPosture>))
+    }
+
+    fn default_permission_note(&self) -> Option<&'static str> {
+        Some("workspace-write, network disabled (default)")
+    }
+
+    fn resume_id_flags(&self) -> &'static [&'static str] {
+        &["resume"]
+    }
+
+    fn ambient_session_id(&self) -> Option<String> {
+        std::env::var("CODEX_THREAD_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
     }
 
     fn continue_mode(&self) -> Mode {

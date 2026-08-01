@@ -148,6 +148,27 @@ pub trait TaskQueue {
     fn render(&self, session_id: &str, cwd: &Path) -> String;
 }
 
+/// An agent's per-session permission/sandbox posture, captured on takeover so the resumed
+/// unattended run executes under the exact context the interactive run had (#17). Only
+/// Codex has one today; an agent without a posture never constructs one (its
+/// `capture_permissions` returns `None`). The spine holds `Box<dyn PermissionPosture>`
+/// and never names a concrete posture type — serialization, application, and rendering
+/// all go through these methods.
+pub trait PermissionPosture: std::fmt::Debug {
+    /// Extra CLI args that impose this posture on the agent invocation (`-c …` pairs).
+    fn config_args(&self) -> Vec<String>;
+    /// One-line posture summary (e.g. "workspace-write, network disabled").
+    fn summary(&self) -> String;
+    /// Serialize into neutral `--permission-arg` VALUES for the detached `__handoff`
+    /// re-invocation; round-trips via [`AgentAdapter::parse_handoff_permissions`].
+    fn handoff_flags(&self) -> Vec<String>;
+    /// The `permissions` meta note persisted for a run under this posture.
+    fn persisted_note(&self) -> String;
+    /// The two run-banner lines (`permissions:` / `approvals:`) shown when a handoff
+    /// preserves this posture.
+    fn banner_lines(&self) -> (String, String);
+}
+
 /// One agent's integration with the supervisor.
 pub trait AgentAdapter {
     fn id(&self) -> Agent;
@@ -240,13 +261,52 @@ pub trait AgentAdapter {
         true
     }
 
-    /// Whether a takeover should preserve this agent's per-session permission posture across
-    /// the handoff (Codex snapshots its sandbox/approval config from the live rollout and
-    /// replays it; Claude carries none). Default `false` — the supervisor then just clears any
-    /// stale permission state. Gating on this capability (not on `Agent == Codex`) keeps the
-    /// permission handling out of the spine's agent identity.
-    fn preserves_permissions(&self) -> bool {
-        false
+    /// Capture the live permission posture for a takeover, so the resumed run keeps the
+    /// exact context the interactive run had (Codex reconstructs its sandbox/approval
+    /// config from the rollout; Claude carries none). Default `Ok(None)` — the supervisor
+    /// then just clears any stale permission state. An agent WITH a posture is fail-closed
+    /// here: a missing session id / unreadable rollout is an `Err`, never a silent
+    /// capability change. Gating on this capability (not on agent identity) keeps
+    /// permission handling out of the spine (#17).
+    fn capture_permissions(
+        &self,
+        _session_id: Option<&str>,
+        _transcript: Option<&Path>,
+    ) -> Result<Option<Box<dyn PermissionPosture>>> {
+        Ok(None)
+    }
+
+    /// Reconstruct a posture from the neutral `--permission-arg` values the parent handoff
+    /// serialized (the inverse of [`PermissionPosture::handoff_flags`]). Empty input means
+    /// "no posture captured" (`Ok(None)`); malformed input is an `Err` (fail-closed).
+    /// Default `Ok(None)` — an agent with no posture ignores stray args.
+    fn parse_handoff_permissions(
+        &self,
+        _args: &[String],
+    ) -> Result<Option<Box<dyn PermissionPosture>>> {
+        Ok(None)
+    }
+
+    /// The `permissions` meta note for a run of this agent with NO captured posture —
+    /// `Some` iff the agent has a posture concept at all (its documented default posture).
+    /// `None` (the default) means the supervisor clears any stale permission state instead.
+    fn default_permission_note(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// The command-line flags that pin a session id in this agent's invocation — the
+    /// REVERSE direction of `build_invocation`, used to recover the id from a running
+    /// process's argv. The default is the Claude-Code family shape (QoderWork and other
+    /// forks carry the same flags); Codex overrides with its `resume` subcommand.
+    fn resume_id_flags(&self) -> &'static [&'static str] {
+        &["--resume", "--session-id"]
+    }
+
+    /// The agent's "ambient" session id, if it exposes one to child processes outside the
+    /// transcript (Codex's `CODEX_THREAD_ID` env var). Consulted by `handoff` between an
+    /// explicit `--session` and the argv-derived id. Default `None`.
+    fn ambient_session_id(&self) -> Option<String> {
+        None
     }
 
     /// One-line description of the autonomy the agent runs under (for the `resume`/

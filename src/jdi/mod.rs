@@ -171,12 +171,11 @@ enum Command {
         /// The pinned session id to resume (from `handoff`).
         #[arg(long)]
         session: Option<String>,
-        /// Normalized Codex sandbox captured by the parent handoff command.
-        #[arg(long, value_enum)]
-        codex_sandbox: Option<codex::CodexSandboxMode>,
-        /// Exact workspace-write network flag captured by the parent handoff.
-        #[arg(long, requires = "codex_sandbox")]
-        codex_workspace_network: Option<bool>,
+        /// Opaque permission-posture values captured by the parent handoff command
+        /// (repeatable). The spine never inspects them; the chosen agent adapter's
+        /// `parse_handoff_permissions` interprets them (#17).
+        #[arg(long = "permission-arg")]
+        permission_arg: Vec<String>,
         instruction: Vec<String>,
     },
 }
@@ -294,8 +293,7 @@ pub fn run() -> Result<()> {
             agent,
             escalate,
             session,
-            codex_sandbox,
-            codex_workspace_network,
+            permission_arg,
             instruction,
         } => cmd_handoff_wait(
             &config,
@@ -307,8 +305,7 @@ pub fn run() -> Result<()> {
             max_attempts,
             escalate,
             session.as_deref(),
-            codex_sandbox,
-            codex_workspace_network,
+            &permission_arg,
         ),
     }
 }
@@ -622,7 +619,7 @@ fn cmd_resume(
     dry_run: bool,
     follow: bool,
     session: Option<&str>,
-    handoff_permissions: Option<&codex::CodexPermissionSnapshot>,
+    handoff_permissions: Option<&dyn agent::PermissionPosture>,
 ) -> Result<()> {
     let current_cwd = std::env::current_dir()?;
     let ResumeTarget {
@@ -749,11 +746,12 @@ fn cmd_resume(
 fn persist_permissions(
     session: &Session,
     agent: Agent,
-    permissions: Option<&codex::CodexPermissionSnapshot>,
+    permissions: Option<&dyn agent::PermissionPosture>,
 ) -> Result<()> {
-    if !agent::adapter(agent).preserves_permissions() {
-        // Preserve arbitrary Claude cargs, but remove a file we know was generated
-        // from a previous Codex permission snapshot when the slot changes agent.
+    let Some(default_note) = agent::adapter(agent).default_permission_note() else {
+        // An agent with no posture concept: preserve arbitrary cargs it may carry, but
+        // remove a file we know was generated from a previous agent's permission
+        // posture when the slot changes agent.
         if session
             .meta_get("permissions")
             .is_some_and(|value| !value.is_empty())
@@ -762,21 +760,18 @@ fn persist_permissions(
             session.meta_set("permissions", "")?;
         }
         return Ok(());
-    }
+    };
     session.ensure_dir()?;
     match permissions {
-        Some(snapshot) => {
-            let args = snapshot.config_args();
+        Some(posture) => {
+            let args = posture.config_args();
             std::fs::write(session.cargs_path(), format!("{}\n", args.join("\n")))
                 .with_context(|| format!("write {}", session.cargs_path().display()))?;
-            session.meta_set(
-                "permissions",
-                &format!("{} (preserved from current Codex turn)", snapshot.summary()),
-            )?;
+            session.meta_set("permissions", &posture.persisted_note())?;
         }
         None => {
             remove_cargs_if_present(session)?;
-            session.meta_set("permissions", "workspace-write, network disabled (default)")?;
+            session.meta_set("permissions", default_note)?;
         }
     }
     Ok(())
@@ -790,50 +785,18 @@ fn remove_cargs_if_present(session: &Session) -> Result<()> {
     }
 }
 
-fn handoff_permission_args(permissions: Option<&codex::CodexPermissionSnapshot>) -> Vec<String> {
-    let Some(snapshot) = permissions else {
+/// Serialize a captured posture into the neutral repeatable `--permission-arg` flags the
+/// detached `__handoff` re-invocation carries; the agent adapter's
+/// `parse_handoff_permissions` round-trips them on the other side (#17).
+fn handoff_permission_args(permissions: Option<&dyn agent::PermissionPosture>) -> Vec<String> {
+    let Some(posture) = permissions else {
         return Vec::new();
     };
-    let mut args = vec![
-        "--codex-sandbox".to_owned(),
-        snapshot.sandbox().as_config_value().to_owned(),
-    ];
-    if let Some(enabled) = snapshot.workspace_network() {
-        args.push("--codex-workspace-network".to_owned());
-        args.push(enabled.to_string());
-    }
-    args
-}
-
-fn handoff_permission_lines(permissions: &codex::CodexPermissionSnapshot) -> (String, String) {
-    (
-        format!(
-            "permissions: preserving {} from the current Codex turn",
-            permissions.summary()
-        ),
-        "approvals:   never (unattended)".to_owned(),
-    )
-}
-
-fn handoff_permission_snapshot(
-    agent: Agent,
-    session_id: Option<&str>,
-    transcript: Option<&Path>,
-) -> Result<Option<codex::CodexPermissionSnapshot>> {
-    if !agent::adapter(agent).preserves_permissions() {
-        return Ok(None);
-    }
-    let session_id = session_id.ok_or_else(|| {
-        anyhow::anyhow!(
-            "cannot preserve the current Codex permission context without a pinned session id"
-        )
-    })?;
-    let transcript = transcript.ok_or_else(|| {
-        anyhow::anyhow!(
-            "cannot locate Codex rollout for {session_id}; current session remains active"
-        )
-    })?;
-    codex::CodexPermissionSnapshot::from_rollout(transcript).map(Some)
+    posture
+        .handoff_flags()
+        .into_iter()
+        .flat_map(|value| ["--permission-arg".to_owned(), value])
+        .collect()
 }
 
 /// The `claude-jdi`-style run summary shown after a supervisor is launched: what it
@@ -1835,32 +1798,32 @@ fn cmd_handoff(
 
     // Pin the exact session id NOW, so the deferred resume targets the session this
     // handoff came from — never "whatever's newest later", which could be a sibling
-    // session in the same dir. Air-tight order: an explicit id → the id in our own
-    // `CODEX_THREAD_ID` exposed by Codex itself → the id in our own agent process's
-    // argv (`--resume <id>` / `codex resume <id>`) → the newest for this cwd captured
-    // at arm time (we are that session, so it's newest right now).
+    // session in the same dir. Air-tight order: an explicit id → the agent's ambient
+    // id exposed to its child processes (Codex's `CODEX_THREAD_ID`) → the id in our
+    // own agent process's argv (`--resume <id>` / `codex resume <id>`) → the newest
+    // for this cwd captured at arm time (we are that session, so it's newest right now).
     let session_id = found.and_then(|(pid, agent)| {
-        let thread_env = std::env::var("CODEX_THREAD_ID").ok();
+        let ambient = agent::adapter(agent).ambient_session_id();
         let argv_id = session_id_from_argv(pid, agent);
-        pinned_handoff_session_id(session, agent, thread_env.as_deref(), argv_id.as_deref())
-            .or_else(|| {
-                agent::adapter(agent)
-                    .discover_resumable(&cwd)
-                    .ok()
-                    .map(|r| r.id)
-            })
+        pinned_handoff_session_id(session, ambient.as_deref(), argv_id.as_deref()).or_else(|| {
+            agent::adapter(agent)
+                .discover_resumable(&cwd)
+                .ok()
+                .map(|r| r.id)
+        })
     });
 
-    // Codex handoff is fail-closed: capture the current turn's exact permission
-    // policy before spawning the watcher or terminating the interactive process.
-    // This keeps a malformed/missing rollout from silently reducing capability or
-    // escalating permissions in the resumed run.
-    let codex_permissions = match found {
+    // A posture-preserving handoff is fail-closed: capture the current turn's exact
+    // permission policy before spawning the watcher or terminating the interactive
+    // process. This keeps a malformed/missing rollout from silently reducing
+    // capability or escalating permissions in the resumed run.
+    let permissions = match found {
         Some((_, agent)) => {
             let transcript = session_id
                 .as_deref()
                 .and_then(|id| agent::adapter(agent).transcript_path(id, &cwd));
-            handoff_permission_snapshot(agent, session_id.as_deref(), transcript.as_deref())?
+            agent::adapter(agent)
+                .capture_permissions(session_id.as_deref(), transcript.as_deref())?
         }
         None => None,
     };
@@ -1880,8 +1843,8 @@ fn cmd_handoff(
                 println!(
                     "[dry-run] would watch pid {pid}; on its exit run: agent-jdi resume {target} {instruction}"
                 );
-                if let Some(permissions) = codex_permissions.as_ref() {
-                    let (policy, approvals) = handoff_permission_lines(permissions);
+                if let Some(posture) = permissions.as_ref() {
+                    let (policy, approvals) = posture.banner_lines();
                     println!("[dry-run] {policy}");
                     println!("[dry-run] {approvals}");
                 }
@@ -1916,7 +1879,7 @@ fn cmd_handoff(
         .arg(&cwd)
         .arg("--agent")
         .arg(agent.label());
-    cmd.args(handoff_permission_args(codex_permissions.as_ref()));
+    cmd.args(handoff_permission_args(permissions.as_deref()));
     if let Some(i) = interval {
         cmd.arg("--interval").arg(i.to_string());
     }
@@ -1952,8 +1915,8 @@ fn cmd_handoff(
         "  when it exits, agent-jdi resumes it unattended in {}.",
         cwd.display()
     );
-    if let Some(permissions) = codex_permissions.as_ref() {
-        let (policy, approvals) = handoff_permission_lines(permissions);
+    if let Some(posture) = permissions.as_ref() {
+        let (policy, approvals) = posture.banner_lines();
         println!("  {policy}.");
         println!("  {approvals}.");
     }
@@ -1976,18 +1939,12 @@ fn cmd_handoff(
 
 fn pinned_handoff_session_id(
     explicit: Option<&str>,
-    agent: Agent,
-    codex_thread_id: Option<&str>,
+    ambient: Option<&str>,
     argv_id: Option<&str>,
 ) -> Option<String> {
     explicit
         .filter(|id| !id.is_empty())
-        .or_else(|| {
-            (agent == Agent::CODEX)
-                .then_some(codex_thread_id)
-                .flatten()
-                .filter(|id| !id.is_empty())
-        })
+        .or_else(|| ambient.filter(|id| !id.is_empty()))
         .or_else(|| argv_id.filter(|id| !id.is_empty()))
         .map(str::to_string)
 }
@@ -2005,8 +1962,7 @@ fn cmd_handoff_wait(
     max_attempts: Option<u32>,
     escalate: bool,
     session: Option<&str>,
-    codex_sandbox: Option<codex::CodexSandboxMode>,
-    codex_workspace_network: Option<bool>,
+    permission_args: &[String],
 ) -> Result<()> {
     // Wait for the session to exit, capped at ~2h so a stuck watcher can't linger.
     // If we asked it to quit (SIGTERM) and it's still alive after a grace period,
@@ -2071,11 +2027,14 @@ fn cmd_handoff_wait(
     // Let the transcript flush before we discover + resume it.
     std::thread::sleep(Duration::from_secs(1));
     std::env::set_current_dir(cwd).with_context(|| format!("chdir into {}", cwd.display()))?;
-    let codex_permissions = codex_sandbox
-        .map(|sandbox| {
-            codex::CodexPermissionSnapshot::from_handoff_parts(sandbox, codex_workspace_network)
-        })
-        .transpose()?;
+    // Round-trip the posture the parent serialized. Fail-closed both ways: a known
+    // agent parses (and validates) its own args; posture args with NO agent to
+    // interpret them must never be silently dropped.
+    let permissions = match agent {
+        Some(agent) => agent::adapter(agent).parse_handoff_permissions(permission_args)?,
+        None if permission_args.is_empty() => None,
+        None => bail!("--permission-arg given but no --agent to interpret it"),
+    };
     // Resume unattended (no follow — this process has no terminal), pinned to the
     // exact session `handoff` captured, so no discovery/picker can pick a sibling.
     cmd_resume(
@@ -2088,7 +2047,7 @@ fn cmd_handoff_wait(
         false,
         false,
         session,
-        codex_permissions.as_ref(),
+        permissions.as_deref(),
     )
 }
 
@@ -2188,18 +2147,15 @@ fn session_id_from_argv(_pid: u32, _agent: Agent) -> Option<String> {
     None
 }
 
-/// The session id in an agent command line: the token after `--resume`/`--session-id`
-/// (Claude) or `resume` (Codex). Pure, so it's unit-testable independent of process
-/// state. `None` when no id flag is present (a fresh interactive session).
+/// The session id in an agent command line: the token after one of the agent's
+/// [`resume_id_flags`](agent::AgentAdapter::resume_id_flags) (`--resume`/`--session-id`
+/// for the Claude-Code family, `resume` for Codex — the adapter supplies its own
+/// vocabulary, the spine stays agent-neutral, #17). Pure, so it's unit-testable
+/// independent of process state. `None` when no id flag is present (a fresh
+/// interactive session).
 fn session_id_in_cmdline(cmdline: &str, agent: Agent) -> Option<String> {
     let toks: Vec<&str> = cmdline.split_whitespace().collect();
-    let flags: &[&str] = match agent {
-        Agent::CODEX => &["resume"],
-        // Claude — and QoderWork or any other Claude-Code fork — carries the same
-        // resume flags; an unknown agent gets the Claude shape (jdi can't drive it
-        // anyway, see `agent::adapter`'s unsupported stub).
-        _ => &["--resume", "--session-id"],
-    };
+    let flags = agent::adapter(agent).resume_id_flags();
     let looks_like_id =
         |s: &str| s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     toks.windows(2)
@@ -2509,10 +2465,10 @@ mod tests {
         assert_eq!(
             handoff_permission_args(Some(&snapshot)),
             [
-                "--codex-sandbox",
-                "workspace-write",
-                "--codex-workspace-network",
-                "true",
+                "--permission-arg",
+                "sandbox=workspace-write",
+                "--permission-arg",
+                "workspace-network=true",
             ]
         );
     }
@@ -2526,7 +2482,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             handoff_permission_args(Some(&full)),
-            ["--codex-sandbox", "danger-full-access"]
+            ["--permission-arg", "sandbox=danger-full-access"]
         );
         assert!(handoff_permission_args(None).is_empty());
     }
@@ -2539,7 +2495,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            handoff_permission_lines(&snapshot),
+            agent::PermissionPosture::banner_lines(&snapshot),
             (
                 "permissions: preserving workspace-write, network disabled \
                  from the current Codex turn"
@@ -2547,19 +2503,32 @@ mod tests {
                 "approvals:   never (unattended)".to_owned(),
             )
         );
+        // The neutral flags round-trip through the adapter's parse hook (#17).
+        let flags = agent::PermissionPosture::handoff_flags(&snapshot);
+        let parsed = agent::adapter(Agent::CODEX)
+            .parse_handoff_permissions(&flags)
+            .unwrap()
+            .expect("posture round-trips");
+        assert_eq!(parsed.config_args(), snapshot.config_args());
+        assert_eq!(
+            parsed.summary(),
+            agent::PermissionPosture::summary(&snapshot)
+        );
     }
 
     #[test]
     fn codex_handoff_fails_closed_without_a_pinned_transcript() {
-        let error = handoff_permission_snapshot(Agent::CODEX, None, None).unwrap_err();
+        let adapter = agent::adapter(Agent::CODEX);
+        let error = adapter.capture_permissions(None, None).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("cannot preserve the current Codex permission context"),
             "{error:#}"
         );
-        let error =
-            handoff_permission_snapshot(Agent::CODEX, Some("thread-123"), None).unwrap_err();
+        let error = adapter
+            .capture_permissions(Some("thread-123"), None)
+            .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -2569,11 +2538,17 @@ mod tests {
     }
 
     #[test]
-    fn claude_handoff_does_not_require_a_codex_permission_snapshot() {
-        assert_eq!(
-            handoff_permission_snapshot(Agent::CLAUDE, None, None).unwrap(),
-            None
-        );
+    fn claude_handoff_does_not_require_a_permission_posture() {
+        assert!(agent::adapter(Agent::CLAUDE)
+            .capture_permissions(None, None)
+            .unwrap()
+            .is_none());
+        // And stray posture args are ignored by a posture-free agent (spine bails on
+        // agent=None instead — see cmd_handoff_wait).
+        assert!(agent::adapter(Agent::CLAUDE)
+            .parse_handoff_permissions(&["sandbox=read-only".to_owned()])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2677,33 +2652,30 @@ mod tests {
     #[test]
     fn codex_handoff_prefers_thread_environment_over_argv_and_discovery() {
         assert_eq!(
-            pinned_handoff_session_id(None, Agent::CODEX, Some("env-thread"), Some("argv-thread"),)
-                .as_deref(),
+            pinned_handoff_session_id(None, Some("env-thread"), Some("argv-thread")).as_deref(),
             Some("env-thread")
         );
         assert_eq!(
             pinned_handoff_session_id(
                 Some("explicit-thread"),
-                Agent::CODEX,
                 Some("env-thread"),
                 Some("argv-thread"),
             )
             .as_deref(),
             Some("explicit-thread")
         );
+        // The stale-env guarantee moved behind the trait (#17): only an agent that
+        // exposes an ambient id yields one — a stale CODEX_THREAD_ID can never leak
+        // into a Claude handoff because Claude's adapter never reads it.
+        std::env::set_var("CODEX_THREAD_ID", "stale-codex-env");
+        assert_eq!(agent::adapter(Agent::CLAUDE).ambient_session_id(), None);
         assert_eq!(
-            pinned_handoff_session_id(
-                None,
-                Agent::CLAUDE,
-                Some("stale-codex-env"),
-                Some("claude-id")
-            )
-            .as_deref(),
-            Some("claude-id"),
-            "Codex environment must never leak into Claude handoff"
+            agent::adapter(Agent::CODEX).ambient_session_id().as_deref(),
+            Some("stale-codex-env")
         );
+        std::env::remove_var("CODEX_THREAD_ID");
         assert_eq!(
-            pinned_handoff_session_id(None, Agent::CODEX, None, None),
+            pinned_handoff_session_id(None, None, None),
             None,
             "None tells the caller to use cwd-scoped discovery"
         );
@@ -2898,7 +2870,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_watcher_accepts_a_normalized_codex_permission_snapshot() {
+    fn handoff_watcher_accepts_neutral_permission_args() {
         let cli = Cli::try_parse_from([
             "agent-jdi",
             "__handoff",
@@ -2910,20 +2882,25 @@ mod tests {
             "codex",
             "--session",
             "thread-123",
-            "--codex-sandbox",
-            "workspace-write",
-            "--codex-workspace-network",
-            "true",
+            "--permission-arg",
+            "sandbox=workspace-write",
+            "--permission-arg",
+            "workspace-network=true",
         ])
         .unwrap();
-        assert!(matches!(
-            cli.command,
-            Command::HandoffWait {
-                codex_sandbox: Some(codex::CodexSandboxMode::WorkspaceWrite),
-                codex_workspace_network: Some(true),
-                ..
-            }
-        ));
+        let Command::HandoffWait { permission_arg, .. } = cli.command else {
+            panic!("expected __handoff");
+        };
+        assert_eq!(
+            permission_arg,
+            ["sandbox=workspace-write", "workspace-network=true"]
+        );
+        // …and the agent adapter interprets exactly those values (#17).
+        let posture = agent::adapter(Agent::CODEX)
+            .parse_handoff_permissions(&permission_arg)
+            .unwrap()
+            .expect("posture parsed");
+        assert_eq!(posture.summary(), "workspace-write, network enabled");
     }
 
     #[test]
