@@ -13,6 +13,7 @@ mod claude;
 mod codex;
 mod detect;
 mod lock;
+mod skill;
 mod state;
 mod supervisor;
 
@@ -95,6 +96,16 @@ enum Command {
     },
     /// Show a supervised session's status.
     Status { id: Option<String> },
+    /// Install the bundled jdi-handoff Skill (shared Codex + Claude Code) — no source
+    /// repo needed; the content ships inside this binary.
+    InstallSkill {
+        /// Agent Skills root (default: ~/.agents/skills)
+        #[arg(long, value_name = "PATH")]
+        agents_dir: Option<PathBuf>,
+        /// Claude configuration root (default: ~/.claude)
+        #[arg(long, value_name = "PATH")]
+        claude_dir: Option<PathBuf>,
+    },
     /// List tracked sessions.
     List,
     /// Queue follow-up work for a session's next drain (omit text to list the queue).
@@ -250,6 +261,10 @@ pub fn run() -> Result<()> {
         ),
         Command::Log { id } => cmd_log(&config, id.as_deref()),
         Command::Status { id } => cmd_status(&config, id.as_deref()),
+        Command::InstallSkill {
+            agents_dir,
+            claude_dir,
+        } => skill::cmd_install_skill(agents_dir, claude_dir),
         Command::List => cmd_list(&config),
         Command::Backlog { message, id, drain } => {
             cmd_backlog(&config, id.as_deref(), &message.join(" "), dry, drain)

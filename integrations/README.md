@@ -15,8 +15,14 @@ fails before the watcher starts or the current session is stopped. A direct
 Retries and backlog drains reuse the tracked handoff policy. The Skill requires
 no additional permission flag.
 
-Install the `agent-jdi` binary first, then install the integration from this
-checkout:
+Install the `agent-jdi` binary first, then install the integration — no checkout
+needed, the binary bundles the skill content (#26):
+
+```sh
+agent-jdi install-skill
+```
+
+From a source checkout the shell installer is equivalent:
 
 ```sh
 ./integrations/install-jdi-handoff.sh
@@ -34,6 +40,10 @@ The installed Skill is copied out of the Git checkout, so moving or deleting the
 checkout does not break the clients. Re-running the installer refreshes managed
 files. When migrating an older copied Claude Skill, the previous regular file is
 preserved once as `SKILL.md.pre-shared-backup` before the symlink is created.
+`agent-jdi install-skill` additionally preserves a locally-modified managed file
+once as `<name>.pre-install-backup` before refreshing it — and refuses to touch a
+file modified again after that backup exists, so local edits are never silently
+clobbered.
 Managed command-file symlinks are replaced rather than followed, and the
 installer refuses installer-owned directories that are themselves symlinks so
 it cannot write outside the selected client roots.
