@@ -472,6 +472,7 @@
         <tr><td><code>parse_reader(reader)</code></td><td class="role">metrics-only fold</td><td><b>provided</b></td></tr>
         <tr><td><code>enrich(path, blocks)</code></td><td class="role">load the sub-agent tree</td><td><b>no-op</b></td></tr>
         <tr><td><code>subagent_source(root, id)</code></td><td class="role">a child transcript's path</td><td><b>None</b></td></tr>
+        <tr><td><code>subagent_sources(root, ids)</code></td><td class="role">MANY children's paths in one operation-scoped call (a relationship-store adapter scans once)</td><td><b>provided</b>: per-id <code>subagent_source</code></td></tr>
       </tbody>
     </table></div>
     <p style="margin-top:14px">(The whole-file parse is not a hook: the facade's

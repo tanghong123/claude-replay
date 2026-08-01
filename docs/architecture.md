@@ -157,6 +157,7 @@ slice handed to the engine's entry points, or as one more family + `REGISTRY` ro
 | `parse_reader(reader)` | metrics-only fold | **provided** |
 | `enrich(path, blocks)` | load the sub-agent tree | **no-op** |
 | `subagent_source(root, id)` | a child transcript's path | **None** |
+| `subagent_sources(root, ids)` | MANY children's paths in one operation-scoped call (a relationship-store adapter scans once) | **provided**: per-id `subagent_source` |
 
 (The whole-file parse is not a hook: the facade's `Transcript::parse` drives the shared
 `SessionAccumulator` with the adapter — one fold, composed from the hooks above.)
