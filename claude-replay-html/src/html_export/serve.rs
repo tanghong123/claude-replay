@@ -148,15 +148,23 @@ impl Live {
     /// per-poll cross-session `register_children` is inverted into this one-time source note +
     /// the child's own lazy, one-time title derivation on its first pull.
     fn register_child_sources(&self, parent_id: &str, children: &[crate::engine::ChildMeta]) {
-        for c in children {
-            if self.cache.is_registered(&c.id) {
-                continue;
-            }
-            if let Some(source) = discover::subagent_source(self.agent, &self.root_path, &c.id) {
+        let unregistered: Vec<&str> = children
+            .iter()
+            .filter(|c| !self.cache.is_registered(&c.id))
+            .map(|c| c.id.as_str())
+            .collect();
+        if unregistered.is_empty() {
+            return;
+        }
+        // One operation-scoped batch: an adapter backed by a relationship store (Codex)
+        // scans it once for the whole child list, not once per child.
+        let sources = discover::subagent_sources(self.agent, &self.root_path, &unregistered);
+        for (id, source) in unregistered.into_iter().zip(sources) {
+            if let Some(source) = source {
                 self.cache
-                    .register_new(&c.id, Transcript::open(self.agent, source));
+                    .register_new(id, Transcript::open(self.agent, source));
                 self.cache
-                    .aux_with(&c.id, |a| a.parent = Some(parent_id.to_string()));
+                    .aux_with(id, |a| a.parent = Some(parent_id.to_string()));
             }
         }
     }

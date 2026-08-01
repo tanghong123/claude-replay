@@ -324,7 +324,11 @@ pub fn populate_sub_agent_transcripts(
     path: &Path,
     map: &mut BTreeMap<AgentId, SubAgentMeta>,
 ) {
-    adapter.populate_sub_agent_transcripts(path, map);
+    let ids: Vec<&str> = map.keys().map(String::as_str).collect();
+    let sources = adapter.subagent_sources(path, &ids);
+    for (meta, source) in map.values_mut().zip(sources) {
+        meta.transcript = source;
+    }
 }
 
 #[cfg(test)]

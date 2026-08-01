@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
-use claude_replay_engine::seam::{Agent, AgentId, Candidate, SubAgentMeta};
+use claude_replay_engine::seam::{Agent, Candidate};
 use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -178,18 +177,27 @@ impl CodexRelationshipIndex {
             .into_iter()
             .filter_map(|path| relationship_from_path(&path))
             .collect();
-        nodes
+        let index = Self { nodes };
+        index.root_id(root).is_some().then_some(index)
+    }
+
+    /// The relationship node for the rollout at `root`. Raw path equality first (the walk
+    /// and the caller normally spell the path identically); a canonicalized rescan only on
+    /// miss, so a symlinked/non-canonical root still resolves instead of silently
+    /// disabling the tree.
+    fn root_id(&self, root: &Path) -> Option<&str> {
+        if let Some(node) = self.nodes.iter().find(|node| node.path == root) {
+            return Some(node.id.as_str());
+        }
+        let root = normalized(root);
+        self.nodes
             .iter()
-            .any(|node| node.path == root)
-            .then_some(Self { nodes })
+            .find(|node| normalized(&node.path) == root)
+            .map(|node| node.id.as_str())
     }
 
     pub(crate) fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        let root_id = self
-            .nodes
-            .iter()
-            .find(|node| node.path == root)
-            .map(|node| node.id.as_str())?;
+        let root_id = self.root_id(root)?;
         let reaches_root = |candidate: &CodexRelationship| {
             let mut current = candidate.parent_thread_id.as_deref();
             let mut seen = HashSet::new();
@@ -237,19 +245,16 @@ pub(crate) fn subagent_source(root: &Path, child_id: &str) -> Option<PathBuf> {
     CodexRelationshipIndex::load(root)?.subagent_source(root, child_id)
 }
 
-pub(crate) fn populate_sub_agent_transcripts(
-    root: &Path,
-    map: &mut BTreeMap<AgentId, SubAgentMeta>,
-) {
-    if map.is_empty() {
-        return;
+pub(crate) fn subagent_sources(root: &Path, ids: &[&str]) -> Vec<Option<PathBuf>> {
+    if ids.is_empty() {
+        return Vec::new();
     }
     let Some(relationships) = CodexRelationshipIndex::load(root) else {
-        return;
+        return vec![None; ids.len()];
     };
-    for (id, meta) in map {
-        meta.transcript = relationships.subagent_source(root, id);
-    }
+    ids.iter()
+        .map(|id| relationships.subagent_source(root, id))
+        .collect()
 }
 
 fn normalized(path: &Path) -> PathBuf {
@@ -675,32 +680,42 @@ mod tests {
             "one relationship read per rollout, independent of child count"
         );
 
-        let mut map = claude_replay_engine::seam::build_sub_agents(&blocks);
         reset_relationship_reads();
-        populate_sub_agent_transcripts(&root, &mut map);
+        let sources = subagent_sources(&root, &["child-a", "child-b"]);
         assert_eq!(
-            map.get("child-a")
-                .and_then(|meta| meta.transcript.as_deref()),
-            Some(child_a.as_path())
-        );
-        assert_eq!(
-            map.get("child-b")
-                .and_then(|meta| meta.transcript.as_deref()),
-            Some(child_b.as_path())
+            sources,
+            vec![Some(child_a.clone()), Some(child_b.clone())],
+            "batch resolution returns paths in ids order"
         );
         assert_eq!(
             relationship_reads(),
             3,
-            "batch metadata fill also reads each rollout once"
+            "batch path resolution also reads each rollout once"
         );
 
-        let mut empty = std::collections::BTreeMap::new();
         reset_relationship_reads();
-        populate_sub_agent_transcripts(&root, &mut empty);
+        assert!(subagent_sources(&root, &[]).is_empty());
         assert_eq!(
             relationship_reads(),
             0,
             "a leaf transcript must not scan the relationship store"
+        );
+    }
+
+    #[test]
+    fn subagent_source_resolves_a_symlinked_root() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root = fixture.rollout("2026/07/18", "root", &cwd, "codex-tui");
+        let child = fixture.related_rollout("child", &cwd, "root", "/root/review");
+
+        // The caller's path spells the same rollout differently (a symlink beside it):
+        // raw equality misses, the canonicalized fallback must still find the root node.
+        let link = root.with_file_name("rollout-link.jsonl");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert_eq!(
+            subagent_source(&link, "child").as_deref(),
+            Some(child.as_path())
         );
     }
 

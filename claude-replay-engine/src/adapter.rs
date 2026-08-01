@@ -12,10 +12,9 @@ use crate::discover::Candidate;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::{AgentId, Block, SubAgentMeta};
+use crate::model::Block;
 use crate::Agent;
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +38,7 @@ pub trait MetricsAccumulator: Send {
 /// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
 /// which both the whole-file batch parse and the live follower feed, so batch and live share
 /// one seam. Discovery (`candidates_scoped`/`resolve_id`) and the optional
-/// `enrich`/`subagent_source`/`populate_sub_agent_transcripts` round it out.
+/// `enrich`/`subagent_source`/`subagent_sources` round it out.
 /// An adapter's claim strength on a sniffed transcript head (#59). Ordering matters
 /// to the facade's `detect_agent`: `Owns` beats `CanParse` beats `No`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,17 +118,16 @@ pub trait TranscriptAdapter: Sync {
     fn subagent_source(&self, _root: &Path, _child_id: &str) -> Option<PathBuf> {
         None
     }
-    /// Fill all known child transcript paths for one parent parse. The default delegates
-    /// to [`TranscriptAdapter::subagent_source`] once per child; adapters backed by a
-    /// relationship store may override this operation-scoped hook to scan that store once.
-    fn populate_sub_agent_transcripts(
-        &self,
-        root: &Path,
-        map: &mut BTreeMap<AgentId, SubAgentMeta>,
-    ) {
-        for (id, meta) in map {
-            meta.transcript = self.subagent_source(root, id);
-        }
+    /// Resolve MANY children's transcript paths in one operation-scoped call — returned in
+    /// `ids` order. The default delegates to [`TranscriptAdapter::subagent_source`] once per
+    /// child; adapters backed by a relationship store override this to scan that store once.
+    /// Path-only, so every batch consumer shares it: the enriched parse's sub-agent meta AND
+    /// a presentation layer registering a parent's children (the live server's child
+    /// registry) resolve through the same single scan.
+    fn subagent_sources(&self, root: &Path, ids: &[&str]) -> Vec<Option<PathBuf>> {
+        ids.iter()
+            .map(|id| self.subagent_source(root, id))
+            .collect()
     }
     /// Is `path` inside this agent's OWN transcript store (#66)? Store provenance
     /// proves ownership even without an in-band marker — a file in
