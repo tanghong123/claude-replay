@@ -636,7 +636,11 @@ fn apply_output(block: &mut Block, output: String) {
                 .and_then(|value| value.get("agent_id"))
                 .and_then(Value::as_str)
             {
-                agent.agent_id = agent_id.to_string();
+                if agent.agent_id.is_empty() {
+                    // A legacy inline id never overrides the activity event's thread id —
+                    // the thread id is what the relationship index resolves by.
+                    agent.agent_id = agent_id.to_string();
+                }
                 return;
             }
             if let Some(task_name) = value

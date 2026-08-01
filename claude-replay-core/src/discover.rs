@@ -91,6 +91,15 @@ pub fn subagent_source(agent: Agent, root: &Path, child_id: &str) -> Option<Path
     crate::adapter::adapter(agent).subagent_source(root, child_id)
 }
 
+/// [`subagent_source`] for MANY children in ONE operation-scoped call — results in `ids`
+/// order. An adapter backed by a relationship store (Codex) scans that store once for the
+/// whole batch instead of once per child; for the rest it is exactly the per-child loop.
+/// Use this whenever a parent's children are resolved together (the live server registering
+/// a pull's child list, the enriched parse's sub-agent meta).
+pub fn subagent_sources(agent: Agent, root: &Path, ids: &[&str]) -> Vec<Option<PathBuf>> {
+    crate::adapter::adapter(agent).subagent_sources(root, ids)
+}
+
 /// The LIVE on-disk task list for the session at `path` (#15) — the agent-neutral
 /// facade over each adapter's `load_tasks` hook (Claude reads
 /// `~/.claude/tasks/<session-id>/*.json`; agents with no task store return `None`).
