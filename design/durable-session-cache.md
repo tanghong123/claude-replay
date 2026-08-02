@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v13 — five review rounds applied; awaiting a clean verification.**
+> **Status: v14 — CLEAN. Six review rounds; verified ready to implement.**
 > Three review rounds; the core rule (§3) has passed a dedicated soundness pass. Earlier
 > drafts rejected the idea after review; that was wrong, and the two dead-end shapes are
 > kept condensed in Appendix A only so they are not re-proposed. Read §1 → §12 in order;
@@ -178,7 +178,14 @@ wrong side of a transformation. The correct captures are:
 7. **Serde prerequisites (compile blockers, all one-liners).** `TimeSpan` has private
    fields and no derive (`metrics.rs:63-66`) — it is **already** re-exported (`seam.rs:45`),
    so only the derive is missing. `QueueItem`
-   has no derive (`replay.rs:629`). **Store the agent as a label `String`, not an `Agent`.** `Agent` *is* serde-able
+   has no derive (`replay.rs:629`).
+   **Split the `Bv` bound off the checkpoint path.** `hibernate`/`restore` live today in
+   `impl<S: PersistentStore> SharedSession<S> where S::Bv: Serialize + DeserializeOwned`
+   (`shared.rs:584-587`). Writing/reading `SessionState` must carry **no** `Bv` bound —
+   only the `BvTable<Bv>` path is bounded — or step 4's `SharedSession<ArcTierBStore>`
+   (`Bv = Arc<Block>`) cannot resolve them without serde's `rc`, which §5.1 #8 exists to
+   avoid. Splitting that single bounded impl is a **step-4 prerequisite**.
+   **Store the agent as a label `String`, not an `Agent`.** `Agent` *is* serde-able
    (hand-written impls, `agent.rs:53-64`) — an earlier claim here
    that it was not is withdrawn. The real limit: `from_label` resolves only the three
    built-ins (`agent.rs:39-46`), so a third-party agent's checkpoint cannot be resolved
@@ -259,9 +266,10 @@ wrong side of a transformation. The correct captures are:
     whole-prefix re-read §8 exists to avoid. `Position`'s fields are also private with no
     offset-only constructor, so the argument cannot even be built. The new entry point
     seeks, sets `anchor: None`, and never routes through `poll_resume`. **Invariant this
-    creates:** a reader seeded at K never sets `anchor` (only `consume` does,
-    `reader.rs:206-208`), so its `tell()` is meaningless — the cache owns the offset and
-    never calls `tell()`. Do **not** convert `advance_reader` to `LineReader`: its
+    creates:** a reader seeded at K *does* set `anchor` (`consume` does so,
+    `reader.rs:206-208`) — but from the first line **after K**, not the file's first line.
+    So its `anchor` and `tell()` are both meaningless to the cache, which owns the offset
+    and the anchor itself and never calls `tell()`. Do **not** convert `advance_reader` to `LineReader`: its
     `poll` does `read_to_end` (`reader.rs:236-239`), destroying the one-line residency that
     makes multi-GB transcripts viable, and `consume` skips empty lines (`:206`) while
     `advance_reader` feeds every line — a byte-gate risk.
@@ -354,7 +362,7 @@ Reuse iff **all** hold, else rebuild from the transcript:
 | **hash of the K bytes immediately before `offset`** matches (K = 64 KiB) | one bounded read |
 | artifact lengths/counts agree with `SessionState.n_committed` | `stat` + the state file |
 | format version, fold-logic version and build id match | free |
-| HTML only: record **flavor** and `FoldPolicy` match | free |
+| HTML only: record **flavor** matches (§4 — the render fingerprint, which subsumes `FoldPolicy`) | free |
 
 **Deliberately NOT a whole-prefix hash.** `reader::poll_resume` validates by re-reading and
 hashing `[0, offset)` (`reader.rs:243-278`) — sound, but on a 40 MB transcript that is a
@@ -433,7 +441,7 @@ never reopened cannot hold its bytes forever.
   `session.state` equals a cold fold's — the check that pins requirement 5, since the same
   assertion must pass for both presentations against the same schema.
 - **Rejection:** rewritten prefix, changed fold/format version, torn artifact, changed
-  flavor or fold policy (records only) ⇒ full rebuild, never a partial serve.
+  flavor (records only) ⇒ full rebuild, never a partial serve.
 - **Lock:** two writers; dead-pid reclaim; live-pid respected; live pid + dead port; TUI
   refusal text; HTML pick-time hand-off; mid-run child served uncached.
 - **Fixture shapes (required):** a linear transcript passes while badly broken. Include a
@@ -461,7 +469,12 @@ exists that can use it.
    non-generic `SessionState`, `BvTable<Bv>` and the free `read_session_state`;
    `Replayer::{checkpoint, restore}` (its fields are private to `replay.rs`, so this is a
    prerequisite, not a detail); `SessionAccumulator::{checkpoint, resume}` — returning fold
-   state **+ offset only** (§8); `FollowParser::resume`, `LineReader::open_at_offset`
+   state **+ offset only** (§8); `PersistentStore::flush(&mut self)` (defaulted no-op — fix (a) of §5.1 #10 has nothing to
+   flush through otherwise; today's `put`s are unbuffered, so it is a superset requirement)
+   with a `FollowParser::store_mut()` passthrough (`SessionAccumulator::store_mut` already
+   exists, `builder.rs:236`); the artifact dir + throttle state on `SharedSession`'s
+   `Inner`/`with_store`, since `advance`/`poll_view` take no path today;
+   `FollowParser::resume`, `LineReader::open_at_offset`
    (§5.1 #18) and `LineReader::line_boundary() -> u64` (`self.offset - self.pending.len()`,
    the value §5.1 #5 needs — the field is private and `tell()` is ruled out) with a
    `FollowParser` passthrough; a `committed_meta()` accessor (`session_meta()` is the merged value §5.1 #3
