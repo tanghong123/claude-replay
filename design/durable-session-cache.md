@@ -313,33 +313,34 @@ is precisely the drift the version stamp cannot catch. This is the same
 two-independent-derivations discipline the workspace already uses for the frozen
 `parse_lines` oracle and the byte gate.
 
-### 5.3e Consequence for the artifact set
+### 5.3e Artifact set — one directory per `<frontend, session>`
 
-The **meta stream is now the one artifact every frontend needs**, and it is entirely
-frontend-agnostic — so it, rather than the Block log, is the natural shared artifact:
+**DECIDED (owner): keep it simple. Everything a frontend needs for a session lives in one
+directory, owned by one lock, written by one process.** The meta stream is **duplicated
+per frontend** rather than shared.
 
 ```
-meta      ← SHARED, frontend-agnostic, required by all      → <session, meta> lock
-blocks    ← the TUI's content artifact; shareable, optional → <session, blocks> lock
-records   ← HTML's content artifact; private                → <session, html> lock
+~/.cache/claude-replay/<frontend>/<agent>-<session-id>/
+    meta        # the frontend-neutral meta stream (§5.3c) — same format everywhere,
+                #   simply written twice when two frontends both open the session
+    blocks      # TUI content artifact (Block JSON)      — TUI dir only
+    records     # HTML content artifact (wire records)   — HTML dir only
+    LOCK        # the single lock + rendezvous record (§7)
 ```
 
-A frontend that cannot take `<session, meta>` still **reads** it (append-only +
-`valid_up_to`) and folds privately past that point, so per-frontend concurrency is
-unaffected. The alternative — duplicating the small meta stream per frontend — is simpler
-but forfeits exactly the cross-frontend reuse this design exists to provide; prefer the
-shared scope, and fall back to duplication only if the lock dance proves troublesome in
-practice.
+The meta stream stays **format-identical** across frontends — the §5.3d equivalence test
+still compares them — it is merely not *shared storage*. What that buys:
 
-**Superseded:** the checkpoint/scalar-sidecar recommendation, and "HTML reads the Block
-log for meta". Fall back to a periodic meta snapshot
-only if Step 0 shows folding the Block log for meta is too slow on HTML's path — an
-optimisation, added later, that changes no interface.
+- no cross-frontend lock scopes, no shared-artifact ownership question;
+- no read-while-another-process-appends protocol (`valid_up_to` remains only for
+  truncating a crash-torn tail within one writer, not for concurrent readers);
+- a frontend's directory is self-contained, so eviction and validation are per-directory.
 
-**Alignment rule (all options).** The two artifact streams and the transcript must land
-on one consistent point: take `n = min(block_log.valid_up_to, record_log.valid_up_to)`,
-use the frontier `Position` recorded for `n`, and treat anything beyond `n` in either log
-as absent. Truncate-on-load rather than trusting a torn tail.
+The cost is accepted deliberately: **the transcript is parsed twice** when a user opens
+the same session in both the TUI and the browser, because those are two invocations. The
+intended future fix is **not** shared storage but a single process that is both the TUI
+app and the HTML server — at which point there is one fold, one meta stream, and the
+duplication disappears without any cross-process protocol ever having existed.
 
 ### 5.4 The one seam addition
 
@@ -404,44 +405,35 @@ locking, validity, or resume is duplicated.
 Note the TUI store is a **composite** — `BV = Block` in memory *and* a side log — which
 is the same put-does-two-things shape `RecordStore` already uses.
 
-## 7. Locking
+## 7. Locking — one lock per `<frontend, session>`
 
-Three scopes, because the shared artifact and the per-frontend artifacts have different
-owners:
+**DECIDED (owner).** One lock, keyed by the artifact directory of §5.3e. No shared
+scopes, no read-only mode, no private-dir fallback.
 
-```
-<session, blocks>   ← the parameter-free Block log (§4.1) — shareable, one writer
-<session, html>     ← wire records
-<session, tui>      ← the TUI's own artifact set
-```
+Note this makes one row of the earlier matrix impossible rather than merely unused:
+holding `<html, S>` *means* serving `S`, so "the holder is alive but does not host the
+session I want" cannot occur. What remains:
 
-Per-frontend scopes keep a TUI and an HTML server from ever blocking each other (the
-owner's requirement). Giving the *shared* Block log its own scope is what lets it stay
-shared: a frontend that loses that lock still **reads** it — safe without a reader lock,
-because the log is append-only and the sidecar's `valid_up_to` bounds what a reader may
-trust — and folds privately past that point.
+| lock state | TUI | HTML |
+|---|---|---|
+| free, or holder's pid is dead, or holder's port does not answer | acquire and run, read+write the cache | same |
+| held by a live holder | **quit**, saying which pid/dir holds it | **point the user at the holder**: print and open its `…?session=S`, then exit |
 
-**Stale recovery is liveness-based**, reclaiming a lock whose pid is dead; a holder that
-also advertises a port is probed, since pids are recycled. The probe is HTTP-shaped
-knowledge and `present` has zero `std::net` usage, so it arrives as an **injected
-callback** from the frontend, not a new capability in `present`.
+Stale recovery stays liveness-based (a dead pid's lock is reclaimed; a holder advertising
+a port is also probed, since pids are recycled), and the probe remains an injected
+callback from the frontend so `present` grows no `std::net` dependency.
 
-**Portability is a correctness issue, not a detail.** `pid_alive` shells to `kill -0` and
-returns `false` on non-unix (`jdi/state.rs:150-167`); dropped into `present` as-is, every
-lock would read stale on Windows and the design would fail *into* concurrent writers.
-Durable caching is therefore **disabled** on a platform without a real liveness check.
+**One UX consequence worth stating plainly.** "Quit" means a second TUI on the same
+session is refused — including the legitimate case of deliberately watching one session in
+two terminals. That is a real regression against today's behaviour, where nothing is
+shared and both simply work. Two cheap mitigations, neither of which complicates the lock:
+a `--no-cache` escape hatch that runs exactly as today (no artifacts, no lock), and making
+the refusal message name the holding pid and directory so a stale situation is diagnosable.
+Recommend shipping the escape hatch with the feature.
 
-The mechanism moves down from `src/jdi/lock.rs` (dependency direction checks out), but
-note it is a short-held *setup* mutex with three outcomes, whereas this needs a long-held
-writer lock with four (§7.3 of v2, retained). The state machine on top is new work.
-
-### 7.1 Hand-off matrix (HTML, session `S`)
-
-| holder | behavior |
-|---|---|
-| none / pid dead / port dead | take the lock, serve, read+write cache |
-| alive, hosts `S` | hand off: print the holder's `…?session=S`, open it, exit |
-| alive, does not host `S` | serve read-only: private run dir, no cache writes |
+Portability is unchanged and remains a correctness gate: `pid_alive` returns `false` on
+non-unix (`jdi/state.rs:150-167`), so on a platform without a real liveness check the
+durable cache is **disabled** rather than assuming every lock is stale.
 
 ## 8. Admission must not run under the cache mutex
 
