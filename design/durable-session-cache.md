@@ -1,9 +1,48 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v5 — NOT READY TO IMPLEMENT. Blocked on a measurement (§4).**
+> **Status: v6 — the blocker is resolved (§0). Still gated on the §4 measurement.**
 > Two successive designs for resuming the *fold* mid-transcript were reviewed and found
 > **unsound** (Appendices A and B). What survives is narrower, and its value is unproven —
 > which is why §4 comes before the design.
+
+## 0. The correction that unblocks this (owner)
+
+Two rules, and they must name the **same** boundary:
+
+1. **Only durable state for committed blocks is written.** Nothing reflecting the open
+   turn is persisted.
+2. **On resume, re-read the transcript only from where the open block starts.**
+
+v4/v5 put those at two *different* points — state captured at the commit drain (which had
+already absorbed effects of later lines) but re-reading from an earlier line. Everything
+the reviews found fatal lived in that gap. With one boundary there is no gap:
+
+- **Nothing is re-read that the original already processed**, so the double-application
+  class (Appendix B: duplicate `ToolResult`s, an extra `UserText`, double-stamped turns,
+  double-counted metrics) cannot occur.
+- **A committed tool call awaiting its result matches by construction**: the commit prunes
+  it from the pending map (`replay.rs:499`), so the original orphans a late result too — a
+  resumed run starting with an empty map behaves identically.
+- **The queue matches by construction**: a commit only happens when the queue is empty
+  (`replay.rs:439`), so restoring an empty queue is always right.
+- **No `(Position, n)` ordinal is needed** — the resume point is a line boundary.
+
+**The one condition:** the committed/open split must fall *between* lines. Normally it
+does (a turn commits when the next user line arrives). One line can occasionally produce
+both a committed block and the open turn (the #56 shape) — **skip checkpointing on such a
+line**; the next clean boundary is moments away.
+
+**Still to settle:** the metrics seam must carry more than `Metrics` — the accumulators
+hold private span endpoints and Codex's `model` comes from a line near the session start
+(`codex/metrics.rs:35-39`), so a resumed run needs both or it reports a wrong duration and
+no cost.
+
+**Note this is a small delta on existing code, not new machinery.**
+`SharedSession::hibernate` already persists committed values, per-turn times, metrics,
+meta, tasks and the store's render continuation (`shared.rs:592-628`). What is missing is
+only: allow `restore` when the source has **grown** rather than requiring byte-identity
+(`shared.rs:639-641`), let a restored session **continue advancing** (`shared.rs:248-250`),
+and carry the handful of fold values above.
 
 ## 1. Problem
 
