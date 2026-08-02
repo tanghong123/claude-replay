@@ -181,7 +181,52 @@ nor stream-shaped — `cwd`, `prev_ts`, `pending_ts`, `prev_user_text`,
 values, so they go in a **tiny scalar sidecar**: a snapshot, but of ~6 fields, which
 makes every objection to (i) vanish (nothing to amplify, nothing to drift).
 
-**Recommendation:** (iii) + the scalar sidecar. Fall back to a periodic meta snapshot
+**Owner's counter, accepted.** Two corrections to the debate above:
+
+1. *Versioning covers intentional change.* If fold logic changes, `Block` layout can
+   change with it — so both the Block log and any meta stream carry a **fold/format
+   version**, and a mismatch rebuilds from the transcript. That is the right mechanism,
+   and it disposes of "the fold changed" as an objection to either option. What a version
+   stamp does **not** cover is *unintentional drift* between two implementations, which is
+   the narrower risk (ii) actually carries.
+2. *The committed/provisional distinction already exists* — and it is what makes a meta
+   stream clean. `SessionAccumulator` keeps `committed_meta: SessionMeta`
+   (`builder.rs:48`) and pushes into it **only at the drain** (`builder.rs:154`, the same
+   site as `store.put`); `session_meta()` returns that clone plus a *fresh* provisional
+   overlay (`builder.rs:272-273, 298-300`). So a meta record appended at the drain is
+   **committed-only by construction** and **aligned with the block log by construction**,
+   because it is written from the same call site. The failure mode of "meta for
+   provisional blocks leaks into the durable stream" cannot arise.
+
+**What the stream records decides whether (ii)'s risk exists at all.** Recording *inputs*
+for a separate replayer to re-interpret is a second implementation. Recording what the
+fold **already computed**, at the drain, is a *recording* — replay is dumb application,
+and there is nothing to drift. Concretely:
+
+- **record the `Block`** → replay is literally `committed_meta.push(&b)`, today's code
+  path, zero new surface. But the reader must decode blocks — free for the TUI, an extra
+  cost for HTML, which otherwise never loads them.
+- **record the meta delta** → smaller, and HTML avoids decoding blocks entirely; the cost
+  is a small output-recording surface (not a logic reimplementation).
+
+**Two pieces of state that neither variant gets for free**, and which must be carried
+explicitly whichever is chosen:
+
+- **`agent_ids` is `Replayer` state, not `SessionMeta`** — it is not in `committed_meta`
+  at all. Either derive it from committed `Block::SubAgent`s (needs blocks) or record it
+  in the stream.
+- **`TaskFold.pending`** (`tasks.rs:104-107`) holds `TaskCreate`s awaiting the tool result
+  that assigns their id. A create committed below the frontier whose result arrives above
+  it spans the boundary, so the *pending* set — not just the joined `TaskList` — has to
+  be persisted.
+
+**Recommendation:** the meta stream, appended at the drain, recording the fold's own
+committed output. Start by recording the `Block` (the Block log already is that stream,
+and the TUI writes it regardless — zero new surface); switch HTML to a compact meta-delta
+record only if Step 0 shows decoding blocks purely for meta is a real cost on its path.
+Both are the same interface, so that stays an optimisation rather than a redesign.
+
+**Superseded:** (i) + the scalar sidecar. Fall back to a periodic meta snapshot
 only if Step 0 shows folding the Block log for meta is too slow on HTML's path — an
 optimisation, added later, that changes no interface.
 
