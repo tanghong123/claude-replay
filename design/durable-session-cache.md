@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v12 — no known blocker. Four review rounds applied; ready to implement.**
+> **Status: v13 — five review rounds applied; awaiting a clean verification.**
 > Three review rounds; the core rule (§3) has passed a dedicated soundness pass. Earlier
 > drafts rejected the idea after review; that was wrong, and the two dead-end shapes are
 > kept condensed in Appendix A only so they are not re-proposed. Read §1 → §12 in order;
@@ -71,7 +71,12 @@ Everything is per `<presentation, session>`; nothing is shared between presentat
 ```
 $CLAUDE_REPLAY_CACHE/<presentation>/<agent>-<session-id>/
     # root default: $XDG_CACHE_HOME/claude-replay (else ~/.cache/claude-replay)
-    # <presentation> ∈ { tui, html }; for html the flavor is part of the key (§8)
+    # <presentation> ∈ { tui, html }
+    # FLAVOR (html only) := the record-render fingerprint — FoldPolicy + render cwd +
+    #   record-schema/build id. It distinguishes the served, --dump-html and
+    #   --dump-all-html renderings, which are mutually unusable (`record_store.rs:136-137`
+    #   hardcodes the served variant). It is a `BvTable` field, presentation-owned and
+    #   checked at load; the TUI has no flavor (raw Blocks bake in no render parameters).
     session.state       # agent-neutral fold state — CONTAINS NO BV   ← metadata from here
     content             # this presentation's artifact: Block log (TUI) / records (HTML)
     bv.state            # committed Vec<Bv> + the store's render continuation
@@ -87,7 +92,8 @@ repeats the same mistake.) Three types instead:
 - `SessionState` — **non-generic**: versions, `committed_meta`, metrics blob, raw
   `user_times`, task fold, raw `out`, replayer state, `cwd`, the agent id, and the
   validity quintuple `{offset, anchor, window_hash, n_committed, content_len}`.
-- `BvTable<Bv>` — `epoch`, `provisional_gen`, `committed: Vec<Bv>`, `store_state`.
+- `BvTable<Bv>` — `epoch`, `provisional_gen`, `committed: Vec<Bv>`, `store_state`, and
+  (HTML only) the **flavor fingerprint** §8 validates.
   **`content_len` lives only in `SessionState` and is authoritative** (it is what §5.1 #10
   truncates back to); `HibernatedSidecar`'s `backing_len` (`shared.rs:539-542`) is dropped
   rather than duplicated.
@@ -96,8 +102,8 @@ repeats the same mistake.) Three types instead:
   ever needs a `::<S>` turbofish, the requirement has been lost. §10's metadata test must
   call it with no type parameter.
 
-Cross-validate on load: `SessionState.n_committed == BvTable.committed.len()` (and the
-record count for HTML), else rebuild — the torn-write guard, since the files are written
+Cross-validate on load: `n_committed` == the decoded record count (TUI, which has no
+`bv.state`) / `BvTable.committed.len()` (HTML), else rebuild — the torn-write guard, since the files are written
 separately.
 
 **`session.state` contains no `BV` of any kind** — requirement 5. Metadata is reconstructed
@@ -203,8 +209,13 @@ wrong side of a transformation. The correct captures are:
 10. **Crash-safety was backwards in §8.** Content is appended *during* `advance_at`, state
     is written *after*, so a crash always leaves the artifact **longer** than the state
     claims. Treating a length mismatch as a rejection would force a full rebuild after
-    every crash. **Fix:** record `content_len` in `session.state` and **truncate the
-    artifact back to it on resume**; write `session.state` via temp-file + `rename` so a
+    every crash. **Two rules make that safe, and they are not optional.** (a) The checkpoint **flushes the
+    content writer before** writing `session.state`, so the "artifact ≥ state" invariant
+    actually holds — §8.1's append is buffered, and without the flush the artifact can be
+    *shorter* than the recorded length. (b) On resume, `artifact_len > content_len`
+    **truncates back** to it; `artifact_len < content_len` is a **validity failure ⇒
+    rebuild**, never a `set_len` (which would zero-extend a short file into a corrupt log).
+    **Fix:** record `content_len` in `session.state` and apply those two rules; write `session.state` via temp-file + `rename` so a
     torn write degrades to "no checkpoint", never "corrupt checkpoint". Also fold a **build
     id** into the version, since `reader.rs` hashes with `DefaultHasher`, whose algorithm is
     not stable across Rust versions (fails safe into a rebuild, but only if versioned).
@@ -267,7 +278,9 @@ wrong side of a transformation. The correct captures are:
   /`restore_state`** as §6's model.
 - **`TierBSession::persist`/`load` is a third, production-unused on-disk session format**
   (`tier_b.rs:245-342`) that already claims "reload without re-folding" and repeats the
-  §4 metadata/BV mixing; only an integration test uses it. Delete **`persist`/`load`/`Sidecar` and the two file constants** as part of this work
+  §4 metadata/BV mixing; only an integration test uses it. Delete **`persist`/`load`/`Sidecar`, the two file constants and `to_io`** (whose only
+  callers are those two, `tier_b.rs:267, 280, 302, 345` — leaving it would be a dead-code
+  warning, which the gate forbids) as part of this work
   (retargeting that test at `SessionState`/`BvTable`) — not `TierBSession` itself, which is
   re-exported (`cache/mod.rs:31`) and used elsewhere — or promote it to be the writer.
   Leaving three formats is the worst outcome.
@@ -290,7 +303,11 @@ fn checkpoint(&self) -> serde_json::Value { Value::Null }   // defaulted
 fn restore(&mut self, _v: serde_json::Value) {}
 ```
 
-Verified round-trippable for both agents once `TimeSpan` derives serde (§5.1 #7);
+Verified round-trippable for both agents once `TimeSpan` derives serde (§5.1 #7). Note
+`claude-replay-agents` has `serde_json` but **not** `serde` as a direct dependency, so
+either add that one line (the seam audit permits it — it flags only
+`claude_replay_engine::` paths) or hand-roll with `json!` + `serde_json::to_value`, which
+needs no new dependency.
 everything else in both accumulators is `u64`/`String`/`BTreeMap`. Note QoderWork shares
 Claude's accumulator (`adapters.rs:162`), so the blob is keyed by presentation **and agent
 id** — which §4's directory naming already provides.
@@ -452,9 +469,11 @@ exists that can use it.
    here and gates everything after.** Byte gate unchanged.
 2. **Present: rewrite `hibernate`/`restore` onto the two files**, still temp-scoped. Not a
    pure re-plumb: §5.1 #2 persists the **raw** `user_times` while the old hibernated body
-   served the flushed vector, so restore must already route through `Replayer::restore` +
-   `open_snapshot` for `hibernate_then_restore_serves_identical_pulls_without_refold`
-   (`shared.rs:917`) to keep passing.
+   served the flushed vector, so restore must already route through the **public** path —
+   `FollowParser::resume` then `open_finalized()` (`follow.rs:221`, `builder.rs:265`) — for
+   `hibernate_then_restore_serves_identical_pulls_without_refold` (`shared.rs:917`) to keep
+   passing. Do **not** reach `Replayer::open_snapshot`: it is `pub(crate)` in the engine
+   (`replay.rs:570`) and step 2's code lives in present, so a re-export cannot widen it.
 3. **Delete `Body::Hibernated`; `restore` yields `Body::Live`** (§2 delta 3). Existing
    hibernate tests are rewritten to assert *continued advance*. Must precede 4, or the
    append-mode store is built against a body that cannot `put`. Also remove the now-dead
