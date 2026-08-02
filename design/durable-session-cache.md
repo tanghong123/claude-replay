@@ -423,13 +423,21 @@ Stale recovery stays liveness-based (a dead pid's lock is reclaimed; a holder ad
 a port is also probed, since pids are recycled), and the probe remains an injected
 callback from the frontend so `present` grows no `std::net` dependency.
 
-**One UX consequence worth stating plainly.** "Quit" means a second TUI on the same
-session is refused — including the legitimate case of deliberately watching one session in
-two terminals. That is a real regression against today's behaviour, where nothing is
-shared and both simply work. Two cheap mitigations, neither of which complicates the lock:
-a `--no-cache` escape hatch that runs exactly as today (no artifacts, no lock), and making
-the refusal message name the holding pid and directory so a stale situation is diagnosable.
-Recommend shipping the escape hatch with the feature.
+**Refusing a second TUI is an improvement, not a regression (owner).** Today two TUI
+instances on one session each fold the whole transcript and each hold a full in-memory
+session — `ArcStore` retains the authoritative copy per process — so the duplication is
+real and **silent**. Refusing surfaces it instead of hiding it, and the lock is what makes
+it visible. The refusal message should name the holding pid and directory so the state is
+diagnosable at a glance.
+
+**A `--no-cache` escape hatch is still worth shipping, on a different rationale.** Not to
+permit a legitimate double-open — per the above there isn't one — but as **operational
+insurance for the cache path itself**. The lock now gates access to the app: a bug in
+liveness detection, an unwritable cache directory, or a filesystem without working locks
+would otherwise leave a user unable to open their own sessions, which is a severe failure
+mode for a read-only viewer. It is also nearly free: a no-cache code path **must exist
+anyway** for the non-unix and unwritable-directory cases, so exposing it as a flag is
+surfacing an existing path, not building a second one.
 
 Portability is unchanged and remains a correctness gate: `pid_alive` returns `false` on
 non-unix (`jdi/state.rs:150-167`), so on a platform without a real liveness check the
