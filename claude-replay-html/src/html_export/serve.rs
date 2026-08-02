@@ -593,8 +593,8 @@ impl LiveServer {
 /// Every root is registered up front — a registry entry only, since streams and folds are
 /// produced on a session's first `/pull` — so all of them are live simultaneously and each
 /// is reachable at `?session=<id>` on the one shared shell. Roots may span agents and
-/// working directories; the per-session agent/cwd plumbing in [`Live`] is what makes that
-/// safe. `serve` is the single-root special case of this.
+/// working directories; the server's per-session agent/cwd plumbing is what makes that
+/// safe. [`serve`] is the single-root special case of this.
 pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveServer> {
     use std::sync::Arc;
     anyhow::ensure!(!paths.is_empty(), "no sessions to serve");
