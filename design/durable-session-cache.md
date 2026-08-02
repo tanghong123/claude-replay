@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v11 — no known blocker. Third review round applied; ready to implement.**
+> **Status: v12 — no known blocker. Four review rounds applied; ready to implement.**
 > Three review rounds; the core rule (§3) has passed a dedicated soundness pass. Earlier
 > drafts rejected the idea after review; that was wrong, and the two dead-end shapes are
 > kept condensed in Appendix A only so they are not re-proposed. Read §1 → §12 in order;
@@ -87,8 +87,10 @@ repeats the same mistake.) Three types instead:
 - `SessionState` — **non-generic**: versions, `committed_meta`, metrics blob, raw
   `user_times`, task fold, raw `out`, replayer state, `cwd`, the agent id, and the
   validity quintuple `{offset, anchor, window_hash, n_committed, content_len}`.
-- `BvTable<Bv>` — `epoch`, `provisional_gen`, `backing_len`, `committed: Vec<Bv>`,
-  `store_state`.
+- `BvTable<Bv>` — `epoch`, `provisional_gen`, `committed: Vec<Bv>`, `store_state`.
+  **`content_len` lives only in `SessionState` and is authoritative** (it is what §5.1 #10
+  truncates back to); `HibernatedSidecar`'s `backing_len` (`shared.rs:539-542`) is dropped
+  rather than duplicated.
 - **`pub fn read_session_state(path) -> Option<SessionState>` as a free function outside
   any `S`-bounded impl.** That free function *is* requirement 5's acceptance test: if it
   ever needs a `::<S>` turbofish, the requirement has been lost. §10's metadata test must
@@ -170,10 +172,14 @@ wrong side of a transformation. The correct captures are:
 7. **Serde prerequisites (compile blockers, all one-liners).** `TimeSpan` has private
    fields and no derive (`metrics.rs:63-66`) — it is **already** re-exported (`seam.rs:45`),
    so only the derive is missing. `QueueItem`
-   has no derive (`replay.rs:629`). `Agent` *is* serde-able (hand-written impls, `agent.rs:53-64`) — an earlier claim here
+   has no derive (`replay.rs:629`). **Store the agent as a label `String`, not an `Agent`.** `Agent` *is* serde-able
+   (hand-written impls, `agent.rs:53-64`) — an earlier claim here
    that it was not is withdrawn. The real limit: `from_label` resolves only the three
-   built-ins (`agent.rs:39-46`), so a third-party agent's checkpoint fails to load; resolve
-   through the registry and rebuild on failure.
+   built-ins (`agent.rs:39-46`), so a third-party agent's checkpoint cannot be resolved
+   *inside the engine*, where the format lives. Keep the label opaque there and resolve it
+   above the engine, through the registry; rebuild on failure. Related: §6's defaulted
+   `checkpoint` returning `Null` means a future adapter that skips it silently restores
+   zeroed metrics — call that out in the adapter docs.
 8. **The TUI has no content artifact.** (Note the counters live in **one** place:
    `n_committed` and `content_len` are `SessionState` fields, so the TUI writes **no**
    `bv.state` at all — its committed values *are* the log and its `store_state` is empty.
@@ -183,12 +189,13 @@ wrong side of a transformation. The correct captures are:
    (`shared.rs:289`) and the one-copy-shared-by-`Arc` principle. **Fix:** an
    `ArcTierBStore` — `Bv = Arc<Block>`, `put` write-through (append the same serde-JSON
    record *and* return the `Arc`), resume decodes the log into `Vec<Arc<Block>>`. Then the
-   TUI's `bv.state` collapses to `{n_committed, content_len}` instead of an O(N) locator
-   table, and serde's `rc` feature (off workspace-wide) is not needed.
+   TUI needs no `bv.state` at all — instead of an O(N) locator table — and serde's `rc`
+   feature (off workspace-wide) is not needed.
 9. **Where and how often to checkpoint.** Inside `SharedSession::advance`/`poll_view`
    (`shared.rs:243, 287`) **after** `advance_stream()` returns — under the existing lock,
    the only point where state, artifact and counters cannot tear — plus a clean-exit flush.
-   Gate on **`committed_grew || reset`** (both already returned by `advance_stream`) with a
+   Gate on **`committed_grew || reset`** (`reset` is returned by `advance_stream`; `committed_grew` is derived at the call site,
+   `shared.rs:257, 300`) with a
    time/byte throttle. The `reset` half is mandatory, not defensive: a truncation clears
    `committed` and `BlockStore::reset` **truncates the artifact** (`tier_b.rs:198-211`,
    `record_store.rs:160-167`), leaving `committed_grew` false — without it `session.state`
@@ -252,15 +259,17 @@ wrong side of a transformation. The correct captures are:
 
 ### 5.2 Reuse, do not rebuild — and delete the third format
 
-- **`LineReader::open_at`** for resuming at an offset; **`src/jdi/lock.rs`** for the lock
+- **`LineReader::open_at_offset`** (new — §5.1 #18) for resuming at an offset; `open_at`
+  and `Position` are **not** reused; **`src/jdi/lock.rs`** for the lock
   (move the primitive to `present::lockdir` + `present::sys::pid_alive`; keep jdi's
   three-way `Acquire` mapping in jdi, and let the owner file carry `pid[:port]` with each
   caller parsing, so jdi's `read_owner` keeps working); **`PersistentStore::hibernate_state`
   /`restore_state`** as §6's model.
 - **`TierBSession::persist`/`load` is a third, production-unused on-disk session format**
   (`tier_b.rs:245-342`) that already claims "reload without re-folding" and repeats the
-  §4 metadata/BV mixing; only an integration test uses it. **Delete it** as part of this
-  work (retargeting that test at `SessionState`/`BvTable`), or promote it to be the writer.
+  §4 metadata/BV mixing; only an integration test uses it. Delete **`persist`/`load`/`Sidecar` and the two file constants** as part of this work
+  (retargeting that test at `SessionState`/`BvTable`) — not `TierBSession` itself, which is
+  re-exported (`cache/mod.rs:31`) and used elsewhere — or promote it to be the writer.
   Leaving three formats is the worst outcome.
 - **The `aux` slot stays out.** The TUI's `ViewSidecar` is derived, width-dependent state
   with consumer-owned validity — it must never enter `SessionState`.
@@ -309,7 +318,8 @@ callback keeps the lock testable).
   server: it discovers children lazily and cannot know its lock set at startup.
 
 `--no-cache` is a hidden flag (`hide = true`, precedent `jdi/mod.rs:164,167`) that skips
-**both the cache and the lock**, so it does permit a second TUI, running exactly today's
+**the durable cache (on-disk artifacts + checkpointing) and the lock** — the in-process
+`SessionCache` is unaffected — so it does permit a second TUI, running exactly today's
 path. Coherent rather than a loophole: it is insurance for the cache path itself (a
 liveness bug, an unwritable dir, a filesystem without locks), and hiding it keeps it from
 becoming the routine way to re-enable silent duplicate folds. Where there is no real liveness
@@ -359,7 +369,7 @@ The cache must add no meaningful cost to the steady-state path.
 |---|---|---|
 | **per line** | the byte offset only — and `advance_at` already receives it (`builder.rs:118-131`). **No hashing, no allocation, no I/O.** | **zero** |
 | **per block (committed)** | HTML: none — `RecordStore` already appends a record per commit today. TUI: one `serde_json` serialize + a **buffered** append of the block. | real but bounded; it is the price of durability, and it buys skipping the entire parse+fold on every later invocation |
-| **per commit** | write `SessionState` (small: at a commit the open window is the turn just started) **+ one bounded 64 KiB `pread` + hash for the validity window**, throttled together | small |
+| **per commit** | write `SessionState` (small: at a commit the open window is the turn just started) **+ one bounded 64 KiB `pread` + hash for the validity window**, throttled together | **O(turns + agents + tasks)** — the throttle is mandatory, not an optimisation |
 | **per open** | `stat` + one line + 64 KiB + parse the state file + take the lock, **plus O(committed)** to decode the log into `Vec<Arc<Block>>` (TUI) or parse the locator table (HTML) | small, once — far below parse+fold; measured at §12 step 4 |
 | **cache disabled / `--no-cache`** | nothing is tracked, written or hashed — the path is exactly today's | **zero** |
 
@@ -368,10 +378,14 @@ Two rules follow, and they are requirements rather than optimisations:
 1. **Nothing is maintained during folding that is only needed at checkpoint time.** Offsets
    are already threaded; everything else (`out`, `tool_slot`, `agent_ids`, …) is *read* at
    checkpoint from state the fold already holds. No shadow bookkeeping.
-2. **Checkpoint on commit, never per advance.** A poll-driven checkpoint would rewrite the
-   open turn every `POLL_MS` (2 s, `mod.rs:46`) per session; commits are line boundaries by
-   construction, so this also satisfies §3 for free and bounds the `agent_ids`
-   re-serialisation cost.
+2. **Checkpoint on commit, never per advance, and throttle it.** A poll-driven checkpoint
+   would rewrite the state every `POLL_MS` (2 s, `mod.rs:46`) per session; commits are line
+   boundaries by construction, so this also satisfies §3 for free. Note the state file is
+   **not** small in the way "the open window is one turn" suggests — `user_times` is
+   O(turns), `agent_ids` is never pruned (`replay.rs:496-502`), `committed_meta.children`
+   is O(sub-agents), and the whole `TaskFold` rides along — so the **throttle is mandatory,
+   not an optimisation**. The first-line anchor is read **once at open and cached**, never
+   per checkpoint.
 
 The TUI's per-block serialize is the only genuinely new steady-state cost in the design. It
 is opt-out, buffered, and amortised against skipping a full parse next time — but it should
@@ -388,8 +402,9 @@ header states that only an O(delta) advance may happen there (`cache/mod.rs:25-2
 Eviction: size cap (default 2 GiB, `CLAUDE_REPLAY_CACHE_MAX`) + 30-day age cap, LRU by
 mtime. **Skip any entry with a `LOCK` present — no liveness probe**, since `pid_alive` is a
 fork/exec (`jdi/state.rs:150-167`) and eviction must not pay it per candidate; a crashed
-holder's lock is reclaimed at the next open of that session, after which the entry becomes
-evictable.
+holder's lock is reclaimed at the next open of that session. **The age cap overrides the
+skip** — a `LOCK` older than the age cap is presumed dead — so an entry whose session is
+never reopened cannot hold its bytes forever.
 
 ## 10. Testing
 
@@ -429,18 +444,32 @@ exists that can use it.
    non-generic `SessionState`, `BvTable<Bv>` and the free `read_session_state`;
    `Replayer::{checkpoint, restore}` (its fields are private to `replay.rs`, so this is a
    prerequisite, not a detail); `SessionAccumulator::{checkpoint, resume}` — returning fold
-   state **+ offset only** (§8); `FollowParser::resume` and `LineReader::open_at_offset`
-   (§5.1 #18); a `committed_meta()` accessor (`session_meta()` is the merged value §5.1 #3
+   state **+ offset only** (§8); `FollowParser::resume`, `LineReader::open_at_offset`
+   (§5.1 #18) and `LineReader::line_boundary() -> u64` (`self.offset - self.pending.len()`,
+   the value §5.1 #5 needs — the field is private and `tell()` is ruled out) with a
+   `FollowParser` passthrough; a `committed_meta()` accessor (`session_meta()` is the merged value §5.1 #3
    forbids). No cache, no frontend, no durable location. **The requirement-5 test lands
    here and gates everything after.** Byte gate unchanged.
-2. **Present: rewrite `hibernate`/`restore` onto the two files**, still temp-scoped — a
-   pure refactor of an existing feature, now that step 1 has given it something to call.
+2. **Present: rewrite `hibernate`/`restore` onto the two files**, still temp-scoped. Not a
+   pure re-plumb: §5.1 #2 persists the **raw** `user_times` while the old hibernated body
+   served the flushed vector, so restore must already route through `Replayer::restore` +
+   `open_snapshot` for `hibernate_then_restore_serves_identical_pulls_without_refold`
+   (`shared.rs:917`) to keep passing.
 3. **Delete `Body::Hibernated`; `restore` yields `Body::Live`** (§2 delta 3). Existing
    hibernate tests are rewritten to assert *continued advance*. Must precede 4, or the
    append-mode store is built against a body that cannot `put`. Also remove the now-dead
    `hibernation_stale()` branch in `serve.rs:277-286`: with no hibernated body it is always
-   `false`, and its "source changed" duty moves to §8's open-time validity gate.
-4. **`RecordStore::open_append`** (§5.1 #6) + the TUI's durable `Arc<Block>` store.
+   `false`. **Narrow, do not delete:** that condition is
+   `hibernation_stale() || poisoned()`, and the poison half is #56's drop-and-refold
+   recovery — keep `if shared.poisoned()` with its `remove_pull` + `open_fresh` body; only
+   the "source changed" duty moves to §8's open-time gate.
+   **`RecordStore::open_append` lands in this step, not step 4.** Once `restore` yields a
+   live body, the store still comes from `S::reopen`, whose `cx: None` makes the first
+   commit panic (`record_store.rs:128-131`) — and `serve.rs:277` is production code, so
+   the tree would be broken between steps 3 and 4, breaking step 5's bisectability promise.
+4. **The TUI's durable `Arc<Block>` store** — `ArcTierBStore` beside `ArcStore` in the
+   engine (`session.rs:94-105`), with its `PersistentStore` impl in present (the trait
+   lives at `shared.rs:561`, as `TierBStore`'s impl does at `:575`).
    **Measure here** (§8.1): the TUI's per-block serialize and the O(committed) resume decode
    are the only new steady-state costs, and both should be numbers before they are defaults.
 5. **Cache API** — `shared_insert_or_get`, `reap_over_budget` returning evictions. No
