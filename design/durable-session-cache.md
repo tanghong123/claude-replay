@@ -48,8 +48,8 @@ No processed line is ever read twice. Consequently:
 - no gap, so no double-application of anything;
 - **no composite frontier and no ordinal** — K+1 is a line boundary by construction, so the
   "one line straddles the commit cut" problem cannot arise;
-- the open turn is not rebuilt by re-reading; it is *restored*, exactly as `hibernate`
-  already restores `provisional: Vec<Block>` inline;
+- the open turn is not rebuilt by re-reading; it is *restored* inline — but note it is the
+  replayer's **raw** window, not hibernate's `provisional` (§5.1 #1);
 - in-flight state (`tool_slot`, `queue`, `suppress`, `last_skill`) is restored rather than
   re-derived, so the pinned-drain cases are just data.
 
@@ -86,42 +86,109 @@ forward. The old worry that its `BV` cannot yield a `Block` never arises.
 
 ## 5. What `session.state` carries (the missing piece)
 
-Everything the fold needs to continue, none of it `BV`-shaped:
+Everything the fold needs to continue, none of it `BV`-shaped. Field choice matters more
+than it looks: hibernate stores *presentation-facing* values, and several of them are the
+wrong side of a transformation. The correct captures are:
 
 | group | fields |
 |---|---|
-| already in `hibernate` | `SessionMeta`, `TaskList`, `user_times`, epoch/gen |
-| **new: replayer working state** | the open turn `out` (inline `Block`s), `base`, `stamped`, `tool_slot`, `queue`, `suppress`, `last_skill`, `prev_ts`, `pending_ts`, `prev_user_text`, `delivered_rendered`, `agent_ids` |
-| **new: accumulator state** | `cwd`, the metrics accumulator's opaque state (§6) |
-| **new: resume point** | the reader position after line K + source identity (§8) |
-| versioning | cache format version **and** a fold-logic version |
+| fold window | **raw `out`** (pre-`finish_turns`), `base`, `durable` (assert empty) |
+| turn stamping | **raw `user_times`**, `stamped`, `pending_ts` — as one triple |
+| in-flight | `tool_slot`, `queue`, `suppress`, `last_skill` |
+| carried | `prev_ts`, `prev_user_text`, `delivered_rendered`, `agent_ids` |
+| accumulator | `cwd`, **`committed_meta`**, the whole `TaskFold`, the metrics accumulator's opaque state (§6) |
+| resume point | line-exact source offset + prefix hash + identity anchor (§5.1 #5) |
+| versioning | cache format version, fold-logic version, and a **build id** (§5.1 #10) |
 
-All are plain `String`/`usize`/`HashMap`/`Vec` of simple types; `QueueItem` is
-`{content: String, marker_idx: Option<usize>, rendered: bool}` — serde-able as-is. Indices
-stay coherent because `out` and `base` are restored together.
+### 5.1 Corrections review found (each with its fix)
 
-The fold-logic version answers the one real coupling concern: this is a private format, so
-if the fold or the `Block` layout changes, bump the version and rebuild from the transcript.
+1. **`out` is not `provisional`.** `out` (`replay.rs:92`) is the raw window; hibernate's
+   `provisional` comes from `open_snapshot()` → `finalize_open()` (`replay.rs:522-538`),
+   which drops suppressed blocks and runs `finish_turns`. Restoring the finalized form into
+   `out` corrupts every stored index — `tool_slot`, `last_skill`, `suppress`,
+   `queue[].marker_idx`, `stamped` are all `base + rel` offsets into the **raw** vector.
+   **Fix:** persist raw `out`; keep `provisional` only as a post-restore cross-check
+   (`finalize_open(out) == stored_provisional`), a free assertion that catches this whole
+   bug class.
+2. **`user_times` must be the raw vector.** `open_snapshot` clones it and *then* runs
+   `stamp_user_turns` (`replay.rs:570-576`); restoring that flushed copy alongside the
+   pre-flush `stamped` makes the next `LineStart` re-stamp the same turns. **Fix:** capture
+   `replayer.user_times()` (raw, `replay.rs:566`) + `stamped` + `pending_ts` together.
+3. **`SessionMeta` must be `committed_meta`.** `session_meta()` folds the open turn on top
+   per call (`builder.rs:272-278`); storing the merged value double-counts on restore. This
+   is the requirement-5 field, so getting it right *is* getting metadata right.
+4. **`TaskFold.pending` is lost** if only `TaskList` is stored (`tasks.rs:103-108`): a
+   `TaskCreate` before the checkpoint whose id arrives after it never becomes a task.
+   **Fix:** derive serde on `TaskFold` and persist the whole fold.
+5. **`LineReader::tell()` is not a line boundary** — it returns all bytes read, including a
+   partial line still in `pending` (`reader.rs:166-173, 194-214`), so resuming there
+   delivers a truncated line. A live-tailing server checkpoints mid-write constantly.
+   **Fix (preferred):** have `SessionAccumulator` compute the offset itself as
+   `offset_K + len(line_K) + 1` and hash the prefix incrementally in `advance_at` — which
+   also gives the cold path (`advance_reader`, `builder.rs:171-191`) an anchor without
+   owning a `LineReader`.
+6. **`RecordStore::reopen` cannot advance** (`cx: None`, and `put` then panics,
+   `record_store.rs:128-131, 178-189`). **Fix:** keep `reopen` as the read-only hibernate
+   path; add `RecordStore::resume(path, fold, cwd, transcript, len)` opening for append.
+   `TierBStore::open` is already append-correct (`tier_b.rs:94-108`).
+7. **Serde prerequisites (compile blockers, all one-liners).** `TimeSpan` has private
+   fields and no derive (`metrics.rs:63-66`) — derive + re-export via `seam`. `QueueItem`
+   has no derive (`replay.rs:629`). **`Agent` cannot be deserialized** — it is
+   `&'static str` (`agent.rs:16`); store the id string and resolve through the registry at
+   restore, never serde the `Agent`.
+8. **The TUI has no content artifact.** `ArcStore` is pure RAM (`session.rs:94-105`), and
+   switching it to `TierBStore` breaks `poll_view`'s `Bv = Arc<Block>` bound
+   (`shared.rs:289`) and the one-copy-shared-by-`Arc` principle. **Fix:** an
+   `ArcTierBStore` — `Bv = Arc<Block>`, `put` write-through (append the same serde-JSON
+   record *and* return the `Arc`), resume decodes the log into `Vec<Arc<Block>>`. Then the
+   TUI's `bv.state` collapses to `{n_committed, content_len}` instead of an O(N) locator
+   table, and serde's `rc` feature (off workspace-wide) is not needed.
+9. **Where and how often to checkpoint.** Inside `SharedSession::advance`/`poll_view`
+   (`shared.rs:243, 287`) **after** `advance_stream()` returns — under the existing lock,
+   the only point where state, artifact and counters cannot tear — plus a clean-exit flush.
+   Gate on `committed_grew` (already computed, `shared.rs:257, 300`) with a time/byte
+   throttle; checkpointing when only the open turn moved buys nothing.
+10. **Crash-safety was backwards in §8.** Content is appended *during* `advance_at`, state
+    is written *after*, so a crash always leaves the artifact **longer** than the state
+    claims. Treating a length mismatch as a rejection would force a full rebuild after
+    every crash. **Fix:** record `content_len` in `session.state` and **truncate the
+    artifact back to it on resume**; write `session.state` via temp-file + `rename` so a
+    torn write degrades to "no checkpoint", never "corrupt checkpoint". Also fold a **build
+    id** into the version, since `reader.rs` hashes with `DefaultHasher`, whose algorithm is
+    not stable across Rust versions (fails safe into a rebuild, but only if versioned).
+11. **`prev_provisional` must not restore empty.** `shared.rs:650` sets it empty because a
+    hibernated body never advanced; once restored sessions *do* advance, the
+    `prefix_intact` check is vacuously true on the first tick and a finalization reshape
+    (#54) skips its `provisional_gen` bump, so a client holding a persisted cursor appends
+    wrongly. **Fix:** set it to `finalize_open(restored_out)` — which is also #1's
+    cross-check value.
+12. **`base` ≠ `committed.len()`.** `base` advances by *raw* blocks (`replay.rs:477, 497`)
+    while the accumulator pushes *finalized* values (`builder.rs:150-158`). `n_committed`
+    validates the BV table and content record count; `base` is fold state only. Do not
+    conflate them in the validity check.
+13. `FollowParser::prev_committed`/`prev_provisional` (`follow.rs:55-56`) need not be
+    persisted — restoring them empty costs one conservative full re-render and fails safe.
 
-## 6. The metrics seam — solved by an existing pattern
+## 6. The metrics seam — an existing pattern
 
 `MetricsAccumulator` is `push`/`finish` only (`adapter.rs:23-34`), and the collapsed
-`Metrics` value cannot restore an accumulator: both agents hold private span endpoints, and
+`Metrics` cannot restore an accumulator: both agents hold private span endpoints, and
 Codex's `model` comes from a `turn_context` line near the session start
 (`codex/metrics.rs:35-39`), so without it a resumed run reports a wrong duration and no
 cost.
 
-**Do not widen `Metrics`.** Mirror the pattern the workspace already uses for stores —
-`PersistentStore::hibernate_state`/`restore_state` (`shared.rs:565-572`), opaque
-`serde_json::Value`:
+**Do not widen `Metrics`.** Mirror `PersistentStore::hibernate_state`/`restore_state`
+(`shared.rs:565-572`) — opaque `serde_json::Value`:
 
 ```rust
 fn checkpoint(&self) -> serde_json::Value { Value::Null }   // defaulted
 fn restore(&mut self, _v: serde_json::Value) {}
 ```
 
-Agent-neutral at the seam, agent-specific in each impl. One defaulted method pair, no
-change to `Metrics`, no change to the neutral vocabulary.
+Verified round-trippable for both agents once `TimeSpan` derives serde (§5.1 #7);
+everything else in both accumulators is `u64`/`String`/`BTreeMap`. Note QoderWork shares
+Claude's accumulator (`adapters.rs:162`), so the blob is keyed by presentation **and agent
+id** — which §4's directory naming already provides.
 
 ## 7. Locking — one lock per `<presentation, session>`
 
