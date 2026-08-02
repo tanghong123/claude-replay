@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v15 — rewritten around the record-stream model. Under review against §1.**
+> **Status: v16 — requirements review applied. Re-review pending.**
 > Two earlier shapes were reviewed and rejected; they are kept condensed in Appendix A so
 > they are not re-proposed. Read §1 → §11 in order; the appendix is history.
 
@@ -26,9 +26,11 @@
 ## 2. This mechanism already exists; we are extending it
 
 The HTML frontend already emits exactly the stream this design needs: block records plus a
-`{t:"meta", …}` record built by `assemble_meta` from the maintained `SessionMeta`,
-`Metrics` and `TaskList` (`html_export/mod.rs:1281`). `--dump-all-html` already writes it
-to disk as line 1 of each stream file. There is even an existing oracle test,
+`{t:"meta", …}` record: the served `/pull` path builds it with `assemble_meta` from the
+maintained `SessionMeta`, `Metrics` and `TaskList` (`html_export/mod.rs:1281`), and
+`--dump-all-html` writes the same wire shape to disk as line 1 of each stream file from the
+block-scan assembler `agent_meta` (`bundle.rs:132-159`). Two assemblers, one record shape —
+which is what the existing oracle test pins. There is even an existing oracle test,
 `assemble_meta_equals_agent_meta_oracle` (`mod.rs:1511`), asserting that meta assembled
 from maintained state equals meta derived by folding blocks.
 
@@ -56,40 +58,88 @@ content   # TUI: JSON-encoded Block per committed block   (Bv = Arc<Block>, writ
 meta      # delta records, each stamped {committed_id, transcript_offset}
 ```
 
-**Commit is the unit.** A block commits when a later turn begins (the fold cuts at the
-last user-turn boundary), so a commit is always a line boundary, and the fold only commits
-when the queue is empty. Every meta record is emitted at a commit.
+**Commit is the unit.** A block commits when a later turn begins; the fold only commits
+when the queue is empty. A checkpoint is taken at a commit — but **not every commit is a
+valid resume point**: one line can produce both a committed block and the block that opens
+the still-open turn (Appendix A1's probe: `committed_len` 0 → 2 on one line). So:
 
-**The offset points at the first message *after* the last committed block** — i.e. at the
-line that opens the still-open turn.
+> **Checkpoint guard.** Take a checkpoint only when the line that produced `out[0]` produced
+> **no** committed block. Otherwise skip it; the next commit checkpoints instead. This is
+> what `line_boundary()` is for. Commits are frequent, so nothing is lost.
 
-**Alignment is by construction, not by cross-validation.** On load, take
-`n = min(last committed id in content, last committed id in meta)`, use that meta record's
-offset, and ignore anything past `n` in either stream. A crash that leaves either stream
-ahead is not a special case — it is a smaller `n`. This is why there is no flush ordering,
-no length cross-check and no truncate-back rule.
+**Two offsets, not one** (§4 explains why):
+
+- `replay_from` — the line that produced `out[0]`, i.e. where the open turn begins;
+- `resume_at` — just past the commit line.
+
+**Alignment.** On load, `n` = the largest meta-stamped `committed_id` **≤ the content
+stream's record count** (meta records are sparse — one per checkpoint — so a plain
+`min` can name an id no record carries). Then **physically truncate both streams**
+(`set_len`) to the boundary just past record `n` before appending anything, and discard a
+trailing record that is unterminated or unparsable.
+
+Truncation is not optional. HTML serves committed bytes as one contiguous range from a
+locator to EOF (`serve.rs:325-329`), so abandoned records left in place would be range-read
+as garbage; and a sequential meta replay would apply abandoned deltas *before* the new ones
+that were computed relative to state at `n`, double-applying every increment.
 
 ## 4. What the meta record carries
 
 **Only state that spans turns.** Everything scoped to the open turn is rebuilt by
 re-reading it from the offset, which costs one turn:
 
-| rebuilt by re-reading the open turn | persisted in the meta stream |
+| rebuilt by re-reading | persisted in the meta stream |
 |---|---|
-| `out`, `base` — the open window | `agent_ids` — never pruned; a completion can resolve a spawn many turns back |
+| `out`, `base` — the open window | `agent_ids` — never pruned; a completion resolves a spawn many turns back |
 | `tool_slot`, `suppress`, `last_skill` — pruned to the open window at the drain | `user_times` + `stamped` |
-| `queue` — provably empty at a commit | `cwd` — first-non-empty-wins, set at line 1 for Codex |
-| | `committed_meta` — turns, tools, children |
-| | the task fold **including `pending`** — a create whose id arrives later |
-| | the metrics accumulator's opaque state (§5) |
+| `queue` — provably empty at a commit | `cwd`; `prev_ts`; `committed_meta`; the task fold **including `pending`**; the metrics blob (§5); **`epoch` and `provisional_gen`** |
 
-That partition is the whole correctness argument, and it is checkable rather than a
-judgement call: *does the drain prune it, or is it provably empty at a commit?* If yes it
-is rebuilt; if no it is streamed.
+### 4.1 The third class — state that is persisted AND re-advanced
+
+A two-outcome rule ("pruned ⇒ rebuild, spans turns ⇒ persist") is **not sufficient**, and
+missing this is what sank the shape in Appendix A2. `advance_at` folds metrics, the task
+op-log and `user_times` for **every** line (`builder.rs:116-164`) — including every line in
+the re-read span. So state that is persisted *and* re-advanced by the replay is
+double-applied: with the `last_skill` pin the open window can span several turns of
+assistant lines carrying `usage`, and Claude's accumulator **sums** them
+(`agents/claude/metrics.rs:41-45`).
+
+**The rule, corrected.** Replay `[replay_from, resume_at)` with the cumulative folds
+**suppressed** — `metrics.push`, the `TaskOp` fold and `on_tool_result` — then fold
+normally from `resume_at`. Two things are deliberately *not* suppressed because they are
+idempotent: `cwd` is first-non-empty-wins in both agents, and `agent_ids` is an upsert
+(`replay.rs:127-137`).
+
+`user_times` is restored **truncated to `committed_meta.turns`** with
+`stamped = committed_len`, and the replay re-stamps. Restoring the raw `stamped` instead
+panics: with `out` empty, `window_stamped()` exceeds `out.len()` and `stamp_user_turns`
+slices out of range — the #56 class. (No `UserText`/`Command` is ever suppressed —
+`suppress` only holds `QueueEvent` markers — so `committed_meta.turns` is exactly the
+committed user-turn count.)
+
+`prev_ts` is persisted because it is neither pruned nor empty at a commit: without it a
+`Thinking` on the first re-read line renders `duration_secs: None` where a cold fold gives
+`Some`.
+
+`epoch`/`provisional_gen` are persisted so a browser holding a cursor across a restart
+resyncs. Without them a resumed session starts at `(1, 0)`; a cursor at `committed_id 500`
+against `n_committed = 480` yields no payload and no resync, and `PullClient` silently
+keeps 20 blocks the server no longer has. **On a truncate-back, bump `epoch`** so every
+outstanding cursor resyncs rather than stalling.
+
+**Tracking `replay_from` costs nothing per line:** push `(base + out.len(), line_offset)`
+onto a small deque per line and prune below `base` at each drain — O(1), keeping §8 honest.
 
 **Requirement 7 — every record carries only what changed.** Scalars appear only when they
-change; collections carry added/updated entries (upsert, since `AgentDone` mutates an
-existing child); the metrics blob carries changed counters. No absolute re-statement.
+change. Collections need **ordinal**, not id-keyed, deltas: `SessionMeta.children` keeps
+duplicate ids deliberately (`session.rs:297-303` — "a map lookup would collapse
+duplicates") and `TaskFold.pending` pushes without dedup and removes the first positional
+match (`tasks.rs:120-131, 185-207`), so an id-keyed upsert is lossy. Use
+`{child_add: {...}}` / `{child_done: [i, ...]}` and the same shape for `pending`.
+`agent_ids` is an idempotent upsert and `user_times` is append-only, so both are simple.
+The metrics blob is the one **stated exemption**: §5's seam returns an opaque snapshot, and
+it is O(1) — five counters, a model string and two span endpoints — so it is written whole,
+or shallow-key-diffed by the writer if that proves worthwhile.
 
 *Accepted consequence:* a load replays the stream from the start — O(records), far below
 O(lines). If that ever dominates, the fix is a periodic absolute record **within the same
@@ -124,14 +174,29 @@ hand-roll with `json!`.
 
 The cache absorbs state-keeping; frontends stay thin. Concretely:
 
-- **No per-block sidecar.** The `BV` table and the render continuation belong to the
-  store, reached through the existing `hibernate_state`/`restore_state` hook — HTML's
-  `EmitState` (block anchors, turn numbers, the sidebar index) rides that hook, not
-  frontend code.
-- **No lock or path handling in the frontend.** It hands the cache a session id and gets a
-  ready `SharedSession`. The only frontend-supplied callback is the port probe (§7), and
-  only because a frontend is the only thing that knows its own port.
-- **No checkpoint scheduling.** The cache decides when to write (§8).
+- **No per-block sidecar.** The `BV` table and the render continuation belong to the store,
+  reached through the existing `hibernate_state`/`restore_state` hook — not frontend code.
+  **`EmitState` is split**, because writing it whole would violate §1.7: its growing part
+  (`turns`, the sidebar index — one entry per user turn) rides the **meta stream** as a
+  per-turn delta, which is exactly the record cadence; its O(1) part (`next_block`, `turn`,
+  `seen_turns`) stays in the store blob and is written at each checkpoint. Persisting the
+  whole struct per commit is O(turns) bytes per commit; persisting it only at eviction means
+  a crash restores `EmitState::default()` and the next `put` renders restarted anchors and
+  turn numbers into a file clients range-read — corrupt output, not a no-op.
+- **One admission call, not a lock protocol.** The frontend calls the cache and gets back
+  `Admission { session, cached, holder: Option<Holder{pid, dir, port}> }`. Lock
+  acquisition, the port probe, validity checking and the uncached fallback all happen
+  **inside** the cache. The frontend's entire lock-related code is then the *message*: the
+  TUI's refusal text, or HTML's redirect to `holder`'s `…?session=S`. That is irreducible —
+  the cache cannot print a TUI message or issue an HTTP redirect — and `cached` is what a
+  multi-root run uses per session, so no frontend bookkeeping is needed.
+- **The frontend still supplies a store factory.** It must: only HTML knows its
+  `FoldPolicy`/cwd/flavor and only the TUI knows it wants `Arc<Block>`. That is one closure,
+  as today (`serve.rs:254-271`), not per-block state.
+- **Checkpoint scheduling is the cache's**, with one exception the frontend cannot delegate:
+  the TUI skips destructors via `process::exit(0)` (`app.rs:57, 93`) and replaces its cache
+  on `Outcome::Switch` (`app.rs:373-376`), so it calls an explicit checkpoint + release at
+  those three points (§11 step 8).
 - **The `aux` slot stays view state.** The TUI's `ViewSidecar` is derived and
   width-dependent; it must never enter the meta stream.
 
@@ -139,8 +204,20 @@ Acceptance is the LOC measure in §1.7, taken per frontend before and after.
 
 ## 7. Locking
 
-One lock per `<presentation, session>` — the artifact directory. Reclaim is
-liveness-based; a server holder is additionally port-probed, since pids are recycled, via
+One lock per `<presentation, session>` — the artifact directory. **The session key is
+`discover::session_id(path)` falling back to the file stem**; naming it matters because both
+frontends currently use the bare stem (`html_export/mod.rs:1016-1021`, `app.rs:459-461`)
+while the engine has a content-derived id (`engine/discover.rs:113-130`), and a durable
+cross-project directory keyed on a stem can collide — the visible symptom would be a TUI
+refusing to open while naming an unrelated pid. §9's first-line anchor is the backstop that
+degrades a collision to a rebuild.
+
+**The lock is held for the winning frontend's whole process lifetime**, independent of
+residency: `pull_response` reaps and hibernates per request (`serve.rs:245-247`), so a
+session can be evicted while its page is still open. Eviction drops residency only; the
+lock is released at exit (§11 step 8). §9's GC rule depends on this.
+
+Reclaim is liveness-based; a server holder is additionally port-probed, since pids are recycled, via
 a callback injected by the frontend (only it knows its port, and a callback keeps the lock
 testable).
 
@@ -172,7 +249,7 @@ fork/exec cost means eviction must not probe per candidate.
 |---|---|
 | **per line** | the byte offset only — `advance_at` already receives it. No hashing, no allocation, no I/O. **Zero.** |
 | **per committed block** | HTML: none, it already appends a record. TUI: one `serde_json` serialize + buffered append. |
-| **per commit** | one delta record — sized to the change (§1.7) |
+| **per commit** | one delta record — sized to the change (§1.7) — plus one bounded 64 KiB `pread`+hash for the validity window, and the O(1) part of the store blob (§6) |
 | **per open** | `stat` + first line + 64 KiB window + replay the deltas + decode/scan the content stream — O(records + committed), far below parse+fold |
 | **cache off / `--no-cache`** | exactly today's path. **Zero.** |
 
@@ -189,9 +266,9 @@ The TUI's per-block serialize is the only genuinely new steady-state cost. **Mea
 Reuse iff **all** hold, else rebuild: source length ≥ the offset; the **first-line anchor**
 matches; a hash of the **64 KiB immediately before the offset** matches; format version,
 **fold-logic version** and build id match; and, for HTML only, the **flavor** — the render
-fingerprint (`FoldPolicy` + render cwd + record schema) distinguishing the served,
-`--dump-html` and `--dump-all-html` renderings, which `record_store.rs:136-137` hardcodes
-apart.
+fingerprint (`FoldPolicy` + render cwd + record schema). Only the **served** rendering is
+cached: the offline dump writers stay off the durable cache (§10), so the flavor space is
+one, not three, and `BYTE-IDENTICAL: PASS` never depends on machine state.
 
 Deliberately **not** a whole-prefix hash: `poll_resume` re-reads and hashes `[0, offset)`,
 which on a 40 MB transcript is a full re-read at every open. A trailing window plus the
@@ -206,13 +283,24 @@ parameterised.
 ## 10. Testing
 
 - **Equivalence:** cached vs cold, byte-identical, per presentation and flavor. The byte
-  gate cannot see this (`gate.sh:32-33` drives only `--dump`/`--dump-html`, which never
-  construct a `SessionCache`) — new harness.
+  gate cannot see this today — `gate.sh:32-33` plus `verify.sh:26-30` drive `--dump`,
+  `--dump --full`, `--dump-html` and `--dump-all-html`, none of which construct a
+  `SessionCache` — so this needs a new harness. **And it must stay unable to see it:** §9
+  gives the dump flavors cache entries, which would make `BYTE-IDENTICAL: PASS` depend on
+  machine state. **Decision: the offline dump writers stay off the durable cache**, and
+  their flavors are dropped from §9; only the served path caches. (Alternative, if they are
+  ever wired: pass `--no-cache` in all five gate invocations and say so in
+  `scripts/gate/README.md`.)
 - **Re-invocation:** a second run of the same presentation parses **zero** lines below the
   resume point (assert a parse count). Assert metadata restored from the stream equals a
   cold fold's — the requirement-5 check, run for both presentations against one reader.
-- **Alignment:** truncate either stream independently; load takes the min and resumes
-  correctly. Kill mid-write; recovery is a smaller `n`, never a rebuild.
+- **Alignment:** truncate either stream independently; load picks the largest
+  meta-stamped id ≤ the content count, truncates both, and resumes correctly. Kill
+  mid-write; recovery is a smaller `n`, never a rebuild. **A held browser cursor across a
+  truncate-back resyncs, never stalls** (the `epoch` bump, §4).
+- **Double-apply:** the pinned-drain fixture must show identical token totals, task state
+  and turn timestamps cached vs cold — this is the §4.1 suppression check, and it is the
+  test that fails if the third class is ever forgotten again.
 - **Rejection:** rewritten prefix, changed fold/format version, changed flavor ⇒ full
   rebuild, never a partial serve.
 - **Lock:** two writers; dead-pid reclaim; live-pid respected; live pid + dead port; the
@@ -229,7 +317,9 @@ parameterised.
    `SessionAccumulator::{checkpoint, resume}` returning fold state **+ offset only**;
    a `committed_meta()` accessor (`session_meta()` is the merged value);
    `LineReader::open_at_offset` (**not** `open_at`, which routes into `poll_resume` and
-   re-reads the whole prefix) and `line_boundary()`; `MetricsAccumulator::{checkpoint,
+   re-reads the whole prefix) and `line_boundary()` (§3's checkpoint guard);
+   **`FollowParser::resume`** (does not exist yet) and **`TaskFold::{checkpoint, restore}`**
+   (`pending` is private to `engine::tasks`, so even a sibling module cannot read it); `MetricsAccumulator::{checkpoint,
    restore}` + the `TimeSpan` derive. **The requirement-5 test lands here and gates the
    rest.** Byte gate unchanged.
 2. **Present: the stream writer/reader**, replacing `hibernate`/`restore`, still
@@ -242,7 +332,12 @@ parameterised.
    `serve.rs:277` is production code, so deferring it breaks the tree. Narrow the
    `hibernation_stale() || poisoned()` branch to `poisoned()`, keeping #56's recovery.
 4. **The TUI's durable `Arc<Block>` store** — `Bv = Arc<Block>` with a write-through
-   `put`, so `poll_view`'s one-copy-shared-by-`Arc` property survives. **Measure here** (§8).
+   `put`, so `poll_view`'s one-copy-shared-by-`Arc` property survives. This also requires
+   **generalising `poll_view`**: it is implemented on the concrete
+   `SessionCache<ArcStore, A>` and hardcodes `SharedSession::with_store(…, ArcStore)`
+   (`cache/mod.rs:225-233`), so a durable store cannot reach the TUI until that becomes
+   `impl<S: BlockStore<Bv = Arc<Block>>, A>` with the store factory step 5 introduces.
+   **Measure here** (§8).
 5. **Cache API:** `shared_insert_or_get` (two-phase admission — `shared_session` runs its
    factory under the cache-wide mutex, whose contract is an O(delta) advance only);
    `reap_over_budget` returning its evictions so they can be checkpointed. `--no-cache`
