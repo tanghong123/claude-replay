@@ -9,8 +9,10 @@
 
 1. **Agent-neutral** implementation — lives in `claude-replay-present`.
 2. **Supports both frontends**, TUI and HTML.
-3. **The transcript is parsed exactly once**, ever — across invocations *and* across
-   frontends.
+3. **The transcript is parsed exactly once per presentation**, amortised across
+   invocations. Locking is at `<presentation, session>`, so duplicating the parse and the
+   metadata store *per presentation* is fine — two concurrent frontends are two
+   invocations.
 4. **Preserves every existing `SessionCache` benefit** — keyed residency, TTL reaping,
    delta reads, tier-b spill, `Arc` sharing, the pull protocol.
 5. **Metadata construction must not depend on the choice of `BV`.**
@@ -56,26 +58,31 @@ the open turn lives only in the small state file, rewritten per checkpoint.
 
 ## 4. Layout — and the BV boundary (requirement 5)
 
+Everything is per `<presentation, session>`; nothing is shared between presentations.
+
 ```
-$CLAUDE_REPLAY_CACHE/<agent>-<session-id>/
-    blocks              # committed Blocks, append-only, agent-neutral CONTENT  (shared)
-    session.state       # agent-neutral fold state — CONTAINS NO BV             (shared)
-    html/records        # HTML's rendered projection, derived from `blocks`
-    html/state          # committed Vec<RecordLocator> + EmitState continuation
-    tui/state           # committed Vec<Bv> (+ any TUI continuation)
-    LOCK.<frontend>
+$CLAUDE_REPLAY_CACHE/<presentation>/<agent>-<session-id>/
+    session.state       # agent-neutral fold state — CONTAINS NO BV   ← metadata from here
+    content             # this presentation's artifact: Block log (TUI) / records (HTML)
+    bv.state            # committed Vec<Bv> + the store's render continuation
+    LOCK                # owner pid (+ port for a server)
 ```
 
-**`session.state` contains no `BV` of any kind**, which is exactly requirement 5: metadata
-is reconstructed from it alone, so it is identical no matter which frontend wrote it and no
-matter what that frontend chose for `BV`. The `BV` table is per-frontend and lives beside
-that frontend's own artifact.
+**`session.state` contains no `BV` of any kind** — requirement 5. Metadata is reconstructed
+from it alone, so its schema and its reconstruction code are identical for every
+presentation regardless of what that presentation chose for `BV`; the `BV` table is a
+separate, presentation-owned file. One implementation of metadata restore, in `present`,
+forever.
 
-**Requirement 3 (parse once) follows from `blocks` + `session.state` being shared.** The
-transcript → `Block` conversion happens once, ever. HTML no longer re-parses to obtain
-blocks: it reads them from `blocks` and renders its records from there. That also disposes
-of the old worry that HTML's `BV` cannot yield a `Block` — it never needs to, because the
-canonical blocks are in a shared file.
+**Requirement 3** is then per-presentation: the second and every later invocation of the
+*same* presentation parses nothing below the checkpoint. Two presentations each keep their
+own copy — accepted, and the eventual fix is not shared storage but a single process that
+is both TUI app and HTML server, at which point the duplication disappears without
+any cross-process sharing protocol ever having been built.
+
+Consequently HTML never needs to read `Block`s from disk: it restores fold state from
+`session.state`, serves committed content from its own rendered records, and continues
+forward. The old worry that its `BV` cannot yield a `Block` never arises.
 
 ## 5. What `session.state` carries (the missing piece)
 
@@ -116,25 +123,22 @@ fn restore(&mut self, _v: serde_json::Value) {}
 Agent-neutral at the seam, agent-specific in each impl. One defaulted method pair, no
 change to `Metrics`, no change to the neutral vocabulary.
 
-## 7. Locking — one writer, never a blocked reader
+## 7. Locking — one lock per `<presentation, session>`
 
-One lock per artifact set. `blocks` + `session.state` are shared, so they get one writer;
-each frontend's own directory gets its own.
+One lock, keyed by the artifact directory of §4. Reclaim is liveness-based (dead pid ⇒ take
+it; a server holder is additionally port-probed, since pids are recycled, via a callback
+injected by the frontend so `present` grows no `std::net` dependency).
 
-- **Lock free / holder dead** (liveness-based reclaim, port-probed for a server holder via a
-  frontend-injected callback so `present` grows no `std::net` dep): take it, read + write.
-- **Held, TUI:** quit, naming pid, dir and `tmux attach` — refusing surfaces the silent
-  duplicate fold-and-hold in RAM that happens today, and `tmux attach` is the real sharing
+- **Free, or holder dead:** take it; read + write.
+- **Held, TUI:** quit, naming pid, dir and `tmux attach`. Refusing surfaces the duplicate
+  fold-and-hold in RAM that happens silently today, and `tmux attach` is the real sharing
   primitive.
 - **Held, HTML at pick time:** open the holder's `…?session=S`.
-- **Held, HTML child discovered mid-run:** serve it **uncached** — correct output, no
-  writes. The lock governs *writing*, never *viewing*; this is what fits the multi-root
-  server, which discovers children lazily and cannot know its lock set at startup.
+- **Held, HTML child discovered mid-run:** serve it **uncached** — correct output, no cache
+  writes. The lock governs *writing*, never *viewing*, which is what fits the multi-root
+  server: it discovers children lazily and cannot know its lock set at startup.
 
-A non-holder may always **read** the shared artifacts (append-only + a durable
-`valid_up_to`), so requirement 3 still holds when two frontends run at once.
-
-`--no-cache` is a hidden flag (`hide = true`, precedent `jdi/mod.rs:164,167`): insurance
+`--no-cache` is a hidden flag (`hide = true`, precedent `jdi/mod.rs:164,167`) — insurance
 for the cache path itself, not a way to force a second TUI. Where there is no real liveness
 check (`pid_alive` returns `false` on non-unix, `jdi/state.rs:150-167`) the cache is
 disabled rather than assuming staleness, which would fail *into* concurrent writers.
@@ -152,8 +156,9 @@ versions** match. For HTML's records additionally: the record *flavor*
 `mod.rs:396`, and cannot be recomputed downstream because `BlockKind::html` is
 non-injective against `fold_key`, `model.rs:375-415`).
 
-Note the `blocks` + `session.state` pair is **flavor- and policy-independent** — only the
-rendered projection is parameterised. So a `--full` run still reuses the parse.
+Note `session.state` is **flavor- and policy-independent** — only the rendered projection
+is parameterised. So within the HTML presentation a `--full` run still reuses the parse,
+re-rendering only its records.
 
 ## 9. Preserving `SessionCache` (requirement 4)
 
@@ -172,8 +177,10 @@ candidate.
 - **Equivalence:** cached vs cold, byte-identical, per frontend and flavor. The byte gate
   cannot see this (`gate.sh:32-33` drives only `--dump`/`--dump-html`, which never construct
   a `SessionCache`), so this is a new harness.
-- **Cross-frontend:** a TUI run populates `blocks` + `session.state`; a subsequent HTML run
-  parses **zero** transcript lines below the checkpoint (assert parse count).
+- **Re-invocation:** a second run of the *same* presentation parses **zero** transcript
+  lines below the checkpoint (assert parse count). Also assert metadata restored from
+  `session.state` equals a cold fold's — the check that pins requirement 5, since the same
+  assertion must pass for both presentations against the same schema.
 - **Rejection:** rewritten prefix, changed fold/format version, torn artifact, changed
   flavor or fold policy (records only) ⇒ full rebuild, never a partial serve.
 - **Lock:** two writers; dead-pid reclaim; live-pid respected; live pid + dead port; TUI
