@@ -12,7 +12,7 @@ pub(crate) type TuiCache = claude_replay_present::SessionCache<
 >;
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
-use crate::{discover, Agent, Args};
+use crate::{discover, discover::Candidate, Agent, Args};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -97,6 +97,124 @@ pub fn run_interactive(args: &Args) -> Result<()> {
 /// cwd-scoped selection the no-arg viewer flow uses, but for `--html` (which then
 /// opens the browser instead of the TUI). One candidate auto-selects; none errors;
 /// `Esc` returns `Ok(None)`. Needs a TTY (like `-f`).
+/// Stay on the session picker and hand each pick to `on_pick`, instead of returning the
+/// first one. Backs `-f --html` with several matches: every discovered session is already
+/// being served, so picking one (`Enter`, or a mouse click on its row) opens that session's
+/// browser tab and the picker **stays up** for the next one — the way back the one-shot
+/// [`pick_session`] never had. `Esc`/`Ctrl-C`/`q` quits.
+///
+/// `status` is shown in the header (the server URL); picks are marked `●` in the list.
+/// Returns once the user quits; the caller owns process teardown.
+pub fn pick_session_loop(
+    cands: Vec<Candidate>,
+    status: &str,
+    on_pick: &mut dyn FnMut(&Path),
+) -> Result<()> {
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut term = Terminal::new(CrosstermBackend::new(out))?;
+    let mut picker = Picker::new(cands);
+    picker.set_status(status.to_string());
+    let res = pick_multi_loop(&mut term, &mut picker, on_pick);
+
+    disable_raw_mode().ok();
+    execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
+    term.show_cursor().ok();
+    res
+}
+
+/// The `pick_session_loop` event loop: like [`pick_loop`], but a confirm fires `on_pick`
+/// and continues rather than returning. Split out so it is drivable under `TestBackend`.
+fn pick_multi_loop<B: ratatui::backend::Backend>(
+    term: &mut Terminal<B>,
+    picker: &mut Picker,
+    on_pick: &mut dyn FnMut(&Path),
+) -> Result<()> {
+    loop {
+        term.draw(|f| picker.draw(f))?;
+        match pick_action(&event::read()?, picker) {
+            PickAction::Quit => return Ok(()),
+            PickAction::Confirm => {
+                if let Some(path) = picker.selected_path() {
+                    on_pick(&path);
+                    picker.mark_selected_opened();
+                }
+            }
+            PickAction::None => {}
+        }
+    }
+}
+
+/// What one event means to the multi-open picker. Pure (all terminal state lives in
+/// `picker`), so the loop's behavior is testable without a TTY.
+#[derive(Debug, PartialEq, Eq)]
+enum PickAction {
+    None,
+    /// Open the current selection — and STAY on the picker.
+    Confirm,
+    Quit,
+}
+
+/// Apply one event to `picker` and say what the loop should do. `Enter` and a left-click
+/// on a row are the same thing: select + confirm.
+fn pick_action(ev: &Event, picker: &mut Picker) -> PickAction {
+    match ev {
+        Event::Key(k) => {
+            if k.kind == KeyEventKind::Release {
+                return PickAction::None;
+            }
+            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+            match k.code {
+                KeyCode::Esc => PickAction::Quit,
+                KeyCode::Char('c') if ctrl => PickAction::Quit,
+                KeyCode::Enter => PickAction::Confirm,
+                KeyCode::Up => {
+                    picker.up();
+                    PickAction::None
+                }
+                KeyCode::Down => {
+                    picker.down();
+                    PickAction::None
+                }
+                KeyCode::Backspace => {
+                    picker.backspace();
+                    PickAction::None
+                }
+                KeyCode::Char(c) => {
+                    picker.push_char(c);
+                    PickAction::None
+                }
+                _ => PickAction::None,
+            }
+        }
+        Event::Mouse(m) => match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if picker.click(m.row) {
+                    PickAction::Confirm
+                } else {
+                    PickAction::None
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                picker.up();
+                PickAction::None
+            }
+            MouseEventKind::ScrollDown => {
+                picker.down();
+                PickAction::None
+            }
+            _ => PickAction::None,
+        },
+        _ => PickAction::None,
+    }
+}
+
 pub fn pick_session(args: &Args) -> Result<Option<PathBuf>> {
     let mut cands = discover::candidates_all(args.agent);
     if cands.is_empty() {
@@ -938,6 +1056,77 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    /// The `-f --html` multi-open contract: a pick OPENS and the picker STAYS — only an
+    /// explicit quit ends the loop. Drives the loop's real decision function with synthetic
+    /// events (no TTY), so "Enter and a click do the same thing, and neither exits" is
+    /// pinned rather than assumed.
+    #[test]
+    fn multi_open_picker_confirms_without_quitting() {
+        use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+        let cands: Vec<Candidate> = ["alpha", "bravo"]
+            .iter()
+            .map(|n| Candidate {
+                path: std::path::PathBuf::from(format!("/tmp/{n}.jsonl")),
+                mtime: std::time::SystemTime::now(),
+                project: n.to_string(),
+                snippet: "session".into(),
+                cwd_affinity: false,
+                agent: Agent::CLAUDE,
+            })
+            .collect();
+        let mut picker = Picker::new(cands);
+        // Lay the list out once so click geometry is real.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
+        term.draw(|f| picker.draw(f)).unwrap();
+
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let click = |row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        // Enter confirms the first entry — and is NOT a quit.
+        assert_eq!(
+            pick_action(&key(KeyCode::Enter), &mut picker),
+            PickAction::Confirm
+        );
+        assert_eq!(
+            picker.selected_path().unwrap().file_name().unwrap(),
+            "alpha.jsonl"
+        );
+
+        // A click on the second row confirms it too — same effect as Enter.
+        assert_eq!(pick_action(&click(2), &mut picker), PickAction::Confirm);
+        assert_eq!(
+            picker.selected_path().unwrap().file_name().unwrap(),
+            "bravo.jsonl"
+        );
+
+        // A click on the header is not a pick; navigation keys are not picks.
+        assert_eq!(pick_action(&click(0), &mut picker), PickAction::None);
+        assert_eq!(
+            pick_action(&key(KeyCode::Up), &mut picker),
+            PickAction::None
+        );
+
+        // Only Esc / Ctrl-C end the loop.
+        assert_eq!(
+            pick_action(&key(KeyCode::Esc), &mut picker),
+            PickAction::Quit
+        );
+        assert_eq!(
+            pick_action(
+                &Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                &mut picker
+            ),
+            PickAction::Quit
+        );
+    }
 
     /// The sub-agent LRU policy (#36): [`enforce_cap`] keeps at most `MAX_RESIDENT_SUBAGENTS`
     /// loaded sub-agent frames, evicting the least-recently-viewed first, while pinning the root

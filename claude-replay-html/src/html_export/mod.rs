@@ -33,7 +33,7 @@ mod bundle;
 mod record_store;
 mod serve;
 pub use bundle::{dump_all_html, dump_html};
-pub use serve::serve;
+pub use serve::{serve, start_server, LiveServer};
 
 const CSS: &str = include_str!("../html/export.css");
 const JS: &str = include_str!("../html/export.js");

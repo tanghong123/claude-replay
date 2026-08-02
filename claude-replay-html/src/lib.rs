@@ -7,7 +7,7 @@
 
 pub mod html_export;
 
-pub use html_export::{dump_all_html, dump_html, serve};
+pub use html_export::{dump_all_html, dump_html, serve, start_server, LiveServer};
 
 // Aliases so the moved module keeps referring to `crate::model`, `crate::cache`, …
 // unchanged.

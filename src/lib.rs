@@ -29,15 +29,39 @@ pub fn run_viewer() -> Result<()> {
     // directly (cwd-scoped for `--latest`); otherwise show the picker (like a bare
     // `-f`), so `-f --html` prompts when this dir has several sessions.
     if args.html {
-        let path = if args.target.is_some() || args.latest {
-            discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?
-        } else {
-            match tui::app::pick_session(&args)? {
-                Some(p) => p,
-                None => return Ok(()), // user aborted the picker
+        if args.target.is_some() || args.latest {
+            let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
+            return html_export::serve(&args, &path);
+        }
+        // No explicit target: the picker chooses. With SEVERAL matches, serve them ALL at
+        // once and stay on the picker — each pick opens that session's browser tab while
+        // the list remains, so there is a way back (the TUI has always had one). A single
+        // match keeps the original direct-serve path untouched.
+        let cands = discover::candidates_all(args.agent);
+        if cands.is_empty() {
+            anyhow::bail!("no transcripts found for any agent in this directory");
+        }
+        if cands.len() == 1 {
+            return html_export::serve(&args, &cands[0].path);
+        }
+        let paths: Vec<std::path::PathBuf> = cands.iter().map(|c| c.path.clone()).collect();
+        let server = html_export::start_server(&args, &paths)?;
+        let by_path: std::collections::HashMap<_, _> = paths
+            .iter()
+            .cloned()
+            .zip(server.root_ids.iter().cloned())
+            .collect();
+        let status = format!(
+            "serving {} sessions at 127.0.0.1:{} — Enter/click opens a tab, Esc quits",
+            server.root_ids.len(),
+            server.port
+        );
+        tui::app::pick_session_loop(cands, &status, &mut |path| {
+            if let Some(sid) = by_path.get(path) {
+                server.open(sid);
             }
-        };
-        return html_export::serve(&args, &path);
+        })?;
+        return Ok(());
     }
     // No id/path/--latest and not dumping → interactive picker ↔ viewer flow. The
     // picker merges sessions from every agent (filtered by --agent) for this dir.

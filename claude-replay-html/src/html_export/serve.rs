@@ -29,12 +29,22 @@ const TAIL_TTL_MS: u128 = 30_000;
 /// per-agent titles, parent pointers, and cached open-turn renders — layered over it.
 struct Live {
     dir: std::path::PathBuf,
-    agent: Agent,
     fold: FoldPolicy,
-    root_path: std::path::PathBuf,
-    cwd: String,
+    /// Every ROOT this server hosts. Usually one (`--html <session>`); the `-f --html`
+    /// picker registers every discovered session so they are all live at once, each
+    /// reachable at `?session=<id>` on this one server. Roots may span agents AND
+    /// working directories, so agent/cwd are per-session, never server-wide.
+    roots: Vec<Root>,
     /// The session domain: id→source registry + resident followers + TTL reaping.
     cache: SessionCache<RecordStore, ServeAux>,
+}
+
+/// One root session this server hosts (its own agent, transcript, and cwd).
+struct Root {
+    id: String,
+    agent: Agent,
+    path: std::path::PathBuf,
+    cwd: String,
 }
 
 /// The live server's per-session presentation sidecar, held in the cache's aux slot (#76 —
@@ -46,6 +56,10 @@ struct Live {
 struct ServeAux {
     title: Option<TitleInfo>,
     parent: Option<String>,
+    /// This session's working directory — recorded once at registration (roots) or
+    /// inherited from the parent (children, which run in the parent's cwd), so a pull
+    /// never re-reads a transcript head just to render paths relative to it.
+    cwd: Option<String>,
     /// Rendered open-turn records, keyed by `(epoch, gen, len)` (#85): within a gen the
     /// finalized provisional is append-only and the committed prefix frozen, so an equal
     /// key ⇒ identical records — concurrent clients (or fast re-pulls) reuse the render
@@ -77,6 +91,30 @@ impl Live {
         }
     }
 
+    /// This session's working directory — paths render relative to it. Reads the aux note
+    /// (written at registration for a root, inherited from the parent for a child) and only
+    /// falls back to sniffing the transcript head for a cold deep link that had neither,
+    /// memoizing the result so the sniff happens at most once per session.
+    fn cwd_of(&self, id: &str, src: &Transcript) -> String {
+        if let Some(cwd) = self.cache.aux_with(id, |a| a.cwd.clone()) {
+            return cwd;
+        }
+        // A hosted root's cwd was resolved when the server started; anything else (a cold
+        // deep link into a child) sniffs the transcript head, once.
+        let cwd = self
+            .roots
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.cwd.clone())
+            .unwrap_or_else(|| {
+                discover::session_cwd(src.path())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            });
+        self.cache.aux_with(id, |a| a.cwd = Some(cwd.clone()));
+        cwd
+    }
+
     /// Resolve `id` to its source + title. Tier-(c) lookup first (the cache registry, populated
     /// from spawn events); else resolve the source directly — every agent shares the flat
     /// `subagents/` dir, so a valid id resolves even if its parent was never navigated (deep links)
@@ -92,11 +130,18 @@ impl Live {
             let t = cached.unwrap_or_else(|| self.derive_title(id));
             return Some((src, t));
         }
-        let source = discover::subagent_source(self.agent, &self.root_path, id)?;
+        // A deep link to a child whose parent was never pulled: no parent pointer exists
+        // yet, so ask each root whether the id is in ITS subtree. Only reached on a cold
+        // deep link (the common path is `register_child_sources`, one batch per parent),
+        // and it stops at the first hit — but it is O(roots) resolves, so keep it off the
+        // hot path.
+        let (agent, source) = self.roots.iter().find_map(|r| {
+            discover::subagent_source(r.agent, &r.path, id).map(|path| (r.agent, path))
+        })?;
         if !source.exists() {
             return None;
         }
-        let src = Transcript::open(self.agent, source);
+        let src = Transcript::open(agent, source);
         let t = TitleInfo {
             title: id.to_string(),
             ..Default::default() // unknown ancestry/type for an un-navigated deep link
@@ -158,13 +203,23 @@ impl Live {
         }
         // One operation-scoped batch: an adapter backed by a relationship store (Codex)
         // scans it once for the whole child list, not once per child.
-        let sources = discover::subagent_sources(self.agent, &self.root_path, &unregistered);
+        // Resolve against the PARENT's own agent + transcript (not a server-wide root):
+        // with several roots hosted at once they may be different agents entirely.
+        let Some(parent) = self.cache.resolve(parent_id) else {
+            return;
+        };
+        let parent_cwd = self.cache.aux_with(parent_id, |a| a.cwd.clone());
+        let sources = discover::subagent_sources(parent.agent(), parent.path(), &unregistered);
         for (id, source) in unregistered.into_iter().zip(sources) {
             if let Some(source) = source {
                 self.cache
-                    .register_new(id, Transcript::open(self.agent, source));
-                self.cache
-                    .aux_with(id, |a| a.parent = Some(parent_id.to_string()));
+                    .register_new(id, Transcript::open(parent.agent(), source));
+                self.cache.aux_with(id, |a| {
+                    a.parent = Some(parent_id.to_string());
+                    // A child runs in its parent's directory — inherit rather than
+                    // re-read the child transcript's head on its first pull.
+                    a.cwd = parent_cwd.clone();
+                });
             }
         }
     }
@@ -178,6 +233,11 @@ impl Live {
         if !src.path().exists() {
             return None;
         }
+        // Per-SESSION context: this server can host several unrelated roots at once, so the
+        // agent comes from the session's own `Transcript` and the cwd from its aux note
+        // (recorded at registration, inherited by children) — never a server-wide field.
+        let agent = src.agent();
+        let cwd = self.cwd_of(id, &src);
         // Lazy reap (this path owns no background thread), then fetch-or-materialize the
         // pull-servable resident — both owned by the cache (one resident set, one policy).
         // Each evicted resident hibernates its serving state to a sidecar beside its backing, so
@@ -195,8 +255,8 @@ impl Live {
             RecordStore::create(
                 path,
                 self.fold.clone(),
-                self.cwd.clone(),
-                crate::Transcript::open(self.agent, src.path().to_path_buf()),
+                cwd.clone(),
+                crate::Transcript::open(agent, src.path().to_path_buf()),
             )
         };
         let open_fresh = || {
@@ -207,7 +267,7 @@ impl Live {
                     .join(format!("cr-records-{}-{id}.records", std::process::id()));
                 mk_store(&alt).expect("create record log")
             });
-            SharedSession::with_store(self.agent, src.path(), store)
+            SharedSession::with_store(agent, src.path(), store)
         };
         let mut shared = self.cache.shared_session(id, || {
             // Restore-from-materialization first (valid only while the source is unchanged);
@@ -247,7 +307,7 @@ impl Live {
         }
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
         // Attachments load from THIS agent's own transcript.
-        let transcript = crate::Transcript::open(self.agent, info.source.clone());
+        let transcript = crate::Transcript::open(agent, info.source.clone());
 
         // #74: committed records were already rendered-once by the store's `put` as each
         // block crossed the durability frontier — the Session's committed table IS the wire
@@ -281,7 +341,7 @@ impl Live {
                 &d.provisional,
                 &d.user_times,
                 &self.fold,
-                &self.cwd,
+                &cwd,
                 true,
                 true,
                 None,
@@ -311,9 +371,9 @@ impl Live {
         // files (small dir; the pull is already a per-second file poll).
         let tasks = crate::engine::tasks::merged(
             &d.tasks,
-            crate::discover::session_tasks(self.agent, src.path()),
+            crate::discover::session_tasks(agent, src.path()),
         );
-        let meta = assemble_meta(self.agent, &self.cwd, &info, &d.meta, &d.metrics, &tasks);
+        let meta = assemble_meta(agent, &cwd, &info, &d.meta, &d.metrics, &tasks);
         self.register_child_sources(id, &d.meta.children);
         let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
             .iter()
@@ -479,57 +539,12 @@ fn append_line(companion: &Path, line: &str) -> Result<()> {
 /// keeping every agent's stream current (new spawns appear, children grow); without it
 /// the bundle is a static snapshot.
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
-    use std::sync::Arc;
-    let agent = discover::detect_agent(path);
-    let fold = args.fold_policy();
-    let sid = session_id(path);
-    let cwd = discover::session_cwd(path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let title = display_title(agent, path);
-
-    // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
-    // wipe any streams left by a previous run of this session so lazy materialization
-    // starts clean (only the root exists until a child is requested).
-    let dir = std::env::temp_dir().join("claude-replay").join(&sid);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-
-    // The shared live state. The registry starts with just the root; children are
-    // discovered + registered lazily as their parents' streams are generated. Streams are
-    // generated ONLY on first request (`/stream?session=<id>`), and only *requested* agents
-    // are re-parsed by the background tailer — so opening a huge tree costs one parse.
-    let live = Arc::new(Live {
-        dir: dir.clone(),
-        agent,
-        fold,
-        root_path: path.to_path_buf(),
-        cwd,
-        cache: SessionCache::new(),
-    });
-    live.cache
-        .register(&sid, Transcript::open(agent, path.to_path_buf()));
-    live.cache.aux_with(&sid, |a| {
-        a.title = Some(TitleInfo {
-            title: title.clone(),
-            ..Default::default()
-        });
-    });
-    // ONE transport (#85): every server-backed page — static or live — is a pull client
-    // (a static page pulls once; a live page keeps polling). One protocol exercised by all
-    // traffic, protected by one test suite, folded on the requester's own thread.
-    std::fs::write(
-        dir.join("index.html"),
-        build_shell(&title, &sid, args.follow, true),
-    )
-    .with_context(|| "write index.html")?;
-
-    let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
-    let url = format!("http://127.0.0.1:{port}/index.html?session={sid}");
+    let server = start_server(args, std::slice::from_ref(&path.to_path_buf()))?;
+    let url = server.url_for_root(0).expect("one root");
     let kind = if args.follow { "live" } else { "static" };
     eprintln!(
         "serving {} at {url} ({kind} — Ctrl-C to stop)",
-        dir.display()
+        server.dir.display()
     );
     eprintln!("  open in a browser, or copy the URL above");
     open_in_browser(&url);
@@ -540,6 +555,124 @@ pub fn serve(args: &Args, path: &Path) -> Result<()> {
     loop {
         std::thread::park();
     }
+}
+
+/// A running live server, and the roots it hosts. Returned by [`start_server`] so a caller
+/// can keep its own UI in the foreground (the `-f --html` session picker stays up and opens
+/// a browser tab per pick) instead of the blocking [`serve`] loop.
+pub struct LiveServer {
+    /// The bundle directory (shell + per-session artifacts).
+    pub dir: std::path::PathBuf,
+    /// Loopback port the bundle is served on.
+    pub port: u16,
+    /// Session ids of the hosted roots, in the order they were passed in.
+    pub root_ids: Vec<String>,
+    /// Keeps the server state alive for the process's lifetime.
+    _live: std::sync::Arc<Live>,
+}
+
+impl LiveServer {
+    /// The browser URL for hosted root `i` (its own `?session=` on the shared shell).
+    pub fn url_for_root(&self, i: usize) -> Option<String> {
+        self.root_ids.get(i).map(|sid| self.url_for(sid))
+    }
+
+    /// The browser URL for any hosted session id.
+    pub fn url_for(&self, sid: &str) -> String {
+        format!("http://127.0.0.1:{}/index.html?session={}", self.port, sid)
+    }
+
+    /// Open a hosted session in the default browser (best-effort).
+    pub fn open(&self, sid: &str) {
+        open_in_browser(&self.url_for(sid));
+    }
+}
+
+/// Start the live server over one or MORE root sessions and return without blocking.
+///
+/// Every root is registered up front — a registry entry only, since streams and folds are
+/// produced on a session's first `/pull` — so all of them are live simultaneously and each
+/// is reachable at `?session=<id>` on the one shared shell. Roots may span agents and
+/// working directories; the per-session agent/cwd plumbing in [`Live`] is what makes that
+/// safe. `serve` is the single-root special case of this.
+pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveServer> {
+    use std::sync::Arc;
+    anyhow::ensure!(!paths.is_empty(), "no sessions to serve");
+    let fold = args.fold_policy();
+    let roots: Vec<Root> = paths
+        .iter()
+        .map(|p| {
+            let agent = discover::detect_agent(p);
+            Root {
+                id: session_id(p),
+                agent,
+                path: p.clone(),
+                cwd: discover::session_cwd(p)
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
+    // wipe any streams left by a previous run of this session so lazy materialization
+    // starts clean (only the root exists until a child is requested). One root keeps the
+    // historical session-keyed name; several get a run-scoped dir so concurrent runs (and
+    // a single-root run of any of the same sessions) can never wipe each other's bundle.
+    let dir = if let [only] = &roots[..] {
+        std::env::temp_dir().join("claude-replay").join(&only.id)
+    } else {
+        std::env::temp_dir()
+            .join("claude-replay")
+            .join(format!("multi-{}", std::process::id()))
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+
+    // The shared live state. The registry starts with the roots; children are
+    // discovered + registered lazily as their parents' streams are generated. Streams are
+    // generated ONLY on first request (`/stream?session=<id>`), and only *requested* agents
+    // are re-parsed by the background tailer — so opening a huge tree costs one parse.
+    let title = display_title(roots[0].agent, &roots[0].path);
+    let root_ids: Vec<String> = roots.iter().map(|r| r.id.clone()).collect();
+    let live = Arc::new(Live {
+        dir: dir.clone(),
+        fold,
+        roots,
+        cache: SessionCache::new(),
+    });
+    for root in &live.roots {
+        live.cache
+            .register(&root.id, Transcript::open(root.agent, root.path.clone()));
+        let root_title = display_title(root.agent, &root.path);
+        let cwd = root.cwd.clone();
+        // EVERY root needs its own title: `derive_title` follows a parent pointer, and a
+        // root has none, so an untitled root would show as its bare session id.
+        live.cache.aux_with(&root.id, |a| {
+            a.title = Some(TitleInfo {
+                title: root_title.clone(),
+                ..Default::default()
+            });
+            a.cwd = Some(cwd.clone());
+        });
+    }
+    let sid = live.roots[0].id.clone();
+    // ONE transport (#85): every server-backed page — static or live — is a pull client
+    // (a static page pulls once; a live page keeps polling). One protocol exercised by all
+    // traffic, protected by one test suite, folded on the requester's own thread.
+    std::fs::write(
+        dir.join("index.html"),
+        build_shell(&title, &sid, args.follow, true),
+    )
+    .with_context(|| "write index.html")?;
+
+    let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
+    Ok(LiveServer {
+        dir,
+        port,
+        root_ids,
+        _live: live,
+    })
 }
 
 /// Open `url` in the default browser (best-effort; never fails the run).
@@ -857,10 +990,13 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
-            root_path: sess.clone(),
-            cwd: "/r".into(),
+            roots: vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }],
             cache: SessionCache::new(),
         };
         live.cache
@@ -956,10 +1092,13 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
-            root_path: sess.clone(),
-            cwd: "/r".into(),
+            roots: vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }],
             cache: SessionCache::new(),
         };
         live.cache
@@ -1036,10 +1175,13 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::CLAUDE,
             fold: FoldPolicy::default(),
-            root_path: sess.clone(),
-            cwd: "/r".into(),
+            roots: vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }],
             cache: SessionCache::new(),
         };
         live.cache
@@ -1085,6 +1227,163 @@ mod tests {
             "derived once, then cached"
         );
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering
+    /// `/pull` for its own `?session=` — the server half of "stay on the picker, open a tab
+    /// per session". Also pins the run-scoped bundle dir for the multi-root case, so a
+    /// concurrent single-root run of any of the same sessions can't wipe it.
+    #[test]
+    fn start_server_hosts_every_root_on_one_port() {
+        use clap::Parser as _;
+        let base = std::env::temp_dir().join(format!(
+            "cr-start-multi-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut paths = Vec::new();
+        for (n, text) in [("one", "first root"), ("two", "second root")] {
+            let p = base.join(format!("{n}.jsonl"));
+            std::fs::write(&p, format!(
+                concat!(
+                    r#"{{"type":"user","cwd":"/w","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}},"timestamp":"2026-08-01T10:00:00Z"}}"#, "\n",
+                    r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"ok"}}]}},"timestamp":"2026-08-01T10:00:01Z"}}"#, "\n",
+                    r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"more"}}]}},"timestamp":"2026-08-01T10:00:02Z"}}"#, "\n",
+                ),
+                text
+            )).unwrap();
+            paths.push(p);
+        }
+
+        let args = crate::Args::parse_from(["claude-replay", "--html"]);
+        let server = start_server(&args, &paths).expect("server starts");
+        assert_eq!(server.root_ids, vec!["one".to_string(), "two".to_string()]);
+        assert!(
+            server
+                .dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("multi-"),
+            "several roots get a run-scoped bundle dir: {}",
+            server.dir.display()
+        );
+        // Distinct URLs, one port.
+        let (u0, u1) = (
+            server.url_for_root(0).unwrap(),
+            server.url_for_root(1).unwrap(),
+        );
+        assert_ne!(u0, u1);
+        assert!(u0.contains("?session=one") && u1.contains("?session=two"));
+
+        // Each root really answers for itself, over the wire.
+        for (sid, want) in [("one", "first root"), ("two", "second root")] {
+            let body = http_post(server.port, &format!("/pull?session={sid}&cursor=0"))
+                .unwrap_or_else(|| panic!("{sid} pull"));
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["meta"]["sid"], json!(sid));
+            let records = std::fs::read_to_string(server.dir.join(format!("{sid}.records")))
+                .unwrap_or_default();
+            assert!(
+                body.contains(want) || records.contains(want),
+                "{sid} serves its own transcript"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&server.dir);
+    }
+
+    /// Minimal loopback HTTP POST for the test above (the server speaks HTTP/1.0-style
+    /// close-delimited replies).
+    fn http_post(port: u16, path: &str) -> Option<String> {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+        write!(
+            s,
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).ok()?;
+        raw.split_once("\r\n\r\n").map(|(_, body)| body.to_string())
+    }
+
+    /// The `-f --html` picker hosts EVERY discovered session on one server. Roots may be
+    /// different agents in different directories, so each must pull with its OWN agent and
+    /// its OWN cwd — the thing the old server-wide `agent`/`cwd` fields could not express.
+    #[test]
+    fn multi_root_server_serves_each_root_with_its_own_agent_and_cwd() {
+        use crate::cache::Cursor;
+        use crate::{SessionCache, Transcript};
+        let base = std::env::temp_dir().join(format!(
+            "cr-serve-multiroot-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let bundle = base.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+
+        // A Claude session in /a and a Codex session in /b.
+        let claude = base.join("claude.jsonl");
+        std::fs::write(&claude, concat!(
+            r#"{"type":"user","cwd":"/a","message":{"role":"user","content":[{"type":"text","text":"hello claude"}]},"timestamp":"2026-08-01T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-08-01T10:00:01Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"again"}]},"timestamp":"2026-08-01T10:00:02Z"}"#, "\n",
+        )).unwrap();
+        let codex = base.join("codex.jsonl");
+        std::fs::write(&codex, concat!(
+            r#"{"type":"session_meta","payload":{"id":"cx","cwd":"/b","source":"cli"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codex"}]}}"#, "\n",
+        )).unwrap();
+
+        let live = Live {
+            dir: bundle,
+            fold: FoldPolicy::default(),
+            roots: vec![
+                Root {
+                    id: "c1".into(),
+                    agent: Agent::CLAUDE,
+                    path: claude.clone(),
+                    cwd: "/a".into(),
+                },
+                Root {
+                    id: "x1".into(),
+                    agent: Agent::CODEX,
+                    path: codex.clone(),
+                    cwd: "/b".into(),
+                },
+            ],
+            cache: SessionCache::new(),
+        };
+        for (id, agent, path) in [("c1", Agent::CLAUDE, &claude), ("x1", Agent::CODEX, &codex)] {
+            live.cache
+                .register(id, Transcript::open(agent, path.clone()));
+        }
+
+        for (id, want_agent, want_cwd, want_text) in [
+            ("c1", "claude", "/a", "hello claude"),
+            ("x1", "codex", "/b", "hello codex"),
+        ] {
+            let reply = live
+                .pull_response(id, Cursor::default())
+                .unwrap_or_else(|| panic!("{id} reply"));
+            let v: Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(v["meta"]["agent"], json!(want_agent), "{id} agent");
+            assert_eq!(v["meta"]["cwd"], json!(want_cwd), "{id} cwd");
+            assert_eq!(v["meta"]["sid"], json!(id));
+            // …and it really served THAT transcript, not the other root's.
+            let records =
+                std::fs::read_to_string(live.dir.join(format!("{id}.records"))).unwrap_or_default();
+            let inline = reply.contains(want_text);
+            assert!(
+                inline || records.contains(want_text),
+                "{id} must serve its own content"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1150,10 +1449,13 @@ mod tests {
 
         let live = Live {
             dir: bundle,
-            agent: Agent::CODEX,
             fold: FoldPolicy::default(),
-            root_path: parent.clone(),
-            cwd: "/repo".into(),
+            roots: vec![Root {
+                id: "sid".into(),
+                agent: Agent::CODEX,
+                path: parent.clone(),
+                cwd: "/repo".into(),
+            }],
             cache: SessionCache::new(),
         };
         live.cache

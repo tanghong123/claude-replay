@@ -107,6 +107,14 @@ same `open -R` the TUI does. With `-f` the page also follows the session live
 snapshot. Either way the page is fully rendered even offline — only path-reveal
 and live-follow need the server.
 
+When you give **no** session and this directory has **several**, `--html` keeps the
+session picker on screen and serves *every* discovered session at once on the one
+port. `Enter` — or a click on a row — opens that session in a browser tab and the
+list **stays up**, marking what you've already opened (`●`), so you can fan several
+sessions out and keep going; `Esc` quits. (With `-f` they are all live
+simultaneously — each open tab tails its own session.) A directory with exactly one
+match still opens it directly.
+
 Default view: user turns (`❯`), assistant text (`⏺`), `✻` thinking summaries, and
 code-**modifying** actions (Edit/Write/MultiEdit + mutating Bash) with each edit as
 a red/green `-`/`+` diff. Non-modifying ops and tool output are hidden to stay
