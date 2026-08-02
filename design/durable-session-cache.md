@@ -1,6 +1,17 @@
 # Design: a durable, cross-run session cache
 
 > **Status: v6 — the blocker is resolved (§0). Still gated on the §4 measurement.**
+>
+> **Framing (owner): everything needed for a durable cache already exists — this task
+> generalises it across invocations.** `SharedSession::hibernate`/`restore`
+> (`shared.rs:592-666`) already persists committed values, per-turn times, metrics, meta,
+> tasks and the store's render continuation, and validates before trusting them. It is
+> merely scoped to one process today. The whole of #96 is four deltas:
+> **(1)** write to a durable location instead of the per-run temp dir wiped at startup;
+> **(2)** accept a **grown** source on restore, not only a byte-identical one
+> (`shared.rs:639-641`); **(3)** let a restored session keep **advancing**
+> (`shared.rs:248-250`); **(4)** add the lock so one process writes.
+> The only genuinely new piece is widening the metrics seam (§0).
 > Two successive designs for resuming the *fold* mid-transcript were reviewed and found
 > **unsound** (Appendices A and B). What survives is narrower, and its value is unproven —
 > which is why §4 comes before the design.
