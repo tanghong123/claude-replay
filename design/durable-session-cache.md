@@ -67,10 +67,21 @@ changes.
   which is the whole point of the pointer path; nothing is decoded into memory.
 - Tailing behaves as in 4.1.
 
-The HTML artifact is **parameter-bound**: records bake in `FoldPolicy`, `cwd` and the
-transcript path via `RenderCx` (`record_store.rs:30-38`). So it is *not* shareable
-between frontends, and it is invalid across a flag change — `--html` then
-`--html --full` must not reuse it.
+The HTML artifact is **parameter-bound** — but less deeply than v4 first assumed, and
+the difference is worth exploiting. `RenderCx` carries `{fold, cwd, transcript}`
+(`record_store.rs:30-38`), and of those:
+
+- **`FoldPolicy` affects exactly one integer per foldable record.** The renderer emits
+  `"open": 0|1` from `self.fold.collapses(b)` (`mod.rs:392-397`) and then emits the body
+  **unconditionally**; the client already treats it as a starting value it may override
+  (`export.js:473, 507`). So fold policy changes a flag, not content.
+- `cwd` and `transcript` are **session properties, not flags** — stable for a given
+  session, so they never change between runs of the same session.
+
+**Decision: hoist the `open` flag out of the cached record and apply it at serve time.**
+Then HTML's records become fold-policy-independent, `--html` and `--html --full` share
+one artifact, and the only remaining validity inputs are session properties that cannot
+drift. This removes most of the TUI/HTML asymmetry rather than validating around it.
 
 ### 4.3 The asymmetry that drives everything
 
@@ -128,6 +139,56 @@ committed count.
 whose BV cannot yield a `Block` (§4.3). Persisting the map — small, one entry per spawn —
 keeps the resume protocol identical for both frontends and is the difference between one
 shared implementation and two.
+
+### 5.3b How meta is reconstructed — snapshot vs. event stream
+
+Session metadata (`SessionMeta`, the task op-log, `agent_ids`) is built incrementally
+while parsing the raw transcript. Loading from artifacts must reproduce it without the
+transcript. Three ways, debated:
+
+**(i) Checkpoint / snapshot** — serialise the carried state at a point.
+*For:* load is O(state), independent of session length; one schema, one write path; **no
+replay logic, so no second implementation of fold semantics to drift**.
+*Against:* rewrites the whole state per checkpoint; the snapshot's as-of point must line
+up with the artifact's `valid_up_to`, so blocks appended after the last checkpoint are
+either discarded or re-folded; a schema change invalidates the whole cache.
+
+**(ii) Meta message stream** — append a small meta record as state changes; replay on load.
+*For:* append-only, the same discipline as every other stream here; **alignment falls out**
+— each record carries its transcript offset, so both streams fast-forward to a common
+point with no waste and no skew; a torn tail truncates harmlessly; schema evolves per
+record type.
+*Against:* load is O(events) not O(state); and the real cost — **it is a second
+serialisation surface that must mirror the fold's state transitions.** If replay drifts
+from the fold, the cache silently diverges. That is exactly the bug class the byte gate
+exists to prevent, and the gate cannot see the cache (`gate.sh:32-33`).
+
+**(iii) Derive meta from the Block log — recommended.** Note what the codebase already
+does: `SessionMeta` is built by folding blocks one at a time (`meta.push(b)`), the task
+state is *already* an op-log replay (`engine/tasks.rs`), and `agent_ids` is derivable
+from committed `Block::SubAgent`s. So "replay the meta stream" can be **"fold the Blocks
+through the builders that already exist"** — no new vocabulary, no second implementation,
+hence none of (ii)'s divergence risk, while keeping (ii)'s append-only alignment because
+the Block log *is* the stream.
+
+This works for HTML too, and is precisely the cross-frontend sharing the owner asked for:
+HTML keeps wire records for **content** (its BV) and reads the shared Block log for
+**meta**. The Block log earns its keep twice.
+
+What (iii) cannot supply is the handful of values that are neither derivable from blocks
+nor stream-shaped — `cwd`, `prev_ts`, `pending_ts`, `prev_user_text`,
+`delivered_rendered`, plus the composite frontier and `valid_up_to`. Those are current
+values, so they go in a **tiny scalar sidecar**: a snapshot, but of ~6 fields, which
+makes every objection to (i) vanish (nothing to amplify, nothing to drift).
+
+**Recommendation:** (iii) + the scalar sidecar. Fall back to a periodic meta snapshot
+only if Step 0 shows folding the Block log for meta is too slow on HTML's path — an
+optimisation, added later, that changes no interface.
+
+**Alignment rule (all options).** The two artifact streams and the transcript must land
+on one consistent point: take `n = min(block_log.valid_up_to, record_log.valid_up_to)`,
+use the frontier `Position` recorded for `n`, and treat anything beyond `n` in either log
+as absent. Truncate-on-load rather than trusting a torn tail.
 
 ### 5.4 The one seam addition
 
