@@ -193,6 +193,52 @@ wrong side of a transformation. The correct captures are:
 13. `FollowParser::prev_committed`/`prev_provisional` (`follow.rs:55-56`) need not be
     persisted — restoring them empty costs one conservative full re-render and fails safe.
 
+14. **`std::process::exit(0)` skips every destructor** (`tui/app.rs:55-57, 91-93`, kept
+    deliberately to avoid slow drops). A `Drop`-based checkpoint or lock release would
+    silently never run, making a *normal quit* indistinguishable from a crash — every later
+    launch takes the dead-pid reclaim path. **Fix:** explicit `checkpoint + release` before
+    both exits and on `Outcome::Switch` (`app.rs:373-376`), which replaces the whole cache;
+    keep `Drop` as the crash-only backstop.
+15. **The TUI's dominant invocation never touches the cache.** `SessionCache` is registered
+    and polled only when `args.follow` (`app.rs:469-495`); plain `claude-replay <path>`
+    calls `transcript.parse()` directly, so as specified the cache would help `-f` only.
+    **Fix:** route the non-follow root through the cache too — one `poll_view` whose first
+    poll folds the whole file — and simply do not enter the tail loop. `tui::app::dump`
+    keeps using `parse_session_enriched_as` directly, so `--dump`/`--dump-html` stay
+    cache-free and the byte gate is unaffected.
+16. **`reap_over_budget` gives no checkpoint hook** — it returns `()` and drops residents
+    (`cache/mod.rs:142-156`), unlike `reap`, which hands them back for exactly this reason.
+    **Fix:** return the evictions, like `reap`; checkpoint each before its `Arc` drops.
+17. **Two-phase admission needs a cache API.** `shared_session` only accepts a factory that
+    runs *under* the `pull_residents` mutex (`cache/mod.rs:162-173`). **Fix:** add
+    `shared_insert_or_get(id, Arc<SharedSession<P>>)`; callers `shared_peek` → build outside
+    the lock → insert. The loser of a race drops its `Arc` **and must release its lock** —
+    cover that path in the lock tests.
+18. **The position needs `LineReader::open_at`, not `Position`'s hashing.** Since §8
+    validates from a trailing window at load time, none of `Position`'s rolling-hash
+    machinery is required — only the ability to start reading at an offset
+    (`reader.rs:148-161`). Do **not** convert `advance_reader` to `LineReader`: its
+    `poll` does `read_to_end` (`reader.rs:236-239`), destroying the one-line residency that
+    makes multi-GB transcripts viable, and `consume` skips empty lines (`:206`) while
+    `advance_reader` feeds every line — a byte-gate risk.
+19. **`serde_json::Value` must be re-exported through `seam`** so the agent crates can
+    implement §6's `checkpoint`/`restore` without tripping `agents_import_only_the_seam`.
+
+## 5.2 Reuse, do not rebuild — and delete the third format
+
+- **`LineReader::open_at`** for resuming at an offset; **`src/jdi/lock.rs`** for the lock
+  (move the primitive to `present::lockdir` + `present::sys::pid_alive`; keep jdi's
+  three-way `Acquire` mapping in jdi, and let the owner file carry `pid[:port]` with each
+  caller parsing, so jdi's `read_owner` keeps working); **`PersistentStore::hibernate_state`
+  /`restore_state`** as §6's model.
+- **`TierBSession::persist`/`load` is a third, production-unused on-disk session format**
+  (`tier_b.rs:245-342`) that already claims "reload without re-folding" and repeats the
+  §4 metadata/BV mixing; only an integration test uses it. **Delete it** as part of this
+  work (retargeting that test at `SessionState`/`BvTable`), or promote it to be the writer.
+  Leaving three formats is the worst outcome.
+- **The `aux` slot stays out.** The TUI's `ViewSidecar` is derived, width-dependent state
+  with consumer-owned validity — it must never enter `SessionState`.
+
 ## 6. The metrics seam — an existing pattern
 
 `MetricsAccumulator` is `push`/`finish` only (`adapter.rs:23-34`), and the collapsed
@@ -347,3 +393,30 @@ mixed epoch (`builder.rs:150-162`); `SessionMeta.children` is mutated by `AgentD
 (`session.rs:297-303`) so a suffix delta cannot express it.
 
 §3 avoids all of it by restoring the open zone instead of recomputing it.
+
+## 12. Implementation order
+
+Nothing writes a file until the format is final; no store gains append mode until a body
+exists that can use it.
+
+1. **Format + BV split, no I/O** — `SessionState` / `BvTable<Bv>` / the non-generic
+   `read_session_state`; version constants. Rewrite `hibernate`/`restore` onto the two
+   files, still temp-scoped. **The requirement-5 test lands here and gates everything after.**
+2. **`SessionAccumulator::{checkpoint, resume}`** — engine only, no cache, no frontend.
+   Byte gate must pass unchanged.
+3. **Delete `Body::Hibernated`; `restore` yields `Body::Live`** (§2 delta 3). Existing
+   hibernate tests are rewritten to assert *continued advance*. Must precede 4, or the
+   append-mode store is built against a body that cannot `put`.
+4. **`RecordStore::open_append`** + the TUI's durable `Arc<Block>` store.
+5. **Cache API** — `shared_insert_or_get`, `reap_over_budget` returning evictions. No
+   behaviour change; both frontends keep passing. `--no-cache` (hidden) lands here so every
+   later step is bisectable against it.
+6. **Move the lock primitive to `present`**, retarget jdi. Independent of 1–5; must precede 7.
+7. **Wire HTML** — cache dir split from the ephemeral bundle dir, per-session locks incl.
+   the multi-root rule, two-phase admission, checkpoint-on-commit.
+8. **Wire TUI** — non-follow path through the cache, explicit checkpoint+release before both
+   `process::exit(0)`s and on `Outcome::Switch`.
+9. **Eviction/GC** — last, because it must know the final layout.
+
+**Measure at step 4** (§8.1): the TUI's per-block serialize is the only new steady-state
+cost, and it should be a number before it is a default.
