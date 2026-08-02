@@ -28,7 +28,12 @@ Four deltas make it cross-invocation:
 
 1. write to a durable location instead of the per-run temp dir wiped at startup;
 2. accept a **grown** source, not only a byte-identical one (`shared.rs:639-641`);
-3. let a restored session **keep advancing** (`shared.rs:248-250`);
+3. **delete `Body::Hibernated` entirely** — `restore` constructs `Body::Live` from a
+   pre-seeded `FollowParser`. This is the spine of the work, not a tweak: the hibernated
+   variant duplicates every read arm (`shared.rs:145-199, 433-437, 479-485`) and exists
+   only to be discarded when the source grows (`hibernation_stale`, `:520-528`, and
+   `serve.rs:280-286`) — exactly what this feature must stop doing. Deleting it makes
+   `advance`/`poll_view`/`pull` work unchanged and leaves **one** path for the byte gate;
 4. one writer per artifact set (§7).
 
 **The one piece genuinely missing** is the rest of the in-memory agent-neutral session
@@ -67,6 +72,25 @@ $CLAUDE_REPLAY_CACHE/<presentation>/<agent>-<session-id>/
     bv.state            # committed Vec<Bv> + the store's render continuation
     LOCK                # owner pid (+ port for a server)
 ```
+
+**Requirement 5 is not achievable against today's types and needs a deliberate split.**
+`HibernatedSidecar<Bv>` (`shared.rs:535-554`) carries metadata *and* `committed: Vec<Bv>`
+in one struct, deserialized inside an `S`-bounded impl (`:584-587, 637-638`) — so reading
+metadata today *requires* naming `BV`. (`TierBSession::Sidecar`, `tier_b.rs:330-342`,
+repeats the same mistake.) Three types instead:
+
+- `SessionState` — **non-generic**: versions, `committed_meta`, metrics blob, raw
+  `user_times`, task fold, raw `out`, replayer state, `cwd`, position, `n_committed`.
+- `BvTable<Bv>` — `epoch`, `provisional_gen`, `backing_len`, `committed: Vec<Bv>`,
+  `store_state`.
+- **`pub fn read_session_state(path) -> Option<SessionState>` as a free function outside
+  any `S`-bounded impl.** That free function *is* requirement 5's acceptance test: if it
+  ever needs a `::<S>` turbofish, the requirement has been lost. §10's metadata test must
+  call it with no type parameter.
+
+Cross-validate on load: `SessionState.n_committed == BvTable.committed.len()` (and the
+record count for HTML), else rebuild — the torn-write guard, since the files are written
+separately.
 
 **`session.state` contains no `BV` of any kind** — requirement 5. Metadata is reconstructed
 from it alone, so its schema and its reconstruction code are identical for every
@@ -193,14 +217,21 @@ id** — which §4's directory naming already provides.
 ## 7. Locking — one lock per `<presentation, session>`
 
 One lock, keyed by the artifact directory of §4. Reclaim is liveness-based (dead pid ⇒ take
-it; a server holder is additionally port-probed, since pids are recycled, via a callback
-injected by the frontend so `present` grows no `std::net` dependency).
+it; a server holder is additionally port-probed, since pids are recycled, via a callback injected by
+the frontend — *not* because `present` would gain a dependency, which was wrong reasoning
+on my part since `std::net` is std, but because only the frontend knows its port and a
+callback keeps the lock testable).
 
 - **Free, or holder dead:** take it; read + write.
 - **Held, TUI:** quit, naming pid, dir and `tmux attach`. Refusing surfaces the duplicate
   fold-and-hold in RAM that happens silently today, and `tmux attach` is the real sharing
   primitive.
 - **Held, HTML at pick time:** open the holder's `…?session=S`.
+- **Multi-root HTML start:** acquire **per session, independently**. Partial success is
+  the normal outcome, not a refusal: sessions won are cached, sessions held elsewhere are
+  served uncached. The "open the holder's URL" rule applies only to the single-root
+  `--html <session>` path (`src/lib.rs:31-35`); the picker path just starts with a mixed
+  lock set. The TUI is the only refusing presentation.
 - **Held, HTML child discovered mid-run:** serve it **uncached** — correct output, no cache
   writes. The lock governs *writing*, never *viewing*, which is what fits the multi-root
   server: it discovers children lazily and cannot know its lock set at startup.
@@ -210,22 +241,55 @@ for the cache path itself, not a way to force a second TUI. Where there is no re
 check (`pid_alive` returns `false` on non-unix, `jdi/state.rs:150-167`) the cache is
 disabled rather than assuming staleness, which would fail *into* concurrent writers.
 
-## 8. Validity
+## 8. Validity — bounded cost, no per-line work
 
-Reuse iff **all** hold, else rebuild from the transcript: source length ≥ recorded and its
-prefix hash + first-line identity anchor match (`reader::Position`'s scheme,
-`reader.rs:44-86` — note it is `pub(crate)` and the cold-build path
-(`advance_reader`, `builder.rs:171-191`) currently has no `LineReader`, so a write-side
-anchor must be added); artifact lengths and counts match; the cache format **and fold-logic
-versions** match. For HTML's records additionally: the record *flavor*
-(served / `--dump-html` / `--dump-all-html` — `put` hardcodes the served variant,
-`record_store.rs:136-137`) and the `FoldPolicy` (which bakes into one emitted flag,
-`mod.rs:396`, and cannot be recomputed downstream because `BlockKind::html` is
-non-injective against `fold_key`, `model.rs:375-415`).
+Reuse iff **all** hold, else rebuild from the transcript:
 
-Note `session.state` is **flavor- and policy-independent** — only the rendered projection
-is parameterised. So within the HTML presentation a `--full` run still reuses the parse,
-re-rendering only its records.
+| check | cost |
+|---|---|
+| source length ≥ recorded `offset` | `stat` |
+| **first-line identity anchor** matches | one line |
+| **hash of the K bytes immediately before `offset`** matches (K = 64 KiB) | one bounded read |
+| artifact lengths/counts agree with `SessionState.n_committed` | `stat` + the state file |
+| format version, fold-logic version and build id match | free |
+| HTML only: record **flavor** and `FoldPolicy` match | free |
+
+**Deliberately NOT a whole-prefix hash.** `reader::poll_resume` validates by re-reading and
+hashing `[0, offset)` (`reader.rs:243-278`) — sound, but on a 40 MB transcript that is a
+full re-read on every open, which partly defeats the point of not re-reading. A trailing
+window is the right trade: transcripts are append-only, and the realistic invalidation is
+compaction, which rewrites content — producing a byte-identical 64 KiB immediately before
+the checkpoint offset is not a case that occurs. The first-line anchor separately catches
+"different file, same shape". Retain the full-prefix hash as an opt-in paranoid mode only.
+
+**The consequence that matters for §8.1: no rolling hash has to be maintained while
+folding.** Validation reads its window at *load* time, so nothing is hashed per line.
+
+## 8.1 Overhead budget (owner requirement)
+
+The cache must add no meaningful cost to the steady-state path.
+
+| when | added work | verdict |
+|---|---|---|
+| **per line** | the byte offset only — and `advance_at` already receives it (`builder.rs:118-131`). **No hashing, no allocation, no I/O.** | **zero** |
+| **per block (committed)** | HTML: none — `RecordStore` already appends a record per commit today. TUI: one `serde_json` serialize + a **buffered** append of the block. | real but bounded; it is the price of durability, and it buys skipping the entire parse+fold on every later invocation |
+| **per commit** | write `SessionState` (small: at a commit the open window is the turn just started), throttled by time/bytes | small |
+| **per open** | `stat` + one line + 64 KiB + parse the state file + take the lock | small, once |
+| **cache disabled / `--no-cache`** | nothing is tracked, written or hashed — the path is exactly today's | **zero** |
+
+Two rules follow, and they are requirements rather than optimisations:
+
+1. **Nothing is maintained during folding that is only needed at checkpoint time.** Offsets
+   are already threaded; everything else (`out`, `tool_slot`, `agent_ids`, …) is *read* at
+   checkpoint from state the fold already holds. No shadow bookkeeping.
+2. **Checkpoint on commit, never per advance.** A poll-driven checkpoint would rewrite the
+   open turn every `POLL_MS` (2 s, `mod.rs:46`) per session; commits are line boundaries by
+   construction, so this also satisfies §3 for free and bounds the `agent_ids`
+   re-serialisation cost.
+
+The TUI's per-block serialize is the only genuinely new steady-state cost in the design. It
+is opt-out, buffered, and amortised against skipping a full parse next time — but it should
+be **measured on the first implementation step**, not assumed.
 
 ## 9. Preserving `SessionCache` (requirement 4)
 
