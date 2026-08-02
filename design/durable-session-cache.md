@@ -430,6 +430,15 @@ real and **silent**. Refusing surfaces it instead of hiding it, and the lock is 
 it visible. The refusal message should name the holding pid and directory so the state is
 diagnosable at a glance.
 
+**And no capability is lost, because the sharing primitive already exists (owner): the
+TUI runs under tmux, so viewing one session from two places is `tmux attach` to the
+shared tmux session** — one process, one fold, one in-memory copy, and the two views stay
+synchronised. That is strictly better than two independent processes, which is what the
+lock now refuses. tmux is already first-class here (the e2e suite drives the real binary
+inside a private tmux server, `tests/tmux_smoke.rs`), so this is the established way the
+app is run rather than a workaround. **The refusal message should say so** — naming the
+holder *and* pointing at `tmux attach` turns the error into the answer.
+
 **A `--no-cache` escape hatch is still worth shipping, on a different rationale.** Not to
 permit a legitimate double-open — per the above there isn't one — but as **operational
 insurance for the cache path itself**. The lock now gates access to the app: a bug in
