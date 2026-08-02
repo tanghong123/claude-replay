@@ -244,7 +244,8 @@ cargo test  --workspace         <span class="c"># deterministic; workspace defau
 scripts/gate/gate.sh            <span class="c"># frozen-fixture diff → must print BYTE-IDENTICAL: PASS</span></pre>
     <p>The byte gate renders a frozen transcript set through <code>--dump</code>,
       <code>--dump-html</code> and the bundle writer and diffs against a baseline (fixture data
-      in <code>$SC_GATE_DIR</code>, default <code>/tmp/sc-gate</code>). Engine refactors must be
+      in <code>$SC_GATE_DIR</code>, default <code>~/.cache/claude-replay-gate</code> — a durable
+      home, deliberately not <code>/tmp</code>). Engine refactors must be
       output-preserving; intentional output changes are verified line-by-line and re-baselined
       — see <code>scripts/gate/README.md</code>. Underneath, the streaming parse is
       additionally pinned to frozen <code>parse_main</code>/<code>parse_lines</code> oracles

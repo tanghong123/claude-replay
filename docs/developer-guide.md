@@ -29,7 +29,7 @@ scripts/gate/gate.sh          # byte-identical frozen-fixture diff → must prin
 
 The byte gate renders a frozen transcript set through `--dump`, `--dump-html`, and the
 bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, default
-`/tmp/sc-gate`). Engine refactors must be output-preserving; intentional output changes are
+`~/.cache/claude-replay-gate` — a durable home, deliberately not `/tmp`). Engine refactors must be output-preserving; intentional output changes are
 verified line-by-line and re-baselined — see [`scripts/gate/README.md`](../scripts/gate/README.md).
 Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`parse_lines`
 oracles (`#[cfg(test)]` equivalence gates in `claude-replay-agents`'

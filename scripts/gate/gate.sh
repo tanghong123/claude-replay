@@ -5,20 +5,30 @@
 # HTML outputs embed the producing build's version (#55: the topbar brand + the meta
 # record's "version" field), which would churn every release — those two tight patterns
 # are NORMALIZED on both sides before diffing (text dumps stay version-free and raw).
-# Data (BASE, NOW, the frozen inputs) lives in $SC_GATE_DIR (default /tmp/sc-gate);
-# a missing BASE means rebaseline first — see README.md / rebaseline.sh.
+# Data (BASE, NOW, the frozen inputs) lives in $SC_GATE_DIR — see gate-dir.sh / README.md.
+# A missing BASE *or* a missing frozen input means rebaseline first.
 set -u
-cd "$(dirname "$0")/../.."
-GATE_DIR="${SC_GATE_DIR:-/tmp/sc-gate}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/gate-dir.sh"
+cd "$SCRIPT_DIR/../.."
 if [ ! -d "$GATE_DIR/BASE" ]; then
   echo "NO BASE at $GATE_DIR/BASE — run scripts/gate/rebaseline.sh <known-good-binary> first."
+  echo "BYTE-IDENTICAL: FAIL"
+  exit 1
+fi
+# Guard the INPUT too, symmetrically. Without this the dumps below write 0 bytes and the
+# run reports a whole-file DIFF — a missing fixture masquerading as a huge regression.
+if [ ! -f "$GATE_DIR/frozen_self.jsonl" ]; then
+  echo "NO INPUT at $GATE_DIR/frozen_self.jsonl — the frozen fixture is gone."
+  echo "  re-freeze + regenerate BASE from a known-good binary:"
+  echo "  scripts/gate/rebaseline.sh \"\$(command -v claude-replay)\" <a-transcript.jsonl>"
   echo "BYTE-IDENTICAL: FAIL"
   exit 1
 fi
 cargo build --release 2>&1 | tail -1
 BIN=./target/release/claude-replay
 OUT="$GATE_DIR/NOW"; rm -rf "$OUT"; mkdir -p "$OUT"
-"$(dirname "$0")/verify.sh" "$BIN" "$OUT"
+"$SCRIPT_DIR/verify.sh" "$BIN" "$OUT"
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$OUT/self.dump.txt" 2>/dev/null
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$OUT/self.html"     2>/dev/null
 # Normalize ONLY the two version carriers: the brand span and the top-level meta field.

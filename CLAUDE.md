@@ -23,7 +23,7 @@ never skip, stub, or defer a feature "because it needs a terminal."
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
 (runs BOTH crates via workspace default-members; deterministic — no terminal needed;
 the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PASS`
-(fixture data lives in `$SC_GATE_DIR`, default `/tmp/sc-gate`; intentional output
+(fixture data lives in `$SC_GATE_DIR`, default `~/.cache/claude-replay-gate`; intentional output
 changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
 ## Layout

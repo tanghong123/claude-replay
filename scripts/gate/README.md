@@ -6,7 +6,8 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
 `cargo fmt --check` / `clippy` / `cargo test`).
 
 - **Scripts** live here (in git). **Data** — `BASE/`, `NOW/`, and the frozen input
-  `frozen_self.jsonl` — lives in `$SC_GATE_DIR` (default `/tmp/sc-gate`), out of git:
+  `frozen_self.jsonl` — lives in `$SC_GATE_DIR` (default `~/.cache/claude-replay-gate`,
+  set in one place by `gate-dir.sh`), out of git:
   the fixtures embed real session content.
 - **Version normalization:** HTML outputs embed the build's version (#55); the two
   carriers (topbar brand span, meta `"version"` field) are normalized on both sides

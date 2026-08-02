@@ -7,7 +7,8 @@
 # BASE entry regenerates from the new freeze, so do this only when starting over).
 set -eu
 BIN="${1:?usage: rebaseline.sh <known-good-binary> [frozen-source.jsonl]}"
-GATE_DIR="${SC_GATE_DIR:-/tmp/sc-gate}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/gate-dir.sh"
 mkdir -p "$GATE_DIR"
 if [ ! -f "$GATE_DIR/frozen_self.jsonl" ]; then
   SRC="${2:?frozen_self.jsonl missing — pass a transcript to freeze}"
@@ -15,7 +16,7 @@ if [ ! -f "$GATE_DIR/frozen_self.jsonl" ]; then
   echo "froze $SRC -> $GATE_DIR/frozen_self.jsonl"
 fi
 BASE="$GATE_DIR/BASE"; rm -rf "$BASE"; mkdir -p "$BASE"
-"$(dirname "$0")/verify.sh" "$BIN" "$BASE"
+"$SCRIPT_DIR/verify.sh" "$BIN" "$BASE"
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$BASE/self.dump.txt" 2>/dev/null
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$BASE/self.html"     2>/dev/null
 echo "BASE regenerated at $BASE from $BIN"
