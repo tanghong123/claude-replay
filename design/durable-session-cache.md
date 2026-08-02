@@ -399,12 +399,9 @@ parameterised.
    `serve.rs:277` is production code, so deferring it breaks the tree. Narrow the
    `hibernation_stale() || poisoned()` branch to `poisoned()`, keeping #56's recovery.
 4. **The TUI's durable `Arc<Block>` store** — `Bv = Arc<Block>` with a write-through
-   `put`, so `poll_view`'s one-copy-shared-by-`Arc` property survives. This also requires
-   **generalising `poll_view`**: it is implemented on the concrete
-   `SessionCache<ArcStore, A>` and hardcodes `SharedSession::with_store(…, ArcStore)`
-   (`cache/mod.rs:225-233`), so a durable store cannot reach the TUI until that becomes
-   `impl<S: BlockStore<Bv = Arc<Block>>, A>` with the store factory step 5 introduces.
-   **Measure here** (§8).
+   `put`, so `poll_view`'s one-copy-shared-by-`Arc` property survives. The store is
+   standalone and unit-testable here; step 5 is what routes it to the TUI. **Measure here**
+   (§8): the per-block serialize is the only new steady-state cost.
 5. **Cache API + the `poll_view` generalisation.** `poll_view` is implemented on the
    concrete `SessionCache<ArcStore, A>` and hardcodes
    `SharedSession::with_store(…, ArcStore)` (`cache/mod.rs:225-233`); it becomes
