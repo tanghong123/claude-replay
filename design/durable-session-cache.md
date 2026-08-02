@@ -571,3 +571,67 @@ persisting the map (§5.3) instead of re-deriving it.**
 `committed_len()` counts post-`finish_turns` blocks — different index spaces. The
 invariant that *does* hold and is worth pinning is `patch_floor >= base` in raw space: no
 drained block is ever mutated.
+
+---
+
+## ⚠ REVIEW ROUND 2 — the resume core is UNSOUND again (2026-08-02)
+
+**Do not implement §5.2/§5.3b-rule/§5.3c as written.** A full rewrite is pending; this
+note is the durable record of why.
+
+**Root cause, one sentence.** The checkpoint is captured **at the drain (line D)**
+(`builder.rs:150-158`) but the re-fold restarts at the **frontier line L ≤ D** (§5.2), and
+every prune `finalize_completed` performs was still live throughout `(L, D]` — so the
+classification criterion "does `finalize_completed` prune it?" answers a question about the
+*drain instant* when resume needs the answer at the *start of line L*. Worse, `L < D` is
+not exotic: it is precisely the pinned-drain case this document's own **Appendix A2**
+already documented (`queue.is_empty()` gate + `last_skill` cap). The rule contradicted a
+finding already in the same file.
+
+**Two misclassifications that break byte-identity:**
+
+- **`tool_slot`** — a `tool_use` emitted before the frontier keeps receiving results until
+  D prunes the map (`replay.rs:499`). Re-folding from L starts with an empty map, so those
+  results fall into the orphan arm (`replay.rs:257-259`) and are admitted → **spurious
+  `ToolResult` blocks** past the frontier, outside the "discard first n".
+- **`queue`** — empty at D but typically **non-empty at L** (that is *why* D > L). A
+  re-fold with an empty queue takes a different FIFO pop, misses content-matched delivery,
+  and emits an **extra `UserText`** — the exact double-render #88 exists to prevent.
+
+**Three more, each fatal on its own:**
+
+- **`stamped` restored "absolute" panics.** `finalize_completed` stamps the whole window
+  including the open turn (`replay.rs:473-475`), so `stamped > out.len()` in a replayer
+  whose `out` is empty ⇒ `&out[*stamped..]` is out of bounds (`replay.rs:649`).
+- **Metrics are captured at the wrong instant and the seam is too narrow.** `push` runs
+  *after* the drain (`builder.rs:150-162`), so a drain-time value covers `[0, D)` and
+  over-counts `[L, D)`; Claude *sums*, so a resumed footer inflates tokens and cost.
+  Independently, the accumulators carry `TimeSpan { min, max }` (`metrics.rs:63-66`) while
+  `Metrics` exposes only `duration_secs` — `min` is unreconstructible, so §5.4's
+  `seed(&Metrics)` yields a wrong duration for **both** agents in rendered bytes.
+- **`(Position, n)` is not constructible.** Nothing maps a raw block index to the line that
+  produced it; `advance_at` uses the offset only for attachment locators
+  (`builder.rs:119-131`). And `n` cannot be counted back from the end: `coalesce_spans`
+  treats `Attachment` as span-**transparent** (`model.rs:527-532`), so a flushed `Thinking`
+  can land *after* an `Attachment` from the frontier line. Attribution is required, and it
+  does not exist.
+
+**Assessment.** This is the second unsound verdict, and the failure is deeper each time.
+Every proposed repair adds structure that creates a new trap — the reviewer notes that
+streaming `queue` with raw `marker_idx` values becomes *unsafe* precisely because resume
+rebases `base`, a hazard created by the fix. Resuming the fold mid-transcript is fighting
+the fold's design.
+
+**Direction.** Run **Step 0** (§10) first. If rendering dominates folding — likely, since
+folding is `serde_json` per line while rendering is markdown + syntect per block — adopt
+the **v2 shape: always fold from zero, cache only renders**, which has none of these
+problems and needs no engine surgery. Fold-resume returns only if measurement shows
+folding dominates, and then as separately-scoped work with the six prerequisites the
+review enumerated (pre-line-L snapshots, `tool_slot` sentinels, queue markers as resolved
+rather than indexed, `user_times`/`stamped` truncation with a rebased `base`, a widened
+metrics seam carrying span endpoints, and block→line attribution).
+
+**Test-fixture requirement, valuable regardless of direction.** The §5.3d equivalence
+catches these defects **only** on a fixture containing a **pinned drain**, a **mid-turn
+typed prompt**, and a **late tool result**. A plain linear transcript passes while broken —
+so those three shapes go into the fixture set explicitly.
