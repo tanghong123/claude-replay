@@ -1,9 +1,10 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v7 — no known blocker. Ready for review, then implementation.**
-> Earlier drafts rejected the idea after review; that was wrong. Every objection is
-> answered here (§3), and the two dead-end shapes are kept condensed in Appendix A only so
-> they are not re-proposed.
+> **Status: v10 — no known blocker. Under final review.**
+> Three review rounds; the core rule (§3) has passed a dedicated soundness pass. Earlier
+> drafts rejected the idea after review; that was wrong, and the two dead-end shapes are
+> kept condensed in Appendix A only so they are not re-proposed. Read §1 → §12 in order;
+> the appendix is history, not guidance.
 
 ## 1. Requirements (owner)
 
@@ -224,7 +225,7 @@ wrong side of a transformation. The correct captures are:
 19. **`serde_json::Value` must be re-exported through `seam`** so the agent crates can
     implement §6's `checkpoint`/`restore` without tripping `agents_import_only_the_seam`.
 
-## 5.2 Reuse, do not rebuild — and delete the third format
+### 5.2 Reuse, do not rebuild — and delete the third format
 
 - **`LineReader::open_at`** for resuming at an offset; **`src/jdi/lock.rs`** for the lock
   (move the primitive to `present::lockdir` + `present::sys::pid_alive`; keep jdi's
@@ -373,27 +374,6 @@ Additive: any validation failure falls back to today's behavior. Worst realistic
 
 ---
 
-## Appendix A — two shapes that were tried and must not be re-proposed
-
-Both failed for the *same* reason, now fixed by §3 (never re-process a line):
-
-**A1. Resume from a bare byte offset.** The commit cut is not a byte offset —
-`finalize_completed` runs once per *line* (`replay.rs:428`) and one line can carry several
-turns (probe: `committed_len` 0 → 2 on one line). The drain also fires later than the open
-window starts, being gated on `queue.is_empty()` (`replay.rs:439`) and capped by the
-`last_skill` pin (`replay.rs:455-462`). And `agent_ids` is never pruned
-(`replay.rs:496-502`), so re-folding from any non-zero offset emits
-`AgentDone { agent_type: "" }` (`mod.rs:443-449`).
-
-**A2. Composite frontier + a meta message stream.** State captured at the drain (line D)
-but re-read from the frontier (line L ≤ D) double-applies everything in `(L, D]`:
-`tool_slot` entries pruned at D orphan late results; the queue is non-empty at L; the
-per-turn times vector is one turn ahead at every drain (`replay.rs:473-475`); metrics are a
-mixed epoch (`builder.rs:150-162`); `SessionMeta.children` is mutated by `AgentDone`
-(`session.rs:297-303`) so a suffix delta cannot express it.
-
-§3 avoids all of it by restoring the open zone instead of recomputing it.
-
 ## 12. Implementation order
 
 Nothing writes a file until the format is final; no store gains append mode until a body
@@ -420,3 +400,26 @@ exists that can use it.
 
 **Measure at step 4** (§8.1): the TUI's per-block serialize is the only new steady-state
 cost, and it should be a number before it is a default.
+
+---
+
+## Appendix A — two shapes that were tried and must not be re-proposed
+
+Both failed for the *same* reason, now fixed by §3 (never re-process a line):
+
+**A1. Resume from a bare byte offset.** The commit cut is not a byte offset —
+`finalize_completed` runs once per *line* (`replay.rs:428`) and one line can carry several
+turns (probe: `committed_len` 0 → 2 on one line). The drain also fires later than the open
+window starts, being gated on `queue.is_empty()` (`replay.rs:439`) and capped by the
+`last_skill` pin (`replay.rs:455-462`). And `agent_ids` is never pruned
+(`replay.rs:496-502`), so re-folding from any non-zero offset emits
+`AgentDone { agent_type: "" }` (`mod.rs:443-449`).
+
+**A2. Composite frontier + a meta message stream.** State captured at the drain (line D)
+but re-read from the frontier (line L ≤ D) double-applies everything in `(L, D]`:
+`tool_slot` entries pruned at D orphan late results; the queue is non-empty at L; the
+per-turn times vector is one turn ahead at every drain (`replay.rs:473-475`); metrics are a
+mixed epoch (`builder.rs:150-162`); `SessionMeta.children` is mutated by `AgentDone`
+(`session.rs:297-303`) so a suffix delta cannot express it.
+
+§3 avoids all of it by restoring the open zone instead of recomputing it.
