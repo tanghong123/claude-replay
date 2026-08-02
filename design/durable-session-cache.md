@@ -452,6 +452,32 @@ Portability is unchanged and remains a correctness gate: `pid_alive` returns `fa
 non-unix (`jdi/state.rs:150-167`), so on a platform without a real liveness check the
 durable cache is **disabled** rather than assuming every lock is stale.
 
+## 7.5 Future direction: if TUI sharing is genuinely needed (owner)
+
+Beyond `tmux attach`, real multi-client TUI sharing means **splitting the TUI into
+backend and frontend, as HTML already is** — and that is why HTML sharing works today:
+its server owns the session while N browser tabs attach as clients.
+
+The pieces already exist and are frontend-neutral. `present::pull` defines a `PullReply`
+carrying `committed: Vec<Block>` and `provisional: Vec<Block>` (`pull.rs:75-90`) with a
+4-member `Cursor` and a ready-made `PullClient` exposing `blocks()` / `apply()` /
+`next_cursor()` (`pull.rs:141-221`). HTML *specialises* that reply into byte-range
+pointers into its records; the **neutral** protocol hands over real `Block`s — exactly
+what a TUI client needs to render. The developer guide already documents this as a
+supported consumer story ("the decoupled shape — a worker thread, a subprocess, or a
+network hop away"); the TUI simply does not use it yet, because it owns its
+`FollowParser` directly.
+
+The end state unifies the two future notes in this document: **one backend per session**
+(one fold, one meta stream, one lock) with **N clients of any kind** — browser tabs and
+TUI instances alike. At that point the lock key relaxes from `<frontend, session>` to
+`<session>`, and the per-frontend duplication accepted in §5.3e disappears on its own.
+
+**This is why §5.3e's duplication is the right interim call rather than debt.** Shared
+cross-process storage would be machinery the end state deletes; duplication is machinery
+the end state simply stops needing. Nothing decided for #96 obstructs the split, and no
+cross-process sharing protocol has to be built and then unbuilt.
+
 ## 8. Admission must not run under the cache mutex
 
 `shared_session` invokes its factory closure **while holding the cache-wide
