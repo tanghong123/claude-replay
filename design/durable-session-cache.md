@@ -220,13 +220,77 @@ explicitly whichever is chosen:
   it spans the boundary, so the *pending* set — not just the joined `TaskList` — has to
   be persisted.
 
-**Recommendation:** the meta stream, appended at the drain, recording the fold's own
-committed output. Start by recording the `Block` (the Block log already is that stream,
-and the TUI writes it regardless — zero new surface); switch HTML to a compact meta-delta
-record only if Step 0 shows decoding blocks purely for meta is a real cost on its path.
-Both are the same interface, so that stays an optimisation rather than a redesign.
+**DECIDED (owner).** **Both** frontends reconstruct metadata from the **meta message
+stream**. `Block` is *not* a privileged `BV` that may shortcut meta derivation.
 
-**Superseded:** (i) + the scalar sidecar. Fall back to a periodic meta snapshot
+Rationale, and why this is stronger than deriving meta from the Block log:
+
+- **One resume protocol, no branch.** Nothing anywhere asks "is my `BV` losslessly a
+  `Block`?" A third frontend gets meta reconstruction for free without its `BV` having to
+  be lossless — and `BlockRead` stays out of the resume path entirely, which matters
+  because HTML deliberately does not implement it.
+- **It removes the last asymmetry.** HTML no longer needs to read the Block log at all;
+  its content comes from its records and its meta from the stream, exactly like the TUI's.
+- Deriving meta from Blocks survives as a **verification oracle** (below), which is where
+  it is genuinely valuable.
+
+### 5.3c The meta stream, concretely
+
+Appended **at the drain** (`builder.rs:154`), the same site as `store.put`, so records are
+committed-only and block-aligned by construction. Each record carries the fold/format
+version and the committed block count `n` it corresponds to, plus the transcript
+`Position` for that `n` (the composite frontier of §5.2).
+
+Payload is classified by shape — the rule that keeps replay simple *and* avoids write
+amplification:
+
+| state shape | how it is written | why |
+|---|---|---|
+| **bounded / fixed-size** — `cwd`, `prev_ts`, `pending_ts`, `prev_user_text`, `delivered_rendered`, `stamped`, folded `Metrics`, meta counters, `TaskFold.pending` | **absolute**, in each record | idempotent; replay is "last value wins"; no accumulation bugs; costs a few bytes |
+| **growing / collection** — `agent_ids` entries, `SessionMeta.children`, appended `user_times`, task ops | **delta** since the previous record | append-only; no rewrite amplification |
+
+Replay = read records in order up to `n`, overwriting absolutes and applying deltas.
+Because absolutes are re-stated every record, a reader may also **start from the last
+record** for those fields and only accumulate the deltas — so load stays O(deltas), not
+O(all state ever).
+
+This is what makes `agent_ids` and `TaskFold.pending` — the two items flagged above as
+free in neither variant — first-class stream contents rather than special cases.
+
+### 5.3d Verification: two independent derivations must agree
+
+Deriving meta from committed `Block`s is retained **as a test oracle**, not a production
+path. For any fixture session, these three must produce an identical `committed_meta`:
+
+1. a cold fold of the transcript (today's behaviour — the reference),
+2. a load that replays the meta stream (the production path, both frontends),
+3. folding the Block log through `committed_meta.push` (the independent oracle).
+
+(1) vs (2) pins the cache; (2) vs (3) pins the stream against the fold it records, which
+is precisely the drift the version stamp cannot catch. This is the same
+two-independent-derivations discipline the workspace already uses for the frozen
+`parse_lines` oracle and the byte gate.
+
+### 5.3e Consequence for the artifact set
+
+The **meta stream is now the one artifact every frontend needs**, and it is entirely
+frontend-agnostic — so it, rather than the Block log, is the natural shared artifact:
+
+```
+meta      ← SHARED, frontend-agnostic, required by all      → <session, meta> lock
+blocks    ← the TUI's content artifact; shareable, optional → <session, blocks> lock
+records   ← HTML's content artifact; private                → <session, html> lock
+```
+
+A frontend that cannot take `<session, meta>` still **reads** it (append-only +
+`valid_up_to`) and folds privately past that point, so per-frontend concurrency is
+unaffected. The alternative — duplicating the small meta stream per frontend — is simpler
+but forfeits exactly the cross-frontend reuse this design exists to provide; prefer the
+shared scope, and fall back to duplication only if the lock dance proves troublesome in
+practice.
+
+**Superseded:** the checkpoint/scalar-sidecar recommendation, and "HTML reads the Block
+log for meta". Fall back to a periodic meta snapshot
 only if Step 0 shows folding the Block log for meta is too slow on HTML's path — an
 optimisation, added later, that changes no interface.
 
