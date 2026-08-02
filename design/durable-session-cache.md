@@ -439,8 +439,14 @@ inside a private tmux server, `tests/tmux_smoke.rs`), so this is the established
 app is run rather than a workaround. **The refusal message should say so** — naming the
 holder *and* pointing at `tmux attach` turns the error into the answer.
 
-**A `--no-cache` escape hatch is still worth shipping, on a different rationale.** Not to
-permit a legitimate double-open — per the above there isn't one — but as **operational
+**A `--no-cache` escape hatch is still worth shipping — as a HIDDEN option (owner).**
+`#[arg(long, hide = true)]`, matching the precedent already in the workspace for
+internal surfaces (`__run` / `__handoff` are declared `hide = true`, `jdi/mod.rs:164-167`).
+
+Hidden is the right visibility, not a compromise: documenting it would advertise a way to
+re-enable exactly the silent RAM duplication the lock exists to surface, and users would
+reach for it to force a second TUI rather than `tmux attach`. Its purpose is not to
+permit a legitimate double-open — per the above there isn't one — but to be **operational
 insurance for the cache path itself**. The lock now gates access to the app: a bug in
 liveness detection, an unwritable cache directory, or a filesystem without working locks
 would otherwise leave a user unable to open their own sessions, which is a severe failure
