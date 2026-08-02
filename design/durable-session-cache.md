@@ -234,6 +234,48 @@ Rationale, and why this is stronger than deriving meta from the Block log:
 - Deriving meta from Blocks survives as a **verification oracle** (below), which is where
   it is genuinely valuable.
 
+### 5.3b-rule The governing principle for replay state (owner)
+
+`agent_ids` is not a special case to be handled — it is the **first instance of a rule**:
+
+> Any state that is part of the **frontend-neutral session state** and **survives the
+> durability drain** — i.e. can still influence output for lines after the frontier — is
+> emitted into the meta stream **at the point it changes**. State that the drain prunes is
+> **not** emitted: it belongs to the provisional zone and is rebuilt for free by the
+> bounded re-fold of §5.2.
+
+The classification criterion is mechanical, not a judgement call: *does
+`finalize_completed` prune it?* (`replay.rs:496-502`). Applying it to today's `Replayer`
+(`replay.rs:96-124`):
+
+| pruned at the drain → **not** streamed | survives the drain → **streamed** |
+|---|---|
+| `out`, `durable`, `base`, `tool_slot`, `suppress`, `last_skill`, `queue` | `agent_ids`, `user_times`, `stamped`, `prev_ts`, `pending_ts`, `prev_user_text`, `delivered_rendered` |
+
+…plus the accumulator-level survivors: `cwd`, folded `Metrics`, `committed_meta`, and the
+task fold (including `pending`).
+
+**Enforcement — structural, not disciplinary.** A rule that relies on a future author
+remembering it will be broken. So the surviving state is **grouped into named types that
+are themselves the stream payload**, making "carried" the default and omission a
+compile-time event rather than a silent resume bug:
+
+- `CarriedScalars` — every bounded survivor, serialised **absolute** in each record
+  (§5.3c). Adding a field to this struct carries it automatically; there is nothing to
+  forget.
+- `CarriedCollections` — the growing survivors, each with a delta emitter, expressed as an
+  enum the writer matches **exhaustively**, so adding a variant fails to compile until its
+  delta is defined.
+
+**Backstop.** The §5.3d three-way equivalence is what catches anything that still slips
+through: state that survives the drain but is not streamed will make a resumed load
+diverge from a cold fold, and the test fails. Rule, structure, and test in that order.
+
+**Consequence for the work breakdown.** This is a refactor of `Replayer`'s field layout
+(grouping survivors into the two types) that must land *before* the stream is written,
+not after — retrofitting the grouping once the stream exists means changing the on-disk
+format again.
+
 ### 5.3c The meta stream, concretely
 
 Appended **at the drain** (`builder.rs:154`), the same site as `store.put`, so records are
