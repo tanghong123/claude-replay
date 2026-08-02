@@ -11,7 +11,11 @@
 > **(2)** accept a **grown** source on restore, not only a byte-identical one
 > (`shared.rs:639-641`); **(3)** let a restored session keep **advancing**
 > (`shared.rs:248-250`); **(4)** add the lock so one process writes.
-> The only genuinely new piece is widening the metrics seam (§0).
+> **The only piece that was actually missing is the session metadata and the rest of the
+> in-memory agent-neutral session state** — what `hibernate` does not carry, and therefore
+> what a restored session needs in order to keep folding rather than being read-only. That
+> is precisely what §0 and §5 specify; the review rounds' contribution was pinning *which*
+> fields and, decisively, at *which boundary* they must be captured.
 > Two successive designs for resuming the *fold* mid-transcript were reviewed and found
 > **unsound** (Appendices A and B). What survives is narrower, and its value is unproven —
 > which is why §4 comes before the design.
