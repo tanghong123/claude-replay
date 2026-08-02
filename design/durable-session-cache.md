@@ -1,421 +1,320 @@
 # Design: a durable, cross-run session cache
 
-> **Status:** design v2 (not built). Task #96.
-> **v1 was reviewed and its core was rejected as unsound** — see §A. That is recorded
-> here in full so the approach is not proposed again. §5 is the replacement.
-> One question remains for the repo owner: §10.
+> **Status:** design v4 (not built). Task #96.
+> v1's core ("resume the fold from a byte offset") was reviewed and **rejected as
+> unsound**; the evidence is kept in Appendix A so it is not re-proposed. v4 below
+> follows the owner's direction: materialize the frontend-agnostic Block stream, and
+> specify the TUI and HTML paths together so the shared/specific seam is explicit.
 
 ## 1. Problem
 
-Every run rebuilds its on-disk artifacts from zero. `html_export::start_server` creates a
-bundle under `std::env::temp_dir()` and `remove_dir_all`s it at startup
-(`serve.rs:622-630`), so a session parsed, folded and rendered yesterday is parsed,
-folded and rendered again today.
+Every run rebuilds its artifacts from zero: `start_server` creates a bundle under
+`temp_dir()` and `remove_dir_all`s it at startup (`serve.rs:622-630`). The TUI is worse
+off still — it keeps everything in RAM (`ArcStore`) and persists nothing, so every open
+re-parses and re-folds the whole transcript.
 
-Transcripts are append-only in the normal case and committed block content is put-once at
-the durability frontier, so *some* reuse must be possible. The question v1 got wrong was
-**which** work can be skipped.
+Transcripts are append-only and committed blocks are put-once, so reuse is possible. v1
+got *which* work is reusable wrong; v4 answers it per frontend.
 
 ## 2. Goals / non-goals
 
-**Goals.** Reuse expensive work across runs; never serve a stale, torn, or
-differently-rendered prefix; never wedge on a lock left by a dead process; never block a
-user from viewing a session because another process holds a lock; keep the capability
-frontend-agnostic.
+**Goals.** Reuse parse+fold (and, for HTML, render) across runs; never serve a stale,
+torn, or differently-parameterised prefix; never wedge on a dead process's lock; never
+block a user from viewing a session; keep the mechanism in `present` so any frontend can
+adopt it.
 
-**Non-goals.** Sharing artifacts *between* frontends (§6). Caching anything derived from
-interactive view state. Multi-machine caches. **Resuming the fold mid-transcript** (§A).
+**Non-goals.** Caching interactive view state (wrapped heights depend on width and fold
+state). Multi-machine caches. Resuming the fold from a bare byte offset (Appendix A).
 
-## 3. Layering
+## 3. What already exists (and must not be rebuilt)
 
-Lives in **`claude-replay-present`**, which already owns `cache/`.
+Three pieces of this design are already implemented and tested. The v4 work is mostly
+*connecting* them.
 
-**`SessionCache` learns nothing** — it is already agnostic via the store type parameter.
-But v1's "just wrap the `shared_session` closure" is **not free**, and the doc must say
-so: `shared_session` invokes that closure inside `or_insert_with` **while holding the
-cache-wide `pull_residents` mutex** (`cache/mod.rs:167-173`), and that module's header
-states the invariant — *"the only work under a cache lock is the brief O(delta) follower
-advance"* (`cache/mod.rs:25-27`).
+| existing | what it gives us | gap |
+|---|---|---|
+| **`TierBStore`** (`engine/tier_b.rs`) | **already IS the Block-JSON artifact**: append-only, newline-framed `serde_json` of `Block`, `Deferred{offset,size}` locators, a sidecar, and a `reopen` that opens read+write and resumes `len` from `SeekFrom::End(0)` so later puts append (`tier_b.rs:91-108`) | not durable across runs; not used by the TUI |
+| **`engine::reader::Position`** | source identity + resume validation: `{offset, consumed_hash, anchor, len_hint}`, `open_at`, `poll_resume` re-reads the prefix, checks `len >= offset`, hashes it, checks a first-line anchor, else full re-read (`reader.rs:44-86, 148-173, 243-278`) | `mod reader` is `pub(crate)`; its header names `SessionAccumulator::checkpoint`/`resume` (#19) as the intended consumer — **unbuilt** |
+| **`SharedSession::hibernate`/`restore`** | serialising committed BVs + open turn + meta/metrics/tasks and reloading them (`shared.rs:592-666`) | requires the source to be byte-**identical**, and a restored body can never `advance()` (`shared.rs:248-250`) |
 
-**Decision.** Admission is **two-phase, outside the lock**: resolve paths, take the file
-lock, validate, and build the store *before* calling `shared_session`, then hand the
-already-constructed `SharedSession` in. Nothing slow ever runs under the cache mutex. A
-port probe, a prefix hash, and a lock acquire that sleeps in its race-grace window
-(`jdi/lock.rs:49`) must never block every other session's `/pull`.
+## 4. The two paths, concretely
 
-## 4. Location and layout
+Both paths are the same shape. Only the **artifact** and the **BV** differ.
 
-Root: **`$CLAUDE_REPLAY_CACHE`**, default `$XDG_CACHE_HOME/claude-replay`.
+### 4.1 TUI path
 
-v1 keyed artifacts at `sessions/<session>/<frontend>/`. **That contradicts how the HTML
-server works** and is corrected here: `start_server` is multi-root (several roots share
-one bundle dir, `serve.rs:622-628`) and **lazily registers child sessions into the same
-dir** as parents' streams are generated (`serve.rs:632-635`). One bundle dir cannot live
-inside N session dirs, and a per-session lock would have to be acquired mid-run for every
-newly discovered child.
+- **`BV = Block`** — committed blocks live in memory, exactly as today.
+- **The sink writes Block JSON on the side.** `put` keeps the `Block` (returns it as the
+  BV) *and* appends its `serde_json` encoding to the durable log. That log is the
+  `TierBStore` format, unchanged.
+- **On first client read**, the committed vector is materialised by decoding the log:
+  `Vec<Block>` in memory. (Lazy: opening a session validates and locks; nothing is
+  decoded until someone actually reads.)
+- **The tailing reader starts at the first line of the provisional zone** (§5.2) and
+  rebuilds the open turn; subsequent tailing appends new committed blocks to the log.
 
-**Decision.** Two separate things, because they have different lifetimes:
+The TUI artifact is **parameter-free**: a serialised `Block` bakes in no fold policy, no
+width, no cwd. That is what makes it shareable across frontends *and* valid across flag
+changes.
+
+### 4.2 HTML path
+
+- **`BV = RecordLocator`** — a pointer into the wire-format records file.
+- **The sink renders at put time** (`record_store.rs:122-142`), appends the wire record,
+  returns the locator. Unchanged from today.
+- **On first client read**, the committed vector is materialised by **scanning the
+  records file for entry boundaries** into `Vec<RecordLocator>`. Content stays on disk —
+  which is the whole point of the pointer path; nothing is decoded into memory.
+- Tailing behaves as in 4.1.
+
+The HTML artifact is **parameter-bound**: records bake in `FoldPolicy`, `cwd` and the
+transcript path via `RenderCx` (`record_store.rs:30-38`). So it is *not* shareable
+between frontends, and it is invalid across a flag change — `--html` then
+`--html --full` must not reuse it.
+
+### 4.3 The asymmetry that drives everything
+
+| | TUI | HTML |
+|---|---|---|
+| artifact | Block JSON (canonical) | wire records (projection) |
+| BV | `Block` (in memory) | locator (on disk) |
+| materialise = | decode every entry | scan entry offsets |
+| parameter-bound? | **no** | yes (fold, cwd, transcript) |
+| can recover `Block`s from it? | yes | **no** (no `BlockRead`, deliberately) |
+| shareable across frontends? | **yes** | no |
+
+The last two rows have a sharp consequence for resume, addressed in §5.3.
+
+## 5. Resume protocol (shared)
+
+### 5.1 Why v1's frontier failed, in one line
+
+Fold state with session-long reach (`agent_ids`) is never pruned at the drain, so
+re-folding from any non-zero offset changes output; and the commit cut is not even
+nameable as a byte offset. Full evidence in Appendix A.
+
+### 5.2 The composite frontier
+
+The checkpoint records **where the provisional zone begins**, as a pair:
 
 ```
-~/.cache/claude-replay/
-  render/<frontend>/<agent>-<session-id>/    # per-SESSION, the reusable artifact (§5)
-      records                                #   rendered wire records
-      meta.json                              #   validity key (§5.2)
-  run/<frontend>/<lock-id>/                  # per-RUN, ephemeral: bundle shell, streams
-      LOCK                                   #   rendezvous record (§7)
+frontier = (line_position, blocks_from_that_line_already_committed)
 ```
 
-The **reusable** unit is per `<session, frontend>` — that is what a later run wants. The
-**run** unit (bundle dir, shell, the multi-root set) stays per-run and is disposable,
-exactly as today. The lock guards *writes to a session's render dir*, so a multi-root run
-takes one lock per session it actually renders, acquired lazily when that session is
-first pulled — the same moment the child is registered. A session it fails to lock is
-served un-cached (§7.4); no partial-failure policy is needed because each session is
-independent.
+The line part is a `reader::Position` (§3) — a **line** boundary, so it always exists.
+The ordinal handles the case that killed v1's `u64`: one line can emit several blocks,
+some committed and some not (verified: `committed_len` goes 0 → 2 on a single line). On
+resume we re-fold **from that line** and **discard the first `n` blocks produced**, since
+they are already in the committed table.
 
-## 5. What is actually reused: renders, not the fold
+Provisional blocks are never persisted — they are rebuilt by that re-fold, which is
+bounded by the open zone.
 
-**Decision. The fold always runs from zero. Only *rendering* is cached.**
+### 5.3 Carried state: persist it, do not re-derive it
 
-This is the v2 core. Folding is re-executed exactly as today, so every piece of fold
-state — `agent_ids`, `cwd`, metrics, `user_times`, the task op-log, `prev_ts` — is
-correct **by construction**, with no seeding, no frontier, and no new engine surgery.
-What gets skipped is the expensive part: rendering each committed block to its wire
-record (markdown + syntect highlighting) inside `RecordStore::put`
-(`record_store.rs:122-142`).
+At the drain, `finalize_completed` prunes `suppress`, `tool_slot` and `last_skill` to the
+open window (`replay.rs:496-502`), and the drain is gated on `queue.is_empty()`
+(`replay.rs:439`). So **every one of those concerns only the provisional zone** and is
+rebuilt for free by the §5.2 re-fold.
 
-### 5.1 Mechanism
+What is *not* pruned must be persisted in the checkpoint sidecar:
 
-`put` is called exactly once per committed block, in commit order, and the cached
-`records` file holds those renders in the same order. So:
+`agent_ids`, `cwd`, `prev_ts`, `pending_ts`, `prev_user_text`, `delivered_rendered`,
+`user_times` + `stamped`, the folded `Metrics`, the task op-log, `SessionMeta`, and the
+committed count.
 
-```
-put(block, at, times):
-    if cache_valid and at < cached_record_count:
-        return cached_locator[at]        # reuse the bytes already on disk
-    else:
-        render, append, return the new locator
-```
+**Decision: persist `agent_ids` directly rather than re-deriving it from committed
+`SubAgent` blocks.** Re-derivation would work for the TUI but is *impossible for HTML*,
+whose BV cannot yield a `Block` (§4.3). Persisting the map — small, one entry per spawn —
+keeps the resume protocol identical for both frontends and is the difference between one
+shared implementation and two.
 
-The first divergence disables reuse for the remainder of the run (a monotone switch — no
-interleaving). Correctness is trivially preserved: on any doubt, render.
+### 5.4 The one seam addition
 
-### 5.2 Validity — what makes cached renders reusable
+`MetricsAccumulator` is `push`/`finish` with no seed hook (`adapter.rs:24-34`). Resume
+needs `fn seed(&mut self, _m: &Metrics) {}` — a defaulted method, implemented by Claude's
+family (which sums) and ignorable by Codex's (which overwrites from a cumulative total
+and self-corrects on the next `token_count` line). One deliberate addition to an audited
+seam; no other `claude-replay-agents` work.
 
-v1 proposed inline FNV-1a. **That reinvents machinery that already exists**:
-`claude-replay-engine/src/engine/reader.rs` implements `Position { offset,
-consumed_hash, anchor, len_hint }` with `encode`/`decode`, `tell()`, `open_at()`, and
-`poll_resume` — which re-reads the prefix, checks `len >= offset`, hashes it, and checks
-a first-line **identity anchor** before accepting (`reader.rs:44-86, 148-173, 243-278`).
-It is strictly stronger than what v1 described, and its header names its intended
-consumers as `SessionAccumulator::checkpoint`/`resume` (#19) and restart persistence
-(#11) (`reader.rs:52-54`).
+### 5.5 Validity
 
-**Decision.** Consume `reader::Position`; do not write a second hasher. Two follow-ups
-the implementation must settle first: `mod reader` is `pub(crate)`
-(`engine/mod.rs:13`) so it needs promoting, and whether #96 supersedes or merely
-consumes #19/#11 must be answered before code lands.
+Reuse the cache iff **all** hold, else discard and rebuild from zero:
 
-Beyond source identity, cached **renders** are only reusable if the parameters they were
-rendered with still hold. `RecordStore::put` renders through `cx.fold`, `cx.cwd`,
-`cx.transcript` (`record_store.rs:122-142`), supplied per run from `args.fold_policy()`
-(`serve.rs:601`). v1 validated **none** of these — so `--html` followed by
-`--html --full` would have appended `--full` records onto a folded prefix in one file,
-silently. The validity key is therefore:
-
-| key component | why |
+| check | scope |
 |---|---|
-| source `Position` (offset + prefix hash + identity anchor) | the transcript is the same file and has only grown |
-| `FoldPolicy` fingerprint | renders bake in fold state |
-| `cwd` | renders bake in relativized paths |
-| record count + `records` byte length | the artifact is not torn |
-| cache format version | forward/backward compatibility |
+| `reader::Position` accepts (grown, prefix hash + anchor match) | both |
+| artifact entry count and byte length match the sidecar | both |
+| **params fingerprint** matches | HTML only (fold + cwd + transcript); empty for TUI |
+| sidecar format version | both |
 
-Any mismatch ⇒ ignore the cache and render fresh. Never partially trust it.
+## 6. The shared / frontend-specific split
 
-### 5.3 STEP 0 — measure before building
+This is the deliverable the owner asked for. Everything above the line is written once.
 
-The entire value of this design is the assumption that **rendering dominates folding**.
-That is plausible (markdown + highlighting per block vs. `serde_json` per line) but it is
-**not measured**, and if folding dominates, this design's ceiling is low and #96 should
-be reconsidered rather than built.
+**Shared — `claude-replay-present` (+ the engine bits noted):**
 
-**The first commit of #96 is an instrumented measurement** of cold-open time split into
-read / fold / render on a large real session. Everything below is contingent on it.
+1. Cache root resolution, per-session directory naming, discovery.
+2. Lock, rendezvous record, liveness, stale reclaim, the §7 matrix, eviction.
+3. Validity (§5.5) via `reader::Position`.
+4. The **checkpoint sidecar** — its schema *is* frontend-agnostic, because §5.3 persists
+   carried state rather than deriving it from an artifact.
+5. `SessionAccumulator::checkpoint()` / `resume()` (engine): seed carried state, position
+   the reader at the composite frontier, drop the first `n` re-produced blocks, continue.
+6. The **append-only log primitive** — extracted from `TierBStore`, which already
+   implements exactly it: append bytes, count entries, track a durable `valid_up_to`.
+   Both artifacts are this log; only the payload differs.
 
-## 6. Why artifacts are per-frontend
+**Frontend-specific — one small trait implemented twice:**
 
-`RecordStore`'s `Bv` is a locator into **rendered wire records**; it deliberately does not
-implement `BlockRead` (`record_store.rs:9-11`). v1 argued a shared artifact set is "not
-representable" — that is circular, since one-wayness is a *choice*. The real reasons are
-concrete: the store carries a render continuation (`EmitState`, `record_store.rs:87-91`)
-and run-scoped `RenderCx { fold, cwd, transcript }` (`record_store.rs:30-38`). Those are
-frontend-specific by nature, so per-frontend directories are the honest layout — and the
-per-`<session, frontend>` lock follows.
+```rust
+/// A frontend's durable artifact for one session. The log, the lock, the validity and
+/// the resume protocol are shared; this is the entire per-frontend surface.
+pub trait DurableArtifact: BlockStore {
+    /// Parameters baked into appended entries — "" when parameter-free (and therefore
+    /// shareable across frontends). TUI: "". HTML: fold + cwd + transcript.
+    fn params_key(&self) -> String;
 
-## 7. Locking, stale recovery, hand-off
+    /// Build the committed BV table from the artifact — called LAZILY, on the session's
+    /// first client read. TUI: decode each entry into a `Block`. HTML: record each
+    /// entry's offset/len as a locator, decoding nothing.
+    fn materialize(log: &AppendLog, count: usize) -> std::io::Result<Vec<Self::Bv>>;
 
-### 7.1 The lock: a move *and* a new state machine
+    /// Open the artifact for append after an existing prefix.
+    fn open_append(log: AppendLog, params: RenderParams) -> std::io::Result<Self>;
+}
+```
 
-`src/jdi/lock.rs` is the right **mechanism** (atomic mkdir + owner pidfile + pid-liveness
-reclaim) and must not be forked. But two v1 claims were wrong:
+So the per-frontend cost of adopting the cache is: choose a payload encoding, say whether
+it is parameter-bound, and say how a BV is made from a log entry. Nothing about location,
+locking, validity, or resume is duplicated.
 
-- It is a **short-held setup mutex**, not a long-held writer lock: *"We hold the lock. A
-  live supervisor runs lock-free"* (`lock.rs:65-66`); long-lived exclusion is done by an
-  injected `session_alive` callback, and `Acquire` has three outcomes where §7.3 needs
-  four. The state machine on top is genuinely new work — budget it.
-- The lock is a **directory** `.lock/` containing an `owner` file, removed with
-  `remove_dir_all` on drop (`lock.rs:26-28, 38-39, 71`), not a leaf file as v1's tree
-  drew it.
+Note the TUI store is a **composite** — `BV = Block` in memory *and* a side log — which
+is the same put-does-two-things shape `RecordStore` already uses.
 
-Dependency direction checks out (root → present → core), so moving it down is graph-legal
-and jdi's other `pid_alive` call sites just re-import.
+## 7. Locking
 
-### 7.2 Portability — a real correctness hole
+Three scopes, because the shared artifact and the per-frontend artifacts have different
+owners:
 
-`pid_alive` shells out to `kill -0` and **returns `false` unconditionally on non-unix**
-(`jdi/state.rs:150-167`). In `present` — which is cross-platform and ships
-`#[cfg(windows)]` paths — that means every lock reads as stale on Windows, every process
-reclaims, and the single-writer invariant fails into **concurrent writers**, the one
-outcome §12 promises cannot happen.
+```
+<session, blocks>   ← the parameter-free Block log (§4.1) — shareable, one writer
+<session, html>     ← wire records
+<session, tui>      ← the TUI's own artifact set
+```
 
-**Decision.** Gate durable caching on a real liveness implementation. On a platform
-without one, the cache is **disabled** (run un-cached), never "assume dead". Also: one
-subprocess per liveness check makes §8's eviction scan spawn a process per cached
-session — the liveness check must be syscall-based, or eviction must not consult it
-per-entry.
+Per-frontend scopes keep a TUI and an HTML server from ever blocking each other (the
+owner's requirement). Giving the *shared* Block log its own scope is what lets it stay
+shared: a frontend that loses that lock still **reads** it — safe without a reader lock,
+because the log is append-only and the sidecar's `valid_up_to` bounds what a reader may
+trust — and folds privately past that point.
 
-### 7.3 The behavior matrix (HTML, asking for session `S`)
+**Stale recovery is liveness-based**, reclaiming a lock whose pid is dead; a holder that
+also advertises a port is probed, since pids are recycled. The probe is HTTP-shaped
+knowledge and `present` has zero `std::net` usage, so it arrives as an **injected
+callback** from the frontend, not a new capability in `present`.
 
-| holder of `S` | behavior |
+**Portability is a correctness issue, not a detail.** `pid_alive` shells to `kill -0` and
+returns `false` on non-unix (`jdi/state.rs:150-167`); dropped into `present` as-is, every
+lock would read stale on Windows and the design would fail *into* concurrent writers.
+Durable caching is therefore **disabled** on a platform without a real liveness check.
+
+The mechanism moves down from `src/jdi/lock.rs` (dependency direction checks out), but
+note it is a short-held *setup* mutex with three outcomes, whereas this needs a long-held
+writer lock with four (§7.3 of v2, retained). The state machine on top is new work.
+
+### 7.1 Hand-off matrix (HTML, session `S`)
+
+| holder | behavior |
 |---|---|
-| none, or pid not alive | take the lock, serve, read+write the cache |
-| alive, port answers, **hosts `S`** | hand off — open the holder's `…?session=S`, start no server |
-| alive, port answers, does **not** host `S` | serve ourselves, **read-only**: private run dir, no cache writes |
-| alive, port does **not** answer | treat as dead → reclaim (row 1) |
+| none / pid dead / port dead | take the lock, serve, read+write cache |
+| alive, hosts `S` | hand off: print the holder's `…?session=S`, open it, exit |
+| alive, does not host `S` | serve read-only: private run dir, no cache writes |
 
-Row 2 supersedes v1's private-dir fallback only when the holder can already serve the
-request; row 3 keeps it for when it cannot.
+## 8. Admission must not run under the cache mutex
 
-**Unresolved in v1, decided here:** the hand-off row has nothing to wait on (the browser
-owns the session), so the handing-off process **prints the URL and exits**.
+`shared_session` invokes its factory closure **while holding the cache-wide
+`pull_residents` mutex** (`cache/mod.rs:167-173`), and that module's header states *"the
+only work under a cache lock is the brief O(delta) follower advance"* (`cache/mod.rs:25-27`).
+Locking, hashing a large prefix, and probing a port must therefore happen **before**
+`shared_session` is called, with the constructed `SharedSession` handed in ready-made.
 
-The port probe is HTTP-shaped knowledge and `present` has zero `std::net` usage.
-**Decision.** The probe is an **injected callback** supplied by the frontend
-(`claude-replay-html`), not a new capability in `present`.
+## 9. Eviction
 
-### 7.4 Who may write
+Size cap (default 2 GiB, `CLAUDE_REPLAY_CACHE_MAX`) + a 30-day age cap, evicting whole
+session dirs LRU by mtime; a live-locked entry is never evicted, and the liveness check
+used here must be cheap enough to run per entry (§7).
 
-**Only the lock holder writes that `<session, frontend>` render dir.** A non-holder runs
-with a private, non-cached store — fully correct, just without the benefit. This is the
-whole single-writer story; no cross-process protocol beyond the lock.
+## 10. Step 0 — measure first
 
-## 8. Eviction
+v4 targets parse+fold (both frontends) and render (HTML). Which dominates is **not
+measured**. The first commit of #96 is an instrumented cold-open split into read / fold /
+render on a large real session; it decides whether the HTML render cache is worth its
+parameter-validation complexity, and how much the TUI actually gains.
 
-Size cap, default 2 GiB (`CLAUDE_REPLAY_CACHE_MAX`), enforced by a `render/` scan at
-startup, evicting whole session dirs LRU by mtime; plus an age cap of 30 days. A **locked
-(live) entry is never evicted** — subject to §7.2's constraint that the liveness check
-used here must be cheap.
+## 11. Work breakdown
 
-## 9. Work breakdown
+- **Engine:** promote `reader`; `SessionAccumulator::checkpoint`/`resume` (§5.2–5.3);
+  extract the append-log primitive from `TierBStore`.
+- **Agents:** `MetricsAccumulator::seed` only (§5.4).
+- **Present:** `cache/durable.rs` (location, validity, two-phase admission, matrix,
+  eviction); `cache/lock.rs` moved down + the four-state machine; the `DurableArtifact`
+  trait; a liveness abstraction.
+- **HTML:** implement `DurableArtifact` for `RecordStore` (+ its params key); durable
+  dir; hand-off.
+- **TUI:** implement `DurableArtifact` for a composite `Block`-BV store that side-writes
+  the Block log.
 
-**Step 0** — the §5.3 measurement. Everything else is contingent.
+## 12. Testing
 
-**Engine** — promote `engine::reader` (or re-export `Position`); no fold changes, no
-frontier, no seeding. This is the big win of v2 over v1: **the engine is barely touched.**
+Lock (two writers; dead-pid reclaim; live-pid respected; live pid + dead port);
+resume (append then reopen — assert only the delta is folded); rejection (rewritten
+prefix; changed fold policy for HTML; torn artifact); **cached-vs-cold byte equality for
+both frontends** — note the existing byte gate cannot evidence this, since
+`--dump`/`--dump-html` never construct a `SessionCache` (`gate.sh:32-33`), so this is new
+test infrastructure; concurrency (two processes, one artifact, no interleaved writes).
 
-**Present** — `cache/durable.rs` (location, discovery, validity, two-phase admission,
-the §7.3 matrix, eviction); `cache/lock.rs` moved down + the four-state machine;
-a liveness abstraction (§7.2).
+## 13. Rollout
 
-**HTML** — render-reuse in `RecordStore::put` + the validity key it needs
-(`RenderCx` identity); durable render dir; hand-off in the serve/picker path
-(`LiveServer` already exposes `{dir, port, root_ids}` + `url_for(sid)`).
-
-**Agents** — none. (v1 needed metrics seeding across both agent families; v2 does not.)
-
-**TUI** — see §10.
-
-## 10. `DECISION NEEDED` — TUI scope
-
-The TUI uses `ArcStore`: pure RAM, no on-disk artifacts (`cache/mod.rs:225-233`). Under
-v2 the cached thing is *renders*, and the TUI's renders are ratatui lines whose wrapping
-depends on width and fold state — i.e. exactly the view state §2 excludes from caching.
-
-So under v2 the honest options are narrower than under v1:
-
-- **(a)** `present` owns location/lock/eviction/validity generically; HTML is the only
-  day-one consumer; the TUI opts in if and when it grows a cacheable artifact.
-- **(b)** The TUI additionally gets a durable *block* backing (`TierBStore`), caching
-  parse+fold rather than render — which only pays off if Step 0 shows folding is
-  expensive, and which changes the TUI's memory profile away from `ArcStore`'s
-  refcount-bump resync.
-
-**Recommendation: (a)**, revisited after Step 0.
-
-## 11. Testing
-
-- **Lock:** two writers one wins; dead-pid lock reclaimed; live-pid lock respected;
-  live pid + dead port treated as dead.
-- **Render reuse:** second run reuses records (assert renders-performed == 0 on an
-  unchanged session); appended transcript reuses the prefix and renders only the tail.
-- **Rejection:** changed `FoldPolicy` ⇒ no reuse; changed cwd ⇒ no reuse; rewritten
-  prefix ⇒ no reuse; torn records file ⇒ no reuse.
-- **Equivalence (the one that matters):** a cached run and a cold run produce
-  **byte-identical** output. Note the existing byte gate does **not** cover this — it
-  drives `--dump`/`--dump-html`, which never construct a `SessionCache`
-  (`gate.sh:32-33`). This is new, unbudgeted test infrastructure.
-- **Concurrency:** two processes, one render dir, no interleaved writes.
-
-## 12. Rollout
-
-Additive: any validation failure falls back to exactly today's behavior. The worst
+Additive: any validation failure falls back to exactly today's behavior, so the worst
 realistic bug is "the cache didn't help", never "the viewer showed something wrong".
 Release: minor.
 
 ---
 
-## Appendix A — the rejected v1 core (resume the fold at a byte frontier)
+## Appendix A — the rejected v1 core (resume from a bare byte offset)
 
-v1 proposed: persist committed state, and on a later run re-fold **from the byte offset
-where the open turn began**, skipping the prefix entirely. Two independent reviews plus a
-direct probe show this is unsound. Recorded so it is not re-proposed.
+v1 proposed re-folding from the byte offset where the open turn began, with no committed
+artifact. Rejected on three independent grounds; kept so it is not re-proposed.
 
 **A1. The commit cut is not a byte offset.** `finalize_completed` runs once per *line*
-after all of that line's messages (`replay.rs:428`), and one line can carry several user
-turns — the documented #56 shape. Verified directly:
+after all that line's messages (`replay.rs:428`), and one line can carry several user
+turns (the #56 shape). Verified directly:
 
 ```
 after line0 (offset 0):   committed_len=0
-after line1 (offset 200): committed_len=2     ← line1 produced a COMMITTED block AND the open turn
+after line1 (offset 200): committed_len=2   ← one line produced a COMMITTED block AND the open turn
 ```
 
-`frontier = 200` re-emits an already-committed block; `frontier = 201` drops a block. No
-`u64` names the cut.
+`frontier = 200` re-emits a committed block; `frontier = 201` drops one. **v4 fixes this
+with the composite (line, ordinal) frontier of §5.2.**
 
 **A2. The drain line is not the frontier line.** The cut is `rposition(UserText|Command)`
 capped back by the `last_skill` pin and gated on `queue.is_empty()`
-(`replay.rs:439, 443-462`). The drain routinely fires on a much later line than the one
-the open window starts at, so "update it at the drain site" silently drops whole turns.
-The same pins refute v1's cost claim: the open window holds every turn since the most
-recent `Skill` call, not "bounded by one turn".
+(`replay.rs:439, 443-462`), so it routinely fires on a much later line than the open
+window starts at. "Stamp it at the drain site" drops whole turns. The same pins refute
+v1's cost claim: the open window holds every turn since the most recent `Skill` call.
 
-**A3. Fold state crosses the frontier with unbounded reach — the fatal one.**
-`agent_ids` (`replay.rs:120-124`) is populated when a spawn is emitted and is **never
-pruned at the drain** (`finalize_completed` retains only `suppress`/`tool_slot`/
-`last_skill`, `replay.rs:496-502`). A `Completion` in the open turn resolves its spawn's
-real id and type from that map (`replay.rs:361-369`) — from a spawn possibly dozens of
-turns earlier. Re-folding from any non-zero frontier starts with an empty map and emits
-`AgentDone { agent_type: "" }`, which is **directly visible output**
-(`html_export/mod.rs:451-454`) and breaks the spawn↔done join (`session.rs:234-246`).
+**A3. Session-long fold state — the fatal one.** `agent_ids` (`replay.rs:120-124`) is
+populated at spawn-emit and **never pruned at the drain** (`replay.rs:496-502`); an
+`AgentDone` resolves its spawn's real id and type from it (`replay.rs:361-369`), possibly
+dozens of turns later. Re-folding from any non-zero offset starts empty and emits
+`AgentDone { agent_type: "" }` — directly visible (`html_export/mod.rs:451-454`) and it
+breaks the spawn↔done join (`session.rs:234-246`). Because the reach is session-long,
+v1's escape hatch ("move the frontier back") has no finite answer. **v4 fixes this by
+persisting the map (§5.3) instead of re-deriving it.**
 
-Because that reach is session-long, v1 §5.3's escape hatch — "move the frontier back; the
-constant just gets larger" — has **no finite answer**. The only sound frontier is 0,
-which is v1's own stated fallback. Also unseedable without new seams: `cwd` is
-first-non-empty-wins from line 1 (`codex/model.rs:141-143`); `MetricsAccumulator` has no
-seed hook (`adapter.rs:24-34`) and Codex *overwrites* from cumulative usage
-(`codex/metrics.rs:41-51`); the task op-log holds unjoined pending creates
-(`tasks.rs:104-107`); `user_times` in the sidecar is tail-aligned and would double-count.
-
-**A4. The proposed assertion was untestable as written.** `patch_floor` is a raw logical
-index; `committed_len()` counts post-`finish_turns` blocks — different index spaces. The
-invariant that *does* hold, and is worth pinning, is `patch_floor >= base` in raw space:
-every patch source is at or above `base`, so no drained block is ever mutated.
-
-**What survived review.** The durable location, the lock and its stale-recovery, the
-rendezvous/hand-off, eviction, and the observation that committed content is put-once —
-all intact. Only the "skip the fold" ambition was wrong, and §5 replaces it with "skip
-the render", which needs none of the machinery A1–A3 would have required.
-
----
-
-## Appendix B — v3: materialize the Block stream (owner's fork, 2026-08-02)
-
-The owner's proposal, and why it **rescues the "skip the fold" ambition that v1 lost**:
-
-> The conversion from transcripts to Block-json is frontend agnostic, so materializing
-> the Block json lets the HTML frontend benefit from what the TUI left behind. For the
-> TUI the cache `BV` should still be `Block`, but the sink generates the Block json on
-> the side. `SessionAccumulator` may need to support building the BVs from on-disk
-> artifacts and then start tailing.
-
-### B1. Why this works where the byte frontier did not
-
-v1 died on §A3: fold state with session-long reach (`agent_ids`) could not be
-reconstructed, so re-folding from a mid-file offset produced different bytes.
-
-Materializing **Blocks** dissolves that, because *the blocks carry the state*.
-Classifying `Replayer`'s carried fields (`replay.rs:96-124`):
-
-| field | at resume |
-|---|---|
-| `agent_ids` | **derivable by scanning committed `Block::SubAgent`s** — each carries `agent_id`/`agent_type`/`tool_use_id`. This is the field that killed v1. |
-| `user_times`, `stamped`, `prev_ts`, `pending_ts`, `prev_user_text`, `delivered_rendered` | small scalars/vectors — persist in the sidecar |
-| `out`, `durable`, `base`, `tool_slot`, `queue`, `suppress`, `last_skill` | open-window / in-flight — **empty at a quiescent boundary** (below) |
-
-So resume needs **no transcript replay at all**: load the committed BVs from the Block
-artifact, restore a small sidecar, position the reader, tail.
-
-### B2. Checkpoint at quiescence
-
-The remaining fields are only safe if they are empty, so **checkpoint only at a quiescent
-line boundary**:
-
-```
-quiescent := queue.is_empty() && tool_slot.is_empty() && last_skill.is_none()
-             && out.len() == base          // window fully drained
-```
-
-No in-flight tool call, no queued prompt, no pending skill, nothing uncommitted. Such
-points recur constantly (typically just before each new user turn). The checkpoint stores
-the reader `Position` (`engine/reader.rs`, §5.2) taken at that boundary — a *line*
-boundary, so §A1's "the cut falls inside a line" cannot arise: we are not naming a
-semantic cut, we are naming a line at which the semantic state happens to be empty.
-
-This is the sound form of `SessionAccumulator::checkpoint`/`resume` that
-`reader.rs:52-54` already anticipates (#19).
-
-### B3. The one seam addition
-
-`MetricsAccumulator` still has no seed hook (`adapter.rs:24-34`). v3 needs **one** default
-method — `fn seed(&mut self, _m: &Metrics) {}` — implemented by Claude's family (which
-sums) and ignorable by Codex's (which overwrites from a cumulative total, so it
-self-corrects on the next `token_count` line). One deliberate seam addition, versus v1's
-redesign of both agent metrics families.
-
-### B4. Lock granularity — keeping the owner's rule *and* the sharing benefit
-
-The owner keeps locks at `<session, frontend>` so a TUI and an HTML server never block
-each other. But the Block artifact is deliberately **shared** between frontends, so under
-per-frontend locks alone, two concurrent frontends would both write it.
-
-**Resolution: separate the artifact scope from the frontend scope.** Three lock scopes,
-each guarding what it owns:
-
-```
-<session, blocks>     ← the shared, frontend-agnostic Block stream (one writer)
-<session, html>       ← rendered wire records          (one writer)
-<session, tui>        ← whatever the TUI materializes  (one writer)
-```
-
-A frontend that loses `<session, blocks>` still runs: it **reads** the Block artifact
-(safe without a reader lock, since the file is append-only and a durable
-`valid_up_to = N blocks` marker bounds what a reader may trust), and folds privately past
-that point. So concurrency is preserved exactly as the owner requires, and the shared
-artifact still gets shared. This also settles B's "hard to support TUI and HTML
-simultaneously" — it isn't, once the shared artifact has its own scope.
-
-### B5. What this changes upstream in this document
-
-- §5's "fold always, cache only renders" becomes the **fallback**, not the core: with a
-  valid Block artifact the fold is skipped too. Render caching (§5.1) still applies
-  independently for HTML, and the §5.2 validity key still governs *renders*.
-- §9's "the engine is barely touched" no longer holds: v3 adds
-  `SessionAccumulator::checkpoint`/`resume` + the quiescence predicate. That is real
-  engine work — but bounded, and it is work `reader.rs` was already designed for.
-- §10's TUI question is answered by the owner: the TUI's `BV` stays `Block`, with the
-  sink writing Block json on the side. The TUI therefore *does* become a day-one producer
-  (and consumer) of the shared artifact.
-- §5.3's Step-0 measurement matters **more**, and its question sharpens: v3 targets
-  fold+parse, §5 targets render. The split decides which to build first — or whether both
-  are worth it.
+**A4. The proposed assertion was untestable.** `patch_floor` is a raw logical index;
+`committed_len()` counts post-`finish_turns` blocks — different index spaces. The
+invariant that *does* hold and is worth pinning is `patch_floor >= base` in raw space: no
+drained block is ever mutated.
