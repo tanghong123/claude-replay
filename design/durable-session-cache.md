@@ -19,6 +19,15 @@
 4. **Preserves every existing `SessionCache` benefit** — keyed residency, TTL reaping,
    delta reads, tier-b spill, `Arc` sharing, the pull protocol.
 5. **Metadata construction must not depend on the choice of `BV`.**
+6. **The cache must make frontend state management *easier*, not harder.** No heavy
+   state-keeping pushed up into the presentation layer — no per-block sidecars, no
+   frontend bookkeeping to work around a restrictive cache API. **Acceptance measure:**
+   after both the TUI and HTML move onto the persistent cache, neither frontend shows a
+   significant LOC increase. A frontend growing bookkeeping code is the signal that the
+   cache API is wrong, not that the frontend is.
+7. **Metadata records are sized to the change.** If one number changed, the record carries
+   one number — never a whole snapshot. This governs the record *format*, not just its
+   frequency.
 
 ## 2. Framing: this already exists; we are generalising it
 
