@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v16 — requirements review applied. Re-review pending.**
+> **Status: v17 — all seven requirements MET at re-review; its 11 follow-ups applied.**
 > Two earlier shapes were reviewed and rejected; they are kept condensed in Appendix A so
 > they are not re-proposed. Read §1 → §11 in order; the appendix is history.
 
@@ -63,9 +63,16 @@ when the queue is empty. A checkpoint is taken at a commit — but **not every c
 valid resume point**: one line can produce both a committed block and the block that opens
 the still-open turn (Appendix A1's probe: `committed_len` 0 → 2 on one line). So:
 
-> **Checkpoint guard.** Take a checkpoint only when the line that produced `out[0]` produced
-> **no** committed block. Otherwise skip it; the next commit checkpoints instead. This is
-> what `line_boundary()` is for. Commits are frequent, so nothing is lost.
+> **Checkpoint guard.** Take a checkpoint only when **every block the current line authored
+> is still in the open window** — precisely, when the logical index at the line's start
+> equals the post-drain `base`. One O(1) comparison off the deque; this is what
+> `line_boundary()` returns.
+>
+> Read it as "authored blocks that committed", **not** "caused a commit": the second reading
+> would never checkpoint at all, since the user line opening turn *n* is also the line that
+> commits turn *n−1*. Stated affirmatively: **the guard holds at every ordinary commit** and
+> skips only the multi-turn-on-one-line case of Appendix A1. §10's zero-parsed-lines
+> assertion catches the wrong reading.
 
 **Two offsets, not one** (§4 explains why):
 
@@ -77,6 +84,17 @@ stream's record count** (meta records are sparse — one per checkpoint — so a
 `min` can name an id no record carries). Then **physically truncate both streams**
 (`set_len`) to the boundary just past record `n` before appending anything, and discard a
 trailing record that is unterminated or unparsable.
+
+**A mid-run reset invalidates both streams.** A truncation/compaction drives
+`advance_from_source` → `builder.reset()` → `BlockStore::reset()`, and `RecordStore::reset`
+does `set_len(0)` on the content log (`record_store.rs:160-167`) — the meta stream has no
+such hook. Left alone, content regrows from 0 while meta still holds checkpoints stamped
+against the old bytes, and the next open restores a stale checkpoint against different
+content: the "false accept ⇒ wrong output" class §9 calls the one to guard hardest, reached
+without any rewrite-detection failure. **The writer subscribes to the same reset signal:
+truncate both streams to 0, bump `epoch`, drop the pending checkpoint.** The poison path
+does the same — step 3 narrows the branch to `poisoned()`, and `open_fresh` must discard the
+durable directory, not just the in-process store.
 
 Truncation is not optional. HTML serves committed bytes as one contiguous range from a
 locator to EOF (`serve.rs:325-329`), so abandoned records left in place would be range-read
@@ -92,7 +110,14 @@ re-reading it from the offset, which costs one turn:
 |---|---|
 | `out`, `base` — the open window | `agent_ids` — never pruned; a completion resolves a spawn many turns back |
 | `tool_slot`, `suppress`, `last_skill` — pruned to the open window at the drain | `user_times` + `stamped` |
-| `queue` — provably empty at a commit | `cwd`; `prev_ts`; `committed_meta`; the task fold **including `pending`**; the metrics blob (§5); **`epoch` and `provisional_gen`** |
+| `queue` — see the invariant below | `cwd`; `prev_ts`; `committed_meta`; the task fold **including `pending`**; the metrics blob (§5); **`epoch` and `provisional_gen`** |
+
+**The queue is not persisted, and the justification must be stated at `replay_from`, not at
+the commit.** "Empty at a commit" is true at `resume_at` but *not* necessarily at
+`replay_from`. It is still sound for a stronger reason: `out[0]` is by construction the last
+user-turn boundary in the window (or the `last_skill`-capped one, and the cap re-derives the
+same boundary during the replay, `replay.rs:429-436`), so no drain and no marker suppression
+can differ between the replay and the original fold.
 
 ### 4.1 The third class — state that is persisted AND re-advanced
 
@@ -105,15 +130,28 @@ assistant lines carrying `usage`, and Claude's accumulator **sums** them
 (`agents/claude/metrics.rs:41-45`).
 
 **The rule, corrected.** Replay `[replay_from, resume_at)` with the cumulative folds
-**suppressed** — `metrics.push`, the `TaskOp` fold and `on_tool_result` — then fold
-normally from `resume_at`. Two things are deliberately *not* suppressed because they are
+**suppressed** — `metrics.push`, the `TaskOp` fold and `on_tool_result` — then fold normally
+from `resume_at`.
+
+There is a **fourth** cumulative fold in `advance_at` that must be named even though it
+cannot fire: the drain itself (`committed_meta.push` + `store.put` + `committed.push`,
+`builder.rs:150-159`). If it fired during the replay it would append duplicate content
+records and double-count the restored `committed_meta`. It is unreachable **because of the
+§3 checkpoint guard plus the `last_skill` cap** — but that dependency is exactly the kind
+left unstated in Appendix A2, so: `debug_assert!` that `committed_len` is unchanged across
+the resume, and treat a violation as a validation failure ⇒ cold rebuild. Two things are deliberately *not* suppressed because they are
 idempotent: `cwd` is first-non-empty-wins in both agents, and `agent_ids` is an upsert
 (`replay.rs:127-137`).
 
-`user_times` is restored **truncated to `committed_meta.turns`** with
-`stamped = committed_len`, and the replay re-stamps. Restoring the raw `stamped` instead
-panics: with `out` empty, `window_stamped()` exceeds `out.len()` and `stamp_user_turns`
-slices out of range — the #56 class. (No `UserText`/`Command` is ever suppressed —
+`user_times` is restored **truncated to `committed_meta.turns`**, with
+**`base = stamped = 0`** and `out` empty; the replay re-stamps. Note `stamped` lives in
+**raw-logical** space (the same space as `base`, `replay.rs:104`) while `committed_len()`
+counts **finalized** blocks (`builder.rs:204-206`) — `coalesce_spans` collapses runs, so the
+two differ. Setting `stamped = committed_len` would make `window_stamped()` exceed
+`out.len()` and the first `LineStart` slice out of range — the #56 panic, on the first
+resume of any session with a committed prefix. `base`'s absolute value never escapes the
+replayer (the only leak is `patch_floor`, whose consumers test `is_some()` only), so
+rebasing to 0 is safe. (No `UserText`/`Command` is ever suppressed —
 `suppress` only holds `QueueEvent` markers — so `committed_meta.turns` is exactly the
 committed user-turn count.)
 
@@ -127,8 +165,13 @@ against `n_committed = 480` yields no payload and no resync, and `PullClient` si
 keeps 20 blocks the server no longer has. **On a truncate-back, bump `epoch`** so every
 outstanding cursor resyncs rather than stalling.
 
-**Tracking `replay_from` costs nothing per line:** push `(base + out.len(), line_offset)`
-onto a small deque per line and prune below `base` at each drain — O(1), keeping §8 honest.
+**Tracking costs nothing per line:** push
+`(logical_index, line_offset, prev_ts, pending_ts)` — the last two *as of the line's start*
+— onto a small deque per line, pruning below `base` at each drain. O(1), keeping §8 honest.
+The timestamps must come from the deque, not from the checkpoint instant: persisting
+`prev_ts` as-of-checkpoint is right only when `replay_from` **is** the commit line. In the
+pinned-drain case it would restore `ts(commit_line − 1)` where a cold fold has
+`ts(replay_from − 1)`, and that propagates whenever a later line carries `LineStart(None)`.
 
 **Requirement 7 — every record carries only what changed.** Scalars appear only when they
 change. Collections need **ordinal**, not id-keyed, deltas: `SessionMeta.children` keeps
@@ -144,6 +187,14 @@ or shallow-key-diffed by the writer if that proves worthwhile.
 *Accepted consequence:* a load replays the stream from the start — O(records), far below
 O(lines). If that ever dominates, the fix is a periodic absolute record **within the same
 stream**, not a format change.
+
+**The record has three layers, because its contents do.** It must carry engine fold state,
+an **agent**-specific metrics blob (§5), **present**-layer counters (`epoch`,
+`provisional_gen`) and an HTML-specific `EmitState.turns` delta (§6) — while §1.1 puts the
+format in the engine, which may name none of those. So:
+`{stamp, engine: {…}, present: {…}, store: Value}`, with the last two opaque to the engine
+and filled by present and the frontend. Precedent is already in the tree:
+`PersistentStore::hibernate_state`/`restore_state` (`shared.rs:568-572`).
 
 **Requirement 5** holds because the record contains no `BV` of any kind: metadata restore
 is one implementation, identical for every presentation, and the reader is a free function
@@ -197,6 +248,10 @@ The cache absorbs state-keeping; frontends stay thin. Concretely:
   the TUI skips destructors via `process::exit(0)` (`app.rs:57, 93`) and replaces its cache
   on `Outcome::Switch` (`app.rs:373-376`), so it calls an explicit checkpoint + release at
   those three points (§11 step 8).
+- **Tier-b spill (§1.4) is preserved as a *seam*, not as a user.** `TierBStore` is already
+  production-vestigial — constructed only in tests, surviving as `SessionCache`'s default
+  type parameter, while HTML uses `RecordStore` and the TUI `ArcStore`. What R4 preserves is
+  `PersistentStore`, whose successors are `RecordStore` and step 4's durable store.
 - **The `aux` slot stays view state.** The TUI's `ViewSidecar` is derived and
   width-dependent; it must never enter the meta stream.
 
@@ -263,8 +318,13 @@ The TUI's per-block serialize is the only genuinely new steady-state cost. **Mea
 
 ## 9. Validity
 
-Reuse iff **all** hold, else rebuild: source length ≥ the offset; the **first-line anchor**
-matches; a hash of the **64 KiB immediately before the offset** matches; format version,
+Reuse iff **all** hold, else rebuild: source length ≥ **`resume_at`**; the **first-line
+anchor** matches; and a hash of the bytes **ending at `resume_at`** matches, over
+`max(64 KiB, resume_at − replay_from)` — the window must cover the whole replay span,
+because the folds over `[replay_from, resume_at)` are *suppressed*, so a rewrite inside it
+is **not** self-correcting: the checkpointed metrics and task state assumed the original
+bytes. Everything below `replay_from` corresponds to committed blocks under the §3 guard, so
+that span is the only unverified region. Also: format version,
 **fold-logic version** and build id match; and, for HTML only, the **flavor** — the render
 fingerprint (`FoldPolicy` + render cwd + record schema). Only the **served** rendering is
 cached: the offline dump writers stay off the durable cache (§10), so the flavor space is
@@ -298,8 +358,9 @@ parameterised.
   meta-stamped id ≤ the content count, truncates both, and resumes correctly. Kill
   mid-write; recovery is a smaller `n`, never a rebuild. **A held browser cursor across a
   truncate-back resyncs, never stalls** (the `epoch` bump, §4).
-- **Double-apply:** the pinned-drain fixture must show identical token totals, task state
-  and turn timestamps cached vs cold — this is the §4.1 suppression check, and it is the
+- **Double-apply:** the pinned-drain fixture must produce a **fully identical block list**
+  cached vs cold — not merely matching token totals, task state and turn timestamps, since
+  `prev_ts` drift (§4.1) shows up only in rendered thinking durations — this is the §4.1 suppression check, and it is the
   test that fails if the third class is ever forgotten again.
 - **Rejection:** rewritten prefix, changed fold/format version, changed flavor ⇒ full
   rebuild, never a partial serve.
@@ -323,7 +384,13 @@ parameterised.
    restore}` + the `TimeSpan` derive. **The requirement-5 test lands here and gates the
    rest.** Byte gate unchanged.
 2. **Present: the stream writer/reader**, replacing `hibernate`/`restore`, still
-   temp-scoped. Not a pure re-plumb: the raw `user_times` differs from the flushed vector
+   temp-scoped. Restore must rehydrate every **derived per-tick baseline**, not just the
+   fold: `epoch`, `provisional_gen`, `n_provisional`, `prev_provisional` (from the replayed
+   open turn — `shared.rs:650` sets it empty on the comment "a hibernated body never
+   advances", which step 3 invalidates; an empty baseline makes `prefix_intact` trivially
+   true so a finalization reshape misses its gen bump and clients keep a stale prefix), and
+   the follower's `prev_committed`/`prev_provisional` (`follow.rs:55-56`, else the first
+   `poll_delta` reports `changed_from = 0` and re-renders everything, defeating the resume). Not a pure re-plumb: the raw `user_times` differs from the flushed vector
    the old hibernated body served, so restore routes through the public
    `FollowParser::resume` + `open_finalized()` path (`Replayer::open_snapshot` is
    `pub(crate)` and present cannot widen it).
@@ -338,7 +405,12 @@ parameterised.
    (`cache/mod.rs:225-233`), so a durable store cannot reach the TUI until that becomes
    `impl<S: BlockStore<Bv = Arc<Block>>, A>` with the store factory step 5 introduces.
    **Measure here** (§8).
-5. **Cache API:** `shared_insert_or_get` (two-phase admission — `shared_session` runs its
+5. **Cache API + the `poll_view` generalisation.** `poll_view` is implemented on the
+   concrete `SessionCache<ArcStore, A>` and hardcodes
+   `SharedSession::with_store(…, ArcStore)` (`cache/mod.rs:225-233`); it becomes
+   `impl<S: BlockStore<Bv = Arc<Block>>, A>` taking the store factory introduced here — so
+   the generalisation and the factory land together and step 4 no longer forward-references
+   this step. Plus `shared_insert_or_get` (two-phase admission — `shared_session` runs its
    factory under the cache-wide mutex, whose contract is an O(delta) advance only);
    `reap_over_budget` returning its evictions so they can be checkpointed. `--no-cache`
    lands here so later steps are bisectable.
