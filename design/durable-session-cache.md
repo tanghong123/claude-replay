@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v10 — no known blocker. Under final review.**
+> **Status: v11 — no known blocker. Third review round applied; ready to implement.**
 > Three review rounds; the core rule (§3) has passed a dedicated soundness pass. Earlier
 > drafts rejected the idea after review; that was wrong, and the two dead-end shapes are
 > kept condensed in Appendix A only so they are not re-proposed. Read §1 → §12 in order;
@@ -8,7 +8,9 @@
 
 ## 1. Requirements (owner)
 
-1. **Agent-neutral** implementation — lives in `claude-replay-present`.
+1. **Agent-neutral** implementation. The state *format* and `checkpoint`/`resume` live in
+   `claude-replay-engine` (the accumulator cannot name a `present` type); the cache, the
+   lock and metadata restore live in `claude-replay-present`, which re-exports the format.
 2. **Supports both frontends**, TUI and HTML.
 3. **The transcript is parsed exactly once per presentation**, amortised across
    invocations. Locking is at `<presentation, session>`, so duplicating the parse and the
@@ -68,6 +70,8 @@ Everything is per `<presentation, session>`; nothing is shared between presentat
 
 ```
 $CLAUDE_REPLAY_CACHE/<presentation>/<agent>-<session-id>/
+    # root default: $XDG_CACHE_HOME/claude-replay (else ~/.cache/claude-replay)
+    # <presentation> ∈ { tui, html }; for html the flavor is part of the key (§8)
     session.state       # agent-neutral fold state — CONTAINS NO BV   ← metadata from here
     content             # this presentation's artifact: Block log (TUI) / records (HTML)
     bv.state            # committed Vec<Bv> + the store's render continuation
@@ -81,7 +85,8 @@ metadata today *requires* naming `BV`. (`TierBSession::Sidecar`, `tier_b.rs:330-
 repeats the same mistake.) Three types instead:
 
 - `SessionState` — **non-generic**: versions, `committed_meta`, metrics blob, raw
-  `user_times`, task fold, raw `out`, replayer state, `cwd`, position, `n_committed`.
+  `user_times`, task fold, raw `out`, replayer state, `cwd`, the agent id, and the
+  validity quintuple `{offset, anchor, window_hash, n_committed, content_len}`.
 - `BvTable<Bv>` — `epoch`, `provisional_gen`, `backing_len`, `committed: Vec<Bv>`,
   `store_state`.
 - **`pub fn read_session_state(path) -> Option<SessionState>` as a free function outside
@@ -122,7 +127,7 @@ wrong side of a transformation. The correct captures are:
 | in-flight | `tool_slot`, `queue`, `suppress`, `last_skill` |
 | carried | `prev_ts`, `prev_user_text`, `delivered_rendered`, `agent_ids` |
 | accumulator | `cwd`, **`committed_meta`**, the whole `TaskFold`, the metrics accumulator's opaque state (§6) |
-| resume point | line-exact source offset + prefix hash + identity anchor (§5.1 #5) |
+| resume point | line-exact source offset + **first-line anchor** + **trailing-window hash** (§8) |
 | versioning | cache format version, fold-logic version, and a **build id** (§5.1 #10) |
 
 ### 5.1 Corrections review found (each with its fix)
@@ -134,7 +139,7 @@ wrong side of a transformation. The correct captures are:
    `queue[].marker_idx`, `stamped` are all `base + rel` offsets into the **raw** vector.
    **Fix:** persist raw `out`; keep `provisional` only as a post-restore cross-check
    (`finalize_open(out) == stored_provisional`), a free assertion that catches this whole
-   bug class.
+   bug class — which means `provisional` is stored too, as a debug/verification field.
 2. **`user_times` must be the raw vector.** `open_snapshot` clones it and *then* runs
    `stamp_user_turns` (`replay.rs:570-576`); restoring that flushed copy alongside the
    pre-flush `stamped` makes the next `LineStart` re-stamp the same turns. **Fix:** capture
@@ -148,20 +153,32 @@ wrong side of a transformation. The correct captures are:
 5. **`LineReader::tell()` is not a line boundary** — it returns all bytes read, including a
    partial line still in `pending` (`reader.rs:166-173, 194-214`), so resuming there
    delivers a truncated line. A live-tailing server checkpoints mid-write constantly.
-   **Fix (preferred):** have `SessionAccumulator` compute the offset itself as
-   `offset_K + len(line_K) + 1` and hash the prefix incrementally in `advance_at` — which
-   also gives the cold path (`advance_reader`, `builder.rs:171-191`) an anchor without
-   owning a `LineReader`.
+   **Fix:** the **driver reports the resume offset** — the last complete line boundary —
+   and the accumulator only stores it. Both drivers already know it exactly
+   (`advance_reader` post-increments, `builder.rs:180-181`; `LineReader` has
+   `offset - pending.len()`, `reader.rs:190`). Do **not** recompute it as
+   `offset + len(line) + 1`: `advance_at` receives the line already stripped of its newline
+   (`builder.rs:182-187`), so CRLF undercounts, a final line with no newline overshoots
+   past EOF, and `LineReader::consume` skips empty lines (`reader.rs:205`). And do **not**
+   hash incrementally while folding — §8 validates from a trailing window at load time, so
+   there is nothing to maintain per line.
 6. **`RecordStore::reopen` cannot advance** (`cx: None`, and `put` then panics,
    `record_store.rs:128-131, 178-189`). **Fix:** keep `reopen` as the read-only hibernate
-   path; add `RecordStore::resume(path, fold, cwd, transcript, len)` opening for append.
+   path; add `RecordStore::open_append(path, fold, cwd, transcript, len)` — one name, used in §12
+   step 4 too.
    `TierBStore::open` is already append-correct (`tier_b.rs:94-108`).
 7. **Serde prerequisites (compile blockers, all one-liners).** `TimeSpan` has private
-   fields and no derive (`metrics.rs:63-66`) — derive + re-export via `seam`. `QueueItem`
-   has no derive (`replay.rs:629`). **`Agent` cannot be deserialized** — it is
-   `&'static str` (`agent.rs:16`); store the id string and resolve through the registry at
-   restore, never serde the `Agent`.
-8. **The TUI has no content artifact.** `ArcStore` is pure RAM (`session.rs:94-105`), and
+   fields and no derive (`metrics.rs:63-66`) — it is **already** re-exported (`seam.rs:45`),
+   so only the derive is missing. `QueueItem`
+   has no derive (`replay.rs:629`). `Agent` *is* serde-able (hand-written impls, `agent.rs:53-64`) — an earlier claim here
+   that it was not is withdrawn. The real limit: `from_label` resolves only the three
+   built-ins (`agent.rs:39-46`), so a third-party agent's checkpoint fails to load; resolve
+   through the registry and rebuild on failure.
+8. **The TUI has no content artifact.** (Note the counters live in **one** place:
+   `n_committed` and `content_len` are `SessionState` fields, so the TUI writes **no**
+   `bv.state` at all — its committed values *are* the log and its `store_state` is empty.
+   Cross-validation is `n_committed` == decoded record count (TUI) / `BvTable.committed.len()`
+   (HTML).) `ArcStore` is pure RAM (`session.rs:94-105`), and
    switching it to `TierBStore` breaks `poll_view`'s `Bv = Arc<Block>` bound
    (`shared.rs:289`) and the one-copy-shared-by-`Arc` principle. **Fix:** an
    `ArcTierBStore` — `Bv = Arc<Block>`, `put` write-through (append the same serde-JSON
@@ -171,8 +188,11 @@ wrong side of a transformation. The correct captures are:
 9. **Where and how often to checkpoint.** Inside `SharedSession::advance`/`poll_view`
    (`shared.rs:243, 287`) **after** `advance_stream()` returns — under the existing lock,
    the only point where state, artifact and counters cannot tear — plus a clean-exit flush.
-   Gate on `committed_grew` (already computed, `shared.rs:257, 300`) with a time/byte
-   throttle; checkpointing when only the open turn moved buys nothing.
+   Gate on **`committed_grew || reset`** (both already returned by `advance_stream`) with a
+   time/byte throttle. The `reset` half is mandatory, not defensive: a truncation clears
+   `committed` and `BlockStore::reset` **truncates the artifact** (`tier_b.rs:198-211`,
+   `record_store.rs:160-167`), leaving `committed_grew` false — without it `session.state`
+   would keep claiming the old counts against a truncated file.
 10. **Crash-safety was backwards in §8.** Content is appended *during* `advance_at`, state
     is written *after*, so a crash always leaves the artifact **longer** than the state
     claims. Treating a length mismatch as a rejection would force a full rebuild after
@@ -215,15 +235,20 @@ wrong side of a transformation. The correct captures are:
     `shared_insert_or_get(id, Arc<SharedSession<P>>)`; callers `shared_peek` → build outside
     the lock → insert. The loser of a race drops its `Arc` **and must release its lock** —
     cover that path in the lock tests.
-18. **The position needs `LineReader::open_at`, not `Position`'s hashing.** Since §8
-    validates from a trailing window at load time, none of `Position`'s rolling-hash
-    machinery is required — only the ability to start reading at an offset
-    (`reader.rs:148-161`). Do **not** convert `advance_reader` to `LineReader`: its
+18. **Add `LineReader::open_at_offset(path, offset)`; do NOT use `open_at`.** `open_at`
+    stores `resume: Some(pos)` and the next `poll()` routes into `poll_resume`
+    (`reader.rs:219-220, 245-285`), which `read_exact`s and hashes `[0, offset)` — the
+    whole-prefix re-read §8 exists to avoid. `Position`'s fields are also private with no
+    offset-only constructor, so the argument cannot even be built. The new entry point
+    seeks, sets `anchor: None`, and never routes through `poll_resume`. **Invariant this
+    creates:** a reader seeded at K never sets `anchor` (only `consume` does,
+    `reader.rs:206-208`), so its `tell()` is meaningless — the cache owns the offset and
+    never calls `tell()`. Do **not** convert `advance_reader` to `LineReader`: its
     `poll` does `read_to_end` (`reader.rs:236-239`), destroying the one-line residency that
     makes multi-GB transcripts viable, and `consume` skips empty lines (`:206`) while
     `advance_reader` feeds every line — a byte-gate risk.
-19. **`serde_json::Value` must be re-exported through `seam`** so the agent crates can
-    implement §6's `checkpoint`/`restore` without tripping `agents_import_only_the_seam`.
+19. *(withdrawn — no seam change needed: the audit flags only `claude_replay_engine::`
+    paths, and `serde_json` is already a direct dependency of `claude-replay-agents`.)*
 
 ### 5.2 Reuse, do not rebuild — and delete the third format
 
@@ -277,14 +302,17 @@ callback keeps the lock testable).
 - **Multi-root HTML start:** acquire **per session, independently**. Partial success is
   the normal outcome, not a refusal: sessions won are cached, sessions held elsewhere are
   served uncached. The "open the holder's URL" rule applies only to the single-root
-  `--html <session>` path (`src/lib.rs:31-35`); the picker path just starts with a mixed
+  paths (`src/lib.rs:31-35`, and the `cands.len() == 1` picker branch ~`src/lib.rs:44`); the picker path just starts with a mixed
   lock set. The TUI is the only refusing presentation.
 - **Held, HTML child discovered mid-run:** serve it **uncached** — correct output, no cache
   writes. The lock governs *writing*, never *viewing*, which is what fits the multi-root
   server: it discovers children lazily and cannot know its lock set at startup.
 
-`--no-cache` is a hidden flag (`hide = true`, precedent `jdi/mod.rs:164,167`) — insurance
-for the cache path itself, not a way to force a second TUI. Where there is no real liveness
+`--no-cache` is a hidden flag (`hide = true`, precedent `jdi/mod.rs:164,167`) that skips
+**both the cache and the lock**, so it does permit a second TUI, running exactly today's
+path. Coherent rather than a loophole: it is insurance for the cache path itself (a
+liveness bug, an unwritable dir, a filesystem without locks), and hiding it keeps it from
+becoming the routine way to re-enable silent duplicate folds. Where there is no real liveness
 check (`pid_alive` returns `false` on non-unix, `jdi/state.rs:150-167`) the cache is
 disabled rather than assuming staleness, which would fail *into* concurrent writers.
 
@@ -309,8 +337,19 @@ compaction, which rewrites content — producing a byte-identical 64 KiB immedia
 the checkpoint offset is not a case that occurs. The first-line anchor separately catches
 "different file, same shape". Retain the full-prefix hash as an opt-in paranoid mode only.
 
-**The consequence that matters for §8.1: no rolling hash has to be maintained while
-folding.** Validation reads its window at *load* time, so nothing is hashed per line.
+**No rolling hash is maintained while folding.** The window is read at *load* time for
+validation and computed by a single bounded `pread` at *checkpoint* time. A maintained
+64 KiB ring buffer would be per-line copying and is explicitly rejected.
+
+**Who computes it.** `SessionAccumulator` has neither the path nor a seek
+(`builder.rs:31-52`; `advance_reader` takes a `&mut dyn BufRead`), so it cannot. Therefore
+`SessionAccumulator::checkpoint` returns **fold state + offset only**; the caller — which
+owns the path (`FollowParser::path()`, `follow.rs:246`) — computes the anchor and window
+hash and writes the file.
+
+**Caveat:** a single line larger than the window (a big tool result or base64 attachment)
+collapses it to a sub-line check; the opt-in full-prefix mode is the answer where that
+matters.
 
 ## 8.1 Overhead budget (owner requirement)
 
@@ -320,8 +359,8 @@ The cache must add no meaningful cost to the steady-state path.
 |---|---|---|
 | **per line** | the byte offset only — and `advance_at` already receives it (`builder.rs:118-131`). **No hashing, no allocation, no I/O.** | **zero** |
 | **per block (committed)** | HTML: none — `RecordStore` already appends a record per commit today. TUI: one `serde_json` serialize + a **buffered** append of the block. | real but bounded; it is the price of durability, and it buys skipping the entire parse+fold on every later invocation |
-| **per commit** | write `SessionState` (small: at a commit the open window is the turn just started), throttled by time/bytes | small |
-| **per open** | `stat` + one line + 64 KiB + parse the state file + take the lock | small, once |
+| **per commit** | write `SessionState` (small: at a commit the open window is the turn just started) **+ one bounded 64 KiB `pread` + hash for the validity window**, throttled together | small |
+| **per open** | `stat` + one line + 64 KiB + parse the state file + take the lock, **plus O(committed)** to decode the log into `Vec<Arc<Block>>` (TUI) or parse the locator table (HTML) | small, once — far below parse+fold; measured at §12 step 4 |
 | **cache disabled / `--no-cache`** | nothing is tracked, written or hashed — the path is exactly today's | **zero** |
 
 Two rules follow, and they are requirements rather than optimisations:
@@ -336,7 +375,7 @@ Two rules follow, and they are requirements rather than optimisations:
 
 The TUI's per-block serialize is the only genuinely new steady-state cost in the design. It
 is opt-out, buffered, and amortised against skipping a full parse next time — but it should
-be **measured on the first implementation step**, not assumed.
+be **measured at §12 step 4**, not assumed.
 
 ## 9. Preserving `SessionCache` (requirement 4)
 
@@ -347,8 +386,10 @@ its factory runs under the cache-wide `pull_residents` lock (`cache/mod.rs:167-1
 header states that only an O(delta) advance may happen there (`cache/mod.rs:25-27`).
 
 Eviction: size cap (default 2 GiB, `CLAUDE_REPLAY_CACHE_MAX`) + 30-day age cap, LRU by
-mtime, never evicting a live-locked entry — and not calling the fork/exec liveness check per
-candidate.
+mtime. **Skip any entry with a `LOCK` present — no liveness probe**, since `pid_alive` is a
+fork/exec (`jdi/state.rs:150-167`) and eviction must not pay it per candidate; a crashed
+holder's lock is reclaimed at the next open of that session, after which the entry becomes
+evictable.
 
 ## 10. Testing
 
@@ -369,8 +410,12 @@ candidate.
 
 ## 11. Rollout
 
-Additive: any validation failure falls back to today's behavior. Worst realistic bug is
-"the cache didn't help". Release: minor.
+Additive **except** the deliberate TUI single-writer refusal (§7) — the one intended
+behavior change, since two `-f` sessions on one transcript work today. Any *validation*
+failure falls back to today's behavior, so the realistic bug is "the cache didn't help".
+The exception to guard hardest is a **false accept** in §8, which yields wrong output
+rather than a no-op — hence anchor + window rather than length alone, and the opt-in
+full-prefix mode. Release: minor.
 
 ---
 
@@ -379,15 +424,25 @@ Additive: any validation failure falls back to today's behavior. Worst realistic
 Nothing writes a file until the format is final; no store gains append mode until a body
 exists that can use it.
 
-1. **Format + BV split, no I/O** — `SessionState` / `BvTable<Bv>` / the non-generic
-   `read_session_state`; version constants. Rewrite `hibernate`/`restore` onto the two
-   files, still temp-scoped. **The requirement-5 test lands here and gates everything after.**
-2. **`SessionAccumulator::{checkpoint, resume}`** — engine only, no cache, no frontend.
-   Byte gate must pass unchanged.
+1. **Engine: format + accessors + checkpoint/resume.** In `claude-replay-engine`: the
+   serde derives (§5.1 #7); `MetricsAccumulator::{checkpoint, restore}` (§6); the
+   non-generic `SessionState`, `BvTable<Bv>` and the free `read_session_state`;
+   `Replayer::{checkpoint, restore}` (its fields are private to `replay.rs`, so this is a
+   prerequisite, not a detail); `SessionAccumulator::{checkpoint, resume}` — returning fold
+   state **+ offset only** (§8); `FollowParser::resume` and `LineReader::open_at_offset`
+   (§5.1 #18); a `committed_meta()` accessor (`session_meta()` is the merged value §5.1 #3
+   forbids). No cache, no frontend, no durable location. **The requirement-5 test lands
+   here and gates everything after.** Byte gate unchanged.
+2. **Present: rewrite `hibernate`/`restore` onto the two files**, still temp-scoped — a
+   pure refactor of an existing feature, now that step 1 has given it something to call.
 3. **Delete `Body::Hibernated`; `restore` yields `Body::Live`** (§2 delta 3). Existing
    hibernate tests are rewritten to assert *continued advance*. Must precede 4, or the
-   append-mode store is built against a body that cannot `put`.
-4. **`RecordStore::open_append`** + the TUI's durable `Arc<Block>` store.
+   append-mode store is built against a body that cannot `put`. Also remove the now-dead
+   `hibernation_stale()` branch in `serve.rs:277-286`: with no hibernated body it is always
+   `false`, and its "source changed" duty moves to §8's open-time validity gate.
+4. **`RecordStore::open_append`** (§5.1 #6) + the TUI's durable `Arc<Block>` store.
+   **Measure here** (§8.1): the TUI's per-block serialize and the O(committed) resume decode
+   are the only new steady-state costs, and both should be numbers before they are defaults.
 5. **Cache API** — `shared_insert_or_get`, `reap_over_budget` returning evictions. No
    behaviour change; both frontends keep passing. `--no-cache` (hidden) lands here so every
    later step is bisectable against it.
