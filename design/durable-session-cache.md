@@ -1,8 +1,11 @@
 # Design: a durable, cross-run session cache
 
-> **Status: v17 — all seven requirements MET at re-review; its 11 follow-ups applied.**
-> Two earlier shapes were reviewed and rejected; they are kept condensed in Appendix A so
-> they are not re-proposed. Read §1 → §11 in order; the appendix is history.
+> **Status: v18 — all seven requirements MET; §3.1's emission protocol is BUILT (see the note
+> there).** v18 replaced the two-offset resume with one offset, which deleted §4.1's
+> suppression rule and shrank §9's validity window; each decision is now stated once, in final
+> form, with superseded reasoning condensed into Appendix A rather than left inline as a
+> correction. Read §1 → §11 in order; the appendix is history and exists so rejected shapes are
+> not re-proposed.
 
 ## 1. Requirements
 
@@ -73,6 +76,16 @@ the still-open turn (Appendix A1's probe: `committed_len` 0 → 2 on one line). 
 > commits turn *n−1*. Stated affirmatively: **the guard holds at every ordinary commit** and
 > skips only the multi-turn-on-one-line case of Appendix A1. §10's zero-parsed-lines
 > assertion catches the wrong reading.
+>
+> **What the skip costs: nothing observed.** Re-probed at v18 — a line carrying user texts
+> A, B, C commits A and B and leaves C open, so the frontier really does cut inside a line and
+> the guard really is needed. But measured across 860 local transcripts (131 Claude/Codex, 729
+> QoderWork), **no line carries two genuine prose user-text items**: all 225 multi-text lines
+> are `<system-reminder>` + one prompt, which yields one turn block. So the guard skips a
+> checkpoint on no observed line, and the alternative — stamping each anchor with a
+> `skip_n` "discard the first *n* blocks this line authored" — would add a field to every
+> anchor for a case that has never occurred. Keep the guard; revisit only if an agent starts
+> emitting the shape.
 
 ### 3.1 When the replayer emits meta records
 
@@ -122,7 +135,7 @@ committed-only state while a turn is open.
 **Only anchored records are resume points**, and that is the whole point of rule (B): a
 record sitting immediately after a committed block describes state *as of that committed
 block*, with nothing from the still-open turn leaked into it. So the
-`{committed_id, replay_from, resume_at}` stamp lives on anchored records only.
+`{committed_id, replay_from}` stamp lives on anchored records only.
 
 **Unanchored records are never resumed from.** They describe provisional-turn
 contributions, which the re-read rebuilds — applying them would double-count (§4.1). They
@@ -134,59 +147,40 @@ replayed to "now" without the transcript.
 would let a later load apply it out of order, ahead of records computed relative to `n` —
 the same hazard as untruncated content (§3, below).
 
-**Two offsets, not one** (§4 explains why):
+**One offset — `replay_from`, the line that produced `out[0]`, i.e. where the open turn
+begins.** Reading resumes there and the fold runs normally from there to EOF.
 
-- `replay_from` — the line that produced `out[0]`, i.e. where the open turn begins;
-- `resume_at` — just past the commit line.
+An earlier revision carried a second offset, `resume_at` (just past the commit line). It was
+never a second *read-start* — reading began at `replay_from` either way. It meant "the offset
+the persisted cumulative state is current to", and it existed only because the checkpoint was
+written at the commit while the open turn began earlier, which forced a rule suppressing the
+cumulative folds across `[replay_from, resume_at)`. **Capturing the cumulative state as-of
+`replay_from` instead of as-of the commit collapses that span to empty**, so one offset
+suffices and the suppression rule is deleted outright (§4.1). This is not a new mechanism:
+§4.1 already did exactly this for `prev_ts`/`pending_ts` ("as of the line's start") for exactly
+this reason — v18 stops special-casing timestamps and treats every cumulative fold the same
+way. See Appendix A3 for why the two-offset shape is not re-proposed.
 
-> **REVISED — one offset, and the name was the confusion.** `resume_at` was never a second
-> *read-start*: reading starts at `replay_from` either way. It is "the offset the persisted
-> cumulative state is current to", and the two differ only because the checkpoint is written at
-> the commit while the open turn began earlier — forcing §4.1's suppression rule over
-> `[replay_from, resume_at)`.
->
-> **Persist the cumulative state as-of `replay_from` instead of as-of the commit, and both the
-> second offset and the whole suppression rule disappear.** Restore, re-read from one offset,
-> fold everything normally. This is not a new mechanism: §4 already does exactly this for
-> `prev_ts`/`pending_ts` ("as of the line's start") for exactly this reason; the fix is to stop
-> special-casing timestamps and treat every cumulative fold the same way.
->
-> Affordable because `out[0]` after a drain is **always** a `UserText`/`Command`
-> (`replay.rs:428-449` — the frontier is a turn boundary, or the `last_skill`-capped one, which
-> the `rposition` also lands on a boundary). So snapshots are needed only at turn boundaries,
-> not per line: overwrite a single scratch slot at each line's start (O(1)), and push it into
-> the deque only if that line appended a boundary block. O(turns-in-window) memory, pruned at
-> the drain — the same budget §8 already assumes.
->
-> **A byte offset alone is underspecified, and this bites both schemes identically.** One line
-> can carry several user-text items (#56), and the frontier then cuts *inside* it: fed a line
-> with texts A, B, C the fold commits A and B and leaves C open, so re-reading from that line's
-> offset re-produces two already-committed blocks. Either carry `(offset, skip_n)`, or — simpler
-> — **refuse to anchor a mid-line frontier** and let the resume fall back to the previous
-> line-aligned anchor. Measured before choosing: across 860 local transcripts (131 Claude/Codex,
-> 729 QoderWork) **no line carries two genuine prose user-text items** — all 225 multi-text lines
-> are `<system-reminder>` + one prompt — so the fallback costs nothing observed, while
-> `(offset, skip_n)` would add a field to every anchor for a case that has never occurred. Take
-> the fallback; revisit if an agent ever emits the shape for real.
+The capture is cheap because `out[0]` after a drain is **always** a `UserText`/`Command`
+(`replay.rs:428-449`: the frontier is the last turn boundary, and the `last_skill` cap
+`rposition`s back to a boundary too). So the snapshot is needed only at turn-boundary lines,
+not at every line — §4.1 gives the mechanism and §8 the cost.
 
-**Alignment.** On load, `n` = the largest meta-stamped `committed_id` **≤ the content
-stream's record count** (meta records are sparse — one per checkpoint — so a plain
-`min` can name an id no record carries). Then **physically truncate both streams**
-(`set_len`) to the boundary just past record `n` before appending anything, and discard a
-trailing record that is unterminated or unparsable.
+**Alignment.** On load, `n` = the largest meta-stamped `committed_id` **≤ the number of
+committed blocks actually loaded**. The loaded `BV` vector's length **is** the authority:
+there is no separately persisted committed count that could disagree with the data. Because
+anchors are **dense** (one per commit, per the protocol above — not one per periodic checkpoint),
+`n == committed.len()` exactly, unless a partial tail write left the two streams uneven.
+No look-ahead buffering is needed: anchored `committed_id`s are monotonic, so the scan is just
+`max { committed_id ≤ committed.len() }`, and the reader is already implemented as
+`replay_meta(&records, Some(n))`.
 
-> **The loaded `BV` vector's length IS the alignment authority** — there is no separately
-> persisted committed count that could disagree with the data. And as built, anchors are
-> **dense** (one per commit, not one per checkpoint), so the parenthetical above is now a tail
-> case rather than the norm: `n == committed.len()` exactly, unless a partial tail write left
-> the two streams uneven. The reader is already implemented —
-> `replay_meta(&records, Some(n))` — and no look-ahead buffering is needed, because anchored
-> `committed_id`s are monotonic, so the scan is just `max { committed_id ≤ committed.len() }`.
->
-> **Truncating the `Vec` is not enough**: the store's backing must be truncated to the same `n`.
-> `RecordStore` serves committed bytes as one contiguous range to EOF (`serve.rs:325-329`), so
-> orphaned bytes past `n` are range-read as garbage. The split is clean — the accumulator
-> computes and returns `n`; the persistence layer does the `set_len` on both streams.
+Then **physically truncate to `n`** before appending anything, and discard a trailing record
+that is unterminated or unparsable. Truncating the in-memory `Vec` is **not enough** — the
+store's backing must be truncated too, since `RecordStore` serves committed bytes as one
+contiguous range to EOF (`serve.rs:325-329`), so orphaned bytes past `n` are range-read as
+garbage. The split is clean: the accumulator computes and returns `n` (§4.2); the persistence
+layer does the `set_len` on both streams.
 
 **A mid-run reset invalidates both streams.** A truncation/compaction drives
 `advance_from_source` → `builder.reset()` → `BlockStore::reset()`, and `RecordStore::reset`
@@ -216,8 +210,9 @@ re-reading it from the offset, which costs one turn:
 | `queue` — see the invariant below | `cwd`; `prev_ts`; `committed_meta`; the task fold **including `pending`**; the metrics blob (§5); **`epoch` and `provisional_gen`** |
 
 **The queue is not persisted, and the justification must be stated at `replay_from`, not at
-the commit.** "Empty at a commit" is true at `resume_at` but *not* necessarily at
-`replay_from`. It is still sound for a stronger reason: `out[0]` is by construction the last
+the commit.** "Empty at a commit" is true at the commit line but *not* necessarily at
+`replay_from`, which is where the replay actually starts. It is still sound for a stronger
+reason: `out[0]` is by construction the last
 user-turn boundary in the window (or the `last_skill`-capped one, and the cap re-derives the
 same boundary during the replay, `replay.rs:429-436`), so no drain and no marker suppression
 can differ between the replay and the original fold.
@@ -232,38 +227,33 @@ double-applied: with the `last_skill` pin the open window can span several turns
 assistant lines carrying `usage`, and Claude's accumulator **sums** them
 (`agents/claude/metrics.rs:41-45`).
 
-**The rule, corrected.** Replay `[replay_from, resume_at)` with the cumulative folds
-**suppressed** — `metrics.push`, the `TaskOp` fold and `on_tool_result` — then fold normally
-from `resume_at`.
+**The rule.** **Capture every cumulative fold's state as of the start of the `replay_from`
+line**, not as of the commit. Then the replay re-reads from `replay_from` and folds
+**normally, suppressing nothing** — each line in the re-read span is applied exactly once,
+because the restored state predates all of them.
 
-> **REVISED — the suppression rule is deleted, not refined.** It exists only because the
-> persisted cumulative state is as-of the commit while the re-read starts earlier. Capture that
-> state as-of `replay_from` (see §3.1) and the span `[replay_from, resume_at)` is empty by
-> construction: restore, re-read from one offset, fold everything normally, suppress nothing.
->
-> This is worth doing for more than tidiness. §4.1's own point is that a two-outcome rule
-> ("pruned ⇒ rebuild, spans turns ⇒ persist") is not sufficient and that missing the third class
-> is what sank Appendix A2. A suppression list is a standing invitation to that same bug: every
-> future cumulative fold added to `advance_at` must be remembered and added to it, and forgetting
-> is silent (double-counted metrics, not a crash). Moving the capture point removes the class
-> instead of enumerating it — the fourth fold §4.1 names as "must be named even though it cannot
-> fire" stops needing the argument at all.
->
-> Keep the `debug_assert!` that `committed_len` is unchanged across the resume regardless: it is
-> cheap and it is the check that catches a mis-derived offset.
+The rejected alternative was to keep capturing at the commit and suppress the cumulative folds
+across `[replay_from, resume_at)`. It is not merely clumsier, it re-opens this very section's
+bug class: a suppression list must be extended by hand for **every** cumulative fold ever added
+to `advance_at`, and forgetting one is silent — double-counted metrics, not a crash. Moving the
+capture point removes the class instead of enumerating it. (Appendix A3.)
 
-There is a **fourth** cumulative fold in `advance_at` that must be named even though it
-cannot fire: the drain itself (`committed_meta.push` + `store.put` + `committed.push`,
-`builder.rs:150-159`). If it fired during the replay it would append duplicate content
-records and double-count the restored `committed_meta`. It is unreachable **because of the
-§3 checkpoint guard plus the `last_skill` cap** — but that dependency is exactly the kind
-left unstated in Appendix A2, so: `debug_assert!` that `committed_len` is unchanged across
-the resume, and treat a violation as a validation failure ⇒ cold rebuild. Two things are deliberately *not* suppressed because they are
-idempotent: `cwd` is first-non-empty-wins in both agents, and `agent_ids` is an upsert
-(`replay.rs:127-137`).
+Two folds need no special handling either way, because they are idempotent: `cwd` is
+first-non-empty-wins in both agents, and `agent_ids` is an upsert (`replay.rs:127-137`).
+
+There is one cumulative fold in `advance_at` that must be named even though it cannot fire: the
+drain itself (`committed_meta.push` + `store.put` + `committed.push`, `builder.rs:150-159`). If
+it fired during the replay it would append duplicate content records and double-count the
+restored `committed_meta`. It is unreachable **because of the §3 checkpoint guard plus the
+`last_skill` cap** — but that dependency is exactly the kind left unstated in Appendix A2, so:
+`debug_assert!` that `committed_len` is unchanged across the resume, and treat a violation as a
+validation failure ⇒ cold rebuild. Keep that assert regardless of the capture rule; it is cheap
+and it is what catches a mis-derived offset.
 
 `user_times` is restored **truncated to `committed_meta.turns`**, with
-**`base = stamped = 0`** and `out` empty; the replay re-stamps. Note `stamped` lives in
+**`base = stamped = 0`** and `out` empty; the replay re-stamps. That truncation is not a
+special case — it *is* `user_times`' as-of-`replay_from` value, since at the start of that line
+the open turn's first `UserText` does not yet exist. Note `stamped` lives in
 **raw-logical** space (the same space as `base`, `replay.rs:104`) while `committed_len()`
 counts **finalized** blocks (`builder.rs:204-206`) — `coalesce_spans` collapses runs, so the
 two differ. Setting `stamped = committed_len` would make `window_stamped()` exceed
@@ -284,29 +274,42 @@ against `n_committed = 480` yields no payload and no resync, and `PullClient` si
 keeps 20 blocks the server no longer has. **On a truncate-back, bump `epoch`** so every
 outstanding cursor resyncs rather than stalling.
 
-**Tracking costs nothing per line:** push
-`(logical_index, line_offset, prev_ts, pending_ts)` — the last two *as of the line's start*
-— onto a small deque per line, pruning below `base` at each drain. O(1), keeping §8 honest.
-The timestamps must come from the deque, not from the checkpoint instant: persisting
-`prev_ts` as-of-checkpoint is right only when `replay_from` **is** the commit line. In the
-pinned-drain case it would restore `ts(commit_line − 1)` where a cold fold has
-`ts(replay_from − 1)`, and that propagates whenever a later line carries `LineStart(None)`.
+**The tracking mechanism.** Everything above is captured *as of a line's start*, and which line
+is `replay_from` is only known after the drain, so the value must be recorded before it is
+needed. Two tiers, because the costs differ:
+
+- **Scalars** — `(logical_index, line_offset, prev_ts, pending_ts)` — are copied into a
+  single **scratch slot at every line's start**. Four words, no allocation.
+- **Cumulative blobs** — the metrics accumulator and the task fold — are cloned into that slot
+  **only when the previous line actually mutated them**, tracked by a dirty flag. Most lines
+  touch neither: metrics moves only on a line carrying `usage`, the task fold only on a
+  `TaskOp`.
+
+When a line appends a turn-boundary block (`UserText`/`Command` — by §3.1 the only thing
+`out[0]` can be), the scratch slot is promoted into a small deque; the drain prunes entries
+below `base`. So the deque holds one entry per *turn* in the open window, not per line, and
+`line_boundary()` (§3's guard) is a comparison against the scratch slot.
+
+Why as-of-line-start rather than as-of-checkpoint, in the concrete: persisting `prev_ts` at the
+checkpoint instant is right only when `replay_from` **is** the commit line. In the pinned-drain
+case it restores `ts(commit_line − 1)` where a cold fold has `ts(replay_from − 1)`, and that
+propagates whenever a later line carries `LineStart(None)`. The same argument generalises to
+every cumulative fold, which is exactly why v18 captures them all at the same point.
 
 **Requirement 7 — every record carries only what changed.** Scalars appear only when they
 change. Collections need **ordinal**, not id-keyed, deltas: `SessionMeta.children` keeps
 duplicate ids deliberately (`session.rs:297-303` — "a map lookup would collapse
 duplicates") and `TaskFold.pending` pushes without dedup and removes the first positional
-match (`tasks.rs:120-131, 185-207`), so an id-keyed upsert is lossy. Use
-`{child_add: {...}}` / `{child_done: [i, ...]}` and the same shape for `pending`.
+match (`tasks.rs:120-131, 185-207`), so an id-keyed upsert is lossy.
 
-> **CORRECTED by the build — the completion op must be id-keyed, and an ordinal is not even
-> computable.** The reasoning above is right for *add* and wrong for *done*. An `AgentDone` in
-> one batch can match a child appended many batches earlier, and a delta has no view of the
-> accumulated list, so it cannot name an ordinal. The duplicate-collapse worry is answered
-> instead by what the op *does*: `ChildOp::Done(AgentId)` clears **every** child with that id,
-> which is exactly `SessionMeta::push`'s linear scan (`session.rs:300-302`), duplicates
-> included. `Add` stays positional. As built in `engine/meta_stream.rs`; the same distinction
-> should be applied to `TaskFold.pending` when it is written.
+**But that is right for *add* and wrong for *done*, and an ordinal `done` is not even
+computable** — an `AgentDone` in one batch can match a child appended many batches earlier, and
+a delta has no view of the accumulated list. The duplicate-collapse worry is answered instead
+by what the op *does*: `ChildOp::Done(AgentId)` clears **every** child carrying that id, which
+is exactly `SessionMeta::push`'s linear scan (`session.rs:300-302`), duplicates included. So:
+**`Add` is positional, `Done` is id-keyed and clears all matches.** As built in
+`engine/meta_stream.rs`; apply the same split to `TaskFold.pending` when it is written.
+
 `agent_ids` is an idempotent upsert and `user_times` is append-only, so both are simple.
 The metrics blob is the one **stated exemption**: §5's seam returns an opaque snapshot, and
 it is O(1) — five counters, a model string and two span endpoints — so it is written whole,
@@ -338,8 +341,8 @@ has (`with_store`):
 ```rust
 pub struct Restored<S: BlockStore> {
     pub acc: SessionAccumulator<S>,
-    pub committed_id: usize,   // where the two streams agreed
-    pub resume_at: ByteOffset, // feed advance_at from here
+    pub committed_id: usize,     // where the two streams agreed
+    pub replay_from: ByteOffset, // the ONE offset (§3.1) — feed advance_at from here
 }
 
 pub fn restore(
@@ -470,33 +473,42 @@ fork/exec cost means eviction must not probe per candidate.
 
 | when | added work |
 |---|---|
-| **per line** | the byte offset only — `advance_at` already receives it. No hashing, no allocation, no I/O. **Zero.** |
+| **per line** | four scalars into a scratch slot (§4.1) — the byte offset `advance_at` already receives, plus the logical index and two timestamps. No hashing, no I/O, no allocation. On the minority of lines that mutate a cumulative fold (a `usage` line, a `TaskOp`), one small clone of that fold. |
+| **per turn** | promote the scratch slot into the boundary deque; the drain prunes it. O(turns in the open window), not O(lines). |
 | **per committed block** | HTML: none, it already appends a record. TUI: one `serde_json` serialize + buffered append. |
 | **per commit** | one delta record — sized to the change (§1.7) — plus one bounded 64 KiB `pread`+hash for the validity window, and the O(1) part of the store blob (§6) |
 | **per open** | `stat` + first line + 64 KiB window + replay the deltas + decode/scan the content stream — O(records + committed), far below parse+fold |
 | **cache off / `--no-cache`** | exactly today's path. **Zero.** |
 
-Two rules, not optimisations: nothing is maintained during folding that is only needed at
-checkpoint time — everything is *read* at commit from state the fold already holds; and
-checkpoints happen at commits, never per advance (a poll-driven write would fire every
-`POLL_MS`, 2 s, per session).
+One rule, not an optimisation: checkpoints happen at commits, never per advance (a poll-driven
+write would fire every `POLL_MS`, 2 s, per session).
 
-The TUI's per-block serialize is the only genuinely new steady-state cost. **Measure it**
-(§11 step 4) rather than assume it.
+**The per-line row is the honest cost of the one-offset resume** (§3.1). The earlier
+two-offset shape kept this row at literally zero by capturing cumulative state at the commit
+instant — and paid for it with §4.1's suppression rule, a hand-maintained list whose omissions
+are silent. Four scalars per line and an occasional small clone is the better trade; it is
+still no allocation on the common line and no I/O ever.
+
+The TUI's per-block serialize remains the only genuinely new *steady-state* cost. **Measure
+both** (§11 step 4) rather than assume them.
 
 ## 9. Validity
 
-Reuse iff **all** hold, else rebuild: source length ≥ **`resume_at`**; the **first-line
-anchor** matches; and a hash of the bytes **ending at `resume_at`** matches, over
-`max(64 KiB, resume_at − replay_from)` — the window must cover the whole replay span,
-because the folds over `[replay_from, resume_at)` are *suppressed*, so a rewrite inside it
-is **not** self-correcting: the checkpointed metrics and task state assumed the original
-bytes. Everything below `replay_from` corresponds to committed blocks under the §3 guard, so
-that span is the only unverified region. Also: format version,
-**fold-logic version** and build id match; and, for HTML only, the **flavor** — the render
-fingerprint (`FoldPolicy` + render cwd + record schema). Only the **served** rendering is
-cached: the offline dump writers stay off the durable cache (§10), so the flavor space is
-one, not three, and `BYTE-IDENTICAL: PASS` never depends on machine state.
+Reuse iff **all** hold, else rebuild: source length ≥ **`replay_from`**; the **first-line
+anchor** matches; and a hash of the **fixed 64 KiB window ending at `replay_from`** matches.
+Also: format version, **fold-logic version** and build id match; and, for HTML only, the
+**flavor** — the render fingerprint (`FoldPolicy` + render cwd + record schema). Only the
+**served** rendering is cached: the offline dump writers stay off the durable cache (§10), so
+the flavor space is one, not three, and `BYTE-IDENTICAL: PASS` never depends on machine state.
+
+**Why the window is fixed-size, and why `replay_from` is the right endpoint.** Everything the
+resume restores — the committed blocks and the cumulative state — derives solely from bytes
+**below** `replay_from`, so that is the only region a rewrite can silently corrupt. Bytes at or
+after `replay_from` are re-read and folded fresh, exactly as a cold fold would, so a rewrite
+there is **self-correcting** and needs no coverage. (Under the two-offset shape this was not
+true: the folds over `[replay_from, resume_at)` were suppressed, so a rewrite inside that span
+was not self-correcting and the window had to stretch to `max(64 KiB, resume_at − replay_from)`
+to cover it. Deleting the suppression rule also deleted the variable-size window.)
 
 Deliberately **not** a whole-prefix hash: `poll_resume` re-reads and hashes `[0, offset)`,
 which on a 40 MB transcript is a full re-read at every open. A trailing window plus the
@@ -528,8 +540,11 @@ parameterised.
   truncate-back resyncs, never stalls** (the `epoch` bump, §4).
 - **Double-apply:** the pinned-drain fixture must produce a **fully identical block list**
   cached vs cold — not merely matching token totals, task state and turn timestamps, since
-  `prev_ts` drift (§4.1) shows up only in rendered thinking durations — this is the §4.1 suppression check, and it is the
-  test that fails if the third class is ever forgotten again.
+  `prev_ts` drift (§4.1) shows up only in rendered thinking durations. This is the check on
+  §4.1's capture rule: it fails if any cumulative fold is captured at the commit instant rather
+  than as of the `replay_from` line, which is the third-class bug in its current form. Use a
+  fixture whose open window spans **several** turns (the `last_skill` pin), since a single-turn
+  window makes the two capture points coincide and the test go vacuous.
 - **Rejection:** rewritten prefix, changed fold/format version, changed flavor ⇒ full
   rebuild, never a partial serve.
 - **Lock:** two writers; dead-pid reclaim; live-pid respected; live pid + dead port; the
@@ -541,9 +556,14 @@ parameterised.
 
 ## 11. Implementation order
 
-1. **Engine: format + accessors.** The meta record type and its delta vocabulary;
+1. **Engine: format + accessors.** ~~The meta record type and its delta vocabulary~~ **DONE**
+   — `engine/meta_stream.rs` plus `SessionAccumulator::drain_meta`, the writer half of §3.1,
+   landed ahead of the rest with its oracle (see §3.1's note). Remaining here:
    `Replayer::{checkpoint, restore}` (its fields are private to `replay.rs`);
-   `SessionAccumulator::{checkpoint, resume}` returning fold state **+ offset only**;
+   `SessionAccumulator::checkpoint` returning fold state **+ the one offset**, and its inverse
+   `SessionAccumulator::restore(adapter, store, committed, records) -> Restored` (§4.2) —
+   naming them as a pair matters, since `restore` is what makes alignment a pure function of
+   two vectors and therefore testable without a filesystem;
    a `committed_meta()` accessor (`session_meta()` is the merged value);
    `LineReader::open_at_offset` (**not** `open_at`, which routes into `poll_resume` and
    re-reads the whole prefix) and `line_boundary()` (§3's checkpoint guard);
@@ -595,7 +615,7 @@ accept in §9, which yields wrong output rather than a no-op. Release: minor.
 
 ---
 
-## Appendix A — two rejected shapes
+## Appendix A — three rejected shapes
 
 **A1. Resume from a bare byte offset.** The commit cut is not a byte offset:
 `finalize_completed` runs once per *line* (`replay.rs:428`) and one line can carry several
@@ -611,9 +631,22 @@ reviews found it unsound: `tool_slot` entries pruned at D orphan late results; t
 non-empty at L; `user_times` is one turn ahead at every drain; metrics are a mixed epoch;
 `SessionMeta.children` is mutated by `AgentDone` so a suffix delta cannot express it.
 
-**Why v15 avoids both:** it resumes at a *commit* boundary — a line boundary by
-construction — re-reads only the open turn, and persists only state that provably spans
-turns.
+**A3. Two offsets plus a suppression list** (v17, superseded by v18). Capture the cumulative
+state at the commit (`resume_at`), re-read from the open turn's start (`replay_from`), and
+suppress `metrics.push`, the `TaskOp` fold and `on_tool_result` across `[replay_from,
+resume_at)` so the re-read does not double-apply them.
+
+It is sound, and it was reviewed as such — the objection is that it is a **standing invitation
+to §4.1's own bug class**. The suppression list must be extended by hand for every cumulative
+fold ever added to `advance_at`, and an omission is silent: double-counted metrics, not a
+crash. It also cost two things that vanish with one offset: a variable-size validity window
+(`max(64 KiB, resume_at − replay_from)`, because the suppressed span is not self-correcting —
+§9), and a second offset on every anchor whose name misled readers into seeing two read-starts.
+
+**Why v18 avoids all three:** it resumes at a *commit* boundary — a line boundary by
+construction, enforced by §3's guard — re-reads only the open turn, persists only state that
+provably spans turns, and captures that state as of the line it resumes from, so the re-read
+folds normally and suppresses nothing.
 
 ## Appendix B — removed upstream
 
