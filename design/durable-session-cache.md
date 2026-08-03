@@ -22,20 +22,21 @@ Two append-only streams per `<presentation, session>`, written only at a commit:
 ```
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
-meta      a StreamHeader, then exactly one MetaRecord per commit, each carrying
-            · delta  — what those committed blocks changed        (every record matters)
-            · resume — the offset + state to restart folding from (only the last one matters)
+meta      a StreamHeader, then one MetaRecord per commit — a flat list of optional fields
+            · accumulate — what those committed blocks changed  (every record composes)
+            · override   — fold state as of replay_from          (read only where you land)
+            · indicator  — (committed_id, replay_from): resumable here
 ```
 
 A block commits when a later turn begins and the prompt queue is empty. There is no periodic
 snapshot, no third file, and nothing schedules a write.
 
-**The resume payload is in-band deliberately.** Only the record at `n` is ever read for its
-resume payload, so a separate file holding just the latest would be smaller (~100 KB per session
-saved). It would also need its own alignment against the other two streams, and a crash between
-writing them would leave the pair disagreeing. In-band, each commit is **one append per stream**
-and the last complete record is by construction a consistent resume point — a torn tail costs
-one commit, never correctness.
+**The override fields are in-band deliberately.** Only the record a load lands on reads them, so
+a separate latest-only file would save the rest — ~270 bytes × commits, ~58 KiB per session. It
+would also need its own alignment against the other two streams, and a crash between writing them
+would leave the pair disagreeing. In-band, each commit is **one append per stream** and the last
+complete record is by construction a consistent resume point — a torn tail costs one commit,
+never correctness. The 58 KiB buys that.
 
 ## 3. The resume principle
 
@@ -67,10 +68,10 @@ line by more than one turn.
 | committed blocks | **content stream** |
 | `committed_meta` | **meta stream**, as per-commit deltas |
 | `agent_ids` | **meta stream** — never pruned; a completion resolves a spawn many turns back |
-| `user_times`, `cwd` | **meta stream** — append-only and write-once, so deltas (§4) |
-| `prev_ts`, `pending_ts` | **resume payload** — neither pruned nor empty at a commit |
-| metrics accumulator, task fold | **resume payload** — folded per line, so not rebuilt |
-| `epoch`, `provisional_gen` | **resume payload** — a held client cursor must resync across a restart |
+| `user_times` | **accumulate** — append-only |
+| `cwd`, `prev_ts`, `pending_ts` | **override** — neither pruned nor empty at a commit |
+| metrics accumulator, task fold | **override** — folded per line, so not rebuilt |
+| `epoch`, `provisional_gen` | **override** (inside `present`) — a held client cursor must resync across a restart |
 
 **When is the state captured?** As of the start of the `replay_from` line — never at the commit
 instant. `advance_at` folds metrics, the task op-log and `user_times` for every line
@@ -90,22 +91,38 @@ turn-boundary block, so `out` retains `out[k..]` and is never empty after a comm
 (`replay.rs:428-449`). A first uncommitted block therefore always exists, and its line's start
 is `replay_from`.
 
-## 4. Types
+## 4. The record
+
+One record per commit: **a flat list of optional fields.** Absent always means "nothing from
+this commit". Fields belong to one of three classes, and the classes are the whole format.
+
+| class | read rule | fields |
+|---|---|---|
+| **accumulate** | value at `n` = fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children`, `agent_ids`, `user_times` |
+| **override** | value at `n` = the value **on record `n`** | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
+| **indicator** | presence marks the record as a resume point | `commit: (committed_id, replay_from)` |
 
 ```rust
 struct MetaRecord {
-    committed_id: usize,                 // committed-block count after this commit
-    delta:        MetaDelta,             // what these committed blocks changed
-    resume:       Option<ResumePayload>, // Some iff §3's partition exists at this commit
-}
+    // accumulate
+    turns:      Option<usize>,
+    tools:      Option<usize>,
+    children:   Vec<ChildOp>,                    // empty = absent
+    agent_ids:  Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
+    user_times: Vec<Option<EpochSeconds>>,       // appended by THESE committed turns
 
-struct MetaDelta {                       // fields absent when unchanged (R7)
-    turns:     Option<usize>,
-    tools:     Option<usize>,
-    children:  Vec<ChildOp>,
-    agent_ids: Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
-    user_times: Vec<Option<EpochSeconds>>,      // appended by THESE committed turns
-    cwd:       Option<String>,                  // first non-empty wins; set once
+    // indicator — present iff §3's partition exists at this commit (I5)
+    commit:     Option<(usize, ByteOffset)>,
+
+    // override — present iff `commit` is; each is state as of `replay_from`
+    window:     Option<Hash>,                    // sha256 of the 64 KiB ending at replay_from
+    cwd:        Option<String>,
+    prev_ts:    Option<Option<EpochSeconds>>,
+    pending_ts: Option<Option<EpochSeconds>>,
+    metrics:    Option<Value>,                   // agent-opaque (§7); O(1)
+    tasks:      Option<Value>,                   // TaskFold incl. `pending`; bounded by open tasks
+    present:    Option<Value>,                   // engine-opaque: epoch, provisional_gen, n_provisional
+    store:      Option<Value>,                   // engine-opaque: EmitState O(1) part
 }
 
 enum ChildOp {
@@ -115,59 +132,54 @@ enum ChildOp {
                       // many batches earlier, and a delta cannot see the accumulated list.
 }
 
-struct StreamHeader {         // record 0 of the meta stream, written once
-    anchor:   Hash,           // first line of the transcript
-    versions: Versions,       // format, fold-logic, build; HTML adds flavor
-}
-
-struct ResumePayload {        // only values that genuinely differ per commit
-    replay_from: ByteOffset,
-    window:      Hash,        // sha256 of the 64 KiB ending at replay_from
-    engine:      EngineState, // as of the start of the replay_from line
-    present:     Value,       // opaque to engine: epoch, provisional_gen, n_provisional
-    store:       Value,       // opaque to engine: EmitState O(1) part
-}
-
-struct EngineState {
-    prev_ts: Option<EpochSeconds>, pending_ts: Option<EpochSeconds>,
-    metrics: Value,           // agent-opaque (§7); O(1) — 5 counters, a model, a span
-    tasks:   Value,           // TaskFold including `pending`; bounded by open tasks
+struct StreamHeader {     // record 0, written once
+    anchor:   Hash,       // first line of the transcript
+    versions: Versions,   // format, fold-logic, build; HTML adds flavor
 }
 ```
 
-**Three lifetimes, three homes.** Conflating them is what wastes space, and one of them is
-asymptotically wrong:
+**The indicator gates the override fields.** An override value is the fold's state as of *that
+record's* `replay_from`, and every record has a different one — so carrying a value forward from
+an earlier record would restore something measured at the wrong offset. Writing them only
+alongside `commit` is what lets the read rule be "the value on record `n`" rather than "the last
+present value ≤ `n`", and a record without `commit` is never landed on, so it needs none of them.
 
-| lifetime | examples | home |
+**Why `commit` is one field and not two.** `committed_id` is used only to align against
+`|committed|` and to name the record a load stops at; both apply solely to resume points. Paired
+with the offset it is one fact — "resumable here" — rather than an invariant to maintain across
+two fields.
+
+**Three lifetimes, three homes.** Conflating them wastes space, and one case is asymptotically
+wrong:
+
+| lifetime | fields | home |
 |---|---|---|
-| constant per session | `anchor`, `versions` | **header**, written once |
-| accumulating | `committed_meta`, `agent_ids`, `user_times`, `cwd` | **`MetaDelta`**, replayed |
-| genuinely per-commit | `replay_from`, `window`, `prev_ts`, `pending_ts`, metrics, tasks, present, store | **`ResumePayload`** |
+| constant per session | `anchor`, `versions` | **header**, once |
+| accumulating | `turns`, `tools`, `children`, `agent_ids`, `user_times` | **accumulate class** |
+| as-of-`replay_from` | `window`, `cwd`, timestamps, metrics, tasks, present, store | **override class** |
 
-`user_times` is the one that matters. It is append-only and grows with turns, so writing it whole
-per commit costs O(turns²) in bytes *and* in serialization, and makes a load O(turns²) too. It
-belongs in `MetaDelta` as an append — the same mechanism that already rebuilds `committed_meta`.
-Accumulating those deltas through record `n` yields exactly its as-of-`replay_from` value,
-because at that offset precisely the committed turns are stamped. `cwd` joins it (write-once,
-idempotent).
+`user_times` is the case that matters. It is append-only and grows with turns, so writing it
+whole per commit costs O(turns²) in bytes *and* serialization, and makes a load O(turns²). As an
+accumulate field it is O(turns): folding through record `n` yields exactly its as-of-`replay_from`
+value, because at that offset precisely the committed turns are stamped.
 
-Measured against ~217 commits (the mean over 131 local transcripts): **253 KiB → 55 KiB**, and
-O(turns²) → O(turns). At 2000 turns it is 15.9 MiB → 504 KiB.
+Measured at ~217 commits (the mean over 131 local transcripts): **253 KiB → 55 KiB** per session,
+O(turns²) → O(turns). At 2000 turns, 15.9 MiB → 504 KiB.
 
-`MetaRecord` names no `BV`, so restore is one implementation with no type parameter (R5). The
-three opaque layers exist because R1 puts the format in the engine, which cannot name a
-`present` or frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
+The record names no `BV`, so restore is one implementation with no type parameter (R5). The two
+opaque `Value`s exist because R1 puts the format in the engine, which cannot name a `present` or
+frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
 (`shared.rs:565-572`).
 
 ## 5. Invariants
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I1 | `n = max { r.committed_id : r.committed_id ≤ \|committed\| ∧ r.resume.is_some() }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
-| I2 | One record per commit, so `committed_id` runs `1..=\|committed\|` without gaps unless the tail is torn. | §6.1 |
+| I1 | `n = max { id : r.commit == Some((id, _)) ∧ id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
+| I2 | One record per commit. `commit` ids are strictly increasing, and reach `\|committed\|` unless the tail is torn or the last commits failed I5. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
-| I4 | Every `EngineState` field equals its value at the start of the `replay_from` line. | §6.1; double-apply test |
-| I5 | `resume.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
+| I4 | Every override field equals its value at the start of that record's `replay_from` line, and is present iff `commit` is. | §6.1; double-apply test |
+| I5 | `commit.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
 | I8 | Reuse only if §6.4 holds. | §6.4 |
@@ -188,11 +200,14 @@ on advance_at(offset, line):
 
 on drain():                                        # finalize_completed
     finalized ← the turns behind the frontier
-    committed_id ← committed_emitted + |finalized|
-    delta ← Σ MetaDelta::push(b) for b in finalized
+    rec ← MetaRecord::default()
+    for b in finalized: rec.accumulate(b)          # accumulate class, incl. user_times
     deque.prune(below: base)
-    resume ← if line_boundary() then Some(payload_from(deque.front())) else None
-    meta.append(MetaRecord { committed_id, delta, resume })
+    if line_boundary():                            # I5 — else indicator+override stay absent
+        e ← deque.front()                          # the entry for the first uncommitted block
+        rec.commit ← Some((committed_emitted + |finalized|, e.offset))
+        rec.set_override_fields(e)
+    meta.append(rec)
 ```
 
 `can_open_turn()` is evaluated before the fold because the snapshot must predate the line's
@@ -213,10 +228,10 @@ deque holds one entry per turn in the open window rather than per line.
 load(dir):
     committed ← bv_loader(dir)                     # frontend-specific: the only such piece
     records   ← meta_loader(dir)                   # shared; discards a torn trailing record
-    n ← per I1
-    if n is None or !valid(records[n].resume): return None      # cold rebuild
+    n ← per I1                                     # max over records whose `commit` is present
+    if n is None or !valid(header, records[n]): return None     # cold rebuild
     truncate(content, n); truncate(meta, n); store.truncate(n)  # I6
-    return (committed[..n], records[..=n], records[n].resume)
+    return (committed[..n], records[..=n])
 ```
 
 Truncation is not optional: HTML serves committed bytes as one range to EOF
@@ -231,9 +246,9 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc ← with_store(adapter, store)
     acc.committed      ← committed[..n]
     acc.committed_meta ← replay_meta(records, n)             # plain accumulate
-    acc.replayer.restore_state(records[n].resume.engine)
+    acc.replayer.restore_state(records[n].override_fields())  # read from record n alone
     acc.replayer.base ← 0; acc.replayer.stamped ← 0; out ← []
-    return { acc, committed_id: n, replay_from: records[n].resume.replay_from }
+    return { acc, committed_id: n, replay_from: records[n].commit.1 }
 
 caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at, which re-reads [0,offset)
         loop { acc.advance_at(off, line) }                      # normal folding
@@ -256,10 +271,11 @@ return two vectors; the persistence layer performs the `set_len`s and is the onl
 ### 6.4 Validate
 
 ```
-valid(hdr, p): len(src) ≥ p.replay_from
-             ∧ first_line(src) == hdr.anchor          # checked once, not per record
-             ∧ sha256(src[p.replay_from-64KiB .. p.replay_from]) == p.window
-             ∧ hdr.versions == current
+valid(hdr, r):  let (_, from) = r.commit
+                len(src) ≥ from
+              ∧ first_line(src) == hdr.anchor         # checked once, not per record
+              ∧ sha256(src[from-64KiB .. from]) == r.window
+              ∧ hdr.versions == current
 ```
 
 The window is fixed-size and ends at `replay_from` because everything restored derives from
@@ -324,7 +340,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 
 | file | change |
 |---|---|
-| `engine/meta_stream.rs` | exists; add `ResumePayload`; remove the unanchored-record path |
+| `engine/meta_stream.rs` | exists; flatten to the §4 record + `StreamHeader`; remove the unanchored-record path |
 | `engine/replay.rs` | scratch slot, boundary deque, `can_open_turn`, `line_boundary`, `save_state`/`restore_state` |
 | `engine/builder.rs` | `save_state`, `restore`, `committed_meta()` |
 | `engine/tasks.rs`, `engine/adapter.rs` | `save_state`/`restore_state`; `TimeSpan` serde |
