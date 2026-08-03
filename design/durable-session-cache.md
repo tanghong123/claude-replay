@@ -101,19 +101,17 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children_add`, `children_done`, `agent_ids`, `user_times` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times` |
 | **override** | unchanged | last present value in records ≤ `n` | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
 | **indicator** | not a resume point | — | `commit: (committed_id, replay_from)` |
 
 ```rust
 struct MetaRecord {
     // accumulate
-    turns:         Option<usize>,
-    tools:         Option<usize>,
-    children_add:  Vec<ChildMeta>,                  // appended, in spawn order
-    children_done: Vec<AgentId>,                    // marks every child with that id finished
-    agent_ids:     Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
-    user_times:    Vec<Option<EpochSeconds>>,       // appended by THESE committed turns
+    turns:       Option<usize>,
+    tools:       Option<usize>,
+    agents:      Vec<AgentEvent>,              // sub-agents arriving and departing, IN ORDER
+    user_times:  Vec<Option<EpochSeconds>>,    // appended by THESE committed turns
 
     // indicator — present iff §3's partition exists at this commit (I5)
     commit:     Option<(usize, ByteOffset)>,
@@ -129,26 +127,56 @@ struct MetaRecord {
     store:      Option<Value>,                   // engine-opaque: EmitState O(1) part
 }
 
+enum AgentEvent {
+    Spawned(Spawn),
+    Finished(AgentId),   // marks every spawn with that id finished — see the ordering note
+}
+
+struct Spawn {                  // everything known about one sub-agent at spawn time
+    tool_use_id: String,        // the key a completion may arrive under, before agent_id exists
+    agent_id:    String,        // empty until the spawn's result lands
+    agent_type:  String,
+    description: String,
+    status:      AgentStatus,   // a spawn can be born terminal
+}
+
 struct StreamHeader {     // record 0, written once
     anchor:   Hash,       // first line of the transcript
     versions: Versions,   // format, fold-logic, build; HTML adds flavor
 }
 ```
 
-**`children` needs no op vocabulary.** The list is append-only apart from one flag flip, so two
-plain accumulate lists express it: append `children_add` in order, then for each id in
-`children_done` clear `running` on **every** child carrying that id. That last part is not a
-choice — it reproduces `SessionMeta::push`'s linear scan (`session.rs:300-302`), which keeps
-duplicate ids deliberately (`session.rs:297-303`). Within a record, adds apply before dones, so
-a child spawned and finished in the same commit lands correctly; across records, record order
-carries it.
+**One ordered list of arrivals and departures, serving both consumers.** `SessionMeta.children`
+(the menu view) and the `agent_ids` resolution table were separate fields carrying the same
+`(agent_id, agent_type)` twice. They are one thing:
 
-Snapshotting the whole list as an override field would be simpler still, and at observed sizes
-free: 16 of 873 local transcripts have sub-agents at all, at most 5 each — 2.9 KiB versus 1.0 KiB.
-It is rejected because it is O(children²): a fan-out workflow spawning 100+ children pays ~1 MB,
-and 1000 pays ~100 MB. The same question applies to `tasks`, which **is** an override snapshot;
-it is bounded by open tasks rather than by session history, so it stays — but if that ceases to
-be true it belongs in the accumulate class for the same reason.
+- **Menu view:** the `Spawned` events with a non-empty `agent_id`; `running` = `!status.is_terminal()`
+  and not since `Finished`. Derived, not stored — a spawn can be born terminal, which is why
+  `status` is in the record.
+- **Resolution table:** every `Spawned` under **both** keys, `tool_use_id` and `agent_id`. Two
+  keys because the id arrives late: a completion names whichever the agent emitted, and a miss
+  degrades to `AgentDone { agent_type: "" }` (`replay.rs:359-361`). A spawn whose `agent_id`
+  never arrives is not a child but must still resolve — which is why the consumers filter the one
+  list differently rather than sharing a pre-filtered one.
+
+**The order is load-bearing, so this is one list and not two.** `Finished(id)` clears every spawn
+carrying that id, reproducing `SessionMeta::push`'s linear scan (`session.rs:300-302`), which
+keeps duplicate ids deliberately (`session.rs:297-303`). Splitting into parallel `spawns` and
+`spawns_done` lists would discard the interleaving and is **wrong**: for `Spawned(X)`,
+`Finished(X)`, `Spawned(X)` in one record, block order yields `[finished, running]`, while
+applying all spawns then all dones yields `[finished, finished]`. Duplicate ids are exactly the
+case `SessionMeta` goes out of its way to preserve, so this is not hypothetical.
+
+That is the whole reason for an event vocabulary: not to be general, but to keep order. Two
+variants, no ordinals — a `Finished` matches by id, because it can refer to a spawn appended many
+records earlier and a record cannot see the accumulated list.
+
+Snapshotting the whole list as an override field would need no ordering at all, and at observed
+sizes is free: 16 of 873 local transcripts have sub-agents, at most 5 each — 2.9 KiB against
+1.0 KiB. Rejected because it is O(agents²): a fan-out workflow spawning 100+ pays ~1 MB, 1000
+pays ~100 MB. The same question applies to `tasks`, which **is** an override snapshot; it is
+bounded by open tasks rather than session history, so it stays — but if that ceases to hold it
+belongs here for the same reason.
 
 **The writer's obligation, and the only way to get this wrong.** An override value is the fold's
 state as of *that record's* `replay_from`, and every record has a different `replay_from`. So the
@@ -168,7 +196,7 @@ wrong:
 | lifetime | fields | home |
 |---|---|---|
 | constant per session | `anchor`, `versions` | **header**, once |
-| accumulating | `turns`, `tools`, `children_add`, `children_done`, `agent_ids`, `user_times` | **accumulate class** |
+| accumulating | `turns`, `tools`, `agents`, `user_times` | **accumulate class** |
 | as-of-`replay_from` | `window`, `cwd`, timestamps, metrics, tasks, present, store | **override class** |
 
 `user_times` is the case that matters. It is append-only and grows with turns, so writing it
