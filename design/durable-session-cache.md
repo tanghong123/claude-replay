@@ -101,18 +101,19 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children`, `agent_ids`, `user_times` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children_add`, `children_done`, `agent_ids`, `user_times` |
 | **override** | unchanged | last present value in records ≤ `n` | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
 | **indicator** | not a resume point | — | `commit: (committed_id, replay_from)` |
 
 ```rust
 struct MetaRecord {
     // accumulate
-    turns:      Option<usize>,
-    tools:      Option<usize>,
-    children:   Vec<ChildOp>,                    // empty = absent
-    agent_ids:  Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
-    user_times: Vec<Option<EpochSeconds>>,       // appended by THESE committed turns
+    turns:         Option<usize>,
+    tools:         Option<usize>,
+    children_add:  Vec<ChildMeta>,                  // appended, in spawn order
+    children_done: Vec<AgentId>,                    // marks every child with that id finished
+    agent_ids:     Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
+    user_times:    Vec<Option<EpochSeconds>>,       // appended by THESE committed turns
 
     // indicator — present iff §3's partition exists at this commit (I5)
     commit:     Option<(usize, ByteOffset)>,
@@ -128,18 +129,26 @@ struct MetaRecord {
     store:      Option<Value>,                   // engine-opaque: EmitState O(1) part
 }
 
-enum ChildOp {
-    Add(ChildMeta),   // positional: SessionMeta keeps duplicate ids (session.rs:297-303)
-    Done(AgentId),    // by id, clearing every match: SessionMeta's scan (session.rs:300-302).
-                      // An ordinal is not computable — an AgentDone can match a child added
-                      // many batches earlier, and a delta cannot see the accumulated list.
-}
-
 struct StreamHeader {     // record 0, written once
     anchor:   Hash,       // first line of the transcript
     versions: Versions,   // format, fold-logic, build; HTML adds flavor
 }
 ```
+
+**`children` needs no op vocabulary.** The list is append-only apart from one flag flip, so two
+plain accumulate lists express it: append `children_add` in order, then for each id in
+`children_done` clear `running` on **every** child carrying that id. That last part is not a
+choice — it reproduces `SessionMeta::push`'s linear scan (`session.rs:300-302`), which keeps
+duplicate ids deliberately (`session.rs:297-303`). Within a record, adds apply before dones, so
+a child spawned and finished in the same commit lands correctly; across records, record order
+carries it.
+
+Snapshotting the whole list as an override field would be simpler still, and at observed sizes
+free: 16 of 873 local transcripts have sub-agents at all, at most 5 each — 2.9 KiB versus 1.0 KiB.
+It is rejected because it is O(children²): a fan-out workflow spawning 100+ children pays ~1 MB,
+and 1000 pays ~100 MB. The same question applies to `tasks`, which **is** an override snapshot;
+it is bounded by open tasks rather than by session history, so it stays — but if that ceases to
+be true it belongs in the accumulate class for the same reason.
 
 **The writer's obligation, and the only way to get this wrong.** An override value is the fold's
 state as of *that record's* `replay_from`, and every record has a different `replay_from`. So the
@@ -159,7 +168,7 @@ wrong:
 | lifetime | fields | home |
 |---|---|---|
 | constant per session | `anchor`, `versions` | **header**, once |
-| accumulating | `turns`, `tools`, `children`, `agent_ids`, `user_times` | **accumulate class** |
+| accumulating | `turns`, `tools`, `children_add`, `children_done`, `agent_ids`, `user_times` | **accumulate class** |
 | as-of-`replay_from` | `window`, `cwd`, timestamps, metrics, tasks, present, store | **override class** |
 
 `user_times` is the case that matters. It is append-only and grows with turns, so writing it
