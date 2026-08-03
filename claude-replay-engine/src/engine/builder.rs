@@ -205,6 +205,20 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.committed.len()
     }
 
+    /// Take the meta records emitted since the last call — the frontend-neutral session state as a
+    /// stream, alongside the block stream (see [`crate::engine::meta_stream`] for the protocol).
+    ///
+    /// Replaying it reproduces [`session_meta`](Self::session_meta) exactly: accumulate the
+    /// anchored deltas, then apply the latest unanchored restatement. That equality is the
+    /// contract, and it is asserted step-by-step against real transcripts by the
+    /// `meta_stream_replay_equals_maintained_meta` integration test.
+    ///
+    /// Drain at whatever cadence you consume blocks — the records are queued in emission order, so
+    /// draining less often coalesces the open-turn restatements without losing an anchor.
+    pub fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
+        self.replayer.drain_meta()
+    }
+
     /// Rebuild from scratch — recreate the replayer, clear the cwd, and take a fresh metrics
     /// accumulator. The live follower calls this on a truncation/compaction (the reader re-read
     /// from 0, so the next `advance` folds the whole new file).

@@ -74,6 +74,154 @@ fn maintained_meta_equals_batch_build_at_every_step() {
     assert_eq!(meta.children[0].id, "achild01");
 }
 
+/// **The meta-stream oracle** (#96). Replaying the emitted meta records must reproduce the
+/// [`SessionMeta`] the accumulator maintains — at EVERY step of a real fold. This is what the
+/// persistent cache rests on: it reconstructs session state from the record stream alone, never
+/// from the blocks, so any drift between `MetaDelta::push` and `SessionMeta::push`, or any
+/// mishandling of accumulate-vs-supersede, corrupts a resumed session.
+///
+/// It is a real test only if the fixture reaches the intricate arms, so the fixture deliberately
+/// contains a spawn whose id arrives late, a duplicate agent id, an activity-coalesced run, and a
+/// completion notification — and the assertions at the bottom fail if any of those stops being
+/// present, so the test cannot silently go vacuous.
+#[test]
+fn meta_stream_replay_equals_maintained_meta() {
+    use claude_replay_engine::engine::meta_stream::replay_meta;
+
+    let lines = [
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#,
+        // A spawn: the SubAgent block folds with NO agent_id yet — it arrives with the result.
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"general-purpose","description":"child one","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#,
+        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"launched"}]},"timestamp":"2026-07-26T10:00:04Z"}"#,
+        // A SECOND spawn reusing the same agent id — SessionMeta keeps both, so the stream must.
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_B","name":"Task","input":{"subagent_type":"general-purpose","description":"child two","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:05Z"}"#,
+        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"launched"}]},"timestamp":"2026-07-26T10:00:06Z"}"#,
+        // The completion notification (Claude delivers it as a queued event) -> AgentDone ->
+        // ChildOp::Done, which must clear BOTH children carrying that id.
+        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-26T10:00:07Z","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"child one\" finished</summary>\n<result>done</result>\n</task-notification>"}"#,
+        // The queue drains — the durability frontier is gated on an empty queue, so without this
+        // pop nothing ever commits and the anchored path would go untested.
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-26T10:00:08Z"}"#,
+        // A second user turn: commits everything above, so the anchored path carries all of it.
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:08Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b2","name":"Read","input":{"file_path":"/r/x"}}]},"timestamp":"2026-07-26T10:00:09Z"}"#,
+    ];
+
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let mut records = Vec::new();
+    let mut off: claude_replay_engine::model::ByteOffset = 0;
+    let mut anchors = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        acc.advance_at(off, line);
+        off += line.len() as u64 + 1;
+        records.extend(acc.drain_meta());
+        anchors = records.iter().filter(|r| r.is_resume_point()).count();
+
+        // THE oracle: accumulate the anchors, supersede with the latest restatement.
+        assert_eq!(
+            replay_meta(&records, None),
+            acc.session_meta(),
+            "meta stream diverged from the maintained header after line {i}"
+        );
+    }
+
+    // Truncating at a resume point yields COMMITTED-ONLY state — no open turn leaked in. That is
+    // the state a resume starts from, so it must equal a batch build over the committed prefix.
+    let committed = acc.committed_tail(0);
+    let last = records
+        .iter()
+        .filter_map(|r| r.committed_id)
+        .next_back()
+        .expect("the fixture commits");
+    assert_eq!(
+        replay_meta(&records, Some(last)),
+        claude_replay_engine::SessionMeta::build(&committed),
+        "replay through the last anchor must equal the committed prefix's meta"
+    );
+    assert_eq!(
+        last,
+        committed.len(),
+        "the anchor names the committed count"
+    );
+
+    // The spawn-identity map rebuilt from the stream must equal the one a fold builds — it is
+    // NOT part of SessionMeta, so the equality above cannot see it. A resumed fold needs it to
+    // resolve an `AgentDone` whose spawn committed and was dropped long ago.
+    let mut want_ids = std::collections::HashMap::new();
+    let mut all = acc.committed_tail(0);
+    all.extend(acc.open_finalized().0);
+    for b in &all {
+        for (k, id, ty) in claude_replay_engine::engine::meta_stream::agent_pairs(b) {
+            want_ids.insert(k, (id, ty));
+        }
+    }
+    assert!(!want_ids.is_empty(), "the fixture spawns sub-agents");
+    assert_eq!(
+        claude_replay_engine::engine::meta_stream::replay_agent_ids(&records, None),
+        want_ids,
+        "the identity map rebuilt from the stream diverged from the fold's"
+    );
+
+    // The fixture really did exercise the intricate arms (guards against going vacuous).
+    let meta = acc.session_meta();
+    assert!(anchors > 0, "the fixture must commit at least once");
+    assert_eq!(meta.children.len(), 2, "two spawns, duplicate id kept");
+    assert!(
+        meta.children.iter().all(|c| c.id == "aXYZ1234"),
+        "both children carry the SAME id — the duplicate case"
+    );
+    assert!(
+        meta.children.iter().all(|c| !c.running),
+        "one AgentDone clears EVERY child with that id, as SessionMeta's linear scan does"
+    );
+    assert!(
+        meta.turns >= 2 && meta.tools >= 2,
+        "turns and tools present"
+    );
+}
+
+/// The supersede baseline must RESET at a commit. This is the case a richer fixture hides: when
+/// the new open turn's contribution happens to be **identical** to the one just committed (here,
+/// two bare user turns — each contributes `turns: 1` and nothing else), a replayer that forgot to
+/// reset would see "no change since last told", emit no restatement, and leave the reader showing
+/// committed-only state while a turn is open. Every consecutive pair of plain prompts hits this,
+/// so it is the common case, not a corner.
+#[test]
+fn commit_resets_the_supersede_baseline() {
+    use claude_replay_engine::engine::meta_stream::replay_meta;
+
+    let lines: Vec<String> = (0..4)
+        .map(|i| {
+            format!(
+                r#"{{"type":"user","cwd":"/r","message":{{"role":"user","content":[{{"type":"text","text":"turn {i}"}}]}},"timestamp":"2026-07-26T10:0{i}:00Z"}}"#
+            )
+        })
+        .collect();
+
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let mut records = Vec::new();
+    let mut off: claude_replay_engine::model::ByteOffset = 0;
+    for (i, line) in lines.iter().enumerate() {
+        acc.advance_at(off, line);
+        off += line.len() as u64 + 1;
+        records.extend(acc.drain_meta());
+        assert_eq!(
+            replay_meta(&records, None).turns,
+            acc.session_meta().turns,
+            "the open turn went missing from the stream after turn {i}"
+        );
+    }
+    assert_eq!(acc.session_meta().turns, 4, "four bare prompts");
+    // Each turn but the last committed, and each commit is an anchor.
+    assert_eq!(
+        records.iter().filter(|r| r.is_resume_point()).count(),
+        3,
+        "one anchor per commit"
+    );
+}
+
 /// #56 regression (the QoderWork panic): ONE transcript line can carry SEVERAL user text
 /// items — the second turn then closes the first within the same fold batch, committing it
 /// before any later `LineStart` stamps its timestamp. The drain must stamp first: no lost

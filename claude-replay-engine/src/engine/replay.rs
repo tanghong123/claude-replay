@@ -126,19 +126,20 @@ pub struct Replayer<'a> {
     /// empty (it is the resume anchor, not merely a change report).
     meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
     committed_emitted: usize,
+    /// The open turn's contribution as most recently restated in an UNANCHORED record. Unanchored
+    /// records supersede rather than accumulate, so this is the "already told them that" baseline:
+    /// a drain restates the open turn only when it differs from this, and a commit resets it (an
+    /// anchor voids every restatement before it). See `engine::meta_stream`.
+    last_provisional: crate::engine::meta_stream::MetaDelta,
 }
 
 /// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
 /// `tool_use_id` and, once known, its `agent_id`). No-op for non-`SubAgent` blocks.
 fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
-    if let Block::SubAgent(sa) = b {
-        let v = (sa.agent_id.clone(), sa.agent_type.clone());
-        if !sa.tool_use_id.is_empty() {
-            map.insert(sa.tool_use_id.clone(), v.clone());
-        }
-        if !sa.agent_id.is_empty() {
-            map.insert(sa.agent_id.clone(), v);
-        }
+    // The rows come from `meta_stream::agent_pairs` — the ONE definition, shared with the meta
+    // stream's `MetaDelta::push`, so the live map and the persisted stream cannot drift.
+    for (key, agent_id, agent_type) in crate::engine::meta_stream::agent_pairs(b) {
+        map.insert(key, (agent_id, agent_type));
     }
 }
 
@@ -174,6 +175,7 @@ impl<'a> Replayer<'a> {
             agent_ids: HashMap::new(),
             meta_out: Vec::new(),
             committed_emitted: 0,
+            last_provisional: crate::engine::meta_stream::MetaDelta::default(),
         }
     }
 
@@ -474,8 +476,11 @@ impl<'a> Replayer<'a> {
             .map(|(_, b)| b)
             .collect();
         let finalized = (self.shaping.finish_turns)(raw);
-        // The meta delta of this commit is folded from the FINALIZED blocks — exactly the
-        // ones the accumulator will `committed_meta.push`, so the two derivations agree.
+        // Rule (B): an ANCHORED record lands right here, immediately after the last committed
+        // block. Its delta is folded from the FINALIZED blocks — exactly the ones the accumulator
+        // will `committed_meta.push` — so the two derivations agree by construction. (The
+        // provisional half is restated at `drain_meta`, which is where the open turn is read; see
+        // there for why it is not computed per batch.)
         let mut committed_delta = crate::engine::meta_stream::MetaDelta::default();
         for b in &finalized {
             committed_delta.push(b);
@@ -487,6 +492,10 @@ impl<'a> Replayer<'a> {
             committed_delta,
             crate::engine::meta_stream::MetaDelta::default(),
         ));
+        // An anchor voids every restatement before it, so the next one is relative to THIS anchor:
+        // the blocks just committed are now covered by the anchored record, and re-including them
+        // in a restatement would double-count them.
+        self.last_provisional = crate::engine::meta_stream::MetaDelta::default();
         self.durable.extend(finalized);
         // Advance the frontier and retire indices that pointed into the dropped turns.
         self.base = hi;
@@ -546,21 +555,42 @@ impl<'a> Replayer<'a> {
         self.stamped.saturating_sub(self.base)
     }
 
-    /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
-    /// crossed the durability frontier), removing them from the replayer — so its resident content
-    /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
-    /// Take the meta records emitted since the last drain (see [`crate::engine::meta_stream`]
-    /// for the protocol). Drained in lockstep with
-    /// [`drain_committed`](Self::drain_committed), so a consumer persisting both streams
-    /// keeps them aligned by construction.
-    // No lib consumer yet by design: the persistent session cache (#96) is what drains and
-    // persists this stream. The protocol is implemented and tested first so the cache is
-    // built on a pinned foundation rather than defining it as it goes.
-    #[allow(dead_code)]
+    /// Take the meta records emitted since the last drain (see [`crate::engine::meta_stream`] for
+    /// the protocol). Drained in lockstep with [`drain_committed`](Self::drain_committed), so a
+    /// consumer persisting both streams keeps them aligned by construction.
+    ///
+    /// The ANCHORED records were queued as each commit happened (rule (B) puts them immediately
+    /// after the last committed block). The open turn's restatement is computed **here** rather
+    /// than per `apply` batch, because here is where a consumer actually reads the open turn — and
+    /// because restating per batch would re-fold the whole open window on every transcript line,
+    /// turning an O(turn) cost into O(turn²). Nothing is lost: a restatement no consumer read is
+    /// one the next restatement supersedes anyway.
+    ///
+    /// It is emitted only when it DIFFERS from the last one told (the supersede baseline), which
+    /// is what makes "no commit, no meta change ⇒ zero records" hold. Note this also catches a
+    /// change with no new block — a `tool_result` that fills a spawn's `agent_id` or grows a
+    /// coalesced `Thinking`'s tool list mutates the open window in place.
+    // Reached from the lib only via `SessionAccumulator::drain_meta`. The persistent session
+    // cache (#96) is the eventual consumer; the protocol is implemented and tested first so the
+    // cache is built on a pinned foundation rather than defining it as it goes.
     pub(crate) fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
+        let mut provisional = crate::engine::meta_stream::MetaDelta::default();
+        for b in &self.open_snapshot().0 {
+            provisional.push(b);
+        }
+        if provisional != self.last_provisional {
+            self.last_provisional = provisional.clone();
+            self.meta_out
+                .push(crate::engine::meta_stream::MetaRecord::unanchored(
+                    provisional,
+                ));
+        }
         std::mem::take(&mut self.meta_out)
     }
 
+    /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
+    /// crossed the durability frontier), removing them from the replayer — so its resident content
+    /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
     pub(crate) fn drain_committed(&mut self) -> Vec<Block> {
         std::mem::take(&mut self.durable)
     }

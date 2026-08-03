@@ -76,6 +76,11 @@ the still-open turn (Appendix A1's probe: `committed_len` 0 → 2 on one line). 
 
 ### 3.1 When the replayer emits meta records
 
+> **Built.** This section is implemented and pinned by tests ahead of the rest of the cache —
+> `claude-replay-engine/src/engine/meta_stream.rs` (the protocol, `emit_batch`, and the reader
+> half `replay_meta`/`replay_agent_ids`), wired at the replayer's drain, with the oracle in
+> `claude-replay-agents/tests/engine_integration.rs`.
+
 For each batch of regular records emitted, the replayer emits **0–2** meta records such
 that:
 
@@ -90,6 +95,29 @@ that:
 | commit is the last record | **1** — right after it, **anchored** |
 | commit mid-batch, no change after it | **1** — right after the last commit, **anchored** |
 | commit mid-batch, changes after it | **2** — anchored after the last commit, then unanchored at the end |
+
+**The two kinds combine DIFFERENTLY** — this is load-bearing, and it is forced by how the
+accumulator already maintains the same value. `SessionAccumulator::session_meta` accumulates
+each committed block into `committed_meta` exactly once, then folds the open turn **freshly on
+top** every time it is asked. The stream must mirror that, or the two derivations disagree:
+
+- **Anchored** records carry an *incremental* delta of blocks that **committed**. They
+  **accumulate** — apply every one, in order, exactly once.
+- **Unanchored** records carry a *full restatement* of the still-open turn's contribution
+  relative to the most recent anchor. They **supersede** — only the latest one after the last
+  anchor counts, and an anchor voids every restatement before it.
+
+```
+committed_meta = Σ (anchored deltas, in order)      // accumulate
+live_meta      = committed_meta + latest unanchored  // supersede
+```
+
+Reading an unanchored record as incremental **double-counts**: a block restated while
+provisional is counted again by the anchored record that later commits it. Note the corollary
+for the writer — a commit must **reset** the "already restated" baseline, or when the new open
+turn's contribution happens to equal the one just committed (two consecutive bare prompts do
+exactly this) the writer sees "no change" and emits nothing, and the reader is left showing
+committed-only state while a turn is open.
 
 **Only anchored records are resume points**, and that is the whole point of rule (B): a
 record sitting immediately after a committed block describes state *as of that committed
