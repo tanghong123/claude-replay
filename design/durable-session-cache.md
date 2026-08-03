@@ -74,6 +74,38 @@ the still-open turn (Appendix A1's probe: `committed_len` 0 → 2 on one line). 
 > skips only the multi-turn-on-one-line case of Appendix A1. §10's zero-parsed-lines
 > assertion catches the wrong reading.
 
+### 3.1 When the replayer emits meta records
+
+For each batch of regular records emitted, the replayer emits **0–2** meta records such
+that:
+
+- **(A)** every meta delta caused by those regular records is captured; and
+- **(B)** if the batch contained a committed block, a meta record lands **immediately after
+  the last committed one**, capturing all deltas since the previous meta record.
+
+| batch | meta records |
+|---|---|
+| no commit, no meta change | **0** |
+| no commit, meta change | **1** — at the end, *unanchored* |
+| commit is the last record | **1** — right after it, **anchored** |
+| commit mid-batch, no change after it | **1** — right after the last commit, **anchored** |
+| commit mid-batch, changes after it | **2** — anchored after the last commit, then unanchored at the end |
+
+**Only anchored records are resume points**, and that is the whole point of rule (B): a
+record sitting immediately after a committed block describes state *as of that committed
+block*, with nothing from the still-open turn leaked into it. So the
+`{committed_id, replay_from, resume_at}` stamp lives on anchored records only.
+
+**Unanchored records are never resumed from.** They describe provisional-turn
+contributions, which the re-read rebuilds — applying them would double-count (§4.1). They
+exist so a live reader's meta stays current between commits and so the stream can be
+replayed to "now" without the transcript.
+
+**Consequently, on load: replay meta records up to and including the anchored record for
+`n`, then truncate the stream there.** Leaving a trailing unanchored record in the file
+would let a later load apply it out of order, ahead of records computed relative to `n` —
+the same hazard as untruncated content (§3, below).
+
 **Two offsets, not one** (§4 explains why):
 
 - `replay_from` — the line that produced `out[0]`, i.e. where the open turn begins;
