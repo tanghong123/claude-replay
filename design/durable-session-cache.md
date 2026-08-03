@@ -22,11 +22,20 @@ Two append-only streams per `<presentation, session>`, written only at a commit:
 ```
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
-meta      exactly one MetaRecord per commit
+meta      exactly one MetaRecord per commit, each carrying
+            · delta  — what those committed blocks changed        (every record matters)
+            · resume — the offset + state to restart folding from (only the last one matters)
 ```
 
 A block commits when a later turn begins and the prompt queue is empty. There is no periodic
-snapshot and nothing schedules a write.
+snapshot, no third file, and nothing schedules a write.
+
+**The resume payload is in-band deliberately.** Only the record at `n` is ever read for its
+resume payload, so a separate file holding just the latest would be smaller (~100 KB per session
+saved). It would also need its own alignment against the other two streams, and a crash between
+writing them would leave the pair disagreeing. In-band, each commit is **one append per stream**
+and the last complete record is by construction a consistent resume point — a torn tail costs
+one commit, never correctness.
 
 ## 3. The resume principle
 
