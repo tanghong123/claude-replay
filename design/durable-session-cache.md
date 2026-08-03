@@ -285,14 +285,29 @@ snapshot only then.
   slot at **every** line's start. Four words, no allocation. `line_boundary()` (§3's guard)
   reads this slot.
 - **The cumulative blobs** — the metrics accumulator and the task fold — are cloned **only on
-  lines whose decoded messages can open a turn** (`UserText` / `Command` / `AttachmentPrompt`),
-  and pushed onto a small deque that the drain prunes below `base`. One entry per *turn* in the
-  open window, not per line.
+  lines whose decoded messages can open a turn**, and pushed onto a small deque that the drain
+  prunes below `base`. One entry per *turn* in the open window, not per line.
 
 **The predicate's safety direction is asymmetric and must be stated:** over-approximating is
-harmless (a wasted snapshot), under-approximating loses the checkpoint that a later
-`replay_from` needs. So it is derived from the fold's own turn-opening messages, and a
-`debug_assert!` fires if a drain ever selects an `out[0]` from a line the predicate rejected.
+harmless (a wasted snapshot), under-approximating loses the checkpoint a later `replay_from`
+needs. The set is therefore read off the fold itself — every arm in `Replayer::apply` that
+pushes a `Block::UserText` or `Block::Command` into `out`:
+
+| `Message` | pushes | note |
+|---|---|---|
+| `UserText` | `Block::UserText` | `replay.rs:274` |
+| `AttachmentPrompt` | `Block::UserText` | `replay.rs:335` |
+| `Command` | `Block::Command` | `replay.rs:293` |
+| **`CommandStdout`** | `Block::Command` | `replay.rs:308` — **only** when there is no preceding `Command` to attach to, which is easy to miss |
+
+`SkillBody` and `QueueOp` are *not* in the set: the first pushes a `ToolResult` fallback, the
+second a `QueueEvent` — neither is a turn boundary.
+
+Because that table is drift-prone, it is **not** open-coded at the call site. It is one
+`Message::can_open_turn()` defined beside those arms, so a new arm that pushes a turn block sits
+next to the predicate it must update — and a `debug_assert!` fires if a drain ever selects an
+`out[0]` from a line the predicate rejected, so drift is caught in tests rather than as a
+corrupt resume.
 
 A dirty-flag variant ("clone only when the previous line mutated a blob") looks cheaper and is
 not: `MetricsAccumulator::push` runs on **every** line that parses as JSON
@@ -461,7 +476,10 @@ degrades a collision to a rebuild.
 **The lock is held for the winning frontend's whole process lifetime**, independent of
 residency: `pull_response` reaps and hibernates per request (`serve.rs:245-247`), so a
 session can be evicted while its page is still open. Eviction drops residency only; the
-lock is released at exit (§11 step 8). §9's GC rule depends on this.
+lock is released at exit (§11 step 8). **§11 step 9's GC rule depends on this** — it skips
+entries with a `LOCK` present, which is only safe because a live holder's lock outlives its
+residency. (§9 is validity and is unaffected by locking: its fixed 64 KiB window ending at
+`replay_from` is a property of the transcript, not of who holds the lock.)
 
 Reclaim is liveness-based; a server holder is additionally port-probed, since pids are recycled, via
 a callback injected by the frontend (only it knows its port, and a callback keeps the lock
@@ -591,9 +609,9 @@ parameterised.
    a `committed_meta()` accessor (`session_meta()` is the merged value);
    `LineReader::open_at_offset` (**not** `open_at`, which routes into `poll_resume` and
    re-reads the whole prefix); the **per-line scratch slot + turn-boundary deque** of §4.1,
-   including the peek predicate and its `debug_assert!` — this is what makes the one-offset
-   resume possible, so it lands with the accessors, not later — and `line_boundary()` reading
-   that slot (§3's checkpoint guard);
+   including `Message::can_open_turn()` and its `debug_assert!` — this is what makes the
+   one-offset resume possible, so it lands with the accessors, not later — and
+   `line_boundary()` reading that slot (§3's checkpoint guard);
    **`FollowParser::resume`** (does not exist yet) and **`TaskFold::{checkpoint, restore}`**
    (`pending` is private to `engine::tasks`, so even a sibling module cannot read it); `MetricsAccumulator::{checkpoint,
    restore}` + the `TimeSpan` derive. **The requirement-5 test lands here and gates the
