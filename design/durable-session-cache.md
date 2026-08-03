@@ -86,7 +86,7 @@ is `replay_from`.
 struct MetaRecord {
     committed_id: usize,                 // committed-block count after this commit
     delta:        MetaDelta,             // what these committed blocks changed
-    resume:       Option<ResumePayload>, // Some iff §3's line-boundary condition holds
+    resume:       Option<ResumePayload>, // Some iff §3's partition exists at this commit
 }
 
 struct MetaDelta {                       // fields absent when unchanged (R7)
