@@ -275,20 +275,31 @@ keeps 20 blocks the server no longer has. **On a truncate-back, bump `epoch`** s
 outstanding cursor resyncs rather than stalling.
 
 **The tracking mechanism.** Everything above is captured *as of a line's start*, and which line
-is `replay_from` is only known after the drain, so the value must be recorded before it is
-needed. Two tiers, because the costs differ:
+is `replay_from` is only known later — at the drain — so the value must be recorded before it
+is needed. The naive reading is "snapshot every line", which is too expensive for the
+cumulative blobs. **Peek instead of snapshotting:** `advance_at` decodes the line into
+`Message`s *before* folding them, so it can ask whether this line can open a turn and take the
+snapshot only then.
 
-- **Scalars** — `(logical_index, line_offset, prev_ts, pending_ts)` — are copied into a
-  single **scratch slot at every line's start**. Four words, no allocation.
-- **Cumulative blobs** — the metrics accumulator and the task fold — are cloned into that slot
-  **only when the previous line actually mutated them**, tracked by a dirty flag. Most lines
-  touch neither: metrics moves only on a line carrying `usage`, the task fold only on a
-  `TaskOp`.
+- **Scalars** — `(logical_index, line_offset, prev_ts, pending_ts)` — go into a single scratch
+  slot at **every** line's start. Four words, no allocation. `line_boundary()` (§3's guard)
+  reads this slot.
+- **The cumulative blobs** — the metrics accumulator and the task fold — are cloned **only on
+  lines whose decoded messages can open a turn** (`UserText` / `Command` / `AttachmentPrompt`),
+  and pushed onto a small deque that the drain prunes below `base`. One entry per *turn* in the
+  open window, not per line.
 
-When a line appends a turn-boundary block (`UserText`/`Command` — by §3.1 the only thing
-`out[0]` can be), the scratch slot is promoted into a small deque; the drain prunes entries
-below `base`. So the deque holds one entry per *turn* in the open window, not per line, and
-`line_boundary()` (§3's guard) is a comparison against the scratch slot.
+**The predicate's safety direction is asymmetric and must be stated:** over-approximating is
+harmless (a wasted snapshot), under-approximating loses the checkpoint that a later
+`replay_from` needs. So it is derived from the fold's own turn-opening messages, and a
+`debug_assert!` fires if a drain ever selects an `out[0]` from a line the predicate rejected.
+
+A dirty-flag variant ("clone only when the previous line mutated a blob") looks cheaper and is
+not: `MetricsAccumulator::push` runs on **every** line that parses as JSON
+(`builder.rs:160-161`), and both agents call `span.observe` on every line carrying a timestamp
+(`claude/metrics.rs:50-54`, `codex/metrics.rs:28-34`) — so the accumulator moves on nearly
+every line and the flag would be set almost always. Peeking is what makes this cheap; the
+dirty flag is not.
 
 Why as-of-line-start rather than as-of-checkpoint, in the concrete: persisting `prev_ts` at the
 checkpoint instant is right only when `replay_from` **is** the commit line. In the pinned-drain
@@ -426,7 +437,16 @@ The cache absorbs state-keeping; frontends stay thin. Concretely:
 - **The `aux` slot stays view state.** The TUI's `ViewSidecar` is derived and
   width-dependent; it must never enter the meta stream.
 
-Acceptance is the LOC measure in §1.7, taken per frontend before and after.
+**Per-line state and per-committed-block state are captured at DIFFERENT points; do not apply
+§4.1's rule uniformly.** §4.1 says to capture as of the `replay_from` line, and that governs
+folds `advance_at` runs for **every line** (metrics, the task op-log, `user_times`). The store
+blob above is not one of those: `EmitState`'s `next_block`/`turn`/`seen_turns` advance only as
+committed blocks are `put`, and the replay commits nothing (§3's guard plus the `last_skill`
+cap — the same argument as §4.1's unreachable fourth fold). So per-committed-block state is
+correctly captured **at the commit**, and moving it back to `replay_from` would restore a value
+that is one commit stale. The test that separates the two is §10's double-apply case.
+
+Acceptance is the LOC measure in **§1.6**, taken per frontend before and after.
 
 ## 7. Locking
 
@@ -473,8 +493,8 @@ fork/exec cost means eviction must not probe per candidate.
 
 | when | added work |
 |---|---|
-| **per line** | four scalars into a scratch slot (§4.1) — the byte offset `advance_at` already receives, plus the logical index and two timestamps. No hashing, no I/O, no allocation. On the minority of lines that mutate a cumulative fold (a `usage` line, a `TaskOp`), one small clone of that fold. |
-| **per turn** | promote the scratch slot into the boundary deque; the drain prunes it. O(turns in the open window), not O(lines). |
+| **per line** | four scalars into a scratch slot (§4.1) — the byte offset `advance_at` already receives, plus the logical index and two timestamps — and one predicate over the already-decoded messages. No hashing, no I/O, no allocation. |
+| **per user turn** | clone the metrics accumulator + task fold onto the boundary deque; the drain prunes it. O(turns in the open window), not O(lines) — user turns are a small fraction of transcript lines. |
 | **per committed block** | HTML: none, it already appends a record. TUI: one `serde_json` serialize + buffered append. |
 | **per commit** | one delta record — sized to the change (§1.7) — plus one bounded 64 KiB `pread`+hash for the validity window, and the O(1) part of the store blob (§6) |
 | **per open** | `stat` + first line + 64 KiB window + replay the deltas + decode/scan the content stream — O(records + committed), far below parse+fold |
@@ -483,14 +503,18 @@ fork/exec cost means eviction must not probe per candidate.
 One rule, not an optimisation: checkpoints happen at commits, never per advance (a poll-driven
 write would fire every `POLL_MS`, 2 s, per session).
 
-**The per-line row is the honest cost of the one-offset resume** (§3.1). The earlier
-two-offset shape kept this row at literally zero by capturing cumulative state at the commit
-instant — and paid for it with §4.1's suppression rule, a hand-maintained list whose omissions
-are silent. Four scalars per line and an occasional small clone is the better trade; it is
-still no allocation on the common line and no I/O ever.
+**A rule this design deliberately gives up.** Earlier versions claimed "nothing is maintained
+during folding that is only needed at checkpoint time — everything is *read* at commit from
+state the fold already holds". The scratch slot and the boundary deque break that rule: they
+are maintained during folding and read only at a checkpoint. The rule was affordable only
+because state was captured at the commit instant, which is exactly what forced §4.1's
+suppression list — a hand-maintained list whose omissions are silent. Four scalars per line
+plus a per-*turn* clone is the better trade, and it is still no allocation on the common line
+and no I/O ever. Nothing else in this design leaned on the abandoned rule; §8 was its only
+statement.
 
 The TUI's per-block serialize remains the only genuinely new *steady-state* cost. **Measure
-both** (§11 step 4) rather than assume them.
+both it and the per-turn clone** (§11 step 4) rather than assume them.
 
 ## 9. Validity
 
@@ -566,7 +590,10 @@ parameterised.
    two vectors and therefore testable without a filesystem;
    a `committed_meta()` accessor (`session_meta()` is the merged value);
    `LineReader::open_at_offset` (**not** `open_at`, which routes into `poll_resume` and
-   re-reads the whole prefix) and `line_boundary()` (§3's checkpoint guard);
+   re-reads the whole prefix); the **per-line scratch slot + turn-boundary deque** of §4.1,
+   including the peek predicate and its `debug_assert!` — this is what makes the one-offset
+   resume possible, so it lands with the accessors, not later — and `line_boundary()` reading
+   that slot (§3's checkpoint guard);
    **`FollowParser::resume`** (does not exist yet) and **`TaskFold::{checkpoint, restore}`**
    (`pending` is private to `engine::tasks`, so even a sibling module cannot read it); `MetricsAccumulator::{checkpoint,
    restore}` + the `TimeSpan` derive. **The requirement-5 test lands here and gates the
