@@ -22,7 +22,7 @@ Two append-only streams per `<presentation, session>`, written only at a commit:
 ```
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
-meta      exactly one MetaRecord per commit, each carrying
+meta      a StreamHeader, then exactly one MetaRecord per commit, each carrying
             · delta  — what those committed blocks changed        (every record matters)
             · resume — the offset + state to restart folding from (only the last one matters)
 ```
@@ -67,7 +67,8 @@ line by more than one turn.
 | committed blocks | **content stream** |
 | `committed_meta` | **meta stream**, as per-commit deltas |
 | `agent_ids` | **meta stream** — never pruned; a completion resolves a spawn many turns back |
-| `cwd`, `prev_ts`, `pending_ts`, `user_times` | **resume payload** — neither pruned nor empty at a commit |
+| `user_times`, `cwd` | **meta stream** — append-only and write-once, so deltas (§4) |
+| `prev_ts`, `pending_ts` | **resume payload** — neither pruned nor empty at a commit |
 | metrics accumulator, task fold | **resume payload** — folded per line, so not rebuilt |
 | `epoch`, `provisional_gen` | **resume payload** — a held client cursor must resync across a restart |
 
@@ -103,6 +104,8 @@ struct MetaDelta {                       // fields absent when unchanged (R7)
     tools:     Option<usize>,
     children:  Vec<ChildOp>,
     agent_ids: Vec<(String, String, String)>,   // (key, agent_id, agent_type); upsert
+    user_times: Vec<Option<EpochSeconds>>,      // appended by THESE committed turns
+    cwd:       Option<String>,                  // first non-empty wins; set once
 }
 
 enum ChildOp {
@@ -112,23 +115,44 @@ enum ChildOp {
                       // many batches earlier, and a delta cannot see the accumulated list.
 }
 
-struct ResumePayload {
+struct StreamHeader {         // record 0 of the meta stream, written once
+    anchor:   Hash,           // first line of the transcript
+    versions: Versions,       // format, fold-logic, build; HTML adds flavor
+}
+
+struct ResumePayload {        // only values that genuinely differ per commit
     replay_from: ByteOffset,
-    anchor:      Hash,        // first line of the transcript
     window:      Hash,        // sha256 of the 64 KiB ending at replay_from
-    versions:    Versions,    // format, fold-logic, build; HTML adds flavor
-    engine:      EngineState, // every field as of the start of the replay_from line
+    engine:      EngineState, // as of the start of the replay_from line
     present:     Value,       // opaque to engine: epoch, provisional_gen, n_provisional
     store:       Value,       // opaque to engine: EmitState O(1) part
 }
 
 struct EngineState {
-    cwd: String, prev_ts: Option<EpochSeconds>, pending_ts: Option<EpochSeconds>,
-    user_times: Vec<Option<EpochSeconds>>,   // length == committed_meta.turns
-    metrics: Value,                          // agent-opaque (§7)
-    tasks:   Value,                          // TaskFold including `pending`
+    prev_ts: Option<EpochSeconds>, pending_ts: Option<EpochSeconds>,
+    metrics: Value,           // agent-opaque (§7); O(1) — 5 counters, a model, a span
+    tasks:   Value,           // TaskFold including `pending`; bounded by open tasks
 }
 ```
+
+**Three lifetimes, three homes.** Conflating them is what wastes space, and one of them is
+asymptotically wrong:
+
+| lifetime | examples | home |
+|---|---|---|
+| constant per session | `anchor`, `versions` | **header**, written once |
+| accumulating | `committed_meta`, `agent_ids`, `user_times`, `cwd` | **`MetaDelta`**, replayed |
+| genuinely per-commit | `replay_from`, `window`, `prev_ts`, `pending_ts`, metrics, tasks, present, store | **`ResumePayload`** |
+
+`user_times` is the one that matters. It is append-only and grows with turns, so writing it whole
+per commit costs O(turns²) in bytes *and* in serialization, and makes a load O(turns²) too. It
+belongs in `MetaDelta` as an append — the same mechanism that already rebuilds `committed_meta`.
+Accumulating those deltas through record `n` yields exactly its as-of-`replay_from` value,
+because at that offset precisely the committed turns are stamped. `cwd` joins it (write-once,
+idempotent).
+
+Measured against ~217 commits (the mean over 131 local transcripts): **253 KiB → 55 KiB**, and
+O(turns²) → O(turns). At 2000 turns it is 15.9 MiB → 504 KiB.
 
 `MetaRecord` names no `BV`, so restore is one implementation with no type parameter (R5). The
 three opaque layers exist because R1 puts the format in the engine, which cannot name a
@@ -219,9 +243,9 @@ caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at,
 `replay.rs:104`) while `committed_len()` counts finalized blocks (`builder.rs:204-206`), and
 `coalesce_spans` collapses runs, so they differ. Setting `stamped = committed_len` makes
 `window_stamped()` exceed `out.len()` and the first `LineStart` slice out of range. `base`'s
-absolute value never escapes the replayer, so rebasing is sound. `user_times` has length
-`committed_meta.turns`, which is its value at `replay_from`: by §3's partition every
-uncommitted `UserText` lies at or above that offset, so none has been stamped. `suppress` holds only `QueueEvent` markers, so no turn is ever suppressed
+absolute value never escapes the replayer, so rebasing is sound. `user_times` comes from the replayed deltas and has length `committed_meta.turns`, which is its
+value at `replay_from`: by §3's partition every uncommitted `UserText` lies at or above that
+offset, so none has been stamped. `suppress` holds only `QueueEvent` markers, so no turn is ever suppressed
 and that count is exact.
 
 Alignment lives in the accumulator because the accumulator owns `committed`. It opens no file
@@ -232,10 +256,10 @@ return two vectors; the persistence layer performs the `set_len`s and is the onl
 ### 6.4 Validate
 
 ```
-valid(p): len(src) ≥ p.replay_from
-        ∧ first_line(src) == p.anchor
-        ∧ sha256(src[p.replay_from-64KiB .. p.replay_from]) == p.window
-        ∧ p.versions == current
+valid(hdr, p): len(src) ≥ p.replay_from
+             ∧ first_line(src) == hdr.anchor          # checked once, not per record
+             ∧ sha256(src[p.replay_from-64KiB .. p.replay_from]) == p.window
+             ∧ hdr.versions == current
 ```
 
 The window is fixed-size and ends at `replay_from` because everything restored derives from
