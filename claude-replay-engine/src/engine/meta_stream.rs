@@ -270,7 +270,11 @@ fn effective(records: &[MetaRecord], through: Option<usize>) -> Vec<&MetaDelta> 
 }
 
 /// Replay a stream to the [`SessionMeta`] it describes — the reader half of the protocol, and the
-/// left-hand side of the oracle tests. See [`effective`] for `through`.
+/// left-hand side of the oracle tests.
+///
+/// `through` bounds the replay to a resume point: `Some(n)` stops after the anchored record for
+/// committed id `n`, yielding committed-only state with no open turn; `None` replays everything,
+/// yielding live state. An unknown `n` yields nothing rather than a partial answer.
 pub fn replay_meta(records: &[MetaRecord], through: Option<usize>) -> SessionMeta {
     let mut m = SessionMeta::default();
     for d in effective(records, through) {
@@ -283,6 +287,8 @@ pub fn replay_meta(records: &[MetaRecord], through: Option<usize>) -> SessionMet
 /// [`agent_pairs`]) — the replayer state a resumed fold needs to resolve a later `AgentDone`
 /// whose spawn is long since committed and dropped. Rebuilding it is why the rows are in the
 /// stream at all; without it a resumed session renders completions with no type or id.
+///
+/// `through` bounds the replay exactly as [`replay_meta`]'s does.
 pub fn replay_agent_ids(
     records: &[MetaRecord],
     through: Option<usize>,
