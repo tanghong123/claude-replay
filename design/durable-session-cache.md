@@ -1,7 +1,7 @@
 # Design: a durable, cross-run session cache
 
-> **v19.** Reuse a prior invocation's parse of a transcript. Read §3 first: the rest follows
-> from it.
+> **v20** — v19 re-reviewed against the code, every citation checked. Reuse a prior
+> invocation's parse of a transcript. Read §3 first: the rest follows from it.
 
 ## 1. Requirements
 
@@ -22,7 +22,7 @@ Two append-only streams per `<presentation, session>`, written only at a commit:
 ```
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
-meta      a StreamHeader, then one MetaRecord per commit — a flat list of optional fields
+meta      a StreamHeader, then one MetaRecord per committing line — a flat list of optional fields
             · accumulate — what those committed blocks changed  (every record composes)
             · override   — fold state as of replay_from          (read only where you land)
             · indicator  — (committed_id, replay_from): resumable here
@@ -64,7 +64,7 @@ line by more than one turn.
 |---|---|
 | `out`, `base` | rebuilt — the re-read reproduces it |
 | `tool_slot`, `suppress`, `last_skill` | rebuilt — pruned to the open window at each drain |
-| `queue` | rebuilt — empty at every commit, by the drain's own gate |
+| `queue` | rebuilt — provably empty at `replay_from`: an item resident there would have gated off every commit since its enqueue (`finalize_completed` returns while the queue is non-empty), so its marker could not sit below the partition |
 | committed blocks | **content stream** |
 | `committed_meta` | **meta stream**, as per-commit deltas |
 | `agent_ids` | **meta stream** — never pruned; a completion resolves a spawn many turns back |
@@ -82,9 +82,17 @@ those double-apply, since the commit line is at or after `replay_from`. Capturin
 **Which commits qualify?** Those at which the partition **exists**. This is not a separate rule
 — it is the definition's well-definedness condition. A line that authored blocks on both sides
 of the frontier admits no offset: re-reading from its start re-produces committed blocks,
-starting after it loses provisional ones. One line can do this (`committed_len` 0 → 2 on one
-line). Such a commit carries no resume payload and a load falls back to the previous qualifying
-record.
+starting after it loses provisional ones. Two shapes do this:
+
+- a **multi-turn line** — one line carrying several user texts commits the earlier turns while
+  the last stays open (`committed_len` 0 → 2 on one line);
+- an **attachment-first prompt** — a user line ordered `[image, text]` authors the `Attachment`
+  block *below* its `UserText` (decode preserves item order, `claude/model.rs:655-668`), so the
+  attachment commits while the turn stays open.
+
+Either way the record carries no `commit` and a load falls back to the previous qualifying
+record — the cost is re-reading one extra turn, never a lost cache. The next drain re-qualifies:
+by then the whole straddling line has committed.
 
 The partition is otherwise total: `finalize_completed` drains `out[0..k)` where `k` indexes a
 turn-boundary block, so `out` retains `out[k..]` and is never empty after a commit
@@ -101,30 +109,37 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times` |
-| **override** | unchanged | last present value in records ≤ `n` | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
-| **indicator** | not a resume point | — | `commit: (committed_id, replay_from)` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times`, `store_grow` |
+| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
+| **indicator** | not a resume point | — | `commit: Commit` |
 
 ```rust
 struct MetaRecord {
     // accumulate
-    turns:       Option<usize>,
-    tools:       Option<usize>,
-    agents:      Vec<AgentEvent>,              // sub-agents arriving and departing, IN ORDER
-    user_times:  Vec<Option<EpochSeconds>>,    // appended by THESE committed turns
+    turns:      Option<usize>,
+    tools:      Option<usize>,
+    agents:     Vec<AgentEvent>,               // sub-agents arriving and departing, IN ORDER
+    user_times: Vec<Option<EpochSeconds>>,     // appended by THESE committed turns
+    store_grow: Vec<Value>,                    // frontend-opaque, list append — HTML's sidebar
+                                               // entries (EmitState.turns), one per user turn
 
-    // indicator — present iff §3's partition exists at this commit (I5)
-    commit:     Option<(usize, ByteOffset)>,
+    // indicator — present iff §3's partition exists at this drain (I5)
+    commit:     Option<Commit>,
 
     // override — written when the value differs from the last one written (R7)
-    window:     Option<Hash>,                    // sha256 of the 64 KiB ending at replay_from
     cwd:        Option<String>,
     prev_ts:    Option<Option<EpochSeconds>>,
     pending_ts: Option<Option<EpochSeconds>>,
     metrics:    Option<Value>,                   // agent-opaque (§7); O(1)
     tasks:      Option<Value>,                   // TaskFold incl. `pending`; bounded by open tasks
     present:    Option<Value>,                   // engine-opaque: epoch, provisional_gen, n_provisional
-    store:      Option<Value>,                   // engine-opaque: EmitState O(1) part
+    store:      Option<Value>,                   // frontend-opaque: EmitState's O(1) part
+}
+
+struct Commit {
+    id:          usize,        // committed-block count after this drain
+    replay_from: ByteOffset,   // §3's partition offset
+    window:      Hash,         // sha256 of the 64 KiB ending at replay_from
 }
 
 enum AgentEvent {
@@ -185,10 +200,18 @@ wrote — otherwise "last present ≤ `n`" restores something measured at an ear
 R7 applied to the override class: `cwd` is written once, `metrics` and the timestamps change at
 every commit and so appear at every commit. The rule is uniform; the frequencies differ.
 
-**Why `commit` is one field and not two.** `committed_id` is used only to align against
-`|committed|` and to name the record a load stops at; both apply solely to resume points. Paired
-with the offset it is one fact — "resumable here" — rather than an invariant to maintain across
-two fields.
+**Why `commit` is one field and not three.** `committed_id` is used only to align against
+`|committed|` and to name the record a load stops at; both apply solely to resume points, so a
+record without an offset never needs it. `window` is a hash **of** `replay_from`'s bytes —
+meaningful only alongside that exact offset, and "absent = unchanged" would be nonsense for it
+(`replay_from` strictly increases, so it always changes). All three are one fact — "resumable
+here" — not an invariant to maintain across fields.
+
+**`store` vs `store_grow`.** Each opaque layer gets a slot in whichever class it needs. HTML's
+`EmitState` splits: its O(1) part (`next_block`, `turn`, `seen_turns`) rides `store` (override);
+its growing sidebar index (`turns: Vec<(anchor, label)>`, `html_export/mod.rs:716-722`) rides
+`store_grow` (accumulate), one entry per user turn — written whole it would be a second
+O(turns²) `user_times`.
 
 **Three lifetimes, three homes.** Conflating them wastes space, and one case is asymptotically
 wrong:
@@ -196,8 +219,9 @@ wrong:
 | lifetime | fields | home |
 |---|---|---|
 | constant per session | `anchor`, `versions` | **header**, once |
-| accumulating | `turns`, `tools`, `agents`, `user_times` | **accumulate class** |
-| as-of-`replay_from` | `window`, `cwd`, timestamps, metrics, tasks, present, store | **override class** |
+| accumulating | `turns`, `tools`, `agents`, `user_times`, `store_grow` | **accumulate class** |
+| as-of-`replay_from` | `cwd`, timestamps, metrics, tasks | **override class** |
+| as-of-the-write | `present`, `store` | **override class** — see I4's scope |
 
 `user_times` is the case that matters. It is append-only and grows with turns, so writing it
 whole per commit costs O(turns²) in bytes *and* serialization, and makes a load O(turns²). As an
@@ -206,6 +230,11 @@ value, because at that offset precisely the committed turns are stamped.
 
 Measured at ~217 commits (the mean over 131 local transcripts): **253 KiB → 55 KiB** per session,
 O(turns²) → O(turns). At 2000 turns, 15.9 MiB → 504 KiB.
+
+**The meta stream is deliberately self-sufficient, not derived from the content stream.** The
+TUI's content stream (JSON `Block`s) could yield `turns`/`tools`/`agents` by scanning at load —
+but HTML's (rendered wire records) cannot, and R5 forbids metadata reconstruction that depends
+on the `BV` choice. `user_times` is in no content stream at all.
 
 The record names no `BV`, so restore is one implementation with no type parameter (R5). The two
 opaque `Value`s exist because R1 puts the format in the engine, which cannot name a `present` or
@@ -216,10 +245,10 @@ frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I1 | `n = max { id : r.commit == Some((id, _)) ∧ id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
-| I2 | One record per commit. `commit` ids are strictly increasing, and reach `\|committed\|` unless the tail is torn or the last commits failed I5. | §6.1 |
+| I1 | `n = max { c.id : r.commit == Some(c) ∧ c.id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
+| I2 | One record per committing drain (`finalize_completed` runs once per line, `replay.rs:412`, so a multi-turn line commits several blocks under ONE record). `commit` ids are strictly increasing and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
-| I4 | For every record with `commit`, each override field's value at that record — its last present value ≤ it — equals the fold's value at the start of that record's `replay_from` line. | §6.1; double-apply test |
+| I4 | For every record with `commit`: each **engine** override field (`cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`) reads — as its last present value ≤ that record — the fold's value at the start of that record's `replay_from` line. `present`/`store` are **as-of-the-write**: they advance only as committed blocks are `put` or clients are served, the replay commits nothing (I7), and a client cursor ahead of a restored `provisional_gen` resyncs rather than stale-serves. | §6.1; double-apply test |
 | I5 | `commit.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
@@ -231,37 +260,61 @@ frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
 
 ### 6.1 Write
 
+The record is authored by the **builder**, not the replayer. The builder already holds every
+input: the decoded messages before `apply` (the predicate), the metrics accumulator and task
+fold (the override sources), the byte offset, and the drained blocks — which it already walks
+for `committed_meta.push` and `store.put` (`builder.rs:150-158`); the same walk accumulates the
+record. The replayer contributes four `pub(crate)` getters (`raw_len` = base+|out|, `base`,
+`prev_ts`, `pending_ts`) and stays purely the block fold.
+
 ```
-on advance_at(offset, line):
+on advance_at(offset, line):                       # builder
     msgs ← decode(line)
-    scratch ← { logical: base + |out|, offset, prev_ts, pending_ts }
-    if any(m.can_open_turn() for m in msgs):        # before folding — see below
-        deque.push(scratch + { metrics: metrics.save_state(), tasks: tasks.save_state() })
-    fold(msgs)
-
-on drain():                                        # finalize_completed
-    finalized ← the turns behind the frontier
-    rec ← MetaRecord::default()
-    for b in finalized: rec.accumulate(b)          # accumulate class, incl. user_times
-    deque.prune(below: base)
-    if line_boundary():                            # I5 — else indicator+override stay absent
-        e ← deque.front()                          # the entry for the first uncommitted block
-        rec.commit ← Some((committed_emitted + |finalized|, e.offset))
-        rec.set_changed_override_fields(e)      # only those differing from the last written
-    meta.append(rec)
+    if any(m.can_open_turn() for m in msgs):       # BEFORE the task-op loop and apply
+        cand ← Entry { logical: replayer.raw_len(), offset,
+                       prev_ts: replayer.prev_ts(), pending_ts: replayer.pending_ts(),
+                       metrics: metrics.save_state(), tasks: task_fold.save_state() }
+    fold task ops; replayer.apply(msgs)            # the drain may fire inside apply
+    if cand exists and replayer.raw_len() grew:    # the line actually authored a block
+        deque.push(cand)
+    drained ← replayer.drain_committed()
+    if drained ≠ ∅:
+        rec ← MetaRecord::default()
+        for b in drained: rec.accumulate(b); committed_meta.push(b); store.put(b)
+        deque.prune(entries with logical < replayer.base())
+        if deque.front()?.logical == replayer.base():          # line_boundary — I5
+            e ← deque.front()
+            rec.commit ← Some(Commit { id: |committed|, replay_from: e.offset,
+                                       window: sha256(src @ e.offset) })
+            rec.set_changed_override_fields(e)     # only those differing from the last written
+        writer.enrich_and_append(rec)              # present/store filled by their own layers
+    metrics.push(line)                             # last — metrics stays as-of-line-start
 ```
 
-`can_open_turn()` is evaluated before the fold because the snapshot must predate the line's
-effects. It must over-approximate: a missed snapshot loses a resume point; a spurious one wastes
-a clone. Its set is every `Replayer::apply` arm pushing a turn block — `UserText`
+**`line_boundary` is the deque-front check, NOT a current-line check.** The current line at a
+pinned drain is the one opening the *newest* turn, while `replay_from` is the line of the
+*oldest* uncommitted block — they differ whenever the open window spans several turns. The front
+entry's `logical` equals the post-drain `base` exactly when that line's **first** authored block
+is the first uncommitted block — which is §3's partition. A straddling line's entry has
+`logical < base` and is pruned; the check then fails on whatever entry follows. (A current-line
+check would wrongly disqualify every pinned commit.)
+
+**An entry is captured before `apply` but committed to the deque only if the line authored a
+block.** Capture must predate the line's effects; but a flagged line can author *nothing* — a
+`CommandStdout` that patches into a prior `Command` — and its entry would then carry the raw
+index of the NEXT line's block, matching `base` falsely. A resume from that offset re-reads the
+`CommandStdout` against an empty window and fabricates an orphan `Command` block a cold fold
+never had. So over-approximation in the predicate is safe **only** because unproductive entries
+are discarded post-`apply`.
+
+`can_open_turn()`'s set is every `Replayer::apply` arm pushing a turn block — `UserText`
 (`replay.rs:274`), `AttachmentPrompt` (`:335`), `Command` (`:293`), and `CommandStdout`
 (`:308`, which pushes a `Block::Command` when no preceding `Command` exists). `SkillBody` and
-`QueueOp` push a `ToolResult` and a `QueueEvent` and are excluded. It is defined beside those
-arms, with a `debug_assert!` firing if a drain ever puts the partition inside a rejected line.
+`QueueOp` push a `ToolResult` and a `QueueEvent` and are excluded. Defined beside those arms,
+with a `debug_assert!` firing if a drain ever puts the partition inside a rejected line.
 
-`deque.front()` locates the partition: after a drain the first uncommitted block is always a
-`UserText` or `Command` (`replay.rs:428-449`), so its line's start is `replay_from`, and the
-deque holds one entry per turn in the open window rather than per line.
+One capture per turn-opening line, one entry per *authored* turn in the open window; the drain
+prunes both.
 
 ### 6.2 Load
 
@@ -270,7 +323,7 @@ load(dir):
     committed ← bv_loader(dir)                     # frontend-specific: the only such piece
     records   ← meta_loader(dir)                   # shared; discards a torn trailing record
     n ← per I1                                     # max over records whose `commit` is present
-    if n is None or !valid(header, records[n]): return None     # cold rebuild
+    if n is None or !valid(header, records[n].commit): return None   # cold rebuild
     truncate(content, n); truncate(meta, n); store.truncate(n)  # I6
     return (committed[..n], records[..=n])
 ```
@@ -287,9 +340,11 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc ← with_store(adapter, store)
     acc.committed      ← committed[..n]
     acc.committed_meta ← replay_meta(records, n)             # plain accumulate
-    acc.replayer.restore_state(override_at(records, n))       # last present value of each
-    acc.replayer.base ← 0; acc.replayer.stamped ← 0; out ← []
-    return { acc, committed_id: n, replay_from: records[n].commit.1 }
+    ov ← override_at(records, n)               # last present value of each override field
+    acc.cwd ← ov.cwd; acc.metrics.restore_state(ov.metrics); acc.task_fold.restore_state(ov.tasks)
+    acc.replayer.restore_state(ov.prev_ts, ov.pending_ts)     # base = stamped = 0, out = []
+    return { acc, committed_id: n, replay_from: rec_n.commit.replay_from,
+             present: ov.present, store: ov.store }           # opaque; callers route them
 
 caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at, which re-reads [0,offset)
         loop { acc.advance_at(off, line) }                      # normal folding
@@ -312,11 +367,11 @@ return two vectors; the persistence layer performs the `set_len`s and is the onl
 ### 6.4 Validate
 
 ```
-valid(hdr, r):  let (_, from) = r.commit
-                len(src) ≥ from
-              ∧ first_line(src) == hdr.anchor         # checked once, not per record
-              ∧ sha256(src[from-64KiB .. from]) == r.window
-              ∧ hdr.versions == current
+valid(hdr, c: Commit):
+    len(src) ≥ c.replay_from
+  ∧ first_line(src) == hdr.anchor                  # checked once, not per record
+  ∧ sha256(src[c.replay_from-64KiB .. c.replay_from]) == c.window
+  ∧ hdr.versions == current
 ```
 
 The window is fixed-size and ends at `replay_from` because everything restored derives from
@@ -370,10 +425,10 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 
 | when | work |
 |---|---|
-| per line | four scalars into a scratch slot, one predicate over decoded messages |
-| per user turn | one clone each of the metrics accumulator and task fold |
+| per line | one predicate over the already-decoded messages |
+| per user turn | one deque entry: four scalars + one clone each of the metrics accumulator and task fold |
 | per committed block | HTML: none. TUI: one serialize + buffered append |
-| per commit | one record + one 64 KiB sha256 (23 µs, on bytes just read) |
+| per committing drain | one record + one 64 KiB sha256 (23 µs, on bytes just read) |
 | per open | `stat` + first line + 64 KiB + replay deltas + scan content — O(records + committed) |
 | `--no-cache` | today's path |
 
@@ -381,11 +436,11 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 
 | file | change |
 |---|---|
-| `engine/meta_stream.rs` | exists; flatten to the §4 record + `StreamHeader`; remove the unanchored-record path |
-| `engine/replay.rs` | scratch slot, boundary deque, `can_open_turn`, `line_boundary`, `save_state`/`restore_state` |
-| `engine/builder.rs` | `save_state`, `restore`, `committed_meta()` |
+| `engine/meta_stream.rs` | reshape to §4's flat record + `StreamHeader`; DELETE `emit_batch`, `MetaDelta` and the unanchored/supersede semantics (a0acaf4/8b4f4cf) |
+| `engine/replay.rs` | DELETE the current meta wiring (`meta_out`, `committed_emitted`, `last_provisional`, `drain_meta`); add four `pub(crate)` getters + `restore_state` seeding — the replayer returns to being purely the block fold |
+| `engine/builder.rs` | the turn-boundary deque + record authorship at the drain (§6.1), `Message::can_open_turn`, `restore` (§6.3), `committed_meta()` |
 | `engine/tasks.rs`, `engine/adapter.rs` | `save_state`/`restore_state`; `TimeSpan` serde |
-| `engine/reader.rs`, `engine/follow.rs` | `open_at_offset`, `FollowParser::resume` |
+| `engine/reader.rs`, `engine/follow.rs` | `open_at_offset`, `FollowParser::resume`; RETIRE `Position`/`open_at`/`tell` — dead code (`reader.rs:52-54` names this feature as its consumer) whose model is superseded: it re-hashes `[0, offset)` on resume, and its `DefaultHasher` is not stable across builds, unusable in a persisted format |
 | `present/cache/` | stream writer/reader, `Admission`, `shared_insert_or_get`, `--no-cache` |
 | `present/cache/shared.rs` | delete `Body::Hibernated`; `restore` yields `Body::Live` |
 | `present/lock.rs` | moved from `jdi/` |
@@ -415,8 +470,11 @@ path. Release: minor.
 | rejection | rewritten prefix, changed version, changed flavor ⇒ full rebuild |
 | lock | two writers; dead-pid reclaim; live pid + dead port; TUI refusal; HTML hand-off |
 
-Fixtures must include a pinned drain, a mid-turn typed prompt and a late tool result. A linear
-transcript passes while the design is broken.
+Fixtures must include a pinned drain, a mid-turn typed prompt, a late tool result, an
+**orphan `CommandStdout` directly before a turn boundary** (the flagged-line-authors-no-block
+false positive — §6.1's discard rule is what it catches), and an **attachment-first prompt**
+(straddles: that drain carries no `commit`, and the fallback to the previous record must
+produce a byte-identical resume). A linear transcript passes while the design is broken.
 
 ## Rejected
 
