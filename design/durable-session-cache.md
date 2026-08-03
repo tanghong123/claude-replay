@@ -139,11 +139,54 @@ the same hazard as untruncated content (§3, below).
 - `replay_from` — the line that produced `out[0]`, i.e. where the open turn begins;
 - `resume_at` — just past the commit line.
 
+> **REVISED — one offset, and the name was the confusion.** `resume_at` was never a second
+> *read-start*: reading starts at `replay_from` either way. It is "the offset the persisted
+> cumulative state is current to", and the two differ only because the checkpoint is written at
+> the commit while the open turn began earlier — forcing §4.1's suppression rule over
+> `[replay_from, resume_at)`.
+>
+> **Persist the cumulative state as-of `replay_from` instead of as-of the commit, and both the
+> second offset and the whole suppression rule disappear.** Restore, re-read from one offset,
+> fold everything normally. This is not a new mechanism: §4 already does exactly this for
+> `prev_ts`/`pending_ts` ("as of the line's start") for exactly this reason; the fix is to stop
+> special-casing timestamps and treat every cumulative fold the same way.
+>
+> Affordable because `out[0]` after a drain is **always** a `UserText`/`Command`
+> (`replay.rs:428-449` — the frontier is a turn boundary, or the `last_skill`-capped one, which
+> the `rposition` also lands on a boundary). So snapshots are needed only at turn boundaries,
+> not per line: overwrite a single scratch slot at each line's start (O(1)), and push it into
+> the deque only if that line appended a boundary block. O(turns-in-window) memory, pruned at
+> the drain — the same budget §8 already assumes.
+>
+> **A byte offset alone is underspecified, and this bites both schemes identically.** One line
+> can carry several user-text items (#56), and the frontier then cuts *inside* it: fed a line
+> with texts A, B, C the fold commits A and B and leaves C open, so re-reading from that line's
+> offset re-produces two already-committed blocks. Either carry `(offset, skip_n)`, or — simpler
+> — **refuse to anchor a mid-line frontier** and let the resume fall back to the previous
+> line-aligned anchor. Measured before choosing: across 860 local transcripts (131 Claude/Codex,
+> 729 QoderWork) **no line carries two genuine prose user-text items** — all 225 multi-text lines
+> are `<system-reminder>` + one prompt — so the fallback costs nothing observed, while
+> `(offset, skip_n)` would add a field to every anchor for a case that has never occurred. Take
+> the fallback; revisit if an agent ever emits the shape for real.
+
 **Alignment.** On load, `n` = the largest meta-stamped `committed_id` **≤ the content
 stream's record count** (meta records are sparse — one per checkpoint — so a plain
 `min` can name an id no record carries). Then **physically truncate both streams**
 (`set_len`) to the boundary just past record `n` before appending anything, and discard a
 trailing record that is unterminated or unparsable.
+
+> **The loaded `BV` vector's length IS the alignment authority** — there is no separately
+> persisted committed count that could disagree with the data. And as built, anchors are
+> **dense** (one per commit, not one per checkpoint), so the parenthetical above is now a tail
+> case rather than the norm: `n == committed.len()` exactly, unless a partial tail write left
+> the two streams uneven. The reader is already implemented —
+> `replay_meta(&records, Some(n))` — and no look-ahead buffering is needed, because anchored
+> `committed_id`s are monotonic, so the scan is just `max { committed_id ≤ committed.len() }`.
+>
+> **Truncating the `Vec` is not enough**: the store's backing must be truncated to the same `n`.
+> `RecordStore` serves committed bytes as one contiguous range to EOF (`serve.rs:325-329`), so
+> orphaned bytes past `n` are range-read as garbage. The split is clean — the accumulator
+> computes and returns `n`; the persistence layer does the `set_len` on both streams.
 
 **A mid-run reset invalidates both streams.** A truncation/compaction drives
 `advance_from_source` → `builder.reset()` → `BlockStore::reset()`, and `RecordStore::reset`
@@ -193,6 +236,22 @@ assistant lines carrying `usage`, and Claude's accumulator **sums** them
 **suppressed** — `metrics.push`, the `TaskOp` fold and `on_tool_result` — then fold normally
 from `resume_at`.
 
+> **REVISED — the suppression rule is deleted, not refined.** It exists only because the
+> persisted cumulative state is as-of the commit while the re-read starts earlier. Capture that
+> state as-of `replay_from` (see §3.1) and the span `[replay_from, resume_at)` is empty by
+> construction: restore, re-read from one offset, fold everything normally, suppress nothing.
+>
+> This is worth doing for more than tidiness. §4.1's own point is that a two-outcome rule
+> ("pruned ⇒ rebuild, spans turns ⇒ persist") is not sufficient and that missing the third class
+> is what sank Appendix A2. A suppression list is a standing invitation to that same bug: every
+> future cumulative fold added to `advance_at` must be remembered and added to it, and forgetting
+> is silent (double-counted metrics, not a crash). Moving the capture point removes the class
+> instead of enumerating it — the fourth fold §4.1 names as "must be named even though it cannot
+> fire" stops needing the argument at all.
+>
+> Keep the `debug_assert!` that `committed_len` is unchanged across the resume regardless: it is
+> cheap and it is the check that catches a mis-derived offset.
+
 There is a **fourth** cumulative fold in `advance_at` that must be named even though it
 cannot fire: the drain itself (`committed_meta.push` + `store.put` + `committed.push`,
 `builder.rs:150-159`). If it fired during the replay it would append duplicate content
@@ -239,6 +298,15 @@ duplicate ids deliberately (`session.rs:297-303` — "a map lookup would collaps
 duplicates") and `TaskFold.pending` pushes without dedup and removes the first positional
 match (`tasks.rs:120-131, 185-207`), so an id-keyed upsert is lossy. Use
 `{child_add: {...}}` / `{child_done: [i, ...]}` and the same shape for `pending`.
+
+> **CORRECTED by the build — the completion op must be id-keyed, and an ordinal is not even
+> computable.** The reasoning above is right for *add* and wrong for *done*. An `AgentDone` in
+> one batch can match a child appended many batches earlier, and a delta has no view of the
+> accumulated list, so it cannot name an ordinal. The duplicate-collapse worry is answered
+> instead by what the op *does*: `ChildOp::Done(AgentId)` clears **every** child with that id,
+> which is exactly `SessionMeta::push`'s linear scan (`session.rs:300-302`), duplicates
+> included. `Add` stays positional. As built in `engine/meta_stream.rs`; the same distinction
+> should be applied to `TaskFold.pending` when it is written.
 `agent_ids` is an idempotent upsert and `user_times` is append-only, so both are simple.
 The metrics blob is the one **stated exemption**: §5's seam returns an opaque snapshot, and
 it is O(1) — five counters, a model string and two span endpoints — so it is written whole,
@@ -259,6 +327,46 @@ and filled by present and the frontend. Precedent is already in the tree:
 **Requirement 5** holds because the record contains no `BV` of any kind: metadata restore
 is one implementation, identical for every presentation, and the reader is a free function
 with no type parameter. If it ever needs a `::<S>` turbofish, the requirement is lost.
+
+### 4.2 The accumulator seam — two input streams, no persistence knowledge
+
+The accumulator should not learn about files, locks or directories. It should learn one new
+thing: that it can be **started from a prior state** instead of from empty. So the restore is a
+constructor taking the two loaded streams as plain values, exactly the shape a cold start already
+has (`with_store`):
+
+```rust
+pub struct Restored<S: BlockStore> {
+    pub acc: SessionAccumulator<S>,
+    pub committed_id: usize,   // where the two streams agreed
+    pub resume_at: ByteOffset, // feed advance_at from here
+}
+
+pub fn restore(
+    adapter: &'static dyn TranscriptAdapter,
+    store: S,                  // already holding its loaded backing
+    committed: Vec<S::Bv>,     // from the BV loader
+    records: &[MetaRecord],    // from the meta record loader
+) -> Restored<S>
+```
+
+The division of labour that makes this work:
+
+- **The loaders** know formats and paths. They produce a `Vec<BV>` and a `Vec<MetaRecord>` and
+  nothing else. Each frontend has its own `BV` loader (that is the only per-frontend piece);
+  the meta loader is shared.
+- **The accumulator** owns alignment, because it owns `committed`: it takes
+  `n = max { committed_id ≤ committed.len() }`, truncates its vector to `n`, seeds itself with
+  `replay_meta(records, Some(n))`, and returns `n` plus the offset to resume from. It touches no
+  file and decodes no `BV` — so this is ONE implementation for every frontend, which is what
+  requirement 5 asks for.
+- **The persistence layer** takes the returned `n` and does the `set_len` on both streams and the
+  store backing. It is the only thing that writes.
+
+Note what this buys beyond tidiness: alignment becomes a **pure function of two vectors**, so it
+is testable with hand-built inputs and no filesystem — including the disagreement cases (meta
+ahead of content, content ahead of meta, a torn tail record) that are otherwise reachable only by
+crashing a real writer at the right instant.
 
 ## 5. The one seam addition
 
