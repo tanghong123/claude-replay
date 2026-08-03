@@ -9,6 +9,7 @@
 pub(crate) mod builder; // the single incremental fold orchestrator (batch + live drive it)
 pub mod index;
 pub(crate) mod message; // the L1↔L2 vocabulary — internal; consumers see `Block`, never `Message`
+pub mod meta_stream; // the meta record stream + its emission protocol (#96)
 pub(crate) mod path; // relativize helpers — internal to the parsers + HTML path rendering
 pub(crate) mod reader; // the follower's byte-offset line reader (tail + resume) — machinery (#87)
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)

@@ -120,6 +120,12 @@ pub struct Replayer<'a> {
     // `AgentDone` resolve its spawn's id/type at emit-time from O(#agents) state instead of a
     // finalize-time scan over all blocks — so resolution survives emit-and-drop of the spawn.
     agent_ids: HashMap<String, (String, String)>,
+    /// Meta records emitted but not yet drained by the accumulator, and the running count of
+    /// committed blocks they anchor to. See `engine::meta_stream` for the emission protocol
+    /// this upholds — in particular why an anchored record is emitted even when its delta is
+    /// empty (it is the resume anchor, not merely a change report).
+    meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
+    committed_emitted: usize,
 }
 
 /// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
@@ -166,6 +172,8 @@ impl<'a> Replayer<'a> {
             suppress: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
+            meta_out: Vec::new(),
+            committed_emitted: 0,
         }
     }
 
@@ -466,6 +474,19 @@ impl<'a> Replayer<'a> {
             .map(|(_, b)| b)
             .collect();
         let finalized = (self.shaping.finish_turns)(raw);
+        // The meta delta of this commit is folded from the FINALIZED blocks — exactly the
+        // ones the accumulator will `committed_meta.push`, so the two derivations agree.
+        let mut committed_delta = crate::engine::meta_stream::MetaDelta::default();
+        for b in &finalized {
+            committed_delta.push(b);
+        }
+        self.committed_emitted += finalized.len();
+        self.meta_out.extend(crate::engine::meta_stream::emit_batch(
+            self.committed_emitted,
+            finalized.len(),
+            committed_delta,
+            crate::engine::meta_stream::MetaDelta::default(),
+        ));
         self.durable.extend(finalized);
         // Advance the frontier and retire indices that pointed into the dropped turns.
         self.base = hi;
@@ -528,6 +549,18 @@ impl<'a> Replayer<'a> {
     /// Take the finalized **committed** blocks accumulated since the last drain (the turns that
     /// crossed the durability frontier), removing them from the replayer — so its resident content
     /// stays O(turn). The `SessionAccumulator` drains after each `apply` and `put`s each block once.
+    /// Take the meta records emitted since the last drain (see [`crate::engine::meta_stream`]
+    /// for the protocol). Drained in lockstep with
+    /// [`drain_committed`](Self::drain_committed), so a consumer persisting both streams
+    /// keeps them aligned by construction.
+    // No lib consumer yet by design: the persistent session cache (#96) is what drains and
+    // persists this stream. The protocol is implemented and tested first so the cache is
+    // built on a pinned foundation rather than defining it as it goes.
+    #[allow(dead_code)]
+    pub(crate) fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
+        std::mem::take(&mut self.meta_out)
+    }
+
     pub(crate) fn drain_committed(&mut self) -> Vec<Block> {
         std::mem::take(&mut self.durable)
     }
@@ -621,4 +654,93 @@ pub fn stamp_user_turns(
         }
     }
     *stamped = out.len();
+}
+
+#[cfg(test)]
+mod meta_emission_tests {
+    use super::*;
+    use crate::engine::meta_stream::MetaDelta;
+
+    /// Drive the REAL fold and assert the emission protocol holds end-to-end: a commit
+    /// always yields exactly one anchored record whose `committed_id` matches the running
+    /// committed count, and a batch that commits nothing yields none.
+    #[test]
+    fn replayer_emits_one_anchored_record_per_commit() {
+        let shaping = Shaping {
+            build_tool: |_, name, _, _| Block::ToolUse {
+                name: name.to_string(),
+                target: String::new(),
+                diffs: vec![],
+                output: None,
+                patch: None,
+                read_lines: None,
+            },
+            join_result: |_, _, _| {},
+            keep_orphan: |_| true,
+            finish_turns: |b| b,
+        };
+        let mut r = Replayer::new(&shaping);
+        let mut committed_seen = 0usize;
+
+        // Turn 1 opens: nothing commits yet, so no anchored record.
+        r.apply(&[Message::UserText { text: "one".into() }]);
+        let recs = r.drain_meta();
+        assert!(
+            recs.iter().all(|m| !m.is_resume_point()),
+            "no commit ⇒ no anchor: {recs:?}"
+        );
+
+        // Turn 2 opens, committing turn 1 -> exactly one anchored record.
+        r.apply(&[Message::UserText { text: "two".into() }]);
+        let committed = r.drain_committed();
+        let recs = r.drain_meta();
+        committed_seen += committed.len();
+        let anchors: Vec<_> = recs.iter().filter(|m| m.is_resume_point()).collect();
+        assert_eq!(anchors.len(), 1, "exactly one anchor per commit: {recs:?}");
+        assert_eq!(
+            anchors[0].committed_id,
+            Some(committed_seen),
+            "the anchor names the running committed count"
+        );
+
+        // The anchored delta accounts for exactly the blocks that committed.
+        let mut want = MetaDelta::default();
+        for b in &committed {
+            want.push(b);
+        }
+        assert_eq!(anchors[0].delta, want, "anchored delta == committed blocks");
+
+        // Turn 3 commits turn 2 -> one more anchor, count advanced.
+        r.apply(&[Message::UserText {
+            text: "three".into(),
+        }]);
+        let committed = r.drain_committed();
+        committed_seen += committed.len();
+        let recs = r.drain_meta();
+        let anchors: Vec<_> = recs.iter().filter(|m| m.is_resume_point()).collect();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].committed_id, Some(committed_seen));
+    }
+
+    /// A batch that emits blocks but commits nothing must not produce an anchor — an anchor
+    /// asserts "state as of a committed block", and there is none.
+    #[test]
+    fn no_commit_yields_no_anchor() {
+        let shaping = Shaping {
+            build_tool: |_, _, _, _| Block::AssistantText(String::new()),
+            join_result: |_, _, _| {},
+            keep_orphan: |_| true,
+            finish_turns: |b| b,
+        };
+        let mut r = Replayer::new(&shaping);
+        r.apply(&[Message::UserText {
+            text: "only turn".into(),
+        }]);
+        r.apply(&[Message::AssistantText("still open".into())]);
+        assert!(r.drain_committed().is_empty(), "nothing commits");
+        assert!(
+            r.drain_meta().iter().all(|m| !m.is_resume_point()),
+            "no anchor without a commit"
+        );
+    }
 }
