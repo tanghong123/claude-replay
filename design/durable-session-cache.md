@@ -96,11 +96,14 @@ is `replay_from`.
 One record per commit: **a flat list of optional fields.** Absent always means "nothing from
 this commit". Fields belong to one of three classes, and the classes are the whole format.
 
-| class | read rule | fields |
-|---|---|---|
-| **accumulate** | value at `n` = fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children`, `agent_ids`, `user_times` |
-| **override** | value at `n` = the value **on record `n`** | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
-| **indicator** | presence marks the record as a resume point | `commit: (committed_id, replay_from)` |
+**Every field is optional, including the indicator. Absent means "no update".** The class fixes
+what an update *is*:
+
+| class | absent means | value at `n` | fields |
+|---|---|---|---|
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map upsert | `turns`, `tools`, `children`, `agent_ids`, `user_times` |
+| **override** | unchanged | last present value in records ≤ `n` | `window`, `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
+| **indicator** | not a resume point | — | `commit: (committed_id, replay_from)` |
 
 ```rust
 struct MetaRecord {
@@ -114,7 +117,7 @@ struct MetaRecord {
     // indicator — present iff §3's partition exists at this commit (I5)
     commit:     Option<(usize, ByteOffset)>,
 
-    // override — present iff `commit` is; each is state as of `replay_from`
+    // override — written when the value differs from the last one written (R7)
     window:     Option<Hash>,                    // sha256 of the 64 KiB ending at replay_from
     cwd:        Option<String>,
     prev_ts:    Option<Option<EpochSeconds>>,
@@ -138,11 +141,12 @@ struct StreamHeader {     // record 0, written once
 }
 ```
 
-**The indicator gates the override fields.** An override value is the fold's state as of *that
-record's* `replay_from`, and every record has a different one — so carrying a value forward from
-an earlier record would restore something measured at the wrong offset. Writing them only
-alongside `commit` is what lets the read rule be "the value on record `n`" rather than "the last
-present value ≤ `n`", and a record without `commit` is never landed on, so it needs none of them.
+**The writer's obligation, and the only way to get this wrong.** An override value is the fold's
+state as of *that record's* `replay_from`, and every record has a different `replay_from`. So the
+writer must emit an override field on any record where its value differs from the last value it
+wrote — otherwise "last present ≤ `n`" restores something measured at an earlier offset. This is
+R7 applied to the override class: `cwd` is written once, `metrics` and the timestamps change at
+every commit and so appear at every commit. The rule is uniform; the frequencies differ.
 
 **Why `commit` is one field and not two.** `committed_id` is used only to align against
 `|committed|` and to name the record a load stops at; both apply solely to resume points. Paired
@@ -178,7 +182,7 @@ frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
 | I1 | `n = max { id : r.commit == Some((id, _)) ∧ id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
 | I2 | One record per commit. `commit` ids are strictly increasing, and reach `\|committed\|` unless the tail is torn or the last commits failed I5. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
-| I4 | Every override field equals its value at the start of that record's `replay_from` line, and is present iff `commit` is. | §6.1; double-apply test |
+| I4 | For every record with `commit`, each override field's value at that record — its last present value ≤ it — equals the fold's value at the start of that record's `replay_from` line. | §6.1; double-apply test |
 | I5 | `commit.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
@@ -206,7 +210,7 @@ on drain():                                        # finalize_completed
     if line_boundary():                            # I5 — else indicator+override stay absent
         e ← deque.front()                          # the entry for the first uncommitted block
         rec.commit ← Some((committed_emitted + |finalized|, e.offset))
-        rec.set_override_fields(e)
+        rec.set_changed_override_fields(e)      # only those differing from the last written
     meta.append(rec)
 ```
 
@@ -246,7 +250,7 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc ← with_store(adapter, store)
     acc.committed      ← committed[..n]
     acc.committed_meta ← replay_meta(records, n)             # plain accumulate
-    acc.replayer.restore_state(records[n].override_fields())  # read from record n alone
+    acc.replayer.restore_state(override_at(records, n))       # last present value of each
     acc.replayer.base ← 0; acc.replayer.stamped ← 0; out ← []
     return { acc, committed_id: n, replay_from: records[n].commit.1 }
 
