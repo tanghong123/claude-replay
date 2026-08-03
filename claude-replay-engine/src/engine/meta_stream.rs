@@ -296,30 +296,35 @@ pub fn replay_agent_ids(
     map
 }
 
-/// **The emission protocol**, as a pure function of one batch.
+/// **The emission protocol**, as a pure function of one batch — the ONE implementation, called by
+/// both of the replayer's emission points (the drain, which commits, and `drain_meta`, which
+/// restates the open turn).
 ///
-/// `committed` is the delta of blocks that committed in this batch (empty if none did);
-/// `provisional` is the **full restatement** of the open turn's contribution afterwards.
-/// `committed_id` is the committed-block count after this batch.
+/// `committed` is the incremental delta of blocks that committed in this batch, and
+/// `committed_blocks` how many did; `provisional` is the **full restatement** of the open turn's
+/// contribution afterwards. `committed_id` is the committed-block count after this batch (ignored
+/// when nothing committed).
 ///
-/// This is the whole of rules (A) and (B) — see the module docs for the five cases. It is a free
-/// function so the protocol can be exercised directly, independent of whatever call pattern the
-/// fold happens to have today.
+/// This is the whole of rules (A) and (B) — see the module docs for the five cases. Being a free
+/// function, the protocol can be exercised directly, independent of the fold's call pattern.
 pub fn emit_batch(
     committed_id: usize,
     committed_blocks: usize,
     committed: MetaDelta,
     provisional: MetaDelta,
 ) -> Vec<MetaRecord> {
+    debug_assert!(
+        committed_blocks > 0 || committed.is_empty(),
+        "a batch that committed no blocks cannot have a committed delta"
+    );
     let mut out = Vec::new();
     if committed_blocks > 0 {
         // Rule (B): a record lands immediately after the last committed block — even when its
         // delta is empty, because it is the resume anchor, not merely a change report.
         out.push(MetaRecord::anchored(committed_id, committed));
-    } else if !committed.is_empty() {
-        // No commit, but the batch changed metadata: rule (A) still requires capture.
-        out.push(MetaRecord::unanchored(committed));
     }
+    // Rule (A): whatever the open turn now contributes is stated in full, superseding the last
+    // restatement. This is the only source of unanchored records.
     if !provisional.is_empty() {
         out.push(MetaRecord::unanchored(provisional));
     }
@@ -370,8 +375,9 @@ mod tests {
         // 1. no commit, no meta change -> zero records
         assert!(emit_batch(0, 0, MetaDelta::default(), MetaDelta::default()).is_empty());
 
-        // 2. no commit, meta change -> one UNANCHORED record
-        let r = emit_batch(0, 0, d(1), MetaDelta::default());
+        // 2. no commit, meta change -> one UNANCHORED record. With nothing committed the change
+        // can only be the open turn's, so it arrives as the restatement.
+        let r = emit_batch(0, 0, MetaDelta::default(), d(1));
         assert_eq!(r.len(), 1);
         assert!(!r[0].is_resume_point(), "no commit ⇒ not a resume point");
         assert_eq!(r[0].delta, d(1));
@@ -409,10 +415,11 @@ mod tests {
     #[test]
     fn no_delta_is_ever_dropped() {
         for (cb, c, p) in [
-            (0usize, d(1), MetaDelta::default()),
+            (0usize, MetaDelta::default(), d(1)),
             (0, MetaDelta::default(), d(2)),
             (2, d(1), d(2)),
             (2, MetaDelta::default(), d(2)),
+            (2, d(1), MetaDelta::default()),
         ] {
             let want: usize = c.turns.unwrap_or(0) + p.turns.unwrap_or(0);
             let got: usize = emit_batch(9, cb, c, p)

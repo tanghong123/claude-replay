@@ -580,10 +580,14 @@ impl<'a> Replayer<'a> {
         }
         if provisional != self.last_provisional {
             self.last_provisional = provisional.clone();
-            self.meta_out
-                .push(crate::engine::meta_stream::MetaRecord::unanchored(
-                    provisional,
-                ));
+            // Through `emit_batch` — the one implementation — with "nothing committed here", so
+            // this path cannot drift from the drain's.
+            self.meta_out.extend(crate::engine::meta_stream::emit_batch(
+                self.committed_emitted,
+                0,
+                crate::engine::meta_stream::MetaDelta::default(),
+                provisional,
+            ));
         }
         std::mem::take(&mut self.meta_out)
     }

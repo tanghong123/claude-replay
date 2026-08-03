@@ -167,6 +167,15 @@ fn meta_stream_replay_equals_maintained_meta() {
     // The fixture really did exercise the intricate arms (guards against going vacuous).
     let meta = acc.session_meta();
     assert!(anchors > 0, "the fixture must commit at least once");
+    // Activity coalescing (#57) folds the Bash/Read tool_use+result pairs into `Thinking{tools}`
+    // rather than leaving bare `ToolUse` blocks — so this fixture's tool counting runs ENTIRELY
+    // through the nested-tools arm, the one an earlier revision dropped. (The bare `ToolUse` arm
+    // is covered by the engine's `push_then_apply_equals_session_meta_push`.)
+    assert!(
+        all.iter()
+            .any(|b| matches!(b, Block::Thinking { tools, .. } if !tools.is_empty())),
+        "the fixture must contain a coalesced run, or the Thinking{{tools}} arm goes untested"
+    );
     assert_eq!(meta.children.len(), 2, "two spawns, duplicate id kept");
     assert!(
         meta.children.iter().all(|c| c.id == "aXYZ1234"),
