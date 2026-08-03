@@ -35,8 +35,18 @@ snapshot and nothing schedules a write.
 
 Three questions follow, and their answers are the whole design.
 
-**Which offset?** The start of the open turn — the line that produced `out[0]`. Committed
-blocks are already on disk; the open window is the only thing that must be rebuilt.
+**Which offset?** `replay_from` partitions the transcript: **bytes below it authored only blocks
+that have committed; bytes at or above it authored only blocks that have not.**
+
+It is defined by the bytes, not by the current shape of `out`. Blocks in the open window still
+merge and mutate before they commit — a `ToolResult` joins its `ToolUse`, a coalesced run
+collapses into one `Thinking{tools}` — so "the line that produced `out[0]`" names a block that
+may not survive to commit in that form. The partition is stable under all of it: what a line
+authored either committed or did not.
+
+Nor is it "the start of the open turn". The open window spans several turns whenever the
+`last_skill` pin caps the drain (`replay.rs:439-446`), so `replay_from` can precede the commit
+line by more than one turn.
 
 **Which state?** Everything the re-read does *not* rebuild. Fold state partitions exactly:
 
@@ -58,10 +68,17 @@ instant. `advance_at` folds metrics, the task op-log and `user_times` for every 
 those double-apply, since the commit line is at or after `replay_from`. Capturing at
 `replay_from` makes the re-read apply each line exactly once and suppress nothing.
 
-**Which commits qualify?** Those where `replay_from` is a line boundary. One line can author
-both a committed block and the block opening the next turn (`committed_len` 0 → 2 on one line),
-and re-reading such a line would re-produce already-committed blocks. A commit failing this
-carries no resume payload; a load falls back to the previous qualifying record.
+**Which commits qualify?** Those at which the partition **exists**. This is not a separate rule
+— it is the definition's well-definedness condition. A line that authored blocks on both sides
+of the frontier admits no offset: re-reading from its start re-produces committed blocks,
+starting after it loses provisional ones. One line can do this (`committed_len` 0 → 2 on one
+line). Such a commit carries no resume payload and a load falls back to the previous qualifying
+record.
+
+The partition is otherwise total: `finalize_completed` drains `out[0..k)` where `k` indexes a
+turn-boundary block, so `out` retains `out[k..]` and is never empty after a commit
+(`replay.rs:428-449`). A first uncommitted block therefore always exists, and its line's start
+is `replay_from`.
 
 ## 4. Types
 
@@ -117,7 +134,7 @@ three opaque layers exist because R1 puts the format in the engine, which cannot
 | I2 | One record per commit, so `committed_id` runs `1..=\|committed\|` without gaps unless the tail is torn. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
 | I4 | Every `EngineState` field equals its value at the start of the `replay_from` line. | §6.1; double-apply test |
-| I5 | `resume.is_some()` ⟹ `replay_from` is a line start and no block authored by that line has `committed_id ≤ n`. | `line_boundary()` |
+| I5 | `resume.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
 | I8 | Reuse only if §6.4 holds. | §6.4 |
@@ -151,11 +168,11 @@ a clone. Its set is every `Replayer::apply` arm pushing a turn block — `UserTe
 (`replay.rs:274`), `AttachmentPrompt` (`:335`), `Command` (`:293`), and `CommandStdout`
 (`:308`, which pushes a `Block::Command` when no preceding `Command` exists). `SkillBody` and
 `QueueOp` push a `ToolResult` and a `QueueEvent` and are excluded. It is defined beside those
-arms, with a `debug_assert!` firing if a drain selects an `out[0]` from a rejected line.
+arms, with a `debug_assert!` firing if a drain ever puts the partition inside a rejected line.
 
-`deque.front()` is the entry for the new `out[0]`'s line: after a drain `out[0]` is always a
-`UserText` or `Command` (`replay.rs:428-449`), so the deque holds one entry per turn in the open
-window, not per line.
+`deque.front()` locates the partition: after a drain the first uncommitted block is always a
+`UserText` or `Command` (`replay.rs:428-449`), so its line's start is `replay_from`, and the
+deque holds one entry per turn in the open window rather than per line.
 
 ### 6.2 Load
 
@@ -194,8 +211,8 @@ caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at,
 `coalesce_spans` collapses runs, so they differ. Setting `stamped = committed_len` makes
 `window_stamped()` exceed `out.len()` and the first `LineStart` slice out of range. `base`'s
 absolute value never escapes the replayer, so rebasing is sound. `user_times` has length
-`committed_meta.turns`, which is its value at `replay_from` — the open turn's first `UserText`
-does not exist there. `suppress` holds only `QueueEvent` markers, so no turn is ever suppressed
+`committed_meta.turns`, which is its value at `replay_from`: by §3's partition every
+uncommitted `UserText` lies at or above that offset, so none has been stamped. `suppress` holds only `QueueEvent` markers, so no turn is ever suppressed
 and that count is exact.
 
 Alignment lives in the accumulator because the accumulator owns `committed`. It opens no file
