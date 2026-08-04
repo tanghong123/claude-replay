@@ -109,8 +109,8 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times` |
-| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `counters`, `render` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map merge | `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops` |
+| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `span`, `task_pending` |
 | **indicator** | not a resume point | — | `commit: Commit` |
 
 ```rust
@@ -122,6 +122,9 @@ struct MetaRecord {
     tools:      Option<usize>,
     agents:     Vec<AgentEvent>,               // sub-agents arriving/departing here, IN ORDER
     user_times: Vec<Option<EpochSeconds>>,     // timestamps of the turns THIS commit stamped
+    tokens:     BTreeMap<Model, TokenCounts>,  // per-MODEL token increments (§7)
+    extra:      BTreeMap<String, u64>,         // agent-specific counters, summed
+    task_ops:   Vec<TaskOp>,                   // the op-log — NOT the task list
 
     // indicator — present iff §3's partition exists at this drain (I5)
     commit:     Option<Commit>,
@@ -130,10 +133,8 @@ struct MetaRecord {
     cwd:        Option<String>,
     prev_ts:    Option<Option<EpochSeconds>>,
     pending_ts: Option<Option<EpochSeconds>>,
-    metrics:    Option<MetricsState>,            // §7 — fixed fields + an `extra` bag
-    tasks:      Option<TaskState>,               // TaskFold: its list + unjoined creates
-    counters:   Option<Counters>,                // present's cursor counters
-    render:     Option<RenderState>,             // the frontend's numbering cursor
+    span:       Option<(EpochSeconds, EpochSeconds)>,  // session min/max; `duration_secs` derives
+    task_pending: Option<Vec<(String, TaskItem)>>,     // creates whose id has not arrived (0-1 typically)
 }
 
 struct Commit {
@@ -159,21 +160,7 @@ struct Spawn {                  // everything known about one sub-agent at spawn
 // layer types: the engine gains no dependency on `present` or a frontend, and each layer maps
 // its own state to and from its shape. Nothing in the format is untyped.
 
-struct MetricsState {                 // §7 — the resumable form of any agent's accumulator
-    input: u64, cache_creation: u64, cache_read: u64, output: u64,
-    model: String,
-    span: Option<(EpochSeconds, EpochSeconds)>,  // min/max; `duration_secs` derives from it
-    extra: BTreeMap<String, u64>,                // agent-specific counters, already in `Metrics`
-}
-
-struct TaskState {                    // `TaskFold` — engine-owned, so simply its own type
-    list: TaskList,
-    pending: Vec<(String, TaskItem)>, // `TaskCreate`s whose id has not arrived yet
-}
-
-struct Counters { epoch: u64, provisional_gen: u64, n_provisional: usize }
-
-struct RenderState { next_block: u64, turn: u64, seen_turns: u64 }
+struct TokenCounts { input: u64, cache_creation: u64, cache_read: u64, output: u64 }
 
 struct StreamHeader {     // record 0, written once
     anchor:   u32,        // CRC32 of the transcript's first line (identity, not trust)
@@ -212,6 +199,20 @@ sizes is free: 16 of 873 local transcripts have sub-agents, at most 5 each — 2
 pays ~100 MB. The same question applies to `tasks`, which **is** an override snapshot; it is
 bounded by open tasks rather than session history, so it stays — but if that ceases to hold it
 belongs here for the same reason.
+
+**`prev_ts` / `pending_ts` semantics.** Two different clocks, both `Option` because a line may
+carry no timestamp.
+- **`pending_ts`** is the timestamp of the line **currently being folded**, set at that line's
+  `LineStart`. It is what stamps the user turns that line authors — hence a turn's timestamp is
+  its own line's.
+- **`prev_ts`** is the timestamp of the **previous event line of any kind** — the thinking
+  clock's zero (`replay.rs:105-108`). A `Thinking` block's `duration_secs` is *its* timestamp
+  minus this (`replay.rs:215-219`), so a burst right after the turn's own text measures from
+  that text rather than from the last tool result.
+
+Both are override fields: neither is pruned, and at a commit each holds a single current value
+that a resumed fold must start from. Persisting `prev_ts` is what keeps a `Thinking` on the
+first re-read line from rendering `duration_secs: None` where a cold fold gives `Some`.
 
 **`user_times` semantics.** *Folded across records*, one entry per **user turn**, in turn
 order: `user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
@@ -263,7 +264,6 @@ wrong:
 | constant per session | `anchor`, `versions` | **header**, once |
 | accumulating | `turns`, `tools`, `agents`, `user_times` | **accumulate class** |
 | as-of-`replay_from` | `cwd`, timestamps, `metrics`, `tasks` | **override class** |
-| as-of-the-write | `counters`, `render` | **override class** — see I4's scope |
 
 `user_times` is the case that matters. It is append-only and grows with turns, so writing it
 whole per commit costs O(turns²) in bytes *and* serialization, and makes a load O(turns²). As an
@@ -280,6 +280,36 @@ on the `BV` choice. `user_times` is in no content stream at all.
 
 The record names no `BV`, so restore is one implementation with no type parameter (R5).
 
+**Why `tokens` and `task_ops` are accumulate, not override — and what that fixed.**
+Both were override in an earlier draft, which is the `user_times` O(n²) mistake a second and
+third time. A `TaskList` is a **full snapshot** (`items: Vec<TaskItem>`, each carrying subject,
+description, status and dependency edges), so writing it whenever it changes is O(changes ×
+tasks): this repo's own queue is **96 tasks / 227 KiB**, and a few hundred updates over a
+session would be tens of megabytes. The delta form already exists and is what `TaskFold`
+consumes — `TaskOp::{Create, Update}` — so the record carries **ops**, typically 0–2 per commit,
+and a load replays them exactly as the live fold does. Only `task_pending` stays override: the
+creates whose id has not yet arrived, normally 0–1 entries, and not derivable after the fact
+because the join reads a tool result that may lie below `replay_from`.
+
+**Tokens are per-MODEL, and that fixes a shipped bug.** The accumulator keeps one `model:
+String` (last-write-wins) with flat counters, and `finish()` prices *every* token at that one
+model's rate. Measured across 128 local sessions with real usage, **6 (4.7%) used more than one
+real model** — including this very session (`claude-fable-5` 2178.8M tokens + `claude-opus-5`
+591.5M) and the queue session (`claude-opus-4-8` + `claude-fable-5`). Their reported cost is
+simply wrong. Keying the counters by model makes cost a sum over models, and it is *free* here:
+the raw data already carries `/message/model` per assistant message, so the attribution was
+being discarded, not missing.
+
+**Increment vs total is an adapter concern, normalised at the seam.** The two agents report
+differently — Claude's `/message/usage` is a **per-message increment** the accumulator sums
+(`claude/metrics.rs:42-45`), while Codex's `total_token_usage` is a **running total** it assigns
+(`codex/metrics.rs:43-49`). The record carries increments; the adapter converts. That is the
+same principle as the rest of the pipeline: agent specificity ends at the decoder, and what
+flows downstream is agent-agnostic.
+
+`span` stays override because it is a **merge** (min/max), not a sum — and the last written pair
+is the correct seed, since a resumed accumulator keeps observing from there.
+
 **Nothing in the format is untyped.** An earlier draft made four fields `serde_json::Value`,
 inheriting the shape of `PersistentStore::hibernate_state`/`restore_state`
 (`shared.rs:565-572`). That precedent exists for a *trait* seam, where the trait cannot name
@@ -288,10 +318,9 @@ out to be nothing:
 
 | field | claimed blocker | what the code says |
 |---|---|---|
-| `metrics` | agent-specific | Both accumulators are the **same shape** (`claude/metrics.rs:15-23`, `codex/metrics.rs:9-16`): counters, a model, a `TimeSpan`, and an `extra` map. Codex's `cached` *is* Claude's `cache_read`; it simply has no `cache_creation`. |
+| `metrics` | agent-specific | Both accumulators are the **same shape** (`claude/metrics.rs:15-23`, `codex/metrics.rs:9-16`): counters, a model, a `TimeSpan`, and an `extra` map. Codex's `cached` *is* Claude's `cache_read`; it simply has no `cache_creation`. Only the *reporting* differs (increment vs total), which is an adapter concern. |
 | `tasks` | `pending` is private to `engine::tasks` | `TaskFold` is **engine-owned code**. A module-privacy detail is not a layering constraint — derive `Serialize` and the engine names its own type. |
-| `counters` | belongs to `present` | Three integers. Carrying a `u64` is not naming a `present` type. |
-| `render` | belongs to the frontend | Three integers (a numbering cursor). Same answer. |
+| `counters`, `render` | belong to other layers | Six integers — but they turned out not to belong in the record **at all**; see below. |
 
 This matters more than tidiness, and the reason is the architecture's own premise: the
 **agent-specific decoder already normalises every line into an agent-agnostic `Message`**. Agent
@@ -300,16 +329,40 @@ neutral `Metrics` type already carries an `extra: BTreeMap<String, u64>` bag for
 counters no shared struct should grow a field for. So the extensibility that opacity was buying
 is already present, typed.
 
-The only thing `Metrics` lacked for *resume* is the span **endpoints** (it exposes the derived
-`duration_secs`), which is an argument for `MetricsState` carrying `span` — not for giving up on
-types.
+What `Metrics` lacked for *resume* was the span **endpoints** (it exposes the derived
+`duration_secs`) and per-model attribution — arguments for a better typed shape, not for giving
+up on types.
 
-**`store_grow` is deleted, not typed.** It existed to carry `EmitState.turns`, the growing
-sidebar index. But the client builds its sidebar from the block records themselves
-(`addTurn(b)` reads `b.id`/`b.turn`/`b.label`, `export.js:967-975`), and on the served path
-`EmitState.turns` accumulates while **nothing ever reads it** — its only consumer is the
-whole-session render (`mod.rs:790`) behind the offline dump writers, which §6.4 already excludes
-from the cache. The served path needs the three counters in `RenderState` and nothing more.
+**No presentation state is persisted at all — it is derived or reset.** The record carries
+engine fold state and nothing else. Three fields were dropped outright, on one test: *does this
+have to survive a process restart?*
+
+- **`store_grow`** (`EmitState.turns`, the growing sidebar index) — **no, and it is never even
+  read.** The client builds its sidebar from the block records themselves (`addTurn(b)` reads
+  `b.id`/`b.turn`/`b.label`, `export.js:967-975`). On the served path `EmitState.turns`
+  accumulates while nothing consumes it; its only reader is the whole-session render
+  (`mod.rs:790`) behind the offline dump writers, which §6.4 already excludes from the cache.
+- **`render`** (`next_block`, `turn`, `seen_turns`) — **no: derive it.** The ids are already
+  baked into the committed records on disk (`"id": "b17"`), so the counter is a *function of
+  durable data*, and persisting it creates a second source of truth. Worse, the two disagree
+  exactly where it hurts: a truncate-back to `n` (I6) cuts the content stream, but a persisted
+  counter written by a later record stays ahead — leaving an id gap. Recomputing from the tail
+  of the truncated stream is consistent by construction. It must be a **max over the record's
+  nested ids**, not the record count: `block_id()` has 8 mint sites, so one record can consume
+  several.
+- **`counters`** (`epoch`, `provisional_gen`, `n_provisional`) — **no: this is live-protocol
+  state.** A restarted server has no provisional tail until it re-reads, and `provisional_gen`
+  need only differ from what a client holds. `epoch` looks like the exception, and the narrow
+  case is real: a client holding `epoch == 1` with a cursor at `committed_id 500`, against a
+  server resumed at `n = 480`, sees a *matching* epoch and silently keeps 20 blocks the server
+  no longer has.
+
+  Persisting `epoch` papers over that; the **protocol guard is the actual fix**: a cursor whose
+  `committed_id` exceeds `n_committed` must resync, whatever the epoch says. That is local and
+  self-evident, it holds however the mismatch arose, and it removes the last reason to persist
+  anything presentational. (`epoch` already starts at 1 so a default `epoch == 0` cursor
+  mismatches on its first pull — `shared.rs:97-98`; this extends the same instinct to the one
+  case it misses.) **Land the guard in step 2**, with the streams, not later.
 
 **This also settles the versioning question** an opaque format would have forced. Typed fields
 version the ordinary way: a new field arrives with `#[serde(default)]` and an older record still
@@ -327,7 +380,7 @@ The record still names no `BV`, so restore remains one implementation with no ty
 | I1 | `n = max { c.id : r.commit == Some(c) ∧ c.id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
 | I2 | One record per committing drain (`finalize_completed` runs once per line, `replay.rs:412`, so a multi-turn line commits several blocks under ONE record). `commit` ids are strictly increasing and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
-| I4 | For every record with `commit`: each **engine** override field (`cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`) reads — as its last present value ≤ that record — the fold's value at the start of that record's `replay_from` line. `present`/`store` are **as-of-the-write**: they advance only as committed blocks are `put` or clients are served, the replay commits nothing (I7), and a client cursor ahead of a restored `provisional_gen` resyncs rather than stale-serves. | §6.1; double-apply test |
+| I4 | For every record with `commit`, each override field's value at that record — its last present value ≤ it — equals the fold's value at the start of that record's `replay_from` line. Uniform: every override field is engine fold state (§4). | §6.1; double-apply test |
 | I5 | `commit.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
@@ -422,8 +475,9 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     ov ← override_at(records, n)               # last present value of each override field
     acc.cwd ← ov.cwd; acc.metrics.restore_state(ov.metrics); acc.task_fold.restore_state(ov.tasks)
     acc.replayer.restore_state(ov.prev_ts, ov.pending_ts)     # base = stamped = 0, out = []
-    return { acc, committed_id: n, replay_from: rec_n.commit.replay_from,
-             counters: ov.counters, render: ov.render }       # typed; callers route them
+    return { acc, committed_id: n, replay_from: rec_n.commit.replay_from }
+    # no presentation state to route: the frontend derives its numbering cursor from the
+    # committed records it just loaded, and the live counters start fresh (§4).
 
 caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at, which re-reads [0,offset)
         loop { acc.advance_at(off, line) }                      # normal folding
@@ -471,26 +525,24 @@ against the old bytes, and the next open accepts a stale payload against differe
 ## 7. The one seam addition
 
 `MetricsAccumulator` is `push`/`finish` with no seed (`adapter.rs:24-34`), and the collapsed
-`Metrics` cannot re-seed one: it exposes the derived `duration_secs` where an accumulator needs
-the span **endpoints**, and Codex's `model` arrives on a `turn_context` line near the session
-start (`codex/metrics.rs:35-39`) — a resumed fold starting mid-session never sees it again.
+`Metrics` cannot re-seed one: it exposes the derived `duration_secs` where a resumed accumulator
+needs the span **endpoints**, and it has already collapsed per-model attribution.
 
 ```rust
-fn save_state(&self)                      -> MetricsState { MetricsState::default() }
-fn restore_state(&mut self, _: MetricsState)              {}
+/// Token/counter increments since the last call, keyed by model — the adapter converts
+/// whatever its agent reports (Claude increments, Codex running totals) into increments.
+fn drain_delta(&mut self) -> (BTreeMap<Model, TokenCounts>, BTreeMap<String, u64>);
+/// Re-seed a resumed accumulator from the folded totals and the observed span.
+fn reseed(&mut self, tokens: &BTreeMap<Model, TokenCounts>,
+          extra: &BTreeMap<String, u64>, span: Option<(EpochSeconds, EpochSeconds)>);
+fn span(&self) -> Option<(EpochSeconds, EpochSeconds)>;
 ```
 
-**`MetricsState` is agent-agnostic, and that is not a compromise.** Both accumulators already
-hold the same fields (`claude/metrics.rs:15-23`, `codex/metrics.rs:9-16`) — counters, a model, a
-`TimeSpan`, an `extra` map. Codex's `cached` is Claude's `cache_read`; Codex leaves
-`cache_creation` at zero. An agent whose metric no shared struct should grow a field for puts it
-in `extra`, exactly as `Metrics::extra` already works. That bag is what makes a typed seam
-extensible, and it predates this design.
-
-`TimeSpan` must derive serde (`metrics.rs:63-66`) and expose its endpoints. QoderWork shares
-Claude's accumulator, so the state is keyed by presentation **and agent id** — a Codex state must
-never be handed to Claude's accumulator, and with a typed seam that is a deserialization error
-rather than a silent misread.
+Typed, agent-agnostic, and extensible where it needs to be: a counter no shared struct should
+grow a field for goes in `extra`, exactly as `Metrics::extra` already works. `TimeSpan` must
+expose its endpoints (`metrics.rs:63-66`). QoderWork shares Claude's accumulator, so state is
+keyed by presentation **and agent id** — a Codex state handed to Claude's accumulator is now a
+type error rather than a silent misread.
 
 ## 8. Locking
 
