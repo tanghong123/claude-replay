@@ -115,13 +115,15 @@ what an update *is*:
 
 ```rust
 struct MetaRecord {
-    // accumulate
+    // accumulate — each field holds ONLY THIS COMMIT'S contribution, never the running
+    // total. A drain normally commits one turn, so the two Vecs below are normally ONE
+    // element (occasionally more: a `last_skill`-pinned drain, or a multi-turn line).
     turns:      Option<usize>,
     tools:      Option<usize>,
-    agents:     Vec<AgentEvent>,               // sub-agents arriving and departing, IN ORDER
-    user_times: Vec<Option<EpochSeconds>>,     // one entry per user turn, in turn order
-    store_grow: Vec<Json>,                     // frontend-opaque, list append — HTML's sidebar
-                                               // entries (EmitState.turns), one per user turn
+    agents:     Vec<AgentEvent>,               // sub-agents arriving/departing here, IN ORDER
+    user_times: Vec<Option<EpochSeconds>>,     // timestamps of the turns THIS commit stamped
+    store_grow: Vec<Json>,                     // frontend-opaque: the sidebar entries
+                                               // (EmitState.turns) THIS commit added
 
     // indicator — present iff §3's partition exists at this drain (I5)
     commit:     Option<Commit>,
@@ -197,9 +199,11 @@ pays ~100 MB. The same question applies to `tasks`, which **is** an override sna
 bounded by open tasks rather than session history, so it stays — but if that ceases to hold it
 belongs here for the same reason.
 
-**`user_times` semantics.** One entry per **user turn**, in turn order:
-`user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
-stream — not per line, not per block. `stamp_user_turns` (`replay.rs:679-691`) pushes one
+**`user_times` semantics.** *Folded across records*, one entry per **user turn**, in turn
+order: `user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
+stream — not per line, not per block. **In any single record it is the delta only** — the turns
+that commit stamped, normally one entry. A 217-turn session emits ~217 one-element deltas
+(≈2 KiB in total), never 217 copies of a growing array. `stamp_user_turns` (`replay.rs:679-691`) pushes one
 entry as each turn-opening block is stamped, so `user_times.len()` tracks `SessionMeta.turns`
 exactly, and HTML indexes it with `EmitState.seen_turns` while rendering.
 
