@@ -109,8 +109,8 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times`, `store_grow` |
-| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `present`, `store` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append | `turns`, `tools`, `agents`, `user_times` |
+| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `metrics`, `tasks`, `counters`, `render` |
 | **indicator** | not a resume point | — | `commit: Commit` |
 
 ```rust
@@ -122,8 +122,6 @@ struct MetaRecord {
     tools:      Option<usize>,
     agents:     Vec<AgentEvent>,               // sub-agents arriving/departing here, IN ORDER
     user_times: Vec<Option<EpochSeconds>>,     // timestamps of the turns THIS commit stamped
-    store_grow: Vec<Json>,                     // frontend-opaque: the sidebar entries
-                                               // (EmitState.turns) THIS commit added
 
     // indicator — present iff §3's partition exists at this drain (I5)
     commit:     Option<Commit>,
@@ -132,10 +130,10 @@ struct MetaRecord {
     cwd:        Option<String>,
     prev_ts:    Option<Option<EpochSeconds>>,
     pending_ts: Option<Option<EpochSeconds>>,
-    metrics:    Option<Json>,                    // agent-opaque (§7); O(1)
-    tasks:      Option<Json>,                    // TaskFold incl. `pending`; bounded by open tasks
-    present:    Option<Json>,                    // engine-opaque: epoch, provisional_gen, n_provisional
-    store:      Option<Json>,                    // frontend-opaque: EmitState's O(1) part
+    metrics:    Option<MetricsState>,            // §7 — fixed fields + an `extra` bag
+    tasks:      Option<TaskState>,               // TaskFold: its list + unjoined creates
+    counters:   Option<Counters>,                // present's cursor counters
+    render:     Option<RenderState>,             // the frontend's numbering cursor
 }
 
 struct Commit {
@@ -157,9 +155,25 @@ struct Spawn {                  // everything known about one sub-agent at spawn
     status:      AgentStatus,   // a spawn can be born terminal
 }
 
-/// `Json` is `serde_json::Value` throughout — an arbitrary JSON subtree the engine stores and
-/// returns without inspecting. Spelled out because it is the only untyped thing in the format.
-type Json = serde_json::Value;
+// Every layer's state is PLAIN DATA declared here, in the engine. These are data shapes, not
+// layer types: the engine gains no dependency on `present` or a frontend, and each layer maps
+// its own state to and from its shape. Nothing in the format is untyped.
+
+struct MetricsState {                 // §7 — the resumable form of any agent's accumulator
+    input: u64, cache_creation: u64, cache_read: u64, output: u64,
+    model: String,
+    span: Option<(EpochSeconds, EpochSeconds)>,  // min/max; `duration_secs` derives from it
+    extra: BTreeMap<String, u64>,                // agent-specific counters, already in `Metrics`
+}
+
+struct TaskState {                    // `TaskFold` — engine-owned, so simply its own type
+    list: TaskList,
+    pending: Vec<(String, TaskItem)>, // `TaskCreate`s whose id has not arrived yet
+}
+
+struct Counters { epoch: u64, provisional_gen: u64, n_provisional: usize }
+
+struct RenderState { next_block: u64, turn: u64, seen_turns: u64 }
 
 struct StreamHeader {     // record 0, written once
     anchor:   u32,        // CRC32 of the transcript's first line (identity, not trust)
@@ -241,21 +255,15 @@ budget problem. A ~2⁻³² false-accept chance is acceptable because the window
 independent checks (§6.4) — length, first-line anchor, window — and the anchor alone catches a
 different file.
 
-**`store` vs `store_grow`.** Each opaque layer gets a slot in whichever class it needs. HTML's
-`EmitState` splits: its O(1) part (`next_block`, `turn`, `seen_turns`) rides `store` (override);
-its growing sidebar index (`turns: Vec<(anchor, label)>`, `html_export/mod.rs:716-722`) rides
-`store_grow` (accumulate), one entry per user turn — written whole it would be a second
-O(turns²) `user_times`.
-
 **Three lifetimes, three homes.** Conflating them wastes space, and one case is asymptotically
 wrong:
 
 | lifetime | fields | home |
 |---|---|---|
 | constant per session | `anchor`, `versions` | **header**, once |
-| accumulating | `turns`, `tools`, `agents`, `user_times`, `store_grow` | **accumulate class** |
-| as-of-`replay_from` | `cwd`, timestamps, metrics, tasks | **override class** |
-| as-of-the-write | `present`, `store` | **override class** — see I4's scope |
+| accumulating | `turns`, `tools`, `agents`, `user_times` | **accumulate class** |
+| as-of-`replay_from` | `cwd`, timestamps, `metrics`, `tasks` | **override class** |
+| as-of-the-write | `counters`, `render` | **override class** — see I4's scope |
 
 `user_times` is the case that matters. It is append-only and grows with turns, so writing it
 whole per commit costs O(turns²) in bytes *and* serialization, and makes a load O(turns²). As an
@@ -272,28 +280,45 @@ on the `BV` choice. `user_times` is in no content stream at all.
 
 The record names no `BV`, so restore is one implementation with no type parameter (R5).
 
-**Why four fields are opaque JSON.** R1 puts the format in `claude-replay-engine`, which cannot
-name a `present` type, a frontend type, or an agent's metrics state — and the metrics
-accumulator is genuinely per-agent (`MetricsAccumulator`, `adapter.rs:24-34`: Claude and Codex
-hold different span endpoints, and Codex discovers its `model` from a `turn_context` line). So
-each layer hands the engine a blob it stores and returns without inspecting. Precedent already
-in the tree: `PersistentStore::hibernate_state`/`restore_state` (`shared.rs:565-572`).
+**Nothing in the format is untyped.** An earlier draft made four fields `serde_json::Value`,
+inheriting the shape of `PersistentStore::hibernate_state`/`restore_state`
+(`shared.rs:565-572`). That precedent exists for a *trait* seam, where the trait cannot name
+every impl's state. A **file format** is not that situation, and each supposed blocker turned
+out to be nothing:
 
-**What that costs, and the one open decision it forces.** `Json` is untyped: nothing
-compile-checks that a layer's `restore_state` reads what its `save_state` wrote, and a blob
-whose shape changed between versions would be silently misread rather than rejected. Today's
-answer is the header's `versions`, which includes the **build id** — so *any* new binary
-invalidates every cached session, which makes stale-shape misreads impossible.
+| field | claimed blocker | what the code says |
+|---|---|---|
+| `metrics` | agent-specific | Both accumulators are the **same shape** (`claude/metrics.rs:15-23`, `codex/metrics.rs:9-16`): counters, a model, a `TimeSpan`, and an `extra` map. Codex's `cached` *is* Claude's `cache_read`; it simply has no `cache_creation`. |
+| `tasks` | `pending` is private to `engine::tasks` | `TaskFold` is **engine-owned code**. A module-privacy detail is not a layering constraint — derive `Serialize` and the engine names its own type. |
+| `counters` | belongs to `present` | Three integers. Carrying a `u64` is not naming a `present` type. |
+| `render` | belongs to the frontend | Three integers (a numbering cursor). Same answer. |
 
-That is safe and blunt. It also means the durable cache is **discarded on every release**, and
-this project ships often (v1.31 and v1.32 landed a day apart) — so in practice a user would
-re-parse from cold after most upgrades, which is much of the value gone. The alternative is to
-drop the build id from `versions`, keep only format + fold-logic, and make each blob
-**self-versioning**: `save_state` stamps a small integer, `restore_state` rejects anything it
-does not recognise (⇒ cold rebuild for that session only). That keeps the cache across
-upgrades that do not change the fold, at the cost of one integer and one match arm per layer.
-**Decide before step 1** — it changes the seam's signature, and retrofitting a version into a
-blob already on disk is exactly the migration this design exists to avoid.
+This matters more than tidiness, and the reason is the architecture's own premise: the
+**agent-specific decoder already normalises every line into an agent-agnostic `Message`**. Agent
+specificity is supposed to end at L1. Metrics was the one place it leaked downstream — and the
+neutral `Metrics` type already carries an `extra: BTreeMap<String, u64>` bag for exactly the
+counters no shared struct should grow a field for. So the extensibility that opacity was buying
+is already present, typed.
+
+The only thing `Metrics` lacked for *resume* is the span **endpoints** (it exposes the derived
+`duration_secs`), which is an argument for `MetricsState` carrying `span` — not for giving up on
+types.
+
+**`store_grow` is deleted, not typed.** It existed to carry `EmitState.turns`, the growing
+sidebar index. But the client builds its sidebar from the block records themselves
+(`addTurn(b)` reads `b.id`/`b.turn`/`b.label`, `export.js:967-975`), and on the served path
+`EmitState.turns` accumulates while **nothing ever reads it** — its only consumer is the
+whole-session render (`mod.rs:790`) behind the offline dump writers, which §6.4 already excludes
+from the cache. The served path needs the three counters in `RenderState` and nothing more.
+
+**This also settles the versioning question** an opaque format would have forced. Typed fields
+version the ordinary way: a new field arrives with `#[serde(default)]` and an older record still
+loads. So `versions` need carry only **format + fold-logic**, not the build id — and the durable
+cache **survives an upgrade** that does not change the fold, instead of being discarded on every
+release. Opacity would have made build-id invalidation the only safe option.
+
+The record still names no `BV`, so restore remains one implementation with no type parameter
+(R5).
 
 ## 5. Invariants
 
@@ -398,7 +423,7 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc.cwd ← ov.cwd; acc.metrics.restore_state(ov.metrics); acc.task_fold.restore_state(ov.tasks)
     acc.replayer.restore_state(ov.prev_ts, ov.pending_ts)     # base = stamped = 0, out = []
     return { acc, committed_id: n, replay_from: rec_n.commit.replay_from,
-             present: ov.present, store: ov.store }           # opaque; callers route them
+             counters: ov.counters, render: ov.render }       # typed; callers route them
 
 caller: reader ← LineReader::open_at_offset(src, replay_from)   # not open_at, which re-reads [0,offset)
         loop { acc.advance_at(off, line) }                      # normal folding
@@ -446,16 +471,26 @@ against the old bytes, and the next open accepts a stale payload against differe
 ## 7. The one seam addition
 
 `MetricsAccumulator` is `push`/`finish` with no seed (`adapter.rs:24-34`), and the collapsed
-`Metrics` cannot rebuild one: both agents hold private span endpoints and Codex's `model` comes
-from a `turn_context` line near the session start (`codex/metrics.rs:35-39`).
+`Metrics` cannot re-seed one: it exposes the derived `duration_secs` where an accumulator needs
+the span **endpoints**, and Codex's `model` arrives on a `turn_context` line near the session
+start (`codex/metrics.rs:35-39`) — a resumed fold starting mid-session never sees it again.
 
 ```rust
-fn save_state(&self)                        -> serde_json::Value { Value::Null }
-fn restore_state(&mut self, _: serde_json::Value)                  {}
+fn save_state(&self)                      -> MetricsState { MetricsState::default() }
+fn restore_state(&mut self, _: MetricsState)              {}
 ```
 
-`TimeSpan` must derive serde (`metrics.rs:63-66`). QoderWork shares Claude's accumulator, so the
-blob is keyed by presentation and agent id.
+**`MetricsState` is agent-agnostic, and that is not a compromise.** Both accumulators already
+hold the same fields (`claude/metrics.rs:15-23`, `codex/metrics.rs:9-16`) — counters, a model, a
+`TimeSpan`, an `extra` map. Codex's `cached` is Claude's `cache_read`; Codex leaves
+`cache_creation` at zero. An agent whose metric no shared struct should grow a field for puts it
+in `extra`, exactly as `Metrics::extra` already works. That bag is what makes a typed seam
+extensible, and it predates this design.
+
+`TimeSpan` must derive serde (`metrics.rs:63-66`) and expose its endpoints. QoderWork shares
+Claude's accumulator, so the state is keyed by presentation **and agent id** — a Codex state must
+never be handed to Claude's accumulator, and with a typed seam that is a deserialization error
+rather than a silent misread.
 
 ## 8. Locking
 
