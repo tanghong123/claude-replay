@@ -543,6 +543,32 @@ The residual diff is **not** decision-free rendering:
   the *clicked* target directly (don't wait for `spy()`), or reconcile `GOTO_Y`/`STICKY_Y`
   so the landed turn is the one `spy()` selects.
 
+- [x] **Study: can a live session be identified, located, and typed into?** ✅ answered —
+  full findings in **`design/session-liveness-probe.md`**; instrument in
+  **`examples/session_probe.rs`** (an example, deliberately never wired into the CLI).
+  Prerequisite knowledge for the machine-wide monitor (`#98`). Headlines:
+  - **Liveness** needs exactly two signals — a live process (basename of **argv[0]**, see
+    the traps below) and the **tree** mtime (root + `subagents/`); the root mtime alone is
+    redundant. The in-flight-tool check stays for the case mtime cannot cover: an agent
+    blocked in a long tool call writes nothing anywhere while being maximally busy.
+  - **Two silent process-matching traps.** Matching argv *anywhere* makes every agent tool
+    shell look like an agent. Matching `comm` from a **bulk** `ps` listing is worse — the
+    multi-column form **truncates** it (`/Users/hong/.local/bin/claude` → `/Users/hong/.loc`),
+    dropping every absolute-path agent. jdi is unaffected (it reads `ps -o comm= -p <pid>`
+    per pid, which does not truncate).
+  - **Process → session is the real gap.** `--resume` carries the id only for *resumed*
+    sessions (7 of 11 live agents had none). Fallbacks: an open `.jsonl` fd works for Codex
+    but not Claude; cwd → project-slug works for Claude. Neither is exact, so cross-check the
+    transcript's recorded `session_id`.
+  - **Injection is a property of the multiplexer**, not the terminal or the OS: tmux
+    `send-keys` ✅, screen `-X stuff` ✅ (needs a *literal* newline), external `TIOCSTI`
+    ❌ `EPERM`, tty write reaches the display but never stdin. **Careful:** `TIOCSTI` on
+    one's *own* stdin is accepted on macOS, so a naive probe reads as a green light.
+  - **Safety gate (§4 of the note).** Injection executes instructions as that user in a
+    session holding their tools and credentials. Any productisation needs per-session
+    consent at the time, visibility in the target, local-only, refuse-by-default. `#98`'s
+    read-only monitor needs none of this; anything that types does.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
