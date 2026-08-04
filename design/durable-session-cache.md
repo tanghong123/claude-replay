@@ -119,7 +119,7 @@ struct MetaRecord {
     turns:      Option<usize>,
     tools:      Option<usize>,
     agents:     Vec<AgentEvent>,               // sub-agents arriving and departing, IN ORDER
-    user_times: Vec<Option<EpochSeconds>>,     // appended by THESE committed turns
+    user_times: Vec<Option<EpochSeconds>>,     // one entry per user turn, in turn order
     store_grow: Vec<Value>,                    // frontend-opaque, list append — HTML's sidebar
                                                // entries (EmitState.turns), one per user turn
 
@@ -139,7 +139,7 @@ struct MetaRecord {
 struct Commit {
     id:          usize,        // committed-block count after this drain
     replay_from: ByteOffset,   // §3's partition offset
-    window:      Hash,         // sha256 of the 64 KiB ending at replay_from
+    window:      u32,          // CRC32 of the 64 KiB ending at replay_from — see below
 }
 
 enum AgentEvent {
@@ -156,7 +156,7 @@ struct Spawn {                  // everything known about one sub-agent at spawn
 }
 
 struct StreamHeader {     // record 0, written once
-    anchor:   Hash,       // first line of the transcript
+    anchor:   u32,        // CRC32 of the transcript's first line (identity, not trust)
     versions: Versions,   // format, fold-logic, build; HTML adds flavor
 }
 ```
@@ -193,6 +193,21 @@ pays ~100 MB. The same question applies to `tasks`, which **is** an override sna
 bounded by open tasks rather than session history, so it stays — but if that ceases to hold it
 belongs here for the same reason.
 
+**`user_times` semantics.** One entry per **user turn**, in turn order:
+`user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
+stream — not per line, not per block. `stamp_user_turns` (`replay.rs:679-691`) pushes one
+entry as each turn-opening block is stamped, so `user_times.len()` tracks `SessionMeta.turns`
+exactly, and HTML indexes it with `EmitState.seen_turns` while rendering.
+
+`Option` because a turn can be **unstamped**: the value pushed is the fold's `pending_ts`, the
+timestamp of the line currently being read, which is `None` when that line carried none. It is
+never a "no turn here" hole — every user turn contributes an entry, some without a clock.
+
+As a `+=` field the delta carries only the turns *this* commit stamped, appended in order, so
+folding through record `n` reproduces the prefix exactly. That is also why restore truncates
+it to `committed_meta.turns` (§6.3): at `replay_from` precisely the committed turns are
+stamped, and the re-read re-stamps the open ones.
+
 **The writer's obligation, and the only way to get this wrong.** An override value is the fold's
 state as of *that record's* `replay_from`, and every record has a different `replay_from`. So the
 writer must emit an override field on any record where its value differs from the last value it
@@ -202,10 +217,21 @@ every commit and so appear at every commit. The rule is uniform; the frequencies
 
 **Why `commit` is one field and not three.** `committed_id` is used only to align against
 `|committed|` and to name the record a load stops at; both apply solely to resume points, so a
-record without an offset never needs it. `window` is a hash **of** `replay_from`'s bytes —
+record without an offset never needs it. `window` is a checksum **of** `replay_from`'s bytes —
 meaningful only alongside that exact offset, and "absent = unchanged" would be nonsense for it
 (`replay_from` strictly increases, so it always changes). All three are one fact — "resumable
 here" — not an invariant to maintain across fields.
+
+**Why CRC32 and not a cryptographic hash.** This detects *accidental* divergence — a
+compaction, a truncation, a different file under the same name — never tampering, and it
+cannot be a trust boundary in any case: anything able to rewrite the transcript can rewrite the
+cache beside it. A cryptographic digest would advertise a guarantee this design does not have,
+and would pull a crypto dependency into a crate that has three. CRC32 is also 13× cheaper
+(measured on 64 KiB: 1.6 µs vs 21.7 µs for sha256 — 0.35 ms vs 4.7 ms across a 217-commit
+session, 3 ms vs 43 ms at 2000), though speed is the lesser reason: neither figure was a
+budget problem. A ~2⁻³² false-accept chance is acceptable because the window is one of three
+independent checks (§6.4) — length, first-line anchor, window — and the anchor alone catches a
+different file.
 
 **`store` vs `store_grow`.** Each opaque layer gets a slot in whichever class it needs. HTML's
 `EmitState` splits: its O(1) part (`next_block`, `turn`, `seen_turns`) rides `store` (override);
@@ -285,7 +311,7 @@ on advance_at(offset, line):                       # builder
         if deque.front()?.logical == replayer.base():          # line_boundary — I5
             e ← deque.front()
             rec.commit ← Some(Commit { id: |committed|, replay_from: e.offset,
-                                       window: sha256(src @ e.offset) })
+                                       window: crc32(src @ e.offset) })
             rec.set_changed_override_fields(e)     # only those differing from the last written
         writer.enrich_and_append(rec)              # present/store filled by their own layers
     metrics.push(line)                             # last — metrics stays as-of-line-start
@@ -370,7 +396,7 @@ return two vectors; the persistence layer performs the `set_len`s and is the onl
 valid(hdr, c: Commit):
     len(src) ≥ c.replay_from
   ∧ first_line(src) == hdr.anchor                  # checked once, not per record
-  ∧ sha256(src[c.replay_from-64KiB .. c.replay_from]) == c.window
+  ∧ crc32(src[c.replay_from-64KiB .. c.replay_from]) == c.window
   ∧ hdr.versions == current
 ```
 
@@ -428,7 +454,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | per line | one predicate over the already-decoded messages |
 | per user turn | one deque entry: four scalars + one clone each of the metrics accumulator and task fold |
 | per committed block | HTML: none. TUI: one serialize + buffered append |
-| per committing drain | one record + one 64 KiB sha256 (23 µs, on bytes just read) |
+| per committing drain | one record + one 64 KiB CRC32 (1.6 µs, on bytes just read) |
 | per open | `stat` + first line + 64 KiB + replay deltas + scan content — O(records + committed) |
 | `--no-cache` | today's path |
 
