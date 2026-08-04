@@ -869,19 +869,28 @@
     if (taskAutoFocus) centerTasks();
   }
   // Scroll the panel so the middle of the running section sits mid-viewport; with no
-  // running tasks, center the finished/pending boundary (where work will resume).
+  // running tasks, center the FINISHED/PENDING BOUNDARY — where work will resume
+  // (#100). The "Pending" section header sits exactly there, since sections render
+  // finished → running → pending; with nothing pending, the end of the list is the
+  // boundary. Rect-based positions, not offsetTop: the items' offsetParent is the
+  // FIXED PANEL (the nearest positioned ancestor), so offsetTop carries the head
+  // bar's height as a constant error in #taskbox scroll coordinates — invisible when
+  // the panel was tall, off-center at the #100 compact height.
   function centerTasks() {
-    var box = $("taskbox");
-    if (!box) return;
+    var box = $("taskbox"), panel = $("taskpanel");
+    if (!box || !panel || !panel.classList.contains("on")) return; // hidden ⇒ rects are 0; reopening recenters
+    var boxTop = box.getBoundingClientRect().top;
+    // Layout position within the scrolled content — scroll-invariant.
+    function at(elm) { return elm.getBoundingClientRect().top - boxTop + box.scrollTop; }
     var rows = all("#taskbox .task-row.active").map(function (r) { return r.parentElement; });
     var mid;
     if (rows.length) {
-      var first = rows[0], last = rows[rows.length - 1];
-      mid = (first.offsetTop + last.offsetTop + last.offsetHeight) / 2;
+      var last = rows[rows.length - 1];
+      mid = (at(rows[0]) + at(last) + last.getBoundingClientRect().height) / 2;
     } else {
       var secs = all("#taskbox .task-sec");
       var pendSec = secs.filter(function (s2) { return s2.textContent === "Pending"; })[0];
-      mid = pendSec ? pendSec.offsetTop : box.scrollHeight;
+      mid = pendSec ? at(pendSec) + pendSec.getBoundingClientRect().height / 2 : box.scrollHeight;
     }
     box.scrollTop = Math.max(0, mid - box.clientHeight / 2);
   }
@@ -1555,6 +1564,99 @@
       if (tc) tc.classList.remove("autofocus");
     }, { passive: true });
   });
+
+  // #101: upward drag-selection. The page scrolls on the WINDOW, and native selection
+  // auto-scroll engages only at the viewport edge — but the fixed topbar occupies the
+  // top of the viewport, so an upward drag reaches the bar (still inside the viewport)
+  // and stalls there instead of scrolling. Downward needs nothing: the bottom edge is
+  // bare, so the native behavior works and is not driven here. While a drag that
+  // started in the content is live: body.selecting makes the chrome unselectable
+  // (css), and a pointer inside the topbar band scrolls the window up at a rate
+  // proportional to the intrusion (the editor-style ramp), re-extending the selection
+  // to the point just below the band as content slides under the pointer.
+  (function () {
+    var live = false, lastX = 0, speed = 0, raf = 0;
+    function bandBottom() {
+      var bar = $("topbar");
+      return (bar ? bar.getBoundingClientRect().bottom : 48) + 8;
+    }
+    // Extend the live selection to the caret nearest (x, y) — scrolling alone moves
+    // content under a stationary pointer without growing the selection.
+    function extendTo(x, y) {
+      var sel = window.getSelection();
+      if (!sel || !sel.rangeCount || !sel.extend) return;
+      var node = null, off = 0;
+      if (document.caretPositionFromPoint) {
+        var p = document.caretPositionFromPoint(x, y);
+        if (p) { node = p.offsetNode; off = p.offset; }
+      } else if (document.caretRangeFromPoint) {
+        var r = document.caretRangeFromPoint(x, y);
+        if (r) { node = r.startContainer; off = r.startOffset; }
+      }
+      if (node) try { sel.extend(node, off); } catch (e) { /* non-Text hit — skip this frame */ }
+    }
+    // A 16 ms timer, not requestAnimationFrame: rAF freezes in hidden/occluded tabs,
+    // which makes the loop untestable headless (this repo's tests drive the page in a
+    // background tab) — and at ~1 frame's cadence the two are visually identical.
+    function tick() {
+      raf = setTimeout(function () {
+        raf = 0;
+        if (!live || !speed) return;
+        window.scrollBy(0, -speed);
+        extendTo(lastX, bandBottom() + 2);
+        tick(); // keep scrolling while the pointer rests in the band
+      }, 16);
+    }
+    document.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
+      // Only drags that START in the content engage: a drag inside the task panel,
+      // sidebar or a menu keeps its own scroll behavior (the v1.25.1 containment).
+      if (e.target.closest("#topbar,#taskpanel,#sidebar,#toolmenu,#agentmenu")) return;
+      live = true;
+      document.body.classList.add("selecting"); // no preventDefault — clicks unaffected
+    });
+    document.addEventListener("mousemove", function (e) {
+      if (!live) return;
+      lastX = e.clientX;
+      var into = bandBottom() - e.clientY;
+      speed = into > 0 ? Math.min(4 + into * 0.6, 44) : 0;
+      if (speed && !raf) tick();
+    });
+    function stop() {
+      live = false; speed = 0;
+      document.body.classList.remove("selecting");
+    }
+    document.addEventListener("mouseup", stop);
+    window.addEventListener("blur", stop);
+  })();
+
+  // #100: the task panel's user resize. Native `resize: vertical` sets an INLINE height
+  // when (and only when) the user drags the handle — content growth never does — so an
+  // inline height is the "user sized it" signal: lift the ~5-row default (.user-sized)
+  // and persist. Restore runs before the observer attaches, so applying the stored
+  // height here doesn't loop.
+  (function () {
+    var panel = $("taskpanel");
+    if (!panel) return;
+    var TP_KEY = "cr-taskpanel-h";
+    var stored = parseInt(lsGet(TP_KEY) || "", 10);
+    if (stored > 0) {
+      panel.style.height = stored + "px";
+      panel.classList.add("user-sized");
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    var t = 0;
+    new ResizeObserver(function () {
+      if (!panel.style.height) return; // content reflow, not a user drag
+      panel.classList.add("user-sized");
+      clearTimeout(t);
+      t = setTimeout(function () {
+        var h = parseInt(panel.style.height, 10);
+        if (h > 0) lsSet(TP_KEY, String(h));
+        if (taskAutoFocus) centerTasks(); // keep ⌖ semantics at the new height
+      }, 150);
+    }).observe(panel);
+  })();
 
   // §8.8/§8.6 apply persisted width mode and size the fixed bar to the window.
   setWide(wide);

@@ -262,11 +262,16 @@ a.crumb:hover { text-decoration: underline; }
 .usage .side-head { padding: 0 0 2px; }
 /* #83 the session task panel — a FLOATING panel below the top bar, top-right.
    Sections: finished → running → pending (IDs ascending); the viewport auto-centers
-   on the middle of the running section until the user scrolls, and ⌖ re-engages. */
+   on the middle of the running section until the user scrolls, and ⌖ re-engages.
+   #100: compact by default (~5 rows via the .tasks max-height below) and user-resizable
+   — native `resize: vertical` (needs overflow ≠ visible; the panel is anchored top-right,
+   so the bottom-corner handle grows it downward). Dragging sets an inline height; the JS
+   marks .user-sized, which lifts the 5-row default so the row area fills the new height. */
 #taskpanel {
   display: none; position: fixed; z-index: 60;
   top: 56px; right: 12px; width: min(420px, 92vw);
-  max-height: min(64vh, 680px);
+  min-height: 84px; max-height: min(64vh, 680px);
+  resize: vertical; overflow: hidden;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18);
   flex-direction: column;
@@ -275,7 +280,11 @@ a.crumb:hover { text-decoration: underline; }
 #taskpanel .tasks {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: 4px 8px 8px;
+  /* The ~5-row default: rows are ~1.6em (line + padding + gap) in this 11.5px context,
+     plus one section header and the box padding. em so it tracks the font. */
+  max-height: 11.5em;
 }
+#taskpanel.user-sized .tasks { max-height: none; }
 .taskpanel-head {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   border-bottom: 1px solid var(--border);
@@ -333,6 +342,17 @@ main { flex: 1; min-width: 0; max-width: 820px; padding: 0 24px 80px; }
 .session-meta { display: flex; flex-wrap: wrap; gap: 14px; font: 11.5px var(--mono); color: var(--muted); }
 #sid { color: var(--faint); cursor: pointer; border-bottom: 1px dashed var(--border); }
 #sid:hover { color: var(--muted); }
+
+/* #101: while a selection drag started in the content is live (body.selecting, set by
+   the JS on mousedown outside the chrome), the chrome must not join the selection —
+   dragging upward otherwise sweeps the fixed topbar, the sticky turn index and the
+   floating task panel into it (they are ordinary selectable DOM between the anchor
+   and the pointer). Scoped to the drag rather than blanket user-select:none, so
+   copying text INSIDE the panel or sidebar still works. */
+body.selecting #topbar, body.selecting #sidebar, body.selecting #taskpanel,
+body.selecting #toolmenu, body.selecting #agentmenu {
+  -webkit-user-select: none; user-select: none;
+}
 
 #stickybar {
   position: sticky; top: 48px; z-index: 20; display: flex; align-items: center; gap: 8px;
