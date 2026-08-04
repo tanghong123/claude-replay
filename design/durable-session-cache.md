@@ -120,7 +120,7 @@ struct MetaRecord {
     tools:      Option<usize>,
     agents:     Vec<AgentEvent>,               // sub-agents arriving and departing, IN ORDER
     user_times: Vec<Option<EpochSeconds>>,     // one entry per user turn, in turn order
-    store_grow: Vec<Value>,                    // frontend-opaque, list append — HTML's sidebar
+    store_grow: Vec<Json>,                     // frontend-opaque, list append — HTML's sidebar
                                                // entries (EmitState.turns), one per user turn
 
     // indicator — present iff §3's partition exists at this drain (I5)
@@ -130,10 +130,10 @@ struct MetaRecord {
     cwd:        Option<String>,
     prev_ts:    Option<Option<EpochSeconds>>,
     pending_ts: Option<Option<EpochSeconds>>,
-    metrics:    Option<Value>,                   // agent-opaque (§7); O(1)
-    tasks:      Option<Value>,                   // TaskFold incl. `pending`; bounded by open tasks
-    present:    Option<Value>,                   // engine-opaque: epoch, provisional_gen, n_provisional
-    store:      Option<Value>,                   // frontend-opaque: EmitState's O(1) part
+    metrics:    Option<Json>,                    // agent-opaque (§7); O(1)
+    tasks:      Option<Json>,                    // TaskFold incl. `pending`; bounded by open tasks
+    present:    Option<Json>,                    // engine-opaque: epoch, provisional_gen, n_provisional
+    store:      Option<Json>,                    // frontend-opaque: EmitState's O(1) part
 }
 
 struct Commit {
@@ -154,6 +154,10 @@ struct Spawn {                  // everything known about one sub-agent at spawn
     description: String,
     status:      AgentStatus,   // a spawn can be born terminal
 }
+
+/// `Json` is `serde_json::Value` throughout — an arbitrary JSON subtree the engine stores and
+/// returns without inspecting. Spelled out because it is the only untyped thing in the format.
+type Json = serde_json::Value;
 
 struct StreamHeader {     // record 0, written once
     anchor:   u32,        // CRC32 of the transcript's first line (identity, not trust)
@@ -262,10 +266,30 @@ TUI's content stream (JSON `Block`s) could yield `turns`/`tools`/`agents` by sca
 but HTML's (rendered wire records) cannot, and R5 forbids metadata reconstruction that depends
 on the `BV` choice. `user_times` is in no content stream at all.
 
-The record names no `BV`, so restore is one implementation with no type parameter (R5). The two
-opaque `Value`s exist because R1 puts the format in the engine, which cannot name a `present` or
-frontend type; precedent is `PersistentStore::hibernate_state`/`restore_state`
-(`shared.rs:565-572`).
+The record names no `BV`, so restore is one implementation with no type parameter (R5).
+
+**Why four fields are opaque JSON.** R1 puts the format in `claude-replay-engine`, which cannot
+name a `present` type, a frontend type, or an agent's metrics state — and the metrics
+accumulator is genuinely per-agent (`MetricsAccumulator`, `adapter.rs:24-34`: Claude and Codex
+hold different span endpoints, and Codex discovers its `model` from a `turn_context` line). So
+each layer hands the engine a blob it stores and returns without inspecting. Precedent already
+in the tree: `PersistentStore::hibernate_state`/`restore_state` (`shared.rs:565-572`).
+
+**What that costs, and the one open decision it forces.** `Json` is untyped: nothing
+compile-checks that a layer's `restore_state` reads what its `save_state` wrote, and a blob
+whose shape changed between versions would be silently misread rather than rejected. Today's
+answer is the header's `versions`, which includes the **build id** — so *any* new binary
+invalidates every cached session, which makes stale-shape misreads impossible.
+
+That is safe and blunt. It also means the durable cache is **discarded on every release**, and
+this project ships often (v1.31 and v1.32 landed a day apart) — so in practice a user would
+re-parse from cold after most upgrades, which is much of the value gone. The alternative is to
+drop the build id from `versions`, keep only format + fold-logic, and make each blob
+**self-versioning**: `save_state` stamps a small integer, `restore_state` rejects anything it
+does not recognise (⇒ cold rebuild for that session only). That keeps the cache across
+upgrades that do not change the fold, at the cost of one integer and one match arm per layer.
+**Decide before step 1** — it changes the seam's signature, and retrofitting a version into a
+blob already on disk is exactly the migration this design exists to avoid.
 
 ## 5. Invariants
 
@@ -422,8 +446,8 @@ against the old bytes, and the next open accepts a stale payload against differe
 from a `turn_context` line near the session start (`codex/metrics.rs:35-39`).
 
 ```rust
-fn save_state(&self)                  -> Value { Value::Null }
-fn restore_state(&mut self, _: Value)          {}
+fn save_state(&self)                        -> serde_json::Value { Value::Null }
+fn restore_state(&mut self, _: serde_json::Value)                  {}
 ```
 
 `TimeSpan` must derive serde (`metrics.rs:63-66`). QoderWork shares Claude's accumulator, so the
