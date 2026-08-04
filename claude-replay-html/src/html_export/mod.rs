@@ -879,8 +879,10 @@ fn build_page(
   </div>
   <div class="searchbox">
     <span class="mag">⌕</span>
-    <input id="q" placeholder="Search transcript  ( / )" autocomplete="off">
+    <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
     <span id="qcount"></span>
+    <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
+    <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
   </div>
   <button id="btn-exp" class="tbtn" data-full="Expand all">Expand all</button>
   <button id="btn-col" class="tbtn" data-full="Collapse all">Collapse all</button>
@@ -920,6 +922,7 @@ fn build_page(
   </main>
 </div>
 <button id="newbadge">↓ new messages</button>
+<div id="livechip">⤓ following live</div>
 <script id="session-data" type="application/jsonl">
 {jsonl_esc}
 </script>

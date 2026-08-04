@@ -1368,6 +1368,18 @@
   function atBottom() {
     return window.innerHeight + window.scrollY >= document.body.scrollHeight - BOTTOM_SLACK;
   }
+  // #103: pin ACQUISITION is stricter than pin HOLDING. Reading the last message
+  // naturally sits within BOTTOM_SLACK, and a scroll ending there used to acquire
+  // the pin silently — then any provisional reshape (a duration tick, a result
+  // back-patch: no visible new message) yanked the page to the exact bottom with
+  // the badge suppressed. Acquire only at the true end — browsers clamp a
+  // scrolled-to-the-end position to scrollHeight, so wheel, trackpad and scrollbar
+  // all genuinely reach it. The generous slack still governs holding and healing,
+  // which the virtualizer's pad shifts need (#88/#89).
+  var PIN_SLACK = 2;
+  function atEnd() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - PIN_SLACK;
+  }
   // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
   // pixel proximity each tick (#88): under the virtualizer, materializing the tail
   // corrects estimated heights and silently moves the true bottom away from the
@@ -1380,6 +1392,12 @@
   // clamp-on-shrink fire the same event with no marker) — carries no intent:
   // while pinned it is displacement to heal with a re-pin, never a state change.
   var following = false;
+  // #103: the pin state is VISIBLE — body.following drives the #livechip — so a
+  // page that moves by itself is never a mystery.
+  function setFollowing(v) {
+    following = v;
+    document.body.classList.toggle("following", v);
+  }
   var USER_MS = 300;
   // Sentinel far in the past: performance.now() is small right after load, so a 0
   // init would classify the load sequence's own scrolls (and the browser's async
@@ -1458,7 +1476,7 @@
     badge.classList.remove("on");
   }
   badge.addEventListener("click", function () {
-    following = true;
+    setFollowing(true);
     toBottom();
     clearNew();
   });
@@ -1602,6 +1620,10 @@
       raf = setTimeout(function () {
         raf = 0;
         if (!live || !speed) return;
+        // #103: this scroll IS the user moving — mark it, or the follow classifier
+        // reads it as browser displacement and (while pinned) heals it straight
+        // back to the bottom, fighting the drag.
+        lastUserInput = performance.now();
         window.scrollBy(0, -speed);
         extendTo(lastX, bandBottom() + 2);
         tick(); // keep scrolling while the pointer rests in the band
@@ -1884,7 +1906,9 @@
     // Navigation SETS the pin state directly (#94): in a background tab the jump's
     // scroll events can deliver long after the intent window, and the classifier
     // would read them as displacement and yank the view back to the tail.
-    following = atBottom();
+    // #103: acquisition needs the true end here too — landing NEAR the tail must
+    // not pin (the same silent-pin trap as a near-bottom scroll).
+    setFollowing(following ? atBottom() : atEnd());
     spy();
   }
 
@@ -2186,6 +2210,7 @@
   }
   function search(v) {
     var qc = $("qcount");
+    showQNav(false);
     clearHl();
     navPos = -1;
     navMark = -1;
@@ -2202,6 +2227,7 @@
     }
     matEls().forEach(function (e) { markHits(e, lc, lc.length); });
     qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s");
+    showQNav(totalHits > 0);
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
   function matRecord(ti) {
@@ -2213,6 +2239,37 @@
       return false;
     });
     return target;
+  }
+  // #102: a hit can sit inside a "⋯ N more lines" cap (a display:none `.more` div)
+  // or a clamped user turn (`.clamped`, max-height + overflow:hidden) — goTo opens
+  // FOLDS but neither of these, so the jump either derived its target from a zero
+  // rect (hidden ⇒ scrolled to ~page top) or landed on a clipped, invisible mark.
+  // Expand the whole enclosing chain first, recording small cap expansions exactly
+  // like a click would (#67) so they survive rematerialization.
+  function revealMark(m) {
+    for (var p = m.parentElement; p; p = p.parentElement) {
+      if (p.classList.contains("more") && !p.classList.contains("shown")) {
+        var btn = document.querySelector('.morebtn[data-more="' + p.id + '"]');
+        if (btn) {
+          var blk = btn.closest(".blk");
+          if (blk && blk.id && btn.dataset.ord != null
+              && hiddenLineCount(p) <= MAX_BUFFER_LINES) {
+            smallMore[blk.id + ":" + btn.dataset.ord] = true;
+          }
+          expandMore(btn);
+        } else {
+          p.classList.add("shown");
+        }
+      }
+      if (p.classList.contains("clamped")) {
+        var cb = p.nextElementSibling;
+        if (cb && cb.classList.contains("clampbtn")) {
+          p.classList.remove("clamped");
+          p.style.maxHeight = "";
+          cb.textContent = "▲ show less";
+        }
+      }
+    }
   }
   // #66: navigation steps through each hit block's ACTUAL DOM marks (exact within a
   // block), advancing to the next/previous hit record when a block's marks are
@@ -2242,6 +2299,7 @@
         m.classList.add("cur");
         var flat = hr.start + Math.min(next, hr.count - 1) + 1;
         $("qcount").textContent = flat + "/" + totalHits;
+        revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
         goTo(m, true);
         spy();
         return;
@@ -2249,6 +2307,21 @@
       navPos = (navPos + dir + hitRecs.length) % hitRecs.length; // wraps
       navMark = dir > 0 ? -1 : Infinity;
     }
+  }
+  // #102: visible prev/next steppers — Shift+Enter always went backward, but
+  // nothing said so; the arrows make both directions discoverable and mousable.
+  // mousedown is swallowed so the input keeps focus and ⏎ keeps working after a click.
+  ["qprev", "qnext"].forEach(function (id) {
+    var b = $(id);
+    if (!b) return;
+    b.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    b.addEventListener("click", function () { stepHit(id === "qprev" ? -1 : 1); });
+  });
+  function showQNav(on) {
+    ["qprev", "qnext"].forEach(function (id) {
+      var b = $(id);
+      if (b) b.classList.toggle("on", !!on);
+    });
   }
   q.addEventListener("input", function () { search(q.value); });
   q.addEventListener("keydown", function (e) {
@@ -2383,7 +2456,9 @@
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
     if (performance.now() - lastUserInput < USER_MS) {
-      following = atBottom(); // the user moving: away unpins, to-the-end re-pins
+      // #103 hysteresis: while pinned the old slack decides (away unpins), but
+      // acquiring the pin needs the true end — near-bottom reading never pins.
+      setFollowing(following ? atBottom() : atEnd());
     } else if (following && !atBottom()) {
       toBottom(); // browser displacement (anchoring/clamp) while pinned — heal it
     }
@@ -2407,7 +2482,7 @@
     // A live page OWNS its landing position (the tail) — stop the browser's async
     // scroll restoration from yanking the view to a stale offset seconds later (#89).
     if (pollMs > 0 && "scrollRestoration" in history) history.scrollRestoration = "manual";
-    following = true;
+    setFollowing(true);
     toBottom();
   }
 })();

@@ -113,6 +113,13 @@ input::placeholder { color: var(--faint); }
 .searchbox:focus-within { border-color: var(--link); box-shadow: 0 0 0 1px var(--link); }
 .searchbox:focus-within .mag { color: var(--link); }
 #qcount { font: 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
+/* #102 prev/next match steppers — shown only while a search has hits. */
+.qnav {
+  display: none; cursor: pointer; user-select: none;
+  font-size: 9px; color: var(--faint); padding: 0 3px;
+}
+.qnav.on { display: inline; }
+.qnav:hover { color: var(--fg); }
 .tbtn {
   font: 12.5px var(--sans); padding: 5px 10px; border: 1px solid var(--border);
   border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
@@ -617,3 +624,14 @@ mark.hl.cur { background: #f59e0b; box-shadow: 0 0 0 2px #f59e0b; }
 }
 #newbadge.on { display: inline-flex; }
 #newbadge:hover { opacity: 0.9; }
+
+/* #103 the follow-state chip: visible whenever the page is pinned to the live tail,
+   so a page that moves by itself is never a mystery. Pure indicator — scrolling up
+   is how you unpin, so it takes no clicks. */
+#livechip {
+  position: fixed; right: 14px; bottom: 14px; z-index: 39;
+  font: 11px var(--sans); color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 10px; opacity: 0; pointer-events: none; transition: opacity 0.15s;
+}
+body.following #livechip { opacity: 0.85; }
