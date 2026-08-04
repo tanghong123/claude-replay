@@ -449,7 +449,7 @@ fn explicit_resumable(
 /// plus every child transcript under its `<stem>/subagents/` dir — the signal that the
 /// session is actively working even when the root is quiet (a sub-agent holds the turn).
 /// `None` when nothing is readable.
-fn latest_tree_activity(transcript: &Path) -> Option<std::time::SystemTime> {
+pub fn latest_tree_activity(transcript: &Path) -> Option<std::time::SystemTime> {
     let mut latest = std::fs::metadata(transcript)
         .and_then(|m| m.modified())
         .ok();
@@ -496,7 +496,9 @@ fn handoff_log(config: &Config, msg: &str) {
 
 const INFLIGHT_TAIL_BYTES: u64 = 262_144;
 
-fn inflight_tool_in_tail(transcript: &Path) -> bool {
+/// Does the transcript tail hold a `tool_use` with no matching `tool_result`? A session
+/// mid-tool-call is busy by construction, even when every mtime in its tree is stale (#82).
+pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(transcript) else {
         return false;
