@@ -23,9 +23,8 @@ Two append-only streams per `<presentation, session>`, written only at a commit:
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
 meta      a StreamHeader, then one MetaRecord per committing line — a flat list of optional fields
-            · accumulate — what those committed blocks changed  (every record composes)
-            · override   — fold state as of replay_from          (read only where you land)
-            · indicator  — (committed_id, replay_from): resumable here
+            Part I  session facts   — counters + gauges; on every record
+            Part II resumption      — offset, clocks, unjoined creates; iff resumable
 ```
 
 A block commits when a later turn begins and the prompt queue is empty. There is no periodic
@@ -104,200 +103,63 @@ is `replay_from`.
 One record per commit: **a flat list of optional fields.** Absent always means "nothing from
 this commit". Fields belong to one of three classes, and the classes are the whole format.
 
-**Every field is optional, including the indicator. Absent means "no update".** The class fixes
-what an update *is*:
+**The record has two parts, split by who reads it.**
+
+| part | present | read by | rule |
+|---|---|---|---|
+| **I — session facts** | every record | *both* consumers | flat optional fields; **absent = no update**, and the field's class fixes what an update is |
+| **II — resumption** | **iff** this commit is a resume point (I5) | the resume only | one block, all fields current when present |
+
+Part I's classes are the counter/gauge distinction:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — scalars `+`, lists append, **maps sum per key** | `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops` |
-| **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `span`, `task_pending` |
-| **indicator** | not a resume point | — | `commit: Commit` |
+| **counter** (accumulate) | added nothing | fold of every present value in records ≤ `n` — scalars `+`, lists append, **maps sum per key** | `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops` |
+| **gauge** (override) | unchanged | last present value in records ≤ `n` | `cwd`, `span` |
 
 ```rust
 struct MetaRecord {
-    // accumulate — each field holds ONLY THIS COMMIT'S contribution, never the running
-    // total. A drain normally commits one turn, so the two Vecs below are normally ONE
-    // element (occasionally more: a `last_skill`-pinned drain, or a multi-turn line).
-    turns:      Option<usize>,
-    tools:      Option<usize>,
-    agents:     Vec<AgentEvent>,               // sub-agents arriving/departing here, IN ORDER
-    user_times: Vec<Option<EpochSeconds>>,     // timestamps of the turns THIS commit stamped
-    tokens:     BTreeMap<Model, TokenCounts>,  // per-MODEL token increments (§7)
-    extra:      BTreeMap<String, u64>,         // agent-specific COUNTERS; a repeated key ADDS
-    task_ops:   Vec<TaskOp>,                   // the op-log — NOT the task list
+    // ── Part I — session facts. Every record. A metadata reader needs ONLY this.
+    turns:      Option<usize>,                        // counter
+    tools:      Option<usize>,                        // counter
+    agents:     Vec<AgentEvent>,                      // counter: ordered log, appended
+    user_times: Vec<Option<EpochSeconds>>,            // counter: the turns THIS commit stamped
+    tokens:     BTreeMap<Model, TokenCounts>,         // counter: per-MODEL increments (§7)
+    extra:      BTreeMap<String, u64>,                // counter: a repeated key ADDS
+    task_ops:   Vec<TaskOp>,                          // counter: the op-log, NOT the task list
+    cwd:        Option<String>,                       // gauge
+    span:       Option<(EpochSeconds, EpochSeconds)>, // gauge: session min/max
 
-    // indicator — present iff §3's partition exists at this drain (I5)
-    commit:     Option<Commit>,
-
-    // override — written when the value differs from the last one written (R7)
-    cwd:        Option<String>,
-    prev_ts:    Option<Option<EpochSeconds>>,
-    pending_ts: Option<Option<EpochSeconds>>,
-    span:       Option<(EpochSeconds, EpochSeconds)>,  // session min/max; `duration_secs` derives
-    task_pending: Option<Vec<(String, TaskItem)>>,     // creates whose id has not arrived (0-1 typically)
+    // ── Part II — resumption. Its PRESENCE is the resume-point indicator (I5); there is no
+    //    separate flag. A metadata reader skips it entirely.
+    resume:     Option<Resume>,
 }
 
-struct Commit {
-    id:          usize,        // committed-block count after this drain
-    replay_from: ByteOffset,   // §3's partition offset
-    window:      u32,          // CRC32 of the 64 KiB ending at replay_from — see below
-}
-
-enum AgentEvent {
-    Spawned(Spawn),
-    Finished(AgentId),   // marks every spawn with that id finished — see the ordering note
-}
-
-struct Spawn {                  // everything known about one sub-agent at spawn time
-    tool_use_id: String,        // the key a completion may arrive under, before agent_id exists
-    agent_id:    String,        // empty until the spawn's result lands
-    agent_type:  String,
-    description: String,
-    status:      AgentStatus,   // a spawn can be born terminal
-}
-
-// Every layer's state is PLAIN DATA declared here, in the engine. These are data shapes, not
-// layer types: the engine gains no dependency on `present` or a frontend, and each layer maps
-// its own state to and from its shape. Nothing in the format is untyped.
-
-struct TokenCounts { input: u64, cache_creation: u64, cache_read: u64, output: u64 }
-
-struct StreamHeader {     // record 0, written once
-    anchor:   u32,        // CRC32 of the transcript's first line (identity, not trust)
-    versions: Versions,   // format, fold-logic, build; HTML adds flavor
+struct Resume {
+    id:           usize,                  // committed-block count after this drain
+    replay_from:  ByteOffset,             // §3's partition offset
+    window:       u32,                    // CRC32 of the 64 KiB ending at replay_from
+    prev_ts:      Option<EpochSeconds>,   // the thinking clock's zero
+    pending_ts:   Option<EpochSeconds>,   // stamps turns authored on the resume's first line
+    task_pending: Vec<(String, TaskItem)>,// creates whose id has not arrived (0-1 typically)
 }
 ```
 
-**One ordered list of arrivals and departures, serving both consumers.** `SessionMeta.children`
-(the menu view) and the `agent_ids` resolution table were separate fields carrying the same
-`(agent_id, agent_type)` twice. They are one thing:
+**Why the split earns its keep — it is not just tidiness.**
 
-- **Menu view:** the `Spawned` events with a non-empty `agent_id`; `running` = `!status.is_terminal()`
-  and not since `Finished`. Derived, not stored — a spawn can be born terminal, which is why
-  `status` is in the record.
-- **Resolution table:** every `Spawned` under **both** keys, `tool_use_id` and `agent_id`. Two
-  keys because the id arrives late: a completion names whichever the agent emitted, and a miss
-  degrades to `AgentDone { agent_type: "" }` (`replay.rs:359-361`). A spawn whose `agent_id`
-  never arrives is not a child but must still resolve — which is why the consumers filter the one
-  list differently rather than sharing a pre-filtered one.
-
-**The order is load-bearing, so this is one list and not two.** `Finished(id)` clears every spawn
-carrying that id, reproducing `SessionMeta::push`'s linear scan (`session.rs:300-302`), which
-keeps duplicate ids deliberately (`session.rs:297-303`). Splitting into parallel `spawns` and
-`spawns_done` lists would discard the interleaving and is **wrong**: for `Spawned(X)`,
-`Finished(X)`, `Spawned(X)` in one record, block order yields `[finished, running]`, while
-applying all spawns then all dones yields `[finished, finished]`. Duplicate ids are exactly the
-case `SessionMeta` goes out of its way to preserve, so this is not hypothetical.
-
-That is the whole reason for an event vocabulary: not to be general, but to keep order. Two
-variants, no ordinals — a `Finished` matches by id, because it can refer to a spawn appended many
-records earlier and a record cannot see the accumulated list.
-
-Snapshotting the whole list as an override field would need no ordering at all, and at observed
-sizes is free: 16 of 873 local transcripts have sub-agents, at most 5 each — 2.9 KiB against
-1.0 KiB. Rejected because it is O(agents²): a fan-out workflow spawning 100+ pays ~1 MB, 1000
-pays ~100 MB. The same question applies to `tasks`, which **is** an override snapshot; it is
-bounded by open tasks rather than session history, so it stays — but if that ceases to hold it
-belongs here for the same reason.
-
-**`prev_ts` / `pending_ts` semantics.** Two different clocks, both `Option` because a line may
-carry no timestamp.
-- **`pending_ts`** is the timestamp of the line **currently being folded**, set at that line's
-  `LineStart`. It is what stamps the user turns that line authors — hence a turn's timestamp is
-  its own line's.
-- **`prev_ts`** is the timestamp of the **previous event line of any kind** — the thinking
-  clock's zero (`replay.rs:105-108`). A `Thinking` block's `duration_secs` is *its* timestamp
-  minus this (`replay.rs:215-219`), so a burst right after the turn's own text measures from
-  that text rather than from the last tool result.
-
-**Neither is session metadata, and a metadata reader ignores both.** They appear nowhere outside
-`replay.rs` — no frontend reads them. They are *fold-continuation* state, and what they produce
-is already carried elsewhere: `pending_ts` produces `user_times` (its own record field), and
-`prev_ts` produces `Thinking.duration_secs`, which is **block content** in the content stream.
-So a consumer that only wants the session's facts never touches them.
-
-That is worth stating because **the record serves two consumers with different needs**:
-
-| consumer | reads | example |
-|---|---|---|
-| **resume** (the cache) | everything, including fold-continuation state | re-seeds the fold, then re-reads from `replay_from` |
-| **metadata reader** | the session facts only — `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops`, `cwd`, `span` | a machine-wide monitor (#98) that never folds a transcript |
-
-The fold-continuation fields — `prev_ts`, `pending_ts`, `task_pending` — exist solely for the
-first. A resume restores them into the replayer before re-reading; without `pending_ts` a turn
-authored on the resume's first line loses its timestamp, and without `prev_ts` a `Thinking` on
-that line renders `duration_secs: None` where a cold fold gives `Some`. A monitor reading the
-same files skips all three and is not wrong to.
-
-**Corollary for #98:** a metadata reader needs no fold, no adapter and no transcript — only the
-meta stream. That is the property that makes a machine-wide monitor cheap, and it survives only
-as long as every displayed fact stays in the record rather than being recomputed from blocks.
-
-**`user_times` semantics.** *Folded across records*, one entry per **user turn**, in turn
-order: `user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
-stream — not per line, not per block. **In any single record it is the delta only** — the turns
-that commit stamped, normally one entry. A 217-turn session emits ~217 one-element deltas
-(≈2 KiB in total), never 217 copies of a growing array. `stamp_user_turns` (`replay.rs:679-691`) pushes one
-entry as each turn-opening block is stamped, so `user_times.len()` tracks `SessionMeta.turns`
-exactly, and HTML indexes it with `EmitState.seen_turns` while rendering.
-
-`Option` because a turn can be **unstamped**: the value pushed is the fold's `pending_ts`, the
-timestamp of the line currently being read, which is `None` when that line carried none. It is
-never a "no turn here" hole — every user turn contributes an entry, some without a clock.
-
-As a `+=` field the delta carries only the turns *this* commit stamped, appended in order, so
-folding through record `n` reproduces the prefix exactly. That is also why restore truncates
-it to `committed_meta.turns` (§6.3): at `replay_from` precisely the committed turns are
-stamped, and the re-read re-stamps the open ones.
-
-**The writer's obligation, and the only way to get this wrong.** An override value is the fold's
-state as of *that record's* `replay_from`, and every record has a different `replay_from`. So the
-writer must emit an override field on any record where its value differs from the last value it
-wrote — otherwise "last present ≤ `n`" restores something measured at an earlier offset. This is
-R7 applied to the override class: `cwd` is written once, `metrics` and the timestamps change at
-every commit and so appear at every commit. The rule is uniform; the frequencies differ.
-
-**Why `commit` is one field and not three.** `committed_id` is used only to align against
-`|committed|` and to name the record a load stops at; both apply solely to resume points, so a
-record without an offset never needs it. `window` is a checksum **of** `replay_from`'s bytes —
-meaningful only alongside that exact offset, and "absent = unchanged" would be nonsense for it
-(`replay_from` strictly increases, so it always changes). All three are one fact — "resumable
-here" — not an invariant to maintain across fields.
-
-**Why CRC32 and not a cryptographic hash.** This detects *accidental* divergence — a
-compaction, a truncation, a different file under the same name — never tampering, and it
-cannot be a trust boundary in any case: anything able to rewrite the transcript can rewrite the
-cache beside it. A cryptographic digest would advertise a guarantee this design does not have,
-and would pull a crypto dependency into a crate that has three. CRC32 is also 13× cheaper
-(measured on 64 KiB: 1.6 µs vs 21.7 µs for sha256 — 0.35 ms vs 4.7 ms across a 217-commit
-session, 3 ms vs 43 ms at 2000), though speed is the lesser reason: neither figure was a
-budget problem. A ~2⁻³² false-accept chance is acceptable because the window is one of three
-independent checks (§6.4) — length, first-line anchor, window — and the anchor alone catches a
-different file.
-
-**Three lifetimes, three homes.** Conflating them wastes space, and one case is asymptotically
-wrong:
-
-| lifetime | fields | home |
-|---|---|---|
-| constant per session | `anchor`, `versions` | **header**, once |
-| accumulating | `turns`, `tools`, `agents`, `user_times` | **accumulate class** |
-| as-of-`replay_from` | `cwd`, timestamps, `metrics`, `tasks` | **override class** |
-
-`user_times` is the case that matters. It is append-only and grows with turns, so writing it
-whole per commit costs O(turns²) in bytes *and* serialization, and makes a load O(turns²). As an
-accumulate field it is O(turns): folding through record `n` yields exactly its as-of-`replay_from`
-value, because at that offset precisely the committed turns are stamped.
-
-Measured at ~217 commits (the mean over 131 local transcripts): **253 KiB → 55 KiB** per session,
-O(turns²) → O(turns). At 2000 turns, 15.9 MiB → 504 KiB.
-
-**The meta stream is deliberately self-sufficient, not derived from the content stream.** The
-TUI's content stream (JSON `Block`s) could yield `turns`/`tools`/`agents` by scanning at load —
-but HTML's (rendered wire records) cannot, and R5 forbids metadata reconstruction that depends
-on the `BV` choice. `user_times` is in no content stream at all.
-
-The record names no `BV`, so restore is one implementation with no type parameter (R5).
+- **The two consumers become a type fact.** A monitor deserialises Part I and never sees Part
+  II; that the fold clocks are invisible to it is structural, not a convention to remember.
+- **I5 stops needing an indicator field.** "Resumable here" *is* `resume.is_some()`. The
+  earlier shape carried a `commit` tuple plus three loose override fields that had to be
+  written alongside it — an obligation nothing enforced.
+- **It deletes the one way to get the override class wrong.** Part I's gauges still read as
+  "last present value ≤ `n`", but `prev_ts`/`pending_ts`/`task_pending` no longer do: they
+  ride Part II, so a resume reads them from the record it lands on and never walks back for a
+  value measured at a different `replay_from`. The failure mode that rule guarded against
+  cannot arise.
+- **It costs nothing.** Part II is ~50 bytes and was already written on every resumable commit
+  (`commit` alone was), and `prev_ts`/`pending_ts` change on nearly every line, so they were
+  being written anyway.
 
 **The class *is* the counter/gauge distinction, and a repeated key ADDS.** If two records carry
 the same `extra` key, the values **sum** — `extra` is a counter bag, not a snapshot. That is
@@ -412,11 +274,11 @@ The record still names no `BV`, so restore remains one implementation with no ty
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I1 | `n = max { c.id : r.commit == Some(c) ∧ c.id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
-| I2 | One record per committing drain (`finalize_completed` runs once per line, `replay.rs:412`, so a multi-turn line commits several blocks under ONE record). `commit` ids are strictly increasing and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.1 |
+| I1 | `n = max { r.resume.id : r.resume.is_some() ∧ r.resume.id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
+| I2 | One record per committing drain (`finalize_completed` runs once per line, `replay.rs:412`, so a multi-turn line commits several blocks under ONE record). `resume.id`s are strictly increasing and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.1 |
 | I3 | `replay_meta(records, n) == SessionMeta::build(committed[..n])`. | oracle test |
 | I4 | For every record with `commit`, each override field's value at that record — its last present value ≤ it — equals the fold's value at the start of that record's `replay_from` line. Uniform: every override field is engine fold state (§4). | §6.1; double-apply test |
-| I5 | `commit.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
+| I5 | `resume.is_some()` ⟺ the §3 partition exists at this commit: no line authored both a committed and an uncommitted block. Then `replay_from` is that partition's offset. | `line_boundary()` |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first new commit. | `debug_assert!`; violation ⇒ cold rebuild |
 | I8 | Reuse only if §6.4 holds. | §6.4 |
@@ -451,10 +313,12 @@ on advance_at(offset, line):                       # builder
         deque.prune(entries with logical < replayer.base())
         if deque.front()?.logical == replayer.base():          # line_boundary — I5
             e ← deque.front()
-            rec.commit ← Some(Commit { id: |committed|, replay_from: e.offset,
-                                       window: crc32(src @ e.offset) })
-            rec.set_changed_override_fields(e)     # only those differing from the last written
-        writer.enrich_and_append(rec)              # present/store filled by their own layers
+            rec.resume ← Some(Resume {         # Part II — one block, all fields current
+                id: |committed|, replay_from: e.offset, window: crc32(src @ e.offset),
+                prev_ts: e.prev_ts, pending_ts: e.pending_ts,
+                task_pending: task_fold.pending() })
+        rec.set_changed_gauges(e)                  # Part I gauges: only what changed (R7)
+        writer.append(rec)                         # no layer to enrich: the record is complete
     metrics.push(line)                             # last — metrics stays as-of-line-start
 ```
 
@@ -490,7 +354,7 @@ load(dir):
     committed ← bv_loader(dir)                     # frontend-specific: the only such piece
     records   ← meta_loader(dir)                   # shared; discards a torn trailing record
     n ← per I1                                     # max over records whose `commit` is present
-    if n is None or !valid(header, records[n].commit): return None   # cold rebuild
+    if n is None or !valid(header, records[n].resume): return None   # cold rebuild
     truncate(content, n); truncate(meta, n); store.truncate(n)  # I6
     return (committed[..n], records[..=n])
 ```
@@ -507,10 +371,14 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc ← with_store(adapter, store)
     acc.committed      ← committed[..n]
     acc.committed_meta ← replay_meta(records, n)             # plain accumulate
-    ov ← override_at(records, n)               # last present value of each override field
-    acc.cwd ← ov.cwd; acc.metrics.restore_state(ov.metrics); acc.task_fold.restore_state(ov.tasks)
-    acc.replayer.restore_state(ov.prev_ts, ov.pending_ts)     # base = stamped = 0, out = []
-    return { acc, committed_id: n, replay_from: rec_n.commit.replay_from }
+    # Part I — gauges walk back to their last present value; counters are already folded above.
+    acc.cwd ← gauge_at(records, n, .cwd)
+    acc.metrics.reseed(folded.tokens, folded.extra, gauge_at(records, n, .span))
+    # Part II — read from the landing record ALONE; no walking back (§4).
+    r ← records[n].resume
+    acc.task_fold.restore(folded.task_ops, r.task_pending)
+    acc.replayer.reseed(r.prev_ts, r.pending_ts)              # base = stamped = 0, out = []
+    return { acc, committed_id: n, replay_from: r.replay_from }
     # no presentation state to route: the frontend derives its numbering cursor from the
     # committed records it just loaded, and the live counters start fresh (§4).
 
@@ -535,10 +403,10 @@ return two vectors; the persistence layer performs the `set_len`s and is the onl
 ### 6.4 Validate
 
 ```
-valid(hdr, c: Commit):
-    len(src) ≥ c.replay_from
+valid(hdr, r: Resume):
+    len(src) ≥ r.replay_from
   ∧ first_line(src) == hdr.anchor                  # checked once, not per record
-  ∧ crc32(src[c.replay_from-64KiB .. c.replay_from]) == c.window
+  ∧ crc32(src[r.replay_from-64KiB .. r.replay_from]) == r.window
   ∧ hdr.versions == current
 ```
 
