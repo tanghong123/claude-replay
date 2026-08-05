@@ -126,7 +126,7 @@ struct MetaRecord {
     user_times: Vec<Option<EpochSeconds>>,            // counter: the turns THIS commit stamped
     tokens:     BTreeMap<Model, TokenCounts>,         // counter: per-MODEL increments (§7)
     extra:      BTreeMap<String, u64>,                // counter: a repeated key ADDS
-    task_ops:   Vec<TaskOp>,                          // counter: the op-log, NOT the task list
+    task_ops:   Vec<TaskOp>,                          // counter: the op-log — incl. Resolve
     cwd:        Option<String>,                       // gauge
     span:       Option<(EpochSeconds, EpochSeconds)>, // gauge: session min/max
 
@@ -136,12 +136,22 @@ struct MetaRecord {
 }
 
 struct Resume {
-    id:           usize,                  // committed-block count after this drain
-    replay_from:  ByteOffset,             // §3's partition offset
-    window:       u32,                    // CRC32 of the 64 KiB ending at replay_from
-    prev_ts:      Option<EpochSeconds>,   // the thinking clock's zero
-    pending_ts:   Option<EpochSeconds>,   // stamps turns authored on the resume's first line
-    task_pending: Vec<(String, TaskItem)>,// creates whose id has not arrived (0-1 typically)
+    id:          usize,                  // committed-block count after this drain
+    replay_from: ByteOffset,             // §3's partition offset
+    window:      u32,                    // CRC32 of the 64 KiB ending at replay_from
+    prev_ts:     Option<EpochSeconds>,   // the thinking clock's zero
+    pending_ts:  Option<EpochSeconds>,   // stamps turns authored on the resume's first line
+}
+
+/// **`TaskOp` needs a third variant.** `Create`/`Update` alone are not a complete log: a
+/// create's id arrives in the *tool result* ("Created task #12: …"), which `on_tool_result`
+/// parses (`tasks.rs:186-205`) — transcript data, not an op. Replaying only Create/Update
+/// therefore leaves every create stranded in `pending` and rebuilds an EMPTY list, since
+/// `Update{task_id}` targets items that never landed. Recording the resolution closes it:
+enum TaskOp {
+    Create { tool_use_id: String, /* subject, description, active_form, blocked_by */ },
+    Update { task_id: String,     /* the present fields only */ },
+    Resolve { tool_use_id: String, id: Option<String> },  // Some ⇒ joined; None ⇒ create failed
 }
 ```
 
@@ -153,7 +163,7 @@ struct Resume {
   earlier shape carried a `commit` tuple plus three loose override fields that had to be
   written alongside it — an obligation nothing enforced.
 - **It deletes the one way to get the override class wrong.** Part I's gauges still read as
-  "last present value ≤ `n`", but `prev_ts`/`pending_ts`/`task_pending` no longer do: they
+  "last present value ≤ `n`", but `prev_ts`/`pending_ts` no longer do: they
   ride Part II, so a resume reads them from the record it lands on and never walks back for a
   value measured at a different `replay_from`. The failure mode that rule guarded against
   cannot arise.
@@ -183,10 +193,17 @@ third time. A `TaskList` is a **full snapshot** (`items: Vec<TaskItem>`, each ca
 description, status and dependency edges), so writing it whenever it changes is O(changes ×
 tasks): this repo's own queue is **96 tasks / 227 KiB**, and a few hundred updates over a
 session would be tens of megabytes. The delta form already exists and is what `TaskFold`
-consumes — `TaskOp::{Create, Update}` — so the record carries **ops**, typically 0–2 per commit,
-and a load replays them exactly as the live fold does. Only `task_pending` stays override: the
-creates whose id has not yet arrived, normally 0–1 entries, and not derivable after the fact
-because the join reads a tool result that may lie below `replay_from`.
+consumes — so the record carries **ops**, typically 0–2 per commit, and a load replays them
+exactly as the live fold does.
+
+**`pending` is derived, not persisted — once the log is complete.** An earlier draft carried
+`task_pending` in Part II, on the grounds that the create→id join reads a tool result which may
+lie below `replay_from`. True of the *result*, but the fix is to record the **resolution** as an
+op (`TaskOp::Resolve`) rather than to persist the derived state. That closes a real hole: with
+only `Create`/`Update`, replay leaves every create stranded in `pending` and reconstructs an
+**empty** list — broken for the resume *and* for a metadata reader, which has no transcript to
+join from at all. With `Resolve`, the op-log is self-contained: `pending` is exactly the creates
+with no matching resolution, so it falls out of the replay and Part II loses a field.
 
 **Tokens are per-MODEL, and that fixes a shipped bug.** The accumulator keeps one `model:
 String` (last-write-wins) with flat counters, and `finish()` prices *every* token at that one
@@ -315,8 +332,7 @@ on advance_at(offset, line):                       # builder
             e ← deque.front()
             rec.resume ← Some(Resume {         # Part II — one block, all fields current
                 id: |committed|, replay_from: e.offset, window: crc32(src @ e.offset),
-                prev_ts: e.prev_ts, pending_ts: e.pending_ts,
-                task_pending: task_fold.pending() })
+                prev_ts: e.prev_ts, pending_ts: e.pending_ts })
         rec.set_changed_gauges(e)                  # Part I gauges: only what changed (R7)
         writer.append(rec)                         # no layer to enrich: the record is complete
     metrics.push(line)                             # last — metrics stays as-of-line-start
@@ -376,7 +392,7 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc.metrics.reseed(folded.tokens, folded.extra, gauge_at(records, n, .span))
     # Part II — read from the landing record ALONE; no walking back (§4).
     r ← records[n].resume
-    acc.task_fold.restore(folded.task_ops, r.task_pending)
+    acc.task_fold.replay(folded.task_ops)      # list AND pending both fall out (§4)
     acc.replayer.reseed(r.prev_ts, r.pending_ts)              # base = stamped = 0, out = []
     return { acc, committed_id: n, replay_from: r.replay_from }
     # no presentation state to route: the frontend derives its numbering cursor from the
@@ -483,7 +499,8 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | `engine/meta_stream.rs` | reshape to §4's flat record + `StreamHeader`; DELETE `emit_batch`, `MetaDelta` and the unanchored/supersede semantics (a0acaf4/8b4f4cf) |
 | `engine/replay.rs` | DELETE the current meta wiring (`meta_out`, `committed_emitted`, `last_provisional`, `drain_meta`); add four `pub(crate)` getters + `restore_state` seeding — the replayer returns to being purely the block fold |
 | `engine/builder.rs` | the turn-boundary deque + record authorship at the drain (§6.1), `Message::can_open_turn`, `restore` (§6.3), `committed_meta()` |
-| `engine/tasks.rs`, `engine/adapter.rs` | `save_state`/`restore_state`; `TimeSpan` serde |
+| `engine/tasks.rs` | `TaskOp::Resolve` emitted where `on_tool_result` joins (`tasks.rs:186-205`), so the op-log is self-contained; `TaskFold::replay(ops)` |
+| `engine/adapter.rs` | the typed metrics seam (§7); `TimeSpan` exposes its endpoints |
 | `engine/reader.rs`, `engine/follow.rs` | `open_at_offset`, `FollowParser::resume`; RETIRE `Position`/`open_at`/`tell` — dead code (`reader.rs:52-54` names this feature as its consumer) whose model is superseded: it re-hashes `[0, offset)` on resume, and its `DefaultHasher` is not stable across builds, unusable in a persisted format |
 | `present/cache/` | stream writer/reader, `Admission`, `shared_insert_or_get`, `--no-cache` |
 | `present/cache/shared.rs` | delete `Body::Hibernated`; `restore` yields `Body::Live` |
