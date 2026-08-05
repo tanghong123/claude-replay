@@ -31,7 +31,13 @@ mod shared;
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 use crate::engine::BlockStore;
 #[allow(unused_imports)]
+pub mod admit;
+pub mod lock;
+pub mod stream;
+pub use admit::{admit, Admission, ColdReason, Denial, Origin, Presentation, Unavailable};
+pub use lock::Holder;
 pub use shared::{PersistentStore, PullDelta, SharedSession, ViewDelta};
+pub use stream::{MetaReader, MetaWriter};
 // The pull protocol moved to [`crate::pull`] (#87); these aliases keep the old paths.
 pub use crate::pull::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
