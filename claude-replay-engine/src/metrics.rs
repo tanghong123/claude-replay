@@ -161,20 +161,73 @@ impl TimeSpan {
 
 /// Rough USD/1M-token (input, output) list prices for cost estimation.
 /// Best-effort — rates are approximate and drift over time.
+/// `(input, output)` USD per million tokens, from the official table
+/// (<https://platform.claude.com/docs/en/about-claude/pricing>, checked 2026-08-05).
+///
+/// **Why this is code and not configuration.** Rates change, and a table baked into a binary
+/// goes stale — which is exactly what happened here: every `opus` was priced at the retired
+/// $15/$75 long after Opus 4.5+ moved to $5/$25, inflating real estimates ~3×. But moving the
+/// numbers to a config file would not have caught that, because nothing would have told anyone
+/// the file was wrong. Two things actually help, and both are here: the estimate is marked
+/// `≥` when any model is unpriced (so a NEW model is visibly missing rather than silently
+/// free), and `price_tests` pins every rate against the published table, so a stale entry is a
+/// failing test at the next touch rather than a wrong number in a footer.
+///
+/// A user-editable file would add a way for the number to be wrong that no test can see. If
+/// rates ever move faster than releases, the shape to reach for is a *shipped* data file
+/// (updated by upgrade, still covered by those tests) — not user configuration.
+///
+/// **Order matters**: the deprecated Opus 4/4.1 cost 3× what Opus 4.5+ do, so the specific
+/// matches must precede the family fallback. Getting this wrong is not cosmetic — a table that
+/// priced every `opus` at the retired $15/$75 rate inflated a real session's estimate ~3×.
 fn price(model: &str) -> Option<(f64, f64)> {
     let m = model.to_lowercase();
-    if m.contains("opus") {
-        Some((15.0, 75.0))
-    } else if m.contains("sonnet") {
-        Some((3.0, 15.0))
-    } else if m.contains("haiku") {
-        Some((1.0, 5.0))
-    } else if m.contains("codex") || m.contains("gpt-5") || m.contains("gpt5") {
-        // OpenAI GPT-5 family (Codex uses these), best-effort list price.
-        Some((1.25, 10.0))
-    } else {
-        None
+    // ── Anthropic ──
+    if m.contains("fable") || m.contains("mythos") {
+        return Some((10.0, 50.0));
     }
+    if m.contains("opus") {
+        // Opus 4 and 4.1 are retired/deprecated and were priced 3× the current family.
+        let legacy = m.contains("opus-4-1") || m.contains("opus-4.1") || is_bare_opus_4(&m);
+        return Some(if legacy { (15.0, 75.0) } else { (5.0, 25.0) });
+    }
+    if m.contains("sonnet") {
+        // Sonnet 5 runs introductory pricing through 2026-08-31, then $3/$15 like Sonnet 4.x.
+        // Not date-aware: a transcript read after the change prices its Sonnet 5 turns at the
+        // introductory rate. Revisit when that matters more than the added plumbing.
+        return Some(if m.contains("sonnet-5") {
+            (2.0, 10.0)
+        } else {
+            (3.0, 15.0)
+        });
+    }
+    if m.contains("haiku") {
+        return Some(if m.contains("haiku-3") {
+            (0.80, 4.0)
+        } else {
+            (1.0, 5.0)
+        });
+    }
+    // ── OpenAI (Codex) — best-effort list price ──
+    if m.contains("codex") || m.contains("gpt-5") || m.contains("gpt5") {
+        return Some((1.25, 10.0));
+    }
+    None
+}
+
+/// Is this the retired original `claude-opus-4`, as opposed to `claude-opus-4-5` and later?
+///
+/// The two are only distinguishable by what follows: a MINOR VERSION is one digit (`-4-8`)
+/// while a RELEASE DATE is eight (`-4-20250514`). A naive `contains("opus-4")` prices every
+/// 4.x at the retired rate — 3× too high — and a naive "next char is `-`" cannot tell the dated
+/// original from a minor version at all.
+fn is_bare_opus_4(m: &str) -> bool {
+    let Some(rest) = m.split("opus-4").nth(1) else {
+        return false;
+    };
+    let tail = rest.trim_start_matches(['-', '.']);
+    // Nothing after it, or a date-length digit run ⇒ the original.
+    rest.is_empty() || tail.chars().take_while(char::is_ascii_digit).count() >= 4
 }
 
 /// Best-effort USD cost from a model name and its token tiers. Cache writes bill
@@ -320,6 +373,47 @@ impl Metrics {
             human_tokens(self.output_tokens),
             human_dur(self.duration_secs),
         )
+    }
+}
+
+#[cfg(test)]
+mod price_tests {
+    use super::*;
+
+    /// Every rate against the official table (checked 2026-08-05). Pins the version-specific
+    /// splits, which are where a family-only match goes wrong: Opus 4/4.1 cost 3× Opus 4.5+,
+    /// and matching `opus-4` naively would catch every 4.x.
+    #[test]
+    fn prices_match_the_published_table() {
+        for (model, want) in [
+            ("claude-fable-5", (10.0, 50.0)),
+            ("claude-mythos-5", (10.0, 50.0)),
+            ("claude-opus-5", (5.0, 25.0)),
+            ("claude-opus-4-8", (5.0, 25.0)),
+            ("claude-opus-4-5", (5.0, 25.0)),
+            ("claude-opus-4-1-20250805", (15.0, 75.0)),
+            ("claude-opus-4-20250514", (15.0, 75.0)),
+            ("claude-sonnet-5", (2.0, 10.0)),
+            ("claude-sonnet-4-6", (3.0, 15.0)),
+            ("claude-haiku-4-5-20251001", (1.0, 5.0)),
+            ("claude-haiku-3-5", (0.80, 4.0)),
+        ] {
+            assert_eq!(price(model), Some(want), "{model}");
+        }
+        assert_eq!(price("some-unknown-model"), None, "unknown stays unpriced");
+    }
+
+    /// `claude-opus-4-8` must NOT be read as the retired `claude-opus-4` — a substring match
+    /// would triple its price.
+    #[test]
+    fn versioned_opus_is_not_the_retired_one() {
+        assert!(!is_bare_opus_4("claude-opus-4-8"));
+        assert!(!is_bare_opus_4("claude-opus-4-5"));
+        assert!(is_bare_opus_4("claude-opus-4"));
+        assert!(
+            is_bare_opus_4("claude-opus-4-20250514"),
+            "a DATE, not a minor version"
+        );
     }
 }
 

@@ -149,8 +149,8 @@ mod tests {
         let all_at_last = estimate_cost("claude-haiku-4-5-20251001", 0, 0, 0, 1_000_010);
         let (got, wrong) = (m.cost_usd.unwrap(), all_at_last.unwrap());
         assert!(
-            got > wrong * 5.0,
-            "got ${got:.4}, last-model pricing gave ${wrong:.4}"
+            got > wrong * 4.0,
+            "the Opus share must dominate: got ${got:.4}, last-model pricing gave ${wrong:.4}"
         );
         // And it equals the sum of the two priced separately.
         let want = estimate_cost("claude-opus-4-8", 0, 0, 0, 1_000_000).unwrap()
@@ -255,8 +255,10 @@ mod tests {
         assert_eq!(human_tokens(2_728_200_000), "2.7B");
         // Cost prices reads (0.1×) and writes (1.25×) on top of new input.
         let c = m.cost_usd.unwrap();
+        // claude-opus-4-8 is $5/$25 per MTok — NOT the retired Opus 4/4.1 $15/$75 this test
+        // previously assumed, which is the stale-table bug the published rates exposed.
         let expected =
-            (1500.0 + 50000.0 * 1.25 + 5_000_000.0 * 0.10) / 1e6 * 15.0 + 10000.0 / 1e6 * 75.0;
+            (1500.0 + 50000.0 * 1.25 + 5_000_000.0 * 0.10) / 1e6 * 5.0 + 10000.0 / 1e6 * 25.0;
         assert!((c - expected).abs() < 1e-9, "cost {c} vs {expected}");
     }
 }
