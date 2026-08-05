@@ -7,6 +7,7 @@
 use claude_replay_agents::{ClaudeAdapter, CodexAdapter};
 use claude_replay_core::{parse_session, parse_session_as, parse_session_enriched_as, Agent};
 use claude_replay_engine::engine::tier_b::{TierBSession, TierBStore};
+use claude_replay_engine::engine::MAX_PINNED_TURNS;
 use claude_replay_engine::model::{AgentStatus, Block};
 use claude_replay_engine::{FollowParser, SessionAccumulator};
 use std::io::Write;
@@ -308,6 +309,89 @@ fn queued_marker_collapses_on_every_pop_and_opless_delivery() {
     assert!(
         d.committed_len() > 0,
         "queue drained ⇒ the durability frontier advanced past the delivered turns"
+    );
+}
+
+/// **The durability frontier cannot freeze.** Every back-reference that holds blocks resident is
+/// bounded, and this is the test that says so — the failure it guards against is silent, since a
+/// frozen frontier still renders a perfectly correct session, just one that can never be resumed
+/// past a certain byte. Measured before the bound: 65% of a 107 MB transcript, for 219 turns.
+///
+/// Two pins, two bounds:
+/// - a `Skill` in a COMPLETED turn — a body can no longer nest across a turn, so nothing is held
+/// - a pending `⧗ queued:` marker whose pickup never arrives — held for at most
+///   `MAX_PINNED_TURNS`, then released
+#[test]
+fn the_durability_frontier_cannot_be_pinned_forever() {
+    let user = |t: &str| {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:00Z"}}"#
+        )
+    };
+    let asst = |t: &str| {
+        format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{t}"}}]}},"timestamp":"2026-07-26T10:00:01Z"}}"#
+        )
+    };
+    let drive = |lines: &[String]| {
+        let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+        let mut off: claude_replay_engine::model::ByteOffset = 0;
+        for l in lines {
+            acc.advance_at(off, l);
+            off += l.len() as u64 + 1;
+        }
+        acc
+    };
+
+    // (a) A skill call, then many turns. The skill's turn completes like any other.
+    let mut lines = vec![
+        user("start"),
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"dump-tasks"}}]},"timestamp":"2026-07-26T10:00:02Z"}"#.into(),
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s1","content":"Launching"}]},"timestamp":"2026-07-26T10:00:03Z"}"#.into(),
+    ];
+    for i in 0..30 {
+        lines.push(user(&format!("turn {i}")));
+        lines.push(asst("ok"));
+    }
+    let mut a = drive(&lines);
+    let n = a.snapshot().blocks().len();
+    assert!(
+        a.committed_len() >= n - 4,
+        "a completed skill turn must not pin the frontier: {} committed of {n}",
+        a.committed_len()
+    );
+
+    // A prompt enqueued and NEVER picked up — a jdi restart the content-match fallback missed.
+    let stuck = |turns: usize| {
+        let mut lines = vec![user("start"), asst("working")];
+        lines.push(
+            r#"{"type":"queue-operation","operation":"enqueue","content":"never delivered"}"#
+                .into(),
+        );
+        for i in 0..turns {
+            lines.push(user(&format!("turn {i}")));
+            lines.push(asst("ok"));
+        }
+        lines
+    };
+
+    // (b) WITHIN the bound the marker's turn is held, so a late pickup can still collapse it —
+    // that is what the pin is for, and dropping it eagerly would resurrect the #52 duplicate.
+    let mut b = drive(&stuck(4));
+    let held = b.snapshot().blocks().len() - b.committed_len();
+    assert!(
+        held > 2,
+        "a pending marker holds its turn while a pickup is plausible, held {held}"
+    );
+
+    // (c) PAST the bound it lets go — otherwise one undelivered prompt freezes the frontier for
+    // the rest of the session, which is the pathology this whole test exists for.
+    let mut c = drive(&stuck(MAX_PINNED_TURNS + 20));
+    let n = c.snapshot().blocks().len();
+    assert!(
+        c.committed_len() >= n - 4,
+        "past the bound a stuck marker must not pin: {} committed of {n}",
+        c.committed_len()
     );
 }
 

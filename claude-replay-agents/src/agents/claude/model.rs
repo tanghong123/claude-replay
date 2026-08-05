@@ -2119,6 +2119,37 @@ mod tests {
         assert_eq!(kinds(&blocks), vec!["tool_result"], "{blocks:?}");
     }
 
+    /// A skill body may only nest into a `Skill` in the SAME turn.
+    ///
+    /// Real transcripts settle this: 27 of 32 bodies arrive two lines after their call, and every
+    /// long-reach case is the same shape — jdi injects a `jdi-handoff` body with no `Skill` call
+    /// at all. Unbounded, that body glued itself onto whatever skill came last, thousands of
+    /// lines back, so an unrelated block grew content that was never its own. Bounding it also
+    /// unpins the durability frontier (see `frontier_advances_past_a_completed_skill_turn`).
+    #[test]
+    fn a_skill_body_never_nests_across_a_user_turn() {
+        let jsonl = r#"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"dump-tasks"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"Launching skill: dump-tasks"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"next thing please"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"sure"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: /Users/dev/.claude/skills/jdi-handoff\n\n# jdi-handoff"}]}}
+"#;
+        let blocks = parse(jsonl);
+        assert_eq!(
+            kinds(&blocks),
+            vec!["skill", "user", "assistant", "tool_result"],
+            "the orphan stands on its own, in order: {blocks:?}"
+        );
+        let Block::ToolUse { output, .. } = &blocks[0] else {
+            panic!("expected the Skill block at 0: {blocks:?}")
+        };
+        assert!(
+            !output.as_deref().unwrap_or("").contains("jdi-handoff"),
+            "an earlier turn's Skill must not absorb it: {output:?}"
+        );
+    }
+
     /// An `Agent` spawn becomes a `SubAgent` block (the "launched" event); its later
     /// completion `<task-notification>` becomes a SEPARATE `AgentDone` event at the point
     /// it arrived — the two-message model. The spawn's status is still back-patched to

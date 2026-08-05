@@ -263,9 +263,24 @@ impl<'a> Replayer<'a> {
                     self.out.push(Block::ToolResult(text.clone()));
                 }
                 Message::SkillBody { text, fallback } => {
-                    // L1 detected the skill body; the fold only nests it into the most recent
-                    // `Skill` block (stateful), falling back to a loose result block.
-                    let target = self.last_skill.map(|i| i - self.base);
+                    // L1 detected the skill body; the fold nests it into the most recent `Skill`
+                    // block **in the open turn**, falling back to a loose result block.
+                    //
+                    // The turn bound is what makes the back-reference honest. A skill's body
+                    // arrives with its call — 27 of 32 across real transcripts are two lines
+                    // later — so reaching back past a user turn never finds the right block, only
+                    // an unrelated older one. The reaching cases are all the same shape: jdi
+                    // injects a `jdi-handoff` body with no `Skill` call at all, and unbounded it
+                    // nested thousands of lines back into whatever skill happened to come last.
+                    let turn_start = self
+                        .out
+                        .iter()
+                        .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+                        .unwrap_or(0);
+                    let target = self
+                        .last_skill
+                        .map(|i| i - self.base)
+                        .filter(|&rel| rel >= turn_start);
                     if attach_skill_body(&mut self.out, target, text) {
                         // Nested into the existing `Skill` block — a back-patch of that block.
                         if let Some(ls) = self.last_skill {
@@ -401,14 +416,14 @@ impl<'a> Replayer<'a> {
 
     /// Drop the completed turns behind the open window: finalize (group + suppress) every turn
     /// before the **last** user-turn boundary and move the result into `durable`, then discard those
-    /// raw blocks from `out` and advance `base`. Runs only when the prompt queue is **empty** — while
-    /// any prompt is pending, its `⧗ queued:` marker might still be suppressed at dequeue, so we keep
-    /// its turn resident (the queue-marker-pinned frontier). Content stays O(turn); the durable prefix
-    /// grows. A no-op until at least one full turn has closed.
+    /// raw blocks from `out` and advance `base`. Content stays O(turn); the durable prefix grows.
+    /// A no-op until at least one full turn has closed.
+    ///
+    /// **The frontier cannot freeze.** Every back-reference that holds blocks resident is bounded:
+    /// the skill body's by the open turn (see the `SkillBody` arm), the queue marker's by
+    /// [`MAX_PINNED_TURNS`] below. That is a property, not a hope — an unbounded one froze the
+    /// frontier at 65% of a 107 MB transcript for the remaining 219 turns.
     fn finalize_completed(&mut self) {
-        if !self.queue.is_empty() {
-            return;
-        }
         // The open turn starts at the last user-turn boundary in the window; everything before it is
         // complete. Nothing to drop if there's no boundary, or the only turn is the open one.
         let Some(mut k) = self
@@ -418,17 +433,14 @@ impl<'a> Replayer<'a> {
         else {
             return;
         };
-        // Pin the turn holding `last_skill`: a `SkillBody` can still nest into a `Skill` block from
-        // an earlier turn (the back-reference persists until the next skill), so that block must stay
-        // resident. Cap the drop at the turn boundary at/before it. (The queue-marker back-reference
-        // is already pinned by the `queue.is_empty()` guard above.)
-        if let Some(ls_rel) = self.last_skill.map(|i| i - self.base) {
-            if ls_rel < k {
-                k = self.out[..=ls_rel]
-                    .iter()
-                    .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
-                    .unwrap_or(0);
-            }
+        // No `last_skill` pin here. It used to cap the drop at the turn holding the last `Skill`,
+        // because a body could still nest into it from any later turn — and since the pin also
+        // stopped `base` from ever passing that index, nothing could clear it: ONE skill call
+        // froze the frontier for the rest of the session. Bounding the nest to the open turn (see
+        // the `SkillBody` arm) removes the reason: a `Skill` in a COMPLETED turn can no longer
+        // receive a body, and the open turn is never drained anyway.
+        if let Some(pin) = self.queue_pin(k) {
+            k = pin;
         }
         if k == 0 {
             return;
@@ -470,6 +482,42 @@ impl<'a> Replayer<'a> {
         if matches!(self.last_skill, Some(i) if i < self.base) {
             self.last_skill = None;
         }
+    }
+
+    /// Where a pending queued prompt caps the drop, or `None` for no constraint.
+    ///
+    /// A pending `⧗ queued:` marker may still be **suppressed** when its prompt is picked up, and
+    /// suppression can only remove a block that is still resident — so the turn holding the
+    /// oldest live marker is kept. Only that turn: this used to be a blanket "commit nothing
+    /// while anything is pending", which threw away every completed turn before the marker too.
+    /// An item with no marker (`prose == false` — nothing visible was emitted) constrains
+    /// nothing.
+    ///
+    /// **Bounded by [`MAX_PINNED_TURNS`].** A prompt whose pickup is never recorded — a jdi
+    /// restart re-delivers it in a fresh process, and the content-match fallback can miss —
+    /// would otherwise pin its turn for the rest of the session. Past the bound the pin is
+    /// dropped and the marker commits; a pickup after that cannot un-draw it, so a stale
+    /// `⧗ queued:` line stays visible. That is a local, one-line artifact in a rare case, against
+    /// a frontier that never advances again in a case that is not rare at all.
+    fn queue_pin(&self, k: usize) -> Option<usize> {
+        let oldest = self
+            .queue
+            .iter()
+            .filter_map(|q| q.marker_idx)
+            .min()
+            .and_then(|i| i.checked_sub(self.base))?; // below `base` ⇒ already committed
+        if oldest >= k {
+            return None; // the marker is in the open turn, which is never drained
+        }
+        let pinned = self.out[..=oldest]
+            .iter()
+            .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+            .unwrap_or(0);
+        let lag = self.out[pinned..k]
+            .iter()
+            .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+            .count();
+        (lag <= MAX_PINNED_TURNS).then_some(pinned)
     }
 
     /// Assemble the full presentable block list: the finalized `durable` prefix followed by the
@@ -633,6 +681,12 @@ pub fn replay(
     user_times.extend(ut);
     blocks
 }
+
+/// How many completed turns a pending queue marker may hold resident before the fold stops
+/// waiting for a pickup that may never come. Generous — a queued prompt is normally picked up
+/// within a turn or two — but finite, which is the whole point: past it the marker commits and a
+/// later pickup can no longer un-draw it, which beats a frontier that never advances again.
+pub const MAX_PINNED_TURNS: usize = 64;
 
 /// One entry in the reconstructed prompt queue. `marker_idx` is the index of this
 /// prompt's `⧗ queued:` marker in the block list (prose only). A marker lives only while its

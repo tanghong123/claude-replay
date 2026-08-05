@@ -20,7 +20,10 @@ pub mod tier_b;
 pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metrics
 
 pub use builder::{SessionAccumulator, StreamRead};
+// The frontier's one tuning bound — public so a consumer (and the test that guards it) can name
+// it rather than restate the number.
 pub use index::SessionIndex;
+pub use replay::MAX_PINNED_TURNS;
 pub use session::{
     build_sub_agents, populate_sub_agent_transcripts, ArcStore, BlockAccess, BlockRead, BlockStore,
     ChildMeta, InMemoryStore, Session, SessionMeta,
