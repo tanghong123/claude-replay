@@ -32,6 +32,17 @@ pub type Model = String;
 /// *field* needs no bump (it arrives with `#[serde(default)]` and older records still load).
 pub const FORMAT_VERSION: u16 = 1;
 
+/// How many resumable drains between checkpoints. A checkpoint costs O(turns + tasks + spawns)
+/// to write, so this amortises it; it also bounds a reader's work, which is otherwise O(records)
+/// and grows without limit for a long-lived session.
+///
+/// The value is a **policy** knob, not a correctness one — every value produces a valid stream.
+pub const CHECKPOINT_EVERY: usize = 64;
+
+/// How many records must precede a checkpoint before compaction bothers rewriting the stream.
+/// Also policy.
+pub const COMPACT_AFTER: usize = 256;
+
 /// The fold's version. **Bump this whenever block output changes** — otherwise a resume splices
 /// blocks built by the old fold onto blocks built by the new one, and the seam is invisible.
 ///
@@ -204,6 +215,16 @@ impl MaterializedMeta {
             *self = c.clone();
             return;
         }
+        self.push_delta(r);
+    }
+
+    /// Fold a record's **deltas only**, ignoring any checkpoint it carries.
+    ///
+    /// Separate from [`push`](Self::push) so a reader can compute what its running state *would*
+    /// be at a checkpointed record and compare — the §6.6 validate-on-pass check, which is what
+    /// turns "a resume equals a cold fold" from a property tests assert into one production
+    /// verifies on every load.
+    pub fn push_delta(&mut self, r: &MetaRecord) {
         // counters
         self.session_meta.turns += r.turns.unwrap_or(0) as usize;
         self.session_meta.tools += r.tools.unwrap_or(0) as usize;
@@ -417,6 +438,105 @@ mod tests {
         assert!(mm2.session_meta.children.is_empty(), "not a child yet");
     }
 
+    /// Build a turn-counting record with a resume payload at `id`.
+    fn r(id: usize, turns: u32) -> MetaRecord {
+        MetaRecord {
+            turns: Some(turns),
+            resume: Some(Resume {
+                id,
+                replay_from: id as u64 * 10,
+                window: 0,
+                prev_ts: None,
+                pending_ts: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// **I11.** A stream that BEGINS at a checkpointed record and the same stream replayed from
+    /// the start must materialize identically — that is what makes compaction sound, and what
+    /// lets a reader's work be bounded rather than O(records).
+    #[test]
+    fn a_compacted_stream_materializes_like_an_uncompacted_one() {
+        let mut whole: Vec<MetaRecord> = (1..=6).map(|i| r(i, 1)).collect();
+        // Checkpoint at record 4, carrying the state as of it (4 turns folded).
+        let mut at4 = MaterializedMeta::default();
+        for x in &whole[..4] {
+            at4.push(x);
+        }
+        whole[3].checkpoint = Some(at4);
+
+        let full = align(&whole, 6).unwrap().expect("resumes");
+        let compacted = align(&whole[3..], 6).unwrap().expect("resumes");
+        assert_eq!(
+            full.meta, compacted.meta,
+            "a compacted stream is the same view as the whole one"
+        );
+        assert_eq!(full.committed, compacted.committed);
+        assert_eq!(full.resume, compacted.resume);
+    }
+
+    /// **Validate on pass** (§6.6). A checkpoint that disagrees with the state folded up to it
+    /// means the stream is corrupt or writer and reader have drifted — the false-accept class,
+    /// which yields wrong output rather than a no-op. Reject the whole cache.
+    #[test]
+    fn a_checkpoint_that_disagrees_rejects_the_stream() {
+        let mut recs: Vec<MetaRecord> = (1..=5).map(|i| r(i, 1)).collect();
+        let mut wrong = MaterializedMeta::default();
+        wrong.session_meta.turns = 999; // not what folding 1..=4 yields
+        recs[3].checkpoint = Some(wrong);
+        assert!(
+            matches!(align(&recs, 5), Err(AlignError::CheckpointMismatch)),
+            "a disagreeing checkpoint must reject, not resume"
+        );
+    }
+
+    /// A checkpoint that AGREES is adopted and the fold carries on — the ordinary path, which
+    /// must not be collateral damage of the check above.
+    #[test]
+    fn a_matching_checkpoint_passes_and_the_fold_continues() {
+        let mut recs: Vec<MetaRecord> = (1..=5).map(|i| r(i, 1)).collect();
+        let mut at4 = MaterializedMeta::default();
+        for x in &recs[..4] {
+            at4.push(x);
+        }
+        recs[3].checkpoint = Some(at4);
+        let a = align(&recs, 5).unwrap().expect("resumes");
+        assert_eq!(a.meta.session_meta.turns, 5);
+        assert_eq!(a.committed, 5);
+    }
+
+    /// The case §8's review found: a checkpoint as the LAST record must still be resumable —
+    /// it rides a record that carries a resume payload, so the stream never holds complete
+    /// state with no `replay_from` anywhere.
+    #[test]
+    fn a_trailing_checkpoint_is_still_a_resume_point() {
+        let mut recs: Vec<MetaRecord> = (1..=3).map(|i| r(i, 1)).collect();
+        let mut at3 = MaterializedMeta::default();
+        for x in &recs[..3] {
+            at3.push(x);
+        }
+        recs[2].checkpoint = Some(at3);
+        let a = align(&recs, 3)
+            .unwrap()
+            .expect("a trailing checkpoint still resumes");
+        assert_eq!(a.committed, 3);
+        assert_eq!(a.resume.replay_from, 30);
+        assert_eq!(a.meta.session_meta.turns, 3);
+    }
+
+    /// A checkpoint ABOVE what the content stream corroborates is never reached, so it can
+    /// neither be adopted nor trip the mismatch check (I1: content is the authority).
+    #[test]
+    fn a_checkpoint_above_the_content_stream_is_ignored() {
+        let mut recs: Vec<MetaRecord> = (1..=5).map(|i| r(i, 1)).collect();
+        let mut wrong = MaterializedMeta::default();
+        wrong.session_meta.turns = 999;
+        recs[4].checkpoint = Some(wrong); // record 5, beyond a 3-block content stream
+        let a = align(&recs, 3).unwrap().expect("resumes at 3");
+        assert_eq!(a.committed, 3, "stopped where content stops");
+    }
+
     /// A checkpoint REPLACES the fold so far — its own delta fields are already included in
     /// it, so applying both would double-count. This is what makes compaction sound.
     #[test]
@@ -473,15 +593,30 @@ pub struct Aligned {
 /// Returns `None` when no record qualifies: an empty or header-only stream, a torn tail below
 /// the first resume point, or a content stream shorter than every recorded commit. The caller
 /// then rebuilds cold.
-pub fn align(records: &[MetaRecord], committed_len: usize) -> Option<Aligned> {
+pub fn align(records: &[MetaRecord], committed_len: usize) -> Result<Option<Aligned>, AlignError> {
     let mut mm = MaterializedMeta::default();
     let mut best: Option<Aligned> = None;
-    for r in records {
+    for (folded, r) in records.iter().enumerate() {
         // Stop before folding a record whose commit the content stream cannot corroborate:
         // beyond this point the meta stream describes blocks that are not there.
         if let Some(res) = &r.resume {
             if res.id > committed_len {
                 break;
+            }
+        }
+        // §6.6 validate-on-pass: a checkpoint is an absolute claim about the state at its
+        // record, so a reader that has folded its way here can check it instead of trusting
+        // it. A disagreement means the stream is corrupt or writer and reader have drifted —
+        // the false-accept class, which yields wrong output rather than a no-op, so the answer
+        // is to reject the whole cache. Skipped for the FIRST record: a compacted stream opens
+        // on a checkpoint with nothing before it to compare against.
+        if let Some(c) = &r.checkpoint {
+            if folded > 0 {
+                let mut probe = mm.clone();
+                probe.push_delta(r);
+                if probe != *c {
+                    return Err(AlignError::CheckpointMismatch);
+                }
             }
         }
         mm.push(r);
@@ -493,5 +628,12 @@ pub fn align(records: &[MetaRecord], committed_len: usize) -> Option<Aligned> {
             });
         }
     }
-    best
+    Ok(best)
+}
+
+/// Why an otherwise-readable stream must be rejected outright.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlignError {
+    /// A checkpoint disagreed with the state folded up to it (§6.6).
+    CheckpointMismatch,
 }

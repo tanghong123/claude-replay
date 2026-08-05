@@ -999,13 +999,21 @@ after *setup* rather than held for the run, and frees on `Drop`; the cache's is 
 with two outcomes, held for the session's life, carrying a frontend-typed note. Merging them
 would force one shape onto both problems. They stay separate.
 
-**Checkpoints and compaction (§6.6) are declared but not emitted.** `MetaRecord::checkpoint`
-exists and `MaterializedMeta::push` adopts one, so the format and the reader are ready — nothing
-writes them periodically, and there is no compactor. The measurement says that is fine for now:
-a 107 MB transcript produces **711 records / 0.43 MB**, and the whole resume costs 49 ms against
-a 764 ms cold fold. Compaction earns its keep somewhere around 10⁵ records — roughly a 15 GB
-transcript — and the reader already handles a compacted stream, so adding the writer later
-changes nothing that exists.
+**Checkpoints ride the writer's own materialized view.** §6.6 left open how the writer builds
+the absolute state a checkpoint carries. Rebuilding it from the accumulator's internals would
+have needed a committed-only copy of `agent_ids` and a turn-sliced `user_times` — two places to
+get subtly wrong, invisibly. Instead the accumulator keeps a running `MaterializedMeta` by
+pushing each authored record through **the same fold the reader uses**, and a checkpoint is a
+clone of it. It therefore cannot disagree with the stream it summarizes, and `restore` seeds it
+so a resumed writer's next checkpoint still describes the whole session.
+
+**When to checkpoint and when to compact is still policy.** `CHECKPOINT_EVERY` and
+`COMPACT_AFTER` are named constants, every value of which produces a valid stream, and
+`compact()` is deliberately **not** called automatically — the natural site is under the lock
+right after a load, but which sessions deserve a rewrite is a question the measurements have not
+yet answered. Today they do not need to: a 107 MB transcript produces **711 records / 0.43 MB**,
+and its resume costs 49 ms against a 764 ms cold fold. Compaction earns its keep somewhere around
+10⁵ records — roughly a 15 GB transcript.
 
 **Two names, since §8's `Admission` needed the room.** The low-level primitive is `claim`
 returning `Claim` (`Ours`/`Denied`); `Admission` is what §8 describes and what a frontend

@@ -23,7 +23,7 @@
 //! future change should assume it does.
 
 use claude_replay_agents::ClaudeAdapter;
-use claude_replay_engine::engine::meta_stream::{align, MetaRecord};
+use claude_replay_engine::engine::meta_stream::{align, Aligned, MetaRecord};
 use claude_replay_engine::model::Block;
 use claude_replay_engine::SessionAccumulator;
 
@@ -122,6 +122,12 @@ fn cold(lines: &[String]) -> FullState {
     full_state(&mut acc)
 }
 
+/// [`align`] for this harness: it only ever feeds streams its own writer produced, so a
+/// checkpoint mismatch is a bug in the harness, not an outcome to branch on.
+fn aligned(recs: &[MetaRecord], committed_len: usize) -> Option<Aligned> {
+    align(recs, committed_len).expect("this harness's own streams must always validate")
+}
+
 /// Load a truncated pair, resume, fold the rest of `T`, and return the final block list —
 /// or `None` when nothing was resumable (a legitimate cold rebuild).
 fn resume_and_finish(
@@ -129,7 +135,7 @@ fn resume_and_finish(
     committed: &[Block],
     recs: &[MetaRecord],
 ) -> Option<(FullState, usize)> {
-    let a = align(recs, committed.len())?;
+    let a = aligned(recs, committed.len())?;
     let mut acc = SessionAccumulator::restore(
         &ClaudeAdapter,
         claude_replay_engine::engine::session::InMemoryStore,
@@ -204,12 +210,12 @@ fn a_full_cache_reparses_only_the_open_turn() {
 fn a_torn_tail_costs_at_most_one_commit() {
     let lines = transcript();
     let (committed, recs) = clean_run(&lines);
-    let full = align(&recs, committed.len()).expect("resumable");
+    let full = aligned(&recs, committed.len()).expect("resumable");
     let ids: Vec<usize> = recs
         .iter()
         .filter_map(|r| r.resume.as_ref().map(|x| x.id))
         .collect();
-    let torn = align(&recs[..recs.len() - 1], committed.len());
+    let torn = aligned(&recs[..recs.len() - 1], committed.len());
     if let Some(t) = torn {
         let prev = ids
             .iter()
@@ -230,9 +236,9 @@ fn a_torn_tail_costs_at_most_one_commit() {
 fn meta_ahead_of_content_is_ignored() {
     let lines = transcript();
     let (committed, recs) = clean_run(&lines);
-    let full = align(&recs, committed.len()).expect("resumable");
+    let full = aligned(&recs, committed.len()).expect("resumable");
     // Pretend the content stream lost its tail: alignment must not pick a later record.
-    let short = align(&recs, committed.len() - 1);
+    let short = aligned(&recs, committed.len() - 1);
     if let Some(s) = short {
         assert!(
             s.committed < committed.len(),

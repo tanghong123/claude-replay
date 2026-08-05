@@ -57,6 +57,14 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     emitted: Boundary,
     /// Meta records authored but not yet drained by the persistence layer.
     meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
+    /// The materialized view of every record authored so far — what a reader will hold at this
+    /// point, maintained by pushing each record through the SAME fold the reader uses. A
+    /// checkpoint is a clone of it, so it cannot disagree with the stream it summarizes.
+    materialized: crate::engine::meta_stream::MaterializedMeta,
+    /// Resumable drains since the last checkpoint. Only resumable ones count: a checkpoint must
+    /// ride a record that carries a resume payload (§6.6), so a straddling drain does not
+    /// advance the clock — it waits for the next qualifying one.
+    since_checkpoint: usize,
 }
 
 /// A turn-opening line's state, captured **before** the line is folded — the candidate
@@ -152,6 +160,8 @@ impl<S: BlockStore> SessionAccumulator<S> {
             boundary: std::collections::VecDeque::new(),
             emitted: Boundary::default(),
             meta_out: Vec::new(),
+            materialized: Default::default(),
+            since_checkpoint: 0,
         }
     }
 
@@ -173,6 +183,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
     ) -> Self {
         let mut acc = Self::with_store(adapter, store);
         acc.committed = committed;
+        // A resumed writer continues the reader's fold: without this its next checkpoint would
+        // claim the session began at the resume point.
+        acc.materialized = mm.clone();
         acc.committed_meta = mm.session_meta.clone();
         acc.cwd = mm.cwd.clone();
         acc.task_fold = mm.tasks.clone();
@@ -200,6 +213,33 @@ impl<S: BlockStore> SessionAccumulator<S> {
             cwd: mm.cwd,
         };
         acc
+    }
+
+    /// Attach a checkpoint when one is due (§6.6).
+    ///
+    /// Ordering is load-bearing: the record is folded into the running view FIRST, so the
+    /// checkpoint includes this record's own deltas — which is exactly what a reader does, since
+    /// `MaterializedMeta::push` adopts a checkpoint *instead of* applying them.
+    ///
+    /// Only a record carrying a resume payload may hold one. A checkpoint with no `replay_from`
+    /// after it would let compaction leave a cache holding complete state that nothing can
+    /// resume from.
+    fn checkpoint_maybe(&mut self, rec: &mut crate::engine::meta_stream::MetaRecord) {
+        self.materialized.push(rec);
+        if rec.resume.is_none() {
+            return;
+        }
+        self.since_checkpoint += 1;
+        if self.since_checkpoint >= crate::engine::meta_stream::CHECKPOINT_EVERY {
+            rec.checkpoint = Some(self.materialized.clone());
+            self.since_checkpoint = 0;
+        }
+    }
+
+    /// The materialized view as of the last authored record — the value a checkpoint carries.
+    /// Exposed for tests that assert the writer's view and a reader's fold agree (I3/I11).
+    pub fn materialized(&self) -> &crate::engine::meta_stream::MaterializedMeta {
+        &self.materialized
     }
 
     /// Fold ONE line into the running state, knowing its **start byte offset** in the transcript:
@@ -294,6 +334,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             rec.task_ops = self.task_fold.drain_recorded();
             self.boundary.retain(|e| e.logical >= self.replayer.base());
             self.author_resume(&mut rec);
+            self.checkpoint_maybe(&mut rec);
             self.meta_out.push(rec);
         }
         if let Ok(v) = serde_json::from_str::<Value>(line) {
@@ -418,6 +459,8 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
+        self.materialized = Default::default();
+        self.since_checkpoint = 0;
         self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's
         // locators start from a clean slate instead of accreting dead content.

@@ -10,7 +10,7 @@
 
 use super::lock::{self, Holder, Taken};
 use super::stream::{anchor_of, meta_path, window_at, MetaReader, MetaWriter};
-use crate::engine::meta_stream::{align, Aligned, Versions};
+use crate::engine::meta_stream::{align, AlignError, Aligned, Versions};
 use std::path::{Path, PathBuf};
 
 /// Which frontend a durable entry belongs to. Namespaces the directory **and** the lock, so a
@@ -99,6 +99,9 @@ pub enum ColdReason {
     /// The stream held no record the content stream corroborates — a torn tail below the first
     /// resume point, or a content stream shorter than every recorded commit.
     TornStream,
+    /// A checkpoint disagreed with the state folded up to it (§6.6) — the stream is corrupt, or
+    /// writer and reader have drifted. Either way the cache is not to be trusted.
+    CheckpointMismatch,
 }
 
 /// Take exclusive ownership of a session's durable entry, or say why not.
@@ -181,8 +184,10 @@ pub(crate) fn recover(
     }
     // Feed records to the fold, stopping at what the content stream corroborates (I1).
     let records: Vec<_> = reader.collect();
-    let Some(a) = align(&records, committed_len) else {
-        return Ok(None);
+    let a = match align(&records, committed_len) {
+        Ok(Some(a)) => a,
+        Ok(None) => return Ok(None),
+        Err(AlignError::CheckpointMismatch) => return Err(ColdReason::CheckpointMismatch),
     };
     // The source must still reach the partition, and the bytes BELOW it must be unchanged —
     // everything the resume restores derives from there. Bytes at or after it are re-read and

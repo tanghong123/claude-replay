@@ -883,12 +883,23 @@ cache: SessionCache&lt;
         <tr><td>length ≥ <code>replay_from</code></td><td class="role">a truncated source</td><td><code>Cold(SourceRewritten)</code></td></tr>
         <tr><td>window (CRC32 of the 64 KiB below <code>replay_from</code>)</td><td class="role">the prefix rewritten in place — the only region a resume derives from</td><td><code>Cold(SourceRewritten)</code></td></tr>
         <tr><td>alignment</td><td class="role">a torn tail below the first resume point</td><td><code>Cold(TornStream)</code></td></tr>
+        <tr><td>checkpoint agreement</td><td class="role">a checkpoint that disagrees with the state folded up to it — the stream is corrupt, or writer and reader have drifted</td><td><code>Cold(CheckpointMismatch)</code></td></tr>
       </tbody>
     </table></div>
     <p style="margin-top:14px">CRC32 rather than a cryptographic hash on purpose: this is not a
       trust boundary, only a corruption check, and it is ~13× cheaper. The reasons are typed
       (<code>ColdReason</code>) because "the cache did not help" is a support question, and the
       rejection tests assert on the reason rather than on "it rebuilt".</p>
+    <p><b>Checkpoints bound the work and check the fold.</b> Every <code>CHECKPOINT_EVERY</code>
+      resumable drains a record also carries an absolute <code>MaterializedMeta</code>. It does
+      three jobs: a reader may <em>start</em> there, which bounds an open's work (otherwise
+      O(records), growing without limit); compaction becomes trivial and needs no fold — keep the
+      newest corroborated checkpoint and everything after it, rewriting to a temp file and
+      renaming, so a crash mid-rewrite leaves the original intact; and a reader that
+      <em>passes</em> one compares it against what it folded, which turns "a resume equals a cold
+      fold" from a property tests assert into one production verifies on every load. A checkpoint
+      only ever rides a record that already has a resume payload — otherwise compacting onto it
+      could leave complete state with no <code>replay_from</code> anywhere.</p>
     <p><b>Exactly one writer per <code>&lt;presentation, session&gt;</code>, always.</b> A file
       lock names its holder; reclaim is liveness-based, and where liveness cannot be decided (a
       non-unix host) the cache is <b>disabled</b> rather than assumed stale — guessing wrong

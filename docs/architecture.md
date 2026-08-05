@@ -549,11 +549,22 @@ always a full cold rebuild — never a partial serve:
 | length ≥ `replay_from` | a truncated source | `Cold(SourceRewritten)` |
 | window (CRC32 of the 64 KiB below `replay_from`) | the prefix rewritten in place — the only region a resume derives from | `Cold(SourceRewritten)` |
 | alignment | a torn tail below the first resume point | `Cold(TornStream)` |
+| checkpoint agreement | a checkpoint that disagrees with the state folded up to it — the stream is corrupt, or writer and reader have drifted | `Cold(CheckpointMismatch)` |
 
 CRC32 rather than a cryptographic hash on purpose: this is not a trust boundary, only a
 corruption check, and it is ~13× cheaper. The reasons are typed (`ColdReason`) because "the
 cache did not help" is a support question, and the rejection tests assert on the reason
 rather than on "it rebuilt".
+
+**Checkpoints bound the work and check the fold.** Every `CHECKPOINT_EVERY` resumable drains a
+record also carries an absolute `MaterializedMeta`. It does three jobs: a reader may *start*
+there, which bounds an open's work (otherwise O(records), growing without limit); compaction
+becomes trivial and needs no fold — keep the newest corroborated checkpoint and everything after
+it, rewriting to a temp file and renaming, so a crash mid-rewrite leaves the original intact; and
+a reader that *passes* one compares it against what it folded, which turns "a resume equals a
+cold fold" from a property tests assert into one production verifies on every load. A checkpoint
+only ever rides a record that already has a resume payload — otherwise compacting onto it could
+leave complete state with no `replay_from` anywhere.
 
 **Exactly one writer per `<presentation, session>`, always.** A file lock names its holder;
 reclaim is liveness-based, and where liveness cannot be decided (a non-unix host) the cache

@@ -154,6 +154,51 @@ impl Iterator for MetaReader {
     }
 }
 
+/// Drop the records a checkpoint makes redundant (#96 §6.6). Returns how many were dropped.
+///
+/// It needs no fold: a checkpoint is an absolute view, so every record before it is already
+/// summarized. Pick the NEWEST checkpoint the content stream corroborates
+/// (`resume.id <= committed_len`) and keep the stream from there.
+///
+/// `committed_len` counts committed **blocks**, not records — the unit `Resume::id` speaks, and
+/// the same number [`claim`](super::admit::claim) hands to alignment. A record count would be far
+/// too small and quietly find no base at all.
+///
+/// **Rewrite, not truncate-in-place.** A checkpoint replaces a *prefix* of an append-only file,
+/// so this writes a new file and renames over the old one — the rename is the commit point, and a
+/// crash mid-rewrite leaves the original untouched. The caller runs it under the same
+/// `<presentation, session>` lock as every other write, which is what makes "any time" safe
+/// rather than a race.
+///
+/// **Never past `n`.** Records above `committed_len` are exactly the ones alignment rejected — a
+/// torn tail, or drains the content stream does not support — and keeping one as the new base
+/// would launder unverified data into absolute state.
+pub fn compact(dir: &Path, committed_len: usize, compact_after: usize) -> std::io::Result<usize> {
+    let Some((header, reader)) = MetaReader::open(dir)? else {
+        return Ok(0);
+    };
+    let records: Vec<MetaRecord> = reader.collect();
+    let Some(at) = records.iter().rposition(|r| {
+        r.checkpoint.is_some() && r.resume.as_ref().is_some_and(|res| res.id <= committed_len)
+    }) else {
+        return Ok(0);
+    };
+    if at < compact_after {
+        return Ok(0); // not enough behind it to be worth a rewrite
+    }
+    let tmp = dir.join("meta.jsonl.compact");
+    {
+        let mut f = File::create(&tmp)?;
+        writeln!(f, "{}", serde_json::to_string(&header)?)?;
+        for r in &records[at..] {
+            writeln!(f, "{}", serde_json::to_string(r)?)?;
+        }
+        f.flush()?;
+    }
+    std::fs::rename(&tmp, meta_path(dir))?; // the commit point
+    Ok(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +293,104 @@ mod tests {
             "the torn record is dropped, the prefix survives"
         );
         assert_eq!(got[1].resume.as_ref().unwrap().id, 2);
+    }
+
+    fn ckpt(id: usize, replay_from: u64, turns: usize) -> MetaRecord {
+        let mut r = rec(id, replay_from);
+        let mut m = crate::engine::meta_stream::MaterializedMeta::default();
+        m.session_meta.turns = turns;
+        r.checkpoint = Some(m);
+        r
+    }
+
+    /// Compaction keeps the newest corroborated checkpoint and everything after it, and the
+    /// result loads like an uncompacted stream — the header survives, the records line up.
+    #[test]
+    fn compaction_keeps_the_newest_corroborated_checkpoint() {
+        let d = tmp("compact");
+        let src = d.join("t.jsonl");
+        std::fs::write(&src, "x".repeat(400)).unwrap();
+        let mut w = MetaWriter::create(&d, &src, versions()).unwrap();
+        for i in 1..=10 {
+            // checkpoints at 4 and 8; the newest wins
+            if i == 4 || i == 8 {
+                w.append(&ckpt(i, i as u64, i)).unwrap();
+            } else {
+                w.append(&rec(i, i as u64)).unwrap();
+            }
+        }
+        w.flush().unwrap();
+
+        let dropped = compact(&d, 10, 1).unwrap();
+        assert_eq!(
+            dropped, 7,
+            "records 1..=7 go; the checkpoint at 8 is index 7"
+        );
+
+        let (h, r) = MetaReader::open(&d).unwrap().unwrap();
+        assert_eq!(h.versions, versions(), "the header survives the rewrite");
+        let got: Vec<_> = r.collect();
+        assert_eq!(got.len(), 3, "the checkpoint plus records 9 and 10");
+        assert!(got[0].checkpoint.is_some(), "it opens ON the checkpoint");
+        assert_eq!(got[0].resume.as_ref().unwrap().id, 8);
+        assert_eq!(got[2].resume.as_ref().unwrap().id, 10);
+    }
+
+    /// **Never past `n`.** A checkpoint the content stream cannot corroborate must not become
+    /// the new base — those are exactly the records alignment rejects, and keeping one would
+    /// launder unverified data into absolute state.
+    #[test]
+    fn compaction_never_bases_on_an_uncorroborated_checkpoint() {
+        let d = tmp("compact-n");
+        let src = d.join("t.jsonl");
+        std::fs::write(&src, "x".repeat(400)).unwrap();
+        let mut w = MetaWriter::create(&d, &src, versions()).unwrap();
+        for i in 1..=10 {
+            if i == 3 || i == 9 {
+                w.append(&ckpt(i, i as u64, i)).unwrap();
+            } else {
+                w.append(&rec(i, i as u64)).unwrap();
+            }
+        }
+        w.flush().unwrap();
+
+        // Only 5 blocks are corroborated: the checkpoint at 9 is off-limits, 3 is not.
+        assert_eq!(compact(&d, 5, 1).unwrap(), 2);
+        let got: Vec<_> = MetaReader::open(&d).unwrap().unwrap().1.collect();
+        assert_eq!(got[0].resume.as_ref().unwrap().id, 3, "based on 3, not 9");
+    }
+
+    /// Below the threshold, and with no checkpoint at all, compaction is a no-op that leaves the
+    /// stream byte-for-byte alone — it must never be a rewrite for its own sake.
+    #[test]
+    fn compaction_is_a_no_op_when_it_would_not_pay() {
+        let d = tmp("compact-noop");
+        let src = d.join("t.jsonl");
+        std::fs::write(&src, "x".repeat(400)).unwrap();
+        let mut w = MetaWriter::create(&d, &src, versions()).unwrap();
+        for i in 1..=6 {
+            w.append(&if i == 5 {
+                ckpt(i, i as u64, i)
+            } else {
+                rec(i, i as u64)
+            })
+            .unwrap();
+        }
+        w.flush().unwrap();
+        let before = std::fs::read(meta_path(&d)).unwrap();
+
+        assert_eq!(compact(&d, 6, 100).unwrap(), 0, "too few records behind it");
+        assert_eq!(std::fs::read(meta_path(&d)).unwrap(), before, "untouched");
+
+        let d2 = tmp("compact-none");
+        let mut w = MetaWriter::create(&d2, &src, versions()).unwrap();
+        for i in 1..=6 {
+            w.append(&rec(i, i as u64)).unwrap();
+        }
+        w.flush().unwrap();
+        let before = std::fs::read(meta_path(&d2)).unwrap();
+        assert_eq!(compact(&d2, 6, 1).unwrap(), 0, "no checkpoint to base on");
+        assert_eq!(std::fs::read(meta_path(&d2)).unwrap(), before, "untouched");
     }
 
     /// No stream at all is a cold start, not an error.

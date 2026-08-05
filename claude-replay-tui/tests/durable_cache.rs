@@ -197,6 +197,76 @@ fn resuming_from_a_resume_stays_identical() {
     }
 }
 
+/// **Checkpoints and compaction, end to end** (#96 §6.6). A session long enough to trip
+/// `CHECKPOINT_EVERY` writes checkpoints; compaction then throws away everything before the
+/// newest one; and the compacted stream still resumes to a block-identical session.
+///
+/// The resume itself is what proves the writer and the reader agree: `align` validates every
+/// checkpoint it passes against the state it folded, so a writer whose materialized view had
+/// drifted would come back `Cold(CheckpointMismatch)` instead of `Resumed`.
+#[test]
+fn checkpoints_are_written_compacted_and_still_resume() {
+    use claude_replay_core::engine::meta_stream::CHECKPOINT_EVERY;
+    use claude_replay_present::cache::stream::{compact, meta_path, MetaReader};
+
+    let root = tmp("ckpt");
+    let src = root.join("t.jsonl");
+    // Comfortably more commits than one checkpoint interval, so several land.
+    transcript(&src, CHECKPOINT_EVERY * 3);
+
+    let dir = claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s");
+    {
+        let c = cache(&root);
+        let (got, _) = open(&c, "s", &src);
+        assert_eq!(got, cold(&src), "the writing run is correct to begin with");
+        c.release_all();
+    }
+
+    let records: Vec<_> = MetaReader::open(&dir).unwrap().unwrap().1.collect();
+    let checkpoints = records.iter().filter(|r| r.checkpoint.is_some()).count();
+    assert!(
+        checkpoints >= 2,
+        "{} records should carry >=2 checkpoints, got {checkpoints}",
+        records.len()
+    );
+    // Every checkpoint rides a resumable record — otherwise compacting onto one could leave
+    // complete state with no `replay_from` anywhere.
+    assert!(
+        records
+            .iter()
+            .filter(|r| r.checkpoint.is_some())
+            .all(|r| r.resume.is_some()),
+        "a checkpoint must ride a resume point"
+    );
+
+    // The content stream's own length IS the committed block count — the unit `resume.id`
+    // speaks, and the same number `admit` hands to alignment.
+    let committed = std::fs::read_to_string(dir.join("blocks.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    let before = std::fs::metadata(meta_path(&dir)).unwrap().len();
+    let dropped = compact(&dir, committed, 1).unwrap();
+    assert!(dropped > 0, "compaction should have found a base");
+    let after = std::fs::metadata(meta_path(&dir)).unwrap().len();
+    assert!(
+        after < before,
+        "compaction shrinks the stream: {before} -> {after}"
+    );
+    let kept: Vec<_> = MetaReader::open(&dir).unwrap().unwrap().1.collect();
+    assert_eq!(kept.len(), records.len() - dropped);
+    assert!(kept[0].checkpoint.is_some(), "it opens ON a checkpoint");
+
+    // …and the compacted stream still resumes, block-identically.
+    let c = cache(&root);
+    let (got, origin) = open(&c, "s", &src);
+    assert!(
+        matches!(origin, Origin::Resumed { .. }),
+        "a compacted stream must still resume, got {origin:?}"
+    );
+    assert_eq!(got, cold(&src), "resumed-from-compacted == cold");
+}
+
 /// A rewritten source must be REJECTED — the false-accept class, which produces a wrong session
 /// rather than a slow one. Asserted on the REASON, not merely on "it rebuilt".
 #[test]
