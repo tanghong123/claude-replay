@@ -992,6 +992,21 @@ one-shot path: no lock, no writes, no resume, exactly today's behaviour. Related
 now gates on `--follow` rather than on "is this id registered" — every session is registered now,
 for the resume, so registration no longer answers "should this view move".
 
+**The jdi lock does not move.** §11 step 6 called for hoisting `src/jdi/lock.rs` into the
+present layer and retargeting it. Writing both showed they are not the same lock: jdi's is
+`mkdir`-atomic with three outcomes (`Acquired`/`AlreadyRunning`/`SetupInFlight`), is released
+after *setup* rather than held for the run, and frees on `Drop`; the cache's is a JSON pidfile
+with two outcomes, held for the session's life, carrying a frontend-typed note. Merging them
+would force one shape onto both problems. They stay separate.
+
+**Checkpoints and compaction (§6.6) are declared but not emitted.** `MetaRecord::checkpoint`
+exists and `MaterializedMeta::push` adopts one, so the format and the reader are ready — nothing
+writes them periodically, and there is no compactor. The measurement says that is fine for now:
+a 107 MB transcript produces **711 records / 0.43 MB**, and the whole resume costs 49 ms against
+a 764 ms cold fold. Compaction earns its keep somewhere around 10⁵ records — roughly a 15 GB
+transcript — and the reader already handles a compacted stream, so adding the writer later
+changes nothing that exists.
+
 **Two names, since §8's `Admission` needed the room.** The low-level primitive is `claim`
 returning `Claim` (`Ours`/`Denied`); `Admission` is what §8 describes and what a frontend
 matches on. The shared `Denial`/`Unavailable`/`Origin`/`ColdReason` types are the same in both.

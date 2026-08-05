@@ -227,3 +227,169 @@ impl DurableStore for RecordStore {
 pub struct HtmlNote {
     pub port: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::{Admission, Holder, Presentation, SessionCache};
+    use crate::engine::meta_stream::Versions;
+    use crate::Agent;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type Cache = SessionCache<RecordStore, ()>;
+
+    fn tmp(n: &str) -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "cr-recdur-{}-{n}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn user(t: &str, s: u32) -> String {
+        format!("{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-07-26T10:00:{s:02}Z\"}}\n")
+    }
+    fn asst(t: &str, s: u32) -> String {
+        format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":8}}}},\"timestamp\":\"2026-07-26T10:00:{s:02}Z\"}}\n")
+    }
+    fn tool(id: &str, s: u32) -> String {
+        format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"ls\"}}}}]}},\"timestamp\":\"2026-07-26T10:00:{s:02}Z\"}}\n")
+    }
+    fn result(id: &str, s: u32) -> String {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out\"}}]}},\"timestamp\":\"2026-07-26T10:00:{s:02}Z\"}}\n")
+    }
+
+    fn write_transcript(p: &Path, turns: usize) {
+        let mut s = String::new();
+        for i in 0..turns {
+            let t = (i * 4) as u32;
+            s.push_str(&user(&format!("ask {i}"), t));
+            s.push_str(&tool(&format!("b{i}"), t + 1));
+            s.push_str(&result(&format!("b{i}"), t + 2));
+            s.push_str(&asst(&format!("reply {i}"), t + 3));
+        }
+        std::fs::write(p, s).unwrap();
+    }
+
+    fn append(p: &Path, s: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+    }
+
+    fn cache(root: &Path) -> Cache {
+        Cache::durable(
+            Presentation::Html,
+            root.to_path_buf(),
+            Versions::current(Some(7)),
+        )
+    }
+
+    /// Open through the real API and fold to EOF; returns the record log's bytes.
+    fn open_and_fold(c: &Cache, root: &Path, src: &Path) -> (String, crate::cache::admit::Origin) {
+        c.register(
+            "s",
+            crate::Transcript::open(Agent::CLAUDE, src.to_path_buf()),
+        );
+        let fold = crate::fold::FoldPolicy::default();
+        let srcp = src.to_path_buf();
+        let origin = match c.admit(
+            "s",
+            move |dir| {
+                RecordStore::open_append(
+                    &dir.join("records.jsonl"),
+                    fold.clone(),
+                    "/r".into(),
+                    crate::Transcript::open(Agent::CLAUDE, srcp.clone()),
+                )
+            },
+            |_: &Holder<HtmlNote>| false,
+        ) {
+            Admission::Owned { session, origin } => {
+                let _ = session.advance();
+                origin
+            }
+            Admission::Denied(_) => panic!("a free entry must be Owned"),
+        };
+        let log =
+            crate::cache::admit::entry_dir(root, Presentation::Html, "s").join("records.jsonl");
+        (std::fs::read_to_string(log).unwrap_or_default(), origin)
+    }
+
+    /// **The HTML half of the resume oracle** (#96 R5). The wire records a resumed server
+    /// writes must be byte-identical to a cold run's — which is really a test of the derived
+    /// `EmitState`: `next_block` (the `b{n}` anchors) and the two turn counters are *computed*
+    /// from the restored prefix rather than persisted with it, and nothing else would catch a
+    /// wrong derivation. The byte gate cannot: its corpus never resumes.
+    #[test]
+    fn a_resumed_record_log_is_byte_identical_to_a_cold_one() {
+        // Cold reference: one run over the whole transcript.
+        let root_a = tmp("cold");
+        let src_a = root_a.join("t.jsonl");
+        write_transcript(&src_a, 6);
+        let cold = {
+            let c = cache(&root_a);
+            let (log, origin) = open_and_fold(&c, &root_a, &src_a);
+            assert!(matches!(origin, crate::cache::admit::Origin::Cold(_)));
+            c.release_all();
+            log
+        };
+        assert!(cold.lines().count() > 5, "the fixture must commit records");
+
+        // Split run: fold 4 turns, drop the process, then resume and fold the rest.
+        let root_b = tmp("resumed");
+        let src_b = root_b.join("t.jsonl");
+        write_transcript(&src_b, 4);
+        {
+            let c = cache(&root_b);
+            open_and_fold(&c, &root_b, &src_b);
+            c.release_all();
+        }
+        for i in 4..6 {
+            let t = (i * 4) as u32;
+            append(&src_b, &user(&format!("ask {i}"), t));
+            append(&src_b, &tool(&format!("b{i}"), t + 1));
+            append(&src_b, &result(&format!("b{i}"), t + 2));
+            append(&src_b, &asst(&format!("reply {i}"), t + 3));
+        }
+        let c = cache(&root_b);
+        let (resumed, origin) = open_and_fold(&c, &root_b, &src_b);
+        assert!(
+            matches!(origin, crate::cache::admit::Origin::Resumed { .. }),
+            "the second run must resume, got {origin:?}"
+        );
+        assert_eq!(
+            resumed, cold,
+            "a resumed record log must equal a cold one, byte for byte"
+        );
+    }
+
+    /// A changed render flavor (a different fold policy) must REBUILD, not resume: the records
+    /// already on disk were rendered under the old one, and splicing the two would leave a page
+    /// whose halves disagree about what is folded.
+    #[test]
+    fn a_changed_render_flavor_rebuilds() {
+        let root = tmp("flavor");
+        let src = root.join("t.jsonl");
+        write_transcript(&src, 3);
+        {
+            let c = cache(&root);
+            open_and_fold(&c, &root, &src);
+            c.release_all();
+        }
+        let c = Cache::durable(
+            Presentation::Html,
+            root.clone(),
+            Versions::current(Some(99)), // a different render fingerprint
+        );
+        let (_, origin) = open_and_fold(&c, &root, &src);
+        assert_eq!(
+            origin,
+            crate::cache::admit::Origin::Cold(crate::cache::ColdReason::VersionChanged)
+        );
+    }
+}

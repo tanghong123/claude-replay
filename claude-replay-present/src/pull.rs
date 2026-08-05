@@ -338,6 +338,24 @@ mod tests {
         }
     }
 
+    /// **The cursor guard** (#96 §4.3). A cursor AHEAD of the committed prefix at a MATCHING
+    /// epoch used to be unreachable — the committed zone is append-only within an epoch — and
+    /// was silently clamped. A durable resume makes it reachable: alignment cuts the content
+    /// stream down to what the record stream corroborates, which SHRINKS `n_committed` without
+    /// a reset. Clamping would then hand the client blocks it already has while skipping the
+    /// ones it does not; the honest answer is a resync.
+    #[test]
+    fn a_cursor_ahead_of_committed_resyncs_at_a_matching_epoch() {
+        // Ahead by one after an alignment cut: resync, both zones from 0.
+        assert_eq!(pull_indices(1, 5, 3, 7, cur(1, 6, 7, 2)), (0, 0));
+        // Far ahead — same answer, no clamping.
+        assert_eq!(pull_indices(1, 5, 3, 7, cur(1, 99, 7, 0)), (0, 0));
+        // Exactly caught up is NOT ahead: serve from where it is, provisional preserved.
+        assert_eq!(pull_indices(1, 5, 3, 7, cur(1, 5, 7, 2)), (5, 2));
+        // Behind is the ordinary case and must still stream forward, not resync.
+        assert_eq!(pull_indices(1, 5, 3, 7, cur(1, 2, 7, 0)), (2, 0));
+    }
+
     /// The **client-side specification**: a `PullClient` driven through every protocol
     /// transition against a simulated server, asserting after each step that (a) the joined
     /// view equals the server's, (b) the cursor is caught up (the next pull is idle), and
