@@ -37,8 +37,9 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long))]
     pub latest: bool,
 
-    /// Follow the file and show new events live (tail -f).
-    #[cfg_attr(feature = "cli", arg(short = 'f', long))]
+    /// **Deprecated, and ignored.** The viewer and the HTML server always tail; a dump never
+    /// does. Kept so existing commands and scripts keep working.
+    #[cfg_attr(feature = "cli", arg(short = 'f', long, hide = true))]
     pub follow: bool,
 
     /// Do not use (or write) the durable session cache — fold every session from scratch.
@@ -92,8 +93,7 @@ pub struct Args {
     /// Export a single self-contained `.html` (no TUI). With no value, write
     /// `<stem>.html` using a deduced stem; `--dump-html <stem>` writes to that
     /// stem; `--dump-html -` prints the page to stdout. Honors --fold/--unfold/
-    /// --full. Add `-f`/`--follow` to also write an append-only `<stem>.jsonl`
-    /// companion the page polls, so the export keeps up with a live session.
+    /// --full. A dump is a **snapshot** — to watch a session, use `--html`.
     #[cfg_attr(feature = "cli", arg(long, num_args(0..=1), value_name = "STEM", conflicts_with = "dump"))]
     pub dump_html: Option<Option<String>>,
 
@@ -108,8 +108,8 @@ pub struct Args {
 
     /// Open the transcript as an HTML page in your browser instead of the TUI.
     /// Serves over a loopback HTTP server (so a tool-path click can reveal the
-    /// file in Finder) and prints the URL; Ctrl-C stops it. With `-f`/`--follow`
-    /// the page also follows the session live. Honors --fold/--unfold/--full.
+    /// file in Finder) and prints the URL; Ctrl-C stops it. The page **follows
+    /// the session live**. Honors --fold/--unfold/--full.
     #[cfg_attr(feature = "cli", arg(long, conflicts_with_all = ["dump", "dump_html"]))]
     pub html: bool,
 }

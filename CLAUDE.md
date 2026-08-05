@@ -90,8 +90,8 @@ session picker · `clipboard.rs`. Only `app`/`view` are public.
 
 **`claude-replay-html/`** — the HTML frontend, no terminal deps: `html_export/` (`mod.rs`
 render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline writers · `serve.rs` the
-`--html` live server; `-f` serves live over a loopback HTTP server since a `file://` page can't
-`fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
+`--html` live server, which always tails; it serves over a loopback HTTP server since a
+`file://` page can't `fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
 emits an append-only JSON block stream, the JS renders it).
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the

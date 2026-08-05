@@ -12,6 +12,6 @@ pub use html_export::{dump_all_html, dump_html, serve, start_server, LiveServer}
 // Aliases so the moved module keeps referring to `crate::model`, `crate::cache`, …
 // unchanged.
 pub(crate) use claude_replay_core::{
-    diff, discover, engine, fold, follow, metrics, model, parse_session_as, Agent, Transcript,
+    diff, discover, engine, fold, metrics, model, parse_session_as, Agent, Transcript,
 };
 pub(crate) use claude_replay_present::{cache, highlight, present, sys, Args, SessionCache};

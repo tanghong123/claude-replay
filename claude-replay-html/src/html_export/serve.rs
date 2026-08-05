@@ -6,10 +6,7 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::record_store::{HtmlNote, RecordStore};
-use super::{
-    assemble_meta, block_lines, build_shell, display_title, render_blocks, render_snapshot,
-    session_id, AgentInfo, POLL_MS,
-};
+use super::{assemble_meta, build_shell, display_title, render_blocks, session_id, AgentInfo};
 use crate::cache::{self, Presentation};
 use crate::cache::{lock, pull_indices, Admission, Cursor, SharedSession};
 use crate::engine::meta_stream::Versions;
@@ -457,29 +454,6 @@ impl Live {
     }
 }
 
-/// The append chunk to bring a stream from `prev` block lines to `fresh`: a
-/// `{t:"reset",from:N}` when an already-rendered block changed/vanished, the new tail,
-/// and the refreshed `meta`. `None` when nothing changed (a pure no-op cycle). Mirrors
-/// the single-file [`follow_and_append`] diff, per agent.
-pub(super) fn stream_delta(prev: &[String], fresh: &[String], meta: &str) -> Option<String> {
-    let diff = prev.iter().zip(fresh).take_while(|(a, b)| a == b).count();
-    if diff >= prev.len() && diff >= fresh.len() {
-        return None; // unchanged
-    }
-    let mut out = String::new();
-    if diff < prev.len() {
-        out.push_str(&json!({ "t": "reset", "from": diff }).to_string());
-        out.push('\n');
-    }
-    for l in &fresh[diff..] {
-        out.push_str(l);
-        out.push('\n');
-    }
-    out.push_str(meta);
-    out.push('\n');
-    Some(out)
-}
-
 /// Build the `/pull` wire reply string. The **provisional** records are spliced inline (already
 /// JSON objects, so `[rec1,rec2,…]` is a valid array — no per-record parse); the **committed**
 /// zone is a pointer `committed_ext: {offset, len}` into `<id>.records` that the client
@@ -505,92 +479,17 @@ fn pull_reply_json(
     )
 }
 
-/// Poll the transcript forever, streaming changes to `companion`. Shared by
-/// `--dump-html -f` and `--html -f`; returns only on error (the caller runs until
-/// Ctrl-C). `prev` is the block lines already on the page (excluding the meta).
-///
-/// The tail of a live transcript is **rewritten**, not just appended to: a
-/// thinking block finalizes, a tool result lands, an activity group coalesces. So
-/// each cycle we diff the fresh block lines against `prev` and find the first that
-/// differs. Blocks before it are stable → left alone (the common case is a pure
-/// append: no divergence, just new lines). From the first divergence we emit a
-/// `{"t":"reset","from":N}` record (the page drops its rendered blocks ≥ N) then
-/// re-emit the fresh tail — so a rewritten/ coalesced tail re-renders correctly,
-/// matching the TUI's full re-parse. `reveal` must match the initial snapshot.
-pub(super) fn follow_and_append(
-    agent: Agent,
-    path: &Path,
-    fold: &FoldPolicy,
-    companion: &Path,
-    mut prev: Vec<String>,
-    reveal: bool,
-) -> Result<()> {
-    // Incremental follower (M16): fold only the newly-appended lines each poll instead of
-    // re-parsing the whole file. `open` starts at byte 0, so the first poll folds the file
-    // to the current state (== the initial export → no diff), then only deltas thereafter.
-    let mut follower = crate::follow::FollowParser::open(claude_replay_core::adapter(agent), path);
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        let polled = match follower.poll() {
-            Ok(p) => p,
-            Err(_) => continue, // transient read error mid-write; retry next cycle
-        };
-        let Some((snap_blocks, times, metrics)) = polled else {
-            continue; // nothing new this cycle
-        };
-        let cwd = crate::discover::session_cwd(path)
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let tasks = crate::engine::tasks::merged(
-            &follower.tasks(),
-            crate::discover::session_tasks(agent, path),
-        );
-        let (fresh, _) = render_snapshot(
-            agent,
-            path,
-            &snap_blocks,
-            &times,
-            &metrics,
-            &cwd,
-            fold,
-            reveal,
-            &tasks,
-        );
-        let meta = fresh.lines().next().unwrap_or("{}");
-        let blocks = block_lines(&fresh);
-        // The rewind/tail/meta diff is the SAME as the multi-file tailer's — one shared helper
-        // (finding #5). `None` on a pure no-op cycle; else append the `{reset,from}` + tail + meta.
-        if let Some(delta) = stream_delta(&prev, &blocks, meta) {
-            append_line(companion, delta.trim_end())?;
-            prev = blocks;
-        }
-    }
-}
-
-/// Append a single already-formatted JSONL line (used to refresh the meta record).
-fn append_line(companion: &Path, line: &str) -> Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(companion)
-        .with_context(|| format!("append {}", companion.display()))?;
-    writeln!(f, "{line}")?;
-    Ok(())
-}
-
 /// `--html`: render to HTML and open it in the browser instead of the TUI, as a
 /// **multi-file bundle** — one shared shell + one `<id>.jsonl` per agent — so sub-agent
 /// drill-down works (clicking an agent navigates to its own stream). Serves over a tiny
 /// **loopback HTTP server** (not `file://`) so a path click can reveal the file in Finder
-/// (`/__reveal`) and the page can `fetch` its streams. `-f` live-tails the whole tree,
-/// keeping every agent's stream current (new spawns appear, children grow); without it
-/// the bundle is a static snapshot.
+/// (`/__reveal`) and the page can `fetch` its streams. It live-tails the whole tree, keeping
+/// every agent's stream current as new spawns appear and children grow.
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
     let server = start_server(args, std::slice::from_ref(&path.to_path_buf()))?;
     let url = server.url_for_root(0).expect("one root");
-    let kind = if args.follow { "live" } else { "static" };
     eprintln!(
-        "serving {} at {url} ({kind} — Ctrl-C to stop)",
+        "serving {} at {url} (live — Ctrl-C to stop)",
         server.dir.display()
     );
     eprintln!("  open in a browser, or copy the URL above");
@@ -720,7 +619,8 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     // traffic, protected by one test suite, folded on the requester's own thread.
     std::fs::write(
         dir.join("index.html"),
-        build_shell(&title, &sid, args.follow, true),
+        // Always live: a served page tails its session, full stop.
+        build_shell(&title, &sid, true, true),
     )
     .with_context(|| "write index.html")?;
 

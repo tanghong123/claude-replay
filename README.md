@@ -59,19 +59,21 @@ claude-replay                                 pick from this dir's sessions (Cla
 claude-replay <session-id | path/to.jsonl>   render that transcript (agent auto-detected)
 claude-replay --latest                        newest session for THIS dir or an ancestor (not the global newest)
 claude-replay --agent codex                   only show Codex sessions (or --agent claude)
-claude-replay <id> -f                         follow a running session live
 claude-replay <id|--latest> --dump -          plain text to stdout (no TUI) — for pipes/tests
 claude-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
 claude-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
 claude-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
 claude-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
 claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
-claude-replay <id> -f --dump-html [stem]       live: also write an append-only <stem>.jsonl the page follows
-claude-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, Ctrl-C to stop
-claude-replay <id> -f --html                   live HTML: also follows the session (new turns stream in)
+claude-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, follows
+                                               the session live, Ctrl-C to stop
 claude-replay <id> --no-cache                  skip the durable cache (fold from scratch; also allows
                                                a second LIVE view of a session another instance follows)
 ```
+
+**Live by default.** The viewer and `--html` always tail — new turns appear as the session
+writes them; nothing to pass. Dumps (`--dump`, `--dump-html`, `--dump-all-html`) are always
+snapshots. `-f`/`--follow` is accepted and ignored, so old commands keep working.
 
 **The durable cache.** Opening a session writes its folded blocks under
 `~/.cache/claude-replay/sessions/`, so opening it again resumes where the last run stopped
@@ -98,8 +100,8 @@ light/dark themes (persisted), and click-to-copy on the session id and code fenc
 It honors the same `--fold`/`--unfold`/`--full` flags, but never caps a body — the
 full content is always in the file (grep-able), with long tails hidden behind a
 `⋯ N more lines` expander. The page is a fixed shell plus an append-only JSONL block
-stream inlined in the file; with `-f` the stream is also written to a companion
-`<stem>.jsonl` that the page polls, so the export follows a running session live.
+stream inlined in the file — a self-contained snapshot. To watch a running session,
+use `--html`, which serves the same content and follows it live.
 Clicking a **file path** in a tool header (`Write`/`Update`/`Read`) opens that file
 (`file://`, new tab) — the browser's stand-in for the TUI's reveal-in-Finder;
 clicking elsewhere on the header still folds.
@@ -110,18 +112,16 @@ tiny **loopback HTTP server** and prints the `http://127.0.0.1:…` URL (copy it
 open elsewhere); Ctrl-C stops the server. Serving (rather than a bare `file://`
 page) is what lets a click on a tool-header path **reveal the file in Finder** —
 the browser can't shell out, so the click asks the local server, which does the
-same `open -R` the TUI does. With `-f` the page also follows the session live
-(new turns stream in, cost updates); without it it's a self-contained static
-snapshot. Either way the page is fully rendered even offline — only path-reveal
-and live-follow need the server.
+same `open -R` the TUI does. The page **follows the session live** — new turns
+stream in and the cost updates as they land.
 
 When you give **no** session and this directory has **several**, `--html` keeps the
 session picker on screen and serves *every* discovered session at once on the one
 port. `Enter` — or a click on a row — opens that session in a browser tab and the
 list **stays up**, marking what you've already opened (`●`), so you can fan several
-sessions out and keep going; `Esc` quits. (With `-f` they are all live
-simultaneously — each open tab tails its own session.) A directory with exactly one
-match still opens it directly.
+sessions out and keep going; `Esc` quits. They are all live simultaneously — each
+open tab tails its own session. A directory with exactly one match still opens it
+directly.
 
 Default view: user turns (`❯`), assistant text (`⏺`), `✻` thinking summaries, and
 code-**modifying** actions (Edit/Write/MultiEdit + mutating Bash) with each edit as

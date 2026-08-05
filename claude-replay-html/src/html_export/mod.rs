@@ -1090,11 +1090,6 @@ fn is_uuid(s: &str) -> bool {
         })
 }
 
-/// The block lines of a stream (everything after the leading `meta` line).
-pub(super) fn block_lines(jsonl: &str) -> Vec<String> {
-    jsonl.lines().skip(1).map(String::from).collect()
-}
-
 /// Enough to generate + locate one agent's stream. The root and every discovered
 /// sub-agent get one; `source` is the transcript the stream is parsed from.
 #[derive(Clone)]
@@ -1430,7 +1425,7 @@ impl AssetSink {
 
 #[cfg(test)]
 mod tests {
-    use super::serve::{percent_decode, query_get, stream_delta};
+    use super::serve::{percent_decode, query_get};
     use super::*;
     use crate::model::Hunk;
 
@@ -1781,39 +1776,8 @@ mod tests {
         assert_eq!(query_get("session=a1", "from"), None);
     }
 
-    /// The live tailer's per-agent delta: a pure append emits no reset; a rewritten tail
-    /// emits `{t:"reset",from:N}` at the first divergence; an unchanged stream is a no-op.
-    #[test]
-    fn stream_delta_appends_and_resets() {
-        let meta = r#"{"t":"meta","tools":2}"#;
-        // Pure append: two new blocks, no reset.
-        let d = stream_delta(
-            &["a".into(), "b".into()],
-            &["a".into(), "b".into(), "c".into()],
-            meta,
-        )
-        .expect("changed");
-        assert!(!d.contains("reset"), "pure append has no reset: {d}");
-        assert!(d.contains('c') && d.trim_end().ends_with(meta));
-        // Rewritten tail: block 1 changed → reset from 1, re-emit the tail.
-        let d = stream_delta(&["a".into(), "b".into()], &["a".into(), "B2".into()], meta)
-            .expect("changed");
-        let reset: Value = serde_json::from_str(d.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            reset,
-            json!({ "t": "reset", "from": 1 }),
-            "reset at divergence"
-        );
-        assert!(d.contains("B2"));
-        // Unchanged → no delta.
-        assert_eq!(
-            stream_delta(&["a".into(), "b".into()], &["a".into(), "b".into()], meta),
-            None
-        );
-    }
-
     /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot;
-    /// `live` adds `data-poll` (served `--html -f`), static omits it.
+    /// `live` adds `data-poll` (what `--html` serves); a dump's page omits it.
     #[test]
     fn build_shell_is_multi_file_without_inline() {
         let html = build_shell("My session", "root-9f3d", false, false);
@@ -2463,54 +2427,6 @@ mod tests {
         let _ = std::fs::remove_file(&tpath);
     }
 
-    /// Regression: in an offline bundle an image attachment must materialize to `assets/`
-    /// and carry `att_kind:"image"` + `att_href` (no `att_datauri`) — that is exactly the
-    /// pair the JS now uses to render the image inline, matching the served page.
-    #[test]
-    fn bundle_image_attachment_emits_href_for_inline_render() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "cr-bimg-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        // A real transcript carrying the base64 image; the block holds only a locator.
-        let line = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}}"#;
-        let tpath = att_transcript(line);
-        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
-        let img = Block::Attachment(crate::model::Attachment {
-            kind: crate::model::AttachmentKind::Image,
-            name: "image.png".into(),
-            path: None,
-            content: AttachmentContent::Deferred { at: 0, index: 0 },
-        });
-        let mut sink = AssetSink::new(&base).unwrap();
-        let (jsonl, _) = build_jsonl_inner(
-            std::slice::from_ref(&img),
-            &[],
-            &FoldPolicy::none(),
-            "/w",
-            false, // exported/bundle (not served)
-            false,
-            Some(&mut sink),
-            Some(&src),
-            json!({ "t": "meta" }),
-        );
-        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
-        let h = &rec["head"];
-        assert_eq!(h["att_kind"], "image");
-        assert!(
-            h.get("att_href").and_then(|v| v.as_str()).is_some(),
-            "bundled image links to assets/: {h}"
-        );
-        assert!(h.get("att_datauri").is_none(), "no data URI in a bundle");
-        let _ = std::fs::remove_dir_all(&base);
-        let _ = std::fs::remove_file(&tpath);
-    }
-
     #[test]
     fn everything_is_html_escaped() {
         let blocks = vec![Block::UserText(
@@ -2670,23 +2586,52 @@ mod tests {
         assert!(has_nested, "nested tool blocks present");
     }
 
+    /// Regression: in an offline bundle an image attachment must materialize to `assets/`
+    /// and carry `att_kind:"image"` + `att_href` (no `att_datauri`) — that is exactly the
+    /// pair the JS now uses to render the image inline, matching the served page.
     #[test]
-    fn block_lines_drops_the_leading_meta() {
-        let (jsonl, _) = build_jsonl(
-            &[Block::UserText("hi".into()), bash("ls", "out")],
+    fn bundle_image_attachment_emits_href_for_inline_render() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cr-bimg-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // A real transcript carrying the base64 image; the block holds only a locator.
+        let line = r#"{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}}"#;
+        let tpath = att_transcript(line);
+        let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
+        let img = Block::Attachment(crate::model::Attachment {
+            kind: crate::model::AttachmentKind::Image,
+            name: "image.png".into(),
+            path: None,
+            content: AttachmentContent::Deferred { at: 0, index: 0 },
+        });
+        let mut sink = AssetSink::new(&base).unwrap();
+        let (jsonl, _) = build_jsonl_inner(
+            std::slice::from_ref(&img),
             &[],
             &FoldPolicy::none(),
-            "/repo",
-            true,
+            "/w",
+            false, // exported/bundle (not served)
             false,
-            None,
+            Some(&mut sink),
+            Some(&src),
             json!({ "t": "meta" }),
         );
-        // The stream is meta + 2 blocks; block_lines keeps just the 2 block records.
-        assert_eq!(jsonl.lines().count(), 3);
-        let bl = block_lines(&jsonl);
-        assert_eq!(bl.len(), 2);
-        assert!(bl.iter().all(|l| l.contains("\"t\":\"block\"")), "{bl:?}");
+        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        let h = &rec["head"];
+        assert_eq!(h["att_kind"], "image");
+        assert!(
+            h.get("att_href").and_then(|v| v.as_str()).is_some(),
+            "bundled image links to assets/: {h}"
+        );
+        assert!(h.get("att_datauri").is_none(), "no data URI in a bundle");
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_file(&tpath);
     }
 
     #[test]

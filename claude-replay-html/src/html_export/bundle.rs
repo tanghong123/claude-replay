@@ -4,8 +4,8 @@
 //! through `super`'s block/stream helpers, and write the files.
 
 use super::{
-    block_lines, build_html, build_shell, child_info, display_title, render_agent_stream,
-    render_snapshot, serve, session_id, AgentInfo, AssetSink, ChildRef,
+    build_html, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
+    session_id, AgentInfo, AssetSink, ChildRef,
 };
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args};
@@ -64,52 +64,16 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
         None => crate::sys::deduce_stem(path, None),
     };
 
-    // Live: the page renders the inline snapshot immediately, then polls the
-    // companion for appended lines — so it works standalone *and* keeps up. The
-    // page references the companion by **basename** (same directory as the .html),
-    // so `fetch` resolves it relative to the page's own URL.
-    let companion = if args.follow {
-        let cpath = format!("{stem}.jsonl");
-        std::fs::write(&cpath, format!("{jsonl}\n")).with_context(|| format!("write {cpath}"))?;
-        let src = Path::new(&cpath)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&cpath)
-            .to_string();
-        Some((cpath, src))
-    } else {
-        None
-    };
+    // A dump is a SNAPSHOT — one self-contained file, no companion, no follower. Watching a
+    // session is `--html`, which serves the same content live over the pull protocol and gets
+    // the durable cache with it; the companion-file variant was a second, uncached way to do
+    // the same thing.
     let html_path = format!("{stem}.html");
-    std::fs::write(
-        &html_path,
-        build_html(
-            &title,
-            &jsonl,
-            &turns,
-            companion.as_ref().map(|(_, s)| s.as_str()),
-        ),
-    )
-    .with_context(|| format!("write {html_path}"))?;
-
-    let Some((cpath, _)) = companion else {
-        eprintln!("wrote {html_path}");
-        println!("{stem}");
-        return Ok(());
-    };
-
-    // Live tail: poll the transcript, appending any block lines that appeared
-    // since the last cycle. Runs until interrupted (like `claude-replay -f`).
-    eprintln!("wrote {html_path} + {cpath} (live — open it and it follows; Ctrl-C to stop)");
+    std::fs::write(&html_path, build_html(&title, &jsonl, &turns, None))
+        .with_context(|| format!("write {html_path}"))?;
+    eprintln!("wrote {html_path}");
     println!("{stem}");
-    serve::follow_and_append(
-        agent,
-        path,
-        &fold,
-        Path::new(&cpath),
-        block_lines(&jsonl),
-        reveal,
-    )
+    Ok(())
 }
 
 /// Parse ONE agent's source transcript (NOT the whole tree) into its stream jsonl: the
