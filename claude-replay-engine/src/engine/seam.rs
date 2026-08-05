@@ -42,7 +42,9 @@ pub use crate::engine::tasks::{task_from_json, TaskList, TaskOp};
 pub use crate::engine::time::epoch_secs;
 #[doc(hidden)]
 pub use crate::metrics::human_tokens;
-pub use crate::metrics::{estimate_cost, parse_reader_with, parse_ts, Metrics, TimeSpan};
+pub use crate::metrics::{
+    estimate_cost, parse_reader_with, parse_ts, total_cost, Metrics, TimeSpan, TokenCounts,
+};
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
 pub use crate::model::*;

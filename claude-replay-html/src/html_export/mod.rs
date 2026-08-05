@@ -1209,7 +1209,7 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     let mut u = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
         "cache_read": human_tokens(m.cache_read_tokens),
-        "cost": m.cost_usd.map(|c| format!("${c:.2}")), "model": m.model,
+        "cost": m.cost_usd.map(|c| m.cost_label(c)), "model": m.model_label(),
     });
     if with_duration {
         u["duration_secs"] = json!(m.duration_secs);

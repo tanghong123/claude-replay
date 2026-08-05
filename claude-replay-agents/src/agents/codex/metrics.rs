@@ -1,4 +1,4 @@
-use claude_replay_engine::seam::{parse_ts, Metrics, TimeSpan};
+use claude_replay_engine::seam::{parse_ts, total_cost, Metrics, TimeSpan, TokenCounts};
 use serde_json::Value;
 
 /// Codex's per-line token/cost accumulator, folded through the shared
@@ -7,9 +7,12 @@ use serde_json::Value;
 /// (keeping the newest total), not sums.
 #[derive(Default, Clone)]
 pub(crate) struct CodexMetricsAcc {
-    input: u64,
-    cached: u64,
-    output: u64,
+    /// Tokens attributed to the model in force when they were reported (#104).
+    per_model: std::collections::BTreeMap<String, TokenCounts>,
+    /// The last cumulative reading. Codex reports RUNNING TOTALS, so each event's contribution
+    /// is its difference from this — the totals→increments conversion the record format wants,
+    /// done here in the adapter because only it knows its agent reports totals at all.
+    last_total: TokenCounts,
     model: String,
     span: TimeSpan,
     extra: std::collections::BTreeMap<String, u64>,
@@ -44,30 +47,40 @@ impl CodexMetricsAcc {
                 return;
             };
             let field = |name: &str| total.get(name).and_then(Value::as_u64).unwrap_or(0);
-            let total_input = field("input_tokens");
-            self.cached = field("cached_input_tokens");
-            self.input = total_input.saturating_sub(self.cached);
-            self.output = field("output_tokens");
+            let cached = field("cached_input_tokens");
+            let now = TokenCounts {
+                input: field("input_tokens").saturating_sub(cached),
+                cache_creation: 0, // Codex has no cache-write tier
+                cache_read: cached,
+                output: field("output_tokens"),
+            };
+            // Bank the increment against the CURRENT model. `saturating_sub` because a total
+            // that goes backwards (a reset) must contribute nothing, never wrap.
+            let e = self.per_model.entry(self.model.clone()).or_default();
+            e.input += now.input.saturating_sub(self.last_total.input);
+            e.cache_read += now.cache_read.saturating_sub(self.last_total.cache_read);
+            e.output += now.output.saturating_sub(self.last_total.output);
+            self.last_total = now;
         }
     }
 
     pub(crate) fn finish(self) -> Metrics {
-        // Codex has no cache-write tier; cached input bills at the read discount.
-        let cost_usd = claude_replay_engine::seam::estimate_cost(
-            &self.model,
-            self.input,
-            0,
-            self.cached,
-            self.output,
-        );
+        // Cost is the sum over models; cached input bills at the read discount (no write tier).
+        let (cost_usd, cost_partial) = total_cost(&self.per_model);
+        let mut tot = TokenCounts::default();
+        for c in self.per_model.values() {
+            tot += *c;
+        }
         let mut m = Metrics::default();
-        m.input_tokens = self.input;
-        m.cache_creation_tokens = 0;
-        m.cache_read_tokens = self.cached;
-        m.output_tokens = self.output;
+        m.input_tokens = tot.input;
+        m.cache_creation_tokens = tot.cache_creation;
+        m.cache_read_tokens = tot.cache_read;
+        m.output_tokens = tot.output;
+        m.per_model = self.per_model;
         m.model = self.model;
         m.duration_secs = self.span.duration_secs();
         m.cost_usd = cost_usd;
+        m.cost_partial = cost_partial;
         m.extra = self.extra;
         m
     }
@@ -76,6 +89,62 @@ impl CodexMetricsAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #104, Codex side. Codex reports RUNNING TOTALS, so per-model attribution means banking
+    /// each event's INCREMENT against the model in force — not overwriting a flat counter.
+    #[test]
+    fn running_totals_bank_increments_against_the_model_in_force() {
+        let ctx = |m: &str| format!(r#"{{"type":"turn_context","payload":{{"model":"{m}"}}}}"#);
+        let count = |input: u64, out: u64| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{
+                   "total_token_usage":{{"input_tokens":{input},"cached_input_tokens":0,
+                   "output_tokens":{out}}}}}}}}}"#
+            )
+        };
+        let mut acc = CodexMetricsAcc::default();
+        for l in [
+            ctx("gpt-a"),
+            count(100, 10),
+            count(300, 30),
+            ctx("gpt-b"),
+            count(400, 45),
+        ] {
+            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+        }
+        let m = acc.finish();
+        // gpt-a got the first two readings (cumulative 300/30); gpt-b only the INCREMENT.
+        assert_eq!(
+            m.per_model["gpt-a"].output, 30,
+            "cumulative, not double-counted"
+        );
+        assert_eq!(
+            m.per_model["gpt-b"].output, 15,
+            "the delta 45-30, not the total 45"
+        );
+        assert_eq!(m.per_model["gpt-a"].input, 300);
+        assert_eq!(m.per_model["gpt-b"].input, 100);
+        // The flat totals still equal the last cumulative reading.
+        assert_eq!(m.output_tokens, 45);
+        assert_eq!(m.input_tokens, 400);
+    }
+
+    /// A total that goes BACKWARDS (a reset) must contribute nothing, never wrap.
+    #[test]
+    fn a_backwards_total_contributes_zero() {
+        let count = |out: u64| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{
+                   "total_token_usage":{{"input_tokens":0,"cached_input_tokens":0,
+                   "output_tokens":{out}}}}}}}}}"#
+            )
+        };
+        let mut acc = CodexMetricsAcc::default();
+        for l in [count(500), count(100)] {
+            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+        }
+        assert_eq!(acc.finish().output_tokens, 500, "no wrap, no loss");
+    }
     use claude_replay_engine::seam::parse_reader_with;
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`

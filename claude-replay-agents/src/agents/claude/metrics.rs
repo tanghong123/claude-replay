@@ -3,7 +3,7 @@
 //! into a running [`MetricsAcc`]; the agent-neutral [`Metrics`] value, pricing, and footer
 //! formatting live in [`claude_replay_engine::seam`].
 
-use claude_replay_engine::seam::{estimate_cost, parse_ts, Metrics, TimeSpan};
+use claude_replay_engine::seam::{parse_ts, total_cost, Metrics, TimeSpan, TokenCounts};
 use serde_json::Value;
 
 /// Claude's per-line token/cost accumulator, folded through the shared
@@ -13,10 +13,10 @@ use serde_json::Value;
 /// `/message/usage`; `finish` prices it.
 #[derive(Default, Clone)]
 pub(crate) struct MetricsAcc {
-    input: u64,
-    cache_creation: u64,
-    cache_read: u64,
-    output: u64,
+    /// Tokens keyed by the model that produced them (#104). Claude reports `usage` per
+    /// assistant message alongside `/message/model`, so attribution is free — it used to be
+    /// discarded, which priced a whole multi-model session at the last model's rate.
+    per_model: std::collections::BTreeMap<String, TokenCounts>,
     model: String,
     span: TimeSpan,
     extra: std::collections::BTreeMap<String, u64>,
@@ -34,15 +34,22 @@ impl MetricsAcc {
 
     pub(crate) fn push(&mut self, v: &Value) {
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        // The model THIS message ran on — not `self.model`, which is only the last seen.
+        let m = v
+            .pointer("/message/model")
+            .and_then(|x| x.as_str())
+            .unwrap_or(&self.model)
+            .to_string();
         if let Some(u) = v.pointer("/message/usage") {
+            let e = self.per_model.entry(m).or_default();
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
             // separate so it doesn't drown out genuinely-new input).
-            self.input += field(u, "input_tokens");
-            self.cache_creation += field(u, "cache_creation_input_tokens");
-            self.cache_read += field(u, "cache_read_input_tokens");
-            self.output += field(u, "output_tokens");
+            e.input += field(u, "input_tokens");
+            e.cache_creation += field(u, "cache_creation_input_tokens");
+            e.cache_read += field(u, "cache_read_input_tokens");
+            e.output += field(u, "output_tokens");
         }
         if let Some(m) = v.pointer("/message/model").and_then(|x| x.as_str()) {
             self.model = m.to_string();
@@ -56,22 +63,26 @@ impl MetricsAcc {
 
     pub(crate) fn finish(self) -> Metrics {
         let duration_secs = self.span.duration_secs();
-        let cost_usd = estimate_cost(
-            &self.model,
-            self.input,
-            self.cache_creation,
-            self.cache_read,
-            self.output,
-        );
+        // Cost is the SUM over models (#104) — pricing the whole session at one model's rate
+        // is wrong whenever it switched, and 4.7% of measured sessions did.
+        let (cost_usd, cost_partial) = total_cost(&self.per_model);
+        // The flat totals keep their meaning: the sum across models. Every existing consumer
+        // reads these unchanged.
+        let mut tot = TokenCounts::default();
+        for c in self.per_model.values() {
+            tot += *c;
+        }
         let mut m = Metrics::default();
-        m.input_tokens = self.input;
-        m.cache_creation_tokens = self.cache_creation;
-        m.cache_read_tokens = self.cache_read;
-        m.output_tokens = self.output;
+        m.input_tokens = tot.input;
+        m.cache_creation_tokens = tot.cache_creation;
+        m.cache_read_tokens = tot.cache_read;
+        m.output_tokens = tot.output;
         m.model = self.model;
         m.duration_secs = duration_secs;
         m.cost_usd = cost_usd;
+        m.cost_partial = cost_partial;
         m.extra = self.extra;
+        m.per_model = self.per_model;
         m
     }
 }
@@ -79,6 +90,88 @@ impl MetricsAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use claude_replay_engine::seam::estimate_cost;
+
+    /// #104: a session that SWITCHES models must price each model's tokens at its own rate.
+    /// Before this, `finish` applied the LAST model's rate to every token in the session —
+    /// measured at 4.7% of local sessions, and wrong in whichever direction the last model
+    /// happened to differ.
+    #[test]
+    fn cost_is_summed_per_model_not_priced_at_the_last_one() {
+        let line = |model: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","model":"{model}",
+                   "usage":{{"input_tokens":0,"output_tokens":{out}}}}},
+                   "timestamp":"2026-08-05T10:00:00Z"}}"#
+            )
+            .replace('\n', "")
+        };
+        let mut acc = MetricsAcc::default();
+        for l in [
+            line("claude-opus-4-8", 1_000_000),
+            line("claude-haiku-4-5-20251001", 10),
+        ] {
+            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+        }
+        let m = acc.finish();
+
+        // Attribution survives: two models, tokens with the one that produced them.
+        assert_eq!(m.per_model.len(), 2, "both models attributed");
+        assert_eq!(m.per_model["claude-opus-4-8"].output, 1_000_000);
+        assert_eq!(m.per_model["claude-haiku-4-5-20251001"].output, 10);
+        // The flat totals keep their old meaning — the sum across models.
+        assert_eq!(m.output_tokens, 1_000_010);
+
+        // The bug: 1M Opus tokens priced at Haiku's rate. Cost must be dominated by the Opus
+        // share, i.e. far above what the last model alone would give.
+        let all_at_last = estimate_cost("claude-haiku-4-5-20251001", 0, 0, 0, 1_000_010);
+        let (got, wrong) = (m.cost_usd.unwrap(), all_at_last.unwrap());
+        assert!(
+            got > wrong * 5.0,
+            "got ${got:.4}, last-model pricing gave ${wrong:.4}"
+        );
+        // And it equals the sum of the two priced separately.
+        let want = estimate_cost("claude-opus-4-8", 0, 0, 0, 1_000_000).unwrap()
+            + estimate_cost("claude-haiku-4-5-20251001", 0, 0, 0, 10).unwrap();
+        assert!((got - want).abs() < 1e-9, "cost must be the per-model sum");
+        // One line, still: the label signals the extra model without a breakdown.
+        assert!(m.model_label().ends_with("+1"), "got {}", m.model_label());
+        assert!(!m.cost_partial, "both models are priced");
+    }
+
+    /// Per-model attribution EXPOSES a gap flat counters hid: a model the price table does not
+    /// know contributes nothing, so a sum over models can silently cover a fraction of the
+    /// session. The byte-gate fixture is exactly this — 97% of its tokens are `claude-fable-5`,
+    /// unpriced — and reporting 3% as "the cost" would be worse than the bug being fixed.
+    #[test]
+    fn an_unpriced_model_makes_the_cost_a_lower_bound() {
+        let line = |model: &str, out: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","model":"{model}",
+                   "usage":{{"input_tokens":0,"output_tokens":{out}}}}},
+                   "timestamp":"2026-08-05T10:00:00Z"}}"#
+            )
+        };
+        let mut acc = MetricsAcc::default();
+        for l in [
+            line("claude-opus-4-8", 100),
+            line("some-unpriced-model", 9_000_000),
+        ] {
+            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+        }
+        let m = acc.finish();
+        assert!(
+            m.cost_partial,
+            "an unpriced model with tokens must flag the total"
+        );
+        let c = m.cost_usd.unwrap();
+        assert_eq!(
+            m.cost_label(c),
+            format!("≥${c:.2}"),
+            "rendered as a lower bound"
+        );
+        assert_eq!(m.output_tokens, 9_000_100, "totals still count every token");
+    }
     use claude_replay_engine::seam::{human_tokens, parse_reader_with};
 
     /// Metrics via the public reader dispatch — exercises the shared `MetricsAccumulator`

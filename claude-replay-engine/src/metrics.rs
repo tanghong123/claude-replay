@@ -47,6 +47,68 @@ pub struct Metrics {
     /// extension bag: data-only (not shown by the standard [`footer`](Self::footer)), so a
     /// brand-new category needs no struct change. Empty for an agent that reports none.
     pub extra: BTreeMap<String, u64>,
+    /// Tokens **attributed to the model that produced them** (#104). A session can switch
+    /// models — measured at 4.7% of local sessions — and pricing every token at one model's
+    /// rate is simply wrong, so [`cost_usd`](Self::cost_usd) is the SUM over this map.
+    /// `model` above remains the last one seen, which is what a live session is running now.
+    pub per_model: BTreeMap<String, TokenCounts>,
+    /// Set when [`cost_usd`](Self::cost_usd) omits a model that produced tokens but is absent
+    /// from the price table — the figure is then a LOWER BOUND, rendered `≥$x` not `~$x`.
+    /// Phrased as the *exception* so `Default` (false = nothing omitted) is correct.
+    pub cost_partial: bool,
+}
+
+/// One model's share of a session's tokens. The four typed counters of [`Metrics`], split out
+/// so they can be keyed by model.
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct TokenCounts {
+    pub input: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+    pub output: u64,
+}
+
+impl std::ops::AddAssign for TokenCounts {
+    fn add_assign(&mut self, o: Self) {
+        self.input += o.input;
+        self.cache_creation += o.cache_creation;
+        self.cache_read += o.cache_read;
+        self.output += o.output;
+    }
+}
+
+impl TokenCounts {
+    /// This model's cost, or `None` when the model isn't priced.
+    pub fn cost(&self, model: &str) -> Option<UsdCost> {
+        estimate_cost(
+            model,
+            self.input,
+            self.cache_creation,
+            self.cache_read,
+            self.output,
+        )
+    }
+}
+
+/// Sum the per-model costs, and say whether the sum covers **every** model that produced
+/// tokens (the returned flag is `true` when some model was OMITTED).
+///
+/// The flag is not decoration. Pricing is name-matched (`price`), so a model the table does not
+/// know contributes **nothing** — and per-model attribution makes that visible where a single
+/// flat counter hid it. A real case from the byte-gate fixture: 97% of its tokens are
+/// `claude-fable-5`, unpriced, so the sum covers 3% of the session. Reporting that as "the
+/// cost" would be worse than the bug this fixes; reporting it as a LOWER BOUND is honest.
+pub fn total_cost(per_model: &BTreeMap<String, TokenCounts>) -> (Option<UsdCost>, bool) {
+    let (mut total, mut partial) = (None, false);
+    for (m, c) in per_model {
+        match c.cost(m) {
+            Some(v) => *total.get_or_insert(0.0) += v,
+            // Only tokens make a gap: a model that produced none costs nothing either way.
+            None if *c != TokenCounts::default() => partial = true,
+            None => {}
+        }
+    }
+    (total, partial)
 }
 
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
@@ -180,7 +242,7 @@ impl Metrics {
             segs.push((format!("{} cached", human_tokens(cached)), 1));
         }
         if !self.model.is_empty() {
-            segs.push((short_model(&self.model).to_string(), 3));
+            segs.push((self.model_label(), 3));
         }
         segs.push((format!("{} in", human_tokens(self.input_tokens)), 4));
         segs.push((format!("{} out", human_tokens(self.output_tokens)), 5));
@@ -188,20 +250,42 @@ impl Metrics {
             segs.push((human_dur(self.duration_secs), 6));
         }
         if let Some(c) = self.cost_usd {
-            segs.push((format!("~${c:.2}"), 7));
+            segs.push((self.cost_label(c), 7));
         }
         segs
+    }
+
+    /// The model for a ONE-LINE footer. With several models in play a single name beside a
+    /// summed cost would misread as "this cost, at this rate", so a `+N` says how many others
+    /// contributed (#104). Neither surface has room for a per-model breakdown; this is the
+    /// smallest honest signal.
+    /// `~$x` when every model that produced tokens is priced; `≥$x` when some is not, so an
+    /// estimate covering part of a session never reads as the whole of it. One character.
+    pub fn cost_label(&self, c: UsdCost) -> String {
+        if self.cost_partial {
+            format!("≥${c:.2}")
+        } else {
+            format!("~${c:.2}")
+        }
+    }
+
+    pub fn model_label(&self) -> String {
+        let short = short_model(&self.model).to_string();
+        match self.per_model.len() {
+            0 | 1 => short,
+            n => format!("{short}+{}", n - 1),
+        }
     }
 
     pub fn footer(&self) -> String {
         let model = if self.model.is_empty() {
             String::new()
         } else {
-            format!("{} · ", short_model(&self.model))
+            format!("{} · ", self.model_label())
         };
         let cost = self
             .cost_usd
-            .map(|c| format!(" · ~${c:.2}"))
+            .map(|c| format!(" · {}", self.cost_label(c)))
             .unwrap_or_default();
         // Show the cache tier only when there is one — cache-less transcripts keep
         // the plain "in / out" shape.
