@@ -236,12 +236,18 @@
     <div class="eyebrow">§1</div>
     <h2>Build &amp; test</h2>
     <p class="kicker">The workspace is fully testable headless — no TTY anywhere in the default
-      suite. Four checks gate every change (CI enforces these):</p>
+      suite. Five checks gate every change (CI enforces these):</p>
 <pre>cargo build --workspace
 cargo fmt --check
 cargo clippy --all-targets      <span class="c"># no new warnings</span>
 cargo test  --workspace         <span class="c"># deterministic; workspace default-members = all seven crates</span>
-scripts/gate/gate.sh            <span class="c"># frozen-fixture diff → must print BYTE-IDENTICAL: PASS</span></pre>
+scripts/gate/gate.sh            <span class="c"># frozen-fixture diff → must print BYTE-IDENTICAL: PASS</span>
+RUSTDOCFLAGS="--deny warnings" cargo doc --workspace --no-deps --document-private-items</pre>
+    <p>Run that last one <b>verbatim</b> — both flags matter.
+      <code>--document-private-items</code> makes rustdoc resolve links into private modules, so
+      a link that is fine in a public-only build errors here (and vice versa). The API-docs job
+      runs independently of Release, so a shortened local check fails <em>after</em> the tag and
+      the brew tap have already shipped.</p>
     <p>The byte gate renders a frozen transcript set through <code>--dump</code>,
       <code>--dump-html</code> and the bundle writer and diffs against a baseline (fixture data
       in <code>$SC_GATE_DIR</code>, default <code>~/.cache/claude-replay-gate</code> — a durable
@@ -428,8 +434,9 @@ cargo apidoc --open</pre>
     <div class="tblwrap"><table>
       <thead><tr><th>entity</th><th>what it does for you</th><th>real consumer in this repo</th></tr></thead>
       <tbody>
-        <tr><td><code>SessionCache&lt;P, A&gt;</code></td><td class="role"><b>the unified data layer</b> (<a href="architecture.html#cache">Architecture §8</a>): keyed residency + your choices — the live store <code>P</code> (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type <code>A</code>; 30 s TTL reaps idle residents</td><td class="role">TUI: <code>SessionCache&lt;ArcStore, ViewSidecar&gt;</code> · HTML server: <code>SessionCache&lt;RecordStore, ServeAux&gt;</code> — same type, both frontends</td></tr>
-        <tr><td><code>SharedSession</code></td><td class="role">a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions</td><td class="role"><code>serve.rs</code> builds one per followed session, tier-b backed</td></tr>
+        <tr><td><code>SessionCache&lt;P, A&gt;</code></td><td class="role"><b>the unified data layer</b> (<a href="architecture.html#cache">Architecture §8</a>): keyed residency + your choices — the live store <code>P</code> (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type <code>A</code>; 30 s TTL reaps idle residents</td><td class="role">TUI: <code>SessionCache&lt;ArcLog, ViewSidecar&gt;</code> · HTML server: <code>SessionCache&lt;RecordStore, ServeAux&gt;</code> — same type, both frontends</td></tr>
+        <tr><td><code>SessionCache::durable</code> + <code>DurableStore</code></td><td class="role"><b>the cross-run cache</b> (<a href="architecture.html#durable">Architecture §7</a>): a later process resumes the fold instead of re-reading the transcript — <code>admit</code> does the locking, validation, alignment and resume-or-rebuild decision behind one call</td><td class="role">both frontends; <code>--no-cache</code> selects <code>ephemeral()</code></td></tr>
+        <tr><td><code>SharedSession</code></td><td class="role">a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, and (when durable) the record writer that runs under the same lock as the fold</td><td class="role"><code>serve.rs</code> builds one per followed session</td></tr>
         <tr><td><code>Cursor</code>/<code>pull</code>/<code>PullClient</code></td><td class="role">the incremental wire protocol, both halves in Rust</td><td class="role">the <code>/pull</code> route serves it; the embedded JS mirrors <code>PullClient</code> transition-for-transition</td></tr>
         <tr><td><code>fold</code> (core) + <code>Args</code></td><td class="role">which block types start collapsed; the shared options type (clap only behind the <code>cli</code> feature)</td><td class="role">both frontends call <code>args.fold_policy()</code></td></tr>
         <tr><td><code>present</code> + core's <code>summary</code></td><td class="role">spawn chips, edit summaries, tool display names, activity/turn phrasing — the <em>voice</em> of the product</td><td class="role">TUI <code>render.rs</code> and the HTML emitter, so wording can't drift</td></tr>
@@ -446,12 +453,14 @@ cargo apidoc --open</pre>
       <b>one</b> authoritative copy of the blocks and your view holds <code>Arc</code>
       references — a tick costs O(delta) refcount bumps, and a resync-from-zero is served from
       memory:</p>
-<pre><span class="k">type</span> MyCache = SessionCache&lt;ArcStore, MySidecar&gt;;
+<pre><span class="k">type</span> MyCache = SessionCache&lt;ArcStore, MySidecar&gt;;   <span class="c">// ::durable(…) to persist</span>
 <span class="k">let</span> cache = MyCache::new();
 cache.register(&id, Transcript::open(agent, path));
 <span class="k">loop</span> {
     <span class="k">if</span> no_input_for_250ms() {
-        <span class="k">if let</span> Some(Ok(d)) = cache.poll_view(&id) {
+        <span class="c">// `open` builds the store on first use; a durable cache never</span>
+        <span class="c">// calls it — `admit` is the only path that takes the lock.</span>
+        <span class="k">if let</span> Some(Ok(d)) = cache.poll_view(&id, || ArcStore) {
             view.splice(d);            <span class="c">// keep [0..frontier), append Arc clones of</span>
         }                              <span class="c">//   d.committed_delta + d.provisional,</span>
     }                                  <span class="c">//   re-derive from d.changed_from — View::apply_view</span>
@@ -545,25 +554,87 @@ present::display_name(name);                   <span class="c">// Edit/MultiEdit
         <code>committed_tail</code>, <code>SharedSession::pull</code> — bounds on it, so the
         compiler tells you exactly which consumers a one-way projection store can't feed (and
         keeps them off it).</li>
-      <li><b><code>PersistentStore</code></b> (present) — <code>backing_len</code>/<code>reopen</code>
-        + optional hibernate-state hooks, so <code>SharedSession</code> can hibernate/restore
-        around your backing across cache evictions.</li>
+      <li><b><code>DurableStore</code></b> (present) — <code>load</code> + <code>adopt</code>,
+        plus the <code>Note</code> your lock carries. It is what makes your cache survive the
+        process; the next block is the whole of it.</li>
     </ul>
     <p>Three in-repo stores calibrate the design space: <code>InMemoryStore</code> (identity —
-      <code>BV = Block</code>), <code>ArcStore</code> (<code>BV = Arc&lt;Block&gt;</code> — the
-      cache retains the one authoritative copy and readers hold references; the TUI live path,
-      #84), and the richest one, <code>claude-replay-html</code>'s <code>RecordStore</code>
+      <code>BV = Block</code>), <code>ArcLog</code> (<code>BV = Arc&lt;Block&gt;</code> — the
+      cache retains the one authoritative copy and readers hold references, #84, with an
+      append-only backing so the next run resumes, #96), and the richest one, <code>claude-replay-html</code>'s <code>RecordStore</code>
       (<code>html_export/record_store.rs</code>):
       <code>Bv = RecordLocator{offset, len}</code> into <code>&lt;id&gt;.records</code>;
       <code>put</code> <b>renders the committed block to its wire-format JSON record</b> as the
       side effect and returns the pointer — the <code>Session</code> itself captures the
       session in the exact form the frontend serves, <code>/pull</code> answers committed zones
       as pointers clients range-read directly, and no second representation exists. It
-      implements <code>BlockStore</code> + <code>PersistentStore</code> but deliberately
+      implements <code>BlockStore</code> + <code>DurableStore</code> but deliberately
       <b>not</b> <code>BlockRead</code> (a wire record is a one-way projection) — the type
       system then keeps every committed consumer on the pointer path. See the
       <a href="architecture.html#showcase">architecture showcase</a> for the serving-CPU
       consequence.</p>
+
+    <h3 id="durable">making your cache durable — the DurableStore seam</h3>
+    <p>Two more methods on your store, and your frontend stops re-reading transcripts it has
+      already read. The design is in
+      <a href="architecture.html#durable">Architecture §7</a>; this is the API.</p>
+<pre><span class="k">impl</span> DurableStore <span class="k">for</span> MyStore {
+    <span class="c">/// What a peer that finds your lock held gets told — a port for a server, a</span>
+    <span class="c">/// pane for a TUI. Typed, not opaque: locks are per-presentation, so the</span>
+    <span class="c">/// only reader is you.</span>
+    <span class="k">type</span> Note = MyNote;
+
+    <span class="c">/// Reload the committed `Bv`s from the backing — the ONE frontend-specific</span>
+    <span class="c">/// step in a load. Drop a torn trailing record AND cut the file, or the next</span>
+    <span class="c">/// append splices onto half a record and every locator past it is garbage.</span>
+    <span class="k">fn</span> load(&<span class="k">mut</span> self) -&gt; io::Result&lt;Vec&lt;Self::Bv&gt;&gt;;
+
+    <span class="c">/// Adopt a restored prefix of exactly `n` blocks with header `meta`: cut the</span>
+    <span class="c">/// backing to `n`, and seed any render continuation you DERIVE from it. One</span>
+    <span class="c">/// call because it is one event — splitting them would let a continuation</span>
+    <span class="c">/// count blocks the cut just removed.</span>
+    <span class="k">fn</span> adopt(&<span class="k">mut</span> self, n: usize, meta: &SessionMeta) -&gt; io::Result&lt;()&gt;;
+}</pre>
+    <p style="margin-top:14px">Then build the cache durable and admit each session.
+      <code>admit</code> does the locking, the version and identity checks, the alignment and
+      the resume-or-rebuild decision — what you write is a <code>match</code>:</p>
+<pre><span class="k">let</span> cache = <span class="k">if</span> no_cache { MyCache::ephemeral() } <span class="k">else</span> {
+    MyCache::durable(Presentation::Tui, cache_root, Versions::current(flavor))
+};
+cache.register(&id, Transcript::open(agent, path));
+
+<span class="k">match</span> cache.admit(
+    &id,
+    |dir| MyStore::open_append(&dir.join(<span class="s">"blocks.jsonl"</span>)),  <span class="c">// MUST NOT truncate</span>
+    |h| lock::pid_alive(h.pid),                             <span class="c">// your liveness signal</span>
+) {
+    Admission::Owned { session, origin } =&gt; run(session, origin),
+    Admission::Denied(Denial::Held(h))   =&gt; refuse_or_redirect(h.note),
+    Admission::Denied(_)                 =&gt; run(cache.open_uncached(&id, MyStore::memory())),
+}
+cache.publish(&id, MyNote { … });   <span class="c">// after you know what to say (a server has no</span>
+                                    <span class="c">//   port until it binds) — hence separate</span></pre>
+    <p style="margin-top:14px">Four rules the API enforces or expects, and the reasons they
+      exist:</p>
+    <ul class="clean">
+      <li><b>Your <code>make_store</code> must not truncate.</b> <code>admit</code> has to read
+        what is there before it can decide whether to keep it; it resets the store itself when
+        the answer is no. A truncating constructor destroys the evidence the decision rests
+        on.</li>
+      <li><b>A denial opens nothing.</b> There is no third "shared" outcome, so a frontend
+        cannot accidentally serve an entry another process owns. <code>open_uncached</code> is
+        the explicit fallback, and it is the <em>same</em> call for every reason a denial can
+        have.</li>
+      <li><b><code>Versions::current(flavor)</code> is what the fold is.</b> Bump
+        <code>FOLD_VERSION</code> whenever block output changes — the byte-gate re-baseline is
+        the moment to do it — or a resume splices blocks built by two different folds with no
+        visible seam. <code>flavor</code> is for a presentation whose <em>render</em> has
+        parameters (the HTML server hashes its fold policy); <code>None</code> otherwise.</li>
+      <li><b>Release on every exit path.</b> <code>release_all()</code> at each
+        <code>process::exit(0)</code>, which skips destructors; everything else is covered by
+        <code>Drop</code>. A lock outliving its process denies the session until its pid dies,
+        which for a recycled pid is never.</li>
+    </ul>
   </section>
 
   <section id="level3">

@@ -364,7 +364,7 @@
         <div class="vrail rail-support"><span class="vlayer">layer 2 · PRESENTATION SUPPORT</span>
           <span class="vcrates">claude-replay-present<br><span class="vrole">frontend-agnostic: cache, sync protocol, highlighting</span></span></div>
         <div class="vstages">
-          <div class="vstage support"><span class="vname">cache</span><span class="vwhat">ONE live resident per session (registered → resident → hibernated); the single full presentation copy both frontends share — §7</span><span class="vmods">SessionCache&lt;P, A&gt; · SharedSession</span></div>
+          <div class="vstage support"><span class="vname">cache</span><span class="vwhat">ONE live resident per session (registered → resident), optionally durable across runs; the single full presentation copy both frontends share — §7</span><span class="vmods">SessionCache&lt;P, A&gt; · SharedSession</span></div>
           <div class="vtok"><span class="token">delta, never the whole session</span><span class="varr">↓</span></div>
           <div class="vsplit">
             <div class="vstage support"><span class="vname">sync — in-process</span><span class="vwhat">ONE call, a splice-shaped <code>Arc</code> delta — §8</span><span class="vmods">SharedSession::poll_view</span></div>
@@ -536,7 +536,12 @@
         blocks of finished turns are final and never touched again; only the open turn is
         re-derived as events arrive. Every incremental surface in the workspace —
         <code>changed_from</code>, the cursor protocol's generations, the put-once stores —
-        leans on this invariant.</li>
+        leans on this invariant. The few back-references that hold a completed turn resident
+        (a skill body that may still nest, a queued prompt whose marker may still be
+        suppressed) are each <b>bounded</b>, and that is a property the tests assert rather
+        than a hope: an unbounded one is invisible — the session renders perfectly, it just
+        stops committing — and one such pin once froze 26% of a large session in RAM for its
+        remaining 219 turns.</li>
       <li><b>Reshape detection.</b> A raw-level pure append can still REWRITE the finalized
         open turn's prefix (a new tool joins a span and absorbs earlier blocks). The live layer
         diffs the finalized view per tick to catch exactly this — it is why the sync protocol
@@ -643,6 +648,7 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
       <div class="card"><h4>InMemoryStore <span class="badge def">default</span></h4><p>Committed blocks resident in RAM (<code>Bv = Block</code>).</p></div>
       <div class="card"><h4>TierBStore</h4><p>(<code>engine/tier_b.rs</code>) Committed <em>content</em> serialized append-only to an off-heap buffer or an on-disk file; <code>Bv = Deferred { offset, size }</code>, a 12-byte locator. Reading a block back is a positional read + decode, dropped after use.</p></div>
       <div class="card"><h4>ArcStore <span class="badge def">#84</span></h4><p>Committed blocks live behind <code>Arc</code> (<code>Bv = Arc&lt;Block&gt;</code>): the accumulator retains the authoritative copy, and handing a block to a reader is a refcount bump. The store behind the one-copy/source-of-truth principles (§7).</p></div>
+      <div class="card"><h4>ArcLog <span class="badge def">#96</span></h4><p>The TUI's: the same <code>Arc&lt;Block&gt;</code> residency <b>plus</b> an append-only JSONL backing, so a later process loads the committed prefix instead of folding to reach it. Not tier-b — tier-b writes to keep content <em>off</em> the heap, this writes to save the <em>next</em> run work.</p></div>
       <div class="card"><h4>…or the presentation's own</h4><p>The html crate's <code>RecordStore</code> renders each block to its wire record at <code>put</code> time (<code>Bv = RecordLocator</code> — the §6 showcase).</p></div>
     </div>
     <p style="margin-top:18px">Incremental facts are maintained the same way:
@@ -712,10 +718,13 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
         even copies committed content: a session with a thousand committed blocks and a
         three-block open turn costs a poll three blocks of render and the client one
         <code>pread</code>.</li>
-      <li><b>Hibernation carries the projection.</b> An evicted resident's sidecar stores the
-        locator table plus the store's render continuation (<code>EmitState</code>); restore
-        reopens the log read-only — no re-render, no re-fold, and outstanding client cursors
-        stay valid.</li>
+      <li><b>The projection survives the process.</b> The record log is also the durable
+        cache's content stream (#96): a later run reloads the locator table by walking its
+        framing newlines, and <b>derives</b> the render continuation
+        (<code>EmitState</code>) from the restored prefix rather than reloading a stored copy
+        — one record per block makes <code>next_block</code> the block count, and both turn
+        counters advance once per user turn, which is what the header counts. Derived cannot
+        go stale against the prefix; persisted can.</li>
     </ul>
   </section>
 
@@ -729,7 +738,7 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
       <div class="rung"><span class="rn">transcript bytes</span><span class="rw">resident: none — the byte-offset tail reads deltas (agent's store, disk)</span></div>
       <div class="rung"><span class="rn">canonical Message</span><span class="rw">resident: ~1 line's worth, transient (L1 decode, one line at a time)</span></div>
       <div class="rung"><span class="rn">Block · open turn</span><span class="rw">resident: O(turn) in the accumulator (L2 fold, Replayer)</span></div>
-      <div class="rung hot"><span class="rn">Block · committed</span><span class="rw">resident: policy! InMemoryStore = RAM · TierBStore = 12-byte locators, content on disk · RecordStore = wire-record locators (#74) · ArcStore = Arc-shared content, ONE copy that the cache owns and every reader references (#84)</span></div>
+      <div class="rung hot"><span class="rn">Block · committed</span><span class="rw">resident: policy! InMemoryStore = RAM · TierBStore = 12-byte locators, content on disk · RecordStore = wire-record locators (#74) · ArcStore = Arc-shared content, ONE copy that the cache owns and every reader references (#84) · ArcLog = the same, plus a durable backing the next run resumes from (#96)</span></div>
       <div class="rung"><span class="rn">presentation form</span><span class="rw">TUI: heights + prefix (O(N) small ints) · HTML: JSON records (client), record log (server) — via fold policy, summaries, records/lines</span></div>
       <div class="rung"><span class="rn">rendered result</span><span class="rw">TUI: <code>hot</code> window ≈ 96 blocks near the viewport · HTML: DOM window ≈ viewport ± 1500px</span></div>
     </div>
@@ -781,7 +790,7 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
     <div class="tblwrap"><table>
       <thead><tr><th>seam</th><th>decides</th><th>the menu</th></tr></thead>
       <tbody>
-        <tr><td><code>P: BlockStore</code></td><td class="role">the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles)</td><td class="role"><code>ArcStore</code> (cache-owned shared copy — the TUI) · the html crate's <code>RecordStore</code> (the wire projection itself, #74) · <code>TierBStore</code> (lossless spill)</td></tr>
+        <tr><td><code>P: BlockStore</code></td><td class="role">the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles)</td><td class="role"><code>ArcLog</code> (cache-owned shared copy + a durable backing — the TUI, #96) · the html crate's <code>RecordStore</code> (the wire projection itself, #74) · <code>ArcStore</code> (the same sharing, nothing written) · <code>TierBStore</code> (lossless spill)</td></tr>
         <tr><td><code>A</code></td><td class="role">the per-session <b>presentation sidecar</b></td><td class="role">any type — park-and-take (<code>aux_put</code>/<code>aux_take</code>) or in-place (<code>aux_with</code>)</td></tr>
       </tbody>
     </table></div>
@@ -791,7 +800,8 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
       <thead><tr><th>tier</th><th>holds</th><th>cost</th><th>transition</th></tr></thead>
       <tbody>
         <tr><td>(c) registered</td><td class="role">agent + path</td><td class="role">~nothing</td><td class="role">the default for a discovered-but-unopened session (a large sub-agent tree stays here)</td></tr>
-        <tr><td>(a) live resident</td><td class="role">a <code>SharedSession&lt;P&gt;</code></td><td class="role">O(turn) + tables (+ disk backing per <code>P</code>)</td><td class="role">polled recently; reaped to (c) after 30 s idle — a <code>PersistentStore</code> resident <b>hibernates</b> its serving state on eviction, so revisiting an <em>unchanged</em> session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding</td></tr>
+        <tr><td>(a) live resident</td><td class="role">a <code>SharedSession&lt;P&gt;</code></td><td class="role">O(turn) + tables (+ disk backing per <code>P</code>)</td><td class="role">polled recently; reaped to (c) after 30 s idle</td></tr>
+        <tr><td>(d) durable</td><td class="role">the committed + meta streams on disk, under <code>&lt;root&gt;/&lt;presentation&gt;/&lt;session&gt;/</code></td><td class="role">bytes only — nothing resident</td><td class="role">written as the fold commits; survives the process, so the NEXT run resumes instead of re-folding (below). Swept after two weeks idle</td></tr>
       </tbody>
     </table></div>
     <p style="margin-top:14px">And the consumption protocols, each matched to a representation
@@ -799,7 +809,7 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
     <div class="tblwrap"><table>
       <thead><tr><th>protocol</th><th>shape</th><th>requires</th><th>copies of committed blocks</th><th>per-tick cost</th></tr></thead>
       <tbody>
-        <tr><td><code>poll_view(id)</code> — in-process</td><td class="role">ONE call: advance + splice-shaped <code>Arc</code> delta + times/metrics/tasks</td><td><code>P = ArcStore</code></td><td><b>1 — cache-owned, view-referenced</b></td><td><b>O(delta)</b></td></tr>
+        <tr><td><code>poll_view(id, make_store)</code> — in-process</td><td class="role">ONE call: advance + splice-shaped <code>Arc</code> delta + times/metrics/tasks</td><td><code>P::Bv = Arc&lt;Block&gt;</code></td><td><b>1 — cache-owned, view-referenced</b></td><td><b>O(delta)</b></td></tr>
         <tr><td><code>shared_session(id)</code> + <code>pull</code> — wire</td><td class="role">cursor zones / byte-range pointers</td><td>any <code>P</code></td><td>1 (or 0 in RAM with <code>RecordStore</code>)</td><td>O(open turn)</td></tr>
       </tbody>
     </table></div>
@@ -813,7 +823,7 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
 <pre><span class="c">// TUI (app.rs): the View is the sole block</span>
 <span class="c">// owner; evicted frames park derived state</span>
 <span class="k">type</span> TuiCache = SessionCache&lt;
-    ArcStore,       <span class="c">// cache owns; View references</span>
+    ArcLog,         <span class="c">// cache owns; View references</span>
     ViewSidecar,    <span class="c">// evicted frames park heights,</span>
 &gt;;                  <span class="c">//   folds, scroll — warm reloads</span></pre>
 <pre><span class="c">// HTML server (serve.rs): committed IS the wire</span>
@@ -835,6 +845,78 @@ cache: SessionCache&lt;
       under an LRU cap of 4 (<code>MAX_RESIDENT_SUBAGENTS</code>); ancestors evict to
       registrations and reload on demand — with the sidecar, an eviction now drops only the
       blocks.</p>
+    <h3 id="durable">Across runs: the durable session cache</h3>
+    <p>Everything above bounds what a <em>running</em> process holds. This bounds what a
+      <em>new</em> one has to redo. A durable cache keeps each owned session's committed blocks
+      and meta records under
+      <code>$XDG_CACHE_HOME/claude-replay/sessions/&lt;presentation&gt;/&lt;session&gt;/</code>,
+      so the next invocation <b>resumes the fold</b> instead of re-reading the transcript from
+      byte 0. Measured on real sessions: 99.99% of a 107&nbsp;MB transcript skipped,
+      block-identically.</p>
+    <p><b>Two append-only streams.</b> The content stream is the frontend's own
+      <code>BlockStore</code> backing (the TUI's <code>ArcLog</code>, the server's
+      <code>RecordStore</code>), so nothing is stored twice — the same bytes that serve the
+      session persist it. The meta stream is one <code>MetaRecord</code> per committing drain,
+      carrying what a block list cannot: counter deltas (turns, tools, per-model tokens, task
+      ops), gauges (cwd, span), and the resume payload.</p>
+    <div class="callout"><b>One principle, from which the rest follows.</b> A resume point is an
+      <code>(offset, state)</code> pair such that folding from <code>offset</code> seeded with
+      <code>state</code> yields <em>exactly</em> what a cold parse yields.</div>
+    <p>That is why <code>replay_from</code> is a <b>partition</b>, not a bookmark: bytes below it
+      authored only committed blocks, bytes at or above it only uncommitted ones — so the resumed
+      fold suppresses nothing and re-applies nothing. A drain that admits no such partition (one
+      line authored blocks on both sides) simply carries no resume payload, and the next one
+      does.</p>
+    <p><b>Every crash leaves a prefix</b>, both streams being append-only — which makes the
+      recovery space enumerable rather than hopeful. Loading is therefore an <em>alignment</em>:
+      fold the records, stop at the last one the content stream corroborates, cut the content
+      stream to match. The content stream is the authority; meta describing commits it cannot
+      corroborate is ignored.</p>
+    <p style="margin-top:14px"><b>Validation is a chain of cheap checks, each rejecting a
+      different lie</b>, and a rejection is always a full cold rebuild — never a partial
+      serve:</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>check</th><th>catches</th><th>on failure</th></tr></thead>
+      <tbody>
+        <tr><td>fold/format version</td><td class="role">a build whose blocks differ — a resume would splice two folds with no visible seam</td><td><code>Cold(VersionChanged)</code></td></tr>
+        <tr><td>anchor (CRC32 of the transcript's first line)</td><td class="role">a <em>different</em> session at the same path</td><td><code>Cold(SourceRewritten)</code></td></tr>
+        <tr><td>length ≥ <code>replay_from</code></td><td class="role">a truncated source</td><td><code>Cold(SourceRewritten)</code></td></tr>
+        <tr><td>window (CRC32 of the 64 KiB below <code>replay_from</code>)</td><td class="role">the prefix rewritten in place — the only region a resume derives from</td><td><code>Cold(SourceRewritten)</code></td></tr>
+        <tr><td>alignment</td><td class="role">a torn tail below the first resume point</td><td><code>Cold(TornStream)</code></td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:14px">CRC32 rather than a cryptographic hash on purpose: this is not a
+      trust boundary, only a corruption check, and it is ~13× cheaper. The reasons are typed
+      (<code>ColdReason</code>) because "the cache did not help" is a support question, and the
+      rejection tests assert on the reason rather than on "it rebuilt".</p>
+    <p><b>Exactly one writer per <code>&lt;presentation, session&gt;</code>, always.</b> A file
+      lock names its holder; reclaim is liveness-based, and where liveness cannot be decided (a
+      non-unix host) the cache is <b>disabled</b> rather than assumed stale — guessing wrong
+      fails <em>into</em> concurrent writers, the one outcome the lock exists to prevent.
+      Admission therefore has <b>two</b> outcomes, not three:</p>
+<pre><span class="k">match</span> cache.admit(id, make_store, alive) {
+    Admission::Owned { session, origin } =&gt; …,   <span class="c">// exclusive; `origin` says resumed or why cold</span>
+    Admission::Denied(denial)            =&gt; …,   <span class="c">// NOTHING was opened, nothing is shared</span>
+}</pre>
+    <p style="margin-top:14px">Falling back to a cache-less session is a separate, explicit
+      <code>open_uncached</code> call, so "we gave up on caching" is visible at the call site
+      instead of hidden in a third variant that would suggest a session might be handed out
+      while another process owns it. The two frontends resolve a denial differently, and the
+      asymmetry is why the holder's note is <em>frontend-typed</em>
+      (<code>DurableStore::Note</code>): the TUI refuses a second <b>live</b> view and names the
+      holder's tmux pane, because two instances would each fold and hold the same growing
+      session in RAM invisibly; the HTML server serves cache-less, because partial success is
+      normal for a multi-root server. A one-shot read is never refused — the refusal's argument
+      is about following.</p>
+    <p><b>Nothing is persisted that can be derived.</b> No presentation state crosses a run: the
+      HTML render continuation is recomputed from the restored prefix (§6), fold/scroll state is
+      per-run by definition, and the pull protocol's <code>epoch</code> stays a live-session
+      token. What is persisted is only what the <em>fold</em> cannot recompute without
+      re-reading bytes.</p>
+    <p>Locks are released on every exit path — both <code>process::exit(0)</code> sites
+      explicitly, everything else by <code>Drop</code> — and a GC sweep drops entries idle past
+      two weeks, trusting a lock without probing it up to an age cap so a crashed holder cannot
+      pin bytes forever.</p>
   </section>
 
   <section id="protocol">
@@ -934,6 +1016,15 @@ cache: SessionCache&lt;
       <li><b>Protocol equivalence</b> — <code>SharedSession</code> pulls are asserted identical
         across storage backings (RAM vs tier-b), and <code>PullClient</code> is walked through
         every protocol transition against the server half.</li>
+      <li><b>A resume equals a cold parse</b> — the durable cache's oracle is always a
+        from-scratch fold, block for block, because a corrupt-but-plausible resume passes
+        every self-consistency check there is. Asserted for clean resumes,
+        resumes-from-resumes, and every truncation of both streams (the crash-consistency
+        harness).</li>
+      <li><b>The durability frontier cannot freeze</b> — every back-reference that holds a
+        completed turn resident is bounded, and a test says so on real transcripts. The
+        failure is silent (a pinned session renders correctly and simply stops committing),
+        so nothing catches it except measuring.</li>
     </ul>
   </section>
 
@@ -947,6 +1038,7 @@ cache: SessionCache&lt;
         <tr><td><code>claude-replay-engine/src/engine/replay.rs</code></td><td class="role">L2 <code>Replayer</code>/<code>Shaping</code> (+ the frozen <code>replay</code> reference driver)</td></tr>
         <tr><td><code>claude-replay-engine/src/engine/builder.rs</code></td><td class="role"><code>SessionAccumulator</code> (sans-io fold) + <code>StreamRead</code></td></tr>
         <tr><td><code>claude-replay-engine/src/engine/{message,session,index,tasks,tier_b,reader,path,time}.rs</code></td><td class="role">canonical log · <code>Session&lt;BV&gt;</code>/<code>BlockStore</code>/<code>BlockAccess</code>/<code>ArcStore</code> · rollups · task model · tier-b backing · byte-offset line reader (tail + resume) · helpers</td></tr>
+        <tr><td><code>claude-replay-engine/src/engine/meta_stream.rs</code></td><td class="role">the durable meta record + <code>MaterializedMeta</code> + alignment (#96)</td></tr>
         <tr><td><code>claude-replay-engine/src/adapter.rs</code></td><td class="role">the <code>TranscriptAdapter</code> trait + <code>SniffClaim</code> (the contract — the registry lives in the facade)</td></tr>
         <tr><td><code>claude-replay-engine/src/engine/seam.rs</code></td><td class="role">the audited adapter contract — all adapter code may import (#87)</td></tr>
         <tr><td><code>claude-replay-engine/src/{discover,metrics,follow,agent,fold,summary,diff}.rs</code></td><td class="role">discovery vocabulary · metrics · live follower · the open <code>Agent</code> id · fold policy · span phrasing · diff-row model</td></tr>
@@ -957,10 +1049,12 @@ cache: SessionCache&lt;
         <tr><td><code>claude-replay-agents/src/agents/mod.rs</code></td><td class="role">the family tree + the <code>agents_import_only_the_seam</code> audit</td></tr>
         <tr><td><code>claude-replay-agents/tests/engine_integration.rs</code></td><td class="role">machinery-with-real-adapters integration tests (a dev-dep cycle would compile two engines inside engine)</td></tr>
         <tr><td><code>claude-replay-core/src/{adapter,discover,session_entry,transcript}.rs</code></td><td class="role">the wired <code>adapter()</code>/<code>adapters()</code> registry · registry-driven discovery · the <code>parse_session*</code> dispatchers · the <code>Transcript</code> source handle</td></tr>
-        <tr><td><code>claude-replay-present/src/cache/{mod,shared}.rs</code></td><td class="role"><code>SessionCache</code> residency · <code>SharedSession</code> (+hibernation)</td></tr>
+        <tr><td><code>claude-replay-present/src/cache/{mod,shared}.rs</code></td><td class="role"><code>SessionCache</code> residency + the durable API (<code>durable</code>/<code>admit</code>/<code>release</code>) · <code>SharedSession</code> · the <code>DurableStore</code> seam</td></tr>
+        <tr><td><code>claude-replay-present/src/cache/{stream,lock,admit}.rs</code></td><td class="role">the meta stream on disk · the single-writer lock · claim/validate/align + GC (#96)</td></tr>
         <tr><td><code>claude-replay-present/src/pull.rs</code></td><td class="role">the pull protocol (<code>Cursor</code>/<code>PullReply</code>/<code>pull</code>/<code>PullClient</code>) (#87)</td></tr>
         <tr><td><code>claude-replay-present/src/{present,highlight,sys,args}.rs</code></td><td class="role">text formatters · syntect highlighter (<code>HlSpan</code>) · OS/path helpers · shared <code>Args</code> (<code>cli</code> feature)</td></tr>
         <tr><td><code>claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs</code></td><td class="role">the terminal viewer</td></tr>
+        <tr><td><code>claude-replay-tui/src/store.rs</code></td><td class="role"><code>ArcLog</code> — the TUI's durable <code>Arc&lt;Block&gt;</code> store + its lock note (#96)</td></tr>
         <tr><td><code>claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs</code> + <code>src/html/</code></td><td class="role">HTML render core · offline writers · live server · the wire-projection <code>RecordStore</code> (#74) · embedded CSS/JS</td></tr>
         <tr><td><code>src/jdi/</code></td><td class="role">the <code>agent-jdi</code> supervisor (see <code>src/jdi/DESIGN.md</code>)</td></tr>
       </tbody>

@@ -25,7 +25,13 @@ cargo fmt --check
 cargo clippy --all-targets    # no new warnings
 cargo test                    # workspace default-members = all seven crates
 scripts/gate/gate.sh          # byte-identical frozen-fixture diff → must print PASS
+RUSTDOCFLAGS="--deny warnings" cargo doc --workspace --no-deps --document-private-items
 ```
+
+Run that last one **verbatim** — both flags matter. `--document-private-items` makes rustdoc
+resolve links into private modules, so a link that is fine in a public-only build errors here
+(and vice versa). The API-docs job runs independently of Release, so a shortened local check
+fails *after* the tag and the brew tap have already shipped.
 
 The byte gate renders a frozen transcript set through `--dump`, `--dump-html`, and the
 bundle writer and diffs against a baseline (fixture data in `$SC_GATE_DIR`, default
@@ -53,13 +59,13 @@ terminal". Three levels:
 
 ## 3. The crates and their responsibilities
 
-Pick your dependency by the job (details: [Architecture §2](architecture.md#2-the-workspace-four-layers-seven-crates)):
+Pick your dependency by the job (details: [Architecture §2](architecture.md#2-the-pipeline--and-where-it-lives)):
 
 | you want to… | depend on | you get |
 |---|---|---|
 | analyze transcripts (stats, ETL, CI checks) | `claude-replay-core` | parse/follow/discover, `Block`/`Session`/`Metrics` — deps: `serde_json` + `anyhow` |
 | bring your own agent set | `claude-replay-engine` | the agent-free machinery + `TranscriptAdapter` + the `seam` — you supply the adapters and the registry slice (the built-ins live in `claude-replay-agents`) |
-| build your own frontend | + `claude-replay-present` | `SessionCache`, the pull protocol (both halves), fold policy, summaries, highlighting, `Args` |
+| build your own frontend | + `claude-replay-present` | `SessionCache` (live residency **and** the cross-run durable cache), the pull protocol (both halves), fold policy, summaries, highlighting, `Args` |
 | embed the existing UIs | + `claude-replay-tui` / `claude-replay-html` | the terminal viewer / the HTML exporter + live server |
 
 The sections below are one worked example of each level — and every example is how **our own
@@ -219,8 +225,9 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, A>`] | **the unified data layer** ([Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a)): keyed residency + your choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcStore, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
-| `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, hibernate/restore across evictions | `serve.rs` builds one per followed session, tier-b backed |
+| [`SessionCache<P, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a)): keyed residency + your choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcLog, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
+| `SessionCache::durable` + [`DurableStore`] | **the cross-run cache** ([Architecture §7](architecture.md#across-runs-the-durable-session-cache)): a later process resumes the fold instead of re-reading the transcript — `admit` does the locking, validation, alignment and resume-or-rebuild decision behind one call | both frontends; `--no-cache` selects `ephemeral()` |
+| `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, and (when durable) the record writer that runs under the same lock as the fold | `serve.rs` builds one per followed session |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
 | `present` + core's `summary` | spawn chips, edit summaries, tool display names, activity/turn phrasing — the *voice* of the product | TUI `render.rs` and the HTML emitter, so wording can't drift |
@@ -236,11 +243,13 @@ retains the ONE authoritative copy of the blocks while your view holds `Arc` ref
 
 ```rust
 type MyCache = SessionCache<ArcStore, MySidecar>;
-let cache = MyCache::new();
+let cache = MyCache::ephemeral();                 // ::durable(…) to persist — see below
 cache.register(&id, Transcript::open(agent, path));
 loop {
     if no_input_for_250ms() {
-        if let Some(Ok(d)) = cache.poll_view(&id) {
+        // `open` builds the store on first use; a durable cache never calls it, because
+        // `admit` is the only path that takes the lock.
+        if let Some(Ok(d)) = cache.poll_view(&id, || ArcStore) {
             // splice: keep [0..frontier), append Arc clones of d.committed_delta +
             // d.provisional, re-derive from d.changed_from — see View::apply_view
             view.splice(d);
@@ -253,7 +262,7 @@ loop {
 (Prefer whole-`Session` values instead? Use the core's own follower —
 `FollowParser::poll`/`poll_delta` — or batch `parse_session`; the cache's job is live
 residency, and its two protocols share one resident. See the protocol table in
-[Architecture §8](architecture.md#the-unified-data-layer-sessioncachep-a).)
+[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
 `PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
@@ -338,22 +347,85 @@ Two optional capabilities refine what your store can feed:
   identity, serde bytes). Everything that rebuilds block streams — `snapshot()`, `poll()`,
   `committed_tail`, `SharedSession::pull` — bounds on it, so the compiler tells you exactly
   which consumers a one-way projection store can't feed (and keeps them off it).
-- **`PersistentStore`** (present) — `backing_len`/`reopen` + optional hibernate-state hooks,
-  so `SharedSession` can hibernate/restore around your backing across cache evictions.
+- **[`DurableStore`]** (present) — `load` + `adopt`, plus the `Note` your lock carries. It is
+  what makes your cache survive the process; the next section is the whole of it.
 
 Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
-`ArcStore` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers
-hold references; the TUI live path, #84), and the richest one,
+`ArcLog` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers hold
+references, #84, with an append-only backing so the next run resumes, #96), and the richest one,
 `claude-replay-html`'s `RecordStore`
 (`html_export/record_store.rs`): `Bv = RecordLocator{offset, len}` into `<id>.records`;
 `put` **renders the committed block to its wire-format JSON record** as the side effect and
 returns the pointer — the `Session` itself captures the session in the exact form the
 frontend serves, `/pull` answers committed zones as pointers clients range-read directly,
-and no second representation exists. It implements `BlockStore` + `PersistentStore` but
+and no second representation exists. It implements `BlockStore` + `DurableStore` but
 deliberately **not** `BlockRead` (a wire record is a one-way projection) — the type system
 then keeps every committed consumer on the pointer path. See the
 [architecture showcase](architecture.md#showcase-sessionbv-in-the-live-html-server) for the
 serving-CPU consequence.
+
+### Making your cache durable — the `DurableStore` seam
+
+Two more methods on your store, and your frontend stops re-reading transcripts it has
+already read. The design is in
+[Architecture §7](architecture.md#across-runs-the-durable-session-cache); this is the API.
+
+```rust
+impl DurableStore for MyStore {
+    /// What a peer that finds your lock held gets told — a port for a server, a pane for a
+    /// TUI. Typed, not opaque: locks are per-presentation, so the only reader is you.
+    type Note = MyNote;
+
+    /// Reload the committed `Bv`s from the backing — the ONE frontend-specific step in a
+    /// load. Drop a torn trailing record AND cut the file, or the next append splices onto
+    /// half a record and every locator past it addresses garbage.
+    fn load(&mut self) -> io::Result<Vec<Self::Bv>>;
+
+    /// Adopt a restored prefix of exactly `n` blocks with header `meta`: cut the backing to
+    /// `n`, and seed any render continuation you DERIVE from it. One call because it is one
+    /// event — splitting them would let a continuation count blocks the cut just removed.
+    fn adopt(&mut self, n: usize, meta: &SessionMeta) -> io::Result<()>;
+}
+```
+
+Then build the cache durable and admit each session. `admit` does the locking, the version
+and identity checks, the alignment and the resume-or-rebuild decision — what you write is a
+`match`:
+
+```rust
+let cache = if no_cache { MyCache::ephemeral() } else {
+    MyCache::durable(Presentation::Tui, cache_root, Versions::current(flavor))
+};
+cache.register(&id, Transcript::open(agent, path));
+
+match cache.admit(
+    &id,
+    |dir| MyStore::open_append(&dir.join("blocks.jsonl")),  // MUST NOT truncate
+    |h| lock::pid_alive(h.pid),                             // your liveness signal
+) {
+    Admission::Owned { session, origin } => run(session, origin),
+    Admission::Denied(Denial::Held(h))   => refuse_or_redirect(h.note),
+    Admission::Denied(_)                 => run(cache.open_uncached(&id, MyStore::memory())),
+}
+cache.publish(&id, MyNote { … });   // after you know what to say (a server has no port
+                                    //   until it binds) — separate from `admit` for that
+```
+
+Four rules the API enforces or expects, and the reasons they exist:
+
+- **Your `make_store` must not truncate.** `admit` has to read what is there before it can
+  decide whether to keep it; it resets the store itself when the answer is no. A truncating
+  constructor destroys the evidence the decision rests on.
+- **A denial opens nothing.** There is no third "shared" outcome, so a frontend cannot
+  accidentally serve an entry another process owns. `open_uncached` is the explicit
+  fallback, and it is the *same* call for every reason a denial can have.
+- **`Versions::current(flavor)` is what the fold is.** Bump `FOLD_VERSION` whenever block
+  output changes — the byte gate re-baseline is the moment to do it — or a resume splices
+  blocks built by two different folds with no visible seam. `flavor` is for a presentation
+  whose *render* has parameters (the HTML server hashes its fold policy); `None` otherwise.
+- **Release on every exit path.** `release_all()` at each `process::exit(0)`, which skips
+  destructors; everything else is covered by `Drop`. A lock outliving its process denies the
+  session until its pid dies, which for a recycled pid is never.
 
 ## 6. Level 3 — embed the finished presenters
 
@@ -385,7 +457,7 @@ frontends (`src/lib.rs::run_viewer`).
 
 ## 7. Adding an agent
 
-The payoff of the [pipeline design](architecture.md#3-the-pipeline): a new agent is **an
+The payoff of the [pipeline design](architecture.md#2-the-pipeline--and-where-it-lives): a new agent is **an
 `impl TranscriptAdapter` over `claude-replay-engine`'s `seam`** — either in your own crate
 with your own registry slice, or (for a built-in) a `model` / `metrics` / `discover` family
 under `claude-replay-agents/src/agents/<agent>/` + one `REGISTRY` row. The shared engine is
@@ -433,7 +505,7 @@ See `agents/codex/metrics.rs`.
 
 Where Gemini keeps its transcripts. Provide `candidates_scoped(cwd)` — scope with
 `discover::ancestors_below(cwd, home)`: auto-discovery must stay strictly inside `$HOME`
-(see [Architecture §4](architecture.md#discovery-precisely)) — and `resolve_id(id)`. If Gemini has
+(see [Architecture §3](architecture.md#discovery-precisely)) — and `resolve_id(id)`. If Gemini has
 sub-agents, also `subagent_source`; if it records a task list, `load_tasks`.
 
 ### Step 5 — wire it up (`adapters.rs`)
@@ -468,7 +540,7 @@ agent up with no further changes.
 
 ## 8. Repo conventions
 
-- **Layout & module map:** [Architecture §12](architecture.md#12-where-things-live).
+- **Layout & module map:** [Architecture §11](architecture.md#11-where-things-live).
 - **Design notes** for specific subsystems live under `design/` — e.g. the CC span rules
   (`cc-activity-coalescing.md`), the fold/coalesce/summarize extensibility study, the DOM
   virtualization technique — and `src/jdi/DESIGN.md` for the supervisor.
@@ -482,3 +554,4 @@ agent up with no further changes.
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
 [`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
 [`PullClient`]: ../claude-replay-present/src/pull.rs
+[`DurableStore`]: ../claude-replay-present/src/cache/shared.rs

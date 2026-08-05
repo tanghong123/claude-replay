@@ -569,6 +569,42 @@ The residual diff is **not** decision-free rendering:
     consent at the time, visibility in the target, local-only, refuse-by-default. `#98`'s
     read-only monitor needs none of this; anything that types does.
 
+- [x] **Durable, cross-run session cache (`#96`).** ✅ shipped v1.35.0 — design of record in
+  **`design/durable-session-cache.md`** (v27, with §14 recording where the build chose
+  differently). A second run resumes the fold instead of re-reading the transcript: on real
+  sessions here, 99.99% of a 107 MB file skipped, block-identically. Shape:
+  - **Two append-only streams** — the frontend's own `BlockStore` backing is the content
+    stream (nothing stored twice), plus one `MetaRecord` per committing drain.
+  - **One principle.** A resume point is an `(offset, state)` pair such that folding from
+    `offset` seeded with `state` yields exactly what a cold parse yields — so `replay_from`
+    is a *partition*, not a bookmark, and the resumed fold suppresses nothing.
+  - **The oracle is always a cold parse**, block for block: a corrupt-but-plausible resume
+    passes every self-consistency check there is. Asserted for clean resumes,
+    resumes-from-resumes, and every truncation of both streams.
+  - **Two-outcome admission** (`Owned` / `Denied`) — an entry is never shared, so on denial
+    nothing was opened; the cache-less fallback is a separate explicit call.
+  - Retired: `Body::Hibernated` and `PersistentStore` (a frozen materialization that could
+    never fold again, and a persisted render continuation §4.3 rules out — the continuation
+    is now *derived* from the restored prefix).
+
+- [x] **The durability frontier cannot freeze (`#96` follow-up).** ✅ shipped v1.36.0 — found
+  by asking why the resume above stopped at 65% of one file. `last_skill` capped the drop at
+  the last `Skill`'s turn, and that same cap stopped `base` from ever reaching it, so its
+  clearing condition was unreachable: **one skill call froze the fold for the rest of the
+  session** — 3218 of 12466 blocks (26%) resident, re-finalized and re-diffed every 250 ms
+  tick, violating the O(open turn) invariant #74/#84/#85 all rest on.
+  - **The skill pin is deleted**, because bounding what it protected removes its reason: a
+    body may only nest into a `Skill` in the same turn. The data says that is what it always
+    was — 27 of 32 bodies across real transcripts arrive two lines after their call, and
+    every long-reach case is a `jdi-handoff` body injected with no `Skill` call at all. That
+    also fixed the rendering it came from (the orphan used to glue itself onto an unrelated
+    skill 126,000 lines back). `FOLD_VERSION` → 2.
+  - **The queue pin is made precise, then bounded** — it capped at the oldest live marker's
+    turn rather than blocking every commit, and lets go past `MAX_PINNED_TURNS`.
+  - The byte gate does *not* reach this (its corpus has no orphaned bodies), so the guard is
+    three tests, one of which measures the resident window on real transcripts — the failure
+    is silent (a pinned session renders perfectly and simply stops committing).
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now

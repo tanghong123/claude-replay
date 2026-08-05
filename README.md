@@ -69,7 +69,15 @@ claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no
 claude-replay <id> -f --dump-html [stem]       live: also write an append-only <stem>.jsonl the page follows
 claude-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, Ctrl-C to stop
 claude-replay <id> -f --html                   live HTML: also follows the session (new turns stream in)
+claude-replay <id> --no-cache                  skip the durable cache (fold from scratch; also allows
+                                               a second LIVE view of a session another instance follows)
 ```
+
+**The durable cache.** Opening a session writes its folded blocks under
+`~/.cache/claude-replay/sessions/`, so opening it again resumes where the last run stopped
+instead of re-reading the transcript — on a 100 MB session that is most of the file skipped.
+It is validated against the transcript (a rewritten or truncated source rebuilds from
+scratch), one writer at a time, and swept after two weeks idle. `--no-cache` opts out.
 
 **Multi-agent.** With no argument, the picker merges this directory's sessions from
 **every agent** — Claude Code (`~/.claude/projects/`) and Codex

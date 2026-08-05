@@ -212,7 +212,12 @@ of it, once, for every agent:
 - **The committed/open split.** The fold maintains a **durability frontier**: blocks of
   finished turns are final and never touched again; only the open turn is re-derived as
   events arrive. Every incremental surface in the workspace — `changed_from`, the cursor
-  protocol's generations, the put-once stores — leans on this invariant.
+  protocol's generations, the put-once stores — leans on this invariant. The few
+  back-references that hold a completed turn resident (a skill body that may still nest, a
+  queued prompt whose marker may still be suppressed) are each **bounded**, and that is a
+  property the tests assert rather than a hope: an unbounded one is invisible — the session
+  renders perfectly, it just stops committing — and one such pin once froze 26% of a large
+  session in RAM for its remaining 219 turns.
 - **Reshape detection.** A raw-level pure append can still REWRITE the finalized open
   turn's prefix (a new tool joins a span and absorbs earlier blocks). The live layer diffs
   the finalized view per tick to catch exactly this — it is why the sync protocol has a
@@ -323,6 +328,10 @@ not baked in:
 - `ArcStore` (#84) — committed blocks live behind `Arc` (`Bv = Arc<Block>`): the accumulator
   retains the authoritative copy, and handing a block to a reader is a refcount bump. The
   store behind the one-copy/source-of-truth principles (§7).
+- `ArcLog` (#96, the TUI's) — the same `Arc<Block>` residency **plus** an append-only JSONL
+  backing, so a later process can load the committed prefix instead of folding to reach it.
+  Not tier-b: tier-b writes to keep content *off* the heap, this writes to save the *next*
+  run work.
 - …or the presentation's own: the html crate's `RecordStore` renders each block to its wire
   record at `put` time (`Bv = RecordLocator` — the §6 showcase).
 
@@ -383,9 +392,12 @@ SharedSession<RecordStore>  (present, parameterized by the html crate)
   `<id>.records` via `/records`. The main serving function never re-renders, re-serializes,
   or even copies committed content: a session with a thousand committed blocks and a
   three-block open turn costs a poll three blocks of render and the client one `pread`.
-- **Hibernation carries the projection.** An evicted resident's sidecar stores the locator
-  table plus the store's render continuation (`EmitState`); restore reopens the log
-  read-only — no re-render, no re-fold, and outstanding client cursors stay valid.
+- **The projection survives the process.** The record log is also the durable cache's
+  content stream (#96): a later run reloads the locator table by walking its framing
+  newlines, and **derives** the render continuation (`EmitState`) from the restored prefix
+  rather than reloading a stored copy — one record per block makes `next_block` the block
+  count, and both turn counters advance once per user turn, which is what the header counts.
+  Derived cannot go stale against the prefix; persisted can.
 
 ## 7. Lean memory: a ladder of representations, each windowed
 
@@ -455,7 +467,7 @@ two decisions a frontend gets to make without losing generality *or* efficiency:
 
 | seam | decides | the menu |
 |---|---|---|
-| `P: BlockStore` | the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles) | `ArcStore` (cache-owned shared copy — the TUI) · the html crate's `RecordStore` (the wire projection itself, #74) · `TierBStore` (lossless spill) |
+| `P: BlockStore` | the live store — the ONE resident kind's committed representation (#85: one tier serves both consumption styles) | `ArcLog` (cache-owned shared copy + a durable backing — the TUI, #96) · the html crate's `RecordStore` (the wire projection itself, #74) · `ArcStore` (the same sharing, nothing written) · `TierBStore` (lossless spill) |
 | `A` | the per-session **presentation sidecar** | any type — park-and-take (`aux_put`/`aux_take`) or in-place (`aux_with`) |
 
 The residency tiers under it (#85: ONE live tier — the same resident serves the in-process
@@ -464,14 +476,15 @@ view and the wire protocol):
 | tier | holds | cost | transition |
 |---|---|---|---|
 | (c) registered | agent + path | ~nothing | the default for a discovered-but-unopened session (a large sub-agent tree stays here) |
-| (a) live resident | a `SharedSession<P>` | O(turn) + tables (+ disk backing per `P`) | polled recently; reaped to (c) after 30 s idle — a `PersistentStore` resident **hibernates** its serving state on eviction, so revisiting an *unchanged* session restores (same epoch/gen — clients' cursors stay valid) instead of re-folding |
+| (a) live resident | a `SharedSession<P>` | O(turn) + tables (+ disk backing per `P`) | polled recently; reaped to (c) after 30 s idle |
+| (d) durable | the committed + meta streams on disk, under `<root>/<presentation>/<session>/` | bytes only — nothing resident | written as the fold commits; survives the process, so the NEXT run resumes instead of re-folding (below). Swept after two weeks idle |
 
 And the consumption protocols, each matched to a representation by the type system
 (a capability bound, not a convention):
 
 | protocol | shape | requires | copies of committed blocks | per-tick cost |
 |---|---|---|---|---|
-| `poll_view(id)` — in-process | ONE call: advance + splice-shaped `Arc` delta + times/metrics/tasks | `P = ArcStore` | **1 — cache-owned, view-referenced** | **O(delta)** |
+| `poll_view(id, make_store)` — in-process | ONE call: advance + splice-shaped `Arc` delta + times/metrics/tasks | `P::Bv = Arc<Block>` | **1 — cache-owned, view-referenced** | **O(delta)** |
 | `shared_session(id)` + `pull` — wire | cursor zones / byte-range pointers | any `P` | 1 (or 0 in RAM with `RecordStore`) | O(open turn) |
 
 (Whole-`Session` consumers use the core's own follower — `FollowParser::poll`/`poll_delta`
@@ -483,7 +496,7 @@ claim made concrete:
 
 ```rust
 // TUI (app.rs):  the View is the sole block owner; evicted frames park their derived state
-type TuiCache = SessionCache<ArcStore, ViewSidecar>;   // every parameter doing chosen work
+type TuiCache = SessionCache<ArcLog, ViewSidecar>;     // every parameter doing chosen work
 // HTML server (serve.rs):  committed IS the wire projection; per-id serve state lives in aux
 cache: SessionCache<RecordStore, ServeAux>
 ```
@@ -499,6 +512,80 @@ The slot is opaque to the cache; **the consumer owns validity**.
 The TUI applies the same thinking one level up: sub-agent frames you drill into are kept
 under an LRU cap of 4 (`MAX_RESIDENT_SUBAGENTS`); ancestors evict to registrations and
 reload on demand — with the sidecar, an eviction now drops only the blocks.
+
+### Across runs: the durable session cache
+
+Everything above bounds what a *running* process holds. This bounds what a *new* one has to
+redo. A durable cache keeps each owned session's committed blocks and meta records under
+`$XDG_CACHE_HOME/claude-replay/sessions/<presentation>/<session>/`, so the next invocation
+**resumes the fold** instead of re-reading the transcript from byte 0. Measured on real
+sessions: 99.99% of a 107 MB transcript skipped, block-identically.
+
+**Two append-only streams.** The content stream is the frontend's own `BlockStore` backing
+(the TUI's `ArcLog`, the server's `RecordStore`), so nothing is stored twice — the same
+bytes that serve the session persist it. The meta stream is one `MetaRecord` per committing
+drain, carrying what a block list cannot: counter deltas (turns, tools, per-model tokens,
+task ops), gauges (cwd, span), and the resume payload.
+
+**One principle, from which the rest follows.** A resume point is an `(offset, state)` pair
+such that folding from `offset` seeded with `state` yields *exactly* what a cold parse
+yields. That is why `replay_from` is a **partition**, not a bookmark: bytes below it
+authored only committed blocks, bytes at or above it only uncommitted ones — so the resumed
+fold suppresses nothing and re-applies nothing. A drain that admits no such partition (one
+line authored blocks on both sides) simply carries no resume payload, and the next one does.
+
+**Every crash leaves a prefix**, both streams being append-only — which makes the recovery
+space enumerable rather than hopeful. Loading is therefore an *alignment*: fold the records,
+stop at the last one the content stream corroborates, cut the content stream to match. The
+content stream is the authority; meta describing commits it cannot corroborate is ignored.
+
+**Validation is a chain of cheap checks, each rejecting a different lie**, and a rejection is
+always a full cold rebuild — never a partial serve:
+
+| check | catches | on failure |
+|---|---|---|
+| fold/format version | a build whose blocks differ — a resume would splice two folds with no visible seam | `Cold(VersionChanged)` |
+| anchor (CRC32 of the transcript's first line) | a *different* session at the same path | `Cold(SourceRewritten)` |
+| length ≥ `replay_from` | a truncated source | `Cold(SourceRewritten)` |
+| window (CRC32 of the 64 KiB below `replay_from`) | the prefix rewritten in place — the only region a resume derives from | `Cold(SourceRewritten)` |
+| alignment | a torn tail below the first resume point | `Cold(TornStream)` |
+
+CRC32 rather than a cryptographic hash on purpose: this is not a trust boundary, only a
+corruption check, and it is ~13× cheaper. The reasons are typed (`ColdReason`) because "the
+cache did not help" is a support question, and the rejection tests assert on the reason
+rather than on "it rebuilt".
+
+**Exactly one writer per `<presentation, session>`, always.** A file lock names its holder;
+reclaim is liveness-based, and where liveness cannot be decided (a non-unix host) the cache
+is **disabled** rather than assumed stale — guessing wrong fails *into* concurrent writers,
+the one outcome the lock exists to prevent. Admission therefore has **two** outcomes, not
+three:
+
+```rust
+match cache.admit(id, make_store, alive) {
+    Admission::Owned { session, origin } => …,   // exclusive; `origin` says resumed or why cold
+    Admission::Denied(denial)            => …,   // NOTHING was opened, nothing is shared
+}
+```
+
+Falling back to a cache-less session is a separate, explicit `open_uncached` call, so "we
+gave up on caching" is visible at the call site instead of hidden in a third variant that
+would suggest a session might be handed out while another process owns it. The two frontends
+resolve a denial differently, and the asymmetry is why the holder's note is *frontend-typed*
+(`DurableStore::Note`): the TUI refuses a second **live** view and names the holder's tmux
+pane, because two instances would each fold and hold the same growing session in RAM
+invisibly; the HTML server serves cache-less, because partial success is normal for a
+multi-root server. A one-shot read is never refused — the refusal's argument is about
+following.
+
+**Nothing is persisted that can be derived.** No presentation state crosses a run: the HTML
+render continuation is recomputed from the restored prefix (§6), fold/scroll state is
+per-run by definition, and the pull protocol's `epoch` stays a live-session token. What is
+persisted is only what the *fold* cannot recompute without re-reading bytes.
+
+Locks are released on every exit path — both `process::exit(0)` sites explicitly, everything
+else by `Drop` — and a GC sweep drops entries idle past two weeks, trusting a lock without
+probing it up to an age cap so a crashed holder cannot pin bytes forever.
 
 ## 8. The sync protocol: a 4-member cursor
 
@@ -578,6 +665,14 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 - **Protocol equivalence** — `SharedSession` pulls are asserted identical across storage
   backings (RAM vs tier-b), and `PullClient` is walked through every protocol transition
   against the server half.
+- **A resume equals a cold parse** — the durable cache's oracle is always a from-scratch
+  fold, block for block, because a corrupt-but-plausible resume passes every
+  self-consistency check there is. Asserted for clean resumes, resumes-from-resumes, and
+  every truncation of both streams (the crash-consistency harness).
+- **The durability frontier cannot freeze** — every back-reference that holds a completed
+  turn resident is bounded, and a test says so on real transcripts. The failure is silent
+  (a pinned session renders correctly and simply stops committing), so nothing catches it
+  except measuring.
 
 ## 11. Where things live
 
@@ -589,7 +684,8 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 | `claude-replay-engine/src/engine/{message,session,index,tasks,tier_b,reader,path,time}.rs` | canonical log · `Session<BV>`/`BlockStore`/`BlockAccess`/`ArcStore` · rollups · task model · tier-b backing · byte-offset line reader (tail + resume) · helpers |
 | `claude-replay-engine/src/adapter.rs` | the `TranscriptAdapter` trait + `SniffClaim` (the contract — the registry lives in the facade) |
 | `claude-replay-engine/src/engine/seam.rs` | the audited adapter contract — all adapter code may import (#87) |
-| `claude-replay-engine/src/{discover,metrics,follow,agent,fold,summary,diff}.rs` | discovery vocabulary · metrics · live follower · the open `Agent` id · fold policy · span phrasing · diff-row model |
+| `claude-replay-engine/src/engine/meta_stream.rs` | the durable meta record + `MaterializedMeta` + alignment (#96) |
+| `claude-replay-engine/src/{discover,metrics,follow,agent,fold,summary,diff}.rs` | discovery vocabulary · metrics · live follower (tail + resume) · the open `Agent` id · fold policy · span phrasing · diff-row model |
 | `claude-replay-agents/src/agents/{claude,codex}/model.rs` | L1 tokenizers + `Shaping` |
 | `claude-replay-agents/src/agents/{claude,codex}/metrics.rs` | token/cost folding |
 | `claude-replay-agents/src/agents/{claude,codex,qoderwork}/discover.rs` | per-agent transcript stores |
@@ -597,10 +693,12 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 | `claude-replay-agents/src/agents/mod.rs` | the family tree + the `agents_import_only_the_seam` audit |
 | `claude-replay-agents/tests/engine_integration.rs` | machinery-with-real-adapters integration tests (a dev-dep cycle would compile two engines inside engine) |
 | `claude-replay-core/src/{adapter,discover,session_entry,transcript}.rs` | the wired `adapter()`/`adapters()` registry · registry-driven discovery · the `parse_session*` dispatchers · the `Transcript` source handle |
-| `claude-replay-present/src/cache/{mod,shared}.rs` | `SessionCache` residency · `SharedSession` (+hibernation) |
+| `claude-replay-present/src/cache/{mod,shared}.rs` | `SessionCache` residency + the durable API (`durable`/`admit`/`release`) · `SharedSession` · the `DurableStore` seam |
+| `claude-replay-present/src/cache/{stream,lock,admit}.rs` | the meta stream on disk · the single-writer lock · claim/validate/align + GC (#96) |
 | `claude-replay-present/src/pull.rs` | the pull protocol (`Cursor`/`PullReply`/`pull`/`PullClient`) (#87) |
 | `claude-replay-present/src/{present,highlight,sys,args}.rs` | text formatters · syntect highlighter (`HlSpan`) · OS/path helpers · shared `Args` (`cli` feature) |
 | `claude-replay-tui/src/{view,app,render,markdown,wrap,theme,picker,clipboard}.rs` | the terminal viewer |
+| `claude-replay-tui/src/store.rs` | `ArcLog` — the TUI's durable `Arc<Block>` store + its lock note (#96) |
 | `claude-replay-html/src/html_export/{mod,bundle,serve,record_store}.rs` + `src/html/` | HTML render core · offline writers · live server · the wire-projection `RecordStore` (#74) · embedded CSS/JS |
 | `src/jdi/` | the `agent-jdi` supervisor (see `src/jdi/DESIGN.md`) |
 
@@ -614,5 +712,6 @@ divergence; the DOM reconciler batches reads/writes to avoid layout thrash.
 [`FollowParser`]: ../claude-replay-engine/src/follow.rs
 [`SessionAccumulator`]: ../claude-replay-engine/src/engine/builder.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
+[`DurableStore`]: ../claude-replay-present/src/cache/shared.rs
 [`pull`]: ../claude-replay-present/src/pull.rs
 [`PullClient`]: ../claude-replay-present/src/pull.rs
