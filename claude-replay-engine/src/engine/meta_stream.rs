@@ -576,6 +576,14 @@ pub struct Aligned {
     pub committed: usize,
     pub meta: MaterializedMeta,
     pub resume: Resume,
+    /// How many records the fold consumed to get here, INCLUDING the resume record.
+    ///
+    /// The meta stream needs the same cut as the content stream (I6), and for the same reason:
+    /// a resumed writer re-folds from `replay_from` and writes records for those commits again,
+    /// so records past this point would be **counted twice** — once from the run that wrote
+    /// them, once from the run that redid them. Blocks are unaffected (the content stream is
+    /// cut), which is exactly why a block-only test cannot see it.
+    pub records: usize,
 }
 
 /// Align a meta stream against a loaded committed count (#96 §6.2, I1).
@@ -625,6 +633,7 @@ pub fn align(records: &[MetaRecord], committed_len: usize) -> Result<Option<Alig
                 committed: res.id,
                 meta: mm.clone(),
                 resume: res.clone(),
+                records: folded + 1,
             });
         }
     }

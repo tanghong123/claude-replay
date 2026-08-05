@@ -999,13 +999,43 @@ after *setup* rather than held for the run, and frees on `Drop`; the cache's is 
 with two outcomes, held for the session's life, carrying a frontend-typed note. Merging them
 would force one shape onto both problems. They stay separate.
 
-**Checkpoints ride the writer's own materialized view.** §6.6 left open how the writer builds
-the absolute state a checkpoint carries. Rebuilding it from the accumulator's internals would
-have needed a committed-only copy of `agent_ids` and a turn-sliced `user_times` — two places to
-get subtly wrong, invisibly. Instead the accumulator keeps a running `MaterializedMeta` by
-pushing each authored record through **the same fold the reader uses**, and a checkpoint is a
-clone of it. It therefore cannot disagree with the stream it summarizes, and `restore` seeds it
-so a resumed writer's next checkpoint still describes the whole session.
+**A checkpoint is built from MAINTAINED state, never by folding the records it accompanies.**
+The first implementation did the latter — the accumulator kept a running `MaterializedMeta` by
+pushing each authored record through the same fold the reader uses, which is simpler and was
+wrong: it makes §6.6's validate-on-pass **tautological**. Two identical folds over identical
+records always agree, so the check could only ever catch a corrupted byte on disk or a
+writer/reader version skew — never a bug in the deltas themselves.
+
+That bug class is not hypothetical. `count_into` is a hand-mirrored copy of `SessionMeta::push`
+and has already drifted once, silently dropping `Thinking{tools}`. So each field of a checkpoint
+now comes from the counterpart of the delta a reader folds, and never from the delta:
+`session_meta` from `committed_meta`, `user_times` from the replayer's stamps, `tasks` from the
+op-log fold, metrics and cwd from the resume point's own capture. `agent_ids` is the stated
+exception — both sides already route through the shared `agent_pairs`, so there is no second
+opinion to be had, and only the committed/open split matters (`committed_agents`).
+
+Verified by mutation rather than assertion: reintroducing the historical `count_into` drift now
+makes a resume come back `Cold(CheckpointMismatch)` instead of quietly succeeding with a wrong
+session. Note that this only fires where a checkpoint has state *behind* it — a compacted stream
+opens on one, so its first record is adopted unchecked. Both shapes are tested.
+
+**It earned its keep immediately, twice.**
+
+- **The meta stream was not being cut on resume.** I6 says the content stream is aligned down to
+  what the records corroborate; the record stream needs the same cut, and did not get one. A
+  resumed writer re-folds from `replay_from` and writes records for those commits *again*, so the
+  previous run's records above the alignment point were counted a second time — turns 161 where
+  the session had 159. Blocks were unaffected (they come from the content stream, which *was*
+  cut), which is exactly why every block-only test passed. `Aligned` now carries `records`, and
+  `MetaWriter::open_append` truncates to it. The durable tests now compare the **header** as well
+  as the blocks.
+- **A checkpoint must speak the delta stream's vocabulary.** A record carries a counter only when
+  it changed (R7), so a model that never scored reaches a reader as an *absent* key — never a
+  zero. The writer's absolute map had a `<synthetic>` model with all-zero counts, so the
+  checkpoint claimed a key the stream could not express and every real session rejected. Zero
+  entries are now dropped from a checkpoint's `tokens`/`extra`.
+
+Both were found on the first run against real transcripts, by the check itself.
 
 **When to checkpoint and when to compact is still policy.** `CHECKPOINT_EVERY` and
 `COMPACT_AFTER` are named constants, every value of which produces a valid stream, and

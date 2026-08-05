@@ -332,25 +332,39 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         };
         let mut store = store.expect("claim only returns Ours after the store callback ran");
 
-        let session = match resumed {
+        // I6, both halves: the content stream is cut to what the records corroborate, and the
+        // record stream to the alignment point. Skipping the second lets a resumed writer's
+        // re-folded commits be counted twice.
+        let (session, keep) = match resumed {
             Some(a) => {
                 let a = *a;
-                // Cut the backing to what the record stream corroborates (I6) before handing the
-                // prefix on, so the two halves describe the same session.
                 if store.adopt(a.committed, &a.meta.session_meta).is_err() {
                     return self.cold_fallback(id, &src, dir, store, ColdReason::TornStream);
                 }
                 loaded.truncate(a.committed);
-                SharedSession::resume(src.agent(), src.path(), store, loaded, a.meta, &a.resume)
+                let keep = a.records;
+                (
+                    SharedSession::resume(
+                        src.agent(),
+                        src.path(),
+                        store,
+                        loaded,
+                        a.meta,
+                        &a.resume,
+                    ),
+                    Some(keep),
+                )
             }
             None => {
                 store.reset(); // a rejected cache keeps nothing
-                SharedSession::with_store(src.agent(), src.path(), store)
+                (
+                    SharedSession::with_store(src.agent(), src.path(), store),
+                    None,
+                )
             }
         };
-        let resumed = matches!(origin, Origin::Resumed { .. });
         let session = self.install(id, session);
-        match admit::writer_for(&dir, src.path(), d.versions.clone(), resumed) {
+        match admit::writer_for(&dir, src.path(), d.versions.clone(), keep) {
             Ok(writer) => {
                 session.attach_writer(writer);
                 lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
@@ -377,7 +391,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
             SharedSession::with_store(src.agent(), src.path(), store),
         );
         if let Some(d) = &self.durable {
-            match admit::writer_for(&dir, src.path(), d.versions.clone(), false) {
+            match admit::writer_for(&dir, src.path(), d.versions.clone(), None) {
                 Ok(writer) => {
                     session.attach_writer(writer);
                     lock_recover(&d.owned).insert(id.to_string(), Owned { dir });

@@ -211,12 +211,11 @@ pub fn writer_for(
     dir: &Path,
     src: &Path,
     versions: Versions,
-    resumed: bool,
+    resumed: Option<usize>,
 ) -> std::io::Result<MetaWriter> {
-    if resumed {
-        MetaWriter::open_append(dir, src)
-    } else {
-        MetaWriter::create(dir, src, versions)
+    match resumed {
+        Some(keep) => MetaWriter::open_append(dir, src, keep),
+        None => MetaWriter::create(dir, src, versions),
     }
 }
 

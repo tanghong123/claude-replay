@@ -57,10 +57,9 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     emitted: Boundary,
     /// Meta records authored but not yet drained by the persistence layer.
     meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
-    /// The materialized view of every record authored so far — what a reader will hold at this
-    /// point, maintained by pushing each record through the SAME fold the reader uses. A
-    /// checkpoint is a clone of it, so it cannot disagree with the stream it summarizes.
-    materialized: crate::engine::meta_stream::MaterializedMeta,
+    /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
+    /// map also holds open-window spawns, which a checkpoint must not claim.
+    committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
     /// Resumable drains since the last checkpoint. Only resumable ones count: a checkpoint must
     /// ride a record that carries a resume payload (§6.6), so a straddling drain does not
     /// advance the clock — it waits for the next qualifying one.
@@ -160,7 +159,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             boundary: std::collections::VecDeque::new(),
             emitted: Boundary::default(),
             meta_out: Vec::new(),
-            materialized: Default::default(),
+            committed_agents: Default::default(),
             since_checkpoint: 0,
         }
     }
@@ -183,9 +182,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
     ) -> Self {
         let mut acc = Self::with_store(adapter, store);
         acc.committed = committed;
-        // A resumed writer continues the reader's fold: without this its next checkpoint would
-        // claim the session began at the resume point.
-        acc.materialized = mm.clone();
+        // A resumed writer continues from the restored state: without this its next checkpoint
+        // would claim the session began at the resume point.
+        acc.committed_agents = mm.agent_ids.clone();
         acc.committed_meta = mm.session_meta.clone();
         acc.cwd = mm.cwd.clone();
         acc.task_fold = mm.tasks.clone();
@@ -217,29 +216,73 @@ impl<S: BlockStore> SessionAccumulator<S> {
 
     /// Attach a checkpoint when one is due (§6.6).
     ///
-    /// Ordering is load-bearing: the record is folded into the running view FIRST, so the
-    /// checkpoint includes this record's own deltas — which is exactly what a reader does, since
-    /// `MaterializedMeta::push` adopts a checkpoint *instead of* applying them.
-    ///
     /// Only a record carrying a resume payload may hold one. A checkpoint with no `replay_from`
     /// after it would let compaction leave a cache holding complete state that nothing can
     /// resume from.
     fn checkpoint_maybe(&mut self, rec: &mut crate::engine::meta_stream::MetaRecord) {
-        self.materialized.push(rec);
         if rec.resume.is_none() {
             return;
         }
         self.since_checkpoint += 1;
         if self.since_checkpoint >= crate::engine::meta_stream::CHECKPOINT_EVERY {
-            rec.checkpoint = Some(self.materialized.clone());
+            rec.checkpoint = Some(self.materialized());
             self.since_checkpoint = 0;
         }
     }
 
-    /// The materialized view as of the last authored record — the value a checkpoint carries.
-    /// Exposed for tests that assert the writer's view and a reader's fold agree (I3/I11).
-    pub fn materialized(&self) -> &crate::engine::meta_stream::MaterializedMeta {
-        &self.materialized
+    /// The absolute state as of the last authored resume point — the value a checkpoint carries.
+    ///
+    /// **Built from the accumulator's own maintained state, deliberately NOT by folding the
+    /// records it just wrote.** A checkpoint's job on load is to be a *second, independent*
+    /// answer to "what does this stream say the session is": a reader folds the deltas, compares,
+    /// and rejects on a disagreement. Deriving it from those same deltas would make the
+    /// comparison tautological — it could still catch a corrupted byte on disk or a writer/reader
+    /// version skew, but never a bug in the deltas themselves.
+    ///
+    /// That bug class is not hypothetical. `count_into` is a hand-mirrored copy of
+    /// `SessionMeta::push` that has already drifted once, silently dropping `Thinking{tools}`.
+    /// Sourcing `session_meta` from `committed_meta` — the `SessionMeta::push` side — is what
+    /// makes a future drift of that pair a *load-time rejection* rather than a wrong session.
+    ///
+    /// Per field: `session_meta` from the maintained header, `user_times` from the replayer's
+    /// stamps, `tasks` from the op-log fold, and the metrics/cwd from the resume point's own
+    /// capture — each the counterpart of a delta the reader folds, and none of them the delta.
+    /// (`agent_ids` is the stated exception: both sides already route through the shared
+    /// `agent_pairs`, so there is no second opinion to be had — only the committed/open split
+    /// matters, which is what `committed_agents` tracks.)
+    pub fn materialized(&self) -> crate::engine::meta_stream::MaterializedMeta {
+        let e = &self.emitted;
+        crate::engine::meta_stream::MaterializedMeta {
+            session_meta: self.committed_meta.clone(),
+            agent_ids: self.committed_agents.clone(),
+            user_times: self
+                .replayer
+                .user_times()
+                .iter()
+                .take(self.committed_meta.turns)
+                .copied()
+                .collect(),
+            // Zero entries are dropped, because the DELTA stream cannot express one: a record
+            // carries a counter only when it changed (R7), so a model or key that never scored
+            // reaches a reader as an absent key, not a zero. The checkpoint has to speak the
+            // same vocabulary or it disagrees over nothing — a real session tripped exactly
+            // this, on a `<synthetic>` model whose counts were all zero.
+            tokens: e
+                .tokens
+                .iter()
+                .filter(|(_, v)| **v != crate::metrics::TokenCounts::default())
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            extra: e
+                .extra
+                .iter()
+                .filter(|(_, v)| **v != 0)
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            tasks: self.task_fold.clone(),
+            cwd: e.cwd.clone(),
+            span: e.span,
+        }
     }
 
     /// Fold ONE line into the running state, knowing its **start byte offset** in the transcript:
@@ -320,6 +363,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
             let mut rec = crate::engine::meta_stream::MetaRecord::default();
             for b in &drained {
                 count_into(&mut rec, b);
+                // The committed half of the replayer's live spawn map — folded here, from the
+                // blocks, so a checkpoint never claims an open-window spawn.
+                for (k, id, ty) in crate::engine::meta_stream::agent_pairs(b) {
+                    self.committed_agents.insert(k, (id, ty));
+                }
             }
             let times = self.replayer.user_times().to_vec();
             for b in drained {
@@ -459,7 +507,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
-        self.materialized = Default::default();
+        self.committed_agents.clear();
         self.since_checkpoint = 0;
         self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's

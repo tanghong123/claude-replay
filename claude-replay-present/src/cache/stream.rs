@@ -84,9 +84,31 @@ impl MetaWriter {
         })
     }
 
-    /// Re-open an existing stream for appending, after a load validated it.
-    pub fn open_append(dir: &Path, src: &Path) -> std::io::Result<Self> {
-        let file = OpenOptions::new().append(true).open(meta_path(dir))?;
+    /// Re-open an existing stream for appending, cut to the first `keep` records.
+    ///
+    /// The cut is the meta stream's half of I6. A resumed writer re-folds from `replay_from` and
+    /// writes records for those commits again; anything the previous run left above the
+    /// alignment point would then be folded a second time, and the reader's turn/tool/token
+    /// totals would come out high. The content stream is cut for the same reason — this is the
+    /// other half, and it is easy to forget precisely because blocks stay correct without it.
+    pub fn open_append(dir: &Path, src: &Path, keep: usize) -> std::io::Result<Self> {
+        let path = meta_path(dir);
+        let raw = std::fs::read(&path)?;
+        // Header + `keep` records, counted in framing newlines.
+        let mut end = 0usize;
+        for (n, line) in raw.split_inclusive(|b| *b == b'\n').enumerate() {
+            if n > keep {
+                break;
+            }
+            end += line.len();
+        }
+        if end < raw.len() {
+            OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .set_len(end as u64)?;
+        }
+        let file = OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
             file,
             src: src.to_path_buf(),

@@ -54,13 +54,44 @@ fn result(id: &str, sec: u32) -> String {
     )
 }
 
-/// A multi-turn transcript: enough turns to have several commit points, with a tool call whose
-/// result lands later (a back-patch across the frontier) in the middle.
-fn transcript(path: &Path, turns: usize) {
+/// Two user turns on ONE line — the straddle shape (#96 I5). The drain it triggers cannot carry
+/// a resume payload, because the partition would fall inside a line.
+fn two_turns_one_line(a: &str, b: &str, sec: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{a}\"}},{{\"type\":\"text\",\"text\":\"{b}\"}}]}},\"timestamp\":\"2026-07-26T10:00:{sec:02}Z\"}}\n"
+    )
+}
+
+/// A sub-agent spawn and a task create — so `agent_ids` and `tasks` are non-empty. Without them
+/// a checkpoint's two map fields are `Default::default()` either way and nothing can tell a
+/// dropped one from a correct one. (Learned by mutation: two faults survived a fixture that had
+/// neither.)
+fn prologue() -> String {
     let mut s = String::new();
+    s.push_str("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Task\",\"input\":{\"subagent_type\":\"general-purpose\",\"description\":\"child one\",\"prompt\":\"go\"}}]},\"timestamp\":\"2026-07-26T09:59:01Z\"}\n");
+    s.push_str("{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"aXYZ\",\"status\":\"async_launched\"},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"launched\"}]},\"timestamp\":\"2026-07-26T09:59:02Z\"}\n");
+    s.push_str("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tk1\",\"name\":\"TaskCreate\",\"input\":{\"subject\":\"s\",\"description\":\"d\",\"active_form\":\"a\"}}]},\"timestamp\":\"2026-07-26T09:59:03Z\"}\n");
+    s.push_str("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tk1\",\"content\":\"Created task #12: s\"}]},\"timestamp\":\"2026-07-26T09:59:04Z\"}\n");
+    s
+}
+
+/// A multi-turn transcript: enough turns to have several commit points, with a tool call whose
+/// result lands later (a back-patch across the frontier) in the middle, a sub-agent and a task in
+/// the prologue, and a **straddling line every third turn** so non-resumable drains are common
+/// rather than a coincidence.
+fn transcript(path: &Path, turns: usize) {
+    let mut s = prologue();
     for i in 0..turns {
         let t = (i * 4) as u32;
-        s.push_str(&user(&format!("ask {i}"), t));
+        if i % 3 == 2 {
+            s.push_str(&two_turns_one_line(
+                &format!("ask {i}a"),
+                &format!("ask {i}b"),
+                t,
+            ));
+        } else {
+            s.push_str(&user(&format!("ask {i}"), t));
+        }
         s.push_str(&tool(&format!("b{i}"), t + 1));
         s.push_str(&result(&format!("b{i}"), t + 2));
         s.push_str(&assistant(&format!("reply {i}"), t + 3));
@@ -80,6 +111,21 @@ fn cache(root: &Path) -> Cache {
         root.to_path_buf(),
         Versions::current(None),
     )
+}
+
+/// The header a session reports — turns, tools, children.
+///
+/// Compared beside the blocks because **blocks alone are not enough**: the meta stream's counters
+/// live outside them, so a resume that double-counted every re-folded commit produced a
+/// block-identical session with an inflated header, and every block-only test passed. (Found
+/// exactly that way.)
+fn meta_of(src: &Path) -> claude_replay_core::engine::SessionMeta {
+    let s = parse_session_as(Agent::CLAUDE, src).unwrap();
+    let mut m = claude_replay_core::engine::SessionMeta::default();
+    for b in s.blocks() {
+        m.push(&b);
+    }
+    m
 }
 
 /// Open `id` through the real API and fold to EOF, returning the joined view + the origin.
@@ -133,6 +179,11 @@ fn a_second_run_resumes_to_a_block_identical_session() {
 
     let c = cache(&root);
     let (second, origin) = open(&c, "s", &src);
+    assert_eq!(
+        c.touch("s").unwrap().session_meta(),
+        meta_of(&src),
+        "the resumed HEADER must match too — the counters live outside the blocks"
+    );
     match origin {
         Origin::Resumed {
             committed,
@@ -170,6 +221,11 @@ fn a_resumed_session_keeps_folding_correctly() {
     let (got, origin) = open(&c, "s", &src);
     assert!(matches!(origin, Origin::Resumed { .. }));
     assert_eq!(got, cold(&src), "restored ++ newly folded == cold");
+    assert_eq!(
+        c.touch("s").unwrap().session_meta(),
+        meta_of(&src),
+        "and its header, which no block comparison would notice"
+    );
 }
 
 /// Resuming REPEATEDLY. One resume being right does not mean a resume from a resume is: the
@@ -185,6 +241,11 @@ fn resuming_from_a_resume_stays_identical() {
         let c = cache(&root);
         let (got, origin) = open(&c, "s", &src);
         assert_eq!(got, cold(&src), "round {round}");
+        assert_eq!(
+            c.touch("s").unwrap().session_meta(),
+            meta_of(&src),
+            "round {round}: the header must not drift across repeated resumes"
+        );
         if round > 0 {
             assert!(
                 matches!(origin, Origin::Resumed { .. }),
@@ -238,6 +299,29 @@ fn checkpoints_are_written_compacted_and_still_resume() {
             .all(|r| r.resume.is_some()),
         "a checkpoint must ride a resume point"
     );
+    // …and the interval counts RESUMABLE drains only. The fixture straddles every third turn, so
+    // non-resumable drains are common; if they advanced the clock, the gaps below would come out
+    // short. Asserting the gap rather than "it rode a resume point" is what makes that
+    // deterministic instead of a coincidence of where the interval happened to land.
+    let gaps: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.checkpoint.is_some())
+        .map(|(i, _)| {
+            records[..=i]
+                .iter()
+                .rev()
+                .skip(1)
+                .take_while(|r| r.checkpoint.is_none())
+                .filter(|r| r.resume.is_some())
+                .count()
+                + 1
+        })
+        .collect();
+    assert!(
+        gaps.iter().all(|&g| g == CHECKPOINT_EVERY),
+        "each checkpoint must follow exactly {CHECKPOINT_EVERY} resumable drains, got {gaps:?}"
+    );
 
     // The content stream's own length IS the committed block count — the unit `resume.id`
     // speaks, and the same number `admit` hands to alignment.
@@ -245,6 +329,25 @@ fn checkpoints_are_written_compacted_and_still_resume() {
         .unwrap()
         .lines()
         .count();
+    // Resume from the UNCOMPACTED stream first. This is the run that exercises
+    // validate-on-pass: alignment folds its way to a mid-stream checkpoint with state already
+    // behind it, and compares. (After compaction the stream OPENS on a checkpoint, so there is
+    // nothing behind it and the check is skipped by design — which is why both runs are here.)
+    {
+        let c = cache(&root);
+        let (got, origin) = open(&c, "s", &src);
+        assert!(
+            matches!(origin, Origin::Resumed { .. }),
+            "an uncompacted checkpointed stream must resume, got {origin:?} — a \
+             CheckpointMismatch here means the writer's checkpoint disagrees with its own deltas"
+        );
+        assert_eq!(got, cold(&src), "resumed-with-checkpoints == cold");
+        c.release_all();
+    }
+
+    // Re-read: the resume above may have fallen back past a straddling drain and re-committed,
+    // appending records of its own. (The simpler fixture never did, which hid this.)
+    let records: Vec<_> = MetaReader::open(&dir).unwrap().unwrap().1.collect();
     let before = std::fs::metadata(meta_path(&dir)).unwrap().len();
     let dropped = compact(&dir, committed, 1).unwrap();
     assert!(dropped > 0, "compaction should have found a base");
@@ -265,6 +368,73 @@ fn checkpoints_are_written_compacted_and_still_resume() {
         "a compacted stream must still resume, got {origin:?}"
     );
     assert_eq!(got, cold(&src), "resumed-from-compacted == cold");
+}
+
+/// **A resumed writer's checkpoints must describe the WHOLE session**, not just what it folded
+/// after the resume. The writer builds a checkpoint from its maintained state, so `restore` has
+/// to seed that state — and the only thing that notices a gap is a *third* run validating a
+/// checkpoint the *second* one wrote.
+///
+/// That is why this needs three runs and a transcript that grows past a checkpoint interval
+/// between them: run 2 must fold enough to emit a checkpoint of its own for run 3 to check.
+#[test]
+fn a_resumed_writers_checkpoints_cover_the_whole_session() {
+    use claude_replay_core::engine::meta_stream::CHECKPOINT_EVERY;
+    use claude_replay_present::cache::stream::MetaReader;
+
+    let root = tmp("resumed-ckpt");
+    let src = root.join("t.jsonl");
+    let dir = claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s");
+    transcript(&src, CHECKPOINT_EVERY + 8);
+
+    {
+        let c = cache(&root);
+        open(&c, "s", &src);
+        c.release_all();
+    }
+    let after_first: Vec<_> = MetaReader::open(&dir).unwrap().unwrap().1.collect();
+    let n1 = after_first
+        .iter()
+        .filter(|r| r.checkpoint.is_some())
+        .count();
+
+    // Grow well past another interval, so the RESUMED run emits checkpoints of its own.
+    let mut extra = String::new();
+    for i in 1000..(1000 + CHECKPOINT_EVERY + 8) {
+        let t = (i % 900) as u32;
+        extra.push_str(&user(&format!("more {i}"), t));
+        extra.push_str(&assistant(&format!("ok {i}"), t + 1));
+    }
+    append(&src, &extra);
+
+    let (got, origin) = {
+        let c = cache(&root);
+        let r = open(&c, "s", &src);
+        c.release_all();
+        r
+    };
+    assert!(matches!(origin, Origin::Resumed { .. }), "{origin:?}");
+    assert_eq!(got, cold(&src), "run 2 is correct");
+
+    let after_second: Vec<_> = MetaReader::open(&dir).unwrap().unwrap().1.collect();
+    let n2 = after_second
+        .iter()
+        .filter(|r| r.checkpoint.is_some())
+        .count();
+    assert!(
+        n2 > n1,
+        "the resumed run must have written a checkpoint of its own ({n1} -> {n2})"
+    );
+
+    // Run 3 folds the stream and validates run 2's checkpoint on the way past. A checkpoint that
+    // forgot everything before the resume disagrees here and comes back Cold.
+    let c = cache(&root);
+    let (got, origin) = open(&c, "s", &src);
+    assert!(
+        matches!(origin, Origin::Resumed { .. }),
+        "a resumed writer's checkpoint must validate, got {origin:?}"
+    );
+    assert_eq!(got, cold(&src));
 }
 
 /// A rewritten source must be REJECTED — the false-accept class, which produces a wrong session

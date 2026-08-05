@@ -897,7 +897,11 @@ cache: SessionCache&lt;
       newest corroborated checkpoint and everything after it, rewriting to a temp file and
       renaming, so a crash mid-rewrite leaves the original intact; and a reader that
       <em>passes</em> one compares it against what it folded, which turns "a resume equals a cold
-      fold" from a property tests assert into one production verifies on every load. A checkpoint
+      fold" from a property tests assert into one production verifies on every load. That last
+      job is why a checkpoint is built from the fold's <b>maintained</b> state rather than from
+      the records it rides with: two identical folds over identical records always agree, so a
+      self-derived checkpoint would make the comparison tautological — able to catch a corrupted
+      byte but never a bug in the deltas. A checkpoint
       only ever rides a record that already has a resume payload — otherwise compacting onto it
       could leave complete state with no <code>replay_from</code> anywhere.</p>
     <p><b>Exactly one writer per <code>&lt;presentation, session&gt;</code>, always.</b> A file

@@ -562,7 +562,11 @@ there, which bounds an open's work (otherwise O(records), growing without limit)
 becomes trivial and needs no fold — keep the newest corroborated checkpoint and everything after
 it, rewriting to a temp file and renaming, so a crash mid-rewrite leaves the original intact; and
 a reader that *passes* one compares it against what it folded, which turns "a resume equals a
-cold fold" from a property tests assert into one production verifies on every load. A checkpoint
+cold fold" from a property tests assert into one production verifies on every load. That last
+job is why a checkpoint is built from the fold's **maintained** state rather than from the
+records it rides with: two identical folds over identical records always agree, so a
+self-derived checkpoint would make the comparison tautological — able to catch a corrupted byte
+but never a bug in the deltas. A checkpoint
 only ever rides a record that already has a resume payload — otherwise compacting onto it could
 leave complete state with no `replay_from` anywhere.
 
