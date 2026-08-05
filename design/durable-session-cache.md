@@ -1,8 +1,13 @@
 # Design: a durable, cross-run session cache
 
-> **v21 — handoff state.** Every type is declared, every code citation verified against the tree,
+> **v22 — handoff state.** Every type is declared, every code citation verified against the tree,
 > every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
 > first: the rest follows from it. §12 lists what must be true before step 1 starts.
+>
+> v22 adds: an **iterative** meta reader (entries are never all resident), **no positional
+> correspondence** between the two streams (I2 — the link is `resume.id` alone), and
+> **checkpoints** (§6.6) that bound an open's work, validate a fold in production, and make
+> compaction asynchronous.
 
 ## 1. Requirements
 
@@ -177,10 +182,30 @@ struct Resume {
     pending_ts:  Option<EpochSeconds>,   // stamps turns authored on the resume's first line
 }
 
+// ── stream entries ────────────────────────────────────────────────────────────
+/// The meta stream is a sequence of these. A `Checkpoint` is an absolute `Part1` — the fold of
+/// everything before it — so a reader may START at the last one it sees and ignore all earlier
+/// entries (§6.6).
+enum MetaEntry {
+    Header(StreamHeader),        // first entry, once
+    Checkpoint(Checkpoint),      // absolute state; written only by compaction
+    Record(MetaRecord),          // one per committing drain
+}
+
+struct Checkpoint { id: usize, state: Part1 }   // `id` = committed-block count it represents
+
 // ── the reader half ───────────────────────────────────────────────────────────
-/// Fold every record up to and including `n` (a resume), or all of them (a metadata reader):
-/// counters accumulate, gauges take the last present value. The left-hand side of I3.
-fn replay_part1(records: &[MetaRecord], through: Option<usize>) -> Part1;
+/// **Iterative, not slice-at-once.** Unlike `Vec<BV>` — which is resident by definition, being
+/// the committed index itself — meta entries are consumed one at a time and never all held.
+/// A reader streams the file; a resume stops feeding at its aligned `n`.
+///
+/// `push` has NO bound check: the CALLER guarantees it feeds nothing past `n` (§6.2). Keeping
+/// the fold ignorant of the alignment is what lets a metadata reader (#98) use the same type
+/// with no bound at all.
+impl Part1 {
+    fn seed(&mut self, c: Checkpoint);      // adopt an absolute state; discards what came before
+    fn push(&mut self, r: &MetaRecord);     // counters accumulate, gauges replace
+}
 
 struct Part1 {
     session_meta: SessionMeta,                  // turns, tools, children — from `agents`
@@ -188,7 +213,7 @@ struct Part1 {
     user_times:   Vec<Option<EpochSeconds>>,
     tokens:       BTreeMap<Model, TokenCounts>,
     extra:        BTreeMap<String, u64>,
-    task_ops:     Vec<TaskOp>,                  // concatenated log; `TaskFold::replay` consumes it
+    tasks:        TaskFold,                     // ops APPLIED as they arrive — list + pending
     cwd:          String,
     span:         Option<(EpochSeconds, EpochSeconds)>,
 }
@@ -316,9 +341,9 @@ build-id invalidation, discarding every cache on every release.
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I1 | `n = max { r.resume.id : r.resume.is_some() ∧ r.resume.id ≤ \|committed\| }`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
-| I2 | One record per committing drain. `finalize_completed` runs once per line (`replay.rs:412`), so a multi-turn line commits several blocks under **one** record and `resume.id` may jump. Ids strictly increase and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.1 |
-| I3 | `replay_part1(records, n)` == the maintained `SessionMeta` / `TaskList` / metrics over `committed[..n]`. | oracle test |
+| I1 | `n = max { r.resume.id : r.resume.is_some() ∧ r.resume.id ≤ \|committed\| }`, and the record used is the one **carrying that id** — never `records[n]`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
+| I2 | **The two streams have no positional correspondence.** One record per committing *drain*, but `finalize_completed` runs once per *line* (`replay.rs:412`), so a multi-turn line commits several blocks under one record and `resume.id` jumps. The only link between the streams is `resume.id`; indexing one by the other's position is always wrong. Ids strictly increase and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.2's lookup-by-id |
+| I3 | A `Part1` folded over the entries up to `n` == the maintained `SessionMeta` / `TaskList` / metrics over `committed[..n]`. | oracle test |
 | I4 | For every record with `resume`, each **gauge**'s value at that record — its last present value ≤ it — and each **counter**'s fold through it equal the fold's value at the start of that record's `replay_from` line. | §6.1; double-apply test |
 | I5 | `resume.is_some()` ⟺ the §3 partition exists at this drain. Then `resume.replay_from` is that partition's offset. | `line_boundary()` (§6.1) |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are all truncated to `n` before any append. | §6.2 |
@@ -326,6 +351,7 @@ build-id invalidation, discarding every cache on every release.
 | I8 | A record is reused only if §6.4 passes: length, anchor, window, versions. | §6.4 |
 | I9 | At most one live process writes a `<presentation, session>`. Where liveness is undecidable (`pid_alive` is unix-only, `jdi/state.rs:150-167`) the cache is **disabled**, never assumed stale. | §8 |
 | I10 | A fold reset truncates both streams and the store backing to 0. | §6.5 |
+| I11 | Seeding from a `Checkpoint` and folding from the stream's start yield the **same** `Part1`. A reader that passes a checkpoint while folding compares against it; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
 
 ## 6. Algorithms
 
@@ -419,13 +445,23 @@ push a `ToolResult` and a `QueueEvent` and are excluded. Define it beside those 
 ### 6.2 Load
 
 ```
-load(dir) -> Option<(Vec<BV>, Vec<MetaRecord>)>:
+load(dir) -> Option<Loaded>:
     committed ← bv_loader(dir)                  # frontend-specific: the ONLY such piece
-    records   ← meta_loader(dir)                # shared; drops a torn trailing record
-    n ← max { r.resume.id : r ∈ records, r.resume.is_some(), r.resume.id ≤ |committed| }   # I1
-    if n is None or !valid(header, records[n].resume): return None      # cold rebuild
-    truncate(content, n); truncate(meta, n); store.truncate(n)          # I6
-    return (committed[..n], records[..=n])
+    # ONE streaming pass over the meta file. Entries are folded as they arrive; nothing but
+    # the running Part1 and the best resume so far is retained.
+    p1 ← Part1::default(); hdr ← None; best ← None
+    for entry in meta_entries(dir):             # drops a torn trailing entry
+        match entry:
+            Header(h)     → hdr ← h
+            Checkpoint(c) → if c.id ≤ |committed| { p1.seed(c); best ← None }   # §6.6
+            Record(r)     →
+                if r.resume.is_some() and r.resume.id > |committed|: break      # I1's bound
+                p1.push(r)                      # the CALLER enforces the bound, not the fold
+                if r.resume.is_some(): best ← Some(r.resume)                    # by id, not index
+    if hdr is None or best is None or !valid(hdr, best): return None            # cold rebuild
+    n ← best.id
+    truncate(content, n); truncate(meta, after the entry carrying id n); store.truncate(n)  # I6
+    return Loaded { committed: committed[..n], part1: p1, resume: best }
 ```
 
 Truncation is not optional: HTML serves committed bytes as one range to EOF
@@ -435,20 +471,20 @@ records already replayed.
 ### 6.3 Restore
 
 ```
-SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
-    n   ← as in §6.2 (I1)
-    p1  ← replay_part1(records, n)              # folds counters, takes last-present gauges
+SessionAccumulator::restore(adapter, store, ld: Loaded) -> Restored:
+    n   ← ld.resume.id                          # NOT an index into any vector (I2)
+    p1  ← ld.part1                              # already folded by the streaming load
     acc ← with_store(adapter, store)
-    acc.committed      ← committed[..n]
+    acc.committed      ← ld.committed
     acc.committed_meta ← p1.session_meta        # turns, tools, children (from `agents`)
     acc.cwd            ← p1.cwd
-    acc.task_fold.replay(p1.task_ops)           # list AND pending both fall out (§4.3)
+    acc.task_fold ← p1.tasks                    # list AND pending both already folded (§4.3)
     acc.metrics.reseed(p1.tokens, p1.extra, p1.span)
     acc.replayer.reseed(p1.agent_ids,                  # spawn identity, both keys
                         p1.user_times,                 # len == p1.session_meta.turns
-                        records[n].resume.prev_ts,
-                        records[n].resume.pending_ts)  # base = stamped = 0, out = []
-    return { acc, committed_id: n, replay_from: records[n].resume.replay_from }
+                        ld.resume.prev_ts,
+                        ld.resume.pending_ts)          # base = stamped = 0, out = []
+    return { acc, committed_id: n, replay_from: ld.resume.replay_from }
     # No presentation state to route: the frontend derives its numbering cursor from the
     # committed records it just loaded, and the live counters start fresh (§4.3).
 
@@ -504,6 +540,47 @@ old bytes, and the next open accepts a stale resume against different content �
 false-accept class §6.4 guards hardest, reached with no detection failure at all. `open_fresh`
 discards the durable directory, not only the in-process store.
 
+### 6.6 Checkpoints and compaction
+
+A `Checkpoint` is an absolute `Part1` — the fold of everything before it. It does three jobs.
+
+**Written periodically by the writer**, every `CHECKPOINT_EVERY` committing drains, alongside the
+ordinary records. Cost is O(turns + tasks + spawns) *once per interval*, not per commit — the
+same snapshot §4.3 rejects at per-commit frequency, made affordable by amortisation. This is why
+`Part1` holds a **reduced** `TaskFold` rather than the raw op-log: a checkpoint carrying every
+`TaskOp` would be as large as the log it is meant to replace.
+
+**A reader may start at one.** `seed` replaces whatever came before, so a stream beginning with a
+checkpoint and one replayed from the start produce the same `Part1` — **I11**, and what the
+equivalence test asserts. That bounds an open's work: without checkpoints it is O(records) and
+grows without limit for a long-lived session.
+
+**A reader that *passes* one validates against it.** A fold that reaches a checkpoint compares
+its running state; a mismatch means the stream is corrupt or the writer and reader have drifted,
+and the answer is a cold rebuild. This turns I3 from a property tests assert into one production
+checks on every load — the class §6.4 calls the one to guard hardest (a false accept yields
+wrong output, not a no-op) now has a second, independent detector.
+
+**Compaction is then trivial and asynchronous.** Because checkpoints already exist in the stream,
+discarding a prefix requires no fold:
+
+```
+compact(dir):                                   # any time, under the §8 lock
+    c ← the newest Checkpoint with c.id ≤ |committed|
+    if c is None or entries_before(c) < COMPACT_AFTER: return
+    rewrite meta as [ Header(hdr), Checkpoint(c), ...entries after c ]   # temp + rename
+```
+
+**Rewrite, not truncate-in-place**: a checkpoint replaces a *prefix* of an append-only file, so
+compaction writes a new file and renames over the old one — the rename is the commit point, and a
+crash mid-rewrite leaves the original intact. It runs under the same `<presentation, session>`
+lock as every other write (§8), which is what makes "asynchronous" safe rather than a race.
+
+**Never checkpoint past `n`.** Only state corroborated by the content stream may become absolute.
+Records above `n` are exactly those alignment rejected — a torn tail, or drains the content
+stream does not support — and folding them into a checkpoint would launder unverified data into a
+form nothing can later question.
+
 ## 7. The one seam addition
 
 `MetricsAccumulator` is `push`/`finish` with no seed (`adapter.rs:24-34`), and the collapsed
@@ -558,21 +635,22 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | per user turn | one deque `Entry`: four scalars + the metrics totals (two small maps) |
 | per committed block | HTML: none. TUI: one serialize + buffered append |
 | per committing drain | one record + one 64 KiB CRC32 (1.6 µs, on bytes just read) |
-| per open | `stat` + first line + 64 KiB + replay records + scan content — O(records + committed) |
+| per `CHECKPOINT_EVERY` drains | one absolute `Part1` — O(turns + tasks + spawns), amortised over the interval |
+| per open | `stat` + first line + 64 KiB + fold entries since the newest checkpoint + scan content — O(entries-since-checkpoint + committed), bounded by `COMPACT_AFTER` rather than by session length |
 | `--no-cache` | today's path |
 
 ## 10. Changes
 
 | file | change |
 |---|---|
-| `engine/meta_stream.rs` | reshape to §4's `MetaRecord` + `StreamHeader`; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf); keep a `replay_part1` reader |
+| `engine/meta_stream.rs` | reshape to §4's `MetaEntry`/`MetaRecord`/`Checkpoint` + `StreamHeader`; the iterative `Part1::{seed, push}` reader; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf) |
 | `engine/replay.rs` | **DELETE** the current meta wiring (`meta_out`, `committed_emitted`, `last_provisional`, `drain_meta`); add the four `pub(crate)` getters + `reseed`; the replayer returns to being purely the block fold |
 | `engine/builder.rs` | the turn-boundary deque + record authorship at the drain (§6.1); `restore` (§6.3); `committed_meta()`; `drain_meta` passthrough removed |
 | `engine/message.rs` | `Message::can_open_turn()`, defined beside the arms it enumerates |
 | `engine/tasks.rs` | `TaskOp::Resolve` emitted where `on_tool_result` joins (`tasks.rs:186-205`); `TaskFold::replay(ops)`; `TaskOp` derives serde |
 | `engine/adapter.rs` | the typed metrics seam (§7); `TimeSpan` exposes its endpoints |
 | `engine/reader.rs`, `engine/follow.rs` | `LineReader::open_at_offset`; `FollowParser::resume`; **RETIRE** `Position`/`open_at`/`tell` — dead code naming this feature as its consumer (`reader.rs:52-54`) whose model is superseded: it re-hashes `[0, offset)` on resume and its `DefaultHasher` is not stable across builds, unusable in a persisted format |
-| `present/cache/` | stream writer/reader, `Admission`, `shared_insert_or_get`, `--no-cache` |
+| `present/cache/` | stream writer/reader (entry-at-a-time, both directions), periodic checkpoints, async compaction (§6.6), `Admission`, `shared_insert_or_get`, `--no-cache` |
 | `present/cache/shared.rs` | delete `Body::Hibernated`; `restore` yields `Body::Live`; **the cursor guard**: `cursor.committed_id > n_committed ⇒ resync` (§4.3) |
 | `present/lock.rs` | moved from `jdi/`, retargeted |
 | `html/serve.rs` | durable dir split from the ephemeral bundle dir; per-session locks incl. the multi-root rule; `RecordStore::open_append`; derive the numbering cursor at load |
