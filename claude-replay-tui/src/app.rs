@@ -333,7 +333,7 @@ struct Frame {
     view: Option<View>,
     /// This frame's key in the session cache (the root's session id, or a child's agent id).
     /// Empty when the frame has no followable source (e.g. a spawn with no recorded agent id).
-    /// The live follower itself lives in the [`SessionCache`](crate::SessionCache) — the frame
+    /// The live follower itself lives in the [`SessionCache`](claude_replay_present::SessionCache) — the frame
     /// keeps only presentation state.
     id: String,
     /// The sidecar key (#75): the child's agent id when it has one, else a stable

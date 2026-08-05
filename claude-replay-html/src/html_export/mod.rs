@@ -724,7 +724,7 @@ pub(super) struct EmitState {
 
 impl EmitState {
     /// The continuation implied by a restored committed prefix of `blocks` blocks holding
-    /// `turns` user turns (#96) — see [`RecordStore::adopt`](super::record_store::RecordStore)
+    /// `turns` user turns (#96) — see the `RecordStore::adopt` that calls it
     /// for why every field here is derived rather than persisted.
     pub(super) fn resumed(blocks: usize, turns: usize) -> Self {
         Self {
