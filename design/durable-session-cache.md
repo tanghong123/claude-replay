@@ -1,8 +1,8 @@
 # Design: a durable, cross-run session cache
 
-> **v26 — handoff state.** Every type is declared, every code citation verified against the tree,
-> every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
-> first: the rest follows from it. §13 lists what must be true before step 1 starts.
+> **v27 — BUILT.** Every step in §11 has landed and every gate passes. The design below stands as
+> written; §14 records the four places the implementation chose differently and why. Read §3
+> first: the rest follows from it.
 >
 > v22 adds: an **iterative** meta reader (entries are never all resident), **no positional
 > correspondence** between the two streams (I2 — the link is `resume.id` alone), and
@@ -944,6 +944,9 @@ rather than "it loaded":
 
 ## 13. Before step 1
 
+*(Historical — all three held. #104 landed first; nothing else needed deciding; step 1 deleted the
+superseded emission protocol rather than reconciling with it.)*
+
 1. **#104 lands first** (per-model tokens) — §7's seam is written against its shape.
 2. **Decide nothing else.** Every open question in earlier drafts is resolved in this version:
    blob typing (§4.1), versioning (§4.3), presentation state (§4.3), `epoch` (§4.3 → step 2's
@@ -952,6 +955,39 @@ rather than "it loaded":
    its `replay.rs` wiring implement the *superseded* emission protocol (anchored/unanchored
    records with accumulate-vs-supersede). It is unreleased and has no consumer. Step 1 deletes
    it rather than building on it — do not try to reconcile the two.
+
+## 14. What the build changed
+
+Four places where writing it settled a question the design had answered differently. Each is a
+narrowing, not a reversal — the model in §§2–7 is untouched.
+
+**`make_store` is a per-call argument, not a constructor field** (§8.2 had it on `durable`). The
+context a store needs is per-*session*: a server hosting several roots renders each against its
+own cwd, and a closure captured at construction cannot see it. Passing it to `admit` also drops
+the `Send + Sync + 'static` boxing the field required.
+
+**The store opens INSIDE the claim, after the lock.** §8.2's signature implied the caller opens
+the backing and hands `committed_len` in, but that ordering opens a backing for a session another
+process may own — and "on a denial nothing was opened" would stop being true. `claim` therefore
+takes `committed_len` as a callback it invokes only once the lock is ours, and hands the lock
+back if the callback cannot open the backing.
+
+**`DurableStore` has two methods, not four.** `reset` was redundant with `BlockStore::reset`,
+which already discards everything on the path that matters, and two `reset`s on one type would
+force disambiguation at every call site. `truncate` merged with seeding the render continuation
+into one `adopt(n, meta)`: they are the same event, and splitting them would let a continuation
+count blocks the truncation just removed. §8.3's `Note` stayed exactly as designed — and is what
+decides which crate a store lives in, since the impl must sit with the note's type.
+
+**Releasing needs no `DurableStore` bound, so `Drop` can do it.** §8's `release_all` covers the
+two `process::exit(0)` sites, but not the `?` paths that skip it — and a lock outliving its
+process denies the session until the pid dies, which for a recycled pid is never. Reading the
+holder with its note left as raw JSON makes release a pid comparison, which `Drop` can carry.
+
+**Two names, since §8's `Admission` needed the room.** The low-level primitive is `claim`
+returning `Claim` (`Ours`/`Denied`); `Admission` is what §8 describes and what a frontend
+matches on. The shared `Denial`/`Unavailable`/`Origin`/`ColdReason` types are the same in both.
+`Unavailable` gained `UnknownSession` — an unregistered id is not the same answer as `--no-cache`.
 
 ## Rejected
 

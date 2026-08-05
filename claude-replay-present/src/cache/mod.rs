@@ -265,6 +265,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// `versions` is what the fold is; a stream written by a different one is rejected rather
     /// than spliced.
     pub fn durable(presentation: Presentation, root: PathBuf, versions: Versions) -> Self {
+        admit::gc(&root); // one directory walk per run keeps the cache from growing forever
         let mut c = Self::default();
         c.durable = Some(Durable {
             presentation,

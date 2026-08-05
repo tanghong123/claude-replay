@@ -9,7 +9,7 @@
 //! [`Admission`](crate::cache::Admission) a frontend actually matches on.
 
 use super::lock::{self, Holder, Taken};
-use super::stream::{anchor_of, window_at, MetaReader, MetaWriter};
+use super::stream::{anchor_of, meta_path, window_at, MetaReader, MetaWriter};
 use crate::engine::meta_stream::{align, Aligned, Versions};
 use std::path::{Path, PathBuf};
 
@@ -215,6 +215,68 @@ pub fn writer_for(
     }
 }
 
+/// How long an untouched entry survives. Long enough that "the session I was reading last week"
+/// still resumes; short enough that a machine's cache does not grow forever.
+pub const KEEP_FOR: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+
+/// When a LOCKED entry stops being taken at its word. A lock normally makes an entry untouchable
+/// without probing — probing every entry on every start is exactly the cost a sweep should not
+/// pay — but a crashed holder must not pin bytes forever, so past this age the lock is probed.
+///
+/// Necessarily longer than [`KEEP_FOR`]: the window between them is where the lock actually does
+/// something, and if it were shorter the trust would never apply at all.
+pub const LOCK_TRUSTED_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
+const _: () = assert!(
+    LOCK_TRUSTED_FOR.as_secs() > KEEP_FOR.as_secs(),
+    "a lock must be trusted for longer than an entry survives, or it protects nothing"
+);
+
+/// Delete durable entries nobody is using (#96 §11 step 9). Best-effort throughout: a sweep that
+/// cannot read a directory simply keeps whatever is in it.
+///
+/// Called once per durable cache construction. It is a directory walk, not a read of any stream.
+pub fn gc(root: &Path) {
+    let now = std::time::SystemTime::now();
+    let age = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+    };
+    let Ok(presentations) = std::fs::read_dir(root) else {
+        return;
+    };
+    for p in presentations.flatten() {
+        let Ok(entries) = std::fs::read_dir(p.path()) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            // The meta stream IS the activity signal — it is appended on every commit — so its
+            // mtime is how long since anything happened here. An entry with no stream yet falls
+            // back to the directory's own.
+            let Some(idle) = age(&meta_path(&dir)).or_else(|| age(&dir)) else {
+                continue;
+            };
+            if idle < KEEP_FOR {
+                continue;
+            }
+            if lock::read::<serde_json::Value>(&dir).is_some_and(|h| {
+                // Below the cap a lock is trusted outright. Above it, the holder has to prove it
+                // still exists — otherwise a crash would pin these bytes permanently.
+                idle < LOCK_TRUSTED_FOR || lock::pid_alive(h.pid)
+            }) {
+                continue;
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +298,15 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         d
     }
+    /// Backdate an entry's meta stream by `by`, so a sweep sees the entry as that idle.
+    fn age_to(dir: &Path, by: std::time::Duration) {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(meta_path(dir))
+            .unwrap();
+        f.set_modified(std::time::SystemTime::now() - by).unwrap();
+    }
+
     /// A source plus a stream describing `n` commits over it.
     fn seeded(root: &Path, n: usize) -> PathBuf {
         let src = root.join("t.jsonl");
@@ -427,6 +498,56 @@ mod tests {
             Claim::Denied(Denial::Held(h)) => assert_eq!(h.pid, 999_999),
             _ => panic!("a live holder must deny"),
         }
+    }
+
+    /// A fresh entry survives the sweep, and a stale unlocked one does not. (Ages are set by
+    /// touching the entry's mtime — the alternative is a test that sleeps for two weeks.)
+    #[test]
+    fn gc_keeps_fresh_entries_and_removes_stale_ones() {
+        let root = tmp("gc");
+        let fresh = entry_dir(&root, Presentation::Tui, "fresh");
+        let stale = entry_dir(&root, Presentation::Tui, "stale");
+        for d in [&fresh, &stale] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(meta_path(d), "{}\n").unwrap();
+        }
+        age_to(&stale, KEEP_FOR * 2);
+
+        gc(&root);
+        assert!(fresh.exists(), "a fresh entry survives");
+        assert!(!stale.exists(), "a stale one is swept");
+    }
+
+    /// A LOCK protects a stale entry — until it is old enough that a crashed holder would be
+    /// pinning the bytes forever, at which point the holder has to prove it exists.
+    #[test]
+    fn gc_respects_a_lock_until_the_age_cap() {
+        let root = tmp("gclock");
+        let held = entry_dir(&root, Presentation::Tui, "held");
+        let ancient = entry_dir(&root, Presentation::Tui, "ancient");
+        for d in [&held, &ancient] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(meta_path(d), "{}\n").unwrap();
+            std::fs::write(
+                lock::lock_path(d),
+                serde_json::to_string(&Holder::<Note> {
+                    pid: 999_999, // a pid that is not running
+                    dir: d.clone(),
+                    note: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        age_to(&held, KEEP_FOR * 2); // stale, but inside the lock's trust window
+        age_to(&ancient, LOCK_TRUSTED_FOR * 2);
+
+        gc(&root);
+        assert!(held.exists(), "a lock is taken at its word below the cap");
+        assert!(
+            !ancient.exists(),
+            "above the cap a dead holder no longer pins the bytes"
+        );
     }
 
     /// The two presentations never contend: the directory and the lock are namespaced.
