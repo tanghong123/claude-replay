@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **v23 — handoff state.** Every type is declared, every code citation verified against the tree,
+> **v24 — handoff state.** Every type is declared, every code citation verified against the tree,
 > every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
 > first: the rest follows from it. §12 lists what must be true before step 1 starts.
 >
@@ -8,7 +8,9 @@
 > correspondence** between the two streams (I2 — the link is `resume.id` alone), and
 > **checkpoints** (§6.6) that bound an open's work, validate a fold in production, and make
 > compaction asynchronous. v23 carries the checkpoint **on a resumable record** rather than as a
-> standalone entry — otherwise compaction can leave state with no resume point.
+> standalone entry — otherwise compaction can leave state with no resume point. v24 names the
+> folded form `MaterializedMeta` and retires the opaque "Part I/II" labels for `delta` /
+> `resume` / `checkpoint`.
 
 ## 1. Requirements
 
@@ -30,15 +32,15 @@ Two append-only streams per `<presentation, session>`, written only at a **commi
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
 meta      a StreamHeader, then one MetaRecord per committing drain
-            Part I     — session facts (counters + gauges); on every record
-            Part II    — resumption (offset, checksum, fold clocks); iff resumable
-            checkpoint — an absolute Part I; every CHECKPOINT_EVERY drains (§6.6)
+            delta      — session facts (counters + gauges); on every record
+            resume     — offset, checksum, fold clocks; iff resumable
+            checkpoint — a materialized MaterializedMeta; every CHECKPOINT_EVERY drains (§6.6)
 ```
 
 A block commits when a later turn begins and the prompt queue is empty. There is no periodic
 snapshot, no third file, and nothing schedules a write.
 
-**Part II is in-band deliberately.** Only the record a load lands on reads it, so a separate
+**The resume payload is in-band deliberately.** Only the record a load lands on reads it, so a separate
 latest-only file would save the rest — ~50 bytes × commits, ~11 KiB per session. It would also
 need its own alignment against the other two streams, and a crash between writing them would
 leave the pair disagreeing. In-band, each commit is **one append per stream** and the last
@@ -78,9 +80,9 @@ authority; §4 gives each persisted item its field.
 | `tool_slot`, `suppress`, `last_skill` | rebuilt — pruned to the open window at each drain |
 | `queue` | rebuilt — provably empty at `replay_from`: an item resident there would have gated off every commit since its enqueue (`finalize_completed` returns while the queue is non-empty), so its marker cannot sit below the partition |
 | committed blocks | **content stream** |
-| turn/tool counts, sub-agent lifecycle, `agent_ids`, per-turn timestamps, tokens, task ops | **Part I counters** — deltas that fold |
-| `cwd`, the metrics time span | **Part I gauges** — last value wins |
-| `prev_ts`, `pending_ts` | **Part II** — fold clocks, read only by a resume |
+| turn/tool counts, sub-agent lifecycle, `agent_ids`, per-turn timestamps, tokens, task ops | **delta counters** — they fold |
+| `cwd`, the metrics time span | **delta gauges** — last value wins |
+| `prev_ts`, `pending_ts` | **resume payload** — fold clocks, read only by a resume |
 
 `agent_ids` (the spawn-identity map) has no field of its own: it is rebuilt from the `Spawned`
 events in `agents`, which carry both keys (§4).
@@ -109,7 +111,7 @@ provisional ones. Two shapes do this:
   block *below* its `UserText` (decode preserves item order, `claude/model.rs:655-668`), so the
   attachment commits while the turn stays open.
 
-Either way the record omits Part II and a load falls back to the previous qualifying record —
+Either way the record omits its resume payload and a load falls back to the previous qualifying record —
 the cost is re-reading one extra turn, never a lost cache. The next drain re-qualifies: by then
 the whole straddling line has committed.
 
@@ -127,7 +129,7 @@ is `replay_from`.
 | **I — session facts** | every record | *both* consumers | flat optional fields; **absent = no update**; the field's class fixes what an update *is* |
 | **II — resumption** | **iff** this drain is a resume point (I5) | the resume only | one block; all fields current when present |
 
-Part I's two classes are the counter/gauge distinction:
+The delta's two classes are the counter/gauge distinction:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
@@ -160,7 +162,7 @@ struct Versions {
 }
 
 struct MetaRecord {
-    // ── Part I — session facts. Every record. A metadata reader needs ONLY this.
+    // ── The DELTA — session facts. Every record. A metadata reader needs ONLY this.
     turns:      Option<u32>,                          // counter: user turns that committed here
     tools:      Option<u32>,                          // counter: tool calls that committed here
     agents:     Vec<AgentEvent>,                      // counter: ordered; see the note below
@@ -171,14 +173,14 @@ struct MetaRecord {
     cwd:        Option<String>,                       // gauge: first non-empty wins
     span:       Option<(EpochSeconds, EpochSeconds)>, // gauge: session min/max timestamps
 
-    // ── Part II — resumption. Its PRESENCE is the resume-point indicator (I5); there is no
+    // ── The RESUME payload. Its PRESENCE is the resume-point indicator (I5); there is no
     //    separate flag. A metadata reader skips it entirely.
     resume:     Option<Resume>,
 
-    // ── Checkpoint — an ABSOLUTE Part1 as of this record, replacing every delta before it.
+    // ── Checkpoint — the MATERIALIZED meta as of this record, replacing every delta before it.
     //    Written every CHECKPOINT_EVERY drains (§6.6). `Some` ⇒ `resume` is also `Some`: a
     //    checkpoint a reader cannot resume from would let compaction strand the cache.
-    checkpoint: Option<Part1>,
+    checkpoint: Option<MaterializedMeta>,
 }
 
 struct Resume {
@@ -190,6 +192,9 @@ struct Resume {
 }
 
 // ── the reader half ───────────────────────────────────────────────────────────
+// `MaterializedMeta` is the log's MATERIALIZED VIEW: what folding the delta records yields.
+// The stream is the deltas; this is their sum. A `checkpoint` is simply one of these written
+// down, which is why adopting a checkpoint and folding from the start must agree (I11).
 /// **Iterative, not slice-at-once.** Unlike `Vec<BV>` — which is resident by definition, being
 /// the committed index itself — records are consumed one at a time and never all held. A reader
 /// streams the file; a resume stops feeding at its aligned `n`.
@@ -197,15 +202,15 @@ struct Resume {
 /// `push` has NO bound check: the CALLER guarantees it feeds nothing past `n` (§6.2). Keeping
 /// the fold ignorant of the alignment is what lets a metadata reader (#98) use the same type
 /// with no bound at all.
-impl Part1 {
+impl MaterializedMeta {
     /// Feed one record. If `r.checkpoint` is `Some`, ADOPT it and discard everything folded so
-    /// far — the checkpoint is the state *as of* this record, so its own Part I deltas are
+    /// far — the checkpoint is the state *as of* this record, so its own delta fields are
     /// already included and must not be applied again. Otherwise fold: counters accumulate,
     /// gauges replace.
     fn push(&mut self, r: &MetaRecord);
 }
 
-struct Part1 {
+struct MaterializedMeta {
     session_meta: SessionMeta,                  // turns, tools, children — from `agents`
     agent_ids:    HashMap<String, (AgentId, String)>, // spawn identity, BOTH keys per Spawn
     user_times:   Vec<Option<EpochSeconds>>,
@@ -216,7 +221,7 @@ struct Part1 {
     span:         Option<(EpochSeconds, EpochSeconds)>,
 }
 
-// ── Part I payload types ──────────────────────────────────────────────────────
+// ── delta payload types ───────────────────────────────────────────────────────
 #[derive(Default)]                   // + AddAssign: `maps sum per key` needs it
 struct TokenCounts { input: u64, cache_creation: u64, cache_read: u64, output: u64 }
 
@@ -257,20 +262,20 @@ enum TaskOp {
 
 | consumer | reads | needs |
 |---|---|---|
-| **resume** (the cache) | Part I **and** Part II | re-seeds the fold, then re-reads from `replay_from` |
-| **metadata reader** | Part I only | no fold, no adapter, **no transcript** — the property that makes a machine-wide monitor (#98) cheap |
+| **resume** (the cache) | the delta **and** the resume payload | re-seeds the fold, then re-reads from `replay_from` |
+| **metadata reader** | the delta only | no fold, no adapter, **no transcript** — the property that makes a machine-wide monitor (#98) cheap |
 
 `prev_ts`/`pending_ts` are fold-continuation state, not session facts: they appear nowhere
 outside `replay.rs`, and what they produce is carried elsewhere — `pending_ts` produces
 `user_times` (its own field), `prev_ts` produces `Thinking.duration_secs`, which is **block
 content** in the content stream. The monitor property holds only as long as every *displayed*
-fact stays in Part I rather than being recomputed from blocks.
+fact stays in the delta rather than being recomputed from blocks.
 
 ### 4.3 Why the shape is what it is
 
 **The two-part split earns its keep.** It makes the two consumers a type fact; it removes I5's
 indicator field (*"resumable here"* **is** `resume.is_some()`); and it deletes the one way to get
-the gauge rule wrong — `prev_ts`/`pending_ts` ride Part II, so a resume reads them from the
+the gauge rule wrong — `prev_ts`/`pending_ts` ride the resume payload, so a resume reads them from the
 record it lands on and can never pick up a value measured at a different `replay_from`. It costs
 ~50 bytes on records that were already writing an offset.
 
@@ -341,7 +346,7 @@ build-id invalidation, discarding every cache on every release.
 |---|---|---|
 | I1 | `n = max { r.resume.id : r.resume.is_some() ∧ r.resume.id ≤ \|committed\| }`, and the record used is the one **carrying that id** — never `records[n]`. The loaded `BV` vector's length is the sole authority; no committed count is persisted separately. | §6.2 |
 | I2 | **The two streams have no positional correspondence.** One record per committing *drain*, but `finalize_completed` runs once per *line* (`replay.rs:412`), so a multi-turn line commits several blocks under one record and `resume.id` jumps. The only link between the streams is `resume.id`; indexing one by the other's position is always wrong. Ids strictly increase and reach `\|committed\|` unless the tail is torn or the last drains failed I5. | §6.2's lookup-by-id |
-| I3 | A `Part1` folded over the entries up to `n` == the maintained `SessionMeta` / `TaskList` / metrics over `committed[..n]`. | oracle test |
+| I3 | A `MaterializedMeta` folded over the records up to `n` == the maintained `SessionMeta` / `TaskList` / metrics over `committed[..n]`. | oracle test |
 | I4 | For every record with `resume`, each **gauge**'s value at that record — its last present value ≤ it — and each **counter**'s fold through it equal the fold's value at the start of that record's `replay_from` line. | §6.1; double-apply test |
 | I5 | `resume.is_some()` ⟺ the §3 partition exists at this drain. Then `resume.replay_from` is that partition's offset. | `line_boundary()` (§6.1) |
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are all truncated to `n` before any append. | §6.2 |
@@ -349,7 +354,7 @@ build-id invalidation, discarding every cache on every release.
 | I8 | A record is reused only if §6.4 passes: length, anchor, window, versions. | §6.4 |
 | I9 | At most one live process writes a `<presentation, session>`. Where liveness is undecidable (`pid_alive` is unix-only, `jdi/state.rs:150-167`) the cache is **disabled**, never assumed stale. | §8 |
 | I10 | A fold reset truncates both streams and the store backing to 0. | §6.5 |
-| I11 | Adopting a `checkpoint` and folding from the stream's start yield the **same** `Part1`. A checkpoint is present only where `resume` is, so compaction can never leave a stream with state but no resume point. A reader that passes a checkpoint compares before adopting; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
+| I11 | Adopting a `checkpoint` and folding from the stream's start yield the **same** `MaterializedMeta`. A checkpoint is present only where `resume` is, so compaction can never leave a stream with state but no resume point. A reader that passes a checkpoint compares before adopting; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
 
 ## 6. Algorithms
 
@@ -416,8 +421,8 @@ that is what makes I4 hold for `tokens`/`extra`. `turns`/`tools`/`agents`/`user_
 subtraction: they are derived from the drained blocks, which are exactly the blocks below the
 new partition.
 
-**A record with no Part II still carries its Part I counters.** They are not lost — the next
-qualifying record's `tokens` delta is measured from `emitted`, which only advances when Part II
+**A record with no resume payload still carries its delta counters.** They are not lost — the next
+qualifying record's `tokens` delta is measured from `emitted`, which only advances when a resume payload
 is written, so nothing is double-counted or dropped.
 
 **`line_boundary` is the deque-front check, NOT a current-line check.** At a pinned drain the
@@ -446,16 +451,16 @@ push a `ToolResult` and a `QueueEvent` and are excluded. Define it beside those 
 load(dir) -> Option<Loaded>:
     committed ← bv_loader(dir)                  # frontend-specific: the ONLY such piece
     # ONE streaming pass over the meta file. Entries are folded as they arrive; nothing but
-    # the running Part1 and the best resume so far is retained.
-    p1 ← Part1::default(); hdr ← meta_header(dir); best ← None
+    # the running MaterializedMeta and the best resume so far is retained.
+    mm ← MaterializedMeta::default(); hdr ← meta_header(dir); best ← None
     for r in meta_records(dir):                 # streaming; drops a torn trailing record
         if r.resume.is_some() and r.resume.id > |committed|: break   # I1's bound — CALLER's job
-        p1.push(r)                              # adopts r.checkpoint if present (§4.1)
+        mm.push(r)                              # adopts r.checkpoint if present (§4.1)
         if r.resume.is_some(): best ← Some(r.resume)                 # by id, never by index
     if hdr is None or best is None or !valid(hdr, best): return None            # cold rebuild
     n ← best.id
     truncate(content, n); truncate(meta, after the entry carrying id n); store.truncate(n)  # I6
-    return Loaded { committed: committed[..n], part1: p1, resume: best }
+    return Loaded { committed: committed[..n], meta: mm, resume: best }
 ```
 
 Truncation is not optional: HTML serves committed bytes as one range to EOF
@@ -467,15 +472,15 @@ records already replayed.
 ```
 SessionAccumulator::restore(adapter, store, ld: Loaded) -> Restored:
     n   ← ld.resume.id                          # NOT an index into any vector (I2)
-    p1  ← ld.part1                              # already folded by the streaming load
+    mm  ← ld.meta                               # already folded by the streaming load
     acc ← with_store(adapter, store)
     acc.committed      ← ld.committed
-    acc.committed_meta ← p1.session_meta        # turns, tools, children (from `agents`)
-    acc.cwd            ← p1.cwd
-    acc.task_fold ← p1.tasks                    # list AND pending both already folded (§4.3)
-    acc.metrics.reseed(p1.tokens, p1.extra, p1.span)
-    acc.replayer.reseed(p1.agent_ids,                  # spawn identity, both keys
-                        p1.user_times,                 # len == p1.session_meta.turns
+    acc.committed_meta ← mm.session_meta        # turns, tools, children (from `agents`)
+    acc.cwd            ← mm.cwd
+    acc.task_fold ← mm.tasks                    # list AND pending both already folded (§4.3)
+    acc.metrics.reseed(mm.tokens, mm.extra, mm.span)
+    acc.replayer.reseed(mm.agent_ids,                  # spawn identity, both keys
+                        mm.user_times,                 # len == mm.session_meta.turns
                         ld.resume.prev_ts,
                         ld.resume.pending_ts)          # base = stamped = 0, out = []
     return { acc, committed_id: n, replay_from: ld.resume.replay_from }
@@ -492,7 +497,7 @@ caller: reader ← LineReader::open_at_offset(src, replay_from)   # NOT open_at 
 `window_stamped()` exceed `out.len()` and the first `LineStart` slice out of range. `base`'s
 absolute value never escapes the replayer, so rebasing is sound.
 
-`user_times` has length `p1.session_meta.turns` — its value at `replay_from`, since by §3's
+`user_times` has length `mm.session_meta.turns` — its value at `replay_from`, since by §3's
 partition every uncommitted `UserText` lies at or above that offset and none has been stamped.
 (`suppress` holds only `QueueEvent` markers, so no turn is ever suppressed and the count is
 exact.)
@@ -536,25 +541,25 @@ discards the durable directory, not only the in-process store.
 
 ### 6.6 Checkpoints and compaction
 
-A checkpoint is an **absolute `Part1`** carried by a record that already has Part II. It does
+A checkpoint is an **absolute `MaterializedMeta`** carried by a record that already has a resume payload. It does
 three jobs.
 
 **Written periodically**, every `CHECKPOINT_EVERY` committing drains. Cost is
 O(turns + tasks + spawns) *once per interval* — the snapshot §4.3 rejects at per-commit
-frequency, made affordable by amortisation. This is why `Part1` holds a **reduced** `TaskFold`
+frequency, made affordable by amortisation. This is why `MaterializedMeta` holds a **reduced** `TaskFold`
 rather than the raw op-log: a checkpoint carrying every `TaskOp` would be as large as the log it
 replaces.
 
 **It must sit on a resumable record, and that is not a convenience.** A checkpoint whose record
 has no `resume` would let compaction strand the cache: truncate to a checkpoint that is also the
-last record, and the stream holds complete Part I state with **no `replay_from` anywhere** — a
+last record, and the stream holds complete materialized state with **no `replay_from` anywhere** — a
 cache that exists and cannot be resumed from, until the next commit happens to add one. So the
 writer emits a checkpoint only where I5 holds; if the scheduled drain is a straddling line
 (§3), it waits for the next qualifying one.
 
 **A reader may start at one.** `push` adopts a checkpoint and discards what it folded before, so
 a stream beginning at a checkpointed record and one replayed from the start produce the same
-`Part1` — **I11**, and what the equivalence test asserts. That bounds an open's work, which is
+`MaterializedMeta` — **I11**, and what the equivalence test asserts. That bounds an open's work, which is
 otherwise O(records) and grows without limit for a long-lived session.
 
 **A reader that *passes* one validates against it.** A fold that reaches a checkpoint can compare
@@ -636,7 +641,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | per user turn | one deque `Entry`: four scalars + the metrics totals (two small maps) |
 | per committed block | HTML: none. TUI: one serialize + buffered append |
 | per committing drain | one record + one 64 KiB CRC32 (1.6 µs, on bytes just read) |
-| per `CHECKPOINT_EVERY` drains | one absolute `Part1` — O(turns + tasks + spawns), amortised over the interval |
+| per `CHECKPOINT_EVERY` drains | one absolute `MaterializedMeta` — O(turns + tasks + spawns), amortised over the interval |
 | per open | `stat` + first line + 64 KiB + fold entries since the newest checkpoint + scan content — O(entries-since-checkpoint + committed), bounded by `COMPACT_AFTER` rather than by session length |
 | `--no-cache` | today's path |
 
@@ -644,7 +649,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 
 | file | change |
 |---|---|
-| `engine/meta_stream.rs` | reshape to §4's `MetaRecord` + `StreamHeader`; the iterative `Part1::push` reader; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf) |
+| `engine/meta_stream.rs` | reshape to §4's `MetaRecord` + `StreamHeader`; the iterative `MaterializedMeta::push` reader; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf) |
 | `engine/replay.rs` | **DELETE** the current meta wiring (`meta_out`, `committed_emitted`, `last_provisional`, `drain_meta`); add the four `pub(crate)` getters + `reseed`; the replayer returns to being purely the block fold |
 | `engine/builder.rs` | the turn-boundary deque + record authorship at the drain (§6.1); `restore` (§6.3); `committed_meta()`; `drain_meta` passthrough removed |
 | `engine/message.rs` | `Message::can_open_turn()`, defined beside the arms it enumerates |
