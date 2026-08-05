@@ -1,6 +1,6 @@
 # Design: a durable, cross-run session cache
 
-> **v25 — handoff state.** Every type is declared, every code citation verified against the tree,
+> **v26 — handoff state.** Every type is declared, every code citation verified against the tree,
 > every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
 > first: the rest follows from it. §13 lists what must be true before step 1 starts.
 >
@@ -619,23 +619,39 @@ seam twice.
 
 Everything above is invisible to a frontend. What it sees is one call.
 
-### 8.1 Admission — one call, not a lock protocol
+### 8.1 Admission — exclusive, or denied
+
+There is **exactly one writer per `<presentation, session>`, always** (I9). Admission therefore
+has two outcomes, not three: you own it, or you do not and **nothing was opened**. Falling back
+to a cache-less session is a separate, explicit choice the frontend makes — never something
+`admit` does quietly, because a three-way outcome would suggest a session might be handed out
+while another process owns it.
 
 ```rust
-/// The outcome of asking for a session. The frontend's ENTIRE lock-related code is the
-/// message it writes for `Held` — the cache cannot print a TUI banner or issue a redirect,
-/// and that is the only part it cannot own.
 enum Admission<P: DurableStore> {
-    /// We hold the lock. Durable, and resumed when the cache was valid.
+    /// Exclusive owner. Durable, and resumed when the cache was valid.
     Owned { session: Arc<SharedSession<P>>, origin: Origin },
-    /// Another LIVE process holds it. Nothing was opened.
-    Held(Holder),
-    /// No durable slot (`--no-cache`, an unwritable dir, or a platform without a liveness
-    /// check — §9). Exactly today's behaviour.
-    Uncached(Arc<SharedSession<P>>),
+    /// Not the owner. NOTHING was opened, nothing is shared.
+    Denied(Denial<P::Note>),
 }
 
-struct Holder { pid: u32, dir: PathBuf, port: Option<u16> }
+enum Denial<N> {
+    /// Another LIVE process holds it. `Holder` carries what a MESSAGE needs — not a lock.
+    Held(Holder<N>),
+    /// No durable slot exists to compete for: `--no-cache`, an unwritable root, or a platform
+    /// with no liveness check (§9, where the cache is disabled rather than assumed stale).
+    Unavailable(Unavailable),
+}
+
+struct Holder<N> {
+    pid:  u32,
+    dir:  PathBuf,
+    /// What the holder published about itself — `None` in the window between taking the lock
+    /// and knowing what to say (an HTML server does not have its port until it binds).
+    note: Option<N>,
+}
+
+enum Unavailable { NoCacheFlag, UnwritableRoot, NoLivenessCheck }
 
 /// Namespaces the durable directory AND the lock, so a TUI and an HTML server on the same
 /// session never contend — R3's "locking is <presentation, session>".
@@ -651,8 +667,6 @@ enum Origin {
 enum ColdReason { NoPriorCache, SourceRewritten, VersionChanged, FlavorChanged, TornStream }
 ```
 
-`Admission` is exhaustive, so a frontend cannot forget the held case — the compiler asks.
-
 ### 8.2 Construction
 
 ```rust
@@ -664,11 +678,20 @@ impl<P: DurableStore, A> SessionCache<P, A> {
                make_store: impl Fn(&Path, &Transcript) -> io::Result<P> + Send + Sync + 'static)
                -> Self;
 
-    /// `--no-cache`, and the fallback when a durable slot cannot be had. Every `admit`
-    /// returns `Uncached`.
+    /// `--no-cache`: every `admit` denies with `Unavailable(NoCacheFlag)`.
     fn ephemeral() -> Self;
 
+    /// Take exclusive ownership, or say why not. Never blocks on another holder.
     fn admit(&self, id: &str) -> Admission<P>;
+
+    /// Publish this process's note for whoever finds the lock held. Separate from `admit`
+    /// because the useful facts arrive later — a server has no port until it binds.
+    fn publish(&self, id: &str, note: P::Note);
+
+    /// The cache-less path, chosen explicitly after a denial: today's behaviour exactly —
+    /// no lock, no durable directory, nothing written.
+    fn open_uncached(&self, id: &str) -> Arc<SharedSession<P>>;
+
     fn release(&self, id: &str);   // flush + unlock one session (TUI's `Outcome::Switch`)
     fn release_all(&self);         // both `process::exit(0)` sites, which skip destructors
 }
@@ -679,11 +702,18 @@ impl<P: DurableStore, A> SessionCache<P, A> {
 
 ### 8.3 The store seam
 
-`admit` needs three things from the frontend's store that a closure cannot express, because they
-are called *during* a load rather than at construction. They replace today's `PersistentStore`:
+`admit` needs three things from the frontend's store that a construction closure cannot express,
+because they are called *during* a load. They replace today's `PersistentStore`:
 
 ```rust
 trait DurableStore: BlockStore + Sized {
+    /// What this frontend leaves in its lock for a peer that finds it held: a port for the
+    /// server, a tmux pane for the TUI. **Typed, not opaque** — locks are per-presentation, so
+    /// the only reader is the same frontend that wrote it, and both ends know the shape.
+    /// Keeping it here rather than on `Holder` is what stops a `port` field — meaningless to
+    /// the TUI — from leaking into a shared type.
+    type Note: Serialize + DeserializeOwned + Clone;
+
     /// Reload the committed `Bv`s from the backing — the only frontend-specific step in §6.2's
     /// load. HTML scans its record log for locators; the TUI decodes JSON blocks.
     fn load(&mut self) -> io::Result<Vec<Self::Bv>>;
@@ -701,49 +731,65 @@ at all.
 
 ### 8.4 What each frontend writes
 
+A denial resolves to **fail** or **run cache-less** — the frontend picks, and the choice is
+visible at the call site.
+
 ```rust
-// TUI — app.rs
+// TUI — app.rs.  Refuses a second instance; falls back only when no slot existed to compete for.
 let cache = if args.no_cache { TuiCache::ephemeral() }
-            else { TuiCache::durable(Presentation::Tui, cache_root()?, |dir, _src| ArcStore::open(dir)) };
+            else { TuiCache::durable(Presentation::Tui, cache_root()?, |dir, _| ArcStore::open(dir)) };
 
 match cache.admit(&id) {
-    Owned { session, .. } | Uncached(session) => run(session),
-    Held(h) => bail!("session open in another claude-replay (pid {}); attach it with \
-                      `tmux attach`, or pass --no-cache to open a second read-only view", h.pid),
+    Owned { session, .. }      => run(session),
+    // TuiNote { pane: Option<String> } — so the refusal can name the exact pane.
+    Denied(Held(h))            => bail!("session open in another claude-replay (pid {}){}; \
+                                         or pass --no-cache for a second read-only view",
+                                        h.pid,
+                                        h.note.and_then(|n| n.pane).map_or(String::new(),
+                                            |p| format!("; attach with `tmux attach -t {p}`"))),
+    Denied(Unavailable(_))     => run(cache.open_uncached(&id)),
 }
 // …and `cache.release_all()` immediately before each `process::exit(0)`.
 ```
 
 ```rust
-// HTML — serve.rs
-let cache = SessionCache::durable(Presentation::Html, cache_root()?, move |dir, src| {
-    RecordStore::open(dir, fold.clone(), cwd.clone(), src.clone())
-});
-
-// Multi-root: per session, independently. Partial success is normal, never a refusal.
+// HTML — serve.rs.  Multi-root: per session, independently. Partial success is normal.
 for id in sessions {
     match cache.admit(id) {
-        Owned { session, .. } | Uncached(session) => serve(id, session),
-        Held(h) => redirect(id, h.port),   // the holder is already serving it
+        Owned { session, .. }              => serve(id, session),
+        // HtmlNote { port: u16 }. No note yet ⇒ the holder has not bound; serve cache-less.
+        Denied(Held(h)) if at_pick_time && h.note.is_some()
+                                           => redirect(id, h.note.unwrap().port),
+        Denied(_)                          => serve(id, cache.open_uncached(id)),
     }
 }
 ```
 
-**The asymmetry is deliberate and is the whole reason `Holder` carries a port.** The TUI refuses
-because a second instance would fold and hold the same session in RAM twice, invisibly; HTML
-redirects because the holder is *already serving* that session over HTTP, so the user gets what
-they wanted from the process that owns it.
+**The asymmetry on `Held` is deliberate, and is why the note is frontend-typed.** The TUI *refuses*:
+a second instance would fold and hold the same session in RAM twice, invisibly, and `tmux attach`
+is the real sharing primitive. HTML *redirects at pick time* because the holder is already
+serving that session over HTTP — the user gets what they wanted, from the process that owns it.
+A child discovered mid-run cannot be handed off (the page is already open), so it serves
+cache-less.
 
 ### 8.5 Why this shape
 
-- **One call.** Lock acquisition, the port probe, validity checking, alignment, truncation and
-  the uncached fallback all happen *inside*. R6 asked that the cache absorb state-keeping; a
-  frontend that had to sequence those steps would be absorbing it instead.
-- **The uncached path is not an error path.** `Uncached` returns a working session, so a frontend
-  never branches on "did caching work" — only on "may I write". That is what keeps `--no-cache`,
-  an unwritable directory, and a non-unix host from each needing their own handling.
-- **`Held` carries what a message needs**, not a lock handle. The frontend cannot mishandle a
-  lock it never receives.
+- **Two outcomes, not three.** `Owned` is the only variant carrying a durable session, so I9 —
+  one writer per `<presentation, session>` — is legible in the type rather than promised in
+  prose. A frontend cannot accidentally serve a shared entry, because none is ever produced.
+- **The fallback is explicit.** `open_uncached` is a call the frontend makes *after* seeing a
+  denial, so "we gave up on caching" is visible at the call site instead of hidden inside
+  `admit`. It is also the same call for every reason — `--no-cache`, an unwritable root, a
+  non-unix host, or a live holder — so those need no separate handling.
+- **One call for the hard part.** Lock acquisition, the port probe, validity checking,
+  alignment, truncation and the cold-rebuild decision all happen *inside* `admit`. R6 asked that
+  the cache absorb state-keeping; a frontend sequencing those steps would be absorbing it.
+- **`Held` carries what a message needs**, not a lock handle. A frontend cannot mishandle a lock
+  it never receives, which makes "the frontend's entire lock-related code is the message"
+  literally true. The note is the frontend's **own** type (§8.3), so the shared `Holder` never
+  grows a `port` the TUI has no use for — the same rule that kept `serde_json::Value` out of
+  the record (§4.3). `Option` on it is not defensive: a server holds the lock before it binds,
+  so the window where a holder exists with nothing useful to say is real.
 - **`Origin` is diagnosable.** `Cold(SourceRewritten)` and `Cold(VersionChanged)` are different
   answers to "why was it slow", and tests assert on them rather than on a rebuild happening.
 
@@ -757,11 +803,11 @@ holder is port-probed as well as pid-checked, through a callback the frontend in
 
 | situation | behaviour |
 |---|---|
-| free, or holder dead | take it |
-| TUI, live holder | quit, naming pid, dir and `tmux attach` |
-| HTML, held at pick time | open the holder's `…?session=S` |
-| HTML, multi-root start | acquire per session; partial success is normal |
-| HTML, child found mid-run, held | serve uncached |
+| free, or holder dead | `Owned` — take it, resume if valid |
+| TUI, live holder | `Denied(Held)` ⇒ quit, naming pid and (from the note) the tmux pane |
+| HTML, held at pick time | `Denied(Held)` ⇒ redirect to the holder's `…?session=S`, using its published note |
+| HTML, multi-root start | `admit` per session; a mix of `Owned` and `Denied` is normal, never a refusal |
+| HTML, child found mid-run, held | `Denied(Held)` ⇒ `open_uncached` — the page is already open, so there is no hand-off |
 
 The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping both.
 
