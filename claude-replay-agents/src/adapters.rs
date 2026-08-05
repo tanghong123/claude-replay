@@ -23,6 +23,20 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn finish(&self) -> Metrics {
         self.clone().finish()
     }
+    /// #96 §7: the resumable form. Both agents hold the same shape — per-model counters, an
+    /// `extra` bag and a span — so the seam is agent-agnostic even though the two REPORT
+    /// differently (Claude increments, Codex running totals), which each `push` normalises.
+    fn totals(&self) -> claude_replay_engine::seam::MetricsTotals {
+        agents::claude::metrics::MetricsAcc::totals(self)
+    }
+    fn reseed(
+        &mut self,
+        tokens: std::collections::BTreeMap<String, claude_replay_engine::seam::TokenCounts>,
+        extra: std::collections::BTreeMap<String, u64>,
+        span: Option<(f64, f64)>,
+    ) {
+        agents::claude::metrics::MetricsAcc::reseed(self, tokens, extra, span)
+    }
 }
 impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn push(&mut self, v: &Value) {
@@ -30,6 +44,20 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     }
     fn finish(&self) -> Metrics {
         self.clone().finish()
+    }
+    /// #96 §7: the resumable form. Both agents hold the same shape — per-model counters, an
+    /// `extra` bag and a span — so the seam is agent-agnostic even though the two REPORT
+    /// differently (Claude increments, Codex running totals), which each `push` normalises.
+    fn totals(&self) -> claude_replay_engine::seam::MetricsTotals {
+        agents::codex::metrics::CodexMetricsAcc::totals(self)
+    }
+    fn reseed(
+        &mut self,
+        tokens: std::collections::BTreeMap<String, claude_replay_engine::seam::TokenCounts>,
+        extra: std::collections::BTreeMap<String, u64>,
+        span: Option<(f64, f64)>,
+    ) {
+        agents::codex::metrics::CodexMetricsAcc::reseed(self, tokens, extra, span)
     }
 }
 

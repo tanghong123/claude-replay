@@ -131,3 +131,26 @@ pub enum Message {
         result: Option<String>,
     },
 }
+
+impl Message {
+    /// Can this message open a **turn** — i.e. author a `UserText`/`Command` block (#96 §6.1)?
+    ///
+    /// The set is every `Replayer::apply` arm that pushes one, and it lives here so a new arm
+    /// sits beside the predicate it must update. Read off the fold, not guessed: `CommandStdout`
+    /// belongs because it pushes a `Block::Command` when there is no preceding `Command` to
+    /// attach to — the case that is easy to miss. `SkillBody` and `QueueOp` push a `ToolResult`
+    /// and a `QueueEvent` and are excluded.
+    ///
+    /// **Over-approximating is safe, under-approximating is not**: a missed line loses a resume
+    /// point, while a spurious one only wastes a capture that the "did it author a block?" check
+    /// then discards.
+    pub fn can_open_turn(&self) -> bool {
+        matches!(
+            self,
+            Message::UserText { .. }
+                | Message::Command { .. }
+                | Message::CommandStdout { .. }
+                | Message::AttachmentPrompt { .. }
+        )
+    }
+}

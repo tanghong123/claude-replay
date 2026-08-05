@@ -31,6 +31,27 @@ pub trait MetricsAccumulator: Send {
     fn push(&mut self, v: &Value);
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;
+
+    /// Running totals as of the last [`push`](Self::push) — per model, plus the agent-specific
+    /// counter bag and the observed span (#96 §7).
+    ///
+    /// The builder captures these at a turn-opening line and persists **differences**; the
+    /// adapter converts whatever its agent reports (Claude per-message increments, Codex running
+    /// totals) into these totals, so agent specificity ends at the decoder as it does everywhere
+    /// else. Defaulted, because an accumulator that reports nothing resumes correctly from
+    /// nothing.
+    fn totals(&self) -> crate::metrics::MetricsTotals {
+        Default::default()
+    }
+
+    /// Re-seed a resumed accumulator from folded totals and the observed span (#96 §7).
+    fn reseed(
+        &mut self,
+        _tokens: std::collections::BTreeMap<String, crate::metrics::TokenCounts>,
+        _extra: std::collections::BTreeMap<String, u64>,
+        _span: Option<(crate::model::EpochSeconds, crate::model::EpochSeconds)>,
+    ) {
+    }
 }
 
 /// The single agent-specific interface. A new agent implements this once; the engine calls

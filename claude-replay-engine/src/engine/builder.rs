@@ -49,6 +49,31 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// The task op-log fold (#15) — session state maintained here (like metrics),
     /// never seen by the block replayer.
     task_fold: crate::engine::tasks::TaskFold,
+    /// One entry per **authored turn** in the open window, oldest first (#96 §6.1). The front
+    /// entry locates the resume partition; the drain prunes below the frontier.
+    boundary: std::collections::VecDeque<Boundary>,
+    /// The state as of the last resume payload written — counter deltas are the difference
+    /// between two `replay_from` captures, not "since the last commit".
+    emitted: Boundary,
+    /// Meta records authored but not yet drained by the persistence layer.
+    meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
+}
+
+/// A turn-opening line's state, captured **before** the line is folded — the candidate
+/// `replay_from` and everything a resume from there must be seeded with.
+#[derive(Clone, Debug, Default)]
+struct Boundary {
+    /// Raw-logical index of this line's FIRST authored block. Equals the post-drain frontier
+    /// exactly when this line's first block is the first uncommitted one — §3's partition.
+    logical: usize,
+    offset: ByteOffset,
+    prev_ts: Option<EpochSeconds>,
+    pending_ts: Option<EpochSeconds>,
+    /// Metrics TOTALS as of this line's start (`metrics.push` runs last, below).
+    tokens: std::collections::BTreeMap<String, crate::metrics::TokenCounts>,
+    extra: std::collections::BTreeMap<String, u64>,
+    span: Option<(EpochSeconds, EpochSeconds)>,
+    cwd: String,
 }
 
 /// The delta-sized read a live streaming consumer (the pull protocol) needs each poll — WITHOUT
@@ -74,6 +99,33 @@ pub struct StreamRead {
     pub tasks: crate::engine::tasks::TaskList,
 }
 
+/// Fold one committed block's contribution into a record's counters.
+///
+/// **Must stay arm-for-arm with `SessionMeta::push`** — that equality is what the oracle test
+/// asserts, and an earlier hand-mirrored copy silently dropped `Thinking{tools}`.
+fn count_into(rec: &mut crate::engine::meta_stream::MetaRecord, b: &Block) {
+    use crate::engine::meta_stream::{AgentEvent, Spawn};
+    match b {
+        Block::UserText(_) | Block::Command { .. } => *rec.turns.get_or_insert(0) += 1,
+        Block::ToolUse { .. } => *rec.tools.get_or_insert(0) += 1,
+        // An activity-coalesced run is ONE block carrying its nested calls.
+        Block::Thinking { tools, .. } if !tools.is_empty() => {
+            *rec.tools.get_or_insert(0) += tools.len() as u32
+        }
+        Block::SubAgent(sa) => rec.agents.push(AgentEvent::Spawned(Spawn {
+            tool_use_id: sa.tool_use_id.clone(),
+            agent_id: sa.agent_id.clone(),
+            agent_type: sa.agent_type.clone(),
+            description: sa.description.clone(),
+            status: sa.status,
+        })),
+        Block::AgentDone { agent_id, .. } if !agent_id.is_empty() => {
+            rec.agents.push(AgentEvent::Finished(agent_id.clone()))
+        }
+        _ => {}
+    }
+}
+
 impl SessionAccumulator<InMemoryStore> {
     /// A fresh accumulator for the agent behind `adapter`, with the in-memory
     /// (identity) store: empty replayer/cwd/metrics, ready to `advance`.
@@ -97,6 +149,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
             committed: Vec::new(),
             committed_meta: SessionMeta::default(),
             task_fold: crate::engine::tasks::TaskFold::default(),
+            boundary: std::collections::VecDeque::new(),
+            emitted: Boundary::default(),
+            meta_out: Vec::new(),
         }
     }
 
@@ -129,6 +184,22 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 }
             }
         }
+        // #96 §6.1: capture a candidate boundary BEFORE anything folds — the snapshot must
+        // predate this line's effects. Over-approximating `can_open_turn` is safe only because
+        // an entry that authors nothing is discarded below.
+        let cand = delta.iter().any(Message::can_open_turn).then(|| {
+            let (tokens, extra, span) = self.metrics.totals();
+            Boundary {
+                logical: self.replayer.raw_len(),
+                offset,
+                prev_ts: self.replayer.prev_ts(),
+                pending_ts: self.replayer.pending_ts(),
+                tokens,
+                extra,
+                span,
+                cwd: self.cwd.clone(),
+            }
+        });
         // The task op-log (#15) folds HERE, at the accumulator — task state is
         // session state like metrics/meta, not a block, so the block replayer (and
         // its parse_main equivalence oracle) never see it. Tool results feed the
@@ -143,24 +214,104 @@ impl<S: BlockStore> SessionAccumulator<S> {
             }
         }
         let patched = self.replayer.apply(&delta);
+        // A flagged line can author NOTHING — a `CommandStdout` that patches into a prior
+        // `Command`. Its entry would then carry the NEXT line's raw index and match the
+        // frontier falsely, and a resume from that offset would fabricate an orphan block a
+        // cold fold never had. So the entry only lands if the line really authored one.
+        if let Some(c) = cand {
+            if self.replayer.raw_len() > c.logical {
+                self.boundary.push_back(c);
+            }
+        }
         // Drain the turns that just crossed the durability frontier and `put` each once — the
         // replayer drops them, keeping its content O(turn); we own the committed prefix. Fold each
         // finalized committed block into the maintained header **once**, before it's stored, so a
         // live poll reads the header without rescanning the committed prefix.
         let drained: Vec<Block> = self.replayer.drain_committed();
         if !drained.is_empty() {
-            let times = self.replayer.user_times();
+            let turns0 = self.committed_meta.turns;
+            let mut rec = crate::engine::meta_stream::MetaRecord::default();
+            for b in &drained {
+                count_into(&mut rec, b);
+            }
+            let times = self.replayer.user_times().to_vec();
             for b in drained {
                 self.committed_meta.push(&b);
                 let at = self.committed.len();
-                let bv = self.store.put(b, at, times);
+                let bv = self.store.put(b, at, &times);
                 self.committed.push(bv);
             }
+            // `user_times` cannot come from the blocks: the stamps live in the replayer,
+            // indexed by TURN. Slice by the turn count this drain added.
+            rec.user_times = times[turns0..self.committed_meta.turns].to_vec();
+            rec.task_ops = self.task_fold.drain_recorded();
+            self.boundary.retain(|e| e.logical >= self.replayer.base());
+            self.author_resume(&mut rec);
+            self.meta_out.push(rec);
         }
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             self.metrics.push(&v);
         }
         patched
+    }
+
+    /// Attach the resume payload and the gauge/counter deltas, **iff** the §3 partition exists
+    /// at this drain (#96 I5).
+    ///
+    /// The check is on the deque FRONT, not the current line: at a `last_skill`-pinned drain the
+    /// current line opens the *newest* turn while `replay_from` is the line of the *oldest*
+    /// uncommitted block. A straddling line's entry has already been pruned (its `logical` sits
+    /// below the frontier), so the check simply fails on whatever follows.
+    fn author_resume(&mut self, rec: &mut crate::engine::meta_stream::MetaRecord) {
+        let Some(e) = self.boundary.front().cloned() else {
+            return;
+        };
+        if e.logical != self.replayer.base() {
+            return; // the partition falls inside a line — no resume point here
+        }
+        // Counter deltas are the difference between two `replay_from` captures, NOT "since the
+        // last commit": the state is as-of that line, so the baseline must be too.
+        for (m, c) in &e.tokens {
+            let prev = self.emitted.tokens.get(m).copied().unwrap_or_default();
+            let d = crate::metrics::TokenCounts {
+                input: c.input.saturating_sub(prev.input),
+                cache_creation: c.cache_creation.saturating_sub(prev.cache_creation),
+                cache_read: c.cache_read.saturating_sub(prev.cache_read),
+                output: c.output.saturating_sub(prev.output),
+            };
+            if d != crate::metrics::TokenCounts::default() {
+                rec.tokens.insert(m.clone(), d);
+            }
+        }
+        for (k, n) in &e.extra {
+            let d = n.saturating_sub(self.emitted.extra.get(k).copied().unwrap_or(0));
+            if d > 0 {
+                rec.extra.insert(k.clone(), d);
+            }
+        }
+        // Gauges: written only when changed (R7).
+        if e.span != self.emitted.span {
+            rec.span = e.span;
+        }
+        if e.cwd != self.emitted.cwd {
+            rec.cwd = Some(e.cwd.clone());
+        }
+        rec.resume = Some(crate::engine::meta_stream::Resume {
+            id: self.committed.len(),
+            replay_from: e.offset,
+            // The window CRC is the persistence layer's to compute — it owns the source bytes.
+            // Zero here means "unset"; the writer fills it before the record lands on disk.
+            window: 0,
+            prev_ts: e.prev_ts,
+            pending_ts: e.pending_ts,
+        });
+        self.emitted = e;
+    }
+
+    /// Take the meta records authored since the last call (#96) — drained in lockstep with the
+    /// committed blocks, so a consumer persisting both streams keeps them aligned.
+    pub fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
+        std::mem::take(&mut self.meta_out)
     }
 
     /// Fold a whole transcript `reader` line-by-line, tracking each line's start byte offset so
@@ -201,22 +352,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// between the append-only committed prefix and the open provisional turn in `fold`'s
     /// block list. Lets a live consumer locate the settled/in-flight boundary in O(1) instead of
     /// re-deriving it by scanning blocks.
-    pub fn committed_len(&self) -> usize {
-        self.committed.len()
+    /// The maintained header of the **committed** prefix — the right-hand side of #96's
+    /// oracle (`session_meta()` is the merged value, which includes the open turn).
+    pub fn committed_meta(&self) -> &SessionMeta {
+        &self.committed_meta
     }
 
-    /// Take the meta records emitted since the last call — the frontend-neutral session state as a
-    /// stream, alongside the block stream (see [`crate::engine::meta_stream`] for the protocol).
-    ///
-    /// Replaying it reproduces [`session_meta`](Self::session_meta) exactly: accumulate the
-    /// anchored deltas, then apply the latest unanchored restatement. That equality is the
-    /// contract, and it is asserted step-by-step against real transcripts by the
-    /// `meta_stream_replay_equals_maintained_meta` integration test.
-    ///
-    /// Drain at whatever cadence you consume blocks — the records are queued in emission order, so
-    /// draining less often coalesces the open-turn restatements without losing an anchor.
-    pub fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
-        self.replayer.drain_meta()
+    pub fn committed_len(&self) -> usize {
+        self.committed.len()
     }
 
     /// Rebuild from scratch — recreate the replayer, clear the cwd, and take a fresh metrics

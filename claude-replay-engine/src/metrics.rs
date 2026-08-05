@@ -90,6 +90,15 @@ impl TokenCounts {
     }
 }
 
+/// The resumable form of any agent's metrics accumulator (#96 §7): per-model token totals, the
+/// agent-specific counter bag, and the observed time span. Named because it crosses the seam in
+/// both directions and an anonymous tuple there reads as noise.
+pub type MetricsTotals = (
+    BTreeMap<String, TokenCounts>,
+    BTreeMap<String, u64>,
+    Option<(crate::model::EpochSeconds, crate::model::EpochSeconds)>,
+);
+
 /// Sum the per-model costs, and say whether the sum covers **every** model that produced
 /// tokens (the returned flag is `true` when some model was OMITTED).
 ///
@@ -132,6 +141,16 @@ impl TimeSpan {
         self.max = Some(self.max.map_or(secs, |a| a.max(secs)));
     }
     /// Elapsed wall-clock seconds (clamped to ≥ 0); `0` if fewer than two timestamps seen.
+    /// The observed endpoints (#96 §7): a resumed accumulator needs these, where the collapsed
+    /// `duration_secs` has already thrown them away.
+    pub fn endpoints(&self) -> Option<(i64, i64)> {
+        self.min.zip(self.max)
+    }
+    /// Re-seed from endpoints a resume restored.
+    pub fn set_endpoints(&mut self, e: Option<(i64, i64)>) {
+        (self.min, self.max) = e.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+    }
+
     pub fn duration_secs(&self) -> i64 {
         match (self.min, self.max) {
             (Some(a), Some(b)) => (b - a).max(0),

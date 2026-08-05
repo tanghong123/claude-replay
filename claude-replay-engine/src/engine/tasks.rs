@@ -74,7 +74,7 @@ impl TaskList {
 
 /// One task operation, as the L1 tokenizer saw it in the transcript — the unit the
 /// [`TaskFold`] replays. Field options are "absent from the call input".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskOp {
     /// A `TaskCreate` call. The assigned id arrives later, in the RESULT text
     /// ("Created task #12: …"), joined by `tool_use_id`.
@@ -86,6 +86,15 @@ pub enum TaskOp {
         blocked_by: Vec<String>,
     },
     /// A `TaskUpdate` call — `task_id` from the input; only present fields change.
+    /// The create→id join, recorded as an OP (#96). The id arrives in the tool RESULT
+    /// ("Created task #12: …"), which is transcript data rather than a task op — so without
+    /// this a replay strands every create in `pending` and rebuilds an EMPTY list, since
+    /// `Update{task_id}` targets items that never landed. `None` ⇒ the create failed and its
+    /// draft is dropped, which is what `on_tool_result` already does on an unparsable id.
+    Resolve {
+        tool_use_id: String,
+        id: Option<String>,
+    },
     Update {
         task_id: String,
         status: Option<String>,
@@ -100,15 +109,29 @@ pub enum TaskOp {
 /// The op-log reducer: replays [`TaskOp`]s (and watches tool results for the create→id
 /// join) into a point-in-time [`TaskList`]. Maintained by the accumulator as messages
 /// fold — live sessions grow it; a finished transcript yields its final state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskFold {
     list: TaskList,
-    /// `TaskCreate` calls whose id hasn't arrived yet: `tool_use_id` → draft item.
+    /// `TaskCreate` calls whose id hasn't arrived yet: `tool_use_id` → draft item. **Derived,
+    /// never persisted** (#96): it is exactly the creates with no matching `Resolve`.
     pending: Vec<(String, TaskItem)>,
+    /// Ops applied since the last [`drain_recorded`](Self::drain_recorded) — the meta record's
+    /// delta. Not part of the fold's value, so it is skipped by serde and by `PartialEq`.
+    #[serde(skip)]
+    recorded: Vec<TaskOp>,
 }
 
 impl TaskFold {
+    /// Apply an op, and RECORD it for the meta stream (#96) — the caller drains
+    /// `recorded` at each committing drain. Separated from [`apply_recorded`](Self::apply_recorded) so a replay of
+    /// the persisted log does not re-record what it is replaying.
     pub fn apply(&mut self, op: &TaskOp) {
+        self.recorded.push(op.clone());
+        self.apply_recorded(op);
+    }
+
+    /// Apply without recording — the replay path.
+    pub fn apply_recorded(&mut self, op: &TaskOp) {
         match op {
             TaskOp::Create {
                 tool_use_id,
@@ -130,6 +153,7 @@ impl TaskFold {
                     },
                 ));
             }
+            TaskOp::Resolve { tool_use_id, id } => self.join(tool_use_id, id.as_deref()),
             TaskOp::Update {
                 task_id,
                 status,
@@ -182,11 +206,14 @@ impl TaskFold {
 
     /// Feed every tool result through here: a pending `TaskCreate`'s result text
     /// ("Created task #12: …") assigns the draft its id and lands it in the list.
+    ///
+    /// The join is RECORDED as a [`TaskOp::Resolve`] (#96), because the id arrives in
+    /// transcript data rather than in an op — without it a replay of the log strands every
+    /// create in `pending` and rebuilds an empty list.
     pub fn on_tool_result(&mut self, tool_use_id: &str, text: &str) {
-        let Some(pos) = self.pending.iter().position(|(id, _)| id == tool_use_id) else {
-            return;
-        };
-        let (_, mut item) = self.pending.remove(pos);
+        if !self.pending.iter().any(|(id, _)| id == tool_use_id) {
+            return; // not a create we are waiting on — record nothing
+        }
         let id = text
             .split('#')
             .nth(1)
@@ -195,15 +222,32 @@ impl TaskFold {
                     .take_while(|c| c.is_ascii_digit())
                     .collect::<String>()
             })
-            .unwrap_or_default();
-        if id.is_empty() {
+            .filter(|s| !s.is_empty());
+        self.apply(&TaskOp::Resolve {
+            tool_use_id: tool_use_id.to_string(),
+            id,
+        });
+    }
+
+    /// Land a pending create under `id`, or drop it when the create failed (`None`).
+    fn join(&mut self, tool_use_id: &str, id: Option<&str>) {
+        let Some(pos) = self.pending.iter().position(|(k, _)| k == tool_use_id) else {
+            return;
+        };
+        let (_, mut item) = self.pending.remove(pos);
+        let Some(id) = id else {
             return; // the create failed — no id, no task
-        }
-        item.id = id;
+        };
+        item.id = id.to_string();
         // A re-created id replaces the older item (shouldn't happen; be idempotent).
         self.list.items.retain(|t| t.id != item.id);
         self.list.items.push(item);
         self.list.sort();
+    }
+
+    /// Take the ops applied since the last call — the meta record's `task_ops` (#96).
+    pub fn drain_recorded(&mut self) -> Vec<TaskOp> {
+        std::mem::take(&mut self.recorded)
     }
 
     pub fn snapshot(&self) -> &TaskList {

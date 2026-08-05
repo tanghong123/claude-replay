@@ -83,152 +83,96 @@ fn maintained_meta_equals_batch_build_at_every_step() {
 /// It is a real test only if the fixture reaches the intricate arms, so the fixture deliberately
 /// contains a spawn whose id arrives late, a duplicate agent id, an activity-coalesced run, and a
 /// completion notification — and the assertions at the bottom fail if any of those stops being
-/// present, so the test cannot silently go vacuous.
-#[test]
-fn meta_stream_replay_equals_maintained_meta() {
-    use claude_replay_engine::engine::meta_stream::replay_meta;
-
-    let lines = [
-        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-07-26T10:00:00Z"}"#,
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-26T10:00:01Z"}"#,
-        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-07-26T10:00:02Z"}"#,
-        // A spawn: the SubAgent block folds with NO agent_id yet — it arrives with the result.
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"general-purpose","description":"child one","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:03Z"}"#,
-        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"launched"}]},"timestamp":"2026-07-26T10:00:04Z"}"#,
-        // A SECOND spawn reusing the same agent id — SessionMeta keeps both, so the stream must.
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_B","name":"Task","input":{"subagent_type":"general-purpose","description":"child two","prompt":"go"}}]},"timestamp":"2026-07-26T10:00:05Z"}"#,
-        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"launched"}]},"timestamp":"2026-07-26T10:00:06Z"}"#,
-        // The completion notification (Claude delivers it as a queued event) -> AgentDone ->
-        // ChildOp::Done, which must clear BOTH children carrying that id.
-        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-26T10:00:07Z","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"child one\" finished</summary>\n<result>done</result>\n</task-notification>"}"#,
-        // The queue drains — the durability frontier is gated on an empty queue, so without this
-        // pop nothing ever commits and the anchored path would go untested.
-        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-26T10:00:08Z"}"#,
-        // A second user turn: commits everything above, so the anchored path carries all of it.
-        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:08Z"}"#,
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b2","name":"Read","input":{"file_path":"/r/x"}}]},"timestamp":"2026-07-26T10:00:09Z"}"#,
-    ];
-
-    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
-    let mut records = Vec::new();
-    let mut off: claude_replay_engine::model::ByteOffset = 0;
-    let mut anchors = 0usize;
-    for (i, line) in lines.iter().enumerate() {
-        acc.advance_at(off, line);
-        off += line.len() as u64 + 1;
-        records.extend(acc.drain_meta());
-        anchors = records.iter().filter(|r| r.is_resume_point()).count();
-
-        // THE oracle: accumulate the anchors, supersede with the latest restatement.
-        assert_eq!(
-            replay_meta(&records, None),
-            acc.session_meta(),
-            "meta stream diverged from the maintained header after line {i}"
-        );
-    }
-
-    // Truncating at a resume point yields COMMITTED-ONLY state — no open turn leaked in. That is
-    // the state a resume starts from, so it must equal a batch build over the committed prefix.
-    let committed = acc.committed_tail(0);
-    let last = records
-        .iter()
-        .filter_map(|r| r.committed_id)
-        .next_back()
-        .expect("the fixture commits");
-    assert_eq!(
-        replay_meta(&records, Some(last)),
-        claude_replay_engine::SessionMeta::build(&committed),
-        "replay through the last anchor must equal the committed prefix's meta"
-    );
-    assert_eq!(
-        last,
-        committed.len(),
-        "the anchor names the committed count"
-    );
-
-    // The spawn-identity map rebuilt from the stream must equal the one a fold builds — it is
-    // NOT part of SessionMeta, so the equality above cannot see it. A resumed fold needs it to
-    // resolve an `AgentDone` whose spawn committed and was dropped long ago.
-    let mut want_ids = std::collections::HashMap::new();
-    let mut all = acc.committed_tail(0);
-    all.extend(acc.open_finalized().0);
-    for b in &all {
-        for (k, id, ty) in claude_replay_engine::engine::meta_stream::agent_pairs(b) {
-            want_ids.insert(k, (id, ty));
-        }
-    }
-    assert!(!want_ids.is_empty(), "the fixture spawns sub-agents");
-    assert_eq!(
-        claude_replay_engine::engine::meta_stream::replay_agent_ids(&records, None),
-        want_ids,
-        "the identity map rebuilt from the stream diverged from the fold's"
-    );
-
-    // The fixture really did exercise the intricate arms (guards against going vacuous).
-    let meta = acc.session_meta();
-    assert!(anchors > 0, "the fixture must commit at least once");
-    // Activity coalescing (#57) folds the Bash/Read tool_use+result pairs into `Thinking{tools}`
-    // rather than leaving bare `ToolUse` blocks — so this fixture's tool counting runs ENTIRELY
-    // through the nested-tools arm, the one an earlier revision dropped. (The bare `ToolUse` arm
-    // is covered by the engine's `push_then_apply_equals_session_meta_push`.)
-    assert!(
-        all.iter()
-            .any(|b| matches!(b, Block::Thinking { tools, .. } if !tools.is_empty())),
-        "the fixture must contain a coalesced run, or the Thinking{{tools}} arm goes untested"
-    );
-    assert_eq!(meta.children.len(), 2, "two spawns, duplicate id kept");
-    assert!(
-        meta.children.iter().all(|c| c.id == "aXYZ1234"),
-        "both children carry the SAME id — the duplicate case"
-    );
-    assert!(
-        meta.children.iter().all(|c| !c.running),
-        "one AgentDone clears EVERY child with that id, as SessionMeta's linear scan does"
-    );
-    assert!(
-        meta.turns >= 2 && meta.tools >= 2,
-        "turns and tools present"
-    );
-}
-
 /// The supersede baseline must RESET at a commit. This is the case a richer fixture hides: when
 /// the new open turn's contribution happens to be **identical** to the one just committed (here,
 /// two bare user turns — each contributes `turns: 1` and nothing else), a replayer that forgot to
 /// reset would see "no change since last told", emit no restatement, and leave the reader showing
 /// committed-only state while a turn is open. Every consecutive pair of plain prompts hits this,
-/// so it is the common case, not a corner.
+/// **The meta-stream oracle** (#96 I3). Replaying the emitted records must reproduce the state
+/// the accumulator maintains — at EVERY step of a real fold. This is what the durable cache
+/// rests on: it reconstructs a session from the record stream alone, never from the blocks, so
+/// any drift between the record's counters and `SessionMeta::push` corrupts a resumed session.
+///
+/// The fixture deliberately reaches the intricate arms — a spawn whose id arrives late, a
+/// DUPLICATE agent id, an activity-coalesced run, a completion, and a task create whose id
+/// lands in a tool result — and asserts they are present, so it cannot quietly go vacuous.
 #[test]
-fn commit_resets_the_supersede_baseline() {
-    use claude_replay_engine::engine::meta_stream::replay_meta;
+fn meta_records_replay_to_the_maintained_state() {
+    use claude_replay_engine::engine::meta_stream::MaterializedMeta;
 
-    let lines: Vec<String> = (0..4)
-        .map(|i| {
-            format!(
-                r#"{{"type":"user","cwd":"/r","message":{{"role":"user","content":[{{"type":"text","text":"turn {i}"}}]}},"timestamp":"2026-07-26T10:0{i}:00Z"}}"#
-            )
-        })
-        .collect();
+    let lines = [
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-05T10:00:00Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-08-05T10:00:01Z"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-08-05T10:00:02Z"}"#,
+        // a spawn whose agent_id arrives with its result, then a SECOND spawn reusing the id
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A","name":"Task","input":{"subagent_type":"general-purpose","description":"child one","prompt":"go"}}]},"timestamp":"2026-08-05T10:00:03Z"}"#,
+        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"launched"}]},"timestamp":"2026-08-05T10:00:04Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_B","name":"Task","input":{"subagent_type":"general-purpose","description":"child two","prompt":"go"}}]},"timestamp":"2026-08-05T10:00:05Z"}"#,
+        r#"{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"launched"}]},"timestamp":"2026-08-05T10:00:06Z"}"#,
+        // a task create; its id arrives in the RESULT — the join that needs TaskOp::Resolve
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tk1","name":"TaskCreate","input":{"subject":"do it","description":"d","active_form":"doing"}}]},"timestamp":"2026-08-05T10:00:07Z"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tk1","content":"Created task #12: do it"}]},"timestamp":"2026-08-05T10:00:08Z"}"#,
+        // the completion, delivered as a queued event, then drained so commits can happen
+        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T10:00:09Z","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"child one\" finished</summary>\n<result>done</result>\n</task-notification>"}"#,
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-08-05T10:00:10Z"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-08-05T10:00:11Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":3,"output_tokens":7},"content":[{"type":"tool_use","id":"b2","name":"Read","input":{"file_path":"/r/x"}}]},"timestamp":"2026-08-05T10:00:12Z"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"third"}]},"timestamp":"2026-08-05T10:00:13Z"}"#,
+    ];
 
     let mut acc = SessionAccumulator::new(&ClaudeAdapter);
-    let mut records = Vec::new();
+    let mut mm = MaterializedMeta::default();
     let mut off: claude_replay_engine::model::ByteOffset = 0;
+    let mut resumes = 0usize;
     for (i, line) in lines.iter().enumerate() {
         acc.advance_at(off, line);
         off += line.len() as u64 + 1;
-        records.extend(acc.drain_meta());
+        for r in acc.drain_meta() {
+            if let Some(res) = &r.resume {
+                resumes += 1;
+                assert_eq!(
+                    res.id,
+                    acc.committed_len(),
+                    "the payload names the committed count"
+                );
+            }
+            mm.push(&r);
+        }
+        // THE ORACLE: the replayed counters equal the maintained COMMITTED header, at every step.
         assert_eq!(
-            replay_meta(&records, None).turns,
-            acc.session_meta().turns,
-            "the open turn went missing from the stream after turn {i}"
+            mm.session_meta,
+            *acc.committed_meta(),
+            "meta stream diverged from the maintained header after line {i}"
+        );
+        assert_eq!(
+            mm.user_times.len(),
+            mm.session_meta.turns,
+            "one stamp per committed turn, after line {i}"
         );
     }
-    assert_eq!(acc.session_meta().turns, 4, "four bare prompts");
-    // Each turn but the last committed, and each commit is an anchor.
+
+    // The fixture really exercised the intricate arms.
+    assert!(resumes > 0, "at least one resume point");
     assert_eq!(
-        records.iter().filter(|r| r.is_resume_point()).count(),
-        3,
-        "one anchor per commit"
+        mm.session_meta.children.len(),
+        2,
+        "two spawns, duplicate id kept"
     );
+    assert!(mm.session_meta.children.iter().all(|c| c.id == "aXYZ1234"));
+    assert!(
+        mm.session_meta.children.iter().all(|c| !c.running),
+        "one completion clears EVERY child with that id"
+    );
+    assert!(mm.session_meta.tools >= 2, "coalesced runs counted");
+    // The task op-log is self-contained: Resolve landed the create in the list.
+    assert_eq!(
+        mm.tasks.snapshot().items.len(),
+        1,
+        "the create was joined by its Resolve op"
+    );
+    assert_eq!(mm.tasks.snapshot().items[0].id, "12");
+    // Spawn identity is rebuilt under BOTH keys, so a later completion still resolves.
+    assert!(mm.agent_ids.contains_key("toolu_A") && mm.agent_ids.contains_key("aXYZ1234"));
 }
 
 /// #56 regression (the QoderWork panic): ONE transcript line can carry SEVERAL user text

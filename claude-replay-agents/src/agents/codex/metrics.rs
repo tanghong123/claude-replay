@@ -64,6 +64,28 @@ impl CodexMetricsAcc {
         }
     }
 
+    /// Running per-model totals, the counter bag and the observed span (#96 §7).
+    pub(crate) fn totals(&self) -> claude_replay_engine::seam::MetricsTotals {
+        (
+            self.per_model.clone(),
+            self.extra.clone(),
+            self.span.endpoints().map(|(a, b)| (a as f64, b as f64)),
+        )
+    }
+
+    /// Re-seed a resumed accumulator (#96 §7).
+    pub(crate) fn reseed(
+        &mut self,
+        tokens: std::collections::BTreeMap<String, TokenCounts>,
+        extra: std::collections::BTreeMap<String, u64>,
+        span: Option<(f64, f64)>,
+    ) {
+        self.per_model = tokens;
+        self.extra = extra;
+        self.span
+            .set_endpoints(span.map(|(a, b)| (a as i64, b as i64)));
+    }
+
     pub(crate) fn finish(self) -> Metrics {
         // Cost is the sum over models; cached input bills at the read discount (no write tier).
         let (cost_usd, cost_partial) = total_cost(&self.per_model);

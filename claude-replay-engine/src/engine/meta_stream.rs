@@ -1,519 +1,426 @@
-//! **The meta record stream** (#96) — the frontend-agnostic companion to the block stream.
+//! **The meta stream** (#96) — the frontend-agnostic companion to the content stream.
 //!
-//! The replayer emits `Block`s; alongside them it emits **meta records** carrying the changes
-//! those blocks make to the agent-neutral session state. Persisted together the two streams let
-//! a later invocation resume without re-parsing the transcript.
+//! The content stream holds committed blocks; this one holds everything else a session knows
+//! about itself, plus what a later invocation needs to resume folding. See
+//! `design/durable-session-cache.md`; the vocabulary here mirrors its §4 exactly.
 //!
-//! # The emission principle
+//! A record is written **once per committing drain** and has three parts:
 //!
-//! For each batch of regular (block) records the replayer emits, it emits **0–2** meta records
-//! such that:
+//! - a **delta** — session facts, present on every record. Two classes: *counters* fold
+//!   (scalars add, lists append, maps sum per key) and *gauges* replace.
+//! - a **resume** payload — present iff this drain is a resume point (the §3 partition exists).
+//!   Its presence *is* the indicator; there is no separate flag.
+//! - a **checkpoint** — an absolute [`MaterializedMeta`], written periodically. Present only
+//!   where `resume` is: a checkpoint a reader cannot resume from would let compaction leave a
+//!   cache with state and no resume point.
 //!
-//! - **(A)** every meta change caused by those blocks is captured in a meta record; and
-//! - **(B)** if the batch contained a **committed** block, a meta record lands **immediately
-//!   after the last committed one**, capturing all committed changes since the previous such
-//!   record.
-//!
-//! | batch | meta records |
-//! |---|---|
-//! | no commit, no meta change | **0** |
-//! | no commit, meta change | **1** — at the end, *unanchored* |
-//! | commit is the last record | **1** — right after it, **anchored** |
-//! | commit mid-batch, no change after it | **1** — right after the last commit, **anchored** |
-//! | commit mid-batch, changes after it | **2** — anchored, then unanchored at the end |
-//!
-//! # The two record kinds are combined DIFFERENTLY
-//!
-//! This is the load-bearing distinction, and it is forced by how the accumulator maintains the
-//! same value: `SessionAccumulator::session_meta` accumulates committed blocks into
-//! `committed_meta` once each, then folds the open turn **freshly on top** each time it is asked.
-//! The stream mirrors exactly that:
-//!
-//! - **Anchored** records (`committed_id.is_some()`) carry an *incremental* delta of blocks that
-//!   **committed**. They **accumulate** — apply every one, in order, exactly once.
-//! - **Unanchored** records carry a *full restatement* of the still-open turn's contribution,
-//!   relative to the most recent anchor. They **supersede** — only the latest one after the last
-//!   anchored record counts, and an anchored record voids any unanchored record before it.
-//!
-//! So the reconstruction is:
-//!
-//! ```text
-//! committed_meta = Σ (anchored deltas, in order)          // accumulate
-//! live_meta      = committed_meta + latest unanchored      // supersede
-//! ```
-//!
-//! Treating an unanchored record as incremental would **double-count**: a block restated while
-//! provisional is counted again by the anchored record that later commits it.
-//!
-//! # Resume
-//!
-//! Only **anchored** records are resume points. A record placed immediately after a committed
-//! block describes state *as of that committed block*, with nothing from the still-open turn
-//! leaked in — exactly the committed-only state a resume needs. Unanchored records describe an
-//! open turn that a resume rebuilds by re-reading the transcript, so applying them would
-//! double-count. They exist so a *live* reader stays current between commits.
-//!
-//! A resume additionally needs byte offsets, but those are the *cache's* concern: the accumulator
-//! owns reader positions and adds them when the persistent cache is built. The replayer supplies
-//! only the anchor.
-//!
-//! On load: replay records up to and including the anchored record for the chosen committed id,
-//! then **truncate the stream there** — leaving a trailing unanchored record would let a later
-//! load apply it ahead of records computed relative to that point.
+//! [`MaterializedMeta`] is the stream's **materialized view**: the stream is the deltas, this is
+//! their sum. A checkpoint is simply one of these written down, which is why adopting one and
+//! folding from the start must agree.
 
 use crate::engine::session::{ChildMeta, SessionMeta};
-use crate::model::{AgentId, Block};
+use crate::engine::tasks::{TaskFold, TaskOp};
+use crate::metrics::TokenCounts;
+use crate::model::{AgentId, AgentStatus, Block, ByteOffset, EpochSeconds};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 
-/// The `(key, agent_id, agent_type)` identity rows a block contributes to the replayer's
-/// spawn-identity map.
-///
-/// The **single** definition of that mapping: `Replayer::record_agent` inserts these rows into its
-/// live `HashMap`, and [`MetaDelta::push`] records the same rows for the stream. Two hand-mirrored
-/// copies would drift (see [`MetaDelta::push`]); one shared list cannot.
-///
-/// A spawn is reachable by **two** keys because the id is discovered late: the `tool_use_id` is
-/// known when the spawn folds, while the real `agent_id` only arrives with the tool result, and a
-/// later `AgentDone` may name either.
-pub fn agent_pairs(b: &Block) -> Vec<(String, String, String)> {
-    let mut out = Vec::new();
-    if let Block::SubAgent(sa) = b {
-        if !sa.tool_use_id.is_empty() {
-            out.push((
-                sa.tool_use_id.clone(),
-                sa.agent_id.clone(),
-                sa.agent_type.clone(),
-            ));
-        }
-        if !sa.agent_id.is_empty() {
-            out.push((
-                sa.agent_id.clone(),
-                sa.agent_id.clone(),
-                sa.agent_type.clone(),
-            ));
-        }
-    }
-    out
+/// A model name — the key tokens are attributed to (#104).
+pub type Model = String;
+
+/// The format this build writes. Bump when the record schema changes incompatibly; a new
+/// *field* needs no bump (it arrives with `#[serde(default)]` and older records still load).
+pub const FORMAT_VERSION: u16 = 1;
+
+// ── the stream ────────────────────────────────────────────────────────────────────────────
+
+/// Record 0 of the meta stream, written once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamHeader {
+    /// CRC32 of the transcript's **first line** — identity, so a stream is never matched
+    /// against a different file that happens to sit at the same path.
+    pub anchor: u32,
+    pub versions: Versions,
 }
 
-/// One change to the child (sub-agent) list.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum ChildOp {
-    /// Append a child. **Positional**: `SessionMeta` deliberately keeps duplicate ids (a block
-    /// walk's order and multiplicity), so this appends and never upserts by id.
-    Add(ChildMeta),
-    /// Mark finished every child with this id — **by id, not by ordinal**. An `AgentDone` in one
-    /// batch can match a child added many batches earlier, and a delta has no view of the
-    /// accumulated list, so an ordinal is not computable here. Clearing *every* match reproduces
-    /// [`SessionMeta::push`]'s linear scan, duplicates included.
-    Done(AgentId),
+/// What must match for a cached stream to be reusable at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Versions {
+    pub format: u16,
+    /// Fold-logic version: bump when block output changes, or a resume would splice blocks
+    /// built by two different folds.
+    pub fold: u16,
+    /// HTML only: the render fingerprint (`FoldPolicy` + cwd + record schema). `None` for a
+    /// presentation whose output has no such parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flavor: Option<u64>,
 }
 
-/// What a batch of blocks changes in the agent-neutral session state.
-///
-/// Carries only what changed — never a snapshot (requirement 7): `turns`/`tools` are absent when
-/// zero and `children`/`agent_ids` are empty when untouched. [`MetaDelta::is_empty`] is what rule
-/// (A) tests.
-///
-/// Read as an *increment* on an anchored record and as a *full restatement of the open turn* on an
-/// unanchored one — see the module docs.
+// ── the record ────────────────────────────────────────────────────────────────────────────
+
+/// One committing drain's contribution. Every field is optional: **absent means no update**,
+/// and the field's class fixes what an update *is*.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct MetaDelta {
-    /// Added user turns (absent when zero).
+pub struct MetaRecord {
+    // ── delta, counters: fold across records ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turns: Option<usize>,
-    /// Added tool calls (absent when zero).
+    pub turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<usize>,
-    /// Child list operations, in order.
+    pub tools: Option<u32>,
+    /// Sub-agent lifecycle, **in order** — see [`AgentEvent`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<ChildOp>,
-    /// Spawn-identity rows — `(key, agent_id, agent_type)`, see [`agent_pairs`]. Upserts, so a
-    /// replay may re-apply them safely. Not part of [`SessionMeta`]: this is replayer state the
-    /// stream carries so a resumed fold can still resolve a later `AgentDone`.
+    pub agents: Vec<AgentEvent>,
+    /// Timestamps of the turns *this* drain stamped — normally one entry, not the running
+    /// vector (that would be O(turns²) over a session).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agent_ids: Vec<(String, String, String)>,
+    pub user_times: Vec<Option<EpochSeconds>>,
+    /// Per-model token increments (#104). Summed per key on fold.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<Model, TokenCounts>,
+    /// Agent-specific **counters**; a repeated key ADDS. A gauge must never live here —
+    /// summing it would be wrong live as well as cached.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, u64>,
+    /// The task op-log — never the task list, which is a full snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_ops: Vec<TaskOp>,
+
+    // ── delta, gauges: last present value wins ──
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<(EpochSeconds, EpochSeconds)>,
+
+    // ── resumption: presence IS the resume-point indicator ──
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<Resume>,
+
+    // ── an absolute materialized view as of this record, replacing every delta before it ──
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<MaterializedMeta>,
 }
 
-impl MetaDelta {
-    /// Nothing changed — rule (A) emits no record for such a batch.
-    pub fn is_empty(&self) -> bool {
-        self.turns.is_none()
-            && self.tools.is_none()
-            && self.children.is_empty()
-            && self.agent_ids.is_empty()
-    }
+/// What a resume needs beyond the folded facts. Present iff the transcript admits a clean
+/// partition at this drain (no line authored blocks on both sides of the frontier).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Resume {
+    /// Committed-block count after this drain. **Not** an index into the record vector — a
+    /// multi-turn line commits several blocks under one record, so these jump.
+    pub id: usize,
+    /// The partition offset: bytes below it authored only committed blocks.
+    pub replay_from: ByteOffset,
+    /// CRC32 of the 64 KiB ending at `replay_from` — everything restored derives from bytes
+    /// below it, so that is the only region a rewrite can silently corrupt.
+    pub window: u32,
+    /// The thinking clock's zero — a `Thinking`'s duration measures from the previous event
+    /// line, so without this the first re-read line renders `None` where a cold fold gives
+    /// `Some`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_ts: Option<EpochSeconds>,
+    /// Stamps turns authored on the resume's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_ts: Option<EpochSeconds>,
+}
 
-    /// Fold one block's contribution in.
+/// Sub-agent lifecycle. **One ordered list**, because order is load-bearing: for
+/// `Spawned(X)`, `Finished(X)`, `Spawned(X)` in one record, block order yields
+/// `[finished, running]` while "all spawns then all dones" yields `[finished, finished]`.
+/// `SessionMeta` deliberately keeps duplicate ids, so that is reachable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum AgentEvent {
+    Spawned(Spawn),
+    /// Clears **every** spawn with this id — `SessionMeta::push`'s linear scan. By id and not
+    /// by ordinal: it can refer to a spawn appended many records earlier, and a delta has no
+    /// view of the accumulated list.
+    Finished(AgentId),
+}
+
+/// Everything known about one sub-agent at spawn time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Spawn {
+    /// The key a completion may arrive under, before `agent_id` exists.
+    pub tool_use_id: String,
+    /// Empty until the spawn's tool result lands.
+    pub agent_id: AgentId,
+    pub agent_type: String,
+    pub description: String,
+    /// A spawn can be born terminal (a synchronous `Task` returns done), so `running` is
+    /// derived from this and any later `Finished` — never stored.
+    pub status: AgentStatus,
+}
+
+// ── the materialized view ─────────────────────────────────────────────────────────────────
+
+/// The fold of every record: what a reader reconstructs, and what a checkpoint stores.
+///
+/// **Iterative, not slice-at-once.** Unlike the committed `BV` vector — resident by definition,
+/// being the committed index itself — records are consumed one at a time and never all held.
+/// [`push`](Self::push) has no bound check: the *caller* stops at its aligned `n`, which is what
+/// lets a metadata reader with no bound at all use the same type.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MaterializedMeta {
+    /// Turns, tools and children — the header both frontends render.
+    pub session_meta: SessionMeta,
+    /// Spawn identity, under **both** keys per spawn (the id arrives late, and a completion
+    /// names whichever the agent emitted).
+    pub agent_ids: HashMap<String, (AgentId, String)>,
+    pub user_times: Vec<Option<EpochSeconds>>,
+    pub tokens: BTreeMap<Model, TokenCounts>,
+    pub extra: BTreeMap<String, u64>,
+    /// Ops **applied** as they arrive — carries the list and the unjoined creates, so
+    /// `pending` is derived rather than persisted.
+    pub tasks: TaskFold,
+    pub cwd: String,
+    pub span: Option<(EpochSeconds, EpochSeconds)>,
+}
+
+impl MaterializedMeta {
+    /// Fold one record in.
     ///
-    /// **Must stay arm-for-arm with [`SessionMeta::push`]** — that equality is the whole contract,
-    /// and `MetaDelta::apply` ∘ `push` reproducing `SessionMeta::push` is asserted by the oracle
-    /// tests. (An earlier revision hand-mirrored it and silently dropped `Thinking{tools}`, which
-    /// is why the oracle exists rather than a code comment promising the two agree.)
-    pub fn push(&mut self, b: &Block) {
-        match b {
-            Block::UserText(_) | Block::Command { .. } => *self.turns.get_or_insert(0) += 1,
-            Block::ToolUse { .. } => *self.tools.get_or_insert(0) += 1,
-            // An activity-coalesced run is ONE Thinking block carrying its nested tool calls.
-            Block::Thinking { tools, .. } if !tools.is_empty() => {
-                *self.tools.get_or_insert(0) += tools.len()
-            }
-            Block::SubAgent(sa) if !sa.agent_id.is_empty() => {
-                self.children.push(ChildOp::Add(ChildMeta {
-                    id: sa.agent_id.clone(),
-                    description: sa.description.clone(),
-                    agent_type: sa.agent_type.clone(),
-                    running: !sa.status.is_terminal(),
-                }))
-            }
-            Block::AgentDone { agent_id, .. } if !agent_id.is_empty() => {
-                self.children.push(ChildOp::Done(agent_id.clone()))
-            }
-            _ => {}
+    /// If `r.checkpoint` is `Some`, **adopt it and discard everything folded so far** — the
+    /// checkpoint is the state *as of* this record, so its own delta fields are already
+    /// included and must not be applied twice.
+    pub fn push(&mut self, r: &MetaRecord) {
+        if let Some(c) = &r.checkpoint {
+            *self = c.clone();
+            return;
         }
-        // Identity rows are recorded for EVERY spawn, including one whose `agent_id` has not
-        // arrived yet (keyed by `tool_use_id` alone) — the arm above skips those for `children`,
-        // but the map still needs the row.
-        self.agent_ids.extend(agent_pairs(b));
-    }
-
-    /// Apply this delta to a running [`SessionMeta`] — the inverse of [`push`](Self::push), and
-    /// the operation a load performs per record. Mirrors `SessionMeta::push`'s effects exactly.
-    pub fn apply(&self, m: &mut SessionMeta) {
-        m.turns += self.turns.unwrap_or(0);
-        m.tools += self.tools.unwrap_or(0);
-        for op in &self.children {
-            match op {
-                ChildOp::Add(c) => m.children.push(c.clone()),
-                ChildOp::Done(id) => {
-                    for c in m.children.iter_mut().filter(|c| &c.id == id) {
+        // counters
+        self.session_meta.turns += r.turns.unwrap_or(0) as usize;
+        self.session_meta.tools += r.tools.unwrap_or(0) as usize;
+        for e in &r.agents {
+            match e {
+                AgentEvent::Spawned(s) => {
+                    if !s.agent_id.is_empty() {
+                        self.session_meta.children.push(ChildMeta {
+                            id: s.agent_id.clone(),
+                            description: s.description.clone(),
+                            agent_type: s.agent_type.clone(),
+                            running: !s.status.is_terminal(),
+                        });
+                    }
+                    for (k, id, ty) in spawn_keys(s) {
+                        self.agent_ids.insert(k, (id, ty));
+                    }
+                }
+                AgentEvent::Finished(id) => {
+                    for c in self
+                        .session_meta
+                        .children
+                        .iter_mut()
+                        .filter(|c| &c.id == id)
+                    {
                         c.running = false;
                     }
                 }
             }
         }
-    }
-
-    /// Merge `other` (a later delta) into this one — used when two batches coalesce into one
-    /// record. Valid for *accumulating* (anchored) deltas only; unanchored records supersede
-    /// rather than merge.
-    pub fn merge(&mut self, other: MetaDelta) {
-        if let Some(t) = other.turns {
-            *self.turns.get_or_insert(0) += t;
+        self.user_times.extend(r.user_times.iter().copied());
+        for (m, c) in &r.tokens {
+            *self.tokens.entry(m.clone()).or_default() += *c;
         }
-        if let Some(t) = other.tools {
-            *self.tools.get_or_insert(0) += t;
+        for (k, n) in &r.extra {
+            *self.extra.entry(k.clone()).or_default() += n;
         }
-        self.children.extend(other.children);
-        self.agent_ids.extend(other.agent_ids);
+        for op in &r.task_ops {
+            self.tasks.apply_recorded(op);
+        }
+        // gauges
+        if let Some(cwd) = &r.cwd {
+            self.cwd = cwd.clone();
+        }
+        if let Some(s) = r.span {
+            self.span = Some(s);
+        }
     }
 }
 
-/// One record in the meta stream. Anchored **iff** `committed_id` is set; that also selects how
-/// the record combines (accumulate vs supersede) — see the module docs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MetaRecord {
-    /// `Some(n)` **iff** anchored — placed immediately after the committed block that brought the
-    /// committed count to `n`. Only anchored records are resume points.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub committed_id: Option<usize>,
-    pub delta: MetaDelta,
-}
-
-impl MetaRecord {
-    pub fn anchored(committed_id: usize, delta: MetaDelta) -> Self {
-        Self {
-            committed_id: Some(committed_id),
-            delta,
-        }
-    }
-    pub fn unanchored(delta: MetaDelta) -> Self {
-        Self {
-            committed_id: None,
-            delta,
-        }
-    }
-    /// Anchored records are the only resume points (see the module docs).
-    pub fn is_resume_point(&self) -> bool {
-        self.committed_id.is_some()
-    }
-}
-
-/// The deltas a load must apply, in order — **the** definition of accumulate-vs-supersede, so
-/// every reader shares one implementation of the subtle part.
+/// The `(key, agent_id, agent_type)` identity rows a spawn contributes.
 ///
-/// `through` bounds the replay to a resume point: `Some(n)` stops after the anchored record for
-/// committed id `n` (committed-only state, no open turn), `None` replays everything (live state).
-/// An unknown `n` yields nothing rather than a partial answer.
-fn effective(records: &[MetaRecord], through: Option<usize>) -> Vec<&MetaDelta> {
-    let end = match through {
-        Some(n) => match records.iter().position(|r| r.committed_id == Some(n)) {
-            Some(i) => i + 1,
-            None => return Vec::new(),
-        },
-        None => records.len(),
-    };
-    let mut out: Vec<&MetaDelta> = Vec::new();
-    let mut pending: Option<&MetaDelta> = None;
-    for r in &records[..end] {
-        if r.is_resume_point() {
-            // An anchor accumulates, and voids any provisional restatement before it.
-            out.push(&r.delta);
-            pending = None;
-        } else {
-            // Supersede: only the latest restatement survives.
-            pending = Some(&r.delta);
-        }
-    }
-    out.extend(pending);
-    out
-}
-
-/// Replay a stream to the [`SessionMeta`] it describes — the reader half of the protocol, and the
-/// left-hand side of the oracle tests.
-///
-/// `through` bounds the replay to a resume point: `Some(n)` stops after the anchored record for
-/// committed id `n`, yielding committed-only state with no open turn; `None` replays everything,
-/// yielding live state. An unknown `n` yields nothing rather than a partial answer.
-pub fn replay_meta(records: &[MetaRecord], through: Option<usize>) -> SessionMeta {
-    let mut m = SessionMeta::default();
-    for d in effective(records, through) {
-        d.apply(&mut m);
-    }
-    m
-}
-
-/// Replay a stream to the spawn-identity map it describes (`key → (agent_id, agent_type)`, see
-/// [`agent_pairs`]) — the replayer state a resumed fold needs to resolve a later `AgentDone`
-/// whose spawn is long since committed and dropped. Rebuilding it is why the rows are in the
-/// stream at all; without it a resumed session renders completions with no type or id.
-///
-/// `through` bounds the replay exactly as [`replay_meta`]'s does.
-pub fn replay_agent_ids(
-    records: &[MetaRecord],
-    through: Option<usize>,
-) -> std::collections::HashMap<String, (String, String)> {
-    let mut map = std::collections::HashMap::new();
-    for d in effective(records, through) {
-        for (key, agent_id, agent_type) in &d.agent_ids {
-            map.insert(key.clone(), (agent_id.clone(), agent_type.clone()));
-        }
-    }
-    map
-}
-
-/// **The emission protocol**, as a pure function of one batch — the ONE implementation, called by
-/// both of the replayer's emission points (the drain, which commits, and `drain_meta`, which
-/// restates the open turn).
-///
-/// `committed` is the incremental delta of blocks that committed in this batch, and
-/// `committed_blocks` how many did; `provisional` is the **full restatement** of the open turn's
-/// contribution afterwards. `committed_id` is the committed-block count after this batch (ignored
-/// when nothing committed).
-///
-/// This is the whole of rules (A) and (B) — see the module docs for the five cases. Being a free
-/// function, the protocol can be exercised directly, independent of the fold's call pattern.
-pub fn emit_batch(
-    committed_id: usize,
-    committed_blocks: usize,
-    committed: MetaDelta,
-    provisional: MetaDelta,
-) -> Vec<MetaRecord> {
-    debug_assert!(
-        committed_blocks > 0 || committed.is_empty(),
-        "a batch that committed no blocks cannot have a committed delta"
-    );
+/// The **single** definition of that mapping: the replayer's live map and the stream's
+/// `Spawned` events both go through it, so they cannot drift. Two keys because the id is
+/// discovered late — `tool_use_id` is known when the spawn folds, the real `agent_id` arrives
+/// with the tool result, and a later completion may name either.
+pub fn spawn_keys(s: &Spawn) -> Vec<(String, AgentId, String)> {
     let mut out = Vec::new();
-    if committed_blocks > 0 {
-        // Rule (B): a record lands immediately after the last committed block — even when its
-        // delta is empty, because it is the resume anchor, not merely a change report.
-        out.push(MetaRecord::anchored(committed_id, committed));
+    if !s.tool_use_id.is_empty() {
+        out.push((
+            s.tool_use_id.clone(),
+            s.agent_id.clone(),
+            s.agent_type.clone(),
+        ));
     }
-    // Rule (A): whatever the open turn now contributes is stated in full, superseding the last
-    // restatement. This is the only source of unanchored records.
-    if !provisional.is_empty() {
-        out.push(MetaRecord::unanchored(provisional));
+    if !s.agent_id.is_empty() {
+        out.push((s.agent_id.clone(), s.agent_id.clone(), s.agent_type.clone()));
     }
     out
+}
+
+/// The identity rows a committed `Block` contributes — the block-side entry point, kept beside
+/// [`spawn_keys`] so the two shapes cannot diverge.
+pub fn agent_pairs(b: &Block) -> Vec<(String, AgentId, String)> {
+    match b {
+        Block::SubAgent(sa) => spawn_keys(&Spawn {
+            tool_use_id: sa.tool_use_id.clone(),
+            agent_id: sa.agent_id.clone(),
+            agent_type: sa.agent_type.clone(),
+            description: sa.description.clone(),
+            status: sa.status,
+        }),
+        _ => Vec::new(),
+    }
+}
+
+// ── CRC32 ─────────────────────────────────────────────────────────────────────────────────
+
+/// CRC32 (IEEE), table-free.
+///
+/// Deliberately **not** a cryptographic digest: this detects *accidental* divergence — a
+/// compaction, a truncation, a different file under the same name — never tampering, and it
+/// could not be a trust boundary anyway, since anything able to rewrite the transcript can
+/// rewrite the cache beside it. Measured 13× cheaper than sha256 over 64 KiB, and it keeps a
+/// crypto dependency out of a crate that has three.
+pub fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            // 0xEDB88320 is the reversed IEEE polynomial.
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (!(crc & 1)).wrapping_add(1));
+        }
+    }
+    !crc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AgentStatus, SubAgent};
 
-    fn d(turns: usize) -> MetaDelta {
-        MetaDelta {
-            turns: Some(turns),
+    fn spawn(id: &str, tuid: &str, status: AgentStatus) -> Spawn {
+        Spawn {
+            tool_use_id: tuid.into(),
+            agent_id: id.into(),
+            agent_type: "general-purpose".into(),
+            description: "child".into(),
+            status,
+        }
+    }
+    fn rec_agents(evs: Vec<AgentEvent>) -> MetaRecord {
+        MetaRecord {
+            agents: evs,
             ..Default::default()
         }
     }
 
-    fn tool(name: &str) -> Block {
-        Block::ToolUse {
-            name: name.into(),
-            target: String::new(),
-            diffs: vec![],
-            output: None,
-            patch: None,
-            read_lines: None,
+    /// The known IEEE CRC32 of "123456789" — pins the hand-rolled implementation against the
+    /// standard rather than against itself.
+    #[test]
+    fn crc32_matches_the_standard_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0);
+        assert_ne!(crc32(b"a"), crc32(b"b"));
+    }
+
+    /// Counters fold; gauges replace. The distinction is the whole format.
+    #[test]
+    fn counters_fold_and_gauges_replace() {
+        let mut mm = MaterializedMeta::default();
+        for (turns, cwd) in [(1u32, "/a"), (2, "/b")] {
+            mm.push(&MetaRecord {
+                turns: Some(turns),
+                tokens: BTreeMap::from([(
+                    "m".to_string(),
+                    TokenCounts {
+                        output: 5,
+                        ..Default::default()
+                    },
+                )]),
+                extra: BTreeMap::from([("k".to_string(), 3)]),
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            });
         }
+        assert_eq!(mm.session_meta.turns, 3, "counters add");
+        assert_eq!(mm.tokens["m"].output, 10, "maps sum per key");
+        assert_eq!(mm.extra["k"], 6, "a repeated extra key ADDS");
+        assert_eq!(mm.cwd, "/b", "gauges take the last value");
     }
 
-    fn spawn(id: &str, tool_use_id: &str, status: AgentStatus) -> Block {
-        Block::SubAgent(SubAgent {
-            agent_id: id.into(),
-            tool_use_id: tool_use_id.into(),
-            agent_type: "general-purpose".into(),
-            description: "child".into(),
-            prompt: String::new(),
-            status,
-            result: None,
-            output_file: None,
-            blocks: Vec::new(),
-            subtree_cost: None,
-        })
-    }
-
-    /// The five cases of the emission protocol, exactly as specified.
+    /// Order within `agents` is load-bearing: a done between two spawns of the SAME id must
+    /// not clear the later one. Two parallel lists would.
     #[test]
-    fn emission_protocol_five_cases() {
-        // 1. no commit, no meta change -> zero records
-        assert!(emit_batch(0, 0, MetaDelta::default(), MetaDelta::default()).is_empty());
-
-        // 2. no commit, meta change -> one UNANCHORED record. With nothing committed the change
-        // can only be the open turn's, so it arrives as the restatement.
-        let r = emit_batch(0, 0, MetaDelta::default(), d(1));
-        assert_eq!(r.len(), 1);
-        assert!(!r[0].is_resume_point(), "no commit ⇒ not a resume point");
-        assert_eq!(r[0].delta, d(1));
-
-        // 3. the commit is the last record -> one ANCHORED record after it
-        let r = emit_batch(7, 2, d(1), MetaDelta::default());
-        assert_eq!(r.len(), 1);
-        assert!(r[0].is_resume_point());
-        assert_eq!(r[0].committed_id, Some(7));
-
-        // 4. commit mid-batch, no change after it -> still exactly one anchored record
-        let r = emit_batch(7, 2, MetaDelta::default(), MetaDelta::default());
-        assert_eq!(
-            r.len(),
-            1,
-            "rule (B) emits the anchor even with an empty delta"
-        );
-        assert!(r[0].is_resume_point());
-        assert!(r[0].delta.is_empty());
-
-        // 5. commit mid-batch, further changes after it -> two records, anchored first
-        let r = emit_batch(7, 2, d(1), d(3));
-        assert_eq!(r.len(), 2);
-        assert!(r[0].is_resume_point(), "the anchor comes first");
-        assert_eq!(r[0].committed_id, Some(7));
-        assert!(
-            !r[1].is_resume_point(),
-            "the open-turn restatement is never a resume point: a resume re-reads the open turn \
-             and would double-count it"
-        );
-        assert_eq!(r[1].delta, d(3));
+    fn agent_event_order_is_preserved() {
+        let mut mm = MaterializedMeta::default();
+        mm.push(&rec_agents(vec![
+            AgentEvent::Spawned(spawn("a1", "t1", AgentStatus::Running)),
+            AgentEvent::Finished("a1".into()),
+            AgentEvent::Spawned(spawn("a1", "t2", AgentStatus::Running)),
+        ]));
+        let c = &mm.session_meta.children;
+        assert_eq!(c.len(), 2, "duplicate ids are kept");
+        assert!(!c[0].running, "the first was finished");
+        assert!(c[1].running, "the second must NOT be");
     }
 
-    /// Rule (A): a change is never silently dropped — every non-empty input reaches a record.
+    /// `Finished` clears every match — `SessionMeta::push`'s linear scan, duplicates included.
     #[test]
-    fn no_delta_is_ever_dropped() {
-        for (cb, c, p) in [
-            (0usize, MetaDelta::default(), d(1)),
-            (0, MetaDelta::default(), d(2)),
-            (2, d(1), d(2)),
-            (2, MetaDelta::default(), d(2)),
-            (2, d(1), MetaDelta::default()),
-        ] {
-            let want: usize = c.turns.unwrap_or(0) + p.turns.unwrap_or(0);
-            let got: usize = emit_batch(9, cb, c, p)
-                .iter()
-                .map(|r| r.delta.turns.unwrap_or(0))
-                .sum();
-            assert_eq!(got, want, "every change must land in some record");
-        }
+    fn finished_clears_every_spawn_with_that_id() {
+        let mut mm = MaterializedMeta::default();
+        mm.push(&rec_agents(vec![
+            AgentEvent::Spawned(spawn("a1", "t1", AgentStatus::Running)),
+            AgentEvent::Spawned(spawn("a1", "t2", AgentStatus::Running)),
+            AgentEvent::Finished("a1".into()),
+        ]));
+        assert!(mm.session_meta.children.iter().all(|c| !c.running));
     }
 
-    /// `MetaDelta::push` + `apply` must reproduce `SessionMeta::push` block for block — the
-    /// property the whole stream rests on, checked over every arm that carries meaning
-    /// (including `Thinking{tools}`, which a hand-mirrored earlier revision dropped).
+    /// A spawn registers under BOTH keys, and one whose id has not arrived still registers
+    /// under its tool_use_id — a completion may name either.
     #[test]
-    fn push_then_apply_equals_session_meta_push() {
-        let blocks = vec![
-            Block::UserText("one".into()),
-            tool("Bash"),
-            // An activity-coalesced run: three nested tool calls in ONE block.
-            Block::Thinking {
-                text: "hm".into(),
-                duration_secs: None,
-                tools: vec![tool("Read"), tool("Grep"), tool("Edit")],
-            },
-            spawn("a1", "toolu_1", AgentStatus::Running),
-            spawn("a2", "toolu_2", AgentStatus::Running),
-            // A duplicate id: SessionMeta keeps both, so the delta must too.
-            spawn("a1", "toolu_3", AgentStatus::Running),
-            Block::AgentDone {
-                agent_id: "a1".into(),
-                agent_type: "general-purpose".into(),
-                description: "child".into(),
-                status: AgentStatus::Completed,
-                result: None,
-            },
-            Block::AssistantText("ignored".into()),
-        ];
-        let want = SessionMeta::build(&blocks);
-        let mut delta = MetaDelta::default();
-        for b in &blocks {
-            delta.push(b);
-        }
-        let mut got = SessionMeta::default();
-        delta.apply(&mut got);
-        assert_eq!(got, want, "delta fold must equal the SessionMeta fold");
-        assert_eq!(want.tools, 4, "Bash + three coalesced nested calls");
-        assert_eq!(want.children.len(), 3, "duplicate ids are kept");
-        // `Done("a1")` clears BOTH children carrying that id, as SessionMeta's linear scan does.
-        assert!(!got.children[0].running && !got.children[2].running);
-        assert!(got.children[1].running, "a2 is untouched");
+    fn spawn_registers_under_both_keys() {
+        let mut mm = MaterializedMeta::default();
+        mm.push(&rec_agents(vec![AgentEvent::Spawned(spawn(
+            "a1",
+            "t1",
+            AgentStatus::Running,
+        ))]));
+        assert_eq!(mm.agent_ids.len(), 2);
+        assert_eq!(mm.agent_ids["t1"].0, "a1");
+        assert_eq!(mm.agent_ids["a1"].0, "a1");
+
+        let mut mm2 = MaterializedMeta::default();
+        mm2.push(&rec_agents(vec![AgentEvent::Spawned(spawn(
+            "",
+            "t9",
+            AgentStatus::Running,
+        ))]));
+        assert_eq!(mm2.agent_ids.len(), 1, "no id yet, but still resolvable");
+        assert!(mm2.session_meta.children.is_empty(), "not a child yet");
     }
 
-    /// The reader half: anchored records ACCUMULATE, unanchored ones SUPERSEDE. Getting this
-    /// backwards double-counts a block that was restated while provisional and then committed.
+    /// A checkpoint REPLACES the fold so far — its own delta fields are already included in
+    /// it, so applying both would double-count. This is what makes compaction sound.
     #[test]
-    fn anchored_accumulate_and_unanchored_supersede() {
-        let recs = vec![
-            MetaRecord::anchored(1, d(1)),
-            MetaRecord::unanchored(d(1)),  // open turn: one turn so far
-            MetaRecord::unanchored(d(1)),  // restated, NOT a second turn
-            MetaRecord::anchored(2, d(1)), // that turn commits; the restatement is voided
-            MetaRecord::unanchored(d(1)),  // a new open turn
-        ];
-        assert_eq!(
-            replay_meta(&recs, None).turns,
-            3,
-            "1 + 1 committed + 1 open"
-        );
-        // Truncating at a resume point yields committed-only state — no open turn.
-        assert_eq!(replay_meta(&recs, Some(2)).turns, 2);
-        assert_eq!(replay_meta(&recs, Some(1)).turns, 1);
-    }
+    fn a_checkpoint_replaces_rather_than_adds() {
+        let mut folded = MaterializedMeta::default();
+        folded.push(&MetaRecord {
+            turns: Some(7),
+            ..Default::default()
+        });
 
-    /// Identity rows come from ONE definition, so the replayer's map and the stream cannot drift.
-    /// A spawn is reachable by both keys, and one without an `agent_id` yet still records a row.
-    #[test]
-    fn agent_pairs_covers_both_keys() {
-        let p = agent_pairs(&spawn("a1", "toolu_1", AgentStatus::Running));
-        assert_eq!(p.len(), 2, "reachable by tool_use_id AND agent_id");
-        assert!(p.iter().any(|(k, ..)| k == "toolu_1"));
-        assert!(p.iter().any(|(k, ..)| k == "a1"));
+        let mut absolute = MaterializedMeta::default();
+        absolute.push(&MetaRecord {
+            turns: Some(7),
+            ..Default::default()
+        });
 
-        // id not yet known: still keyed by tool_use_id, and contributes NO child.
-        let pending = spawn("", "toolu_9", AgentStatus::Running);
-        assert_eq!(agent_pairs(&pending).len(), 1);
-        let mut delta = MetaDelta::default();
-        delta.push(&pending);
-        assert!(delta.children.is_empty(), "no id ⇒ not a child yet");
-        assert_eq!(delta.agent_ids.len(), 1, "but the identity row is recorded");
+        // A record carrying that absolute state, plus the delta it already contains.
+        let mut seeded = MaterializedMeta::default();
+        seeded.push(&MetaRecord {
+            turns: Some(7),
+            checkpoint: Some(absolute),
+            ..Default::default()
+        });
+        assert_eq!(seeded, folded, "adopt, not add — turns must be 7, never 14");
     }
 }
