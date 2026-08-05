@@ -210,9 +210,28 @@ carry no timestamp.
   minus this (`replay.rs:215-219`), so a burst right after the turn's own text measures from
   that text rather than from the last tool result.
 
-Both are override fields: neither is pruned, and at a commit each holds a single current value
-that a resumed fold must start from. Persisting `prev_ts` is what keeps a `Thinking` on the
-first re-read line from rendering `duration_secs: None` where a cold fold gives `Some`.
+**Neither is session metadata, and a metadata reader ignores both.** They appear nowhere outside
+`replay.rs` — no frontend reads them. They are *fold-continuation* state, and what they produce
+is already carried elsewhere: `pending_ts` produces `user_times` (its own record field), and
+`prev_ts` produces `Thinking.duration_secs`, which is **block content** in the content stream.
+So a consumer that only wants the session's facts never touches them.
+
+That is worth stating because **the record serves two consumers with different needs**:
+
+| consumer | reads | example |
+|---|---|---|
+| **resume** (the cache) | everything, including fold-continuation state | re-seeds the fold, then re-reads from `replay_from` |
+| **metadata reader** | the session facts only — `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops`, `cwd`, `span` | a machine-wide monitor (#98) that never folds a transcript |
+
+The fold-continuation fields — `prev_ts`, `pending_ts`, `task_pending` — exist solely for the
+first. A resume restores them into the replayer before re-reading; without `pending_ts` a turn
+authored on the resume's first line loses its timestamp, and without `prev_ts` a `Thinking` on
+that line renders `duration_secs: None` where a cold fold gives `Some`. A monitor reading the
+same files skips all three and is not wrong to.
+
+**Corollary for #98:** a metadata reader needs no fold, no adapter and no transcript — only the
+meta stream. That is the property that makes a machine-wide monitor cheap, and it survives only
+as long as every displayed fact stays in the record rather than being recomputed from blocks.
 
 **`user_times` semantics.** *Folded across records*, one entry per **user turn**, in turn
 order: `user_times[i]` is the timestamp of the *i*-th `UserText`/`Command` block in the display
