@@ -12,10 +12,10 @@
 //!   the authoritative copy, views hold clones of the pointers); the HTML server serves any
 //!   number of stateless clients from the same resident via the cursor [`pull`] protocol
 //!   (`P = RecordStore`, committed blocks living as wire-format pointers on disk).
-//! - **hibernated** — [`reap`](SessionCache::reap) evicts residents idle past a TTL and hands
-//!   them back for hibernation; a [`PersistentStore`]'s backing (plus its
-//!   [`hibernate_state`](PersistentStore::hibernate_state) sidecar) survives, so a later open
-//!   [`restore`](SharedSession::restore)s without re-folding the whole transcript.
+//! - **durable** (#96) — a cache built with [`durable`](SessionCache::durable) keeps each owned
+//!   session's committed blocks and meta records on disk under `root/<presentation>/<session>/`,
+//!   so a LATER PROCESS resumes the fold instead of re-reading the transcript from byte 0. The
+//!   frontend's whole view of it is [`admit`](SessionCache::admit) and its two outcomes.
 //!
 //! The `A` parameter is an opaque per-session **presentation sidecar** slot
 //! ([`aux_put`](SessionCache::aux_put)/[`aux_take`](SessionCache::aux_take)): view-parameter-
@@ -27,6 +27,7 @@
 //! under a cache lock is the brief O(delta) follower advance.
 // SharedSession: the one live tier — the follower + store both frontends share.
 mod shared;
+use crate::engine::meta_stream::Versions;
 #[allow(unused_imports)]
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 use crate::engine::BlockStore;
@@ -34,14 +35,15 @@ use crate::engine::BlockStore;
 pub mod admit;
 pub mod lock;
 pub mod stream;
-pub use admit::{admit, Admission, ColdReason, Denial, Origin, Presentation, Unavailable};
+pub use admit::{ColdReason, Denial, Origin, Presentation, Unavailable};
 pub use lock::Holder;
-pub use shared::{PersistentStore, PullDelta, SharedSession, ViewDelta};
+pub use shared::{DurableStore, PullDelta, SharedSession, ViewDelta};
 pub use stream::{MetaReader, MetaWriter};
 // The pull protocol moved to [`crate::pull`] (#87); these aliases keep the old paths.
 pub use crate::pull::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -76,6 +78,24 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// adopter discards on mismatch). Registry-lifetime: reaping a resident does NOT drop
     /// its sidecar.
     aux: Mutex<HashMap<String, A>>,
+    /// The durable wiring (#96), absent on an [`ephemeral`](Self::ephemeral) cache. `None` is
+    /// not a degraded mode: it is exactly today's behaviour, and `--no-cache` selects it.
+    durable: Option<Durable>,
+}
+
+/// Everything a cache needs to be durable: where entries live, what it is folding with (so a
+/// changed fold rejects rather than splices), how to open a frontend's backing, and the entries
+/// this process currently owns.
+struct Durable {
+    presentation: Presentation,
+    root: PathBuf,
+    versions: Versions,
+    owned: Mutex<HashMap<String, Owned>>,
+}
+
+/// One entry this process holds: its directory and the open record writer.
+struct Owned {
+    dir: PathBuf,
 }
 
 /// A pull-servable resident: its idle clock + the shared session. Tier-b-backed — the committed
@@ -88,11 +108,18 @@ impl<P: BlockStore, A> Default for SessionCache<P, A> {
             registry: Mutex::new(HashMap::new()),
             pull_residents: Mutex::new(HashMap::new()),
             aux: Mutex::new(HashMap::new()),
+            durable: None,
         }
     }
 }
 
 impl<P: BlockStore, A> SessionCache<P, A> {
+    /// A cache that persists nothing — today's behaviour exactly, and what `--no-cache` selects.
+    /// Every [`admit`](Self::admit) on one of these denies with `Unavailable(NoCacheFlag)`.
+    pub fn ephemeral() -> Self {
+        Self::default()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -189,11 +216,11 @@ impl<P: BlockStore, A> SessionCache<P, A> {
             .map(|(_, ss)| ss.clone())
     }
 
-    /// Evict every resident (follower **and** pull-servable) idle for longer than `ttl_ms` back
-    /// down to tier (c). Their registry sources remain, so a later `poll`/`shared_session`
-    /// re-materializes them. Returns the **evicted pull residents** so the owner can persist each
-    /// one's serving state (see [`SharedSession::hibernate`]) before the reference drops — the
-    /// cache stays policy-free about where materializations live.
+    /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their registry
+    /// sources remain, so a later `shared_session` re-materializes them — and on a durable cache
+    /// that re-materialization is a RESUME, not a re-fold, which is what makes an aggressive TTL
+    /// affordable. Returns the evicted residents so the owner can act on the reference before it
+    /// drops.
     pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<P>>)> {
         let mut evicted = Vec::new();
         self.pull_residents
@@ -215,25 +242,261 @@ impl<P: BlockStore, A> SessionCache<P, A> {
         self.shared_peek(id).map(|ss| ss.tasks())
     }
 
-    /// Drop one pull resident immediately (regardless of idle time) — used when a restored
-    /// materialization turns out stale ([`SharedSession::hibernation_stale`]) and must be replaced
-    /// by a fresh live session.
+    /// The resident for `id`, bumping its idle clock — a read that keeps the session alive
+    /// without being able to materialize one.
+    pub fn touch(&self, id: &str) -> Option<std::sync::Arc<SharedSession<P>>> {
+        let mut m = lock_recover(&self.pull_residents);
+        let e = m.get_mut(id)?;
+        e.0 = Instant::now();
+        Some(e.1.clone())
+    }
+
+    /// Drop one pull resident immediately (regardless of idle time) — used when a resident turns
+    /// out to be poisoned ([`SharedSession::poisoned`]) and must be replaced by a fresh session.
     pub fn remove_pull(&self, id: &str) {
         lock_recover(&self.pull_residents).remove(id);
     }
 }
 
-/// The **in-process view surface** (#85) — on a cache whose live store is
-/// [`ArcStore`](crate::engine::ArcStore): ONE call per tick materializes the resident on
-/// first use (from the registry), advances it borrow-to-tail, and returns the
-/// splice-shaped [`ViewDelta`] — Arc-clone blocks + times + metrics + tasks. The same
-/// resident serves the wire pull protocol; there is exactly one live tier (#85).
-impl<A> SessionCache<crate::engine::ArcStore, A> {
-    pub fn poll_view(&self, id: &str) -> Option<std::io::Result<crate::cache::ViewDelta>> {
-        let src = self.resolve(id)?;
-        let ss = self.shared_session(id, || {
-            SharedSession::with_store(src.agent(), src.path(), crate::engine::ArcStore)
+/// **The durable frontend API** (#96 §8). One call in, an exhaustive outcome out.
+impl<P: DurableStore, A> SessionCache<P, A> {
+    /// A cache whose entries live under `root/<presentation>/<session>/`.
+    ///
+    /// `versions` is what the fold is; a stream written by a different one is rejected rather
+    /// than spliced.
+    pub fn durable(presentation: Presentation, root: PathBuf, versions: Versions) -> Self {
+        let mut c = Self::default();
+        c.durable = Some(Durable {
+            presentation,
+            root,
+            versions,
+            owned: Mutex::new(HashMap::new()),
         });
+        c
+    }
+
+    /// Take exclusive ownership of `id`, or say why not. Never blocks on another holder.
+    ///
+    /// `make_store` is the ONE per-frontend piece, and it takes the entry's own directory: only
+    /// HTML knows its fold policy and this session's cwd, only the TUI knows it wants
+    /// `Arc<Block>`. It must open the backing **without truncating** — this needs to read what
+    /// is there before deciding whether to keep it, and resets the store itself when the answer
+    /// is no.
+    ///
+    /// It is a per-call argument rather than a field on the cache because the context a store
+    /// needs is per-session: a server hosting several roots renders each against its own cwd,
+    /// and a closure stored at construction could not see it.
+    ///
+    /// `alive` decides whether a lock's holder is still running. [`lock::pid_alive`] is right
+    /// for the TUI; a server ANDs in a port probe, since a recycled pid would otherwise make a
+    /// stale lock look live forever.
+    pub fn admit(
+        &self,
+        id: &str,
+        make_store: impl FnOnce(&Path) -> std::io::Result<P>,
+        alive: impl Fn(&Holder<P::Note>) -> bool,
+    ) -> Admission<P> {
+        let Some(d) = &self.durable else {
+            return Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
+        };
+        let Some(src) = self.resolve(id) else {
+            return Admission::Denied(Denial::Unavailable(Unavailable::UnknownSession));
+        };
+        // The store is opened INSIDE the claim, after the lock is ours — see `claim`'s docs for
+        // why the ordering is load-bearing. It comes back out through this slot.
+        let mut store: Option<P> = None;
+        let mut loaded: Vec<P::Bv> = Vec::new();
+        let claimed = admit::claim::<P::Note>(
+            Some(&d.root),
+            d.presentation,
+            id,
+            src.path(),
+            d.versions.clone(),
+            |dir| {
+                let mut s = make_store(dir).ok()?;
+                loaded = s.load().ok()?;
+                let n = loaded.len();
+                store = Some(s);
+                Some(n)
+            },
+            alive,
+        );
+        let (dir, origin, resumed) = match claimed {
+            admit::Claim::Denied(x) => return Admission::Denied(x),
+            admit::Claim::Ours {
+                dir,
+                origin,
+                resumed,
+            } => (dir, origin, resumed),
+        };
+        let mut store = store.expect("claim only returns Ours after the store callback ran");
+
+        let session = match resumed {
+            Some(a) => {
+                let a = *a;
+                // Cut the backing to what the record stream corroborates (I6) before handing the
+                // prefix on, so the two halves describe the same session.
+                if store.adopt(a.committed, &a.meta.session_meta).is_err() {
+                    return self.cold_fallback(id, &src, dir, store, ColdReason::TornStream);
+                }
+                loaded.truncate(a.committed);
+                SharedSession::resume(src.agent(), src.path(), store, loaded, a.meta, &a.resume)
+            }
+            None => {
+                store.reset(); // a rejected cache keeps nothing
+                SharedSession::with_store(src.agent(), src.path(), store)
+            }
+        };
+        let resumed = matches!(origin, Origin::Resumed { .. });
+        let session = self.install(id, session);
+        match admit::writer_for(&dir, src.path(), d.versions.clone(), resumed) {
+            Ok(writer) => {
+                session.attach_writer(writer);
+                lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
+            }
+            // The stream cannot be written, so nothing more can be recorded. The session is
+            // still correct — serve it, undurable from here on, rather than fail the open.
+            Err(_) => lock::release_any(&dir),
+        }
+        Admission::Owned { session, origin }
+    }
+
+    /// A resume that could not adopt its prefix: fall back to a cold session on the same entry.
+    fn cold_fallback(
+        &self,
+        id: &str,
+        src: &Transcript,
+        dir: PathBuf,
+        mut store: P,
+        why: ColdReason,
+    ) -> Admission<P> {
+        store.reset();
+        let session = self.install(
+            id,
+            SharedSession::with_store(src.agent(), src.path(), store),
+        );
+        if let Some(d) = &self.durable {
+            match admit::writer_for(&dir, src.path(), d.versions.clone(), false) {
+                Ok(writer) => {
+                    session.attach_writer(writer);
+                    lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
+                }
+                Err(_) => lock::release_any(&dir),
+            }
+        }
+        Admission::Owned {
+            session,
+            origin: Origin::Cold(why),
+        }
+    }
+
+    /// Install a freshly built session as `id`'s resident, replacing whatever was there.
+    fn install(&self, id: &str, session: SharedSession<P>) -> std::sync::Arc<SharedSession<P>> {
+        let session = std::sync::Arc::new(session);
+        lock_recover(&self.pull_residents)
+            .insert(id.to_string(), (Instant::now(), session.clone()));
+        session
+    }
+
+    /// Publish this process's note for whoever finds the lock held — separate from
+    /// [`admit`](Self::admit) because the useful facts arrive later (a server has no port until
+    /// it binds).
+    pub fn publish(&self, id: &str, note: P::Note) {
+        if let Some(d) = &self.durable {
+            if let Some(o) = lock_recover(&d.owned).get(id) {
+                let _ = lock::publish(&o.dir, note);
+            }
+        }
+    }
+
+    /// The cache-less path, chosen explicitly after a denial: no lock, no durable directory,
+    /// nothing written. The SAME call for every reason a denial can have.
+    pub fn open_uncached(&self, id: &str, store: P) -> Option<std::sync::Arc<SharedSession<P>>> {
+        let src = self.resolve(id)?;
+        Some(self.install(
+            id,
+            SharedSession::with_store(src.agent(), src.path(), store),
+        ))
+    }
+}
+
+/// Releasing needs no [`DurableStore`] bound — only a pid comparison — which is what lets
+/// [`Drop`] do it too. That matters: every `?` on an error path skips an explicit call, and a
+/// lock outliving its process denies the session to the next run until the pid dies, which for a
+/// recycled pid can be never.
+impl<P: BlockStore, A> SessionCache<P, A> {
+    /// Flush and unlock ONE session — the TUI's `Outcome::Switch`, or a server dropping a root.
+    pub fn release(&self, id: &str) {
+        if let Some(ss) = self.shared_peek(id) {
+            ss.flush_meta();
+        }
+        let Some(d) = &self.durable else { return };
+        if let Some(o) = lock_recover(&d.owned).remove(id) {
+            lock::release_any(&o.dir);
+        }
+    }
+
+    /// Flush and unlock EVERYTHING. Both `process::exit(0)` sites call this explicitly, because
+    /// they skip destructors and `Drop` never runs.
+    pub fn release_all(&self) {
+        let Some(d) = &self.durable else { return };
+        let ids: Vec<String> = lock_recover(&d.owned).keys().cloned().collect();
+        for id in ids {
+            self.release(&id);
+        }
+    }
+}
+
+impl<P: BlockStore, A> Drop for SessionCache<P, A> {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+/// The outcome of asking a durable cache for a session (#96 §8.1).
+///
+/// **Two** outcomes, not three. A cache entry is never shared, so you either own it or you do
+/// not — and on a denial *nothing was opened*. Falling back to a cache-less session is a
+/// separate, explicit [`open_uncached`](SessionCache::open_uncached) call, so "we gave up on
+/// caching" is visible at the call site rather than hidden in a third variant that would suggest
+/// a session might be handed out while another process owns it.
+pub enum Admission<P: DurableStore> {
+    /// Exclusive owner. Durable, and resumed when the cache was valid.
+    Owned {
+        session: std::sync::Arc<SharedSession<P>>,
+        origin: Origin,
+    },
+    /// Not the owner. **Nothing was opened, nothing is shared.**
+    Denied(Denial<P::Note>),
+}
+
+/// The **in-process view surface** (#85) — on any cache whose blocks are `Arc<Block>`: ONE call
+/// per tick advances the resident borrow-to-tail and returns the splice-shaped [`ViewDelta`]
+/// (Arc-clone blocks + times + metrics + tasks). The same resident serves the wire pull protocol;
+/// there is exactly one live tier (#85).
+///
+/// Generic over the store rather than fixed to [`ArcStore`](crate::engine::ArcStore), because a
+/// durable TUI keeps `Arc<Block>` blocks *and* a log behind them (#96) — the tick is the same
+/// either way.
+impl<P: BlockStore<Bv = std::sync::Arc<crate::model::Block>>, A> SessionCache<P, A> {
+    /// `open` builds the store when `id` is not yet resident.
+    ///
+    /// On a **durable** cache it is never called: [`admit`](Self::admit) is the only way a
+    /// durable session comes into being, because it is the only path that takes the lock. A tick
+    /// on an id that was never admitted is idle, not a silently unlocked session.
+    pub fn poll_view(
+        &self,
+        id: &str,
+        open: impl FnOnce() -> P,
+    ) -> Option<std::io::Result<crate::cache::ViewDelta>> {
+        let ss = if self.durable.is_some() {
+            self.touch(id)?
+        } else {
+            let src = self.resolve(id)?;
+            self.shared_session(id, || {
+                SharedSession::with_store(src.agent(), src.path(), open())
+            })
+        };
         ss.poll_view().transpose()
     }
 }
@@ -276,16 +539,28 @@ mod tests {
         std::fs::write(&path, CLAUDE_1).unwrap();
         let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
 
-        assert!(cache.poll_view("s").is_none(), "unregistered");
+        assert!(
+            cache.poll_view("s", || crate::engine::ArcStore).is_none(),
+            "unregistered"
+        );
         cache.register("s", Transcript::open(Agent::CLAUDE, path.clone()));
-        let d1 = cache.poll_view("s").expect("registered").expect("readable");
+        let d1 = cache
+            .poll_view("s", || crate::engine::ArcStore)
+            .expect("registered")
+            .expect("readable");
         assert_eq!(d1.changed_from, 0, "first poll: everything is new");
         let n1 = d1.committed_len + d1.provisional.len();
         assert!(n1 > 0);
-        assert!(cache.poll_view("s").is_none(), "idle on an unchanged file");
+        assert!(
+            cache.poll_view("s", || crate::engine::ArcStore).is_none(),
+            "idle on an unchanged file"
+        );
 
         append(&path, CLAUDE_2);
-        let d2 = cache.poll_view("s").expect("registered").expect("readable");
+        let d2 = cache
+            .poll_view("s", || crate::engine::ArcStore)
+            .expect("registered")
+            .expect("readable");
         assert!(
             d2.changed_from <= d1.committed_len + d1.provisional.len(),
             "boundary within the previously-seen view"
@@ -308,7 +583,10 @@ mod tests {
         cache.reap(0);
         assert!(cache.shared_peek("s").is_none());
         assert!(cache.is_registered("s"));
-        let d3 = cache.poll_view("s").expect("registered").expect("readable");
+        let d3 = cache
+            .poll_view("s", || crate::engine::ArcStore)
+            .expect("registered")
+            .expect("readable");
         assert_eq!(d3.changed_from, 0, "re-materialized from scratch");
         let _ = std::fs::remove_file(&path);
     }
@@ -356,7 +634,7 @@ mod tests {
         }
         // Materialize in a known touch order: root, then a (oldest child), b, c (newest).
         for id in ["root", "a", "b", "c"] {
-            cache.poll_view(id);
+            cache.poll_view(id, || crate::engine::ArcStore);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         cache.reap_over_budget(2, "root");

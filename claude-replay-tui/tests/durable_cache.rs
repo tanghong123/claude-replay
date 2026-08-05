@@ -1,0 +1,382 @@
+//! **The durable cache, end to end** (#96) — through the real frontend API, not its parts.
+//!
+//! `claude-replay-agents/tests/crash_consistency.rs` proves the *fold* restores correctly from a
+//! record stream. This proves the whole path a frontend actually takes: `admit` → fold → drop the
+//! process → `admit` again → resume. The two are complementary, and the composition is where a
+//! design like this usually breaks — each piece right, the seam between them wrong.
+//!
+//! The oracle is always a cold parse. "It resumed" is not the property; "it resumed to exactly
+//! what folding from scratch produces" is, because a corrupt-but-plausible resume passes every
+//! self-consistency check there is.
+
+use claude_replay_core::engine::meta_stream::Versions;
+use claude_replay_core::model::Block;
+use claude_replay_core::{parse_session_as, Agent, Transcript};
+use claude_replay_present::cache::{
+    admit::Origin, Admission, Denial, Holder, Presentation, SessionCache, Unavailable,
+};
+use claude_replay_tui::store::{ArcLog, TuiNote};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+type Cache = SessionCache<ArcLog, ()>;
+
+fn tmp(name: &str) -> PathBuf {
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let d = std::env::temp_dir().join(format!(
+        "cr-durable-{}-{name}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn user(t: &str, sec: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-07-26T10:00:{sec:02}Z\"}}\n"
+    )
+}
+fn assistant(t: &str, sec: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":8}}}},\"timestamp\":\"2026-07-26T10:00:{sec:02}Z\"}}\n"
+    )
+}
+fn tool(id: &str, sec: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"ls\"}}}}]}},\"timestamp\":\"2026-07-26T10:00:{sec:02}Z\"}}\n"
+    )
+}
+fn result(id: &str, sec: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out\"}}]}},\"timestamp\":\"2026-07-26T10:00:{sec:02}Z\"}}\n"
+    )
+}
+
+/// A multi-turn transcript: enough turns to have several commit points, with a tool call whose
+/// result lands later (a back-patch across the frontier) in the middle.
+fn transcript(path: &Path, turns: usize) {
+    let mut s = String::new();
+    for i in 0..turns {
+        let t = (i * 4) as u32;
+        s.push_str(&user(&format!("ask {i}"), t));
+        s.push_str(&tool(&format!("b{i}"), t + 1));
+        s.push_str(&result(&format!("b{i}"), t + 2));
+        s.push_str(&assistant(&format!("reply {i}"), t + 3));
+    }
+    std::fs::write(path, s).unwrap();
+}
+
+fn append(path: &Path, s: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    f.write_all(s.as_bytes()).unwrap();
+}
+
+fn cache(root: &Path) -> Cache {
+    Cache::durable(
+        Presentation::Tui,
+        root.to_path_buf(),
+        Versions::current(None),
+    )
+}
+
+/// Open `id` through the real API and fold to EOF, returning the joined view + the origin.
+fn open(c: &Cache, id: &str, src: &Path) -> (Vec<Block>, Origin) {
+    c.register(id, Transcript::open(Agent::CLAUDE, src.to_path_buf()));
+    let (session, origin) = match c.admit(
+        id,
+        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |_: &Holder<TuiNote>| false, // no live peer in these tests
+    ) {
+        Admission::Owned { session, origin } => (session, origin),
+        Admission::Denied(_) => panic!("a free entry must be Owned"),
+    };
+    let d = c
+        .poll_view(id, ArcLog::memory)
+        .expect("registered")
+        .expect("readable");
+    let mut blocks: Vec<Block> = session
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    blocks.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
+    (blocks, origin)
+}
+
+fn cold(src: &Path) -> Vec<Block> {
+    parse_session_as(Agent::CLAUDE, src).unwrap().blocks()
+}
+
+/// **The equivalence property.** A second run resumes — and resumes to exactly what a cold fold
+/// produces. Both halves matter: without the first the cache is useless, without the second it is
+/// worse than useless.
+#[test]
+fn a_second_run_resumes_to_a_block_identical_session() {
+    let root = tmp("equiv");
+    let src = root.join("t.jsonl");
+    transcript(&src, 6);
+
+    let (first, origin) = {
+        let c = cache(&root);
+        let r = open(&c, "s", &src);
+        c.release_all();
+        r
+    };
+    assert!(
+        matches!(origin, Origin::Cold(_)),
+        "the first run has nothing to resume from"
+    );
+    assert_eq!(first, cold(&src), "a cold run equals a cold parse");
+
+    let c = cache(&root);
+    let (second, origin) = open(&c, "s", &src);
+    match origin {
+        Origin::Resumed {
+            committed,
+            replay_from,
+        } => {
+            assert!(committed > 0, "something was restored");
+            assert!(replay_from > 0, "and the reader started ABOVE byte 0");
+        }
+        other => panic!("the second run must resume, got {other:?}"),
+    }
+    assert_eq!(second, cold(&src), "resumed == cold, block for block");
+}
+
+/// A resume that then keeps folding. The interesting case is not "it loaded", but "it loaded and
+/// the session it continued into is still right" — the seam between restored and freshly folded
+/// blocks is exactly where a wrong `prev_ts`/turn-count/back-patch state would show.
+#[test]
+fn a_resumed_session_keeps_folding_correctly() {
+    let root = tmp("grow");
+    let src = root.join("t.jsonl");
+    transcript(&src, 4);
+
+    {
+        let c = cache(&root);
+        open(&c, "s", &src);
+        c.release_all();
+    }
+
+    // The session moved on while nothing was watching.
+    append(&src, &user("later", 40));
+    append(&src, &assistant("after the restart", 41));
+    append(&src, &user("later still", 42));
+
+    let c = cache(&root);
+    let (got, origin) = open(&c, "s", &src);
+    assert!(matches!(origin, Origin::Resumed { .. }));
+    assert_eq!(got, cold(&src), "restored ++ newly folded == cold");
+}
+
+/// Resuming REPEATEDLY. One resume being right does not mean a resume from a resume is: the
+/// second run's records are authored by a restored writer, whose counter baselines came out of
+/// the stream rather than from zero.
+#[test]
+fn resuming_from_a_resume_stays_identical() {
+    let root = tmp("chain");
+    let src = root.join("t.jsonl");
+    transcript(&src, 3);
+
+    for round in 0..4 {
+        let c = cache(&root);
+        let (got, origin) = open(&c, "s", &src);
+        assert_eq!(got, cold(&src), "round {round}");
+        if round > 0 {
+            assert!(
+                matches!(origin, Origin::Resumed { .. }),
+                "round {round} must resume"
+            );
+        }
+        c.release_all();
+        append(&src, &user(&format!("round {round}"), 50 + round));
+        append(&src, &assistant("ok", 51 + round));
+    }
+}
+
+/// A rewritten source must be REJECTED — the false-accept class, which produces a wrong session
+/// rather than a slow one. Asserted on the REASON, not merely on "it rebuilt".
+#[test]
+fn a_rewritten_source_rebuilds_cold_and_stays_correct() {
+    let root = tmp("rewrite");
+    let src = root.join("t.jsonl");
+    transcript(&src, 4);
+    {
+        let c = cache(&root);
+        open(&c, "s", &src);
+        c.release_all();
+    }
+
+    // Same path, different session entirely.
+    let mut s = String::new();
+    for i in 0..3 {
+        s.push_str(&user(&format!("unrelated {i}"), (i * 2) as u32));
+        s.push_str(&assistant("different", (i * 2 + 1) as u32));
+    }
+    std::fs::write(&src, s).unwrap();
+
+    let c = cache(&root);
+    let (got, origin) = open(&c, "s", &src);
+    assert_eq!(
+        origin,
+        Origin::Cold(claude_replay_present::cache::ColdReason::SourceRewritten)
+    );
+    assert_eq!(got, cold(&src), "and the rebuild is a correct session");
+}
+
+/// A fold-version bump invalidates: resuming across one would splice blocks built by two
+/// different folds into a single session, with no visible seam.
+#[test]
+fn a_fold_version_bump_rebuilds_cold() {
+    let root = tmp("ver");
+    let src = root.join("t.jsonl");
+    transcript(&src, 3);
+    {
+        let c = cache(&root);
+        open(&c, "s", &src);
+        c.release_all();
+    }
+
+    let newer = Versions {
+        fold: Versions::current(None).fold + 1,
+        ..Versions::current(None)
+    };
+    let c = Cache::durable(Presentation::Tui, root.clone(), newer);
+    let (got, origin) = open(&c, "s", &src);
+    assert_eq!(
+        origin,
+        Origin::Cold(claude_replay_present::cache::ColdReason::VersionChanged)
+    );
+    assert_eq!(got, cold(&src));
+}
+
+/// **The single-writer invariant.** A live holder denies, and the denial opens NOTHING — the
+/// property the two-outcome admission rests on. The note reaches the peer so its refusal can name
+/// the pane.
+#[test]
+fn a_live_holder_denies_the_second_process() {
+    let root = tmp("held");
+    let src = root.join("t.jsonl");
+    transcript(&src, 2);
+
+    // A holder from ANOTHER process. It has to be a foreign pid: a lock naming *this* pid is
+    // reclaimed by design, so that one process re-admitting a session it already owns (after
+    // dropping a poisoned resident, say) does not deny itself.
+    let dir = claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        claude_replay_present::cache::lock::lock_path(&dir),
+        serde_json::to_string(&Holder {
+            pid: 999_999u32,
+            dir: dir.clone(),
+            note: Some(TuiNote {
+                pane: Some("%42".into()),
+            }),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let c = cache(&root);
+    c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
+    match c.admit(
+        "s",
+        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |_: &Holder<TuiNote>| true, // it is alive
+    ) {
+        Admission::Denied(Denial::Held(h)) => {
+            assert_eq!(h.pid, 999_999);
+            assert_eq!(h.note.unwrap().pane.unwrap(), "%42", "the note reaches it");
+        }
+        _ => panic!("a live holder must deny"),
+    }
+    assert!(
+        c.touch("s").is_none(),
+        "a denial must open NOTHING — that is what makes two outcomes honest"
+    );
+    assert!(
+        !dir.join("blocks.jsonl").exists(),
+        "and it must not even have opened the backing"
+    );
+
+    // A DEAD holder's lock is reclaimed instead — otherwise a crash would pin the session.
+    assert!(matches!(
+        c.admit(
+            "s",
+            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+            |_: &Holder<TuiNote>| false
+        ),
+        Admission::Owned { .. }
+    ));
+}
+
+/// An ephemeral cache denies with `NoCacheFlag` and writes nothing — `--no-cache` is a real path,
+/// not a degraded one, and it must leave the durable root untouched.
+#[test]
+fn an_ephemeral_cache_denies_and_writes_nothing() {
+    let root = tmp("ephem");
+    let src = root.join("t.jsonl");
+    transcript(&src, 2);
+
+    let c = Cache::ephemeral();
+    c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
+    assert!(matches!(
+        c.admit(
+            "s",
+            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+            |_: &Holder<TuiNote>| false
+        ),
+        Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
+    ));
+    assert!(
+        !root.join("tui").exists(),
+        "nothing was created for a session that was never admitted"
+    );
+
+    // The explicit cache-less path still serves a correct session.
+    let ss = c.open_uncached("s", ArcLog::memory()).expect("registered");
+    let d = c.poll_view("s", ArcLog::memory).unwrap().unwrap();
+    let mut got: Vec<Block> = ss
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    got.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
+    assert_eq!(got, cold(&src), "cache-less is still a correct session");
+    assert!(
+        !root.join("tui").exists(),
+        "and it still wrote nothing durable"
+    );
+}
+
+/// The lock does not outlive the process even on an ERROR path, where nobody called
+/// `release_all` — `Drop` covers it. A leaked lock would deny the session to the next run until
+/// the pid died, which for a recycled pid can be never.
+#[test]
+fn dropping_a_cache_releases_its_locks() {
+    let root = tmp("drop");
+    let src = root.join("t.jsonl");
+    transcript(&src, 2);
+
+    {
+        let c = cache(&root);
+        open(&c, "s", &src); // no release_all — the drop must do it
+    }
+
+    let c = cache(&root);
+    c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
+    assert!(
+        matches!(
+            c.admit(
+                "s",
+                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+                |_: &Holder<TuiNote>| true // even believing any holder is alive
+            ),
+            Admission::Owned { .. }
+        ),
+        "a dropped cache leaves no lock behind"
+    );
+}

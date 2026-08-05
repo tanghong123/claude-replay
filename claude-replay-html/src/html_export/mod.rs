@@ -722,6 +722,20 @@ pub(super) struct EmitState {
     turns: Vec<(String, String)>,
 }
 
+impl EmitState {
+    /// The continuation implied by a restored committed prefix of `blocks` blocks holding
+    /// `turns` user turns (#96) — see [`RecordStore::adopt`](super::record_store::RecordStore)
+    /// for why every field here is derived rather than persisted.
+    pub(super) fn resumed(blocks: usize, turns: usize) -> Self {
+        Self {
+            next_block: blocks,
+            turn: turns,
+            seen_turns: turns,
+            turns: Vec::new(),
+        }
+    }
+}
+
 /// Render `blocks` to one JSON wire record per block, **continuing** the `Emitter` state in `st`
 /// (so a later range's anchors/turns follow on). `user_times` is the WHOLE session's per-turn
 /// timestamps; `st.seen_turns` indexes into it. This is the resumable core the render-once path

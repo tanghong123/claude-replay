@@ -11,8 +11,8 @@
 //! every committed consumer on the pointer path.
 
 use super::{render_blocks, EmitState};
-use crate::cache::PersistentStore;
-use crate::engine::BlockStore;
+use crate::cache::DurableStore;
+use crate::engine::{BlockStore, SessionMeta};
 use crate::fold::FoldPolicy;
 use crate::model::{Block, BlockIndex, EpochSeconds};
 use crate::Transcript;
@@ -27,33 +27,36 @@ pub struct RecordLocator {
     pub len: u32,
 }
 
-/// What `put` needs to render: the serve run's presentation parameters plus the resumable
-/// [`EmitState`] (anchors/turn numbering follow on across ranges). Absent on a
-/// [`reopen`](PersistentStore::reopen)ed store until [`restore_state`](PersistentStore::restore_state) rehydrates the emit
-/// state — a hibernated body never `put`s, but its emit state still seeds the open-turn render.
+/// What `put` needs to render: the serve run's presentation parameters. The resumable
+/// [`EmitState`] (anchors/turn numbering follow on across ranges) sits beside it on the store.
 struct RenderCx {
     fold: FoldPolicy,
     cwd: String,
     transcript: Transcript,
 }
 
-/// The wire-record log backing. `file` is `None` on a reopened (hibernated) store — reads open
-/// the path per call, so a read-only store holds no handle.
+/// The wire-record log backing. Reads open the path per call (stateless), so a range read never
+/// contends with the append handle.
 struct Log {
     path: PathBuf,
-    file: Option<std::fs::File>,
+    file: std::fs::File,
     len: u64,
 }
 
 pub struct RecordStore {
     log: Log,
-    cx: Option<RenderCx>,
+    cx: RenderCx,
     emit: EmitState,
 }
 
 impl RecordStore {
-    /// Create (truncating) the record log at `path` with this serve run's render parameters.
-    pub(crate) fn create(
+    /// Open the log, keeping what is there.
+    ///
+    /// There is no truncating constructor: a caller that wants a fresh log calls
+    /// [`reset`](BlockStore::reset), and a durable open MUST be able to read the existing log
+    /// before deciding whether to keep it (#96) — a constructor that truncated would destroy the
+    /// evidence the decision rests on.
+    pub(crate) fn open_append(
         path: &Path,
         fold: FoldPolicy,
         cwd: String,
@@ -61,22 +64,30 @@ impl RecordStore {
     ) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .create(true)
-            .write(true)
-            .truncate(true)
+            .append(true)
             .open(path)?;
+        let len = file.metadata()?.len();
         Ok(Self {
             log: Log {
                 path: path.to_path_buf(),
-                file: Some(file),
-                len: 0,
+                file,
+                len,
             },
-            cx: Some(RenderCx {
+            cx: RenderCx {
                 fold,
                 cwd,
                 transcript,
-            }),
+            },
             emit: EmitState::default(),
         })
+    }
+
+    /// Cut the log to `len` bytes and leave the handle at the new end.
+    fn cut_to(&mut self, len: u64) -> std::io::Result<()> {
+        self.log.file.set_len(len)?;
+        self.log.file.seek(SeekFrom::End(0))?;
+        self.log.len = len;
+        Ok(())
     }
 
     /// Current log length (EOF) — the end bound of a committed `{offset, len}` pointer.
@@ -125,10 +136,7 @@ impl BlockStore for RecordStore {
         _at: BlockIndex,
         user_times: &[Option<EpochSeconds>],
     ) -> RecordLocator {
-        let cx = self
-            .cx
-            .as_ref()
-            .expect("a reopened record store never puts");
+        let cx = &self.cx;
         let lines = render_blocks(
             &[b],
             user_times,
@@ -146,10 +154,8 @@ impl BlockStore for RecordStore {
             offset: self.log.len,
             len: rec.len() as u32,
         };
-        if let Some(f) = &mut self.log.file {
-            let _ = f.write_all(rec.as_bytes());
-            let _ = f.write_all(b"\n");
-        }
+        let _ = self.log.file.write_all(rec.as_bytes());
+        let _ = self.log.file.write_all(b"\n");
         self.log.len += rec.len() as u64 + 1;
         locator
     }
@@ -158,43 +164,66 @@ impl BlockStore for RecordStore {
     /// render continuation. The epoch bump that accompanies the reset resyncs every client, so
     /// no outstanding pointer can reference the discarded bytes.
     fn reset(&mut self) {
-        if let Some(f) = &mut self.log.file {
-            let _ = f.set_len(0);
-            let _ = f.seek(SeekFrom::Start(0));
-        }
-        self.log.len = 0;
+        let _ = self.cut_to(0);
         self.emit = EmitState::default();
     }
 }
 
-impl PersistentStore for RecordStore {
-    fn backing_len(&self) -> u64 {
-        self.log.len
-    }
+impl DurableStore for RecordStore {
+    type Note = HtmlNote;
 
-    /// Read-only reopen for a hibernated body: no write handle, no render context — it serves
-    /// range reads and (after [`restore_state`](PersistentStore::restore_state) rehydrates the
-    /// emit state) seeds the open-turn render. It never `put`s: a changed source refolds fresh.
-    fn reopen(backing: &Path) -> std::io::Result<Self> {
-        let len = std::fs::metadata(backing)?.len();
-        Ok(Self {
-            log: Log {
-                path: backing.to_path_buf(),
-                file: None,
-                len,
-            },
-            cx: None,
-            emit: EmitState::default(),
-        })
-    }
-
-    fn hibernate_state(&self) -> serde_json::Value {
-        serde_json::to_value(&self.emit).unwrap_or(serde_json::Value::Null)
-    }
-
-    fn restore_state(&mut self, v: serde_json::Value) {
-        if let Ok(emit) = serde_json::from_value(v) {
-            self.emit = emit;
+    /// Rebuild the committed locator table by walking the log's framing newlines.
+    ///
+    /// A **torn trailing record** is dropped *and* cut, so `log_len` stays an honest append
+    /// offset: appending after a fragment would splice a new record onto half an old one and
+    /// every locator past it would address garbage.
+    fn load(&mut self) -> std::io::Result<Vec<RecordLocator>> {
+        let mut buf = Vec::new();
+        match std::fs::File::open(&self.log.path) {
+            Ok(mut f) => f.read_to_end(&mut buf)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut out = Vec::new();
+        let mut at = 0u64;
+        for line in buf.split_inclusive(|b| *b == b'\n') {
+            if !line.ends_with(b"\n") {
+                break; // the writer died mid-append
+            }
+            out.push(RecordLocator {
+                offset: at,
+                len: line.len() as u32 - 1, // the locator excludes the framing newline
+            });
+            at += line.len() as u64;
         }
+        if at != self.log.len || at != buf.len() as u64 {
+            self.cut_to(at)?;
+        }
+        Ok(out)
     }
+
+    /// Cut the log to `n` records and **derive** the render continuation from the prefix that
+    /// survives (#96 §4.3: no presentation state is persisted).
+    ///
+    /// All three counters are facts about the prefix, so deriving them cannot go stale against
+    /// it the way a persisted copy could: one record per committed block makes `next_block` the
+    /// block count, and both turn counters advance once per `UserText`/`Command`, which is
+    /// exactly what the header's `turns` counts. The sidebar accumulator starts empty because
+    /// the live path never reads it — a served page builds its turn index from the records
+    /// themselves; only the static bundle, which never resumes, consumes it.
+    fn adopt(&mut self, n: usize, meta: &SessionMeta) -> std::io::Result<()> {
+        let end = self.load()?.get(n).map(|l| l.offset);
+        if let Some(end) = end {
+            self.cut_to(end)?;
+        }
+        self.emit = EmitState::resumed(n, meta.turns);
+        Ok(())
+    }
+}
+
+/// What a second server finds when it discovers this one already holds a session (#96 §8.4):
+/// where to go instead. `None` until the listener binds — a real state, not a defensive option.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HtmlNote {
+    pub port: u16,
 }

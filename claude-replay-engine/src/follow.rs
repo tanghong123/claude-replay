@@ -90,6 +90,35 @@ impl<S: BlockStore> FollowParser<S> {
         }
     }
 
+    /// Follow `path` from a **restored** fold (#96 §6.3): the accumulator is rebuilt from the
+    /// durable cache, and the reader starts at `resume.replay_from` — so the bytes below it are
+    /// never re-read, which is the whole point of the resume.
+    ///
+    /// `prev_committed` starts at the restored length rather than zero. Left at zero, the first
+    /// poll would report every restored block as changed and the frontend would re-render the
+    /// entire session — a resume that loads instantly and then repaints everything is not a
+    /// resume. `prev_provisional` stays empty because it is: by §3's partition, nothing above
+    /// `replay_from` has been folded yet.
+    pub fn resume(
+        adapter: &'static dyn crate::adapter::TranscriptAdapter,
+        path: &Path,
+        store: S,
+        committed: Vec<S::Bv>,
+        mm: crate::engine::meta_stream::MaterializedMeta,
+        resume: &crate::engine::meta_stream::Resume,
+    ) -> Self {
+        let prev_committed = committed.len();
+        Self {
+            agent: adapter.agent(),
+            adapter,
+            path: path.to_path_buf(),
+            builder: SessionAccumulator::restore(adapter, store, committed, mm, resume),
+            reader: LineReader::open_at_offset(path, resume.replay_from),
+            prev_committed,
+            prev_provisional: Vec::new(),
+        }
+    }
+
     /// Fold any newly-appended lines (or rebuild on a truncation/rewrite) into the running
     /// builder. Returns a [`Tick`]: whether content advanced, whether it was a reset (truncation),
     /// and the batch's back-patch signal (the min already-emitted index any line mutated in place,
@@ -145,6 +174,12 @@ impl<S: BlockStore> FollowParser<S> {
     #[allow(clippy::type_complexity)]
     /// The current task op-log state (#15) — for consumers that refresh a panel
     /// alongside `poll_delta` without assembling a session.
+    /// Take the meta records the fold has authored since the last call (#96 §6.1) — the durable
+    /// cache appends them; a cache-less run simply never asks and they are dropped.
+    pub fn drain_meta(&mut self) -> Vec<crate::engine::meta_stream::MetaRecord> {
+        self.builder.drain_meta()
+    }
+
     pub fn tasks(&self) -> crate::engine::tasks::TaskList {
         self.builder.tasks().clone()
     }

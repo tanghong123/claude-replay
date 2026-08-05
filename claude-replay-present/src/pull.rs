@@ -298,7 +298,15 @@ pub fn pull_indices(
     if cursor.epoch != epoch {
         return (0, 0); // resync: everything from 0
     }
-    let committed_from = cursor.committed_id.min(n_committed);
+    // A cursor AHEAD of the committed prefix, at a matching epoch (#96 §4.3). The committed zone
+    // is append-only within an epoch, so this used to be unreachable and was clamped — but a
+    // durable resume aligns the content stream DOWN to what the meta stream corroborates, which
+    // shrinks `n_committed` without a reset. Clamping would then serve the client blocks it
+    // already has while silently skipping the ones it does not; a resync is the honest answer.
+    if cursor.committed_id > n_committed {
+        return (0, 0);
+    }
+    let committed_from = cursor.committed_id;
     let committed_grew = n_committed > committed_from;
     let provisional_from = if committed_grew || cursor.provisional_gen != provisional_gen {
         0

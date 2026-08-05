@@ -97,6 +97,14 @@ impl FoldPolicy {
 
     /// Does this policy start `b` collapsed? Also drives the HTML export's
     /// `data-open`, so a dump and an export fold identically.
+    /// The set of folded kinds, sorted — a stable identity for this policy, so a durable cache
+    /// can tell that a page was rendered under different flags (#96).
+    pub fn folded_kinds(&self) -> Vec<&'static str> {
+        let mut v: Vec<&'static str> = self.folded.iter().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
     pub fn collapses(&self, b: &Block) -> bool {
         self.folded.contains(crate::model::fold_key(b))
     }

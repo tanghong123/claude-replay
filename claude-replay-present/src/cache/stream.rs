@@ -34,7 +34,7 @@ pub fn anchor_of(src: &Path) -> std::io::Result<u32> {
 /// CRC32 of the (up to) [`WINDOW_BYTES`] ending at `offset`.
 ///
 /// A short file, or an offset below the window size, hashes what is there — the length check in
-/// [`admit`](super::admit()) is what catches a truncated source, so this need not also.
+/// [`claim`](super::admit::claim) is what catches a truncated source, so this need not also.
 pub fn window_at(src: &Path, offset: u64) -> std::io::Result<u32> {
     let mut f = File::open(src)?;
     let start = offset.saturating_sub(WINDOW_BYTES);

@@ -7,13 +7,65 @@ use crate::sys::{deduce_stem, reveal_in_file_manager};
 /// parameters): the live store is the cache-owned shared copy, the aux slot parks
 /// evicted frames' derived view state.
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
-    claude_replay_core::engine::ArcStore, // live store: cache-owned shared copy (#84)
-    crate::view::ViewSidecar,             // aux slot: evicted frames' derived state (#75)
+    crate::store::ArcLog, // live store: cache-owned shared copy (#84), logged for #96
+    crate::view::ViewSidecar, // aux slot: evicted frames' derived state (#75)
 >;
+
+/// This run's cache. Durable unless `--no-cache` or no resolvable cache home — in which case it
+/// is exactly the pre-#96 cache: no lock, no directory, nothing written.
+fn make_cache(args: &Args) -> TuiCache {
+    match (args.no_cache, cache::admit::default_root()) {
+        (false, Some(root)) => TuiCache::durable(
+            Presentation::Tui,
+            root,
+            // The TUI has no render parameters baked into a stored block: `Block`s are stored,
+            // and fold/scroll are applied at draw time. So no flavor.
+            Versions::current(None),
+        ),
+        _ => TuiCache::ephemeral(),
+    }
+}
+
+/// Bring `id`'s session into the cache, or explain why we will not.
+///
+/// The TUI **refuses** a session another instance holds. Two instances folding and holding the
+/// same session would each keep a full copy in RAM, invisibly — and `tmux attach` is the real
+/// sharing primitive, which is why the refusal names the holder's pane when it can.
+fn admit_root(
+    cache: &TuiCache,
+    id: &str,
+) -> Result<std::sync::Arc<claude_replay_present::cache::SharedSession<crate::store::ArcLog>>> {
+    match cache.admit(
+        id,
+        |dir| crate::store::ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |h| claude_replay_present::cache::lock::pid_alive(h.pid),
+    ) {
+        Admission::Owned { session, .. } => {
+            cache.publish(id, crate::store::TuiNote::here());
+            Ok(session)
+        }
+        Admission::Denied(Denial::Held(h)) => anyhow::bail!(
+            "session already open in another claude-replay (pid {}){}\n\
+             or pass --no-cache for a second read-only view",
+            h.pid,
+            h.note
+                .and_then(|n| n.pane)
+                .map(|p| format!("; attach with `tmux attach -t {p}`"))
+                .unwrap_or_default()
+        ),
+        // No durable slot to compete for — `--no-cache`, an unwritable root, or a host with no
+        // liveness check. Run cache-less: the same call for every one of those reasons.
+        Admission::Denied(Denial::Unavailable(_)) => cache
+            .open_uncached(id, crate::store::ArcLog::memory())
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not registered")),
+    }
+}
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
 use crate::{discover, discover::Candidate, Agent, Args};
 use anyhow::Result;
+use claude_replay_core::engine::meta_stream::Versions;
+use claude_replay_present::cache::{self, Admission, Denial, Presentation};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -37,6 +89,7 @@ pub fn run(args: &Args, path: &Path) -> Result<()> {
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
+    // `run_view_loop` releases its cache on every exit path, including the error one below.
     let res = run_view_loop(&mut term, args, path.to_path_buf(), false).map(|_| ());
 
     disable_raw_mode().ok();
@@ -303,7 +356,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     let mut tick: u64 = 0;
     // The session domain (live followers + their residency) lives in the cache; frames keep only
     // presentation state. `s`-switching to a different session replaces the cache wholesale.
-    let mut cache = TuiCache::new();
+    let mut cache = make_cache(args);
     let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
@@ -371,10 +424,20 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             Outcome::Ascend => {} // at root: nothing above to ascend to
             // `s`-switch resets the whole stack to the newly chosen session.
             Outcome::Switch(p) => {
-                cache = crate::SessionCache::new();
+                // Flush and unlock everything this cache holds BEFORE dropping it: the next
+                // session's cache is a different object, and a lock left behind would deny the
+                // session to the next run of this very binary.
+                cache.release_all();
+                cache = make_cache(args);
                 stack = vec![build_frame(args, &cache, &p, can_go_back, 0)?];
             }
-            other => return Ok(other), // Quit / Back
+            other => {
+                // Quit / Back — the loop's ONLY other exit, and both lead to a
+                // `process::exit(0)` that skips destructors. Flush and unlock here or a lock
+                // outlives the process and denies the session to the next run.
+                cache.release_all();
+                return Ok(other);
+            }
         }
     }
 }
@@ -466,32 +529,34 @@ fn build_frame(
     // is never touched, so no follower exists.
     let transcript = crate::Transcript::open(agent, path);
     let id = title.clone();
-    let (blocks, cwd, metrics, oplog_tasks) = if args.follow {
-        cache.register(&id, transcript.clone());
-        // The follower's FIRST poll folds the whole current file; the accumulator RETAINS
-        // the authoritative committed copy (#84 — the cache-owned source of truth) and the
-        // view receives Arc clones: one content copy in the process, shared by reference.
-        match cache.poll_view(&id) {
-            Some(Ok(d)) => {
-                let mut blocks = d.committed_delta;
-                blocks.extend(d.provisional);
-                (blocks, discover::session_cwd(path), d.metrics, d.tasks)
-            }
-            _ => (
-                Vec::new(),
-                discover::session_cwd(path),
-                Default::default(),
-                Default::default(),
-            ),
+    // Both paths go through the cache now (#96). Following needs it for the tail; a one-shot
+    // read wants it for the RESUME — skipping the bytes a previous run already folded is exactly
+    // where a large transcript's open time goes. The follower's first poll folds whatever is
+    // above the resume point, matching a one-shot `parse_session_as` from there.
+    cache.register(&id, transcript.clone());
+    let session = admit_root(cache, &id)?;
+    let polled = cache
+        .poll_view(&id, crate::store::ArcLog::memory)
+        .and_then(|r| r.ok());
+    let (blocks, cwd, metrics, oplog_tasks) = match polled {
+        Some(d) => {
+            // The WHOLE committed prefix, not the tick's delta: this process has no blocks yet,
+            // and after a resume the delta covers only what was folded above the resume point.
+            let mut blocks = session.committed_arcs();
+            blocks.extend(d.provisional);
+            (blocks, discover::session_cwd(path), d.metrics, d.tasks)
         }
-    } else {
-        let s = transcript.parse()?;
-        (
-            s.blocks().into_iter().map(std::sync::Arc::new).collect(),
-            s.cwd,
-            s.metrics,
-            s.tasks,
-        )
+        // An idle first poll means an empty (or unreadable) transcript; re-read it directly so a
+        // genuinely unreadable file still reports its error instead of opening blank.
+        None => {
+            let s = transcript.parse()?;
+            (
+                s.blocks().into_iter().map(std::sync::Arc::new).collect(),
+                s.cwd,
+                s.metrics,
+                s.tasks,
+            )
+        }
     };
     let mut view = View::new_shared(blocks, title, args.follow, fold);
     view.set_can_go_back(can_go_back);
@@ -655,7 +720,7 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Only a registered id has a follower (registration happens in `-f` mode only); an
             // evicted follower silently re-materializes from the registry inside the cache.
             if !id.is_empty() {
-                if let Some(Ok(d)) = cache.poll_view(id) {
+                if let Some(Ok(d)) = cache.poll_view(id, crate::store::ArcLog::memory) {
                     // The tick carries the task op-log state (#15) — one call, no second
                     // cache lock; the on-disk side refreshes when the panel opens.
                     view.set_tasks(crate::engine::tasks::merged(

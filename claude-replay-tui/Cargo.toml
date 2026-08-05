@@ -10,6 +10,8 @@ description = "The ratatui terminal frontend of claude-replay: viewer state mach
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-present = { path = "../claude-replay-present" }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 ratatui = "0.29"
 crossterm = "0.28"
 unicode-width = "0.2"

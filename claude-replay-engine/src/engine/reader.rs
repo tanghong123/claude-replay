@@ -4,19 +4,17 @@
 //! - **Tail** — `poll()` returns the complete lines appended since the last poll, buffering a
 //!   trailing partial until its newline arrives, and recovering from truncation/rewrite
 //!   (compaction) by detecting a shrunk file and re-reading from 0 (`reset`).
-//! - **Resume** — `tell()` yields an opaque [`Position`]; `open_at(path, pos)` resumes reading
-//!   there. The first poll validates `pos` against the current file (identity anchor + a hash of
-//!   the consumed prefix) and either returns only the delta or, if the position is
-//!   stale/foreign/rewritten, resets to 0 and returns the whole file with `reset: true` — the
-//!   same signal a truncation already emits, so the consumer's loop is uniform.
+//! - **Resume** — [`open_at_offset`](LineReader::open_at_offset) starts reading at a byte offset,
+//!   so a restored fold reads only the bytes above its resume point. Validating that offset is
+//!   deliberately **not** the reader's job (#96): the durable cache checks the source window
+//!   before it ever constructs a reader, and a reader that re-hashed the prefix on every resume
+//!   would spend exactly what the resume exists to save.
 //!
 //! Adapted in spirit from claude-code-scrollback (MIT, © 2026 pjh4993): buffer a trailing
 //! partial line until its newline arrives, and recover from truncation/rewrite by detecting a
 //! shrunk file and re-reading.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
-use std::hash::Hasher;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
@@ -24,65 +22,6 @@ pub struct LineReader {
     path: PathBuf,
     offset: crate::model::ByteOffset,
     pending: String,
-    /// Rolling hash of the consumed bytes `[0, offset)`, updated on each `poll`. `tell()`
-    /// snapshots it as `Position::consumed_hash` (O(1), no re-read).
-    hasher: DefaultHasher,
-    /// Hash of the file's first non-empty line (a stable identity — Claude's `sessionId` /
-    /// Codex's `session_meta` line). Set the first time a line is produced from offset 0;
-    /// carried in `Position::anchor` to reject a position from a different file.
-    anchor: Option<u64>,
-    /// A position awaiting validation, set by [`open_at`](Self::open_at) and consumed on the
-    /// first `poll`.
-    resume: Option<Position>,
-}
-
-/// An opaque, serializable read position. Encodes where reading stopped (`offset`) plus enough
-/// identity to reject a position from a different file (`anchor` = first-line hash) and to
-/// detect that the consumed region was rewritten (`consumed_hash` = hash of `[0, offset)`).
-/// Round-trips via [`encode`](Self::encode) / [`decode`](Self::decode) with a version tag; the
-/// fields are private, so it is genuinely opaque.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Position {
-    offset: u64,
-    consumed_hash: u64,
-    anchor: u64,
-    len_hint: u64,
-}
-
-// The resume API (`Position::{encode,decode}`, `LineReader::{tell,open_at}`) is test-wired now;
-// its production consumer is `SessionAccumulator::checkpoint`/`resume` (#19) + restart persistence
-// (#11), per the roadmap's decision A. The `allow(dead_code)` goes away when #19 wires it in.
-impl Position {
-    /// Serialize to a versioned string (`crrd1:…`). A garbage or wrong-version token is
-    /// rejected by [`decode`](Self::decode), not misread.
-    #[allow(dead_code)]
-    pub fn encode(&self) -> String {
-        format!(
-            "crrd1:{:x}:{:x}:{:x}:{:x}",
-            self.offset, self.consumed_hash, self.anchor, self.len_hint
-        )
-    }
-
-    /// Parse a token from [`encode`](Self::encode); `None` if the prefix/version/shape is wrong.
-    #[allow(dead_code)]
-    pub fn decode(s: &str) -> Option<Position> {
-        let rest = s.strip_prefix("crrd1:")?;
-        let mut it = rest.split(':');
-        let mut next = || u64::from_str_radix(it.next()?, 16).ok();
-        let offset = next()?;
-        let consumed_hash = next()?;
-        let anchor = next()?;
-        let len_hint = next()?;
-        if it.next().is_some() {
-            return None;
-        }
-        Some(Position {
-            offset,
-            consumed_hash,
-            anchor,
-            len_hint,
-        })
-    }
 }
 
 #[derive(Default)]
@@ -92,25 +31,9 @@ pub struct Poll {
     /// The **start byte offset** in the file of each line in `lines` (parallel, same length) —
     /// so the follower can stamp attachment locators without re-deriving positions.
     pub offsets: Vec<crate::model::ByteOffset>,
-    /// True if a truncation/rewrite (or a stale `open_at` position) was detected and we re-read
-    /// from 0 — `lines` then holds the whole current file.
+    /// True if a truncation/rewrite was detected and we re-read from 0 — `lines` then holds the
+    /// whole current file.
     pub reset: bool,
-}
-
-fn hash_bytes(b: &[u8]) -> u64 {
-    let mut h = DefaultHasher::new();
-    h.write(b);
-    h.finish()
-}
-
-/// Hash of the first non-empty line of `bytes`, split exactly as [`LineReader::consume`] does
-/// (lossy UTF-8, split on `\n`, skip empties) so the anchor matches on both the read and the
-/// validation path.
-fn first_line_hash(bytes: &[u8]) -> Option<u64> {
-    String::from_utf8_lossy(bytes)
-        .split('\n')
-        .find(|p| !p.is_empty())
-        .map(|p| hash_bytes(p.as_bytes()))
 }
 
 impl LineReader {
@@ -125,9 +48,6 @@ impl LineReader {
             path,
             offset,
             pending: String::new(),
-            hasher: DefaultHasher::new(),
-            anchor: None,
-            resume: None,
         }
     }
 
@@ -135,61 +55,38 @@ impl LineReader {
     /// subsequent polls return only appends. Used by the incremental follower (M16), which folds
     /// the file once through a persistent `Replayer` and then only the delta.
     pub fn open_at_start(path: impl Into<PathBuf>) -> Self {
+        Self::open_at_offset(path, 0)
+    }
+
+    /// Start reading at `offset` — the resume entry point (#96). The first `poll` returns the
+    /// lines at or above it, stamped with their true file offsets, so attachment locators in a
+    /// resumed session match a cold parse's exactly.
+    ///
+    /// The caller vouches for `offset`. A file that has since shrunk below it is still caught —
+    /// `poll` sees the shrink and resets — but a file whose bytes were *rewritten* in place is
+    /// not, which is what the durable cache's window CRC is for.
+    pub fn open_at_offset(path: impl Into<PathBuf>, offset: crate::model::ByteOffset) -> Self {
         Self {
             path: path.into(),
-            offset: 0,
+            offset,
             pending: String::new(),
-            hasher: DefaultHasher::new(),
-            anchor: None,
-            resume: None,
         }
     }
 
-    /// Resume reading at `pos`. Optimistic: the next `poll` validates `pos` against the current
-    /// file and either resumes (returning only the delta after `pos`) or, if the position is
-    /// stale/foreign/rewritten, resets to 0 and returns the whole file with `reset: true`.
-    #[allow(dead_code)]
-    pub fn open_at(path: impl Into<PathBuf>, pos: Position) -> Self {
-        Self {
-            path: path.into(),
-            offset: 0,
-            pending: String::new(),
-            hasher: DefaultHasher::new(),
-            anchor: None,
-            resume: Some(pos),
-        }
-    }
-
-    /// An opaque, serializable position at the current read point. O(1) — snapshots the rolling
-    /// consumed-hash; no file access.
-    #[allow(dead_code)]
-    pub fn tell(&self) -> Position {
-        Position {
-            offset: self.offset,
-            consumed_hash: self.hasher.finish(),
-            anchor: self.anchor.unwrap_or(0),
-            len_hint: self.offset,
-        }
-    }
-
-    /// Reset to a from-scratch read (on a detected truncation/rewrite or a failed resume).
+    /// Reset to a from-scratch read (on a detected truncation/rewrite).
     fn reset_state(&mut self) {
         self.offset = 0;
         self.pending.clear();
-        self.hasher = DefaultHasher::new();
-        self.anchor = None;
     }
 
     /// Fold `buf` (the bytes just read, starting at the current `offset`) into the running
     /// state: advance the offset + rolling hash, split off complete lines into `out`, keep a
-    /// trailing partial in `pending`, and set the identity `anchor` from the first line if unset.
+    /// trailing partial in `pending`.
     fn consume(&mut self, buf: &[u8], out: &mut Poll) {
         // File offset of `pending`'s first byte: bytes consumed so far, minus the held partial.
-        // (Assumes valid UTF-8 — `pending` is built via lossy decode, the same assumption the
-        // anchor/consumed-hash logic already relies on; JSONL transcripts are UTF-8.)
+        // (Assumes valid UTF-8 — `pending` is built via lossy decode; JSONL transcripts are UTF-8.)
         let base = self.offset - self.pending.len() as u64;
         self.offset += buf.len() as u64;
-        self.hasher.write(buf);
         self.pending.push_str(&String::from_utf8_lossy(buf));
         let ends_newline = self.pending.ends_with('\n');
         let combined = std::mem::take(&mut self.pending);
@@ -203,9 +100,6 @@ impl LineReader {
         let mut pos = 0u64; // byte position of the current part's start within `combined`
         for p in parts {
             if !p.is_empty() {
-                if self.anchor.is_none() {
-                    self.anchor = Some(hash_bytes(p.as_bytes()));
-                }
                 out.offsets.push(base + pos);
                 out.lines.push(p.to_string());
             }
@@ -216,9 +110,6 @@ impl LineReader {
 
     /// Read any bytes appended since the last poll, returning complete lines.
     pub fn poll(&mut self) -> std::io::Result<Poll> {
-        if let Some(pos) = self.resume.take() {
-            return self.poll_resume(pos);
-        }
         let mut out = Poll::default();
         let mut f = match File::open(&self.path) {
             Ok(f) => f,
@@ -237,50 +128,6 @@ impl LineReader {
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
         self.consume(&buf, &mut out);
-        Ok(out)
-    }
-
-    /// First poll after [`open_at`](Self::open_at): validate `pos` against the current file and
-    /// either resume from `pos.offset` (delta only) or fall back to a full re-read (`reset`).
-    fn poll_resume(&mut self, pos: Position) -> std::io::Result<Poll> {
-        let mut out = Poll::default();
-        let mut f = match File::open(&self.path) {
-            Ok(f) => f,
-            Err(_) => return Ok(out), // file missing → next poll starts fresh from 0
-        };
-        let len = f.metadata()?.len();
-        // Re-read + hash the claimed consumed prefix to validate (hashing only — never parse).
-        let read_len = pos.offset.min(len);
-        let mut prefix = vec![0u8; read_len as usize];
-        f.seek(SeekFrom::Start(0))?;
-        f.read_exact(&mut prefix)?;
-        let valid = len >= pos.offset
-            && hash_bytes(&prefix) == pos.consumed_hash
-            && first_line_hash(&prefix) == Some(pos.anchor);
-        if valid {
-            // Resume: seed the rolling hash with the validated prefix, then read the delta.
-            self.offset = pos.offset;
-            self.hasher = DefaultHasher::new();
-            self.hasher.write(&prefix);
-            self.anchor = Some(pos.anchor);
-            self.pending.clear();
-            if len > self.offset {
-                f.seek(SeekFrom::Start(self.offset))?;
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf)?;
-                self.consume(&buf, &mut out);
-            }
-        } else {
-            // Stale/foreign/rewritten → full re-read, same signal as a truncation.
-            self.reset_state();
-            out.reset = true;
-            if len > 0 {
-                f.seek(SeekFrom::Start(0))?;
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf)?;
-                self.consume(&buf, &mut out);
-            }
-        }
         Ok(out)
     }
 }
@@ -318,49 +165,49 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
+    /// A reader resumed at a byte offset sees exactly the delta an uninterrupted reader sees —
+    /// and stamps the SAME absolute file offsets, which is what keeps a resumed session's
+    /// attachment locators identical to a cold parse's.
     #[test]
-    fn resume_from_a_saved_position_equals_uninterrupted_read() {
+    fn resuming_at_an_offset_equals_an_uninterrupted_read() {
         let p = tmp("resume.jsonl");
         std::fs::write(&p, b"{\"a\":1}\n{\"b\":2}\n").unwrap();
 
-        // Reader 1 consumes the current file, then we snapshot its position.
         let mut r1 = LineReader::open_at_start(&p);
         assert_eq!(r1.poll().unwrap().lines, vec!["{\"a\":1}", "{\"b\":2}"]);
-        let pos = r1.tell();
+        let at = std::fs::metadata(&p).unwrap().len();
 
-        // Position round-trips through encode/decode opaquely.
-        let pos = Position::decode(&pos.encode()).unwrap();
-
-        // Append more, then resume a fresh reader at the saved position.
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         write!(f, "{{\"c\":3}}\n{{\"d\":4}}\n").unwrap();
 
-        let mut r2 = LineReader::open_at(&p, pos);
+        let mut r2 = LineReader::open_at_offset(&p, at);
         let got = r2.poll().unwrap();
-        assert!(!got.reset, "valid resume must not reset");
+        assert!(!got.reset, "a resume is not a reset");
         assert_eq!(got.lines, vec!["{\"c\":3}", "{\"d\":4}"]);
 
-        // Reader 1 continued from where it stopped sees exactly the same delta.
-        assert_eq!(r1.poll().unwrap().lines, vec!["{\"c\":3}", "{\"d\":4}"]);
+        let cont = r1.poll().unwrap();
+        assert_eq!(got.lines, cont.lines);
+        assert_eq!(got.offsets, cont.offsets, "absolute offsets, not relative");
 
         std::fs::remove_file(&p).ok();
     }
 
+    /// A file that SHRANK below the resume offset is still caught here — the one rewrite shape
+    /// the reader can see for free. An in-place rewrite that keeps the length is deliberately
+    /// NOT this layer's job: the durable cache's window CRC covers it, and re-hashing the prefix
+    /// on every resume would cost exactly what the resume saves.
     #[test]
-    fn stale_position_after_rewrite_falls_back_to_full_reread() {
-        let p = tmp("rewrite.jsonl");
-        std::fs::write(&p, b"{\"a\":1}\n{\"b\":2}\n").unwrap();
-        let mut r1 = LineReader::open_at_start(&p);
-        r1.poll().unwrap();
-        let pos = r1.tell();
+    fn a_source_shrunk_below_the_resume_offset_resets() {
+        let p = tmp("shrunk.jsonl");
+        std::fs::write(&p, b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n").unwrap();
+        let at = std::fs::metadata(&p).unwrap().len();
 
-        // Rewrite the consumed region (compaction): different bytes at the same offsets.
-        std::fs::write(&p, b"{\"x\":9}\n{\"y\":8}\n{\"z\":7}\n").unwrap();
+        std::fs::write(&p, b"{\"x\":9}\n").unwrap(); // compacted away
 
-        let mut r2 = LineReader::open_at(&p, pos);
-        let got = r2.poll().unwrap();
-        assert!(got.reset, "rewritten prefix must be detected → reset");
-        assert_eq!(got.lines, vec!["{\"x\":9}", "{\"y\":8}", "{\"z\":7}"]);
+        let mut r = LineReader::open_at_offset(&p, at);
+        let got = r.poll().unwrap();
+        assert!(got.reset, "a shrunk source must reset");
+        assert_eq!(got.lines, vec!["{\"x\":9}"]);
 
         std::fs::remove_file(&p).ok();
     }

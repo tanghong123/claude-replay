@@ -242,7 +242,7 @@ pub enum PopupClick {
 }
 
 /// Derived per-session view state that outlives an evicted frame (#75): the measure pass's
-/// outputs + the user's interaction state, keyed in the [`SessionCache`](crate::SessionCache)
+/// outputs + the user's interaction state, keyed in the [`SessionCache`](claude_replay_present::SessionCache)
 /// aux slot. Deliberately NOT in the session's `BlockStore::Bv`: geometry is a function of
 /// (width, fold state), which change interactively — put-once storage can't hold it, an
 /// invalidatable cache-level sidecar can.
@@ -3383,6 +3383,7 @@ mod tests {
 
     fn args_with(fold: Option<&str>, unfold: Option<&str>, full: bool) -> Args {
         Args {
+            no_cache: true,
             target: None,
             agent: None,
             latest: false,

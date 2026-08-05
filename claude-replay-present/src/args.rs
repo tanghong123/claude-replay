@@ -41,6 +41,11 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(short = 'f', long))]
     pub follow: bool,
 
+    /// Do not use (or write) the durable session cache — fold every session from scratch.
+    /// Also the escape hatch for a second read-only view of a session another instance holds.
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub no_cache: bool,
+
     /// Hide ✻ thinking summaries (shown by default).
     #[cfg_attr(feature = "cli", arg(long))]
     pub no_thinking: bool,

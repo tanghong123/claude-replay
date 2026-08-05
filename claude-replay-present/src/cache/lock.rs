@@ -121,6 +121,14 @@ pub fn release<N: Serialize + DeserializeOwned + Clone>(dir: &Path) {
     }
 }
 
+/// [`release`] without knowing the note's type — the holder is read with the note left as raw
+/// JSON, since only the pid decides whether the lock is ours. That is what lets a cache release
+/// its locks from `Drop`, which cannot carry the `DurableStore` bound the typed form needs, and
+/// `Drop` is what covers every error path that would otherwise leave a lock behind.
+pub fn release_any(dir: &Path) {
+    release::<serde_json::Value>(dir)
+}
+
 pub fn read<N: DeserializeOwned>(dir: &Path) -> Option<Holder<N>> {
     let s = std::fs::read_to_string(lock_path(dir)).ok()?;
     serde_json::from_str(&s).ok()

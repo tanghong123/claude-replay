@@ -1,14 +1,12 @@
-//! **The frontend API** (#96 §8) — one call, an exhaustive outcome.
+//! **Claiming a durable entry** (#96 §8) — the machinery behind the frontend API.
 //!
-//! Everything below this is invisible to a frontend: lock acquisition, validity checking,
-//! alignment, truncation and the cold-rebuild decision all happen inside [`admit`]. What a
-//! frontend writes is a `match`.
+//! [`claim`] does everything that has to happen before a session can exist: take the lock, check
+//! the versions and the source identity, align the record stream to what the content stream
+//! corroborates, and decide resume-or-rebuild. What it does NOT do is build the session — it
+//! knows nothing about `BV`, which is exactly why one implementation serves every presentation.
 //!
-//! Admission has **two** outcomes, not three. A cache entry is never shared, so you either own
-//! it or you do not — and on denial *nothing was opened*. Falling back to a cache-less session
-//! is a separate, explicit call, so "we gave up on caching" is visible at the call site rather
-//! than hidden in a third variant that would suggest a session might be handed out while
-//! another process owns it.
+//! [`SessionCache::admit`](crate::cache::SessionCache::admit) wraps this into the two-outcome
+//! [`Admission`](crate::cache::Admission) a frontend actually matches on.
 
 use super::lock::{self, Holder, Taken};
 use super::stream::{anchor_of, window_at, MetaReader, MetaWriter};
@@ -32,11 +30,11 @@ impl Presentation {
     }
 }
 
-/// The outcome of asking for a session.
+/// The outcome of claiming a durable entry.
 #[derive(Debug)]
-pub enum Admission<N> {
-    /// Exclusive owner. Durable, and resumed when the cache was valid.
-    Owned {
+pub enum Claim<N> {
+    /// Ours exclusively. Durable, and resumed when the cache was valid.
+    Ours {
         dir: PathBuf,
         origin: Origin,
         /// The recovered state, when this was a resume. `None` on a cold start.
@@ -58,10 +56,31 @@ pub enum Denial<N> {
 pub enum Unavailable {
     /// `--no-cache`.
     NoCacheFlag,
-    /// The durable root could not be created or written.
+    /// The durable root, or the entry's own backing, could not be created or written.
     UnwritableRoot,
     /// No liveness check on this platform, so a lock cannot be reclaimed safely (§9).
     NoLivenessCheck,
+    /// The id is not registered — there is no source to open, cached or not.
+    UnknownSession,
+}
+
+/// Where durable entries live: `$XDG_CACHE_HOME` (or `~/.cache`) `/claude-replay/sessions`.
+///
+/// Deliberately NOT the temp bundle dir a serve run wipes on startup — the whole point is to
+/// survive the process. `None` when neither variable resolves, which denies durability rather
+/// than guessing at a writable location.
+pub fn default_root() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    Some(base.join("claude-replay").join("sessions"))
+}
+
+/// A durable entry's directory. A pure function of the three, so the caller can name the entry
+/// before deciding to claim it.
+pub fn entry_dir(root: &Path, p: Presentation, session: &str) -> PathBuf {
+    root.join(p.dir_name()).join(session)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,36 +103,44 @@ pub enum ColdReason {
 
 /// Take exclusive ownership of a session's durable entry, or say why not.
 ///
-/// `committed_len` is how many committed blocks the frontend's own loader recovered — **the
-/// sole authority** on how far the content stream reaches (I1). Passing it in is what keeps
-/// this function free of `BV` decoding, and therefore one implementation for every
-/// presentation (R5).
-pub fn admit<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
+/// `committed_len` is a **callback**, not a value, and that is the whole ordering argument: it
+/// opens the frontend's backing and reports how far the content stream reaches (I1, the sole
+/// authority), so it must run *after* the lock is ours — otherwise a denial would leave a
+/// backing open for a session another process owns, and "nothing was opened" would be a lie.
+/// `None` from it means the backing could not be opened, and the lock is handed back.
+///
+/// The callback is also what keeps this function free of `BV` decoding, and therefore one
+/// implementation for every presentation (R5).
+pub fn claim<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
     root: Option<&Path>,
     p: Presentation,
     session: &str,
     src: &Path,
     versions: Versions,
-    committed_len: usize,
+    committed_len: impl FnOnce(&Path) -> Option<usize>,
     alive: impl Fn(&Holder<N>) -> bool,
-) -> Admission<N> {
+) -> Claim<N> {
     let Some(root) = root else {
-        return Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
+        return Claim::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
     };
     if !lock::liveness_decidable() {
         // Assuming a lock is stale would fail INTO concurrent writers — the one outcome the
         // lock exists to prevent. Better to serve cache-less.
-        return Admission::Denied(Denial::Unavailable(Unavailable::NoLivenessCheck));
+        return Claim::Denied(Denial::Unavailable(Unavailable::NoLivenessCheck));
     }
-    let dir = root.join(p.dir_name()).join(session);
+    let dir = entry_dir(root, p, session);
     if std::fs::create_dir_all(&dir).is_err() {
-        return Admission::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+        return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
     }
     match lock::acquire::<N>(&dir, alive) {
-        Ok(Taken::Held(h)) => return Admission::Denied(Denial::Held(h)),
+        Ok(Taken::Held(h)) => return Claim::Denied(Denial::Held(h)),
         Ok(Taken::Owned) => {}
-        Err(_) => return Admission::Denied(Denial::Unavailable(Unavailable::UnwritableRoot)),
+        Err(_) => return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot)),
     }
+    let Some(committed_len) = committed_len(&dir) else {
+        lock::release::<N>(&dir); // we took it and cannot use it — do not pin the session
+        return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+    };
 
     let (origin, resumed) = match recover(&dir, src, &versions, committed_len) {
         Ok(Some(a)) => (
@@ -126,7 +153,7 @@ pub fn admit<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
         Ok(None) => (Origin::Cold(ColdReason::TornStream), None),
         Err(r) => (Origin::Cold(r), None),
     };
-    Admission::Owned {
+    Claim::Ours {
         dir,
         origin,
         resumed,
@@ -135,7 +162,7 @@ pub fn admit<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
 
 /// Validate and align a durable entry. `Err(reason)` is a diagnosable rejection; `Ok(None)`
 /// means the stream was readable but nothing in it was corroborated by the content stream.
-fn recover(
+pub(crate) fn recover(
     dir: &Path,
     src: &Path,
     versions: &Versions,
@@ -173,8 +200,8 @@ fn recover(
     Ok(Some(a))
 }
 
-/// Open the writer for an entry `admit` granted, truncating the stream when the cache was not
-/// reusable.
+/// Open the writer for an entry [`claim`] granted, starting a fresh stream when the cache was
+/// not reusable.
 pub fn writer_for(
     dir: &Path,
     src: &Path,
@@ -232,32 +259,32 @@ mod tests {
         w.flush().unwrap();
         src
     }
-    fn admit_at(root: &Path, src: &Path, committed: usize) -> Admission<Note> {
-        admit(
+    fn admit_at(root: &Path, src: &Path, committed: usize) -> Claim<Note> {
+        claim(
             Some(root),
             Presentation::Tui,
             "s1",
             src,
             versions(),
-            committed,
+            |_| Some(committed),
             |_| true,
         )
     }
 
     #[test]
     fn no_cache_flag_denies_without_touching_anything() {
-        let a = admit::<Note>(
+        let a = claim::<Note>(
             None,
             Presentation::Tui,
             "s",
             Path::new("/nope"),
             versions(),
-            0,
+            |_| Some(0),
             |_| true,
         );
         assert!(matches!(
             a,
-            Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
+            Claim::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
         ));
     }
 
@@ -267,7 +294,7 @@ mod tests {
         let src = root.join("t.jsonl");
         std::fs::write(&src, "x\n").unwrap();
         match admit_at(&root, &src, 0) {
-            Admission::Owned {
+            Claim::Ours {
                 origin, resumed, ..
             } => {
                 assert_eq!(origin, Origin::Cold(ColdReason::NoPriorCache));
@@ -282,7 +309,7 @@ mod tests {
         let root = tmp("resume");
         let src = seeded(&root, 3);
         match admit_at(&root, &src, 3) {
-            Admission::Owned {
+            Claim::Ours {
                 origin, resumed, ..
             } => {
                 assert_eq!(
@@ -305,7 +332,7 @@ mod tests {
         let root = tmp("ahead");
         let src = seeded(&root, 3);
         match admit_at(&root, &src, 2) {
-            Admission::Owned { origin, .. } => assert_eq!(
+            Claim::Ours { origin, .. } => assert_eq!(
                 origin,
                 Origin::Resumed {
                     committed: 2,
@@ -329,7 +356,7 @@ mod tests {
         )
         .unwrap();
         match admit_at(&root, &src, 3) {
-            Admission::Owned {
+            Claim::Ours {
                 origin, resumed, ..
             } => {
                 assert_eq!(origin, Origin::Cold(ColdReason::SourceRewritten));
@@ -346,7 +373,7 @@ mod tests {
         let src = seeded(&root, 3);
         std::fs::write(&src, "ab").unwrap();
         match admit_at(&root, &src, 3) {
-            Admission::Owned { origin, .. } => {
+            Claim::Ours { origin, .. } => {
                 assert_eq!(origin, Origin::Cold(ColdReason::SourceRewritten))
             }
             _ => panic!("expected Owned"),
@@ -364,10 +391,16 @@ mod tests {
             fold: 2,
             flavor: None,
         };
-        match admit::<Note>(Some(&root), Presentation::Tui, "s1", &src, newer, 3, |_| {
-            true
-        }) {
-            Admission::Owned { origin, .. } => {
+        match claim::<Note>(
+            Some(&root),
+            Presentation::Tui,
+            "s1",
+            &src,
+            newer,
+            |_| Some(3),
+            |_| true,
+        ) {
+            Claim::Ours { origin, .. } => {
                 assert_eq!(origin, Origin::Cold(ColdReason::VersionChanged))
             }
             _ => panic!("expected Owned"),
@@ -391,7 +424,7 @@ mod tests {
         )
         .unwrap();
         match admit_at(&root, &src, 1) {
-            Admission::Denied(Denial::Held(h)) => assert_eq!(h.pid, 999_999),
+            Claim::Denied(Denial::Held(h)) => assert_eq!(h.pid, 999_999),
             _ => panic!("a live holder must deny"),
         }
     }
@@ -402,27 +435,27 @@ mod tests {
         let root = tmp("ns");
         let src = root.join("t.jsonl");
         std::fs::write(&src, "x\n").unwrap();
-        let tui = admit::<Note>(
+        let tui = claim::<Note>(
             Some(&root),
             Presentation::Tui,
             "s",
             &src,
             versions(),
-            0,
+            |_| Some(0),
             |_| true,
         );
-        let html = admit::<Note>(
+        let html = claim::<Note>(
             Some(&root),
             Presentation::Html,
             "s",
             &src,
             versions(),
-            0,
+            |_| Some(0),
             |_| true,
         );
-        assert!(matches!(tui, Admission::Owned { .. }));
+        assert!(matches!(tui, Claim::Ours { .. }));
         assert!(
-            matches!(html, Admission::Owned { .. }),
+            matches!(html, Claim::Ours { .. }),
             "a peer presentation must not be blocked"
         );
     }

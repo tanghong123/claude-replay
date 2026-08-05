@@ -6,6 +6,7 @@
 //! `claude-replay-core`.
 
 pub mod app;
+pub mod store; // the TUI's durable Arc<Block> block store (#96)
 pub mod view;
 
 mod clipboard;
@@ -25,4 +26,4 @@ pub(crate) mod tui {
 pub(crate) use claude_replay_core::{
     diff, discover, engine, fold, metrics, model, parse_session_enriched_as, Agent, Transcript,
 };
-pub(crate) use claude_replay_present::{highlight, present, sys, Args, SessionCache};
+pub(crate) use claude_replay_present::{highlight, present, sys, Args};

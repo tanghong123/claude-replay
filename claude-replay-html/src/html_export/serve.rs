@@ -5,17 +5,20 @@
 //! rendered-line diff baseline + titles). Split out so the HTTP/tailer machinery doesn't share
 //! a namespace with the markdown/JSON renderer.
 
-use super::record_store::RecordStore;
+use super::record_store::{HtmlNote, RecordStore};
 use super::{
     assemble_meta, block_lines, build_shell, display_title, render_blocks, render_snapshot,
     session_id, AgentInfo, POLL_MS,
 };
-use crate::cache::{pull_indices, Cursor, SharedSession};
+use crate::cache::{self, Presentation};
+use crate::cache::{lock, pull_indices, Admission, Cursor, SharedSession};
+use crate::engine::meta_stream::Versions;
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::Arc;
 
 /// How long an agent keeps being tailed after its last request before it goes idle and is
 /// dropped (its stream file stays on disk; a later request revives it).
@@ -37,6 +40,35 @@ struct Live {
     roots: Vec<Root>,
     /// The session domain: id→source registry + resident followers + TTL reaping.
     cache: SessionCache<RecordStore, ServeAux>,
+}
+
+/// The render fingerprint a durable stream is validated against: change what a wire record
+/// contains, or how folding shapes it, and a resumed page would splice two schemas together.
+///
+/// It covers the fold policy and the record schema, and deliberately not the session's cwd —
+/// which paths are rendered relative to. The cwd is a pure function of the transcript (a root's
+/// is read from its own head; a child's is inherited from its single parent, whose own is), and
+/// the transcript's identity is already pinned by the stream's anchor.
+fn render_flavor(fold: &FoldPolicy) -> u64 {
+    use std::hash::{Hash, Hasher};
+    /// Bump when the wire record's shape changes.
+    const RECORD_SCHEMA: u16 = 1;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    RECORD_SCHEMA.hash(&mut h);
+    fold.folded_kinds().hash(&mut h);
+    h.finish()
+}
+
+/// Whether a lock's published port still answers. A pid alone is not enough: pids are recycled,
+/// and a stale lock naming a recycled pid would look live forever. `None` (a holder that took
+/// the lock but has not bound yet) counts as live — it is a real window, not a dead process.
+fn port_open(port: Option<u16>) -> bool {
+    let Some(port) = port else { return true };
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(150),
+    )
+    .is_ok()
 }
 
 /// One root session this server hosts (its own agent, transcript, and cwd).
@@ -224,6 +256,56 @@ impl Live {
         }
     }
 
+    /// This session's resident, admitting it into the durable cache on first use (#96).
+    ///
+    /// A denial is never fatal here: partial success is normal for a multi-root server, so a
+    /// session another process holds — or one with no durable slot at all — is simply served
+    /// **cache-less**, out of the run's own temp bundle. The pick-time redirect a holder's note
+    /// enables is a routing decision made before this point; by the time a client is pulling,
+    /// the page is already open and cannot be handed off.
+    fn session_for(
+        &self,
+        id: &str,
+        src: &Transcript,
+        cwd: &str,
+    ) -> Option<Arc<SharedSession<RecordStore>>> {
+        if let Some(ss) = self.cache.touch(id) {
+            return Some(ss);
+        }
+        let agent = src.agent();
+        let path = src.path().to_path_buf();
+        // #74: the Session's own BlockStore renders each committed block to its wire record as
+        // it commits (Bv = RecordLocator) — one storage, one serialization; there is no separate
+        // block backing. A followed session's resident footprint is O(open turn) + the locators.
+        let open = |at: &Path| {
+            RecordStore::open_append(
+                at,
+                self.fold.clone(),
+                cwd.to_string(),
+                Transcript::open(agent, path.clone()),
+            )
+        };
+        match self.cache.admit(
+            id,
+            |dir| open(&dir.join("records.jsonl")),
+            |h| lock::pid_alive(h.pid) && port_open(h.note.as_ref().map(|n| n.port)),
+        ) {
+            Admission::Owned { session, .. } => Some(session),
+            Admission::Denied(_) => {
+                // Cache-less: the run's own temp bundle, wiped at startup. Range reads go
+                // through the store's own path, so this serves fully.
+                let at = self.dir.join(format!("{id}.records"));
+                let store = open(&at).or_else(|_| {
+                    open(
+                        &std::env::temp_dir()
+                            .join(format!("cr-records-{}-{id}.records", std::process::id())),
+                    )
+                });
+                self.cache.open_uncached(id, store.ok()?)
+            }
+        }
+    }
+
     /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. The session
     /// domain lives in the [`SessionCache`]: it materializes the id's [`SharedSession`] on first
     /// pull and TTL-reaps idle residents (no background thread — folding rides this request's
@@ -238,51 +320,16 @@ impl Live {
         // (recorded at registration, inherited by children) — never a server-wide field.
         let agent = src.agent();
         let cwd = self.cwd_of(id, &src);
-        // Lazy reap (this path owns no background thread), then fetch-or-materialize the
-        // pull-servable resident — both owned by the cache (one resident set, one policy).
-        // Each evicted resident hibernates its serving state to a sidecar beside its backing, so
-        // revisiting an UNCHANGED session reloads instead of re-folding the whole transcript.
-        for (rid, ss) in self.cache.reap(TAIL_TTL_MS) {
-            let _ = ss.hibernate(&self.dir.join(format!("{rid}.state")));
-        }
-        let records_path = self.dir.join(format!("{id}.records"));
-        let state_path = self.dir.join(format!("{id}.state"));
-        // #74: the Session's own BlockStore renders each committed block to its wire record as
-        // it commits (Bv = RecordLocator into `<id>.records`) — one storage, one serialization;
-        // there is no separate block backing. A followed session's resident footprint is
-        // O(open turn) + the locator table.
-        let mk_store = |path: &Path| {
-            RecordStore::create(
-                path,
-                self.fold.clone(),
-                cwd.clone(),
-                crate::Transcript::open(agent, src.path().to_path_buf()),
-            )
-        };
-        let open_fresh = || {
-            let store = mk_store(&records_path).unwrap_or_else(|_| {
-                // Unwritable serve dir: fall back to a temp-dir log — range reads go through
-                // the store (its own path), so the fallback serves fully.
-                let alt = std::env::temp_dir()
-                    .join(format!("cr-records-{}-{id}.records", std::process::id()));
-                mk_store(&alt).expect("create record log")
-            });
-            SharedSession::with_store(agent, src.path(), store)
-        };
-        let mut shared = self.cache.shared_session(id, || {
-            // Restore-from-materialization first (valid only while the source is unchanged);
-            // else fold fresh. A restored session keeps its epoch/gen (and its render
-            // continuation, via the sidecar's store state), so a client that held its cursor
-            // across the eviction continues seamlessly.
-            SharedSession::restore(src.path(), &state_path, &records_path)
-                .unwrap_or_else(&open_fresh)
-        });
-        if shared.hibernation_stale() || shared.poisoned() {
-            // Two reasons to distrust this state: the source changed after a restore, or a panic
-            // poisoned it mid-update (#56 — its state may be torn). Either way: drop it and
-            // refold fresh; the new epoch resyncs clients. Never serve torn state, never brick.
+        // Lazy reap (this path owns no background thread), then fetch-or-admit the resident —
+        // both owned by the cache (one resident set, one policy).
+        self.cache.reap(TAIL_TTL_MS);
+        let mut shared = self.session_for(id, &src, &cwd)?;
+        if shared.poisoned() {
+            // A panic poisoned it mid-update (#56 — its state may be torn). Drop it and refold
+            // fresh; the new epoch resyncs clients. Never serve torn state, never brick.
             self.cache.remove_pull(id);
-            shared = self.cache.shared_session(id, open_fresh);
+            self.cache.release(id);
+            shared = self.session_for(id, &src, &cwd)?;
         }
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
         let _ = shared.advance();
@@ -635,11 +682,22 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     // are re-parsed by the background tailer — so opening a huge tree costs one parse.
     let title = display_title(roots[0].agent, &roots[0].path);
     let root_ids: Vec<String> = roots.iter().map(|r| r.id.clone()).collect();
+    // The durable cache (#96) lives OUTSIDE the temp bundle dir wiped above — surviving the
+    // process is the entire point. `--no-cache`, or no resolvable cache home, means ephemeral:
+    // exactly today's behaviour.
+    let cache = match (args.no_cache, cache::admit::default_root()) {
+        (false, Some(root)) => SessionCache::durable(
+            Presentation::Html,
+            root,
+            Versions::current(Some(render_flavor(&fold))),
+        ),
+        _ => SessionCache::ephemeral(),
+    };
     let live = Arc::new(Live {
         dir: dir.clone(),
         fold,
         roots,
-        cache: SessionCache::new(),
+        cache,
     });
     for root in &live.roots {
         live.cache
@@ -667,6 +725,11 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     .with_context(|| "write index.html")?;
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
+    // Now that the listener is bound there is finally something useful to say: a peer that finds
+    // one of our locks held can send the user here instead of refusing.
+    for id in &root_ids {
+        live.cache.publish(id, HtmlNote { port });
+    }
     Ok(LiveServer {
         dir,
         port,
@@ -1258,7 +1321,10 @@ mod tests {
             paths.push(p);
         }
 
-        let args = crate::Args::parse_from(["claude-replay", "--html"]);
+        // `--no-cache`: this test is about multi-root SERVING, and a durable run would put its
+        // records under the user's real cache home — a test suite must not write there, nor
+        // contend for locks with a concurrently running viewer.
+        let args = crate::Args::parse_from(["claude-replay", "--html", "--no-cache"]);
         let server = start_server(&args, &paths).expect("server starts");
         assert_eq!(server.root_ids, vec!["one".to_string(), "two".to_string()]);
         assert!(
@@ -1498,7 +1564,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("t.records");
         let _ = std::fs::remove_file(&path);
-        let mut store = super::super::record_store::RecordStore::create(
+        let mut store = super::super::record_store::RecordStore::open_append(
             &path,
             FoldPolicy::default(),
             "/r".into(),

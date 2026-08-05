@@ -275,6 +275,8 @@ dependencies = [
  "nucleo",
  "pulldown-cmark",
  "ratatui",
+ "serde",
+ "serde_json",
  "unicode-width 0.2.0",
 ]
 

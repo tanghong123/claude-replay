@@ -32,6 +32,25 @@ pub type Model = String;
 /// *field* needs no bump (it arrives with `#[serde(default)]` and older records still load).
 pub const FORMAT_VERSION: u16 = 1;
 
+/// The fold's version. **Bump this whenever block output changes** — otherwise a resume splices
+/// blocks built by the old fold onto blocks built by the new one, and the seam is invisible.
+///
+/// The byte-identical gate is what catches a change that needs a bump: an intentional output
+/// change re-baselines the gate, and that is the moment to bump here too.
+pub const FOLD_VERSION: u16 = 1;
+
+impl Versions {
+    /// This build's versions for a presentation whose output has no render parameters (the TUI).
+    /// A presentation that has them passes its fingerprint as `flavor`.
+    pub fn current(flavor: Option<u64>) -> Self {
+        Self {
+            format: FORMAT_VERSION,
+            fold: FOLD_VERSION,
+            flavor,
+        }
+    }
+}
+
 // ── the stream ────────────────────────────────────────────────────────────────────────────
 
 /// Record 0 of the meta stream, written once.
