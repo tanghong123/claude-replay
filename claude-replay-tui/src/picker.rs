@@ -46,6 +46,35 @@ fn human_age(now: SystemTime, t: SystemTime) -> String {
     }
 }
 
+/// `s` fitted to exactly `width` display columns: padded with spaces, or truncated on a
+/// character boundary that respects double-width glyphs (a CJK snippet must not be cut
+/// through the middle of a cell).
+fn fit(s: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let w = UnicodeWidthStr::width(s);
+    if w == width {
+        return s.to_string();
+    }
+    if w < width {
+        let mut out = String::with_capacity(s.len() + width - w);
+        out.push_str(s);
+        out.extend(std::iter::repeat_n(' ', width - w));
+        return out;
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw > width {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    out.extend(std::iter::repeat_n(' ', width - used)); // a wide glyph can leave one column
+    out
+}
+
 impl Picker {
     pub fn new(cands: Vec<Candidate>) -> Self {
         let now = SystemTime::now();
@@ -187,7 +216,12 @@ impl Picker {
             } else {
                 Style::default()
             };
-            lines.push(Line::styled(text, style));
+            // Pad to the full row so the selection bar spans the window. `Paragraph` styles only
+            // the cells a `Line` actually covers, so an unpadded row leaves the highlight ending
+            // wherever the text happens to — a ragged bar that stops mid-window on anything but
+            // the longest snippet. Truncating on the same call keeps a long snippet from being
+            // clipped at an arbitrary byte and keeps the padding arithmetic honest.
+            lines.push(Line::styled(fit(&text, area.width as usize), style));
         }
         f.render_widget(
             Paragraph::new(Line::styled(
@@ -239,6 +273,73 @@ mod tests {
             cwd_affinity: affinity,
             agent: crate::Agent::CLAUDE,
         }
+    }
+
+    /// **The selected row must span the whole window.** `Paragraph` styles only the cells a
+    /// `Line` actually covers, so an unpadded row leaves the selection bar ending wherever the
+    /// text happens to — a highlight that stops mid-window and makes the picker look narrower
+    /// than the terminal. Measured across widths, since the bug is invisible at the one width
+    /// where the longest snippet happens to reach the edge.
+    #[test]
+    fn the_selected_row_highlight_spans_the_full_width() {
+        use ratatui::{backend::TestBackend, style::Modifier, Terminal};
+        for w in [40u16, 80, 120, 200] {
+            let mut p = Picker::new(vec![
+                cand("alpha", "first session", true),
+                cand("bravo", "second session", false),
+            ]);
+            p.down(); // select row 2 — not the first, so an off-by-one shows
+            let mut term = Terminal::new(TestBackend::new(w, 8)).unwrap();
+            term.draw(|f| p.draw(f)).unwrap();
+            let buf = term.backend().buffer();
+            let rev = |y: u16| {
+                (0..w)
+                    .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+                    .count()
+            };
+            assert_eq!(rev(2), w as usize, "selected row must fill width {w}");
+            assert_eq!(rev(1), 0, "an unselected row carries no highlight at all");
+        }
+    }
+
+    /// A snippet longer than the window must be CLIPPED to it, never wrapped into the next
+    /// row — the list is one session per line, and a wrapped row would shift every entry below
+    /// it out from under the click/selection geometry.
+    #[test]
+    fn a_long_snippet_is_clipped_to_one_row() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let long = "x".repeat(400);
+        let mut p = Picker::new(vec![
+            cand("alpha", &long, true),
+            cand("bravo", "short", false),
+        ]);
+        let (w, h) = (60u16, 8u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| p.draw(f)).unwrap();
+        let buf = term.backend().buffer();
+        let row = |y: u16| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(row(1).contains("alpha"), "row 1 is the long entry");
+        assert!(
+            row(2).contains("bravo"),
+            "row 2 is still the SECOND entry, not a wrapped tail: {:?}",
+            row(2)
+        );
+    }
+
+    /// `fit` is width-correct for double-width glyphs: a CJK snippet is never cut through the
+    /// middle of a cell, and the result is exactly the requested number of columns.
+    #[test]
+    fn fit_respects_double_width_glyphs() {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(UnicodeWidthStr::width(fit("abc", 10).as_str()), 10);
+        assert_eq!(UnicodeWidthStr::width(fit("你好世界", 5).as_str()), 5);
+        assert_eq!(
+            fit("你好世界", 5),
+            "你好 ",
+            "a wide glyph leaves one column"
+        );
+        assert_eq!(UnicodeWidthStr::width(fit("你好", 4).as_str()), 4);
+        assert_eq!(fit("abcdef", 3), "abc");
     }
 
     /// The multi-open flow (`-f --html` with several matches): a click maps to the row
