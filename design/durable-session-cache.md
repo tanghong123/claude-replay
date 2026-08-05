@@ -1,13 +1,14 @@
 # Design: a durable, cross-run session cache
 
-> **v22 — handoff state.** Every type is declared, every code citation verified against the tree,
+> **v23 — handoff state.** Every type is declared, every code citation verified against the tree,
 > every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
 > first: the rest follows from it. §12 lists what must be true before step 1 starts.
 >
 > v22 adds: an **iterative** meta reader (entries are never all resident), **no positional
 > correspondence** between the two streams (I2 — the link is `resume.id` alone), and
 > **checkpoints** (§6.6) that bound an open's work, validate a fold in production, and make
-> compaction asynchronous.
+> compaction asynchronous. v23 carries the checkpoint **on a resumable record** rather than as a
+> standalone entry — otherwise compaction can leave state with no resume point.
 
 ## 1. Requirements
 
@@ -29,8 +30,9 @@ Two append-only streams per `<presentation, session>`, written only at a **commi
 content   TUI:  JSON-encoded Block per committed block   (Bv = Arc<Block>)
           HTML: rendered wire record per committed block (Bv = RecordLocator)
 meta      a StreamHeader, then one MetaRecord per committing drain
-            Part I  — session facts (counters + gauges); on every record
-            Part II — resumption (offset, checksum, fold clocks); iff resumable
+            Part I     — session facts (counters + gauges); on every record
+            Part II    — resumption (offset, checksum, fold clocks); iff resumable
+            checkpoint — an absolute Part I; every CHECKPOINT_EVERY drains (§6.6)
 ```
 
 A block commits when a later turn begins and the prompt queue is empty. There is no periodic
@@ -172,6 +174,11 @@ struct MetaRecord {
     // ── Part II — resumption. Its PRESENCE is the resume-point indicator (I5); there is no
     //    separate flag. A metadata reader skips it entirely.
     resume:     Option<Resume>,
+
+    // ── Checkpoint — an ABSOLUTE Part1 as of this record, replacing every delta before it.
+    //    Written every CHECKPOINT_EVERY drains (§6.6). `Some` ⇒ `resume` is also `Some`: a
+    //    checkpoint a reader cannot resume from would let compaction strand the cache.
+    checkpoint: Option<Part1>,
 }
 
 struct Resume {
@@ -182,29 +189,20 @@ struct Resume {
     pending_ts:  Option<EpochSeconds>,   // stamps turns authored on the resume's first line
 }
 
-// ── stream entries ────────────────────────────────────────────────────────────
-/// The meta stream is a sequence of these. A `Checkpoint` is an absolute `Part1` — the fold of
-/// everything before it — so a reader may START at the last one it sees and ignore all earlier
-/// entries (§6.6).
-enum MetaEntry {
-    Header(StreamHeader),        // first entry, once
-    Checkpoint(Checkpoint),      // absolute state; written only by compaction
-    Record(MetaRecord),          // one per committing drain
-}
-
-struct Checkpoint { id: usize, state: Part1 }   // `id` = committed-block count it represents
-
 // ── the reader half ───────────────────────────────────────────────────────────
 /// **Iterative, not slice-at-once.** Unlike `Vec<BV>` — which is resident by definition, being
-/// the committed index itself — meta entries are consumed one at a time and never all held.
-/// A reader streams the file; a resume stops feeding at its aligned `n`.
+/// the committed index itself — records are consumed one at a time and never all held. A reader
+/// streams the file; a resume stops feeding at its aligned `n`.
 ///
 /// `push` has NO bound check: the CALLER guarantees it feeds nothing past `n` (§6.2). Keeping
 /// the fold ignorant of the alignment is what lets a metadata reader (#98) use the same type
 /// with no bound at all.
 impl Part1 {
-    fn seed(&mut self, c: Checkpoint);      // adopt an absolute state; discards what came before
-    fn push(&mut self, r: &MetaRecord);     // counters accumulate, gauges replace
+    /// Feed one record. If `r.checkpoint` is `Some`, ADOPT it and discard everything folded so
+    /// far — the checkpoint is the state *as of* this record, so its own Part I deltas are
+    /// already included and must not be applied again. Otherwise fold: counters accumulate,
+    /// gauges replace.
+    fn push(&mut self, r: &MetaRecord);
 }
 
 struct Part1 {
@@ -351,7 +349,7 @@ build-id invalidation, discarding every cache on every release.
 | I8 | A record is reused only if §6.4 passes: length, anchor, window, versions. | §6.4 |
 | I9 | At most one live process writes a `<presentation, session>`. Where liveness is undecidable (`pid_alive` is unix-only, `jdi/state.rs:150-167`) the cache is **disabled**, never assumed stale. | §8 |
 | I10 | A fold reset truncates both streams and the store backing to 0. | §6.5 |
-| I11 | Seeding from a `Checkpoint` and folding from the stream's start yield the **same** `Part1`. A reader that passes a checkpoint while folding compares against it; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
+| I11 | Adopting a `checkpoint` and folding from the stream's start yield the **same** `Part1`. A checkpoint is present only where `resume` is, so compaction can never leave a stream with state but no resume point. A reader that passes a checkpoint compares before adopting; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
 
 ## 6. Algorithms
 
@@ -449,15 +447,11 @@ load(dir) -> Option<Loaded>:
     committed ← bv_loader(dir)                  # frontend-specific: the ONLY such piece
     # ONE streaming pass over the meta file. Entries are folded as they arrive; nothing but
     # the running Part1 and the best resume so far is retained.
-    p1 ← Part1::default(); hdr ← None; best ← None
-    for entry in meta_entries(dir):             # drops a torn trailing entry
-        match entry:
-            Header(h)     → hdr ← h
-            Checkpoint(c) → if c.id ≤ |committed| { p1.seed(c); best ← None }   # §6.6
-            Record(r)     →
-                if r.resume.is_some() and r.resume.id > |committed|: break      # I1's bound
-                p1.push(r)                      # the CALLER enforces the bound, not the fold
-                if r.resume.is_some(): best ← Some(r.resume)                    # by id, not index
+    p1 ← Part1::default(); hdr ← meta_header(dir); best ← None
+    for r in meta_records(dir):                 # streaming; drops a torn trailing record
+        if r.resume.is_some() and r.resume.id > |committed|: break   # I1's bound — CALLER's job
+        p1.push(r)                              # adopts r.checkpoint if present (§4.1)
+        if r.resume.is_some(): best ← Some(r.resume)                 # by id, never by index
     if hdr is None or best is None or !valid(hdr, best): return None            # cold rebuild
     n ← best.id
     truncate(content, n); truncate(meta, after the entry carrying id n); store.truncate(n)  # I6
@@ -542,33 +536,40 @@ discards the durable directory, not only the in-process store.
 
 ### 6.6 Checkpoints and compaction
 
-A `Checkpoint` is an absolute `Part1` — the fold of everything before it. It does three jobs.
+A checkpoint is an **absolute `Part1`** carried by a record that already has Part II. It does
+three jobs.
 
-**Written periodically by the writer**, every `CHECKPOINT_EVERY` committing drains, alongside the
-ordinary records. Cost is O(turns + tasks + spawns) *once per interval*, not per commit — the
-same snapshot §4.3 rejects at per-commit frequency, made affordable by amortisation. This is why
-`Part1` holds a **reduced** `TaskFold` rather than the raw op-log: a checkpoint carrying every
-`TaskOp` would be as large as the log it is meant to replace.
+**Written periodically**, every `CHECKPOINT_EVERY` committing drains. Cost is
+O(turns + tasks + spawns) *once per interval* — the snapshot §4.3 rejects at per-commit
+frequency, made affordable by amortisation. This is why `Part1` holds a **reduced** `TaskFold`
+rather than the raw op-log: a checkpoint carrying every `TaskOp` would be as large as the log it
+replaces.
 
-**A reader may start at one.** `seed` replaces whatever came before, so a stream beginning with a
-checkpoint and one replayed from the start produce the same `Part1` — **I11**, and what the
-equivalence test asserts. That bounds an open's work: without checkpoints it is O(records) and
-grows without limit for a long-lived session.
+**It must sit on a resumable record, and that is not a convenience.** A checkpoint whose record
+has no `resume` would let compaction strand the cache: truncate to a checkpoint that is also the
+last record, and the stream holds complete Part I state with **no `replay_from` anywhere** — a
+cache that exists and cannot be resumed from, until the next commit happens to add one. So the
+writer emits a checkpoint only where I5 holds; if the scheduled drain is a straddling line
+(§3), it waits for the next qualifying one.
 
-**A reader that *passes* one validates against it.** A fold that reaches a checkpoint compares
-its running state; a mismatch means the stream is corrupt or the writer and reader have drifted,
-and the answer is a cold rebuild. This turns I3 from a property tests assert into one production
-checks on every load — the class §6.4 calls the one to guard hardest (a false accept yields
-wrong output, not a no-op) now has a second, independent detector.
+**A reader may start at one.** `push` adopts a checkpoint and discards what it folded before, so
+a stream beginning at a checkpointed record and one replayed from the start produce the same
+`Part1` — **I11**, and what the equivalence test asserts. That bounds an open's work, which is
+otherwise O(records) and grows without limit for a long-lived session.
 
-**Compaction is then trivial and asynchronous.** Because checkpoints already exist in the stream,
-discarding a prefix requires no fold:
+**A reader that *passes* one validates against it.** A fold that reaches a checkpoint can compare
+its running state before adopting; a mismatch means the stream is corrupt or writer and reader
+have drifted, and the answer is a cold rebuild. This turns I3 from a property tests assert into
+one production checks on every load — so the class §6.4 guards hardest (a false accept yields
+wrong output, not a no-op) gains a second, independent detector.
+
+**Compaction is then trivial and asynchronous**, because it needs no fold:
 
 ```
 compact(dir):                                   # any time, under the §8 lock
-    c ← the newest Checkpoint with c.id ≤ |committed|
-    if c is None or entries_before(c) < COMPACT_AFTER: return
-    rewrite meta as [ Header(hdr), Checkpoint(c), ...entries after c ]   # temp + rename
+    r ← the newest record with r.checkpoint.is_some() and r.resume.id ≤ |committed|
+    if r is None or records_before(r) < COMPACT_AFTER: return
+    rewrite meta as [ Header(hdr), r, ...records after r ]      # temp file + rename
 ```
 
 **Rewrite, not truncate-in-place**: a checkpoint replaces a *prefix* of an append-only file, so
@@ -576,7 +577,7 @@ compaction writes a new file and renames over the old one — the rename is the 
 crash mid-rewrite leaves the original intact. It runs under the same `<presentation, session>`
 lock as every other write (§8), which is what makes "asynchronous" safe rather than a race.
 
-**Never checkpoint past `n`.** Only state corroborated by the content stream may become absolute.
+**Never checkpoint past `n`.** Only state the content stream corroborates may become absolute.
 Records above `n` are exactly those alignment rejected — a torn tail, or drains the content
 stream does not support — and folding them into a checkpoint would launder unverified data into a
 form nothing can later question.
@@ -643,7 +644,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 
 | file | change |
 |---|---|
-| `engine/meta_stream.rs` | reshape to §4's `MetaEntry`/`MetaRecord`/`Checkpoint` + `StreamHeader`; the iterative `Part1::{seed, push}` reader; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf) |
+| `engine/meta_stream.rs` | reshape to §4's `MetaRecord` + `StreamHeader`; the iterative `Part1::push` reader; **DELETE** `emit_batch`, `MetaDelta`, `MetaRecord::{anchored,unanchored}` and the unanchored/supersede semantics (a0acaf4, 8b4f4cf) |
 | `engine/replay.rs` | **DELETE** the current meta wiring (`meta_out`, `committed_emitted`, `last_provisional`, `drain_meta`); add the four `pub(crate)` getters + `reseed`; the replayer returns to being purely the block fold |
 | `engine/builder.rs` | the turn-boundary deque + record authorship at the drain (§6.1); `restore` (§6.3); `committed_meta()`; `drain_meta` passthrough removed |
 | `engine/message.rs` | `Message::can_open_turn()`, defined beside the arms it enumerates |
