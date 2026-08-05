@@ -177,6 +177,22 @@ struct Resume {
     pending_ts:  Option<EpochSeconds>,   // stamps turns authored on the resume's first line
 }
 
+// ── the reader half ───────────────────────────────────────────────────────────
+/// Fold every record up to and including `n` (a resume), or all of them (a metadata reader):
+/// counters accumulate, gauges take the last present value. The left-hand side of I3.
+fn replay_part1(records: &[MetaRecord], through: Option<usize>) -> Part1;
+
+struct Part1 {
+    session_meta: SessionMeta,                  // turns, tools, children — from `agents`
+    agent_ids:    HashMap<String, (AgentId, String)>, // spawn identity, BOTH keys per Spawn
+    user_times:   Vec<Option<EpochSeconds>>,
+    tokens:       BTreeMap<Model, TokenCounts>,
+    extra:        BTreeMap<String, u64>,
+    task_ops:     Vec<TaskOp>,                  // concatenated log; `TaskFold::replay` consumes it
+    cwd:          String,
+    span:         Option<(EpochSeconds, EpochSeconds)>,
+}
+
 // ── Part I payload types ──────────────────────────────────────────────────────
 #[derive(Default)]                   // + AddAssign: `maps sum per key` needs it
 struct TokenCounts { input: u64, cache_creation: u64, cache_read: u64, output: u64 }
@@ -338,16 +354,22 @@ state: deque: VecDeque<Entry>, emitted: Entry   # `emitted` = totals at the last
 on advance_at(offset, line):                    # builder
     msgs ← decode(line)
     if any(m.can_open_turn() for m in msgs):    # BEFORE the task-op loop and apply
+        (tk, ex, sp) ← metrics.totals()          # §7 — as-of-line-start (see the last line)
         cand ← Entry { logical: replayer.raw_len(), offset,
                        prev_ts: replayer.prev_ts(), pending_ts: replayer.pending_ts(),
-                       tokens/extra/span/cwd: metrics.totals(), task_fold.cwd() }
+                       tokens: tk, extra: ex, span: sp,
+                       cwd: self.cwd }                  # the ACCUMULATOR's cwd (builder.rs:36)
     fold task ops (recording them in pending_ops); replayer.apply(msgs)
     if cand exists and replayer.raw_len() > cand.logical:   # the line AUTHORED a block
         deque.push_back(cand)
     drained ← replayer.drain_committed()
     if drained ≠ ∅:
         rec ← MetaRecord::default()
+        turns0 ← committed_meta.turns                   # BEFORE folding this drain
         for b in drained: rec.count(b); committed_meta.push(b); store.put(b)
+        # `count` derives turns/tools/agents from the blocks; user_times cannot come from
+        # them — the stamps live in the replayer, indexed by TURN — so slice by turn count:
+        rec.user_times ← replayer.user_times()[turns0 .. committed_meta.turns]
         rec.task_ops ← take(pending_ops)
         deque.prune_front(entries with logical < replayer.base())
         if deque.front()?.logical == replayer.base():       # line_boundary — I5
@@ -400,7 +422,7 @@ push a `ToolResult` and a `QueueEvent` and are excluded. Define it beside those 
 load(dir) -> Option<(Vec<BV>, Vec<MetaRecord>)>:
     committed ← bv_loader(dir)                  # frontend-specific: the ONLY such piece
     records   ← meta_loader(dir)                # shared; drops a torn trailing record
-    n ← per I1                                  # max over records carrying Part II
+    n ← max { r.resume.id : r ∈ records, r.resume.is_some(), r.resume.id ≤ |committed| }   # I1
     if n is None or !valid(header, records[n].resume): return None      # cold rebuild
     truncate(content, n); truncate(meta, n); store.truncate(n)          # I6
     return (committed[..n], records[..=n])
@@ -414,7 +436,7 @@ records already replayed.
 
 ```
 SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
-    n   ← per I1
+    n   ← as in §6.2 (I1)
     p1  ← replay_part1(records, n)              # folds counters, takes last-present gauges
     acc ← with_store(adapter, store)
     acc.committed      ← committed[..n]
@@ -422,7 +444,7 @@ SessionAccumulator::restore(adapter, store, committed, records) -> Restored:
     acc.cwd            ← p1.cwd
     acc.task_fold.replay(p1.task_ops)           # list AND pending both fall out (§4.3)
     acc.metrics.reseed(p1.tokens, p1.extra, p1.span)
-    acc.replayer.reseed(agent_ids_from(p1.agents),     # spawn identity, both keys
+    acc.replayer.reseed(p1.agent_ids,                  # spawn identity, both keys
                         p1.user_times,                 # len == p1.session_meta.turns
                         records[n].resume.prev_ts,
                         records[n].resume.pending_ts)  # base = stamped = 0, out = []
