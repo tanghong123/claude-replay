@@ -43,7 +43,9 @@ fn admit_root(
         |h| claude_replay_present::cache::lock::pid_alive(h.pid),
     ) {
         Admission::Owned { session, .. } => {
-            cache.publish(id, crate::store::TuiNote::here());
+            // Publishes here because the entry is ours from this line on, and the TUI's note
+            // (its tmux pane) is known at startup — unlike a server's port.
+            let _ = cache.publish(id, crate::store::TuiNote::here());
             Ok(session)
         }
         Admission::Denied(Denial::Held(h)) => anyhow::bail!(

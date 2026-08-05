@@ -37,6 +37,37 @@ struct Live {
     roots: Vec<Root>,
     /// The session domain: id→source registry + resident followers + TTL reaping.
     cache: SessionCache<RecordStore, ServeAux>,
+    /// This server's port, set once the listener binds.
+    ///
+    /// It exists so the lock's note can name where we serve. The note cannot be written at
+    /// startup: sessions are admitted lazily, on their first `/pull`, so at bind time this
+    /// process owns nothing and a publish would silently do nothing — which is exactly what
+    /// used to happen, leaving every lock's note `null` and a peer with nowhere to redirect.
+    port: std::sync::OnceLock<u16>,
+}
+
+/// Where an ALREADY-RUNNING server serves `sid`, if one does (#96's rendezvous).
+///
+/// The lock is a rendezvous record, not just a mutex: its holder writes the port it serves on,
+/// so a second invocation can send the user to the existing server instead of standing up a
+/// duplicate. Read-only — this never takes the lock.
+///
+/// Both checks matter. A pid alone is not enough, because pids are recycled; a port alone is
+/// not enough, because some *other* program may now hold that port. A holder that has not
+/// published a note yet has bound nothing to redirect to, so it does not count.
+pub fn existing_server(root: Option<&std::path::Path>, sid: &str) -> Option<u16> {
+    let dir = cache::admit::entry_dir(root?, Presentation::Html, sid);
+    let h = lock::read::<HtmlNote>(&dir)?;
+    if h.pid == std::process::id() {
+        return None; // our own lock from earlier in this process
+    }
+    let port = h.note?.port;
+    (lock::pid_alive(h.pid) && port_open(Some(port))).then_some(port)
+}
+
+/// The browser URL a hand-off points at.
+pub fn handoff_url(port: u16, sid: &str) -> String {
+    format!("http://127.0.0.1:{port}/index.html?session={sid}")
 }
 
 /// The render fingerprint a durable stream is validated against: change what a wire record
@@ -287,7 +318,14 @@ impl Live {
             |dir| open(&dir.join("records.jsonl")),
             |h| lock::pid_alive(h.pid) && port_open(h.note.as_ref().map(|n| n.port)),
         ) {
-            Admission::Owned { session, .. } => Some(session),
+            Admission::Owned { session, .. } => {
+                // Now that the entry is ours, say where we serve it. This is the first moment
+                // both facts are true: the lock is held AND the port is known.
+                if let Some(&port) = self.port.get() {
+                    let _ = self.cache.publish(id, HtmlNote { port });
+                }
+                Some(session)
+            }
             Admission::Denied(_) => {
                 // Cache-less: the run's own temp bundle, wiped at startup. Range reads go
                 // through the store's own path, so this serves fully.
@@ -485,7 +523,21 @@ fn pull_reply_json(
 /// **loopback HTTP server** (not `file://`) so a path click can reveal the file in Finder
 /// (`/__reveal`) and the page can `fetch` its streams. It live-tails the whole tree, keeping
 /// every agent's stream current as new spawns appear and children grow.
+///
+/// If another instance is **already serving this session**, this hands off to it — opens that
+/// server's URL and returns, rather than standing up a second server, a second fold and a second
+/// copy of the same session. Reuse beats duplication when the running server already serves what
+/// was asked for (#96).
 pub fn serve(args: &Args, path: &Path) -> Result<()> {
+    let sid = session_id(path);
+    let root = (!args.no_cache).then(cache::admit::default_root).flatten();
+    if let Some(port) = existing_server(root.as_deref(), &sid) {
+        let url = handoff_url(port, &sid);
+        eprintln!("already served by another claude-replay at {url}");
+        open_in_browser(&url);
+        println!("{url}");
+        return Ok(());
+    }
     let server = start_server(args, std::slice::from_ref(&path.to_path_buf()))?;
     let url = server.url_for_root(0).expect("one root");
     eprintln!(
@@ -597,6 +649,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
         fold,
         roots,
         cache,
+        port: std::sync::OnceLock::new(),
     });
     for root in &live.roots {
         live.cache
@@ -625,11 +678,9 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     .with_context(|| "write index.html")?;
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
-    // Now that the listener is bound there is finally something useful to say: a peer that finds
-    // one of our locks held can send the user here instead of refusing.
-    for id in &root_ids {
-        live.cache.publish(id, HtmlNote { port });
-    }
+    // Hand the port to the session path, which publishes it as each session is admitted. Not a
+    // publish loop here: nothing is admitted yet.
+    let _ = live.port.set(port);
     Ok(LiveServer {
         dir,
         port,
@@ -939,6 +990,160 @@ mod tests {
     /// EVERY poll, the DOM a freshly-attached client (a page reload) builds from the same server
     /// — the user's "reloading fixes the duplicate" observation, promoted to the oracle. Drives
     /// the real pull_response/records_bytes through appends, a back-patch, activity grouping, a
+    /// **The rendezvous probe** (#96): a second invocation finds the running server through the
+    /// lock instead of standing up a duplicate. Both signals are required and each is tested for
+    /// its own reason — a pid alone is not enough because pids are recycled, a port alone is not
+    /// enough because another program may hold it, and a holder with no note has bound nothing to
+    /// redirect to yet.
+    #[test]
+    fn existing_server_is_found_only_when_the_holder_is_alive_and_answering() {
+        use crate::cache::{admit, lock, Holder, Presentation};
+
+        let root = std::env::temp_dir().join(format!("cr-rdv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = admit::entry_dir(&root, Presentation::Html, "sid");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A real listening port and a real live pid that is not ours.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let alive_pid = child.id();
+
+        let write = |pid: u32, note: Option<HtmlNote>| {
+            std::fs::write(
+                lock::lock_path(&dir),
+                serde_json::to_string(&Holder {
+                    pid,
+                    dir: dir.clone(),
+                    note,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        write(alive_pid, Some(HtmlNote { port }));
+        assert_eq!(
+            existing_server(Some(&root), "sid"),
+            Some(port),
+            "a live holder that is answering IS the hand-off target"
+        );
+
+        write(alive_pid, None);
+        assert_eq!(
+            existing_server(Some(&root), "sid"),
+            None,
+            "a holder that has not bound yet has nothing to redirect to"
+        );
+
+        write(std::process::id(), Some(HtmlNote { port }));
+        assert_eq!(
+            existing_server(Some(&root), "sid"),
+            None,
+            "our own lock is not a hand-off target"
+        );
+
+        // A dead holder: the port may even still be open (another program), so the pid check is
+        // what has to reject this.
+        child.kill().ok();
+        child.wait().ok();
+        write(alive_pid, Some(HtmlNote { port }));
+        assert_eq!(
+            existing_server(Some(&root), "sid"),
+            None,
+            "a dead holder is not a hand-off target, whoever holds the port now"
+        );
+
+        // A closed port with a live pid: the port probe is what has to reject this.
+        let mut child2 = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        drop(listener);
+        write(child2.id(), Some(HtmlNote { port }));
+        assert_eq!(
+            existing_server(Some(&root), "sid"),
+            None,
+            "a live pid that stopped answering is not a hand-off target"
+        );
+        child2.kill().ok();
+        child2.wait().ok();
+
+        assert_eq!(
+            existing_server(None, "sid"),
+            None,
+            "no cache root, no target"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The lock's note must name where we serve.** A peer that finds the lock held reads it to
+    /// redirect; a `null` note leaves it nowhere to go.
+    ///
+    /// The bug this pins was one of ordering: the note used to be published right after the
+    /// listener bound, but sessions are admitted lazily on their first `/pull`, so at that moment
+    /// the process owned nothing and the publish silently did nothing. It is now written when the
+    /// entry is admitted — the first moment the lock is ours AND the port is known.
+    #[test]
+    fn the_lock_note_carries_the_serving_port_once_a_session_is_admitted() {
+        use crate::cache::{admit, lock, Presentation};
+        use crate::engine::meta_stream::Versions;
+        use crate::{SessionCache, Transcript};
+
+        let base = std::env::temp_dir().join(format!("cr-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("nid.jsonl");
+        let bundle = base.join("bundle");
+        let root = base.join("cache"); // never the developer's real cache
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(
+            &sess,
+            "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n",
+        )
+        .unwrap();
+
+        let live = Live {
+            dir: bundle,
+            fold: FoldPolicy::default(),
+            roots: vec![Root {
+                id: "nid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }],
+            cache: SessionCache::durable(
+                Presentation::Html,
+                root.clone(),
+                Versions::current(Some(1)),
+            ),
+            port: std::sync::OnceLock::new(),
+        };
+        live.cache
+            .register("nid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let _ = live.port.set(4321);
+
+        let entry = admit::entry_dir(&root, Presentation::Html, "nid");
+        assert!(
+            lock::read::<HtmlNote>(&entry).is_none(),
+            "nothing is owned before the first pull"
+        );
+
+        live.pull_response("nid", Cursor::default()).expect("pull");
+
+        let held = lock::read::<HtmlNote>(&entry).expect("the pull admitted and locked it");
+        assert_eq!(held.pid, std::process::id());
+        assert_eq!(
+            held.note.expect("the note must not be null").port,
+            4321,
+            "a peer reads this to redirect instead of standing up its own server"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// sub-agent spawn + async completion (queue-op), commits, plus a lagging second client
     /// (missed ticks) and an interleaved third client (a second tab).
     #[test]
@@ -961,6 +1166,7 @@ mod tests {
                 cwd: "/r".into(),
             }],
             cache: SessionCache::new(),
+            port: std::sync::OnceLock::new(),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -1063,6 +1269,7 @@ mod tests {
                 cwd: "/r".into(),
             }],
             cache: SessionCache::new(),
+            port: std::sync::OnceLock::new(),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -1146,6 +1353,7 @@ mod tests {
                 cwd: "/r".into(),
             }],
             cache: SessionCache::new(),
+            port: std::sync::OnceLock::new(),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -1324,6 +1532,7 @@ mod tests {
                 },
             ],
             cache: SessionCache::new(),
+            port: std::sync::OnceLock::new(),
         };
         for (id, agent, path) in [("c1", Agent::CLAUDE, &claude), ("x1", Agent::CODEX, &codex)] {
             live.cache
@@ -1423,6 +1632,7 @@ mod tests {
                 cwd: "/repo".into(),
             }],
             cache: SessionCache::new(),
+            port: std::sync::OnceLock::new(),
         };
         live.cache
             .register("parent", Transcript::open(Agent::CODEX, parent));

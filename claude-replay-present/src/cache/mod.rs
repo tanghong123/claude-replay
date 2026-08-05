@@ -415,13 +415,17 @@ impl<P: DurableStore, A> SessionCache<P, A> {
 
     /// Publish this process's note for whoever finds the lock held — separate from
     /// [`admit`](Self::admit) because the useful facts arrive later (a server has no port until
-    /// it binds).
-    pub fn publish(&self, id: &str, note: P::Note) {
-        if let Some(d) = &self.durable {
-            if let Some(o) = lock_recover(&d.owned).get(id) {
-                let _ = lock::publish(&o.dir, note);
-            }
-        }
+    /// it binds). It can therefore only land on a session this process **already owns**.
+    /// Returns whether it landed. `false` means this process does not own `id` — it was never
+    /// admitted, admission was denied, or the entry has been released. That is worth checking:
+    /// publishing before admitting is silently a no-op, and an HTML server that did exactly
+    /// that left every lock's note `null`, so a peer finding it held had nowhere to redirect.
+    #[must_use]
+    pub fn publish(&self, id: &str, note: P::Note) -> bool {
+        let Some(d) = &self.durable else { return false };
+        let owned = lock_recover(&d.owned);
+        let Some(o) = owned.get(id) else { return false };
+        lock::publish(&o.dir, note).is_ok()
     }
 
     /// The cache-less path, chosen explicitly after a denial: no lock, no durable directory,

@@ -64,12 +64,22 @@ pub enum Unavailable {
     UnknownSession,
 }
 
-/// Where durable entries live: `$XDG_CACHE_HOME` (or `~/.cache`) `/claude-replay/sessions`.
+/// Where durable entries live.
+///
+/// `$CLAUDE_REPLAY_CACHE` wins outright when set — the explicit override, mirroring
+/// `agent-jdi`'s `AGENT_JDI_HOME`; otherwise `$XDG_CACHE_HOME` (or `~/.cache`)
+/// `/claude-replay/sessions`.
 ///
 /// Deliberately NOT the temp bundle dir a serve run wipes on startup — the whole point is to
-/// survive the process. `None` when neither variable resolves, which denies durability rather
-/// than guessing at a writable location.
+/// survive the process. `None` when nothing resolves, which denies durability rather than
+/// guessing at a writable location.
 pub fn default_root() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("CLAUDE_REPLAY_CACHE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Some(p);
+    }
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

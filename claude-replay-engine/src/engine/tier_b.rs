@@ -11,13 +11,9 @@
 //! are all safe. On a source truncation the accumulator's reset also
 //! [`reset`](BlockStore::reset)s the store, so a rebuilt session starts on a fresh backing.
 
-use crate::engine::SessionIndex;
 use crate::engine::{BlockAccess, BlockStore, Session};
-use crate::metrics::Metrics;
-use crate::model::{AgentId, Block, BlockIndex, ByteOffset, SubAgentMeta};
-use crate::Agent;
+use crate::model::{Block, BlockIndex, ByteOffset};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -220,7 +216,7 @@ impl crate::engine::session::BlockRead for TierBStore {
 
 /// A `Session<Deferred>` paired with its tier-b backing — the client-side handle that can actually
 /// read block content. Implements [`BlockAccess`] by seeking to each locator and decoding on demand;
-/// the [`SessionIndex`] / metrics / `sub_agents` come free from the
+/// the [`SessionIndex`](crate::engine::SessionIndex) / metrics / `sub_agents` come free from the
 /// session and never touch the backing.
 pub struct TierBSession {
     /// The offset-table session (`blocks: Vec<Deferred>`) + the `Bv`-free index/metrics/sub_agents.
@@ -241,109 +237,6 @@ impl TierBSession {
         let end = start + d.size as usize;
         serde_json::from_slice(&self.backing[start..end]).expect("tier-b: valid block record")
     }
-
-    /// **Persist** this session to `dir` so it can be reloaded without re-folding the transcript
-    /// (restart / `SessionCache` re-admit survival). Writes two files: `blocks.tierb` (the
-    /// append-only content backing — the bulk) and `session.json` (a small sidecar: agent, cwd,
-    /// `user_times`, `metrics`, `sub_agents`, and the `Vec<Deferred>` offset table).
-    ///
-    /// The [`SessionIndex`] is deliberately **not** written — it is fully derivable from the blocks
-    /// plus `user_times`, so it's rebuilt on [`load`](Self::load). (That also sidesteps serializing
-    /// the index's `&'static str` count keys.) `Metrics` can't be re-derived from blocks — its token
-    /// tallies come from the raw transcript — so it is persisted.
-    pub fn persist(&self, dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        std::fs::write(dir.join(BLOCKS_FILE), &self.backing)?;
-        let sidecar = Sidecar {
-            agent: self.session.agent,
-            cwd: self.session.cwd.clone(),
-            user_times: self.session.user_times.clone(),
-            metrics: self.session.metrics.clone(),
-            sub_agents: self.session.sub_agents.clone(),
-            committed: self.session.committed.clone(),
-            provisional: self.session.provisional.clone(),
-            tasks: self.session.tasks.clone(),
-        };
-        let json = serde_json::to_vec(&sidecar).map_err(to_io)?;
-        std::fs::write(dir.join(SIDECAR_FILE), json)?;
-        Ok(())
-    }
-
-    /// **Reload** a session persisted by [`persist`](Self::persist): read the backing + sidecar and
-    /// rebuild the [`SessionIndex`] by folding the blocks back through [`SessionIndex::push`] (which
-    /// equals a batch `build`). The result is byte-identical to the session that was persisted —
-    /// same blocks, index, metrics, `user_times`, `sub_agents` — for the cost of one pass over the
-    /// backing instead of a full transcript re-fold.
-    pub fn load(dir: &Path) -> io::Result<Self> {
-        let backing = std::fs::read(dir.join(BLOCKS_FILE))?;
-        let sidecar: Sidecar =
-            serde_json::from_slice(&std::fs::read(dir.join(SIDECAR_FILE))?).map_err(to_io)?;
-
-        // Rebuild the index incrementally over the committed blocks (re-decoded from the backing)
-        // then the resident provisional tail — advancing the user-turn cursor exactly as
-        // `SessionIndex::build` does. Committed content is never held all-resident.
-        let mut index = SessionIndex::default();
-        let mut turn_i = 0usize;
-        let mut at = 0usize;
-        let mut push = |index: &mut SessionIndex, b: &Block| {
-            let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
-                let t = sidecar.user_times.get(turn_i).copied().flatten();
-                turn_i += 1;
-                t
-            } else {
-                None
-            };
-            index.push(at, b, turn_time);
-            at += 1;
-        };
-        for d in &sidecar.committed {
-            let start = d.offset as usize;
-            let b: Block =
-                serde_json::from_slice(&backing[start..start + d.size as usize]).map_err(to_io)?;
-            push(&mut index, &b);
-        }
-        for b in &sidecar.provisional {
-            push(&mut index, b);
-        }
-
-        let session = Session {
-            agent: sidecar.agent,
-            cwd: sidecar.cwd,
-            committed: sidecar.committed,
-            provisional: sidecar.provisional,
-            user_times: sidecar.user_times,
-            metrics: sidecar.metrics,
-            index,
-            sub_agents: sidecar.sub_agents,
-            tasks: sidecar.tasks,
-        };
-        Ok(Self { session, backing })
-    }
-}
-
-/// File names inside a persisted tier-b session directory.
-const BLOCKS_FILE: &str = "blocks.tierb";
-const SIDECAR_FILE: &str = "session.json";
-
-/// The persisted metadata beside the content backing. Everything that is **not** re-derivable from
-/// the blocks (so the index is absent — rebuilt on load).
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Sidecar {
-    agent: Agent,
-    cwd: Option<PathBuf>,
-    user_times: Vec<Option<crate::model::EpochSeconds>>,
-    metrics: Metrics,
-    sub_agents: BTreeMap<AgentId, SubAgentMeta>,
-    committed: Vec<Deferred>,
-    provisional: Vec<Block>,
-    /// Task state (#15). `default` keeps pre-#15 sidecars loadable.
-    #[serde(default)]
-    tasks: crate::engine::tasks::TaskList,
-}
-
-/// Map a `serde_json` error into an `io::Error` (persist/load surface `io::Result`).
-fn to_io(e: serde_json::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
 impl BlockAccess for TierBSession {

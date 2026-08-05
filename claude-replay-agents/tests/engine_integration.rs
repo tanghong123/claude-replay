@@ -549,60 +549,6 @@ fn tier_b_session_matches_in_memory_parse() {
     assert_eq!(mem_session.sub_agents, tb_sess.session.sub_agents);
 }
 
-// Persist a tier-b session to disk and reload it: every block, the rebuilt index, metrics,
-// user_times, and sub_agents must match the pre-persist session exactly — a restart survives
-// without re-folding the transcript.
-
-#[test]
-fn persist_then_load_reconstructs_the_session() {
-    use claude_replay_engine::engine::session::BlockAccess;
-    use claude_replay_engine::engine::SessionAccumulator;
-    use std::io::Cursor;
-
-    let jsonl = r##"
-{"type":"user","message":{"content":[{"type":"text","text":"start"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"review","prompt":"review it"}}]}}
-{"type":"user","toolUseResult":{"agentId":"aXYZ1234","status":"async_launched","outputFile":"/t/aXYZ1234.output"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
-{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aXYZ1234</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>completed</status>\n<summary>Agent \"review\" finished</summary>\n<result>Two gaps.</result>\n</task-notification>"}
-{"type":"user","message":{"content":[{"type":"text","text":"thanks"}]}}
-"##;
-
-    let mut acc = SessionAccumulator::with_store(&ClaudeAdapter, TierBStore::new());
-    acc.advance_reader(&mut Cursor::new(jsonl.as_bytes()))
-        .unwrap();
-    let session = acc.snapshot();
-    let backing = acc.into_store().into_backing();
-    let before = TierBSession::new(session, backing);
-
-    let dir = std::env::temp_dir().join(format!("tierb-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    before.persist(&dir).unwrap();
-    let after = TierBSession::load(&dir).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-
-    assert_eq!(before.session.block_count(), after.session.block_count());
-    assert!(before.session.block_count() >= 5);
-    for i in 0..before.session.block_count() {
-        assert_eq!(
-            before.block(i),
-            after.block(i),
-            "block {i} survives persist→load"
-        );
-    }
-    assert_eq!(before.session.agent, after.session.agent);
-    assert_eq!(before.session.cwd, after.session.cwd);
-    assert_eq!(before.session.user_times, after.session.user_times);
-    assert_eq!(before.session.metrics, after.session.metrics);
-    assert_eq!(before.session.sub_agents, after.session.sub_agents);
-    // The index is rebuilt on load — must equal the original (compared via Debug; no PartialEq).
-    assert_eq!(
-        format!("{:?}", before.session.index),
-        format!("{:?}", after.session.index),
-        "rebuilt index equals the persisted session's"
-    );
-}
-
 /// `poll_delta`'s `changed_from` must be a **safe unchanged prefix**: `blocks[..changed_from]`
 /// is byte-identical to the previous poll's, across append / back-patch / commit / reset — and
 /// it must equal the whole-list common prefix a consumer would otherwise scan for (so it is
