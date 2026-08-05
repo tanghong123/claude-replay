@@ -870,8 +870,64 @@ today's path. Release: minor.
 | cursor guard | a client cursor ahead of `n_committed` resyncs — with a *matching* epoch, which is the case §4.3 identifies |
 | double-apply | I4: pinned-drain fixture yields an **identical block list** (not merely matching totals — `prev_ts` drift shows only in rendered thinking durations). The open window **must span several turns**, or the two capture points coincide and the test is vacuous |
 | rejection | rewritten prefix, changed format/fold version, changed flavor ⇒ full rebuild, never a partial serve — asserted on `ColdReason`, not merely on "it rebuilt" |
+| crash consistency | §12.1's differential harness — every truncation of both streams resumes to a block-identical session |
 | lock | two writers; dead-pid reclaim; live pid + dead port; TUI refusal text; HTML pick-time hand-off; mid-run child uncached |
 | admission | each `Admission` arm reachable: `Owned{Resumed}`, `Owned{Cold(_)}` per `ColdReason`, `Held` with a live holder, `Uncached` under `--no-cache` and under an unwritable root |
+
+### 12.1 Crash consistency — the differential harness
+
+The interesting failures are not "does a clean resume work" but "what happens when the process
+dies mid-write". Both streams are append-only and written under one lock, so every crash leaves
+a **prefix** of what a clean run would have written — which makes the whole space enumerable.
+
+**The oracle is a cold parse.** For a transcript `T`, let `cold(T)` be the session a
+from-scratch fold produces. Then for *every* truncation pair:
+
+> load the truncated streams → resume → fold the rest of `T` → the result must equal `cold(T)`,
+> **block for block**, not merely in totals.
+
+```
+harness(T):
+    run once to completion, keeping the full content and meta streams   # the "clean" pair
+    for (c, m) in truncations(content, meta):
+        write the truncated pair into a temp dir
+        got = admit(...) then advance to EOF of T
+        assert got.blocks == cold(T).blocks           # identical, not "matching counts"
+        assert got.meta   == cold(T).meta             # turns/tools/agents/tokens/tasks/times
+        assert lines_parsed <= T.lines - resumed_prefix_lines   # it actually resumed
+```
+
+**Truncations to enumerate**, surgical before random — a random-only harness reports "some seed
+failed" instead of naming the shape:
+
+| shape | why it is the interesting one |
+|---|---|
+| both at a record boundary, every `n` | the ordinary case; asserts alignment picks the right resume point at every depth |
+| meta ahead of content | the writer died between the two appends — content is authoritative (I1), so the extra meta record must be ignored |
+| content ahead of meta | the other order — resume falls back to the last record with a resume payload, and re-reads more of `T` |
+| **mid-record** (a torn tail: half a JSON line) | the last entry is unparsable and must be dropped, not misread |
+| **mid-record with valid-looking JSON** | truncation landing on a `}` boundary — parses, but describes a commit the content stream does not corroborate |
+| truncate to zero / header only | a cache with no resume point at all ⇒ cold rebuild, not a panic |
+| checkpoint present, everything before it cut | §6.6's compaction output must load like an uncompacted stream (I11) |
+| checkpoint is the LAST entry | the case §8's review found: a checkpoint with no resume payload after it must still be resumable |
+| random byte truncation, seeded, ×N | the residue — with the seed printed so a failure is reproducible |
+
+**Kill a real process too.** The truncation harness covers what a crash *produces*; it does not
+prove the writer only ever produces prefixes. One test spawns a real `claude-replay` against a
+growing transcript, `SIGKILL`s it at a random moment (not `SIGTERM` — no destructors, no flush),
+then runs the same equality assertion. `SIGKILL` specifically: the design's I6/§6.6 rename
+argument and the "flush before `process::exit`" rule (§11) are both claims about surviving the
+*ungraceful* path.
+
+**Two invariants this is really testing**, and they are why equality-with-cold is the assertion
+rather than "it loaded":
+
+- **No false accept.** A resume that succeeds must be *right*. §6.4 calls this the class to
+  guard hardest — wrong output rather than a no-op — and a differential test is the only thing
+  that detects it, because a corrupt-but-plausible resume passes every self-consistency check.
+- **No lost work beyond one commit.** A torn tail costs at most the last commit (§2). Assert
+  the resumed prefix is within one commit of the clean run's, or the cache silently degrades to
+  "cold rebuild every time" and nothing fails.
 
 **Required fixture shapes** — a linear transcript passes while the design is badly broken:
 
