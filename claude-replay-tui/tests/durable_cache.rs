@@ -437,6 +437,37 @@ fn a_resumed_writers_checkpoints_cover_the_whole_session() {
     assert_eq!(got, cold(&src));
 }
 
+/// **A registered-but-never-admitted session must still tick.** Sub-agent frames in `-f` mode
+/// are `register_new`'d and then polled — they never go through `admit`, because a child is not
+/// the session the user opened. On a durable cache `poll_view` refuses to materialize (only
+/// `admit` may, since only `admit` takes the lock), so without an explicit cache-less open the
+/// child would silently stop live-tailing.
+#[test]
+fn a_registered_child_still_ticks_on_a_durable_cache() {
+    let root = tmp("child");
+    let src = root.join("child.jsonl");
+    transcript(&src, 2);
+
+    let c = cache(&root);
+    c.register("child", Transcript::open(Agent::CLAUDE, src.clone()));
+    // Registration alone is NOT enough on a durable cache — this is the trap.
+    assert!(
+        c.poll_view("child", ArcLog::memory).is_none(),
+        "a durable cache must not materialize an unadmitted session behind the lock's back"
+    );
+    // The explicit cache-less open is what a non-owned session needs.
+    c.open_uncached("child", ArcLog::memory())
+        .expect("registered");
+    let d = c
+        .poll_view("child", ArcLog::memory)
+        .expect("resident now")
+        .expect("readable");
+    assert!(
+        d.committed_len + d.provisional.len() > 0,
+        "the child folds and ticks once it is open"
+    );
+}
+
 /// A rewritten source must be REJECTED — the false-accept class, which produces a wrong session
 /// rather than a slow one. Asserted on the REASON, not merely on "it rebuilt".
 #[test]

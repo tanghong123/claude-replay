@@ -637,12 +637,20 @@ fn build_child_frame(
     // by the event loop): its first poll re-folds the child transcript (== the blocks just
     // loaded), then only deltas. The residency budget in `enforce_cap` bounds how many child
     // followers stay materialized.
+    //
+    // A child is opened **cache-less**, explicitly. Registration alone is not enough on a
+    // durable cache: `poll_view` will not materialize a session `admit` never granted, because
+    // `admit` is the only path that takes the lock — so without this the child would register,
+    // never become resident, and silently stop ticking. Cache-less rather than admitted because
+    // a sub-agent is not the session the user opened: taking a durable entry and a lock per
+    // child would multiply both for state that is usually small and short-lived.
     let live = args.follow && child_transcript.is_some() && !agent_id.is_empty();
     if live {
         cache.register_new(
             &agent_id,
             child_transcript.clone().expect("live ⇒ transcript"),
         );
+        cache.open_uncached(&agent_id, crate::store::ArcLog::memory());
     }
     // The sidecar key (#75): stable across evict/reload cycles of this same child.
     let sc_key = if agent_id.is_empty() {
