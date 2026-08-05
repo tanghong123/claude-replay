@@ -533,6 +533,29 @@ impl<'a> Replayer<'a> {
     /// accumulator's snapshot is `committed ++ open_snapshot().0`.
     /// The per-turn timestamps stamped so far (committed turns final). Borrowed by the
     /// accumulator's drain so a projection store can index times at `put` time (#74).
+    /// Seed a resumed fold (#96 §6.3). `base`/`stamped` start at **0**, not `committed_len`:
+    /// `stamped` is raw-logical (like `base`) while `committed_len` counts *finalized* blocks,
+    /// and `coalesce_spans` collapses runs — so the two differ, and setting `stamped` to the
+    /// finalized count makes `window_stamped()` exceed `out.len()` and the first `LineStart`
+    /// slice out of range. `base`'s absolute value never escapes the replayer, so rebasing is
+    /// sound.
+    pub(crate) fn reseed(
+        &mut self,
+        agent_ids: HashMap<String, (String, String)>,
+        user_times: Vec<Option<EpochSeconds>>,
+        prev_ts: Option<EpochSeconds>,
+        pending_ts: Option<EpochSeconds>,
+    ) {
+        self.agent_ids = agent_ids;
+        self.user_times = user_times;
+        self.prev_ts = prev_ts;
+        self.pending_ts = pending_ts;
+        self.base = 0;
+        self.stamped = 0;
+        self.out.clear();
+        self.durable.clear();
+    }
+
     /// Raw-logical index one past the last emitted block — `base + out.len()`. The builder
     /// captures this at a line's start to learn whether that line went on to author anything
     /// (#96 §6.1); a flagged line that authors nothing must not enter the boundary deque.

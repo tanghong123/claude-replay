@@ -155,6 +155,53 @@ impl<S: BlockStore> SessionAccumulator<S> {
         }
     }
 
+    /// Rebuild an accumulator from a persisted cache (#96 §6.3) — the inverse of the record
+    /// stream.
+    ///
+    /// Takes the two loaded halves as plain values: the committed `Bv`s (whose loader is the one
+    /// frontend-specific piece) and the materialized meta folded from the records up to the same
+    /// point. It opens no file and decodes no `Bv`, so this is ONE implementation for every
+    /// presentation — which is what requirement R5 asks for. The caller then feeds
+    /// [`advance_at`](Self::advance_at) from `resume.replay_from`, folding normally and
+    /// suppressing nothing.
+    pub fn restore(
+        adapter: &'static dyn TranscriptAdapter,
+        store: S,
+        committed: Vec<S::Bv>,
+        mm: crate::engine::meta_stream::MaterializedMeta,
+        resume: &crate::engine::meta_stream::Resume,
+    ) -> Self {
+        let mut acc = Self::with_store(adapter, store);
+        acc.committed = committed;
+        acc.committed_meta = mm.session_meta.clone();
+        acc.cwd = mm.cwd.clone();
+        acc.task_fold = mm.tasks.clone();
+        acc.metrics
+            .reseed(mm.tokens.clone(), mm.extra.clone(), mm.span);
+        // `user_times` has length `committed_meta.turns` — its value at `replay_from`, since by
+        // the §3 partition every uncommitted `UserText` lies at or above that offset and none
+        // has been stamped.
+        acc.replayer.reseed(
+            mm.agent_ids.clone(),
+            mm.user_times.clone(),
+            resume.prev_ts,
+            resume.pending_ts,
+        );
+        // A resumed writer measures its counter deltas from where the last record left off,
+        // not from zero — otherwise the next record would re-report the whole session.
+        acc.emitted = Boundary {
+            logical: 0,
+            offset: resume.replay_from,
+            prev_ts: resume.prev_ts,
+            pending_ts: resume.pending_ts,
+            tokens: mm.tokens,
+            extra: mm.extra,
+            span: mm.span,
+            cwd: mm.cwd,
+        };
+        acc
+    }
+
     /// Fold ONE line into the running state, knowing its **start byte offset** in the transcript:
     /// decode it to canonical messages, stamp that offset into any content-bearing attachment's
     /// [`Deferred`](AttachmentContent::Deferred) locator (so the bytes can be re-loaded on

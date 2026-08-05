@@ -424,3 +424,55 @@ mod tests {
         assert_eq!(seeded, folded, "adopt, not add — turns must be 7, never 14");
     }
 }
+
+// ── alignment ─────────────────────────────────────────────────────────────────────────────
+
+/// What a load recovered: the committed prefix it may keep, the meta folded to the same point,
+/// and the resume payload to restart from.
+#[derive(Clone, Debug)]
+pub struct Aligned {
+    /// How many committed blocks survive. The caller truncates its `BV` vector AND the store
+    /// backing to this (I6) — orphaned bytes past it are read as garbage by a range-serving
+    /// frontend.
+    pub committed: usize,
+    pub meta: MaterializedMeta,
+    pub resume: Resume,
+}
+
+/// Align a meta stream against a loaded committed count (#96 §6.2, I1).
+///
+/// **A pure function of two inputs** — no filesystem, no `BV` decoding — which is what lets the
+/// crash cases be tested with hand-built vectors instead of by killing a writer at exactly the
+/// right instant.
+///
+/// The `BV` vector's length is the sole authority; no committed count is persisted separately.
+/// Records are folded in order and the last one whose resume payload the content stream
+/// corroborates wins. **There is no positional correspondence between the two streams** (I2):
+/// `finalize_completed` runs once per *line*, so a multi-turn line commits several blocks under
+/// one record and `resume.id` jumps — the link is the id, never an index.
+///
+/// Returns `None` when no record qualifies: an empty or header-only stream, a torn tail below
+/// the first resume point, or a content stream shorter than every recorded commit. The caller
+/// then rebuilds cold.
+pub fn align(records: &[MetaRecord], committed_len: usize) -> Option<Aligned> {
+    let mut mm = MaterializedMeta::default();
+    let mut best: Option<Aligned> = None;
+    for r in records {
+        // Stop before folding a record whose commit the content stream cannot corroborate:
+        // beyond this point the meta stream describes blocks that are not there.
+        if let Some(res) = &r.resume {
+            if res.id > committed_len {
+                break;
+            }
+        }
+        mm.push(r);
+        if let Some(res) = &r.resume {
+            best = Some(Aligned {
+                committed: res.id,
+                meta: mm.clone(),
+                resume: res.clone(),
+            });
+        }
+    }
+    best
+}
