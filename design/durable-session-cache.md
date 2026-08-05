@@ -109,7 +109,7 @@ what an update *is*:
 
 | class | absent means | value at `n` | fields |
 |---|---|---|---|
-| **accumulate** | added nothing | fold of every present value in records ≤ `n` — numeric `+`, list append, map merge | `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops` |
+| **accumulate** | added nothing | fold of every present value in records ≤ `n` — scalars `+`, lists append, **maps sum per key** | `turns`, `tools`, `agents`, `user_times`, `tokens`, `extra`, `task_ops` |
 | **override** | unchanged | last present value in records ≤ `n` | `cwd`, `prev_ts`, `pending_ts`, `span`, `task_pending` |
 | **indicator** | not a resume point | — | `commit: Commit` |
 
@@ -123,7 +123,7 @@ struct MetaRecord {
     agents:     Vec<AgentEvent>,               // sub-agents arriving/departing here, IN ORDER
     user_times: Vec<Option<EpochSeconds>>,     // timestamps of the turns THIS commit stamped
     tokens:     BTreeMap<Model, TokenCounts>,  // per-MODEL token increments (§7)
-    extra:      BTreeMap<String, u64>,         // agent-specific counters, summed
+    extra:      BTreeMap<String, u64>,         // agent-specific COUNTERS; a repeated key ADDS
     task_ops:   Vec<TaskOp>,                   // the op-log — NOT the task list
 
     // indicator — present iff §3's partition exists at this drain (I5)
@@ -279,6 +279,22 @@ but HTML's (rendered wire records) cannot, and R5 forbids metadata reconstructio
 on the `BV` choice. `user_times` is in no content stream at all.
 
 The record names no `BV`, so restore is one implementation with no type parameter (R5).
+
+**The class *is* the counter/gauge distinction, and a repeated key ADDS.** If two records carry
+the same `extra` key, the values **sum** — `extra` is a counter bag, not a snapshot. That is
+enforced today, not merely documented: `bump(key, n)` is the only writer and it does `+= n`
+(`claude/metrics.rs:31-33`, `codex/metrics.rs:23-25`), with no setter, so a gauge is currently
+unrepresentable. Worth stating because it generalises:
+
+| metric kind | example | class | repeated key |
+|---|---|---|---|
+| **counter** (monotonic, additive) | tokens, `reasoning_tokens`, `web_searches` | accumulate | **add** |
+| **gauge** (point-in-time) | context-window size, queue depth | override | **replace** |
+
+A gauge must never be a key in `extra`: summing it would be wrong **live as well as cached** —
+the accumulator would already report nonsense. If an agent ever needs one it takes its own
+override field, which is a deliberate choice at that moment rather than a silent misread. One
+bag, one rule; a second bag is not worth adding for a case that does not exist yet.
 
 **Why `tokens` and `task_ops` are accumulate, not override — and what that fixed.**
 Both were override in an earlier draft, which is the `user_times` O(n²) mistake a second and
