@@ -393,15 +393,23 @@ and identity checks, the alignment and the resume-or-rebuild decision — what y
 `match`:
 
 ```rust
-let cache = if no_cache { MyCache::ephemeral() } else {
-    MyCache::durable(Presentation::Tui, cache_root, Versions::current(flavor))
+type MyCache = SessionCache<MyStore, MySidecar>;   // the alias from the in-process
+                                                   //   example, with YOUR store in P
+
+// `default_root()` is $XDG_CACHE_HOME/claude-replay/sessions — None when neither it nor
+// $HOME resolves, which is a host with nowhere to be durable, not an error.
+let cache = match (no_cache, cache::admit::default_root()) {
+    (false, Some(root)) => MyCache::durable(Presentation::Tui, root, Versions::current(None)),
+    _                   => MyCache::ephemeral(),
 };
 cache.register(&id, Transcript::open(agent, path));
 
 match cache.admit(
     &id,
-    |dir| MyStore::open_append(&dir.join("blocks.jsonl")),  // MUST NOT truncate
-    |h| lock::pid_alive(h.pid),                             // your liveness signal
+    // `make_store` — opens the backing once the lock is ours. MUST NOT truncate.
+    |dir| MyStore::open_append(&dir.join("blocks.jsonl")),
+    // `alive` — your liveness signal; a server ANDs in a probe of the holder's port.
+    |h| lock::pid_alive(h.pid),
 ) {
     Admission::Owned { session, origin } => run(session, origin),
     Admission::Denied(Denial::Held(h))   => refuse_or_redirect(h.note),
@@ -410,6 +418,10 @@ match cache.admit(
 cache.publish(&id, MyNote { … });   // after you know what to say (a server has no port
                                     //   until it binds) — separate from `admit` for that
 ```
+
+(`open_append` and `memory` are constructors you write — the durable one and the
+nothing-written one a denial falls back to. `claude-replay-tui`'s `ArcLog`
+(`claude-replay-tui/src/store.rs`) is a small worked example of both.)
 
 Four rules the API enforces or expects, and the reasons they exist:
 

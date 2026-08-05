@@ -598,15 +598,23 @@ present::display_name(name);                   <span class="c">// Edit/MultiEdit
     <p style="margin-top:14px">Then build the cache durable and admit each session.
       <code>admit</code> does the locking, the version and identity checks, the alignment and
       the resume-or-rebuild decision — what you write is a <code>match</code>:</p>
-<pre><span class="k">let</span> cache = <span class="k">if</span> no_cache { MyCache::ephemeral() } <span class="k">else</span> {
-    MyCache::durable(Presentation::Tui, cache_root, Versions::current(flavor))
+<pre><span class="k">type</span> MyCache = SessionCache&lt;MyStore, MySidecar&gt;;   <span class="c">// the alias from the in-process</span>
+                                                   <span class="c">//   example, with YOUR store in P</span>
+
+<span class="c">// `default_root()` is $XDG_CACHE_HOME/claude-replay/sessions — None when neither it</span>
+<span class="c">// nor $HOME resolves, which is a host with nowhere to be durable, not an error.</span>
+<span class="k">let</span> cache = <span class="k">match</span> (no_cache, cache::admit::default_root()) {
+    (<span class="k">false</span>, Some(root)) =&gt; MyCache::durable(Presentation::Tui, root, Versions::current(None)),
+    _                   =&gt; MyCache::ephemeral(),
 };
 cache.register(&id, Transcript::open(agent, path));
 
 <span class="k">match</span> cache.admit(
     &id,
-    |dir| MyStore::open_append(&dir.join(<span class="s">"blocks.jsonl"</span>)),  <span class="c">// MUST NOT truncate</span>
-    |h| lock::pid_alive(h.pid),                             <span class="c">// your liveness signal</span>
+    <span class="c">// `make_store` — opens the backing once the lock is ours. MUST NOT truncate.</span>
+    |dir| MyStore::open_append(&dir.join(<span class="s">"blocks.jsonl"</span>)),
+    <span class="c">// `alive` — your liveness signal; a server ANDs in a probe of the holder's port.</span>
+    |h| lock::pid_alive(h.pid),
 ) {
     Admission::Owned { session, origin } =&gt; run(session, origin),
     Admission::Denied(Denial::Held(h))   =&gt; refuse_or_redirect(h.note),
@@ -614,8 +622,11 @@ cache.register(&id, Transcript::open(agent, path));
 }
 cache.publish(&id, MyNote { … });   <span class="c">// after you know what to say (a server has no</span>
                                     <span class="c">//   port until it binds) — hence separate</span></pre>
-    <p style="margin-top:14px">Four rules the API enforces or expects, and the reasons they
-      exist:</p>
+    <p style="margin-top:14px">(<code>open_append</code> and <code>memory</code> are
+      constructors you write — the durable one and the nothing-written one a denial falls back
+      to. <code>claude-replay-tui</code>'s <code>ArcLog</code>
+      (<code>claude-replay-tui/src/store.rs</code>) is a small worked example of both.)</p>
+    <p>Four rules the API enforces or expects, and the reasons they exist:</p>
     <ul class="clean">
       <li><b>Your <code>make_store</code> must not truncate.</b> <code>admit</code> has to read
         what is there before it can decide whether to keep it; it resets the store itself when
