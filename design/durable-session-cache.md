@@ -1,8 +1,8 @@
 # Design: a durable, cross-run session cache
 
-> **v24 — handoff state.** Every type is declared, every code citation verified against the tree,
+> **v25 — handoff state.** Every type is declared, every code citation verified against the tree,
 > every invariant has a named enforcer. Reuse a prior invocation's parse of a transcript. Read §3
-> first: the rest follows from it. §12 lists what must be true before step 1 starts.
+> first: the rest follows from it. §13 lists what must be true before step 1 starts.
 >
 > v22 adds: an **iterative** meta reader (entries are never all resident), **no positional
 > correspondence** between the two streams (I2 — the link is `resume.id` alone), and
@@ -352,7 +352,7 @@ build-id invalidation, discarding every cache on every release.
 | I6 | After a load, `\|committed\| == n`, and content stream, meta stream and store backing are all truncated to `n` before any append. | §6.2 |
 | I7 | Across a resume, `committed_len()` is unchanged until the first genuinely new commit. | `debug_assert!`; violation ⇒ cold rebuild |
 | I8 | A record is reused only if §6.4 passes: length, anchor, window, versions. | §6.4 |
-| I9 | At most one live process writes a `<presentation, session>`. Where liveness is undecidable (`pid_alive` is unix-only, `jdi/state.rs:150-167`) the cache is **disabled**, never assumed stale. | §8 |
+| I9 | At most one live process writes a `<presentation, session>`. Where liveness is undecidable (`pid_alive` is unix-only, `jdi/state.rs:150-167`) the cache is **disabled**, never assumed stale. | §9 |
 | I10 | A fold reset truncates both streams and the store backing to 0. | §6.5 |
 | I11 | Adopting a `checkpoint` and folding from the stream's start yield the **same** `MaterializedMeta`. A checkpoint is present only where `resume` is, so compaction can never leave a stream with state but no resume point. A reader that passes a checkpoint compares before adopting; a mismatch ⇒ cold rebuild. | §6.6; equivalence test |
 
@@ -571,7 +571,7 @@ wrong output, not a no-op) gains a second, independent detector.
 **Compaction is then trivial and asynchronous**, because it needs no fold:
 
 ```
-compact(dir):                                   # any time, under the §8 lock
+compact(dir):                                   # any time, under the §9 lock
     r ← the newest record with r.checkpoint.is_some() and r.resume.id ≤ |committed|
     if r is None or records_before(r) < COMPACT_AFTER: return
     rewrite meta as [ Header(hdr), r, ...records after r ]      # temp file + rename
@@ -580,7 +580,7 @@ compact(dir):                                   # any time, under the §8 lock
 **Rewrite, not truncate-in-place**: a checkpoint replaces a *prefix* of an append-only file, so
 compaction writes a new file and renames over the old one — the rename is the commit point, and a
 crash mid-rewrite leaves the original intact. It runs under the same `<presentation, session>`
-lock as every other write (§8), which is what makes "asynchronous" safe rather than a race.
+lock as every other write (§9), which is what makes "asynchronous" safe rather than a race.
 
 **Never checkpoint past `n`.** Only state the content stream corroborates may become absolute.
 Records above `n` are exactly those alignment rejected — a torn tail, or drains the content
@@ -615,7 +615,139 @@ deserialization error, not a silent misread.
 `MetricsAccumulator` and `Metrics` in the same place, and doing it second would mean writing the
 seam twice.
 
-## 8. Locking
+## 8. The frontend API
+
+Everything above is invisible to a frontend. What it sees is one call.
+
+### 8.1 Admission — one call, not a lock protocol
+
+```rust
+/// The outcome of asking for a session. The frontend's ENTIRE lock-related code is the
+/// message it writes for `Held` — the cache cannot print a TUI banner or issue a redirect,
+/// and that is the only part it cannot own.
+enum Admission<P: DurableStore> {
+    /// We hold the lock. Durable, and resumed when the cache was valid.
+    Owned { session: Arc<SharedSession<P>>, origin: Origin },
+    /// Another LIVE process holds it. Nothing was opened.
+    Held(Holder),
+    /// No durable slot (`--no-cache`, an unwritable dir, or a platform without a liveness
+    /// check — §9). Exactly today's behaviour.
+    Uncached(Arc<SharedSession<P>>),
+}
+
+struct Holder { pid: u32, dir: PathBuf, port: Option<u16> }
+
+/// Namespaces the durable directory AND the lock, so a TUI and an HTML server on the same
+/// session never contend — R3's "locking is <presentation, session>".
+enum Presentation { Tui, Html }
+
+enum Origin {
+    Resumed { committed: usize, replay_from: ByteOffset },
+    Cold(ColdReason),
+}
+
+/// Why a cold fold happened. Diagnosable on purpose: "the cache did not help" is a support
+/// question, and §12's rejection test asserts on these rather than on "it rebuilt".
+enum ColdReason { NoPriorCache, SourceRewritten, VersionChanged, FlavorChanged, TornStream }
+```
+
+`Admission` is exhaustive, so a frontend cannot forget the held case — the compiler asks.
+
+### 8.2 Construction
+
+```rust
+impl<P: DurableStore, A> SessionCache<P, A> {
+    /// Durable under `root/<presentation>/<session>/`. `make_store` is the ONE per-frontend
+    /// piece: only HTML knows its FoldPolicy/cwd/flavor, only the TUI knows it wants
+    /// `Arc<Block>`. It captures that config, exactly as `serve.rs:254-261` does today.
+    fn durable(p: Presentation, root: PathBuf,
+               make_store: impl Fn(&Path, &Transcript) -> io::Result<P> + Send + Sync + 'static)
+               -> Self;
+
+    /// `--no-cache`, and the fallback when a durable slot cannot be had. Every `admit`
+    /// returns `Uncached`.
+    fn ephemeral() -> Self;
+
+    fn admit(&self, id: &str) -> Admission<P>;
+    fn release(&self, id: &str);   // flush + unlock one session (TUI's `Outcome::Switch`)
+    fn release_all(&self);         // both `process::exit(0)` sites, which skip destructors
+}
+```
+
+`SessionCache::new()` becomes `ephemeral()`; nothing else about the type changes, so `poll_view`,
+`pull` and the aux slot keep working (R4).
+
+### 8.3 The store seam
+
+`admit` needs three things from the frontend's store that a closure cannot express, because they
+are called *during* a load rather than at construction. They replace today's `PersistentStore`:
+
+```rust
+trait DurableStore: BlockStore + Sized {
+    /// Reload the committed `Bv`s from the backing — the only frontend-specific step in §6.2's
+    /// load. HTML scans its record log for locators; the TUI decodes JSON blocks.
+    fn load(&mut self) -> io::Result<Vec<Self::Bv>>;
+    /// Truncate the backing to `n` committed blocks (I6). Not optional: HTML serves committed
+    /// bytes as one range to EOF (`serve.rs:325-329`), so orphaned bytes are read as garbage.
+    fn truncate(&mut self, n: usize) -> io::Result<()>;
+    /// Discard everything — a fold reset (§6.5) or a rejected cache.
+    fn reset(&mut self) -> io::Result<()>;
+}
+```
+
+`hibernate_state`/`restore_state` are **deleted**, not ported: they existed to park a render
+continuation across hibernation, and §4.3 establishes that no presentation state is persisted
+at all.
+
+### 8.4 What each frontend writes
+
+```rust
+// TUI — app.rs
+let cache = if args.no_cache { TuiCache::ephemeral() }
+            else { TuiCache::durable(Presentation::Tui, cache_root()?, |dir, _src| ArcStore::open(dir)) };
+
+match cache.admit(&id) {
+    Owned { session, .. } | Uncached(session) => run(session),
+    Held(h) => bail!("session open in another claude-replay (pid {}); attach it with \
+                      `tmux attach`, or pass --no-cache to open a second read-only view", h.pid),
+}
+// …and `cache.release_all()` immediately before each `process::exit(0)`.
+```
+
+```rust
+// HTML — serve.rs
+let cache = SessionCache::durable(Presentation::Html, cache_root()?, move |dir, src| {
+    RecordStore::open(dir, fold.clone(), cwd.clone(), src.clone())
+});
+
+// Multi-root: per session, independently. Partial success is normal, never a refusal.
+for id in sessions {
+    match cache.admit(id) {
+        Owned { session, .. } | Uncached(session) => serve(id, session),
+        Held(h) => redirect(id, h.port),   // the holder is already serving it
+    }
+}
+```
+
+**The asymmetry is deliberate and is the whole reason `Holder` carries a port.** The TUI refuses
+because a second instance would fold and hold the same session in RAM twice, invisibly; HTML
+redirects because the holder is *already serving* that session over HTTP, so the user gets what
+they wanted from the process that owns it.
+
+### 8.5 Why this shape
+
+- **One call.** Lock acquisition, the port probe, validity checking, alignment, truncation and
+  the uncached fallback all happen *inside*. R6 asked that the cache absorb state-keeping; a
+  frontend that had to sequence those steps would be absorbing it instead.
+- **The uncached path is not an error path.** `Uncached` returns a working session, so a frontend
+  never branches on "did caching work" — only on "may I write". That is what keeps `--no-cache`,
+  an unwritable directory, and a non-unix host from each needing their own handling.
+- **`Held` carries what a message needs**, not a lock handle. The frontend cannot mishandle a
+  lock it never receives.
+- **`Origin` is diagnosable.** `Cold(SourceRewritten)` and `Cold(VersionChanged)` are different
+  answers to "why was it slow", and tests assert on them rather than on a rebuild happening.
+
+## 9. Locking
 
 One lock per `<presentation, session>`, keyed by `discover::session_id(path)` with the file stem
 as fallback — both frontends currently use the bare stem, which collides across projects in a
@@ -633,7 +765,7 @@ holder is port-probed as well as pid-checked, through a callback the frontend in
 
 The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping both.
 
-## 9. Cost
+## 10. Cost
 
 | when | work |
 |---|---|
@@ -645,7 +777,7 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | per open | `stat` + first line + 64 KiB + fold entries since the newest checkpoint + scan content — O(entries-since-checkpoint + committed), bounded by `COMPACT_AFTER` rather than by session length |
 | `--no-cache` | today's path |
 
-## 10. Changes
+## 11. Changes
 
 | file | change |
 |---|---|
@@ -656,11 +788,11 @@ The lock governs writing, not viewing. `--no-cache` is a hidden flag skipping bo
 | `engine/tasks.rs` | `TaskOp::Resolve` emitted where `on_tool_result` joins (`tasks.rs:186-205`); `TaskFold::replay(ops)`; `TaskOp` derives serde |
 | `engine/adapter.rs` | the typed metrics seam (§7); `TimeSpan` exposes its endpoints |
 | `engine/reader.rs`, `engine/follow.rs` | `LineReader::open_at_offset`; `FollowParser::resume`; **RETIRE** `Position`/`open_at`/`tell` — dead code naming this feature as its consumer (`reader.rs:52-54`) whose model is superseded: it re-hashes `[0, offset)` on resume and its `DefaultHasher` is not stable across builds, unusable in a persisted format |
-| `present/cache/` | stream writer/reader (entry-at-a-time, both directions), periodic checkpoints, async compaction (§6.6), `Admission`, `shared_insert_or_get`, `--no-cache` |
-| `present/cache/shared.rs` | delete `Body::Hibernated`; `restore` yields `Body::Live`; **the cursor guard**: `cursor.committed_id > n_committed ⇒ resync` (§4.3) |
+| `present/cache/` | §8's API — `Admission`/`Origin`/`Holder`, `durable`/`ephemeral`/`admit`/`release{,_all}`; stream writer/reader (entry-at-a-time), periodic checkpoints, async compaction (§6.6); `shared_insert_or_get` |
+| `present/cache/shared.rs` | delete `Body::Hibernated`; `restore` yields `Body::Live`; replace `PersistentStore` with §8.3's `DurableStore` (`hibernate_state`/`restore_state` are deleted, not ported); **the cursor guard**: `cursor.committed_id > n_committed ⇒ resync` (§4.3) |
 | `present/lock.rs` | moved from `jdi/`, retargeted |
-| `html/serve.rs` | durable dir split from the ephemeral bundle dir; per-session locks incl. the multi-root rule; `RecordStore::open_append`; derive the numbering cursor at load |
-| `tui/app.rs` | cache on the non-follow path; flush + lock release at both `process::exit(0)`s and on `Outcome::Switch` |
+| `html/serve.rs` | durable dir split from the ephemeral bundle dir; `admit` per session with the `Held` → redirect rule (§8.4); `RecordStore` implements `DurableStore`; derive the numbering cursor at load |
+| `tui/app.rs` | cache on the non-follow path; `admit` + the `Held` refusal message (§8.4); `release_all()` at both `process::exit(0)`s and `release(id)` on `Outcome::Switch` |
 
 **Order.** #104 → engine (1) → present streams + cursor guard (2) → delete `Body::Hibernated`
 (3) → TUI durable store (4) → cache API and the `poll_view` generalisation (5) → lock move (6) →
@@ -681,7 +813,7 @@ HTML (7) → TUI (8) → GC (9).
 Additive except the deliberate TUI single-writer refusal. Any validation failure falls back to
 today's path. Release: minor.
 
-## 11. Tests
+## 12. Tests
 
 | test | asserts |
 |---|---|
@@ -691,8 +823,9 @@ today's path. Release: minor.
 | alignment | truncate either stream ⇒ I1 and I6 hold and the session resumes; a killed write yields a smaller `n`, never a rebuild |
 | cursor guard | a client cursor ahead of `n_committed` resyncs — with a *matching* epoch, which is the case §4.3 identifies |
 | double-apply | I4: pinned-drain fixture yields an **identical block list** (not merely matching totals — `prev_ts` drift shows only in rendered thinking durations). The open window **must span several turns**, or the two capture points coincide and the test is vacuous |
-| rejection | rewritten prefix, changed format/fold version, changed flavor ⇒ full rebuild, never a partial serve |
+| rejection | rewritten prefix, changed format/fold version, changed flavor ⇒ full rebuild, never a partial serve — asserted on `ColdReason`, not merely on "it rebuilt" |
 | lock | two writers; dead-pid reclaim; live pid + dead port; TUI refusal text; HTML pick-time hand-off; mid-run child uncached |
+| admission | each `Admission` arm reachable: `Owned{Resumed}`, `Owned{Cold(_)}` per `ColdReason`, `Held` with a live holder, `Uncached` under `--no-cache` and under an unwritable root |
 
 **Required fixture shapes** — a linear transcript passes while the design is badly broken:
 
@@ -707,7 +840,7 @@ today's path. Release: minor.
 | mid-session model switch | per-model `tokens` folding (#104) |
 | late tool result | back-patch across the frontier |
 
-## 12. Before step 1
+## 13. Before step 1
 
 1. **#104 lands first** (per-model tokens) — §7's seam is written against its shape.
 2. **Decide nothing else.** Every open question in earlier drafts is resolved in this version:
