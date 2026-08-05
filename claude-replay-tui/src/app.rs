@@ -28,12 +28,16 @@ fn make_cache(args: &Args) -> TuiCache {
 
 /// Bring `id`'s session into the cache, or explain why we will not.
 ///
-/// The TUI **refuses** a session another instance holds. Two instances folding and holding the
-/// same session would each keep a full copy in RAM, invisibly — and `tmux attach` is the real
-/// sharing primitive, which is why the refusal names the holder's pane when it can.
+/// A session another instance holds is **refused when following** and served **cache-less**
+/// otherwise. The refusal's whole argument is about following: two live instances would each
+/// fold and hold the same growing session in RAM, invisibly, and `tmux attach` is the real
+/// sharing primitive — which is why the refusal names the holder's pane when it can. None of
+/// that applies to reading a transcript in a second window, so that keeps working exactly as it
+/// did before there was a cache; it just does not get the resume.
 fn admit_root(
     cache: &TuiCache,
     id: &str,
+    following: bool,
 ) -> Result<std::sync::Arc<claude_replay_present::cache::SharedSession<crate::store::ArcLog>>> {
     match cache.admit(
         id,
@@ -44,7 +48,7 @@ fn admit_root(
             cache.publish(id, crate::store::TuiNote::here());
             Ok(session)
         }
-        Admission::Denied(Denial::Held(h)) => anyhow::bail!(
+        Admission::Denied(Denial::Held(h)) if following => anyhow::bail!(
             "session already open in another claude-replay (pid {}){}\n\
              or pass --no-cache for a second read-only view",
             h.pid,
@@ -53,9 +57,10 @@ fn admit_root(
                 .map(|p| format!("; attach with `tmux attach -t {p}`"))
                 .unwrap_or_default()
         ),
-        // No durable slot to compete for — `--no-cache`, an unwritable root, or a host with no
-        // liveness check. Run cache-less: the same call for every one of those reasons.
-        Admission::Denied(Denial::Unavailable(_)) => cache
+        // Nothing to compete for (`--no-cache`, an unwritable root, a host with no liveness
+        // check), or a holder we are content to read alongside. Run cache-less: the same call
+        // for every one of those reasons.
+        Admission::Denied(_) => cache
             .open_uncached(id, crate::store::ArcLog::memory())
             .ok_or_else(|| anyhow::anyhow!("session {id} is not registered")),
     }
@@ -534,7 +539,7 @@ fn build_frame(
     // where a large transcript's open time goes. The follower's first poll folds whatever is
     // above the resume point, matching a one-shot `parse_session_as` from there.
     cache.register(&id, transcript.clone());
-    let session = admit_root(cache, &id)?;
+    let session = admit_root(cache, &id, args.follow)?;
     let polled = cache
         .poll_view(&id, crate::store::ArcLog::memory)
         .and_then(|r| r.ok());
@@ -717,9 +722,10 @@ fn event_loop<B: ratatui::backend::Backend>(
         // view preserves fold toggles + render cache for the unchanged prefix without re-scanning
         // the whole block list. `apply_poll` swaps blocks + refreshes the footer in one call.
         if !event::poll(Duration::from_millis(250))? {
-            // Only a registered id has a follower (registration happens in `-f` mode only); an
-            // evicted follower silently re-materializes from the registry inside the cache.
-            if !id.is_empty() {
+            // Only `-f` tails. Every session is registered now (#96 caches the one-shot read
+            // too, for the resume), so "is it registered" no longer answers "should this view
+            // move" — `--follow` does, and the gate has to say so.
+            if args.follow && !id.is_empty() {
                 if let Some(Ok(d)) = cache.poll_view(id, crate::store::ArcLog::memory) {
                     // The tick carries the task op-log state (#15) — one call, no second
                     // cache lock; the on-disk side refreshes when the panel opens.

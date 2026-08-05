@@ -984,6 +984,14 @@ two `process::exit(0)` sites, but not the `?` paths that skip it — and a lock 
 process denies the session until the pid dies, which for a recycled pid is never. Reading the
 holder with its note left as raw JSON makes release a pid comparison, which `Drop` can carry.
 
+**The TUI refuses only when FOLLOWING.** §8.4's snippet refuses a held session outright, but its
+own argument is about following — two live instances each folding and holding the same growing
+session in RAM. Reading a transcript in a second window is neither, and refusing it would break
+something that worked before there was a cache. So a held session is served cache-less on the
+one-shot path: no lock, no writes, no resume, exactly today's behaviour. Relatedly, the tick loop
+now gates on `--follow` rather than on "is this id registered" — every session is registered now,
+for the resume, so registration no longer answers "should this view move".
+
 **Two names, since §8's `Admission` needed the room.** The low-level primitive is `claim`
 returning `Claim` (`Ours`/`Denied`); `Admission` is what §8 describes and what a frontend
 matches on. The shared `Denial`/`Unavailable`/`Origin`/`ColdReason` types are the same in both.
