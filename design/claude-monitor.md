@@ -1,9 +1,12 @@
 # Design: `claude-monitor` — every session on the machine, over HTTP
 
-> **v3 — for review.** v2 revised against six owner requirements; v3 adds the two the owner
-> settled since: the session title goes **through the meta record** as a gauge and degrades to the
-> last user message (§4), and the monitor **reuses the HTML presentation** rather than sitting
-> beside it (§6 — the main new material, and the one that changes `claude-replay`'s shape).
+> **v4 — for review.** Three rounds of owner review have made this design *smaller* each time,
+> which is the direction to want. v3's two central proposals were both rejected and both replaced
+> with less: the session title left the meta record for the monitor's own store (§4.1), and the
+> page's host-owned rail slot became no extension point at all (§6.3).
+>
+> What survived is a shorter list of changes to `claude-replay` (§6.6) and one of them —
+> `session_card` — now pays for itself in the shipped frontends before the monitor exists.
 >
 > Unblocked by #96, shipped v1.35.0–v1.39.0. Read §2, §3 and §6.
 
@@ -53,8 +56,9 @@ is a directory walk plus a hundred small reads.
 > something on the index, that is a signal the *record* is missing a field — not that the reader
 > needs a fold. Adding the field to Part I is the fix.
 >
-> §4 is the worked example: the session title wanted to be a tail read, and became a record gauge
-> instead. There is no exception to this rule in the design.
+> The rule is about the **index page**, not about the record swallowing everything. §4 is the
+> counter-example that keeps it honest: the session title is *not* a session fact, so it lives in
+> the monitor's own derived store on its own cadence — outside both the record and the fold.
 
 ### 2.1 Reading is lock-free, and that is a property not a shortcut
 
@@ -115,7 +119,7 @@ A session that has never been swept still gets a row (§4 gives it identity from
 it is missing counters, not presence. **The index is complete from the first page load; it becomes
 *rich* as the sweep catches up.**
 
-## 4. The session card (R2) — title through the record, degrading to the last prompt
+## 4. The session card (R2) — a general capability the monitor consumes
 
 Recognition is the point of the index, and the first user prompt is a poor label: it says what a
 session *started* as, not what it is. Probing real transcripts found much better material, and it
@@ -131,56 +135,102 @@ the session evolves**:
 Codex carries `session_meta`/`turn_context` instead and no title at all; QoderWork may hold one
 outside the transcript entirely, in its own store. So the derivation is a **per-agent seam**.
 
-### 4.1 The title is a gauge in the meta record
+### 4.1 The title is derived OUTSIDE the fold, on its own cadence
 
-The owner settled this: an agent-written title goes **through the meta record**, may **change over
-time**, and degrades to the **last user message** when there is none.
+v3 put the title in the meta record as a gauge. That was wrong, and the reason is sharper than
+layering.
 
-That maps exactly onto a class the record already has. Part I's fields are counters (fold) or
-**gauges** (last present value wins — `cwd`, `span`). A title is a gauge:
+**`SessionAccumulator` is sans-io by design** — the caller acquires bytes and pushes lines; the
+fold never touches a file (architecture §5). A title whose source may be *an agent's own
+database* (QoderWork) cannot be produced without I/O, so asking for it at drain time would put I/O
+inside the one component built to have none. The v3 hook, `session_title(path, tail)` called by
+the accumulator, was that mistake written down.
+
+Three more reasons, each independently sufficient:
+
+- **Cadence mismatch.** A record is written per committing drain; a title needs refreshing
+  *occasionally*. Coupling them over-serves the title and costs a tail scan per commit.
+- **It taxes everyone for one consumer.** A new gauge bumps `FOLD_VERSION`, invalidating every
+  existing durable cache entry for every `claude-replay` user — to carry a field only the monitor
+  reads.
+- **It is a derived view, not a session fact.** Turns and tokens are what the session *did*. A
+  title is a label someone (or something) chose for it, revisable at any time and reconstructible
+  from the transcript whenever wanted. Caches of derived views want their own lifecycle.
+
+So: **the monitor owns the title, in its own store, on its own schedule.**
+
+#### The agent knowledge belongs behind the one seam — and not only for the monitor
+
+`TranscriptAdapter` already has a *class* of hook for exactly this — path-taking,
+I/O-performing, and **never called by the fold**: `load_tasks(path)`, `candidates_scoped(cwd)`,
+`resolve_id(id)`, `subagent_source(root, id)`, `load_attachment(...)`. One more joins them:
 
 ```rust
-// engine/meta_stream.rs — MetaRecord, gauge half
-#[serde(default, skip_serializing_if = "Option::is_none")]
-pub title: Option<SessionTitle>,
+/// The agent's own idea of what this session is called, and what it was last asked — read from
+/// wherever the agent keeps it. Discovery-side: like `load_tasks`, this does I/O and the fold
+/// never calls it.
+fn session_card(&self, _path: &Path) -> Option<SessionCard> { None }
 
-pub struct SessionTitle {
-    pub text: String,
-    /// Which well it came from — so the index can render a fallback differently from a real
-    /// title rather than pretending they are the same fact.
-    pub source: TitleSource,   // Agent | LastPrompt
+pub struct SessionCard {
+    /// A name the agent or the user gave this session.
+    pub title: Option<String>,
+    /// The most recent prompt — "what it is doing now".
+    pub last_prompt: Option<String>,
 }
 ```
 
-Three consequences, and they are why this is the better answer than v2's tail read:
+Claude reads the last `custom-title` / `ai-title` / `last-prompt` from a bounded tail; Codex
+returns `None` today; QoderWork queries its database. Default `None` means an agent opts in with
+one method, and no adapter is forced to care.
 
-- **The index goes back to being a pure metadata read.** v2 made the card the one exception to
-  §2's rule; with the title in the record there is no exception left, and §2 holds without a
-  caveat.
-- **A changing title is not staleness.** v2's worry was that a *cached* title goes stale for
-  exactly the growing sessions where it matters. A gauge does not cache — the writer re-states it
-  whenever it changes, and folding the stream yields the latest value by construction.
-- **The fallback is resolved by the WRITER, not the reader.** The reader holds counters, not
-  text; it could not compute "the last user message" if it wanted to. So the accumulator resolves
-  agent-title-else-last-prompt at drain time and writes the winner. The reader stays free of the
-  fold, which is the whole point.
+**Display precedence**, all three sources agent-side or discovery-side, none in the fold:
+`title` → `last_prompt` → `Candidate::snippet` (the first prompt, which always exists).
 
-**Sources may live outside the transcript.** QoderWork keeping titles in its own database is the
-case that decides the shape: the hook cannot be "scan these lines", it has to be "ask the agent".
+#### This is not monitor scaffolding — both frontends want it today
 
-```rust
-// engine/adapter.rs — one more TranscriptAdapter hook, defaulted
-fn session_title(&self, path: &Path, tail: &str) -> Option<String> { None }
+The hook pays for itself before the monitor exists, because **the product currently shows a UUID
+where a name belongs**:
+
+| surface | today | with `session_card` |
+|---|---|---|
+| TUI viewer title | `path.file_stem()` — the raw session UUID (`app.rs`) | `"Project status"` |
+| HTML page title | `display_title` → the UUID, falling back to the *repo name* when it looks like an id | the session's own name, repo name as the fallback |
+| picker rows | project + first prompt | project + the session's name, which is what the user called it |
+
+So this lands in `claude-replay` **on its own**, as a small self-contained improvement, and the
+monitor is its third consumer rather than its reason. That ordering is worth keeping: it means the
+hook gets exercised by two shipped frontends before a new application depends on it, which is a
+much better way to find out the shape is wrong.
+
+The facade surfaces it once — `Transcript::card()` — so no frontend reaches for an adapter
+directly, exactly as `Transcript::parse`/`load_attachment` already work.
+
+#### The store
+
+`cards.json` at the monitor's cache root — **one file**, rewritten atomically (temp + rename).
+One file rather than one per entry because the index reads every card on every page load, and N
+small files would be N syscalls for no benefit. Small: N × a couple of hundred bytes.
+
+```
+{ "<session-id>": { title, last_prompt, source, derived_at, turns_at_derivation } }
 ```
 
-`tail` is the bounded window the accumulator already has in hand; `path` lets an adapter reach its
-own store. Claude reads the last `custom-title`/`ai-title`; Codex returns `None` today; QoderWork
-can query its database. Default `None` means an agent opts in by writing one method, and the
-fallback covers everyone else.
+#### When it refreshes
 
-**Open (§13 Q1):** how often the writer re-evaluates. Per drain is simplest and costs a bounded
-tail scan per commit; per N drains is cheaper and lags. Leaning per-drain-when-the-tail-changed,
-but it is a real cost question on a busy session.
+| trigger | why |
+|---|---|
+| **a new session appears** (§5) | a row without a name is not identifiable, and this is the cheapest possible moment |
+| **the sweep folds it** (§3.1) | the file is already warm; a bounded tail costs nothing on top |
+| **turns advanced by ≥ N since derivation** | a title tracks the topic, and the turn count is the topic's clock |
+| never otherwise | a session that is not growing cannot have changed its title |
+
+Using **turns** rather than bytes is the load-bearing choice: `session_meta.turns` is *already on
+the row* from the index, so evaluating staleness is free. A byte threshold would need a `stat` per
+session per cycle — paying I/O to decide whether to do I/O.
+
+**Open (§13 Q1):** what N is. Small enough that a title does not lag a pivot in the work, large
+enough that a chatty session is not re-derived every cycle. Guessing 10–20 turns; it wants
+watching rather than deciding up front.
 
 ### 4.2 Organization
 
@@ -287,8 +337,6 @@ pub struct ServiceConfig {
     pub fold: FoldPolicy,
     /// Scratch directory for the cache-less fallback and static assets.
     pub scratch: PathBuf,
-    /// The host's left rail (§6.3). `None` ⇒ today's page, unchanged.
-    pub rail: Option<Rail>,
 }
 
 impl SessionService {
@@ -312,63 +360,70 @@ impl SessionService {
 never names a `BV`, never renders a block, never touches the cache — it hands over a config and
 calls four methods. That is the test for whether this is a real seam or a leak.
 
-### 6.3 The rail slot
+### 6.3 The unit of reuse is a **URL**, not a slot
 
-The page gains **one** host-owned region, and knows nothing about what goes in it:
+v3 gave the page a host-owned `#rail` region. That was wrong, and the objection generalises past
+the rail: a slot is an extension point shaped like *one* host's layout. A host that wants the view
+in a top strip, a right pane, a tab set, a modal, or two side-by-side has no way in — it would
+have to ask for another slot, and the crate would accumulate one per host.
 
-```rust
-pub struct Rail {
-    /// Width reserved, as a CSS length. Drives `--rail-w`.
-    pub width: String,
-    /// A script URL the page loads; it owns everything inside `#rail`.
-    pub script: String,
-}
+So the crate offers **no extension point at all**. It offers a self-contained page at a URL:
+
+```
+GET /session?id=<sid>     → the complete session view, exactly as `--html` serves it today
+GET /pull, /records, …    → its wire surface
+GET /export.css, .js      → its assets
 ```
 
-The shell renders `<aside id="rail"></aside>` before `.layout` and sets `--rail-w`; `export.css`
-gains one rule — `body.has-rail .layout { margin-left: var(--rail-w); }` — and `.layout`'s
-`max-width: 1160px` becomes `min(1160px, 100vw - var(--rail-w))`. That is the entire change to the
-existing presentation.
+The monitor then composes **at the document level**, where composition belongs:
 
-The monitor serves `/rail.js` and `/sessions.json`; the rail polls the latter (§8) and re-renders
-itself. **The html crate never learns what a session list is** — it learns that a host may own a
-strip on the left.
-
-Two properties this buys, both of which matter more than they look:
-
-- **The existing page is byte-identical when `rail` is `None`.** No rail, no class, no CSS
-  variable in play — so the byte gate over `--dump-html`/`--dump-all-html` keeps passing
-  unchanged, which is the evidence that reuse did not become a fork.
-- **The rail cannot break the session view.** It is a sibling element with its own script; the
-  pull client, virtualized DOM, folding and search are untouched.
-
-### 6.4 Who owns the listener
-
-The **host** does. `spawn_http_server` becomes generic over a handler and moves to a small public
-module:
-
-```rust
-pub fn spawn(static_dir: PathBuf, handle: impl Fn(&str, &str) -> Option<Response> + Send + Sync + 'static)
-    -> Result<u16>;
+```html
+<aside id="rail"><!-- the monitor's session list, its own markup, its own script --></aside>
+<iframe id="view" src="/session?id=…"></iframe>
 ```
 
-- `--html` passes a handler that delegates everything to its `SessionService`.
-- The monitor passes a handler that answers `/`, `/sessions.json` and `/rail.js` itself, and
-  delegates `/pull`, `/records`, `/__reveal` and the assets to the service.
+Nothing host-specific enters `claude-replay-html`. The page it serves is byte-identical to
+today's, so the byte gate over `--dump-html`/`--dump-all-html` covers it with no new argument
+needed.
 
-One HTTP implementation, two route tables. The alternative — the monitor reimplementing a loopback
-server — is ~100 lines of duplication that would drift on the first header fix.
+**This is better than the slot on its own terms, not just purer:**
+
+- **It generalises.** Any layout a host can express in a document, it can have — because the view
+  is a URL and a URL goes anywhere.
+- **Isolation is total.** The view's global ids (`#sidebar`, `#layout`, `#taskbox`), its
+  document-level keyboard handlers, and its window-scroll virtualization cannot collide with the
+  host's. With a slot, all three are shared and every one of them is a real collision risk — the
+  virtualizer in particular measures against the viewport.
+- **It fixes §6.4's open question rather than answering it.** Swapping `view.src` keeps the rail's
+  own state — scroll, filter, selection — because the rail was never re-rendered. A full page
+  load, which the slot design implied, threw that away.
+- **Several views at once become free.** Two frames, two independent pull cursors — which is
+  already the protocol's design (per-client stateless, N tabs at their own pace).
+
+### 6.4 What the URL boundary does not give
+
+Worth stating, because the boundary is a real one and I would rather name its limit than discover
+it later:
+
+- A host **cannot restyle** the view — no theme injection, no CSS variables reaching in. Same
+  origin means it *could* reach in via the frame's DOM, but that is a coupling that would break on
+  the crate's next render change, so treat it as unavailable.
+- A host **cannot share a scroll context** with the view. Here that is a feature (the rail stays
+  put while the view scrolls); for a host that wants one continuous document it is a wall.
+
+If either is ever wanted, the honest answer is not a slot — it is making the view a **scoped
+component**: shadow-DOM custom element, ids namespaced, virtualization rooted at a scroll
+container instead of the window, `export.css` scoped. That is a real piece of work in the most
+intricate file in the crate, and it should be driven by a host that actually needs it rather than
+designed on spec. The URL boundary is what makes deferring it safe: nothing about it forecloses
+the component later.
 
 ### 6.5 Navigating between sessions
 
-Clicking a rail row is a **full page load** carrying `?session=<id>`, which is exactly what
-sub-agent navigation already does in the multi-file shell today. It costs a reload of a page whose
-data is a cursor pull anyway, and it keeps the pull client's per-session state trivially correct.
-
-**Open (§13 Q6):** whether that is good enough. A reload loses scroll position, fold state and
-search within the session you were reading. Client-side switching would keep them, at the cost of
-teaching `export.js` to tear down and re-establish a pull cursor — a real change to the most
-intricate file in the crate, for a nicety.
+Clicking a rail row sets `view.src = "/session?id=<sid>"`. The rail is untouched — it keeps
+scroll, filter and selection — and the view gets a clean per-session pull cursor, which is exactly
+what the protocol wants. No history juggling in the crate; the monitor owns its own URL bar if it
+wants deep links.
 
 ### 6.6 What this costs `claude-replay`
 
@@ -378,12 +433,15 @@ Honest accounting, because R10 pushes work into the library rather than the moni
 |---|---|---|
 | `Live` → `SessionService` + `ServiceConfig` | mechanical: move fields, thread config | low — `--html` becomes a caller and the gate covers it |
 | listener takes a handler | small | low |
-| rail slot in the shell + 2 CSS rules | small | low — inert when `rail: None` |
-| `session_title` adapter hook + record gauge (§4) | small per adapter | **`FOLD_VERSION` bump**: a new gauge changes no block output, but a stream written before it carries no title, so old entries degrade to the fallback until re-swept |
+| ~~rail slot in the shell~~ | **none** | the page is untouched (§6.3) |
+| `/session?id=` route serving today's page | trivial | none — it is `page(id)` behind a route |
+| `session_card` adapter hook (§4.1) | one defaulted method | low — discovery-side, alongside `load_tasks`; the fold never calls it, and **no `FOLD_VERSION` bump** |
 | liveness helpers move to core (§10) | mechanical | low |
 
 None of it is speculative generality: every item is something the monitor needs on day one, and
-each leaves `--html` walking the same code it walks now.
+each leaves `--html` walking the same code it walks now. Two rounds of review have made this table
+*shorter* — the rail became nothing, and the title stopped touching the fold — which is the
+direction a design should move in.
 
 ## 7. Shape
 
@@ -480,34 +538,40 @@ of it and should keep needing none of it.
 
 ## 13. Open questions
 
-1. **How often does the writer re-evaluate the title?** (§4.1) Per drain is simplest and costs a
-   bounded tail scan per commit; per N drains is cheaper and lags. Leaning
-   per-drain-when-the-tail-changed, but it is a real cost on a busy session.
+1. **How stale may a title get?** (§4.1) The refresh trigger is "turns advanced by ≥ N since
+   derivation", because the turn count is already on the row and costs nothing to test. N wants
+   watching rather than deciding up front — guessing 10–20.
 2. **Is the project leaf the right grouping key?** (§4.2) Two checkouts of one repo share a leaf
    and would merge; the full cwd disambiguates but is too long to show.
 3. **Scan strategy at scale.** (§8) Full re-read per cycle vs incremental by mtime; unmeasured at
    ~1000 sessions.
-4. **Where does `session_title` live?** (§4.1) A `TranscriptAdapter` hook is my lean — "what is
-   this session called" is a fact about the agent's format, and QoderWork reading its own database
-   is exactly the case a monitor-side function could not serve. The cost is a new hook on the seam
-   every adapter sees.
-5. **What is the sweep's completion signal?** A session whose fold *fails* (corrupt transcript,
+4. **What is the sweep's completion signal?** A session whose fold *fails* (corrupt transcript,
    unknown agent) must not be retried every cycle forever. Some negative cache with a reason, but
    its shape and invalidation are undesigned.
-6. **Full page load on session switch, or client-side?** (§6.5) A reload matches today's
-   sub-agent navigation and keeps the pull cursor trivially correct, but loses scroll, folds and
-   search in the session you were reading.
-7. **A session whose transcript was deleted but whose index entry survives.** A ghost row is
+5. **A session whose transcript was deleted but whose index entry survives.** A ghost row is
    arguably useful history and arguably confusing. Undecided.
-8. **Sub-agent rows.** A session with 40 sub-agents has 40 child transcripts. List, nest, or leave
+6. **Sub-agent rows.** A session with 40 sub-agents has 40 child transcripts. List, nest, or leave
    to drill-down? Leaning drill-down — but a long-running child is exactly what you would want to
    see from the index.
-9. **Configuration surface for R1.** A flag, a config file, or both — and whether "which agents"
+7. **Configuration surface for R1.** A flag, a config file, or both — and whether "which agents"
    is the only axis worth configuring (versus store roots, or projects).
-10. **Does the rail belong in `claude-replay-html` at all?** (§6.3) It is one `<aside>` and two CSS
-    rules, inert without a host — but it is also the first thing in that crate that exists purely
-    for a *different* application. The alternative is the monitor serving its own shell that
-    embeds the session view, which trades one small slot for a duplicated page template.
+8. **Keyboard focus across the frame boundary.** (§6.3) The rail wants `↑/↓` and `/`; the view
+   already binds `j k`, `/`, `[ ]`, `space`. Same-origin `postMessage` handles it, but who owns a
+   keystroke when the rail has focus and the view does not is a decision, not a detail.
+
+**Resolved by review** — kept as a record of what moved and why:
+
+- *Should the title live in the meta record?* No (§4.1). It would put I/O in the sans-io fold,
+  bump `FOLD_VERSION` for every user to serve one consumer, and couple an occasional refresh to a
+  per-commit cadence. It is a derived view with its own lifecycle.
+- *Is the card an adapter hook or monitor-side?* Adapter hook (§4.1) — and the deciding argument
+  was not the monitor at all: the TUI and HTML both show a UUID today where a name belongs.
+- *Does the rail belong in the html crate?* No (§6.3). A slot is shaped like one host's layout;
+  the unit of reuse is a URL, which anticipates none and serves all.
+- *Full page load on session switch?* Moot (§6.5) — swapping the frame's `src` keeps the rail's
+  state, which was the concern.
+- *Must `Presentation` become an open id?* Not for this (§10) — the monitor reuses
+  `Presentation::HTML` at its own root, and the root already isolates it.
 
 ## Rejected
 
@@ -522,8 +586,9 @@ of it and should keep needing none of it.
 | A second HTML renderer tuned for summaries | two renderers drift — the same argument that keeps one classifier and one fold |
 | First-prompt snippet as the display name | says what a session *started* as; `custom-title`/`ai-title`/`last-prompt` say what it *is* |
 | Bind non-loopback behind a flag | §11 — the aggregate is the machine's whole body of work; a flag is too small a gesture |
-| A monitor-side title function instead of an adapter hook | could not serve QoderWork, whose title lives in its own database rather than the transcript (§4.1) |
-| Caching the title from a tail read | v2 did; a cached title is stale for exactly the growing sessions where the title matters most — a record gauge is fresh by construction (§4.1) |
+| A monitor-side title function instead of an adapter hook | could not serve QoderWork, whose title lives in its own database rather than the transcript; and it would leave the TUI and HTML showing a UUID forever (§4.1) |
+| The title as a meta-record gauge | v3 proposed it. It puts I/O in the **sans-io** fold, bumps `FOLD_VERSION` for every user to serve one consumer, and ties an occasional refresh to a per-commit cadence (§4.1) |
+| A host-owned `#rail` slot in the page | v3 proposed it. A slot is shaped like one host's layout; the next host needs a different one, and the crate accumulates one per host (§6.3) |
 | The monitor reimplementing the loopback server | ~100 lines duplicated that would drift on the first header fix (§6.4) |
 | The monitor serving its own page shell that embeds the session view | duplicates the page template — the divergence would be silent and permanent (§13 Q10) |
 | Forking the html crate for a "monitor mode" | R10; and two renderers drift, the same argument that keeps one classifier and one fold |

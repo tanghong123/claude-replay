@@ -605,33 +605,31 @@ The residual diff is **not** decision-free rendering:
     three tests, one of which measures the resident window on real transcripts — the failure
     is silent (a pinned session renders perfectly and simply stops committing).
 
-- [ ] **`claude-monitor` — every session on the machine, over HTTP (`#98`).** Design **v3** in
-  **`design/claude-monitor.md`** (2026-08-06, for review); NOT started. Unblocked by #96. Ten
-  requirements; the ones that shaped it:
-  - **Its own cache** (R5) dissolves the cold-index gap — the viewer's cache only holds sessions
-    someone *opened*, and a machine-wide index is exactly the tool you point at sessions nobody
-    has. Owning it makes the fold-once sweep the design, and removes lock contention with viewers
-    *in principle* rather than by care.
-  - **Growth by `stat`** (R3/R4) is the primary liveness signal, demoting the unreliable
-    process→session link (7 of 11 live agents carried no `--resume` id) to splitting *idle* from
-    *finished* only, where being wrong is cheap.
-  - **The session title is a meta-record GAUGE** (R2) — agents write it, it changes over time, and
-    it degrades to the last user message. The reader holds counters not text, so the *writer*
-    resolves the fallback. That keeps the index a pure metadata read with no exceptions, and it
-    needs one defaulted `TranscriptAdapter` hook (`session_title`) because QoderWork's title may
-    live in its own database, not the transcript.
-  - **The html crate becomes a SERVICE, not a server** (R10). The monitor hosts today's session
-    view rather than sitting beside it: `Live` → a public `SessionService` + `ServiceConfig`
-    (cache root, presentation, fold, rail), the listener takes a handler so the host owns routing,
-    and the page gains ONE host-owned `#rail` slot — inert when absent, so `--dump-html` stays
-    byte-identical and the gate keeps proving reuse did not become a fork. `RecordStore`,
-    `Emitter` and the page internals stay private.
-  - **v2's `Presentation` claim was wrong** and is corrected: the monitor reuses `Presentation::HTML`
-    at its own ROOT, and the root already isolates it. Opening the enum is still right eventually
-    for a third-party frontend, but it is not on this path. The one real prerequisite left is
-    moving the jdi liveness helpers out of the root binary crate into core.
-  - Ten open questions in §13; the sharpest are how often the writer re-evaluates the title, and
-    whether the rail belongs in the html crate at all.
+- [ ] **`claude-monitor` — every session on the machine, over HTTP (`#98`).** Design **v4** in
+  **`design/claude-monitor.md`** (2026-08-06, for review); NOT started. Unblocked by #96. Three
+  review rounds made it smaller each time — both of v3's central proposals were rejected and
+  replaced with *less*:
+  - **The session title left the meta record.** Putting it there would have put I/O inside the
+    **sans-io** fold (an agent's title may live in its own database, e.g. QoderWork), bumped
+    `FOLD_VERSION` for every user to serve one consumer, and tied an occasional refresh to a
+    per-commit cadence. It is now a `TranscriptAdapter::session_card(path)` hook — the same class
+    as `load_tasks`, path-taking and never called by the fold — plus the monitor's own
+    `cards.json` with its own refresh policy (new session · swept · turns advanced by N).
+  - **That hook lands on its own, before the monitor.** Both shipped frontends show a UUID where
+    a name belongs today (`app.rs` uses `path.file_stem()`; `display_title` falls back to the repo
+    name), so this improves the product now and gets exercised by two frontends before a new
+    application depends on it.
+  - **The page's rail slot became nothing.** A slot is shaped like one host's layout; the next
+    host needs a different one. The unit of reuse is a **URL** — the crate serves
+    `/session?id=<sid>` and hosts compose at the document level (the monitor: a rail plus an
+    iframe). Nothing host-specific enters the html crate, the page stays byte-identical, and
+    swapping the frame's `src` keeps the rail's state, which resolves the page-reload question.
+    §6.4 names what the URL boundary does NOT give (restyling, a shared scroll context) and what
+    it would take to lift that later (a scoped component) rather than pretending it is free.
+  - Still standing from v2/v3: its own cache root (removes the cold-index gap and all lock
+    contention), growth-by-`stat` as the primary liveness signal, and `Live` → a public
+    `SessionService` + `ServiceConfig` so `--html` and the monitor share one implementation.
+  - Eight open questions in §13, plus a record of the five the review resolved and why.
 
 ### Cleanup tasks
 
