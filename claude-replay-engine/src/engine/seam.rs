@@ -24,7 +24,7 @@
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
 //!   a seam concern (#87 step 3).
 
-pub use crate::discover::{ancestors_below, home_dir, Candidate};
+pub use crate::discover::{ancestors_below, home_dir, Candidate, SessionCard};
 pub use crate::engine::builder::SessionAccumulator;
 pub use crate::engine::message::{Message, QueueOpKind};
 pub use crate::engine::path::relativize;

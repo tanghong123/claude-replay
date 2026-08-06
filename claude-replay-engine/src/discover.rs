@@ -10,6 +10,39 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// What an agent calls a session, read from wherever that agent keeps it.
+///
+/// **Discovery-side, never the fold.** Producing this may open a file or query an agent's own
+/// store, so it belongs with `load_tasks`/`candidates_scoped` and not in the sans-io
+/// accumulator — a title is a label someone chose, revisable at any time, not something the
+/// transcript *did*.
+///
+/// Both fields are optional because agents differ: Claude records a user-set title, an
+/// agent-generated one and the most recent prompt; Codex records none of them. A consumer falls
+/// back to [`Candidate::snippet`] (the FIRST prompt), which always exists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionCard {
+    /// A name for the session — the user's own if they set one, else the agent's.
+    pub title: Option<String>,
+    /// The most recent prompt: what the session is doing *now*, as opposed to what it opened
+    /// with. Worth showing beside a title, not just as a fallback for one.
+    pub last_prompt: Option<String>,
+}
+
+impl SessionCard {
+    /// Whether this carries anything worth showing — a card with neither field is
+    /// indistinguishable from no card, and callers should treat it as `None`.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.last_prompt.is_none()
+    }
+
+    /// The best single line for `path`'s session: its name, else what it was last asked, else
+    /// nothing. The one-call form for a consumer that has room for exactly one string.
+    pub fn label(&self) -> Option<&str> {
+        self.title.as_deref().or(self.last_prompt.as_deref())
+    }
+}
+
 /// A pickable session — one transcript on disk plus the metadata the fuzzy session picker
 /// shows and ranks by. Produced by the facade's `candidates_all` / the per-agent discovery.
 #[derive(Clone)]

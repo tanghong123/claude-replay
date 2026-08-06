@@ -111,6 +111,15 @@ pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::
     crate::adapter::adapter(agent).load_tasks(path)
 }
 
+/// What `agent` calls the session at `path` — its name and its most recent prompt (see
+/// [`SessionCard`]). `None` for an agent that names nothing, or a
+/// session not yet named.
+///
+/// Discovery-side: this reads a file (or an agent's own store) and is never part of a fold.
+pub fn session_card(agent: Agent, path: &Path) -> Option<crate::discover::SessionCard> {
+    crate::adapter::adapter(agent).session_card(path)
+}
+
 /// Is the `agent` label for `path` OWNERSHIP-PROVEN (#66)? True when the sniff
 /// owned it (a distinctive in-band marker) OR the file sits inside that agent's own
 /// transcript store (provenance — a normal `~/.claude/projects` session is Claude's

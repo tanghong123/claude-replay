@@ -162,4 +162,17 @@ pub trait TranscriptAdapter: Sync {
     fn load_tasks(&self, _path: &Path) -> Option<crate::engine::tasks::TaskList> {
         None
     }
+
+    /// What this agent calls the session at `path` — see [`SessionCard`](crate::discover::SessionCard).
+    ///
+    /// Same class as [`load_tasks`](Self::load_tasks): it takes a path, it may do I/O, and the
+    /// **fold never calls it**. That is not a convention to be careful about but the reason the
+    /// hook can exist at all — an agent may keep its titles in its own database rather than the
+    /// transcript, and the accumulator is sans-io by design.
+    ///
+    /// Default `None`: an agent that names nothing costs its adapter no code, and consumers
+    /// already have a fallback that always exists.
+    fn session_card(&self, _path: &Path) -> Option<crate::discover::SessionCard> {
+        None
+    }
 }

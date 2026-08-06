@@ -119,6 +119,15 @@ impl Transcript {
     /// seeks to `at`, reads that ONE line, and re-runs the agent's attachment extraction —
     /// O(1) memory (one line, one attachment). Returns `Ok(None)` when the line holds no such
     /// loadable attachment (a stale locator / a non-content-bearing line).
+    /// What this session is called, and what it was last asked — the agent's own answer, or
+    /// `None` when it has none. See [`SessionCard`](crate::discover::SessionCard).
+    ///
+    /// A frontend showing a session's name calls this rather than reaching for an adapter, the
+    /// same way it calls [`parse`](Self::parse) rather than driving the accumulator itself.
+    pub fn card(&self) -> Option<crate::discover::SessionCard> {
+        crate::discover::session_card(self.agent(), self.path())
+    }
+
     pub fn load_attachment(
         &self,
         at: ByteOffset,

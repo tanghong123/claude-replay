@@ -468,6 +468,43 @@ fn a_registered_child_still_ticks_on_a_durable_cache() {
     );
 }
 
+/// **A session's display title must never become its cache key.** The two were one variable in
+/// the viewer until the title stopped being the transcript stem; keying by it would mean two
+/// sessions the user named the same thing share one cache entry and one lock — silently serving
+/// one session's blocks under the other's name.
+///
+/// This asserts the property at the level that matters: two DIFFERENT transcripts carrying the
+/// SAME title get separate entries.
+#[test]
+fn two_sessions_with_the_same_title_do_not_share_an_entry() {
+    let root = tmp("sametitle");
+    let title = "{\"type\":\"custom-title\",\"customTitle\":\"fix the parser\"}\n";
+    let (a, b) = (root.join("aaa.jsonl"), root.join("bbb.jsonl"));
+    for (p, who) in [(&a, "alpha"), (&b, "bravo")] {
+        transcript(p, 2);
+        append(p, &user(who, 50));
+        append(p, title);
+    }
+    // Both really do carry the same name — otherwise this proves nothing.
+    let card = |p: &Path| {
+        claude_replay_core::discover::session_card(Agent::CLAUDE, p).and_then(|c| c.title)
+    };
+    assert_eq!(card(&a).as_deref(), Some("fix the parser"));
+    assert_eq!(card(&b).as_deref(), Some("fix the parser"));
+
+    let c = cache(&root);
+    open(&c, "aaa", &a);
+    open(&c, "bbb", &b);
+    c.release_all();
+
+    for id in ["aaa", "bbb"] {
+        let d = claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, id);
+        assert!(d.join("meta.jsonl").exists(), "{id} has its own entry");
+    }
+    // …and they are genuinely distinct sessions, not one entry read twice.
+    assert_ne!(cold(&a), cold(&b));
+}
+
 /// A rewritten source must be REJECTED — the false-accept class, which produces a wrong session
 /// rather than a slow one. Asserted on the REASON, not merely on "it rebuilt".
 #[test]

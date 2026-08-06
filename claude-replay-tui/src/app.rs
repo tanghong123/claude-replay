@@ -521,18 +521,27 @@ fn build_frame(
     // The agent is a property of the file — detect it from the contents so the right
     // parser/metrics run, whether we got here from the picker or a path.
     let agent = discover::detect_agent(path);
-    let title = path
+    // The session's own name when it has one, else its id. A transcript's stem is a UUID, which
+    // tells you nothing about which session you are looking at — the agent usually knows better.
+    let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
+    let title = crate::Transcript::open(agent, path)
+        .card()
+        .and_then(|c| c.title)
+        .unwrap_or_else(|| stem.clone());
     let fold = args.fold_policy();
     // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
     // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
     // the tail (the event loop's `poll_delta`). Non-live: one plain streaming parse — the cache
     // is never touched, so no follower exists.
     let transcript = crate::Transcript::open(agent, path);
-    let id = title.clone();
+    // The session ID is the transcript's stem, and deliberately NOT the display title: it keys
+    // the cache entry, the lock and the registry. A title is user-settable and not unique — two
+    // sessions called "fix the parser" would collide on one cache entry and one lock.
+    let id = stem.clone();
     // Both paths go through the cache now (#96). Following needs it for the tail; a one-shot
     // read wants it for the RESUME — skipping the bytes a previous run already folded is exactly
     // where a large transcript's open time goes. The follower's first poll folds whatever is

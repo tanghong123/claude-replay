@@ -1057,8 +1057,15 @@ fn repo_name(cwd: &str) -> Option<String> {
 pub(super) fn display_title(agent: Agent, path: &Path) -> String {
     let stem = session_id(path);
     let name = if looks_like_session_id(&stem) {
-        discover::session_cwd(path)
-            .and_then(|cwd| repo_name(&cwd.display().to_string()))
+        // A machine-generated stem names nothing. Ask the agent what the session is called
+        // (#106) before falling back to the repo it was working in — a title the user or the
+        // agent chose beats a directory name, which is shared by every session in that repo.
+        crate::Transcript::open(agent, path.to_path_buf())
+            .card()
+            .and_then(|c| c.title)
+            .or_else(|| {
+                discover::session_cwd(path).and_then(|cwd| repo_name(&cwd.display().to_string()))
+            })
             .unwrap_or(stem)
     } else {
         stem // a file the user named → the stem is the meaningful name
