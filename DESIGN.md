@@ -605,6 +605,24 @@ The residual diff is **not** decision-free rendering:
     three tests, one of which measures the resident window on real transcripts — the failure
     is silent (a pinned session renders perfectly and simply stops committing).
 
+- [ ] **`claude-monitor` — every session on the machine, over HTTP (`#98`).** Design drafted
+  2026-08-06 in **`design/claude-monitor.md`** (v1, for review); NOT started. Unblocked by #96,
+  which is what makes it tractable: the meta record's Part I is frontend-agnostic and fold-free,
+  so an index row is a sub-millisecond read of a small append-only file (0.43 MB / 711 records
+  for a 107 MB transcript) instead of a 764 ms fold. Shape:
+  - **The index reads metadata, never transcripts.** If it ever wants to parse one to render
+    something, that means the *record* is missing a field — not that the reader needs a fold.
+  - **Lock-free by construction**: the stream is append-only and `MetaReader` drops a torn tail,
+    so a concurrent writer costs at most a one-commit-stale row. Taking the lock would let the
+    monitor deny sessions to the viewer.
+  - **Liveness comes from #99** — process (basename of argv[0]) + tree mtime + in-flight tool,
+    three states; the process→session link is the weak part (7 of 11 live agents carried no
+    `--resume` id) and rows should say "unconfirmed" rather than assert.
+  - **Reuses the rendezvous hand-off** (#96): opening a session someone else already serves
+    redirects to their port instead of duplicating the server.
+  - Seven open questions in §11; the biggest is how sessions nobody has opened get indexed at
+    all (the cache only holds what a frontend opened).
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
