@@ -29,6 +29,78 @@ pub struct SessionCard {
     pub last_prompt: Option<String>,
 }
 
+/// **Opaque, adapter-owned memoization state** — whatever an adapter needs to answer faster next
+/// time: a byte offset it already scanned to, a row version, a resolved id.
+///
+/// The caller stores it beside the card and hands it back on the next call for the same path. It
+/// never looks inside, and it must be prepared to lose it.
+///
+/// **A memo is always optional and always discardable.** An adapter must treat a missing,
+/// unreadable, foreign, or stale-format memo exactly as `None` and fall back to its cold path —
+/// never an error, and never trusted unverified. An adapter whose format changes stamps a version
+/// inside its own JSON and ignores anything it does not recognise; nothing here polices that,
+/// because nothing here can.
+///
+/// Opaque JSON is right *here* even though #96 rejected it for the meta record, and the reason is
+/// in that rejection: opacity suits a **trait** seam, whose trait cannot name every impl's state,
+/// and not a **file format**, whose readers depend on it. This is the former — and the product is
+/// a cache its owner may throw away, which is what makes the discard rule safe.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CardMemo(serde_json::Value);
+
+impl CardMemo {
+    /// Wrap an adapter's own state. Only the adapter that wrote it should read it back.
+    pub fn new(v: serde_json::Value) -> Self {
+        Self(v)
+    }
+    /// Read it back — for the adapter that wrote it. A caller has no use for this.
+    pub fn value(&self) -> &serde_json::Value {
+        &self.0
+    }
+    /// Decode into the adapter's own type, or `None` when it is missing/foreign/stale. The
+    /// shape every adapter wants at the top of `session_card`.
+    pub fn decode<T: serde::de::DeserializeOwned>(memo: Option<&Self>) -> Option<T> {
+        serde_json::from_value(memo?.0.clone()).ok()
+    }
+    /// Encode the adapter's own state.
+    pub fn encode<T: serde::Serialize>(v: &T) -> Option<Self> {
+        serde_json::to_value(v).ok().map(Self)
+    }
+}
+
+/// What a `session_card` call answers. Three cases, because a caller cannot tell them apart
+/// otherwise — and confusing two of them is visible: "keep the card you have" reported as "no
+/// card" makes a title vanish on the next refresh, while the reverse makes a deleted one linger.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CardOutcome {
+    /// Nothing this adapter depends on has changed — **keep the card you already have.**
+    ///
+    /// The memo is **required**, not optional: an adapter's cursor can advance even when its
+    /// answer does not (Claude's scan offset moves with every append), so a caller that had the
+    /// option of dropping it would silently restart from a stale position on every call and
+    /// quietly undo the memoization.
+    Unchanged { memo: CardMemo },
+    /// A card — the first, or a changed one — plus the memo for next time. `None` from an
+    /// adapter with nothing worth remembering.
+    Fresh {
+        card: SessionCard,
+        memo: Option<CardMemo>,
+    },
+    /// This agent names nothing here — **drop any card and memo you cached.**
+    Absent,
+}
+
+impl CardOutcome {
+    /// The card this outcome carries, if it carries one. `Unchanged` yields `None` because the
+    /// card it refers to is the caller's, not the outcome's.
+    pub fn card(&self) -> Option<&SessionCard> {
+        match self {
+            CardOutcome::Fresh { card, .. } => Some(card),
+            _ => None,
+        }
+    }
+}
+
 impl SessionCard {
     /// Whether this carries anything worth showing — a card with neither field is
     /// indistinguishable from no card, and callers should treat it as `None`.

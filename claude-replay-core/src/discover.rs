@@ -117,7 +117,38 @@ pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::
 ///
 /// Discovery-side: this reads a file (or an agent's own store) and is never part of a fold.
 pub fn session_card(agent: Agent, path: &Path) -> Option<crate::discover::SessionCard> {
-    crate::adapter::adapter(agent).session_card(path)
+    match crate::adapter::adapter(agent).session_card(path, None) {
+        crate::discover::CardOutcome::Fresh { card, .. } => Some(card),
+        // With no memo there is nothing to be `Unchanged` against, so an adapter cannot
+        // legitimately answer that here — treat it as nothing named rather than assert.
+        _ => None,
+    }
+}
+
+/// [`session_card`] with the adapter's memoization state threaded through: hand back whatever the
+/// previous call returned for this same path, and get the next one.
+///
+/// This is the form a **repeated** consumer wants — an index that re-derives titles on a timer.
+/// The memo is opaque and discardable: losing it costs one cold derivation
+/// (see [`CardMemo`]). Measured on Claude, the difference between
+/// re-deriving and answering from a memo is ~0.96 ms versus ~1.3 µs per session.
+pub fn session_card_memo(
+    agent: Agent,
+    path: &Path,
+    memo: Option<&crate::discover::CardMemo>,
+) -> crate::discover::CardOutcome {
+    crate::adapter::adapter(agent).session_card(path, memo)
+}
+
+/// Many sessions in one operation-scoped call — see
+/// [`TranscriptAdapter::session_cards`](crate::adapter::TranscriptAdapter::session_cards). All
+/// `items` must belong to `agent`; a consumer spanning agents groups them first, which it has to
+/// do anyway to pick the adapter.
+pub fn session_cards(
+    agent: Agent,
+    items: &[(&Path, Option<&crate::discover::CardMemo>)],
+) -> Vec<crate::discover::CardOutcome> {
+    crate::adapter::adapter(agent).session_cards(items)
 }
 
 /// Is the `agent` label for `path` OWNERSHIP-PROVEN (#66)? True when the sniff

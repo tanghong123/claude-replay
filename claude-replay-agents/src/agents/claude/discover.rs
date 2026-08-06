@@ -5,7 +5,7 @@
 //! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in the facade crate's `discover`.
 
-use claude_replay_engine::seam::{Agent, Candidate, SessionCard};
+use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -224,33 +224,78 @@ fn tasks_root() -> PathBuf {
 /// missing or nothing parses — the caller then falls back to the transcript's op-log.
 /// This is Claude's half of `discover::session_tasks` (the `TranscriptAdapter::load_tasks`
 /// hook); files may be pruned/gc'd, which the op-log merge backfills.
+/// What Claude's `session_card` remembers between calls: how far it has already scanned, and
+/// what it found. Versioned so a future shape change is a cache miss rather than a misread.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Memo {
+    v: u8,
+    /// Byte offset scanned up to — everything below it has been examined.
+    at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_prompt: Option<String>,
+    /// Whether `title` came from a `custom-title`. A user's name outranks a generated one, so an
+    /// incremental scan must not let a later `ai-title` overwrite it.
+    #[serde(default)]
+    custom: bool,
+}
+
+const MEMO_V: u8 = 1;
+
 /// Claude's half of `TranscriptAdapter::session_card`: the session's name and its most recent
-/// prompt, from the tail of the transcript.
+/// prompt.
 ///
 /// Claude Code writes three line types and **rewrites them as the session evolves**:
 /// `custom-title` (`customTitle` — what the user named it), `ai-title` (`aiTitle` — what the
 /// agent named it) and `last-prompt` (`lastPrompt`). Each is taken from its LAST occurrence, and
 /// a user's name beats a generated one.
 ///
-/// Bounded: the last [`TAIL_BYTES`] only, and the first (possibly severed) line of that window is
-/// discarded rather than parsed. `None` when the file is unreadable or names nothing — a session
-/// with no title is the normal early state, not an error.
-pub(crate) fn session_card(path: &Path) -> Option<SessionCard> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let from = len.saturating_sub(TAIL_BYTES);
-    f.seek(SeekFrom::Start(from)).ok()?;
-    let mut buf = Vec::with_capacity((len - from) as usize);
-    f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
+/// **Incremental.** With a memo, only the bytes appended since the last call are scanned; with
+/// none — or one that cannot be trusted — the last [`TAIL_BYTES`] are. The three cases:
+///
+/// | file vs `memo.at` | meaning | work |
+/// |---|---|---|
+/// | equal | nothing appended | `Unchanged` — one `stat` |
+/// | longer | appended | scan the append only |
+/// | shorter | compacted, or a different file at this path | cold rescan of the tail |
+///
+/// The shrink case is a **rebuild, never a trust**: a shorter file invalidates the offset, and an
+/// offset into a rewritten file names nothing. (The same rule, and the same reason, as #96's
+/// resume.)
+pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
+        return CardOutcome::Absent;
+    };
+    let prev: Option<Memo> = CardMemo::decode(memo).filter(|m: &Memo| m.v == MEMO_V && m.at <= len);
 
-    let mut card = SessionCard::default();
-    let mut custom: Option<String> = None;
-    // Skip a severed first line when the window started mid-file: it cannot be parsed, and
-    // guessing at half a record is how a truncated title reaches the UI.
-    let lines = text.lines().skip(usize::from(from > 0));
-    for l in lines {
+    // Resume where the last scan stopped, or cold-read the tail.
+    let from = match &prev {
+        Some(m) => m.at,
+        None => len.saturating_sub(TAIL_BYTES),
+    };
+    if let Some(m) = &prev {
+        if from == len {
+            // Nothing appended. The memo still has to come back: its offset is the thing that
+            // makes the NEXT call cheap too.
+            return CardOutcome::Unchanged {
+                memo: CardMemo::encode(m).unwrap_or_else(|| CardMemo::new(serde_json::Value::Null)),
+            };
+        }
+    }
+
+    let Some(text) = read_from(path, from, len) else {
+        return CardOutcome::Absent;
+    };
+    // A cold read starts mid-file, so its first line is severed — parsing half a record is how a
+    // truncated title reaches the UI. A resumed read starts exactly on a boundary we wrote.
+    let skip_severed = prev.is_none() && from > 0;
+
+    let mut title = prev.as_ref().and_then(|m| m.title.clone());
+    let mut custom = prev.as_ref().is_some_and(|m| m.custom);
+    let mut last_prompt = prev.as_ref().and_then(|m| m.last_prompt.clone());
+
+    for l in text.lines().skip(usize::from(skip_severed)) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
             continue;
         };
@@ -262,19 +307,51 @@ pub(crate) fn session_card(path: &Path) -> Option<SessionCard> {
                 .map(str::to_string)
         };
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("custom-title") => custom = field("customTitle").or(custom),
-            Some("ai-title") => card.title = field("aiTitle").or(card.title.take()),
-            Some("last-prompt") => {
-                card.last_prompt = field("lastPrompt").or(card.last_prompt.take())
+            Some("custom-title") => {
+                if let Some(t) = field("customTitle") {
+                    title = Some(t);
+                    custom = true;
+                }
             }
+            // A generated title never displaces one the user chose.
+            Some("ai-title") => {
+                if !custom {
+                    title = field("aiTitle").or(title);
+                }
+            }
+            Some("last-prompt") => last_prompt = field("lastPrompt").or(last_prompt),
             _ => {}
         }
     }
-    // A name the user chose outranks one the agent generated.
-    if custom.is_some() {
-        card.title = custom;
+
+    let card = SessionCard { title, last_prompt };
+    let next = CardMemo::encode(&Memo {
+        v: MEMO_V,
+        at: len,
+        title: card.title.clone(),
+        last_prompt: card.last_prompt.clone(),
+        custom,
+    });
+    if card.is_empty() {
+        // Nothing named yet. Still hand back the memo when we have one, so the next call resumes
+        // instead of re-reading this tail — "no title yet" is the normal early state of every
+        // session, and it is the one that would otherwise pay full price forever.
+        return match next {
+            Some(memo) if prev.is_some() => CardOutcome::Unchanged { memo },
+            _ => CardOutcome::Absent,
+        };
     }
-    (!card.is_empty()).then_some(card)
+    CardOutcome::Fresh { card, memo: next }
+}
+
+/// `[from, to)` of `path` as text, or `None` if it cannot be read.
+fn read_from(path: &Path, from: u64, to: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::with_capacity((to.saturating_sub(from)) as usize);
+    f.take(to.saturating_sub(from)).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 pub(crate) fn load_tasks(path: &Path) -> Option<claude_replay_engine::seam::TaskList> {
@@ -350,6 +427,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// `session_card` with no memo, unwrapped to the card — the shape the pre-memo tests wrote
+    /// against, kept so they keep asserting the same behaviour.
+    fn cold(p: &Path) -> Option<SessionCard> {
+        match session_card(p, None) {
+            CardOutcome::Fresh { card, .. } => Some(card),
+            _ => None,
+        }
+    }
+
     fn card_tmp(name: &str, body: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cr-card-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
@@ -378,7 +464,7 @@ mod tests {
                 "\n",
             ),
         );
-        let c = session_card(&p).expect("named");
+        let c = cold(&p).expect("named");
         assert_eq!(c.title.as_deref(), Some("My Name"), "the user's name wins");
         assert_eq!(
             c.last_prompt.as_deref(),
@@ -400,7 +486,7 @@ mod tests {
                 "\n",
             ),
         );
-        assert_eq!(session_card(&p).unwrap().title.as_deref(), Some("current"));
+        assert_eq!(cold(&p).unwrap().title.as_deref(), Some("current"));
     }
 
     /// A session with only a prompt has no name, and `label` degrades to it — which is what a
@@ -411,7 +497,7 @@ mod tests {
             "lastonly",
             "{\"type\":\"last-prompt\",\"lastPrompt\":\"do the thing\"}\n",
         );
-        let c = session_card(&p).unwrap();
+        let c = cold(&p).unwrap();
         assert_eq!(c.title, None);
         assert_eq!(c.label(), Some("do the thing"));
     }
@@ -424,8 +510,8 @@ mod tests {
             "plain",
             "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
         );
-        assert!(session_card(&p).is_none());
-        assert!(session_card(Path::new("/nope/missing.jsonl")).is_none());
+        assert!(cold(&p).is_none());
+        assert!(cold(Path::new("/nope/missing.jsonl")).is_none());
     }
 
     /// Blank values are not names. An agent that writes `""` must not blank out the row.
@@ -440,7 +526,7 @@ mod tests {
                 "\n",
             ),
         );
-        assert_eq!(session_card(&p).unwrap().title.as_deref(), Some("Real"));
+        assert_eq!(cold(&p).unwrap().title.as_deref(), Some("Real"));
     }
 
     /// **The tail is bounded, and its first line is severed.** A transcript larger than the
@@ -462,11 +548,202 @@ mod tests {
             std::fs::metadata(&p).unwrap().len() > TAIL_BYTES,
             "fixture must exceed the window"
         );
-        let c = session_card(&p).expect("the tail names it");
+        let c = cold(&p).expect("the tail names it");
         assert_eq!(
             c.title.as_deref(),
             Some("in the tail"),
             "a title outside the window is out of scope, and the severed first line is skipped"
         );
+    }
+
+    fn append_to(p: &Path, s: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+    }
+    const AI: &str = "{\"type\":\"ai-title\",\"aiTitle\":\"first\"}\n";
+    const LP: &str = "{\"type\":\"last-prompt\",\"lastPrompt\":\"ask one\"}\n";
+
+    /// **Nothing appended ⇒ `Unchanged`, and the memo comes back.** This is the case the whole
+    /// interface exists for: the common answer, at the cost of one `stat`.
+    #[test]
+    fn an_unchanged_file_answers_unchanged_and_returns_its_memo() {
+        let p = card_tmp("memo-idle", &format!("{AI}{LP}"));
+        let CardOutcome::Fresh { card, memo } = session_card(&p, None) else {
+            panic!("first call is Fresh")
+        };
+        assert_eq!(card.title.as_deref(), Some("first"));
+        let memo = memo.expect("Claude always memoizes");
+
+        match session_card(&p, Some(&memo)) {
+            CardOutcome::Unchanged { memo: back } => {
+                assert_eq!(back, memo, "the memo survives an unchanged call unchanged")
+            }
+            other => panic!("expected Unchanged, got {other:?}"),
+        }
+    }
+
+    /// An append with **no** title line must keep the title the memo remembers — the incremental
+    /// scan sees only the new bytes, so anything it does not re-find has to come from the memo.
+    #[test]
+    fn an_append_without_a_title_keeps_the_remembered_one() {
+        let p = card_tmp("memo-keep", &format!("{AI}{LP}"));
+        let CardOutcome::Fresh { memo, .. } = session_card(&p, None) else {
+            panic!()
+        };
+        append_to(
+            &p,
+            "{\"type\":\"assistant\",\"message\":{\"content\":\"work\"}}\n",
+        );
+
+        let CardOutcome::Fresh { card, .. } = session_card(&p, memo.as_ref()) else {
+            panic!("the file grew, so this is Fresh")
+        };
+        assert_eq!(card.title.as_deref(), Some("first"), "carried by the memo");
+        assert_eq!(card.last_prompt.as_deref(), Some("ask one"));
+    }
+
+    /// An append that DOES rename the session wins over the memo — the memo is a starting point,
+    /// not an answer.
+    #[test]
+    fn an_append_with_a_new_title_supersedes_the_memo() {
+        let p = card_tmp("memo-new", &format!("{AI}{LP}"));
+        let CardOutcome::Fresh { memo, .. } = session_card(&p, None) else {
+            panic!()
+        };
+        append_to(&p, "{\"type\":\"ai-title\",\"aiTitle\":\"second\"}\n");
+        let CardOutcome::Fresh { card, .. } = session_card(&p, memo.as_ref()) else {
+            panic!()
+        };
+        assert_eq!(card.title.as_deref(), Some("second"));
+    }
+
+    /// A user's name outranks a generated one **across calls** too: the memo has to carry the
+    /// fact that the title was user-set, or the next `ai-title` in an append silently wins.
+    #[test]
+    fn a_custom_title_survives_a_later_ai_title_in_an_append() {
+        let p = card_tmp(
+            "memo-custom",
+            "{\"type\":\"custom-title\",\"customTitle\":\"Mine\"}\n",
+        );
+        let CardOutcome::Fresh { card, memo } = session_card(&p, None) else {
+            panic!()
+        };
+        assert_eq!(card.title.as_deref(), Some("Mine"));
+        append_to(&p, "{\"type\":\"ai-title\",\"aiTitle\":\"generated\"}\n");
+        let CardOutcome::Fresh { card, .. } = session_card(&p, memo.as_ref()) else {
+            panic!()
+        };
+        assert_eq!(
+            card.title.as_deref(),
+            Some("Mine"),
+            "a generated title must not displace the user's, even a call later"
+        );
+    }
+
+    /// **A shrunk file is a rebuild, never a trust.** An offset into a rewritten file names
+    /// nothing, so the memo is discarded and the tail rescanned.
+    #[test]
+    fn a_shrunk_file_discards_the_memo_and_rescans() {
+        let p = card_tmp("memo-shrink", &format!("{AI}{LP}"));
+        let CardOutcome::Fresh { memo, .. } = session_card(&p, None) else {
+            panic!()
+        };
+        // Compaction: a different, shorter file at the same path, with a different name.
+        std::fs::write(&p, "{\"type\":\"ai-title\",\"aiTitle\":\"rebuilt\"}\n").unwrap();
+        let CardOutcome::Fresh { card, .. } = session_card(&p, memo.as_ref()) else {
+            panic!()
+        };
+        assert_eq!(
+            card.title.as_deref(),
+            Some("rebuilt"),
+            "the stale offset must not be believed"
+        );
+    }
+
+    /// A memo that is foreign, stale-format, or garbage is a **cache miss**, never an error —
+    /// the rule that makes the memo safe to persist across upgrades.
+    #[test]
+    fn an_unusable_memo_falls_back_to_the_cold_path() {
+        let p = card_tmp("memo-junk", &format!("{AI}{LP}"));
+        for junk in [
+            serde_json::json!("not an object"),
+            serde_json::json!({"v": 99, "at": 0}),
+            serde_json::json!({"at": "not a number"}),
+            serde_json::json!({}),
+        ] {
+            let m = CardMemo::new(junk.clone());
+            match session_card(&p, Some(&m)) {
+                CardOutcome::Fresh { card, .. } => {
+                    assert_eq!(
+                        card.title.as_deref(),
+                        Some("first"),
+                        "cold path still works"
+                    )
+                }
+                other => panic!("{junk} should cold-path, got {other:?}"),
+            }
+        }
+    }
+
+    /// A session with no title yet still memoizes — that is the state most sessions are in early,
+    /// and the one that would otherwise re-read its tail on every single refresh forever.
+    #[test]
+    fn an_unnamed_session_still_memoizes_after_the_first_call() {
+        let p = card_tmp("memo-unnamed", "{\"type\":\"user\",\"m\":1}\n");
+        assert!(
+            matches!(session_card(&p, None), CardOutcome::Absent),
+            "nothing named, and nothing to resume from yet"
+        );
+        // Once it HAS been scanned with a memo in hand, an unchanged unnamed file is Unchanged.
+        let m = CardMemo::encode(&Memo {
+            v: MEMO_V,
+            at: std::fs::metadata(&p).unwrap().len(),
+            title: None,
+            last_prompt: None,
+            custom: false,
+        })
+        .unwrap();
+        assert!(matches!(
+            session_card(&p, Some(&m)),
+            CardOutcome::Unchanged { .. }
+        ));
+    }
+
+    /// The incremental path must reach the same answer as a cold read — the equivalence that
+    /// makes memoization safe rather than merely fast.
+    #[test]
+    fn incremental_equals_cold() {
+        let p = card_tmp("memo-equiv", &format!("{AI}{LP}"));
+        let mut memo = match session_card(&p, None) {
+            CardOutcome::Fresh { memo, .. } => memo,
+            _ => panic!(),
+        };
+        for i in 0..12 {
+            append_to(&p, &format!("{{\"type\":\"user\",\"n\":{i}}}\n"));
+            if i % 4 == 0 {
+                append_to(
+                    &p,
+                    &format!("{{\"type\":\"ai-title\",\"aiTitle\":\"t{i}\"}}\n"),
+                );
+            }
+            if i % 3 == 0 {
+                append_to(
+                    &p,
+                    &format!("{{\"type\":\"last-prompt\",\"lastPrompt\":\"p{i}\"}}\n"),
+                );
+            }
+            memo = match session_card(&p, memo.as_ref()) {
+                CardOutcome::Fresh { memo, .. } => memo,
+                CardOutcome::Unchanged { memo } => Some(memo),
+                CardOutcome::Absent => None,
+            };
+            let incremental = match session_card(&p, memo.as_ref()) {
+                CardOutcome::Fresh { card, .. } => Some(card),
+                CardOutcome::Unchanged { .. } => cold(&p), // unchanged ⇒ the caller's card stands
+                CardOutcome::Absent => None,
+            };
+            assert_eq!(incremental, cold(&p), "step {i}: incremental == cold");
+        }
     }
 }

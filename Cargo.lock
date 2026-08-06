@@ -213,6 +213,7 @@ dependencies = [
  "anyhow",
  "claude-replay-core",
  "claude-replay-engine",
+ "serde",
  "serde_json",
 ]
 

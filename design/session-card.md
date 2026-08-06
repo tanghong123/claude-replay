@@ -1,8 +1,12 @@
 # Design: the `session_card` seam — cheap, repeatable title derivation
 
-> **v1 — for review.** Revises the interface shipped in v1.40.0 (#106), which derives a title
-> correctly but pays the full cost every time. The addition is an **opaque, adapter-owned memo**
-> the caller stores and hands back, so the second derivation costs almost nothing.
+> **v2 — BUILT** (the Claude half; QoderWork is §9). Revises the interface shipped in v1.40.0
+> (#106), which derives a title correctly but pays the full cost every time. The addition is an
+> **opaque, adapter-owned memo** the caller stores and hands back, so the second derivation costs
+> almost nothing.
+>
+> Measured on 18 real transcripts (714 MB): **1.707 ms → 3.8 µs per session, 446×**, all 18
+> answering `Unchanged`. §8 Q2 is settled — `Unchanged` carries a **required** memo.
 >
 > Driven by #98 (`claude-monitor`), which re-derives titles for every session on the machine on a
 > ~2 s cadence — but the interface belongs to `claude-replay` and every frontend benefits.
@@ -66,8 +70,11 @@ pub struct CardMemo(serde_json::Value);
 /// The three answers, distinguished because a caller cannot tell them apart otherwise.
 pub enum CardOutcome {
     /// Nothing this adapter depends on has changed — **keep the card you already have.**
-    /// Optionally refresh the memo (e.g. a new offset to resume from).
-    Unchanged { memo: Option<CardMemo> },
+    ///
+    /// The memo is REQUIRED, not optional: a cursor advances even when the answer does not
+    /// (Claude's scan offset moves with every append), so a caller free to drop it would
+    /// silently restart from a stale position every call and undo the memoization.
+    Unchanged { memo: CardMemo },
     /// A card, plus the memo for next time.
     Fresh { card: SessionCard, memo: Option<CardMemo> },
     /// This agent names nothing here — **drop any card you cached.**
@@ -225,10 +232,8 @@ route through `Transcript::card()` — so the breaking part is contained to the 
    memo. Adding `card_memo()` later is additive, so this can wait — but not adding it now means
    the monitor calls the adapter through a lower-level path than the frontends do, which is a
    small asymmetry worth naming.
-2. **Does `Unchanged` need to carry a memo at all?** Claude wants it (the offset advances even
-   when the title does not). QoderWork does not. Carrying `Option<CardMemo>` serves both, but a
-   caller that ignores it on `Unchanged` would silently make Claude's scan restart from a stale
-   offset each time — so it may deserve to be non-optional there, forcing the caller to store it.
+2. ~~Does `Unchanged` need to carry a memo?~~ **Settled: required.** A caller free to drop it
+   would silently restart Claude's scan from a stale offset on every call.
 3. **A cheap/expensive budget hint.** The index refresh wants cheap; the sweep can afford
    expensive. Today the memo makes the common case cheap enough that a hint looks like premature
    generality — but if an adapter's cold path is ever *very* expensive (a network call), the
@@ -240,6 +245,33 @@ route through `Transcript::card()` — so the breaking part is contained to the 
    A framework-level `{adapter, version, payload}` wrapper would make skew impossible to get
    wrong, at the cost of a concept every adapter must understand. Leaning no — the discard rule
    makes the failure mode harmless.
+
+## 9. Status
+
+| | |
+|---|---|
+| `CardMemo` / `CardOutcome` / the two hooks | **built** |
+| Claude's incremental scan | **built** — 16 tests, including `incremental_equals_cold` |
+| `Transcript::card()` unchanged for frontends | **built** — the TUI and HTML did not change |
+| `session_card_memo` / `session_cards` on the facade | **built** |
+| **QoderWork's SQLite implementation** | **not built** — needs a dependency decision (§9.1) |
+
+### 9.1 The QoderWork dependency question
+
+Its titles live in `~/Library/Application Support/QoderWork/data/agents.db`
+(`sub_chats.name`, joined on `session_id` = the transcript stem). Reading that needs SQLite, and
+`claude-replay-agents` has no database dependency today. Three options, none obviously right:
+
+- **`rusqlite`** — correct and safe, but pulls a C library into a workspace that currently builds
+  with pure Rust, affecting build time and cross-compilation. Biggest hammer; also the only one
+  that reads WAL correctly.
+- **Shell out to `sqlite3`** — no dependency, but a runtime requirement and a parsing surface;
+  fragile in exactly the way this codebase avoids elsewhere.
+- **Defer** — QoderWork sessions fall back to `Candidate::snippet`, exactly as Codex does, and the
+  interface is ready when the answer is.
+
+Leaning `rusqlite` behind an **optional feature**, off by default, so the cost lands only on a
+build that wants QoderWork titles. Wants a decision rather than a guess.
 
 ## Rejected
 

@@ -170,9 +170,34 @@ pub trait TranscriptAdapter: Sync {
     /// hook can exist at all — an agent may keep its titles in its own database rather than the
     /// transcript, and the accumulator is sans-io by design.
     ///
-    /// Default `None`: an agent that names nothing costs its adapter no code, and consumers
-    /// already have a fallback that always exists.
-    fn session_card(&self, _path: &Path) -> Option<crate::discover::SessionCard> {
-        None
+    /// `memo` is whatever this adapter returned for this same path last time, or `None` on a
+    /// first call, after a cache eviction, or when the stored memo could not be read. It is the
+    /// adapter's own state — see [`CardMemo`](crate::discover::CardMemo) for the rules, of which
+    /// the hardest is that a memo must never be required and never be trusted unverified.
+    ///
+    /// Default [`Absent`](crate::discover::CardOutcome::Absent): an agent that names nothing
+    /// costs its adapter no code, and consumers already have a fallback that always exists.
+    fn session_card(
+        &self,
+        _path: &Path,
+        _memo: Option<&crate::discover::CardMemo>,
+    ) -> crate::discover::CardOutcome {
+        crate::discover::CardOutcome::Absent
+    }
+
+    /// [`session_card`](Self::session_card) for MANY sessions in one operation-scoped call, for
+    /// adapters whose per-call setup dominates — opening a database, scanning a store. Provided:
+    /// the obvious loop, which is right for an adapter that reads one file per session.
+    ///
+    /// Same shape and same reason as [`subagent_sources`](Self::subagent_sources): a memo makes
+    /// the repeat cheap, but only a batch makes the *setup* cheap.
+    fn session_cards(
+        &self,
+        items: &[(&Path, Option<&crate::discover::CardMemo>)],
+    ) -> Vec<crate::discover::CardOutcome> {
+        items
+            .iter()
+            .map(|(p, m)| self.session_card(p, *m))
+            .collect()
     }
 }

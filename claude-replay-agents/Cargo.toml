@@ -10,6 +10,7 @@ categories = ["parser-implementations"]
 
 [dependencies]
 claude-replay-engine = { path = "../claude-replay-engine", version = "1" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 

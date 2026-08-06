@@ -108,8 +108,12 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn load_tasks(&self, path: &Path) -> Option<claude_replay_engine::engine::tasks::TaskList> {
         agents::claude::discover::load_tasks(path)
     }
-    fn session_card(&self, path: &Path) -> Option<claude_replay_engine::seam::SessionCard> {
-        agents::claude::discover::session_card(path)
+    fn session_card(
+        &self,
+        path: &Path,
+        memo: Option<&claude_replay_engine::seam::CardMemo>,
+    ) -> claude_replay_engine::seam::CardOutcome {
+        agents::claude::discover::session_card(path, memo)
     }
     fn store_contains(&self, path: &Path) -> bool {
         path.starts_with(agents::claude::discover::projects_dir())
