@@ -2,10 +2,23 @@
 //! this machine's real transcripts.
 //!
 //! Written to test a hypothesis that turned out to be wrong: that the durable cache should make a
-//! switch instant. The cache is fine — `admit` resumes a 12,469-block session in ~50 ms. The cost
-//! is the View's FIRST LAYOUT, which renders every block (syntax highlighting included) purely to
-//! count its wrapped lines, then throws the styled output away. Measured 5.9 s, of which 5.68 s
-//! is `render::block_body`.
+//! switch instant. The cache was never the problem — `admit` resumes a 12,469-block session in
+//! ~47 ms. The cost was the View's FIRST LAYOUT, which renders every block purely to count its
+//! wrapped lines and then throws the styled output away, at ~150 µs a line of syntect parsing.
+//!
+//! #107 cut that two ways, both output-identical (`BYTE-IDENTICAL: PASS`): a collapsed write now
+//! parses only the lines it prints, and the measure pass fans out across cores once `carry_in`
+//! has settled. Measured on this machine, before → after:
+//!
+//! | session          | blocks | first layout before | after   |
+//! |------------------|--------|---------------------|---------|
+//! | 094539f2 (107MB) | 12,469 | 5.9 s               | 816 ms  |
+//! | 530339ac (55MB)  |  3,404 | 1.3 s               | 291 ms  |
+//! | 4752d00e (7MB)   |    688 | 180 ms              |  55 ms  |
+//!
+//! What this bench is FOR now: it fails nothing, so read the numbers. If `admit` ever rivals the
+//! layout again, the cache regressed; if the layout climbs back toward seconds, the measure pass
+//! stopped fanning out (see `View::measure_parallel`).
 //!
 //! `cargo test -p claude-replay-tui --test switch_cost --release -- --ignored --nocapture`
 use claude_replay_core::engine::meta_stream::Versions;

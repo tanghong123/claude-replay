@@ -227,7 +227,21 @@ fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Ve
     let shown = limit.map_or(lines.len(), |cap| lines.len().min(cap));
     // Gutter width from the largest *shown* number (min 2), as CC does.
     let gutter = shown.to_string().len().max(2);
-    let hl = highlight::highlight_spans(content, token);
+    // Highlight only the lines that will actually be PRINTED. syntect's state flows forward
+    // only, so lines `0..shown` parse to identical spans whether or not the parse continues past
+    // them — while a COLLAPSED preview (`limit = WRITE_PREVIEW`) would otherwise parse a whole
+    // 5,000-line write to show ten of it, and that parse is ~150 µs a line (#107).
+    let head = if shown >= lines.len() {
+        content
+    } else {
+        let end = content
+            .match_indices('\n')
+            .take(shown)
+            .last()
+            .map_or(content.len(), |(i, _)| i + 1);
+        &content[..end]
+    };
+    let hl = highlight::highlight_spans(head, token);
     for (i, l) in lines.iter().take(shown).enumerate() {
         // 6-space margin + right-aligned number + one space, then the code.
         let mut spans = vec![
@@ -1799,6 +1813,31 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s.style.fg, Some(Color::Indexed(..)))),
             "no markdown syntect color"
+        );
+    }
+
+    /// `assemble_one`'s ONLY use of `carry_in`: a body that opens with a blank line drops it when
+    /// something already emitted a line, and keeps it when nothing has. This is the contract that
+    /// makes the measure pass's serial `carry_in` prefix necessary before it fans out (#107) —
+    /// no block kind opens blank today, so this is where the requirement is written down.
+    #[test]
+    fn assemble_one_drops_a_leading_blank_only_when_something_preceded_it() {
+        let opens_blank = || vec![Line::from(""), Line::from("body")];
+        assert_eq!(
+            assemble_one(opens_blank(), true).len(),
+            2,
+            "carry_in: the opening blank is a duplicate separator and goes"
+        );
+        assert_eq!(
+            assemble_one(opens_blank(), false).len(),
+            3,
+            "no carry: the opening blank is the document's own and stays"
+        );
+        // A body that opens with content is indifferent — which is every block kind today.
+        let opens_solid = || vec![Line::from("body")];
+        assert_eq!(
+            assemble_one(opens_solid(), true).len(),
+            assemble_one(opens_solid(), false).len()
         );
     }
 }

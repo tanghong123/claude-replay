@@ -180,4 +180,28 @@ mod tests {
         // Plain identifiers / operators use the near-white default fg (231).
         assert_eq!(fg_of(&spans, "x"), 231, "identifier");
     }
+
+    /// The property that lets a collapsed preview parse only what it prints (#107): syntect's
+    /// state flows FORWARD only, so the spans for lines `0..n` are identical whether the parse
+    /// stops at `n` or runs to the end. Checked with multi-line state in flight — an unterminated
+    /// block comment and an open string — since that is where a backward dependency would show.
+    #[test]
+    fn a_truncated_parse_matches_the_full_one_line_for_line() {
+        let code = "fn a() {}\n/* opens here\nstill inside\n*/\nlet s = \"x\";\nfn b() {}\n";
+        let full = highlight_spans(code, "rs");
+        for n in 1..=code.lines().count() {
+            let end = code
+                .match_indices('\n')
+                .take(n)
+                .last()
+                .map_or(code.len(), |(i, _)| i + 1);
+            let head = highlight_spans(&code[..end], "rs");
+            assert_eq!(
+                head.len(),
+                n,
+                "a {n}-line prefix parses to {n} lines of spans"
+            );
+            assert_eq!(head[..], full[..n], "prefix of {n} lines diverged");
+        }
+    }
 }

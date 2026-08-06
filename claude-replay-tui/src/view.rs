@@ -32,6 +32,20 @@ pub(crate) const INSET: usize = 6;
 /// The footer location segment's shed priority — never dropped, only truncated last.
 const LOC_PRIO: u8 = 100;
 
+/// Render + wrap one block, free of the `View` — so a measure pass can hand blocks to several
+/// threads without the whole viewer having to be `Sync`. See [`View::wrapped_block_lines`].
+fn wrapped_lines_of(
+    block: &Block,
+    is_collapsed: bool,
+    width: usize,
+    carry_in: bool,
+) -> Vec<Line<'static>> {
+    let body = render::block_body(block, is_collapsed, width);
+    let assembled = render::assemble_one(body, carry_in);
+    let tags = vec![0usize; assembled.len()];
+    wrap::wrap_all_tagged(&assembled, &tags, width).0
+}
+
 /// Footer measurement is in terminal COLUMNS, not `char`s. Session titles are agent-supplied
 /// (#106) and routinely CJK — "初筛候选人简历" is 7 chars but 14 columns, so counting chars
 /// would let the footer overrun its line and wrap.
@@ -620,10 +634,44 @@ impl View {
     fn wrapped_block_lines(&self, b: usize, carry_in: bool) -> Vec<Line<'static>> {
         let is_collapsed =
             self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]);
-        let body = render::block_body(&self.blocks[b], is_collapsed, self.width as usize);
-        let assembled = render::assemble_one(body, carry_in);
-        let tags = vec![0usize; assembled.len()];
-        wrap::wrap_all_tagged(&assembled, &tags, self.width as usize).0
+        wrapped_lines_of(&self.blocks[b], is_collapsed, self.width as usize, carry_in)
+    }
+
+    /// Wrapped HEIGHTS for `[from, to)`, every block of which is known to have `carry_in = true`
+    /// — spread across the machine's cores. Rendering a block is pure (it reads the block, the
+    /// fold bit and the width, and shares only syntect's immutable `SyntaxSet`), so the split is
+    /// invisible: each block produces the same height it would have produced serially.
+    ///
+    /// Worth it only in bulk — the first layout of a large session, which is the 4.9 s this
+    /// exists to cut (#107). A live tail re-measures a handful of blocks and stays serial, where
+    /// spawning would cost more than the work.
+    fn measure_parallel(&self, from: usize, to: usize) -> Vec<usize> {
+        const MIN_PER_THREAD: usize = 64;
+        let n = to - from;
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |p| p.get())
+            .min(n.div_ceil(MIN_PER_THREAD));
+        if workers <= 1 {
+            return (from..to)
+                .map(|b| self.wrapped_block_lines(b, true).len())
+                .collect();
+        }
+        let (blocks, folds, width) = (&self.blocks, &self.collapsed, self.width as usize);
+        let mut out = vec![0usize; n];
+        std::thread::scope(|sc| {
+            for (k, slice) in out.chunks_mut(n.div_ceil(workers)).enumerate() {
+                let base = from + k * n.div_ceil(workers);
+                sc.spawn(move || {
+                    for (i, h) in slice.iter_mut().enumerate() {
+                        let b = base + i;
+                        let is_collapsed =
+                            folds.get(b).copied().unwrap_or(false) && render::foldable(&blocks[b]);
+                        *h = wrapped_lines_of(&blocks[b], is_collapsed, width, true).len();
+                    }
+                });
+            }
+        });
+        out
     }
 
     /// Re-measure display geometry from block `d` on: render each block once, record its wrapped
@@ -637,11 +685,30 @@ impl View {
         self.hot.retain(|&b, _| b < d);
         let mut total = self.prefix[d];
         let mut carry = self.prefix[d] > 0;
-        for b in d..self.blocks.len() {
-            let wrapped = self.wrapped_block_lines(b, carry);
-            carry |= !wrapped.is_empty();
-            self.heights.push(wrapped.len());
-            total += wrapped.len();
+        // `carry_in` is a prefix-OR — "has anything before me emitted a line" — so it can only go
+        // false → true, once. Walk serially until it flips (usually the very first block), and
+        // from there every remaining block has the SAME carry_in and the order stops mattering.
+        //
+        // Today this prefix changes no height: `assemble_one` consults `carry_in` only to decide
+        // whether a body's OPENING blank line is a duplicate, and no current block kind opens
+        // blank (`assemble_one_drops_a_leading_blank_only_when_something_preceded_it` pins the
+        // mechanism). It is kept because the fold contract says carry_in is an input, and this is
+        // what keeps the parallel split honest the day a block does open blank.
+        let n = self.blocks.len();
+        let mut b = d;
+        let mut measured: Vec<usize> = Vec::with_capacity(n - d);
+        while b < n && !carry {
+            let h = self.wrapped_block_lines(b, carry).len();
+            carry |= h > 0;
+            measured.push(h);
+            b += 1;
+        }
+        if b < n {
+            measured.extend(self.measure_parallel(b, n));
+        }
+        for h in measured {
+            total += h;
+            self.heights.push(h);
             self.prefix.push(total);
         }
     }
@@ -3797,5 +3864,69 @@ mod tests {
         let f = row(&buf, 9);
         assert!(f.contains("fix the parser"), "{f}");
         assert!(!f.contains('…'), "nothing to elide:\n{f}");
+    }
+
+    /// The measure pass is split across threads (#107). It must produce EXACTLY the heights a
+    /// serial walk would — the heights are the scroll geometry, so a single divergence puts the
+    /// scrollbar and every click target out of step with what is drawn.
+    ///
+    /// Sized past `MIN_PER_THREAD` so the split actually happens, and led by blocks that render
+    /// to nothing, which is the one case where `carry_in` is still false and the serial prefix
+    /// has to do the work itself.
+    #[test]
+    fn the_parallel_measure_agrees_with_a_serial_walk() {
+        let mut blocks: Vec<Block> = vec![
+            // Zero-height leaders: `carry_in` stays false across these.
+            Block::UserText(String::new()),
+            Block::UserText(String::new()),
+        ];
+        for i in 0..300 {
+            blocks.push(Block::UserText(format!(
+                "line {i} with a fairly long body that will wrap at least once at this width"
+            )));
+            blocks.push(Block::AssistantText(format!(
+                "```rust\nfn f{i}() {{ let s = \"a string\"; /* note */ s.len() }}\n```"
+            )));
+            // Foldable, and 6 lines expanded against 2 collapsed — so a worker that got the fold
+            // bit wrong could not possibly agree with the serial walk.
+            blocks.push(Block::ToolUse {
+                name: "Edit".into(),
+                target: format!("src/f{i}.rs"),
+                diffs: vec![("a\nb\nc\n".into(), "a\nB\nc\n".into())],
+                output: None,
+                patch: None,
+                read_lines: None,
+            });
+        }
+        let n = blocks.len();
+        let mut v = View::new(blocks, "t", false, FoldPolicy::default());
+        draw(&mut v, 100, 20);
+
+        // Recompute serially, exactly as the pre-#107 loop did.
+        let mut carry = false;
+        let mut total = 0usize;
+        for b in 0..n {
+            let h = v.wrapped_block_lines(b, carry).len();
+            carry |= h > 0;
+            assert_eq!(
+                v.heights[b], h,
+                "block {b} measured differently in parallel"
+            );
+            total += h;
+            assert_eq!(v.prefix[b + 1], total, "prefix diverged at block {b}");
+        }
+        assert_eq!(v.total_wrapped(), total);
+        assert!(
+            v.heights[0] == 0 && v.heights[1] == 0,
+            "the zero-height leaders are the point of this fixture"
+        );
+        assert!(
+            v.heights.contains(&2) && v.heights.iter().any(|&h| h > 2),
+            "the fixture must mix collapsed and expanded heights for the fold bit to matter"
+        );
+        assert!(
+            n > 128,
+            "must exceed MIN_PER_THREAD so the work is actually split"
+        );
     }
 }

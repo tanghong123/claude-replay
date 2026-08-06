@@ -431,6 +431,14 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                 // Flush and unlock everything this cache holds BEFORE dropping it: the next
                 // session's cache is a different object, and a lock left behind would deny the
                 // session to the next run of this very binary.
+                //
+                // Deliberately NOT keeping the cache across a switch (#107). Retaining it would
+                // make switching BACK skip a re-resume, but a resume is 47 ms of a switch — the
+                // cost was always the measure pass, and that is now parallel. What retention
+                // would really cost is locks: every session the reader browsed through would
+                // stay held for the life of the process, so a second terminal could not open a
+                // session this one merely visited. Refusing a session in use is the behaviour we
+                // want; refusing one we walked past is not, and 47 ms does not buy it.
                 cache.release_all();
                 cache = make_cache(args);
                 stack = vec![build_frame(args, &cache, &p, can_go_back, 0)?];
