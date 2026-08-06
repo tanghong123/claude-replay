@@ -136,6 +136,70 @@ pub enum Block {
         /// `local-command-stdout` chunks shown beneath the header (may be empty).
         output: Vec<String>,
     },
+    /// A **context compaction** — the point where the agent dropped the conversation so far
+    /// and continued from a summary. Rendered as a dim, foldable *divider* (an epoch
+    /// boundary), collapsed to `context compacted (auto · 996k → 18k)` and expanding to
+    /// the summary prose. Not a turn: it gets no `user_times`/sidebar-turn entry (see the
+    /// `UserText | Command` predicates), only an epoch tick in the turn list.
+    ///
+    /// Built from **two** adjacent transcript events paired by the fold — the metadata
+    /// record and the summary message that follows it (`Message::CompactBoundary` then
+    /// `Message::CompactSummary`). All 65 compactions across this machine's transcripts
+    /// are that pair, but the fold tolerates either alone: a lone boundary renders with an
+    /// empty `summary`, a lone summary stays an ordinary system note.
+    Compaction {
+        /// Whether the agent compacted on its own (the context filled) or the human asked.
+        trigger: CompactTrigger,
+        /// Context size immediately BEFORE the compaction, in tokens. The honest gauge of
+        /// how large the conversation had grown — transcript bytes understate it.
+        pre_tokens: u64,
+        /// Context size immediately after, in tokens. `pre_tokens - post_tokens` is what
+        /// this compaction dropped; the session total is the sum over compactions (see
+        /// `Metrics::extra`'s `compact_dropped`), which reproduces the transcript's own
+        /// `cumulativeDroppedTokens` — a field only 54 of those 65 records carry, which is
+        /// why it is summed here rather than read.
+        post_tokens: u64,
+        /// The continuation summary the agent wrote back into the transcript. Empty when
+        /// the transcript carried a boundary with no summary after it.
+        summary: String,
+    },
+}
+
+/// What caused a [`Block::Compaction`] — the agent running out of context, or the human
+/// asking for it (`/compact`). Closed like [`AttachmentKind`]: an unrecognised trigger
+/// string is not a new variant, it is `Auto` (the conservative reading — a compaction the
+/// human didn't ask for).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompactTrigger {
+    /// The context filled and the agent compacted itself.
+    Auto,
+    /// The human ran `/compact`.
+    Manual,
+}
+
+impl CompactTrigger {
+    /// Parse the transcript's trigger string; anything unrecognised (or absent) reads as
+    /// [`Auto`](Self::Auto).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "manual" => Self::Manual,
+            _ => Self::Auto,
+        }
+    }
+
+    /// The lowercase label shown in the divider (`auto`/`manual`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+impl std::fmt::Display for CompactTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A file / plan / image the transcript carried. The viewer surfaces it so the reader
@@ -337,6 +401,7 @@ pub enum BlockKind {
     Read,
     Skill,
     Tool,
+    Compaction,
 }
 
 /// Classify a block. (An `Agent`/`Task` `ToolUse` never reaches here — the tokenizer turns
@@ -358,6 +423,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
         Block::Attachment(_) => Attachment,
         Block::SubAgent(_) | Block::AgentDone { .. } => Agent,
         Block::Command { .. } => Command,
+        Block::Compaction { .. } => Compaction,
         Block::ToolUse { name, .. } => match name.as_str() {
             "Bash" => Bash,
             "Edit" | "MultiEdit" => Edit,
@@ -389,6 +455,7 @@ impl BlockKind {
             Read => "read",
             Skill => "skill",
             Tool => "tool",
+            Compaction => "compaction",
         }
     }
 
@@ -411,6 +478,7 @@ impl BlockKind {
             Read => "read",
             Skill => "skill",
             Tool => "tool",
+            Compaction => "compaction",
         }
     }
 }
@@ -423,7 +491,8 @@ pub fn fold_key(b: &Block) -> &'static str {
 /// source of truth for both presenters — the TUI (`render::foldable`) and the HTML export
 /// (`html_export::is_fold`) delegate here so they can never disagree. Prose turns
 /// (`UserText`/`AssistantText`), the `⧗ queued` marker, and attachments are not foldable;
-/// tools, results, thinking, commands, and sub-agent spawn/completion blocks are.
+/// tools, results, thinking, commands, compaction dividers, and sub-agent spawn/completion
+/// blocks are.
 pub fn foldable(b: &Block) -> bool {
     matches!(
         b,
@@ -433,6 +502,7 @@ pub fn foldable(b: &Block) -> bool {
             | Block::Command { .. }
             | Block::SubAgent(_)
             | Block::AgentDone { .. }
+            | Block::Compaction { .. }
     )
 }
 

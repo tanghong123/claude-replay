@@ -2,7 +2,23 @@
 //! HTML exporter both need (spawn chips, activity/turn summaries, tool display names, edit
 //! summaries, …). Pure text over `crate::model::{Block, SubAgent}`; no ratatui/theme.
 
-use crate::model::{Block, SubAgent};
+use crate::model::{Block, CompactTrigger, SubAgent};
+
+/// The compaction divider's one-line text — `context compacted · auto · 725k → 7.0k` (#108).
+/// Shared so the TUI rule, the HTML divider, and `--dump` say the same thing; each surface
+/// adds its own decoration (the TUI's `──` rule, the HTML's hairline).
+pub fn compaction_summary(trigger: CompactTrigger, pre_tokens: u64, post_tokens: u64) -> String {
+    // Sizes only when the transcript recorded them — a boundary with no token figures still
+    // deserves its divider, and `0 → 0` would be a claim the record never made.
+    if pre_tokens == 0 && post_tokens == 0 {
+        return format!("context compacted · {trigger}");
+    }
+    format!(
+        "context compacted · {trigger} · {} → {}",
+        crate::metrics::human_tokens(pre_tokens),
+        crate::metrics::human_tokens(post_tokens),
+    )
+}
 
 /// Direct tool calls in a sub-agent's child transcript (activity tools absorbed into a
 /// `Thinking` turn are counted too, since grouping folds Bash/Read/… into it).

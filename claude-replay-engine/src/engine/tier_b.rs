@@ -312,6 +312,12 @@ mod tests {
                 args: "".into(),
                 output: vec!["done".into()],
             },
+            Block::Compaction {
+                trigger: crate::model::CompactTrigger::Auto,
+                pre_tokens: 594_718,
+                post_tokens: 8_617,
+                summary: "This session is being continued…".into(),
+            },
         ]
     }
 

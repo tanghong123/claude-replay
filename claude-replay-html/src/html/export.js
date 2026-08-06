@@ -483,6 +483,7 @@
     recHit.push(false);
     indexIds(b, records.length - 1);
     if (b.turn != null) addTurn(b);
+    else if (b.epoch) addEpoch(b);
   }
   // Walk a top-level record's tree to the node with `id`, applying `fn` to every
   // container on the path (for open-chains) and to the node itself.
@@ -785,6 +786,9 @@
     row("input", (u.input || "0") + " tok");
     row("output", (u.output || "0") + " tok");
     row("cache read", (u.cache_read || "0") + " tok");
+    // #108: only sessions that actually compacted get a row, so the panel keeps its shape.
+    // Without it the token totals look inexplicable beside a short-looking replay.
+    if (u.compacted) row("compacted", u.compacted);
     if (u.cost) row("est. cost", u.cost, "total");
 
     renderTasks(m.tasks);
@@ -974,6 +978,20 @@
     turnlist.appendChild(item);
   }
 
+  // Append a compaction EPOCH tick to the sidebar (#108). Not a turn — it carries no
+  // number and is styled as a seam — but it lets a session that compacted fifteen times
+  // read as fifteen chapters instead of one flat list. Keyed by the block id like a turn,
+  // so a re-emitted record updates in place rather than duplicating.
+  function addEpoch(b) {
+    var label = (b.head && b.head.summary) || "context compacted";
+    var exist = turnlist.querySelector('[data-t="' + b.id + '"]');
+    if (exist) { exist.textContent = label; return; }
+    var item = el("div", "side-epoch", label);
+    item.dataset.t = b.id;
+    item.tabIndex = 0;
+    turnlist.appendChild(item);
+  }
+
   // Render every JSONL record we haven't yet. `consumed` counts *records*
   // (non-empty lines), not array indices — the inline snapshot and the polled
   // companion frame their newlines differently, so an index would misalign and
@@ -1029,7 +1047,7 @@
     idIndex = {};
     records.forEach(function (b, i) { indexIds(b, i); });
     turnlist.textContent = "";
-    records.forEach(function (b) { if (b.turn != null) addTurn(b); });
+    records.forEach(function (b) { if (b.turn != null) addTurn(b); else if (b.epoch) addEpoch(b); });
     prefix = null;
     if (loIdx > from) loIdx = from;
     if (hiIdx > from) hiIdx = from;
@@ -1079,7 +1097,7 @@
   // NAME (Read, Bash, Update, …) AND each non-tool fold kind (Agent, Thinking, Activity,
   // Command). `filter` is the CSS selector the chosen entry maps to. Rebuilt whenever
   // content changes (live sessions grow types).
-  var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command" };
+  var KIND_LABEL = { agent: "Agent", think: "Thinking", act: "Activity", command: "Command", compaction: "Compaction" };
   // Expanded tree nodes in the dropdown (#94) — survives menu rebuilds on live growth.
   var mcpOpen = {};
   function buildToolMenu() {
@@ -2117,7 +2135,7 @@
     var trow = e.target.closest(".task-row");
     if (trow) { trow.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
-    var si = e.target.closest(".side-item");
+    var si = e.target.closest(".side-item, .side-epoch");
     if (si) goToId(si.dataset.t);
   });
 

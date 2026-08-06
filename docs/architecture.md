@@ -346,9 +346,14 @@ every layer above) and is the stable public API.
 
 - **[`Block`]** — one render unit. Variants: `UserText`, `AssistantText`, `Thinking { text,
   duration_secs, tools }`, `ToolUse { name, target, diffs, output, patch, read_lines }`,
-  `ToolResult`, `Attachment`, `SubAgent`, `AgentDone`, `Command`, `QueueEvent`. Tool results
-  are already joined onto their calls; nothing is dropped or truncated (what shows collapsed
-  is a *view* decision, not a parse decision).
+  `ToolResult`, `Attachment`, `SubAgent`, `AgentDone`, `Command`, `QueueEvent`, `Compaction
+  { trigger, pre_tokens, post_tokens, summary }`. Tool results are already joined onto their
+  calls; nothing is dropped or truncated (what shows collapsed is a *view* decision, not a
+  parse decision).
+  `Compaction` is the one variant built from **two** transcript events — the agent writes a
+  metadata boundary and, on the next line, the continuation summary — so the fold pairs them
+  into one epoch divider. It is deliberately not a turn: it authors no `user_times` entry and
+  no sidebar turn, only a chapter break.
 - **[`Session<BV = Block>`]** — the whole parse: `{ agent, cwd, blocks, user_times, metrics,
   index, tasks }`. Generic over the block representation: `Session<Block>` is fully resident;
   `Session<Deferred>` holds only the locator table (content in a tier-b backing) and reads

@@ -2196,6 +2196,9 @@ fn block_occurrences(b: &Block, needle: &str) -> usize {
             ..
         } => count(agent_id, needle) + count(description, needle),
         Block::Attachment(a) => count(&a.name, needle),
+        // The summary prose is real content a reader searches for; the divider's own
+        // metadata is chrome the search shouldn't match.
+        Block::Compaction { summary, .. } => count(summary, needle),
     }
 }
 

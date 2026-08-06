@@ -18,7 +18,8 @@ use crate::fold::FoldPolicy;
 use crate::highlight;
 use crate::model::{AttachmentContent, Block, LoadedAttachment};
 use crate::present::{
-    display_name, edit_summary, spawn_chip, thinking_summary, write_content, WRITE_PREVIEW,
+    compaction_summary, display_name, edit_summary, spawn_chip, thinking_summary, write_content,
+    WRITE_PREVIEW,
 };
 use crate::{discover, Agent, Transcript};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -365,8 +366,38 @@ struct Emitter<'a> {
     transcript: Option<&'a Transcript>,
     next_block: crate::model::BlockIndex,
     turn: usize,
-    /// `(anchor id, label)` per user turn — becomes the sidebar.
-    turns: Vec<(String, String)>,
+    /// The sidebar rows, in emit order — see [`SideEntry`].
+    turns: Vec<SideEntry>,
+}
+
+/// One sidebar row: a user turn, or (since #108) a compaction **epoch tick**. A session
+/// that compacted fifteen times reads as fifteen chapters instead of one flat turn list,
+/// which is the whole reason to surface the boundary at all.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct SideEntry {
+    /// The anchor to scroll to — `t<N>` for a turn, `b<N>` for an epoch.
+    pub id: String,
+    /// The row's text.
+    pub label: String,
+    /// An epoch tick rather than a turn (styled as a seam; not numbered).
+    pub epoch: bool,
+}
+
+impl SideEntry {
+    fn turn(id: String, label: String) -> Self {
+        Self {
+            id,
+            label,
+            epoch: false,
+        }
+    }
+    fn epoch(id: String, label: String) -> Self {
+        Self {
+            id,
+            label,
+            epoch: true,
+        }
+    }
 }
 
 impl Emitter<'_> {
@@ -403,7 +434,8 @@ impl Emitter<'_> {
             Block::UserText(text) => {
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
-                self.turns.push((id.clone(), label_of(text, 46)));
+                self.turns
+                    .push(SideEntry::turn(id.clone(), label_of(text, 46)));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
@@ -530,7 +562,8 @@ impl Emitter<'_> {
                 } else {
                     format!("{name} — {}", label_of(args, 60))
                 };
-                self.turns.push((id.clone(), label_of(&label, 46)));
+                self.turns
+                    .push(SideEntry::turn(id.clone(), label_of(&label, 46)));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(&label, 80)));
@@ -545,6 +578,27 @@ impl Emitter<'_> {
                 }
                 for chunk in output {
                     body.push(pre_part(chunk));
+                }
+            }
+            // A context-compaction divider (kind "compaction") — a hairline seam whose
+            // summary is the fold body. It is deliberately NOT a turn: no `t<N>` id, no
+            // sidebar row, no `turn` field. The sidebar marks the epoch instead (#108).
+            Block::Compaction {
+                trigger,
+                pre_tokens,
+                post_tokens,
+                summary,
+            } => {
+                let id = self.block_id();
+                let text = compaction_summary(*trigger, *pre_tokens, *post_tokens);
+                o.insert("id".into(), json!(id));
+                // `epoch` is what tells the renderer to add the sidebar seam — the record has no
+                // `turn`, so the turn-driven sidebar path would otherwise pass it by.
+                o.insert("epoch".into(), json!(true));
+                head.insert("summary".into(), json!(text.clone()));
+                self.turns.push(SideEntry::epoch(id, text));
+                if !summary.is_empty() {
+                    body.push(json!({ "p": "md", "h": md_html(summary) }));
                 }
             }
             Block::Thinking {
@@ -698,7 +752,7 @@ fn build_jsonl(
     linked: bool,
     transcript: Option<&Transcript>,
     meta: Value,
-) -> (String, Vec<(String, String)>) {
+) -> (String, Vec<SideEntry>) {
     build_jsonl_inner(
         blocks, user_times, fold, cwd, reveal, linked, None, transcript, meta,
     )
@@ -718,8 +772,8 @@ pub(super) struct EmitState {
     turn: usize,
     /// How many user turns have been consumed from `user_times` so far (indexes into it).
     seen_turns: usize,
-    /// `(anchor id, label)` per user turn — the sidebar, accumulated across ranges.
-    turns: Vec<(String, String)>,
+    /// The sidebar rows, accumulated across ranges — see [`SideEntry`].
+    turns: Vec<SideEntry>,
 }
 
 impl EmitState {
@@ -793,7 +847,7 @@ fn build_jsonl_inner(
     assets: Option<&mut AssetSink>,
     transcript: Option<&Transcript>,
     meta: Value,
-) -> (String, Vec<(String, String)>) {
+) -> (String, Vec<SideEntry>) {
     let mut st = EmitState::default();
     let lines = render_blocks(
         blocks, user_times, fold, cwd, reveal, linked, assets, transcript, &mut st,
@@ -806,7 +860,7 @@ fn build_jsonl_inner(
 
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
-fn build_html(title: &str, jsonl: &str, turns: &[(String, String)], live: Option<&str>) -> String {
+fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
     build_page(title, jsonl, turns, live, None)
 }
 
@@ -824,17 +878,18 @@ pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) ->
 fn build_page(
     title: &str,
     jsonl: &str,
-    turns: &[(String, String)],
+    turns: &[SideEntry],
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
 ) -> String {
     let sidebar: String = turns
         .iter()
-        .map(|(id, label)| {
+        .map(|e| {
+            let class = if e.epoch { "side-epoch" } else { "side-item" };
             format!(
-                "<div class=\"side-item\" data-t=\"{}\" tabindex=\"0\">{}</div>",
-                esc(id),
-                esc(label)
+                "<div class=\"{class}\" data-t=\"{}\" tabindex=\"0\">{}</div>",
+                esc(&e.id),
+                esc(&e.label)
             )
         })
         .collect();
@@ -998,7 +1053,7 @@ pub(super) fn render_snapshot(
     fold: &FoldPolicy,
     reveal: bool,
     tasks: &crate::engine::TaskList,
-) -> (String, Vec<(String, String)>) {
+) -> (String, Vec<SideEntry>) {
     let session_id = session_id(path);
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
@@ -1227,6 +1282,12 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
         "cache_read": human_tokens(m.cache_read_tokens),
         "cost": m.cost_usd.map(|c| m.cost_label(c)), "model": m.model_label(),
     });
+    // #108. The KEY is omitted (not set to null) when the session never compacted, so a
+    // non-compacting session's wire record is unchanged — the property that keeps this
+    // feature invisible to every transcript it doesn't apply to.
+    if let Some(label) = m.compaction_label() {
+        u["compacted"] = json!(label);
+    }
     if with_duration {
         u["duration_secs"] = json!(m.duration_secs);
     }
@@ -2527,8 +2588,62 @@ mod tests {
         assert_eq!(objs[2]["ts"], json!(2000.0));
         // Both user turns feed the sidebar.
         assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0].0, "t1");
-        assert_eq!(turns[1].0, "t2");
+        assert_eq!(turns[0].id, "t1");
+        assert_eq!(turns[1].id, "t2");
+    }
+
+    /// #108: the compaction divider is a fold whose header is the seam text and whose body is
+    /// the continuation summary — and it is NOT a turn: no `t<N>` id, no `turn` field, no
+    /// turn-numbered sidebar row. Its `epoch` flag is what puts a chapter break in the
+    /// sidebar instead, both server-rendered and (via the record) in the live renderer.
+    #[test]
+    fn compaction_emits_an_epoch_divider_that_is_not_a_turn() {
+        let blocks = vec![
+            Block::UserText("before".into()),
+            Block::Compaction {
+                trigger: crate::model::CompactTrigger::Auto,
+                pre_tokens: 996_000,
+                post_tokens: 18_000,
+                summary: "continued…".into(),
+            },
+            Block::UserText("after".into()),
+        ];
+        let (jsonl, turns) = build_jsonl(
+            &blocks,
+            &[Some(1000.0), Some(2000.0)],
+            &FoldPolicy::default(),
+            "/repo",
+            true,
+            false,
+            None,
+            json!({ "t": "meta" }),
+        );
+        let objs: Vec<Value> = jsonl
+            .lines()
+            .skip(1)
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let d = &objs[1];
+        assert_eq!(d["kind"], json!("compaction"));
+        assert_eq!(d["epoch"], json!(true));
+        assert_eq!(d["fold"], json!(true));
+        assert_eq!(d["open"], json!(0), "collapsed by the default policy");
+        assert_eq!(
+            d["head"]["summary"],
+            json!("context compacted · auto · 996.0k → 18.0k")
+        );
+        assert!(d["body"][0]["h"].as_str().unwrap().contains("continued"));
+        assert!(d.get("turn").is_none(), "a compaction is not a turn: {d}");
+        // The two REAL turns keep `t1`/`t2` — the divider must not consume a turn number,
+        // or every deep link after a compaction would shift.
+        assert_eq!(objs[0]["id"], json!("t1"));
+        assert_eq!(objs[2]["id"], json!("t2"));
+        // Sidebar: turn, epoch seam, turn — the epoch sits between them, unnumbered.
+        let rows: Vec<(&str, bool)> = turns
+            .iter()
+            .map(|e| (e.id.as_str(), e.epoch))
+            .collect::<Vec<_>>();
+        assert_eq!(rows, vec![("t1", false), ("b1", true), ("t2", false)]);
     }
 
     #[test]

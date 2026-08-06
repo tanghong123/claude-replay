@@ -24,16 +24,31 @@ pub(crate) struct MetricsAcc {
 
 impl MetricsAcc {
     /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
-    /// key). The seam for a Claude-only counter (e.g. `reasoning_tokens`): call this from
-    /// [`push`](Self::push) when the relevant JSON key is seen. Nothing calls it yet — the
-    /// interface is ready for the first such metric (task #22).
-    #[allow(dead_code)]
+    /// key). The seam for a Claude-only counter: call this from [`push`](Self::push) when the
+    /// relevant JSON key is seen. Its first users are the compaction counters below (#108).
     pub(crate) fn bump(&mut self, key: &str, n: u64) {
         *self.extra.entry(key.to_string()).or_default() += n;
     }
 
     pub(crate) fn push(&mut self, v: &Value) {
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        // Compactions (#108). Both are true counters, so they fold by addition exactly like
+        // tokens do — which is what lets a resumed session keep counting from the meta record
+        // instead of re-reading the transcript.
+        //
+        // `compact_dropped` SUMS each boundary's own `pre - post` rather than reading the
+        // record's `cumulativeDroppedTokens`: that field is missing from 11 of the 65
+        // compactions on this machine, and the summed form reproduces it exactly where both
+        // exist (594718-8617 then 725463-7015 = 1304549, the second record's own figure).
+        if v.get("subtype").and_then(|x| x.as_str()) == Some("compact_boundary") {
+            if let Some(m) = v.get("compactMetadata") {
+                self.bump("compactions", 1);
+                self.bump(
+                    "compact_dropped",
+                    field(m, "preTokens").saturating_sub(field(m, "postTokens")),
+                );
+            }
+        }
         // The model THIS message ran on — not `self.model`, which is only the last seen.
         let m = v
             .pointer("/message/model")
@@ -203,7 +218,6 @@ mod tests {
     }
 
     /// The agent-specific extension seam: `bump` accumulates by key and `finish` emits the bag.
-    /// (No production agent populates `extra` yet; this exercises the interface end-to-end.)
     #[test]
     fn bump_accumulates_agent_specific_metrics_into_extra() {
         let mut acc = MetricsAcc::default();
@@ -215,6 +229,48 @@ mod tests {
         assert_eq!(m.extra.get("web_searches"), Some(&1));
         // Untouched by the default parse — `extra` stays empty when no agent bumps it.
         assert!(parse_reader("").extra.is_empty());
+    }
+
+    /// #108: compactions fold into `extra` as two counters. `compact_dropped` SUMS each
+    /// boundary's own `pre - post`, and the figures below are the first two real
+    /// compactions from this project's own transcript — whose SECOND record states
+    /// `cumulativeDroppedTokens: 1304549`. Reproducing that number from the summed deltas
+    /// is what proves the derivation right, and it is the reason the record's own field
+    /// (absent from 11 of 65 local compactions) is never read.
+    #[test]
+    fn compaction_counters_reproduce_the_transcripts_cumulative_dropped() {
+        let jsonl = r#"
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-07-01T01:32:57.757Z","compactMetadata":{"trigger":"manual","preTokens":594718,"postTokens":8617,"cumulativeDroppedTokens":586101}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-07-03T16:16:27.142Z","compactMetadata":{"trigger":"manual","preTokens":725463,"postTokens":7015}}
+"#;
+        let m = parse_reader(jsonl);
+        assert_eq!(m.compactions(), (2, 1_304_549));
+        assert_eq!(
+            m.compaction_label().unwrap(),
+            "2× compacted, 1.3M dropped",
+            "the footer segment"
+        );
+        assert!(
+            m.footer().contains("2× compacted"),
+            "footer: {}",
+            m.footer()
+        );
+        assert!(
+            m.footer_segments().first().unwrap().0.contains("compacted"),
+            "compactions shed first, so they sit ahead of `cached`"
+        );
+    }
+
+    /// A session that never compacted keeps its footer exactly as it was — no empty
+    /// segment, no stray separator.
+    #[test]
+    fn a_session_without_compactions_shows_no_compaction_segment() {
+        let m = parse_reader(
+            r#"{"type":"assistant","timestamp":"2026-06-28T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"output_tokens":5}}}"#,
+        );
+        assert_eq!(m.compactions(), (0, 0));
+        assert_eq!(m.compaction_label(), None);
+        assert!(!m.footer().contains("compacted"), "footer: {}", m.footer());
     }
 
     #[test]

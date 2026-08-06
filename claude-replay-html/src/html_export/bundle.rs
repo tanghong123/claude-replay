@@ -20,7 +20,7 @@ fn build_stream(
     path: &Path,
     fold: &FoldPolicy,
     reveal: bool,
-) -> Result<(String, Vec<(String, String)>)> {
+) -> Result<(String, Vec<super::SideEntry>)> {
     // One parse yields blocks + per-turn times + metrics + cwd (design §3.3 / Phase 4).
     let s = crate::parse_session_as(agent, path)
         .with_context(|| format!("read transcript {}", path.display()))?;

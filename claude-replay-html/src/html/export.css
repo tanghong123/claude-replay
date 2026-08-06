@@ -222,6 +222,19 @@ a.crumb:hover { text-decoration: underline; }
 .fold[data-kind="think"] > .fold-h,
 .fold[data-kind="act"] > .fold-h { box-shadow: inset 2px 0 0 var(--faint); }
 .fold[data-kind="command"] > .fold-h { box-shadow: none; }
+/* #108 the context-compaction divider: a SEAM, not a message. No keyline (it isn't a
+   speaker), a hairline rule through the header, and centred faint text — so a session with
+   fifteen compactions reads as fifteen chapters at a glance. Expanding shows the
+   continuation summary, which renders as ordinary body markdown. */
+.fold[data-kind="compaction"] > .fold-h {
+  box-shadow: none; background: none; justify-content: center; gap: 10px;
+  color: var(--faint); font: 11px var(--mono); letter-spacing: 0.04em;
+}
+.fold[data-kind="compaction"] > .fold-h::before,
+.fold[data-kind="compaction"] > .fold-h::after {
+  content: ""; flex: 1 1 auto; height: 1px; background: var(--border);
+}
+.fold[data-kind="compaction"] > .fold-h:hover { color: var(--muted); }
 .fold-h.filter-hit { box-shadow: inset 3px 0 0 var(--tool) !important; }
 /* #49 the CURRENT filtered hit — a stronger accent, like search's `.cur` match. */
 .fold-h.filter-cur {
@@ -260,6 +273,15 @@ a.crumb:hover { text-decoration: underline; }
 }
 .side-item:hover { background: var(--hover); }
 .side-item.active { background: var(--hover); color: var(--fg); font-weight: 600; }
+/* #108 an epoch tick between two stretches of turns — the sidebar's chapter break. Dimmer
+   and unnumbered, so it reads as a seam in the list rather than as another turn. */
+.side-epoch {
+  flex: none; padding: 7px 10px 6px; cursor: pointer;
+  font: 10px var(--mono); letter-spacing: 0.03em; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-top: 1px solid var(--border); margin: 4px 0 2px;
+}
+.side-epoch:hover { color: var(--muted); background: var(--hover); }
 
 .usage, .legend {
   padding: 10px; border-top: 1px solid var(--border);

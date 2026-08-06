@@ -309,6 +309,13 @@ impl Metrics {
     /// priority 2, is scroll-derived and added by the view.)
     pub fn footer_segments(&self) -> Vec<(String, u8)> {
         let mut segs = Vec::new();
+        // Compactions shed FIRST — the newest and most niche segment, so a narrow terminal
+        // loses it before anything that was already there. (`min_by_key` picks the first
+        // segment at the lowest priority, so sharing `1` with `cached` and sitting ahead of
+        // it in the vec is what puts it first in line.)
+        if let Some(seg) = self.compaction_label() {
+            segs.push((seg, 1));
+        }
         let cached = self.cache_creation_tokens + self.cache_read_tokens;
         if cached > 0 {
             segs.push((format!("{} cached", human_tokens(cached)), 1));
@@ -341,6 +348,29 @@ impl Metrics {
         }
     }
 
+    /// How many times this session's context was compacted, and how many tokens that
+    /// dropped in total — read from the [`extra`](Self::extra) bag an adapter folded (#108).
+    /// `(0, 0)` for an agent that reports none, or a session that never compacted.
+    pub fn compactions(&self) -> (u64, u64) {
+        let get = |k: &str| self.extra.get(k).copied().unwrap_or(0);
+        (get("compactions"), get("compact_dropped"))
+    }
+
+    /// The footer's compaction segment (`3× compacted, 1.3M dropped`), or `None` when the
+    /// session never compacted. Long sessions are *defined* by their compactions — without
+    /// this the footer's token totals look inexplicably large beside a short-looking replay.
+    pub fn compaction_label(&self) -> Option<String> {
+        let (n, dropped) = self.compactions();
+        if n == 0 {
+            return None;
+        }
+        Some(if dropped > 0 {
+            format!("{n}× compacted, {} dropped", human_tokens(dropped))
+        } else {
+            format!("{n}× compacted")
+        })
+    }
+
     pub fn model_label(&self) -> String {
         let short = short_model(&self.model).to_string();
         match self.per_model.len() {
@@ -367,8 +397,14 @@ impl Metrics {
         } else {
             String::new()
         };
+        // Only sessions that actually compacted carry the segment, so an ordinary footer
+        // keeps its existing shape exactly.
+        let compacted = self
+            .compaction_label()
+            .map(|s| format!(" · {s}"))
+            .unwrap_or_default();
         format!(
-            "{model}{} in · {cached}{} out · {}{cost}",
+            "{model}{} in · {cached}{} out · {}{cost}{compacted}",
             human_tokens(self.input_tokens),
             human_tokens(self.output_tokens),
             human_dur(self.duration_secs),

@@ -27,14 +27,39 @@ fn status_from_str(s: &str) -> Option<AgentStatus> {
     })
 }
 
-/// Is this `user` event injected/system content rather than a human turn?
-/// `isMeta` marks instruction/skill/caveat bodies; `isCompactSummary` marks the
-/// summary `/compact` writes back into the transcript.
-fn is_injected_event(v: &Value) -> bool {
-    v.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
-        || v.get("isCompactSummary")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+/// How a `user` event was injected, if at all — the event-level flags that say its content
+/// is system content rather than a human turn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Injected {
+    /// A genuine human turn.
+    No,
+    /// `isMeta`: an instruction / skill / caveat body. Folds to a system-note block.
+    Meta,
+    /// `isCompactSummary`: the continuation summary written back after a compaction. Folds
+    /// into the [`Block::Compaction`] divider the boundary record just opened (#108) — it
+    /// used to be lumped in with `Meta` as a loose system note, which discarded the pairing.
+    CompactSummary,
+}
+
+impl Injected {
+    /// Is this content injected at all (either flavour)? The old `is_injected_event`
+    /// predicate, kept where only the yes/no matters (caveat stripping, turn suppression).
+    fn is_injected(self) -> bool {
+        self != Self::No
+    }
+}
+
+/// Classify a `user` event's injection flags. `isCompactSummary` wins over `isMeta`: it is
+/// the more specific claim, and the two co-occur on nothing observed.
+fn injection_of(v: &Value) -> Injected {
+    let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    if flag("isCompactSummary") {
+        Injected::CompactSummary
+    } else if flag("isMeta") {
+        Injected::Meta
+    } else {
+        Injected::No
+    }
 }
 
 /// L1 classification of a plain-string `user` message into the **structured** message the
@@ -42,7 +67,14 @@ fn is_injected_event(v: &Value) -> bool {
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
 /// never sees them. Mirrors the retired `push_user_string`, but returns a `Message` instead
 /// of pushing a block. `None` drops the message (caveat-only / phantom keystroke).
-fn classify_user_string(s: &str, injected: bool) -> Option<Message> {
+fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
+    // The compaction summary is claimed by its event flag, ahead of every content sniff below:
+    // the flag is the transcript's own statement of what this message is, and the fold needs it
+    // whole to join to the boundary divider (#108).
+    if injected == Injected::CompactSummary {
+        return compact_summary(s);
+    }
+    let injected = injected.is_injected();
     // A skill instruction body: the fold nests it into the last `Skill` block; the fallback
     // (no skill block to nest into) is a system-note result, cleaned exactly as the old fold
     // did — an injected body is trimmed, a bare one is not.
@@ -118,13 +150,16 @@ fn classify_user_string(s: &str, injected: bool) -> Option<Message> {
 /// L1 classification of a non-empty `text` item inside a `user` array — simpler than the
 /// plain-string case (no command/notification parsing): a skill body nests, other injected
 /// content is a system note, else it's a human turn.
-fn classify_user_array_text(text: &str, injected: bool) -> Message {
-    if is_skill_body(text) {
+fn classify_user_array_text(text: &str, injected: Injected) -> Option<Message> {
+    if injected == Injected::CompactSummary {
+        return compact_summary(text);
+    }
+    Some(if is_skill_body(text) {
         Message::SkillBody {
             text: text.to_string(),
             fallback: text.to_string(),
         }
-    } else if injected {
+    } else if injected.is_injected() {
         Message::SystemNote {
             text: text.to_string(),
         }
@@ -132,12 +167,51 @@ fn classify_user_array_text(text: &str, injected: bool) -> Message {
         Message::UserText {
             text: text.to_string(),
         }
-    }
+    })
+}
+
+/// The prose half of a compaction, cleaned exactly as an injected system note is (caveats
+/// stripped, trimmed) so the divider's expansion reads the same as the loose result block it
+/// replaces. Empty prose yields nothing — the divider then stands on its metadata alone.
+fn compact_summary(s: &str) -> Option<Message> {
+    let cleaned = strip_caveat(s);
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| Message::CompactSummary {
+        text: cleaned.to_string(),
+    })
+}
+
+/// The metadata half: Claude's `system` / `compact_boundary` record. `preTokens` and
+/// `postTokens` are present on all 65 compactions across this machine's transcripts;
+/// `cumulativeDroppedTokens` is NOT (54/65), which is why the session total is summed from
+/// `pre - post` rather than read from the record.
+fn compact_boundary(v: &Value) -> Option<Message> {
+    let m = v.get("compactMetadata")?;
+    let n = |k: &str| m.get(k).and_then(Value::as_u64).unwrap_or(0);
+    Some(Message::CompactBoundary {
+        trigger: CompactTrigger::parse(m.get("trigger").and_then(Value::as_str).unwrap_or("")),
+        pre_tokens: n("preTokens"),
+        post_tokens: n("postTokens"),
+    })
 }
 
 /// Injected/system content Claude flags at the event level (`isMeta`/`isCompactSummary`) —
 /// folds as a system result block; caveat-only noise is dropped. Used by the frozen
 /// reference parser [`parse_main`]; the streaming path uses [`classify_user_string`].
+/// The compaction summary's placement in the frozen reference parser — the mirror of the
+/// fold's `CompactSummary` arm: fill the divider it directly follows, else stand alone as a
+/// system-note block.
+#[cfg(test)]
+fn push_compact_summary(s: &str, out: &mut Vec<Block>) {
+    let Some(Message::CompactSummary { text }) = compact_summary(s) else {
+        return;
+    };
+    match out.last_mut() {
+        Some(Block::Compaction { summary, .. }) if summary.is_empty() => *summary = text,
+        _ => out.push(Block::ToolResult(text)),
+    }
+}
+
 #[cfg(test)]
 fn push_injected(s: &str, out: &mut Vec<Block>) {
     let cleaned = strip_caveat(s);
@@ -642,9 +716,16 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 }
             }
         }
+        // The only `system` record the viewer surfaces: a context-compaction boundary (#108).
+        // Every other subtype stays dropped — they are agent bookkeeping with no reader value.
+        Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") => {
+            if let Some(m) = compact_boundary(&v) {
+                msgs.push(m);
+            }
+        }
         Some("user") => {
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
-            let injected = is_injected_event(&v);
+            let injected = injection_of(&v);
             let Some(content) = v.pointer("/message/content") else {
                 return;
             };
@@ -658,7 +739,9 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
-                                    msgs.push(classify_user_array_text(t, injected));
+                                    if let Some(m) = classify_user_array_text(t, injected) {
+                                        msgs.push(m);
+                                    }
                                 }
                             }
                         }
@@ -992,18 +1075,40 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     }
                 }
             }
+            // #108 mirror: the compaction boundary opens a summary-less divider, which the
+            // `isCompactSummary` message that follows then fills.
+            Some("system")
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") =>
+            {
+                if let Some(Message::CompactBoundary {
+                    trigger,
+                    pre_tokens,
+                    post_tokens,
+                }) = compact_boundary(&v)
+                {
+                    out.push(Block::Compaction {
+                        trigger,
+                        pre_tokens,
+                        post_tokens,
+                        summary: String::new(),
+                    });
+                }
+            }
             Some("user") => {
                 // The message-level toolUseResult metadata (shared by its result blocks).
                 let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
-                // `isMeta`/`isCompactSummary` events are injected system content, not
-                // human turns — route their prose to a folded system block so it never
-                // gets a turn/sidebar/sticky entry (see `push_injected`).
-                let injected = is_injected_event(&v);
+                // `isMeta` events are injected system content, not human turns — route their
+                // prose to a folded system block so it never gets a turn/sidebar/sticky entry
+                // (see `push_injected`); `isCompactSummary` fills the divider above instead.
+                let injection = injection_of(&v);
+                let injected = injection.is_injected();
                 let Some(content) = v.pointer("/message/content") else {
                     continue;
                 };
                 if let Some(s) = content.as_str() {
-                    if is_skill_body(s) && attach_skill_body(&mut out, last_skill, s) {
+                    if injection == Injected::CompactSummary {
+                        push_compact_summary(s, &mut out);
+                    } else if is_skill_body(s) && attach_skill_body(&mut out, last_skill, s) {
                         // Nested into its `Skill` block above — no loose result block.
                     } else if injected {
                         push_injected(s, &mut out);
@@ -1016,7 +1121,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             Some("text") => {
                                 if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                     if !t.trim().is_empty() {
-                                        if is_skill_body(t)
+                                        if injection == Injected::CompactSummary {
+                                            push_compact_summary(t, &mut out);
+                                        } else if is_skill_body(t)
                                             && attach_skill_body(&mut out, last_skill, t)
                                         {
                                             // Nested into its `Skill` block above.
@@ -1821,6 +1928,87 @@ mod tests {
         }
     }
 
+    /// #108: Claude records a compaction as TWO adjacent events — a `system` /
+    /// `compact_boundary` carrying the metadata, then a `user` event flagged
+    /// `isCompactSummary` carrying the prose. Before this, the boundary was dropped
+    /// entirely (no `system` arm existed) and the summary folded into a generic system
+    /// note, so the trigger and the token figures never survived. They must now pair into
+    /// ONE divider, and the compaction must NOT count as a turn.
+    #[test]
+    fn compaction_boundary_and_summary_pair_into_one_divider() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"before"}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":594718,"postTokens":8617,"cumulativeDroppedTokens":586101}}
+{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued…"}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"after"}}
+"##;
+        let mut ut = Vec::new();
+        let blocks = replay(&tokenize(jsonl.lines()), &mut ut, &CLAUDE_SHAPING);
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| matches!(b, Block::Compaction { .. }))
+                .count(),
+            1,
+            "one divider, not a divider plus a loose note: {blocks:?}"
+        );
+        let Some(Block::Compaction {
+            trigger,
+            pre_tokens,
+            post_tokens,
+            summary,
+        }) = blocks
+            .iter()
+            .find(|b| matches!(b, Block::Compaction { .. }))
+        else {
+            panic!("no Compaction: {blocks:?}")
+        };
+        assert_eq!(*trigger, CompactTrigger::Auto);
+        assert_eq!((*pre_tokens, *post_tokens), (594718, 8617));
+        assert_eq!(summary, "This session is being continued…");
+        // Two human turns — the compaction is a seam between them, not a third.
+        assert_eq!(ut.len(), 2, "compaction must not open a turn: {ut:?}");
+    }
+
+    /// The pairing is a ONE-BLOCK reach, so neither half can capture something that
+    /// isn't its partner: a boundary followed by a real turn keeps an empty summary and
+    /// leaves the turn alone, and a summary with no boundary before it stays the loose
+    /// system note it has always been.
+    #[test]
+    fn unpaired_compaction_halves_degrade_cleanly() {
+        let jsonl = r##"
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:00.000Z","compactMetadata":{"trigger":"manual","preTokens":100,"postTokens":10}}
+{"type":"user","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":"a real turn"}}
+{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"orphan summary"}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            matches!(&blocks[0], Block::Compaction { trigger, summary, .. }
+                if *trigger == CompactTrigger::Manual && summary.is_empty()),
+            "lone boundary keeps an empty summary: {blocks:?}"
+        );
+        assert!(
+            matches!(&blocks[1], Block::UserText(t) if t == "a real turn"),
+            "the turn after a boundary is still a turn: {blocks:?}"
+        );
+        assert!(
+            matches!(&blocks[2], Block::ToolResult(t) if t == "orphan summary"),
+            "an unpaired summary stays a system note: {blocks:?}"
+        );
+    }
+
+    /// A `system` record of any OTHER subtype stays dropped — the arm is deliberately
+    /// narrow, and a missing/empty `compactMetadata` yields no divider at all rather
+    /// than one claiming `0 → 0`.
+    #[test]
+    fn only_compact_boundary_system_records_surface() {
+        let jsonl = r##"
+{"type":"system","subtype":"hook_result","timestamp":"2026-06-30T03:00:00.000Z","content":"hook ran"}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","content":"no metadata here"}
+"##;
+        assert!(parse(jsonl).is_empty(), "{:?}", parse(jsonl));
+    }
+
     /// #95: QoderWork's synchronous spawn result (`{kind:"agent-result",
     /// state:"completed", …}`) resolves the spawn's terminal status — its transcripts
     /// are Claude-format, but completion rides `state`, not Claude's `status`.
@@ -2498,6 +2686,19 @@ mod tests {
 {"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued…"}}
 {"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"another real question"}}
 "##,
+            // #108 compaction: the boundary + its summary pair into ONE divider; a LONE
+            // boundary keeps an empty summary; a boundary whose next line is an ordinary
+            // turn must not swallow it.
+            r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"before the cut"}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":594718,"postTokens":8617,"cumulativeDroppedTokens":586101}}
+{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"This session is being continued from a previous conversation…"}}
+{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"after the cut"}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:04.000Z","compactMetadata":{"trigger":"manual","preTokens":725463,"postTokens":7015}}
+{"type":"user","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":"a real turn, not a summary"}}
+{"type":"system","subtype":"other_subtype","timestamp":"2026-06-30T03:00:06.000Z","content":"ignored"}
+{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:07.000Z","message":{"content":"an unpaired summary stays a system note"}}
+"##,
             // Queue markers: immediate pickup, type-ahead pop, op-less delivery (both the
             // plain-string and array-text user shapes); interleaved task-notification.
             r##"
@@ -2663,6 +2864,19 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-06-30T03:00:09.000Z","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}"#,
             "\n",
         ));
+        // #108: the compaction pair split BETWEEN its two halves — the case where the fold
+        // has to hold an open divider across an `apply` boundary, exactly as the live tail
+        // delivers it.
+        assert_split(concat!(
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"before"}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","compactMetadata":{"trigger":"auto","preTokens":900,"postTokens":9}}"#,
+            "\n",
+            r#"{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:02.000Z","message":{"content":"continued…"}}"#,
+            "\n",
+            r#"{"type":"user","timestamp":"2026-06-30T03:00:03.000Z","message":{"content":"after"}}"#,
+            "\n",
+        ));
         // queue enqueue/dequeue lifecycle across the split.
         assert_split(concat!(
             r#"{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}"#,
@@ -2725,6 +2939,24 @@ mod tests {
             r2.apply(&tokenize([user, tool, result].into_iter())),
             None,
             "a tool whose result arrives in the same batch is a fresh append, not a back-patch"
+        );
+
+        // #108: filling a compaction divider's summary is the SAME kind of back-patch. A live
+        // reader is handed the boundary as soon as it lands (the summary is a separate line, and
+        // on a long compaction arrives seconds later); without the signal the divider would sit
+        // there expanding to nothing until an unrelated edit forced a re-render.
+        let boundary = r#"{"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:04.000Z","compactMetadata":{"trigger":"auto","preTokens":900,"postTokens":9}}"#;
+        let summary = r#"{"type":"user","isCompactSummary":true,"timestamp":"2026-06-30T03:00:05.000Z","message":{"content":"continued…"}}"#;
+        let mut r3 = Replayer::new(&CLAUDE_SHAPING);
+        assert_eq!(
+            r3.apply(&tokenize([user, boundary].into_iter())),
+            None,
+            "appends only"
+        );
+        assert_eq!(
+            r3.apply(&tokenize([summary].into_iter())),
+            Some(1),
+            "the summary back-patches the already-emitted divider at logical index 1"
         );
     }
 

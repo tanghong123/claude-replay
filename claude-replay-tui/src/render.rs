@@ -606,8 +606,40 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 out.push(line);
             }
         }
+        Block::Compaction { summary, .. } => {
+            // The rule, then the continuation summary the agent wrote — the whole point of
+            // expanding an epoch divider is reading what survived the cut. Same `⎿` body
+            // idiom (and the same 4-column gutter) as every other block's body, so the prose
+            // wraps where it always did; no background tier, because a seam is not a speaker.
+            out.push(compaction_rule(b));
+            for (i, line) in summary.lines().enumerate() {
+                let prefix = if i == 0 { "⎿ " } else { "  " };
+                out.push(Line::styled(format!("  {prefix}{line}"), theme::result()));
+            }
+        }
     }
     out
+}
+
+/// The compaction divider's rule: `── context compacted · auto · 725k → 7.0k ──`, dim, so it
+/// reads as a seam in the conversation rather than as another message.
+fn compaction_rule(b: &Block) -> Line<'static> {
+    let Block::Compaction {
+        trigger,
+        pre_tokens,
+        post_tokens,
+        ..
+    } = b
+    else {
+        return Line::raw("");
+    };
+    Line::styled(
+        format!(
+            "── {} ──",
+            crate::present::compaction_summary(*trigger, *pre_tokens, *post_tokens)
+        ),
+        theme::dim(),
+    )
 }
 
 /// The dim `⎿`-prefixed stdout lines beneath a command header (each stdout chunk
@@ -840,6 +872,7 @@ fn render_header(b: &Block) -> Line<'static> {
             theme::result(),
         ),
         Block::Command { name, args, .. } => command_header(name, args),
+        Block::Compaction { .. } => compaction_rule(b),
     }
 }
 
@@ -902,6 +935,15 @@ fn body_len(b: &Block) -> usize {
         },
         // Command uses its own collapsed summary; this count is unused for it.
         Block::Command { output, .. } => output.iter().map(|c| c.lines().count()).sum(),
+        // The summary prose beneath the rule; a summary-less boundary folds to nothing, so
+        // `foldable`'s divider shows no `⋯ N folded` affordance it can't honour.
+        Block::Compaction { summary, .. } => {
+            if summary.is_empty() {
+                0
+            } else {
+                summary.lines().count()
+            }
+        }
     }
 }
 
@@ -1697,6 +1739,60 @@ mod tests {
         let st = lines[1].spans[0].style;
         assert_eq!(st.fg, theme::result().fg, "stdout not in result/dim color");
         assert_eq!(st.bg, Some(theme::user_bg()), "stdout not on the block bg");
+    }
+
+    /// #108: a compaction renders as a dim RULE, not as another message — and its collapsed
+    /// header is byte-for-byte the first line it renders expanded (the invariant every
+    /// foldable block owes `render_header`, since the two are drawn by different paths).
+    /// Expanding adds the continuation summary.
+    #[test]
+    fn compaction_renders_as_a_dim_rule_expanding_to_the_summary() {
+        use crate::model::CompactTrigger;
+        let block = Block::Compaction {
+            trigger: CompactTrigger::Auto,
+            pre_tokens: 996_000,
+            post_tokens: 18_000,
+            summary: "This session is being continued…\nsecond line".into(),
+        };
+        let t = texts(&render_one(&block, 80));
+        assert_eq!(
+            t[0], "── context compacted · auto · 996.0k → 18.0k ──",
+            "rule: {:?}",
+            t[0]
+        );
+        assert_eq!(
+            texts(&[render_header(&block)])[0],
+            t[0],
+            "the collapsed header must equal the expanded first line"
+        );
+        assert_eq!(t[1], "  ⎿ This session is being continued…");
+        assert_eq!(t[2], "    second line");
+        // `body_len` drives the `⋯ N folded` count, so it must match what was emitted.
+        assert_eq!(body_len(&block), t.len() - 1);
+        // Dim, so the seam reads as chrome between turns rather than as a speaker. (Line-level
+        // style like the other bg-less markers — there is no block background to survive.)
+        assert_eq!(render_one(&block, 80)[0].style.fg, theme::dim().fg);
+    }
+
+    /// A boundary whose summary never arrived (the transcript ended mid-compaction, or an
+    /// older shape) still shows its rule — and folds to NOTHING, so no `⋯ N folded`
+    /// affordance promises content that isn't there.
+    #[test]
+    fn a_summary_less_compaction_folds_to_nothing() {
+        use crate::model::CompactTrigger;
+        let block = Block::Compaction {
+            trigger: CompactTrigger::Manual,
+            pre_tokens: 0,
+            post_tokens: 0,
+            summary: String::new(),
+        };
+        let t = texts(&render_one(&block, 80));
+        assert_eq!(
+            t,
+            vec!["── context compacted · manual ──"],
+            "no token figures the record never made"
+        );
+        assert_eq!(body_len(&block), 0);
     }
 
     /// A slash command with multi-line args keeps its line breaks when expanded

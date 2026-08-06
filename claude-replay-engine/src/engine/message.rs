@@ -130,6 +130,20 @@ pub enum Message {
         /// The agent's returned text (`<result>`), if any.
         result: Option<String>,
     },
+    /// A **context-compaction boundary** — the metadata half of a compaction, from the
+    /// record the agent writes at the cut. The fold pushes a summary-less
+    /// [`Block::Compaction`](crate::model::Block::Compaction); the prose arrives next as
+    /// [`CompactSummary`](Self::CompactSummary).
+    CompactBoundary {
+        trigger: crate::model::CompactTrigger,
+        pre_tokens: u64,
+        post_tokens: u64,
+    },
+    /// The **continuation summary** written back after a compaction — the prose half.
+    /// The fold fills it into the `Compaction` block it directly follows; with no such
+    /// block it degrades to a `SystemNote`-style result block, which is what this content
+    /// rendered as before compactions were paired.
+    CompactSummary { text: String },
 }
 
 impl Message {

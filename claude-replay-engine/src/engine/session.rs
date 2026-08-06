@@ -495,6 +495,12 @@ mod tests {
                 args: String::new(),
                 output: vec![],
             }, // turn 2
+            Block::Compaction {
+                trigger: crate::model::CompactTrigger::Auto,
+                pre_tokens: 100,
+                post_tokens: 10,
+                summary: "continued…".into(),
+            }, // #108: a seam, not a third turn
         ];
         let m = SessionMeta::build(&blocks);
         assert_eq!(m.turns, 2);

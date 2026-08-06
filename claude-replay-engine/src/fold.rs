@@ -21,6 +21,7 @@ const FOLD_KEYS: &[&str] = &[
     "agent",
     "tool_result",
     "command",
+    "compaction",
 ];
 
 /// Map a user-typed key to its canonical `&'static str` (accepts a few aliases).
@@ -55,7 +56,8 @@ pub struct FoldPolicy {
 impl Default for FoldPolicy {
     fn default() -> Self {
         // Claude-Code-like: thinking, shell, reads, writes, and other tool calls
-        // collapse; user/assistant/edit stay expanded.
+        // collapse; user/assistant/edit stay expanded. The compaction divider collapses too —
+        // its point is the one-line epoch marker; the summary prose is the expansion.
         Self {
             folded: [
                 "thinking",
@@ -67,6 +69,7 @@ impl Default for FoldPolicy {
                 "agent",
                 "command",
                 "write",
+                "compaction",
             ]
             .into_iter()
             .collect(),

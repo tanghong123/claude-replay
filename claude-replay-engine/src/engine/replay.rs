@@ -262,6 +262,38 @@ impl<'a> Replayer<'a> {
                 Message::SystemNote { text } => {
                     self.out.push(Block::ToolResult(text.clone()));
                 }
+                Message::CompactBoundary {
+                    trigger,
+                    pre_tokens,
+                    post_tokens,
+                } => {
+                    self.out.push(Block::Compaction {
+                        trigger: *trigger,
+                        pre_tokens: *pre_tokens,
+                        post_tokens: *post_tokens,
+                        summary: String::new(),
+                    });
+                }
+                Message::CompactSummary { text } => {
+                    // The prose half joins the boundary it directly follows — a back-reference
+                    // reaching exactly ONE block, so it can neither pin the frontier nor find
+                    // an unrelated older divider. Every compaction on this machine (65/65) is
+                    // that adjacent pair; a summary that arrives without one is the pre-pairing
+                    // shape and stays an ordinary system-note block.
+                    let last_logical = (self.base + self.out.len()).checked_sub(1);
+                    match self.out.last_mut() {
+                        Some(Block::Compaction { summary, .. }) if summary.is_empty() => {
+                            *summary = text.clone();
+                            // A block already handed to a reader just changed: without this the
+                            // divider would expand to nothing until some later edit forced a
+                            // re-render (the #54/#61 failure class).
+                            if let Some(logical) = last_logical {
+                                note_patch(&mut patch_floor, logical, emitted_frontier);
+                            }
+                        }
+                        _ => self.out.push(Block::ToolResult(text.clone())),
+                    }
+                }
                 Message::SkillBody { text, fallback } => {
                     // L1 detected the skill body; the fold nests it into the most recent `Skill`
                     // block **in the open turn**, falling back to a loose result block.

@@ -72,5 +72,8 @@ fn describe(b: &Block) -> (&'static str, String) {
         Block::AgentDone { description, .. } => ("agent-done", clip(description)),
         Block::Attachment(a) => ("attachment", a.name.clone()),
         Block::QueueEvent { text } => ("queued", clip(text)),
+        Block::Compaction {
+            trigger, summary, ..
+        } => ("compaction", format!("{trigger} · {}", clip(summary))),
     }
 }

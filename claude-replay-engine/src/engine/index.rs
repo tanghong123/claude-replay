@@ -249,6 +249,14 @@ mod tests {
                 path: None,
                 content: AttachmentContent::None,
             }),
+            // #108: a compaction is counted by kind but is NOT a turn — the property the
+            // sidebar, `user_times`, and the durability frontier all read off.
+            Block::Compaction {
+                trigger: crate::model::CompactTrigger::Manual,
+                pre_tokens: 100,
+                post_tokens: 10,
+                summary: "continued…".into(),
+            },
             Block::UserText("again".into()),
         ];
         // Three user turns (two UserText + one Command), in emit order.
