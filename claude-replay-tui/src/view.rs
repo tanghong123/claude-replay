@@ -182,6 +182,11 @@ fn is_diff_line(line: &Line<'static>) -> bool {
     )
 }
 
+/// A display row's plain text, for the search-row check in `draw`.
+fn row_text(line: &Line<'static>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
 /// Apply a search-highlight background to every span of a matching line.
 fn highlight_bg(line: &Line<'static>, strong: bool) -> Line<'static> {
     let (bg, fg) = if strong {
@@ -343,7 +348,13 @@ pub struct View {
     occurrences: usize,
     /// The transiently peek-expanded hit block, if any (vim `foldopen=search`).
     peeked: Option<crate::model::BlockIndex>,
-    match_pos: usize,                        // index into `matches`
+    match_pos: usize, // index into `matches`
+    /// The viewport top when the CURRENT search began — the anchor the initial match is chosen
+    /// against on every keystroke (#108 enhancement). Anchoring at the start (not at the live
+    /// `scroll`) stops incremental typing from drifting: each jump moves `scroll`, and re-picking
+    /// relative to the moved viewport would skip matches between the anchor and wherever the last
+    /// partial query landed.
+    search_origin: usize,
     metrics: String, // footer text (tokens/cost/duration/model) — legacy string
     footer_segs: Vec<(String, u8)>, // droppable footer metric parts (text, shed priority)
     descended: bool, // this view is a descended sub-agent (footer shows `esc back`)
@@ -412,6 +423,7 @@ impl View {
             occurrences: 0,
             peeked: None,
             match_pos: 0,
+            search_origin: 0,
             metrics: String::new(),
             footer_segs: Vec::new(),
             descended: false,
@@ -903,7 +915,7 @@ impl View {
                 self.hot.clear(); // widths baked into every cached line
             }
             self.measure_from(if width_changed { 0 } else { d });
-            // Match indices are wrapped-line positions — recompute only on a geometry rebuild.
+            // Hit blocks may change on a geometry rebuild (live tail growth) — rescan.
             self.recompute_matches();
         }
         let max = self.max_scroll();
@@ -1344,8 +1356,14 @@ impl View {
         }
         // The block's first display line is exact without any wrapping (prefix sums); the
         // peek expansion only changes heights AFTER this block, so the target is stable.
+        // A hit whose block already STARTS on screen is left where it is — the reader is
+        // looking at it; yanking it to the top would turn "the match is right there" into a
+        // viewport jump. Off-screen hits scroll so the block starts at the top, as before.
         if let Some(&line) = self.prefix.get(b) {
-            self.scroll = line.min(self.max_scroll());
+            let in_view = line >= self.scroll && line < self.scroll + self.view_h;
+            if !in_view {
+                self.scroll = line.min(self.max_scroll());
+            }
             self.follow = false;
         }
     }
@@ -1372,15 +1390,33 @@ impl View {
         self.query.clear();
         self.matches.clear();
         self.match_pos = 0;
+        self.search_origin = self.scroll;
+    }
+    /// The match the search should START on: the first hit block that BEGINS at or below the
+    /// viewport top where the search was opened — the nearest hit that is on screen or reached
+    /// by scrolling down. Every hit block strictly above wraps around to the end of the cycle,
+    /// so when the whole document's hits are behind the reader the pick loops to the first.
+    /// (Matches vim's `/`: search forward from here, wrap at the end.)
+    fn initial_match(&self) -> usize {
+        let below = self
+            .matches
+            .partition_point(|&b| self.prefix.get(b).copied().unwrap_or(0) < self.search_origin);
+        if below == self.matches.len() {
+            0 // every hit is above the viewpoint — loop around
+        } else {
+            below
+        }
     }
     pub fn search_input(&mut self, c: char) {
         self.query.push(c);
         self.recompute_matches();
+        self.match_pos = self.initial_match();
         self.jump_to_current_match();
     }
     pub fn search_backspace(&mut self) {
         self.query.pop();
         self.recompute_matches();
+        self.match_pos = self.initial_match();
     }
     pub fn search_confirm(&mut self) {
         self.searching = false; // keep query + highlights
@@ -1692,16 +1728,21 @@ impl View {
         self.layout(area.width, area.height);
         let end = (self.scroll + self.view_h).min(self.total_wrapped());
         let cur = self.matches.get(self.match_pos).copied();
+        // Since #84 `matches` holds BLOCK indices (discovery scans block text, not display
+        // text), so the row highlight can't come from an index lookup: a row lights up when
+        // its own text contains the needle, brighter when its block is the current hit.
+        let needle = (!self.query.is_empty()).then(|| self.query.to_lowercase());
         let mut view: Vec<Line> = Vec::new();
         for ai in self.scroll..end {
             let Some(line) = self.line_at(ai) else { break };
             // Detect the diff-inset need from the original line, before search
             // highlighting overwrites the bg (else the matched row shifts left).
             let inset = is_diff_line(&line);
-            let styled = if !self.query.is_empty() && self.matches.binary_search(&ai).is_ok() {
-                highlight_bg(&line, Some(ai) == cur)
-            } else {
-                line
+            let styled = match &needle {
+                Some(q) if row_text(&line).to_lowercase().contains(q.as_str()) => {
+                    highlight_bg(&line, self.tag_of(ai) == cur)
+                }
+                _ => line,
             };
             let focused = self.focus.is_some() && self.tag_of(ai) == self.focus;
             // The header row is the first wrapped line of the focused block (its
@@ -3927,6 +3968,132 @@ mod tests {
         assert!(
             n > 128,
             "must exceed MIN_PER_THREAD so the work is actually split"
+        );
+    }
+
+    /// Opening a search picks the hit nearest the CURRENT viewpoint — on screen or below —
+    /// not the document's first hit. Two hit blocks, viewport scrolled between them: the
+    /// search must start on the second.
+    #[test]
+    fn search_starts_at_the_hit_nearest_the_viewpoint() {
+        let mut bs = blocks(30);
+        bs[5] = Block::AssistantText("UNIQUEMATCH alpha".into());
+        bs[20] = Block::AssistantText("UNIQUEMATCH beta".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10); // first draw follows to the bottom
+        v.scroll_by(-9999); // take the viewport to the top (clears follow)…
+        v.scroll_by(30); // …then between the two hits: block 5 behind, block 20 ahead
+        let origin = v.scroll();
+        assert_eq!(origin, 30);
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        v.search_confirm();
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 2/2"),
+            "the search starts on the hit AHEAD of the viewpoint:\n{}",
+            row(&buf, 9)
+        );
+        assert!(v.scroll() > origin, "reaching it means scrolling DOWN");
+        let body: String = (0..9).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("UNIQUEMATCH beta"), "{body}");
+    }
+
+    /// Every hit behind the viewpoint: the pick loops around to the document's first hit —
+    /// and `n` keeps cycling through the wrap, so no hit is ever unreachable.
+    #[test]
+    fn search_loops_to_the_top_when_every_hit_is_behind() {
+        let mut bs = blocks(30);
+        bs[5] = Block::AssistantText("UNIQUEMATCH alpha".into());
+        bs[20] = Block::AssistantText("UNIQUEMATCH beta".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10);
+        v.scroll_by(9999); // bottom: both hits are above
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        v.search_confirm();
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 1/2"),
+            "wrapped to the FIRST hit:\n{}",
+            row(&buf, 9)
+        );
+        // And n cycles: 1 → 2 → wraps back to 1.
+        v.search_next();
+        draw(&mut v, 40, 10);
+        v.search_next();
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 1/2"),
+            "n wraps:\n{}",
+            row(&buf, 9)
+        );
+    }
+
+    /// A hit whose block already starts on screen does not move the viewport — the reader is
+    /// looking at it; the highlight is enough.
+    #[test]
+    fn search_does_not_scroll_when_the_hit_is_already_in_view() {
+        let mut bs = blocks(30);
+        bs[2] = Block::AssistantText("UNIQUEMATCH here".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10); // first draw follows to the bottom
+        v.scroll_by(-9999); // top; block 2 is on screen
+        assert_eq!(v.scroll(), 0);
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        draw(&mut v, 40, 10);
+        assert_eq!(v.scroll(), 0, "the hit was on screen — no jump");
+    }
+
+    /// The hit rows are actually PAINTED: the row containing the needle carries the search
+    /// background, strong (current hit) vs dim (other hits). Regression test for the #84
+    /// switch to block-index matches, after which the draw kept comparing them against
+    /// wrapped-LINE indices — highlighting nothing, or an arbitrary early row.
+    #[test]
+    fn search_highlight_paints_the_needle_rows() {
+        let mut bs = blocks(30);
+        bs[2] = Block::AssistantText("UNIQUEMATCH one".into());
+        bs[4] = Block::AssistantText("UNIQUEMATCH two".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 12); // first draw follows to the bottom
+        v.scroll_by(-9999); // top: both hit blocks on screen
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        let buf = draw(&mut v, 40, 12);
+        let bg_of = |needle_row: &str| {
+            let y = (0..11)
+                .find(|&y| row(&buf, y).contains(needle_row))
+                .unwrap_or_else(|| panic!("{needle_row} not on screen"));
+            let x = row(&buf, y).find('U').unwrap() as u16;
+            buf[(x, y)].style().bg
+        };
+        assert_eq!(
+            bg_of("UNIQUEMATCH one"),
+            Some(ratatui::style::Color::Yellow),
+            "the CURRENT hit row is strong-highlighted"
+        );
+        assert_eq!(
+            bg_of("UNIQUEMATCH two"),
+            Some(ratatui::style::Color::Rgb(70, 70, 0)),
+            "another hit row is dim-highlighted"
+        );
+        // A row with no occurrence is untouched.
+        let y0 = (0..11).find(|&y| row(&buf, y).contains("line 0")).unwrap();
+        let x0 = row(&buf, y0).find('l').unwrap() as u16;
+        let plain = buf[(x0, y0)].style().bg;
+        assert!(
+            plain != Some(ratatui::style::Color::Yellow)
+                && plain != Some(ratatui::style::Color::Rgb(70, 70, 0)),
+            "non-hit rows keep their bg, got {plain:?}"
         );
     }
 }

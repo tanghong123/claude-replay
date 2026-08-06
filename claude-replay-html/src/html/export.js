@@ -2281,8 +2281,23 @@
   function stepHit(dir) {
     if (!hitRecs.length) return;
     if (navPos < 0) {
-      navPos = dir > 0 ? 0 : hitRecs.length - 1;
-      navMark = dir > 0 ? -1 : Infinity;
+      // Entering navigation: start from the viewport, not the top of the document. `k` is
+      // the first hit record that BEGINS at or below the viewport top (stream coords) —
+      // the nearest hit that is on screen or reached by scrolling down. Forward starts
+      // there (wrapping to the first hit when every hit is behind); backward starts on the
+      // hit just above (wrapping to the last). Enter/n keep cycling through the wrap below.
+      var vt = window.scrollY - streamTop();
+      var k = -1;
+      for (var f = 0; f < hitRecs.length; f++) {
+        if (P()[hitRecs[f].rec] >= vt) { k = f; break; }
+      }
+      if (dir > 0) {
+        navPos = k >= 0 ? k : 0;
+        navMark = -1;
+      } else {
+        navPos = k > 0 ? k - 1 : hitRecs.length - 1;
+        navMark = Infinity;
+      }
     }
     var tries = 0;
     while (tries++ <= hitRecs.length) {
