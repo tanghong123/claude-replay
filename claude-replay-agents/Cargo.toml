@@ -13,6 +13,16 @@ claude-replay-engine = { path = "../claude-replay-engine", version = "1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# QoderWork keeps its session titles in SQLite, not in the transcript, so reading them needs a
+# database. Optional and OFF by default: it is the only C dependency in an otherwise pure-Rust
+# workspace, and no other agent needs it. `bundled` so enabling it never depends on the host's
+# libsqlite3 — a build that opts in should not also inherit a system requirement.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+
+[features]
+default = []
+# Read QoderWork session titles from its SQLite store (see `agents/qoderwork/discover.rs`).
+qoderwork-titles = ["dep:rusqlite"]
 
 [dev-dependencies]
 claude-replay-core = { path = "../claude-replay-core" }

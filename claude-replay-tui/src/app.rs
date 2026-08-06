@@ -528,10 +528,12 @@ fn build_frame(
         .and_then(|s| s.to_str())
         .unwrap_or("session")
         .to_string();
-    let title = crate::Transcript::open(agent, path)
+    // The agent's own name for this session (#106), when it has one. Kept apart from the stem:
+    // the view caps a NAME's footer width (unbounded prose) but never a stem's (already bounded,
+    // and the only thing that identifies the session).
+    let name = crate::Transcript::open(agent, path)
         .card()
-        .and_then(|c| c.title)
-        .unwrap_or_else(|| stem.clone());
+        .and_then(|c| c.title);
     let fold = args.fold_policy();
     // Live (`-f`): register the source and let the CACHE's follower own both the initial fold
     // (its first poll folds the whole current file, matching a one-shot `parse_session_as`) and
@@ -572,7 +574,10 @@ fn build_frame(
         }
     };
     // Always live: the viewer tails, full stop (`-f` is deprecated and ignored).
-    let mut view = View::new_shared(blocks, title, true, fold);
+    let mut view = View::new_shared(blocks, stem.clone(), true, fold);
+    if let Some(name) = name {
+        view.set_session_name(name);
+    }
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
     // The task panel's initial state (#15): the transcript's op-log merged with the

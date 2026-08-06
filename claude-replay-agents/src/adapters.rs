@@ -212,4 +212,11 @@ impl TranscriptAdapter for QoderWorkAdapter {
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         agents::claude::model::subagent_file(root, child_id)
     }
+    fn session_card(
+        &self,
+        path: &Path,
+        memo: Option<&claude_replay_engine::seam::CardMemo>,
+    ) -> claude_replay_engine::seam::CardOutcome {
+        agents::qoderwork::discover::session_card(path, memo)
+    }
 }

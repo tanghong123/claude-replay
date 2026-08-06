@@ -59,6 +59,11 @@ pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
+[features]
+# Surface the QoderWork title store (#106) end to end: `cargo build --features qoderwork-titles`.
+# Off by default — see the note on the core crate's feature of the same name.
+qoderwork-titles = ["claude-replay-core/qoderwork-titles"]
+
 [dependencies]
 claude-replay-core = { path = "claude-replay-core" }
 claude-replay-present = { path = "claude-replay-present", features = ["cli"] }

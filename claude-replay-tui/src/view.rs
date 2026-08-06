@@ -32,6 +32,45 @@ pub(crate) const INSET: usize = 6;
 /// The footer location segment's shed priority — never dropped, only truncated last.
 const LOC_PRIO: u8 = 100;
 
+/// Footer measurement is in terminal COLUMNS, not `char`s. Session titles are agent-supplied
+/// (#106) and routinely CJK — "初筛候选人简历" is 7 chars but 14 columns, so counting chars
+/// would let the footer overrun its line and wrap.
+fn cols(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
+}
+
+/// Truncate to at most `max` columns, spending one of them on the `…` when anything is dropped.
+fn clip_cols(s: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// How many columns an agent-supplied session NAME may claim (a stem is exempt). A title is unbounded agent-supplied text (#106)
+/// sharing one line with position, %, and the token/cost run, and it carries `LOC_PRIO` — the
+/// truncate-LAST rank. Uncapped, that rank is backwards: a 90-column name would evict every
+/// metric to keep itself whole, when the metrics are why the footer exists. So the title is
+/// capped BEFORE it enters the shed set, and only then ranked last.
+fn title_budget(avail: usize) -> usize {
+    (avail / 3).clamp(12, 40)
+}
+
 /// Fit-and-shed the footer's LEFT run to `avail` columns: drop the highest-priority
 /// (largest number) droppable segment (`1..LOC_PRIO`) first, repeat until it fits;
 /// priority-0 segments (nav labels, live-state, position) never drop; the location
@@ -40,8 +79,7 @@ const LOC_PRIO: u8 = 100;
 /// out(5) → duration(6) → cost(7).
 fn shed_footer(mut segs: Vec<(String, u8)>, avail: usize) -> Vec<(String, u8)> {
     let joined = |segs: &[(String, u8)]| -> usize {
-        segs.iter().map(|(t, _)| t.chars().count()).sum::<usize>()
-            + segs.len().saturating_sub(1) * 3
+        segs.iter().map(|(t, _)| cols(t)).sum::<usize>() + segs.len().saturating_sub(1) * 3
     };
     while joined(&segs) > avail {
         // Drop the LEAST-important droppable first — spec order cached(1) → %(2) →
@@ -62,12 +100,7 @@ fn shed_footer(mut segs: Vec<(String, u8)>, avail: usize) -> Vec<(String, u8)> {
     if joined(&segs) > avail {
         let over = joined(&segs) - avail;
         if let Some((loc, _)) = segs.iter_mut().find(|(_, p)| *p == LOC_PRIO) {
-            let keep = loc.chars().count().saturating_sub(over + 1);
-            *loc = if keep == 0 {
-                String::new()
-            } else {
-                loc.chars().take(keep).chain(['…']).collect()
-            };
+            *loc = clip_cols(loc, cols(loc).saturating_sub(over));
         }
     }
     segs
@@ -282,6 +315,10 @@ pub struct View {
     follow: bool,  // pinned to bottom
     new_count: usize,
     title: String,
+    /// Is `title` an agent-supplied NAME (#106) rather than the session's stem? Only a name is
+    /// length-capped: a stem is inherently bounded (a uuid is 36 columns) and truncating it would
+    /// destroy the one thing that identifies the session, while a name is unbounded prose.
+    title_named: bool,
     live: bool,
     // search (P6)
     query: String,   // current needle (empty = no search)
@@ -353,6 +390,7 @@ impl View {
             follow: true,
             new_count: 0,
             title: title.into(),
+            title_named: false,
             live,
             query: String::new(),
             searching: false,
@@ -560,6 +598,13 @@ impl View {
             p.backspace();
         }
     }
+    /// Adopt an agent-supplied session NAME (#106) in place of the stem. Marked as a name so the
+    /// footer caps its length (`title_budget`); a stem is left whole.
+    pub fn set_session_name(&mut self, name: impl Into<String>) {
+        self.title = name.into();
+        self.title_named = true;
+    }
+
     /// Confirm the switcher's selection: close the overlay and return the chosen
     /// transcript path (None if there was no selection).
     pub fn switcher_confirm(&mut self) -> Option<PathBuf> {
@@ -1438,6 +1483,11 @@ impl View {
         let total = self.total_wrapped().max(1);
         // Build the LEFT run in order, each segment with a shed priority (0 = never
         // drop: the nav labels, live-state, position; LOC_PRIO = the id, truncate last).
+        // The key-hint run is never what loses — it's fixed at the right, outside the
+        // shed set; the left run sheds to fit the remaining columns.
+        const HINT: &str = "?·[ ]·␣↵·/·n·g·q";
+        let width = self.width.max(1) as usize;
+        let avail = width.saturating_sub(cols(HINT) + 3);
         let mut segs: Vec<(String, u8)> = Vec::new();
         if self.descended {
             segs.push(("↑ esc back".into(), 0)); // ascend hint + (future) click target
@@ -1446,7 +1496,13 @@ impl View {
         if active > 0 {
             segs.push((format!("a active {active}"), 0));
         }
-        segs.push((self.title.clone(), LOC_PRIO)); // session uuid / agent id
+        // The session name (#106) — an agent-supplied title when there is one, else the uuid.
+        let name = if self.title_named {
+            clip_cols(&self.title, title_budget(avail))
+        } else {
+            self.title.clone() // a stem: bounded already, and shed's last resort still trims it
+        };
+        segs.push((name, LOC_PRIO));
         segs.push((
             if self.live {
                 format!("{mark} · live")
@@ -1458,14 +1514,9 @@ impl View {
         segs.push((format!("{pos}/{total}"), 0));
         segs.push((format!("{pct}%"), 2));
         segs.extend(self.footer_segs.iter().cloned());
-        // The key-hint run is never what loses — it's fixed at the right, outside the
-        // shed set; the left run sheds to fit the remaining columns.
-        const HINT: &str = "?·[ ]·␣↵·/·n·g·q";
-        let width = self.width.max(1) as usize;
-        let avail = width.saturating_sub(HINT.chars().count() + 3);
         let kept = shed_footer(segs, avail);
-        let left_w: usize = kept.iter().map(|(t, _)| t.chars().count()).sum::<usize>()
-            + kept.len().saturating_sub(1) * 3;
+        let left_w: usize =
+            kept.iter().map(|(t, _)| cols(t)).sum::<usize>() + kept.len().saturating_sub(1) * 3;
         let mut spans = vec![Span::raw(" ")];
         for (i, (t, p)) in kept.iter().enumerate() {
             if i > 0 {
@@ -3636,5 +3687,115 @@ mod tests {
         v.search_next();
         draw(&mut v, 40, 10);
         assert_ne!(v.scroll(), first, "n should move to the next match");
+    }
+
+    /// A long agent-supplied title (#106) must not be able to evict the metrics. The title's
+    /// `LOC_PRIO` means "truncate last", which read alone would let a novel-length name push
+    /// position, % and the token run off the line — so the cap is applied BEFORE the shed set.
+    #[test]
+    fn a_long_title_is_capped_before_it_can_evict_the_metrics() {
+        let long = "refactor the transcript folding pipeline and also the cache".repeat(4);
+        let mut v = View::new(
+            vec![Block::UserText("x".into())],
+            "stem",
+            false,
+            FoldPolicy::default(),
+        );
+        v.set_session_name(long.clone());
+        let buf = draw(&mut v, 120, 10);
+        let f = row(&buf, 9);
+        assert!(
+            f.contains('…'),
+            "the title is elided, not printed whole:\n{f}"
+        );
+        assert!(
+            f.contains("1/2") && f.contains('%'),
+            "position and % survive a long title:\n{f}"
+        );
+        assert!(
+            !f.contains(&long[..60]),
+            "the title never claims the whole line:\n{f}"
+        );
+        // And the cap is a fraction of the room, so a wider terminal shows more of it.
+        assert!(title_budget(30) < title_budget(200));
+    }
+
+    /// QoderWork titles are Chinese ("初筛候选人简历"): 7 chars, 14 COLUMNS. Measuring the
+    /// footer in `char`s would under-count by half and overrun the line into a wrap.
+    #[test]
+    fn a_cjk_title_is_measured_in_columns_not_chars() {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(cols("初筛候选人简历"), 14);
+        assert_eq!(
+            UnicodeWidthStr::width(clip_cols("初筛候选人简历", 7).as_str()),
+            7
+        );
+
+        // The line is always exactly `w` cells, so an overrun shows up as the RIGHT-aligned
+        // key-hint run being shoved off the edge and clipped — that is what to assert.
+        for w in [40u16, 60, 120] {
+            let mut v = View::new(
+                vec![Block::UserText("x".into())],
+                "初筛候选人简历初筛候选人简历初筛候选人简历",
+                false,
+                FoldPolicy::default(),
+            );
+            v.set_session_name("初筛候选人简历初筛候选人简历初筛候选人简历");
+            let buf = draw(&mut v, w, 10);
+            let f = row(&buf, 9);
+            assert!(
+                f.contains("?·[ ]·␣↵·/·n·g·q"),
+                "a CJK title pushed the key hints off the {w}-column line:\n{f}"
+            );
+        }
+    }
+
+    /// A session with NO agent name shows its stem, and a stem is never capped: a Claude uuid is
+    /// 36 columns and `title_budget` at a normal width is 33, so capping it would elide the last
+    /// three characters of the only thing identifying the session.
+    #[test]
+    fn a_bare_uuid_stem_is_never_elided() {
+        const STEM: &str = "4752d00e-3b98-4c8d-bc68-c7ca742b11cc";
+        assert_eq!(cols(STEM), 36);
+        for w in [100u16, 120, 200] {
+            let mut v = View::new(
+                vec![Block::UserText("x".into())],
+                STEM,
+                false,
+                FoldPolicy::default(),
+            );
+            let buf = draw(&mut v, w, 10);
+            let f = row(&buf, 9);
+            assert!(f.contains(STEM), "the stem is truncated at width {w}:\n{f}");
+        }
+        // But an agent NAME of the same length IS capped — that is the whole distinction.
+        let mut v = View::new(
+            vec![Block::UserText("x".into())],
+            STEM,
+            false,
+            FoldPolicy::default(),
+        );
+        v.set_session_name(STEM);
+        let buf = draw(&mut v, 120, 10);
+        assert!(
+            !row(&buf, 9).contains(STEM),
+            "a name of any length is capped"
+        );
+    }
+
+    /// The cap is a ceiling, not a floor: a short title — the common case, and every uuid —
+    /// is printed whole and unmarked.
+    #[test]
+    fn a_short_title_is_left_alone() {
+        let mut v = View::new(
+            vec![Block::UserText("x".into())],
+            "fix the parser",
+            false,
+            FoldPolicy::default(),
+        );
+        let buf = draw(&mut v, 120, 10);
+        let f = row(&buf, 9);
+        assert!(f.contains("fix the parser"), "{f}");
+        assert!(!f.contains('…'), "nothing to elide:\n{f}");
     }
 }
