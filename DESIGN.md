@@ -605,23 +605,27 @@ The residual diff is **not** decision-free rendering:
     three tests, one of which measures the resident window on real transcripts — the failure
     is silent (a pinned session renders perfectly and simply stops committing).
 
-- [ ] **`claude-monitor` — every session on the machine, over HTTP (`#98`).** Design drafted
-  2026-08-06 in **`design/claude-monitor.md`** (v1, for review); NOT started. Unblocked by #96,
-  which is what makes it tractable: the meta record's Part I is frontend-agnostic and fold-free,
-  so an index row is a sub-millisecond read of a small append-only file (0.43 MB / 711 records
-  for a 107 MB transcript) instead of a 764 ms fold. Shape:
-  - **The index reads metadata, never transcripts.** If it ever wants to parse one to render
-    something, that means the *record* is missing a field — not that the reader needs a fold.
-  - **Lock-free by construction**: the stream is append-only and `MetaReader` drops a torn tail,
-    so a concurrent writer costs at most a one-commit-stale row. Taking the lock would let the
-    monitor deny sessions to the viewer.
-  - **Liveness comes from #99** — process (basename of argv[0]) + tree mtime + in-flight tool,
-    three states; the process→session link is the weak part (7 of 11 live agents carried no
-    `--resume` id) and rows should say "unconfirmed" rather than assert.
-  - **Reuses the rendezvous hand-off** (#96): opening a session someone else already serves
-    redirects to their port instead of duplicating the server.
-  - Seven open questions in §11; the biggest is how sessions nobody has opened get indexed at
-    all (the cache only holds what a frontend opened).
+- [ ] **`claude-monitor` — every session on the machine, over HTTP (`#98`).** Design **v2** in
+  **`design/claude-monitor.md`** (2026-08-06, for review); NOT started. Unblocked by #96. Six
+  owner requirements; three of them changed the design rather than extending it:
+  - **Its own cache** (not the viewer's) dissolves v1's biggest gap — the viewer's cache only
+    holds sessions someone *opened*, and a machine-wide index is exactly the tool you point at
+    sessions nobody has. Owning it makes the fold-once sweep the design rather than an edge case,
+    and removes lock contention with viewers *in principle* rather than by care.
+  - **Growth detection is the primary liveness signal** — a `stat` diff over the tree, no process
+    needed. That demotes v1's weakest mechanism (process→session has no reliable link: 7 of 11
+    live agents carried no `--resume` id) to splitting *idle* from *finished* only, where being
+    wrong is far cheaper.
+  - **Agent-specific session cards.** Probing real transcripts found Claude writes `custom-title`
+    (user's), `ai-title` (agent's) and `last-prompt` — far better identification than the first
+    prompt, and rewritten as the session evolves, so it is a bounded TAIL read. Codex has none of
+    them, confirming the per-agent seam.
+  - **A separate repo later needs two changes in `claude-replay` first**: `Presentation` must
+    become an open interned id (as `Agent` already is) so a third-party frontend can mint its own
+    cache namespace; and the liveness helpers must move from the root binary crate down into
+    core, or a separate repo links ratatui to `stat` a file.
+  - Eight open questions in §12; the sharpest is whether the session card belongs in the meta
+    record (purity) or stays a tail read (freshness for exactly the growing sessions that matter).
 
 ### Cleanup tasks
 
