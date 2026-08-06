@@ -631,6 +631,26 @@ The residual diff is **not** decision-free rendering:
     `SessionService` + `ServiceConfig` so `--html` and the monitor share one implementation.
   - Eight open questions in §13, plus a record of the five the review resolved and why.
 
+- [ ] **The `session_card` memo (`#98` prerequisite).** Design in **`design/session-card.md`**
+  (v1, for review); NOT started. Revises the interface shipped in v1.40.0, which derives a title
+  correctly but pays full cost every time — **0.96 ms/session**, flat in transcript size (the tail
+  is bounded) but linear in session count, so 1000 sessions is ~1 s per refresh spent almost
+  entirely re-reading bytes that did not change. The floor is one `stat`: **1.3 µs**.
+  - **The caller cannot fix this.** A framework `(len, mtime)` cache is *wrong for QoderWork*,
+    whose title lives in SQLite and changes with the transcript untouched — it would pin such a
+    title forever. Only the adapter knows what its answer depends on, so the staleness decision
+    moves to the adapter, and it needs somewhere to keep what it learned: an **opaque JSON memo**
+    the caller stores and hands back, never interprets.
+  - **Three outcomes, not `Option`**: `Unchanged` / `Fresh` / `Absent`. With `Option`, "keep
+    yours" and "nothing here" collapse into `None` — one makes titles vanish on the next poll, the
+    other makes a deleted one linger.
+  - **The memo must always be optional**: missing, foreign or stale-format is a cache miss and the
+    cold path, never an error. That discardability is what distinguishes it from #96's rejected
+    opaque payloads — a cache its owner may throw away, not a format readers depend on.
+  - Also adds a provided `session_cards` batch (mirroring `subagent_sources`) because QoderWork's
+    per-session cost is *opening the database*, which a memo cannot fix but a batch can.
+  - Five open questions in §8.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now

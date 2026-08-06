@@ -232,6 +232,14 @@ session per cycle — paying I/O to decide whether to do I/O.
 enough that a chatty session is not re-derived every cycle. Guessing 10–20 turns; it wants
 watching rather than deciding up front.
 
+**The refresh is cheap because the adapter memoizes**, not because it is rare — see
+**`design/session-card.md`**. Each derivation returns an opaque JSON memo the monitor stores
+beside the card and hands back next time; an adapter that finds nothing changed answers from a
+single `stat`. Measured: **0.96 ms → 1.3 µs** for an unchanged session. That is what makes
+"re-derive on every scan" affordable at all, and it is why the staleness decision belongs to the
+adapter: a QoderWork title changes when its *database* changes, with the transcript untouched, so
+no caller-side mtime rule could be correct for both agents.
+
 ### 4.2 Organization
 
 Grouping, in priority order — a display concern, not a stored one:
