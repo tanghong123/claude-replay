@@ -598,6 +598,27 @@ invisibly; the HTML server serves cache-less, because partial success is normal 
 multi-root server. A one-shot read is never refused — the refusal's argument is about
 following.
 
+**Residency outlives ownership** (#109). Releasing a session gives up the *lock*, not the
+blocks. `release` **quiesces** it — flush the records, detach the writer, stop folding, all in
+one critical section — and leaves it resident. That separation is what the TUI's `s`-switch
+rides: the session you walked away from is unlocked for a second terminal within milliseconds,
+while its blocks and its measured geometry stay in memory for the switch back.
+
+Re-admitting one is a third origin beside resumed and cold. A **witness** decides: the backing
+is still the length we left it (`DurableStore::backing_len` vs the file), the stream's fold
+version is ours, and the source anchor matches. All three hold ⇒ nothing was written here since
+we let go ⇒ `Origin::Retained`, and the same session object is handed back having loaded,
+aligned and folded nothing. Any of them fails — most realistically because a peer took the
+released entry and folded into it — and it falls through to an ordinary resume. Even then the
+resident prefix is not wasted: `load_from(at)` reads the content stream **from the middle**, so
+the rebuild decodes only what the peer appended rather than the whole backing. Measured on the
+107 MB session: a switch back costs 13 ms where a full resume + measure cost 184 ms.
+
+The quiescence is not bookkeeping. A released session that kept folding would append blocks to
+an entry another process may now own — two writers on one entry, which is exactly what the lock
+exists to prevent — and detaching the meta writer alone would not stop it, because the content
+stream is written by `BlockStore::put`.
+
 **Nothing is persisted that can be derived.** No presentation state crosses a run: the HTML
 render continuation is recomputed from the restored prefix (§6), fold/scroll state is
 per-run by definition, and the pull protocol's `epoch` stays a live-session token. What is

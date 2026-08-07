@@ -72,22 +72,30 @@ impl ArcLog {
         })
     }
 
-    /// The committed blocks the backing actually holds.
+    /// The committed blocks the backing holds **from byte `at` onward** — the read-from-the-middle
+    /// loader (#109). `at` is clamped to the backing's length, so an `at` past the end yields
+    /// nothing instead of `set_len`-extending the file with a hole.
     ///
     /// A **torn trailing record** — the writer died mid-append — is dropped *and* cut from the
     /// file, so the log is left exactly as long as the records it yielded. Doing it here rather
     /// than leaving the fragment for the next append is what keeps `len` an honest offset: an
     /// append after a torn tail would otherwise splice a new record onto half an old one and
-    /// corrupt every locator after it.
-    pub fn load(&mut self) -> std::io::Result<Vec<Arc<Block>>> {
+    /// corrupt every locator after it. The cut is computed from `at`, not from zero, so a partial
+    /// load leaves the skipped prefix alone.
+    pub fn load_from(&mut self, at: u64) -> std::io::Result<Vec<Arc<Block>>> {
         let mut buf = Vec::new();
-        match File::open(&self.path) {
-            Ok(mut f) => f.read_to_end(&mut buf)?,
+        let at = match File::open(&self.path) {
+            Ok(mut f) => {
+                let at = at.min(f.metadata()?.len());
+                f.seek(SeekFrom::Start(at))?;
+                f.read_to_end(&mut buf)?;
+                at
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
         let mut out = Vec::new();
-        let mut good = 0u64; // bytes covered by complete, parsed records
+        let mut good = at; // bytes covered by complete, parsed records
         for line in buf.split_inclusive(|b| *b == b'\n') {
             if !line.ends_with(b"\n") {
                 break; // a fragment with no newline: the writer died mid-append
@@ -100,10 +108,15 @@ impl ArcLog {
                 Err(_) => break, // a complete line that does not parse ends the usable log
             }
         }
-        if good != self.len || good != buf.len() as u64 {
+        if good != self.len || good != at + buf.len() as u64 {
             self.cut_to(good)?;
         }
         Ok(out)
+    }
+
+    /// The whole backing, from byte 0.
+    pub fn load(&mut self) -> std::io::Result<Vec<Arc<Block>>> {
+        self.load_from(0)
     }
 
     /// Cut the backing to `n` committed records (#96 I6) — the content stream must never keep
@@ -197,8 +210,12 @@ impl TuiNote {
 impl DurableStore for ArcLog {
     type Note = TuiNote;
 
-    fn load(&mut self) -> std::io::Result<Vec<Arc<Block>>> {
-        ArcLog::load(self)
+    fn load_from(&mut self, at: u64) -> std::io::Result<Vec<Arc<Block>>> {
+        ArcLog::load_from(self, at)
+    }
+
+    fn backing_len(&self) -> u64 {
+        self.len
     }
 
     /// The TUI derives no render continuation from its prefix — blocks render from themselves —
@@ -283,6 +300,40 @@ mod tests {
 
         s.truncate_to(0).unwrap();
         assert_eq!(ArcLog::open_append(&p).unwrap().load().unwrap().len(), 0);
+    }
+
+    /// **Reading from the middle** (#109): a load that starts at a record boundary yields exactly
+    /// the records above it and leaves the prefix alone, so `prefix ++ load_from(|prefix|)` is
+    /// the same vector a whole load produces. That equality is what lets a re-admission reuse an
+    /// already-decoded prefix instead of paying for it twice.
+    #[test]
+    fn load_from_a_boundary_yields_the_tail_and_nothing_else() {
+        let p = tmp("mid.jsonl");
+        let mut s = ArcLog::create(&p).unwrap();
+        for t in ["a", "b"] {
+            s.put(blk(t), 0, &[]);
+        }
+        let at = s.backing_len(); // the boundary after two records
+        for t in ["c", "d"] {
+            s.put(blk(t), 0, &[]);
+        }
+
+        let mut r = ArcLog::open_append(&p).unwrap();
+        let whole = r.load().unwrap();
+        let tail = r.load_from(at).unwrap();
+        assert_eq!(tail.len(), 2, "only what follows the boundary");
+        assert_eq!(*tail[0], blk("c"));
+        assert_eq!(whole[2..], tail[..], "the tail matches the whole load");
+        assert_eq!(
+            r.backing_len(),
+            std::fs::metadata(&p).unwrap().len(),
+            "a partial load still leaves an honest append offset"
+        );
+
+        // Past the end is empty, and — the trap this guards — must NOT extend the file.
+        let end = r.backing_len();
+        assert!(r.load_from(end * 4).unwrap().is_empty());
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), end, "file untouched");
     }
 
     /// A missing backing is an empty load, not an error — the cold-start path.

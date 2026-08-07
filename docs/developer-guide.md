@@ -347,8 +347,9 @@ Two optional capabilities refine what your store can feed:
   identity, serde bytes). Everything that rebuilds block streams — `snapshot()`, `poll()`,
   `committed_tail`, `SharedSession::pull` — bounds on it, so the compiler tells you exactly
   which consumers a one-way projection store can't feed (and keeps them off it).
-- **[`DurableStore`]** (present) — `load` + `adopt`, plus the `Note` your lock carries. It is
-  what makes your cache survive the process; the next section is the whole of it.
+- **[`DurableStore`]** (present) — `load_from` + `backing_len` + `adopt`, plus the `Note` your
+  lock carries. It is what makes your cache survive the process; the next section is the whole
+  of it.
 
 Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
 `ArcLog` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers hold
@@ -366,7 +367,7 @@ serving-CPU consequence.
 
 ### Making your cache durable — the `DurableStore` seam
 
-Two more methods on your store, and your frontend stops re-reading transcripts it has
+Three more methods on your store, and your frontend stops re-reading transcripts it has
 already read. The design is in
 [Architecture §7](architecture.md#across-runs-the-durable-session-cache); this is the API.
 
@@ -376,10 +377,19 @@ impl DurableStore for MyStore {
     /// TUI. Typed, not opaque: locks are per-presentation, so the only reader is you.
     type Note = MyNote;
 
-    /// Reload the committed `Bv`s from the backing — the ONE frontend-specific step in a
-    /// load. Drop a torn trailing record AND cut the file, or the next append splices onto
-    /// half a record and every locator past it addresses garbage.
-    fn load(&mut self) -> io::Result<Vec<Self::Bv>>;
+    /// Reload the committed `Bv`s from byte `at` onward — the ONE frontend-specific step in
+    /// a load, and the only one that costs O(session). Drop a torn trailing record AND cut
+    /// the file, or the next append splices onto half a record and every locator past it
+    /// addresses garbage.
+    ///
+    /// `at` is what makes a RE-admission cheap: a caller holding the blocks that occupy the
+    /// first `at` bytes gets back only what follows. `load()` is `load_from(0)`.
+    fn load_from(&mut self, at: u64) -> io::Result<Vec<Self::Bv>>;
+
+    /// Bytes you have written. The cache compares it against the file to decide whether a
+    /// released-but-resident session still describes the entry (`Origin::Retained`), so it
+    /// must count exactly the bytes your `put`s appended — no more, no less.
+    fn backing_len(&self) -> u64;
 
     /// Adopt a restored prefix of exactly `n` blocks with header `meta`: cut the backing to
     /// `n`, and seed any render continuation you DERIVE from it. One call because it is one
@@ -438,6 +448,10 @@ Four rules the API enforces or expects, and the reasons they exist:
 - **Release on every exit path.** `release_all()` at each `process::exit(0)`, which skips
   destructors; everything else is covered by `Drop`. A lock outliving its process denies the
   session until its pid dies, which for a recycled pid is never.
+- **A released session is frozen, not merely unlocked.** `release` quiesces: the writer
+  detaches and the fold stops, so the session stays readable but touches neither stream. Keep
+  polling it if you like — it answers idle. Re-admit it and it thaws, retaining its blocks when
+  the entry is untouched.
 
 ## 6. Level 3 — embed the finished presenters
 

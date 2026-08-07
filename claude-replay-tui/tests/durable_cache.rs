@@ -688,3 +688,213 @@ fn dropping_a_cache_releases_its_locks() {
         "a dropped cache leaves no lock behind"
     );
 }
+
+// ── retention: residency that outlives ownership (#109) ───────────────────────────────────────
+
+/// Bytes in an entry's two streams — the state a released session must not touch.
+fn stream_lens(root: &Path, id: &str) -> (u64, u64) {
+    let dir = claude_replay_present::cache::admit::entry_dir(root, Presentation::Tui, id);
+    let len = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    (len(dir.join("blocks.jsonl")), len(dir.join("meta.jsonl")))
+}
+
+/// `admit` + fold to EOF, keeping the session handle (the `open` helper drops it).
+fn admit_and_fold(c: &Cache, id: &str, src: &Path) -> (Session, Origin) {
+    c.register(id, Transcript::open(Agent::CLAUDE, src.to_path_buf()));
+    let (session, origin) = match c.admit(
+        id,
+        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |_: &Holder<TuiNote>| false,
+    ) {
+        Admission::Owned { session, origin } => (session, origin),
+        Admission::Denied(_) => panic!("a free entry must be Owned"),
+    };
+    c.poll_view(id, ArcLog::memory);
+    (session, origin)
+}
+
+type Session = std::sync::Arc<claude_replay_present::cache::SharedSession<ArcLog>>;
+
+/// **The retention property.** Releasing a session gives up the LOCK, not the blocks: it stays
+/// resident, and re-admitting it is `Retained` — the same session object, never rebuilt.
+///
+/// The `Arc::ptr_eq` is the whole point. A rebuilt session that happened to fold to the same
+/// blocks would pass a content check while paying exactly the cost this exists to avoid.
+#[test]
+fn a_released_session_is_re_admitted_without_rebuilding() {
+    let root = tmp("retain");
+    let src = root.join("t.jsonl");
+    transcript(&src, 6);
+
+    let c = cache(&root);
+    let (first, origin) = admit_and_fold(&c, "s", &src);
+    assert!(matches!(origin, Origin::Cold(_)), "first open is cold");
+    let committed = first.counters().2;
+    assert!(committed > 0, "something committed to retain");
+
+    c.release("s");
+    assert!(first.frozen(), "released ⇒ quiesced");
+
+    let (again, origin) = admit_and_fold(&c, "s", &src);
+    assert_eq!(
+        origin,
+        Origin::Retained { committed },
+        "the entry was untouched, so nothing is loaded, aligned or folded"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &again),
+        "retained means the SAME session, not an identical one"
+    );
+    assert!(!again.frozen(), "re-admitting thaws it");
+
+    // And it is still a correct session: folding on from here matches a cold parse.
+    append(&src, &user("more", 900));
+    append(&src, &assistant("ok", 901));
+    c.poll_view("s", ArcLog::memory);
+    let mut blocks: Vec<Block> = again
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    blocks.extend(again.pull_delta(again.epoch(), blocks.len()).provisional);
+    assert_eq!(blocks, cold(&src), "a retained session keeps folding right");
+    c.release_all();
+}
+
+/// **Quiescence** (#109 / #96's single-writer rule). A released session must not fold: its writer
+/// is detached, and `put` would append blocks to an entry another process may now own.
+///
+/// Checked at the streams, not at a flag — the flag is the mechanism, "the bytes did not move" is
+/// the property. Before this, `release` flushed but left the writer attached, so a session that
+/// kept ticking kept writing to an entry it no longer held.
+#[test]
+fn a_released_session_writes_nothing() {
+    let root = tmp("quiesce");
+    let src = root.join("t.jsonl");
+    transcript(&src, 4);
+
+    let c = cache(&root);
+    let (ss, _) = admit_and_fold(&c, "s", &src);
+    c.release("s");
+    let before = stream_lens(&root, "s");
+
+    // The transcript grows by two whole turns — plenty to commit, had it been folding.
+    let committed = ss.counters().2;
+    for i in 0..2 {
+        append(&src, &user("after release", 900 + i * 2));
+        append(&src, &assistant("reply", 901 + i * 2));
+    }
+    assert!(
+        c.poll_view("s", ArcLog::memory).is_none(),
+        "a frozen session is idle, however much the source grew"
+    );
+    assert!(!ss.advance().unwrap(), "and so is a direct advance");
+    assert_eq!(ss.counters().2, committed, "nothing was folded");
+    assert_eq!(stream_lens(&root, "s"), before, "and nothing was written");
+    c.release_all();
+}
+
+/// **The witness.** Retention is only sound while the entry is untouched, so a peer that wrote to
+/// it while we were released must defeat it — and the fallback must still produce a correct
+/// session, not a spliced one.
+///
+/// The peer here is a second cache over the same root: it resumes the entry, folds the transcript
+/// the first session never saw, and writes both streams. The first cache's blocks are then a
+/// PREFIX of the entry rather than the whole of it, which is exactly the case
+/// `Backing::Retained`'s length check exists to catch.
+#[test]
+fn a_peer_writing_while_released_defeats_retention() {
+    let root = tmp("peer");
+    let src = root.join("t.jsonl");
+    transcript(&src, 5);
+
+    let c = cache(&root);
+    let (ours, _) = admit_and_fold(&c, "s", &src);
+    c.release("s");
+
+    // A peer takes the released entry and folds two more turns into it.
+    {
+        let peer = cache(&root);
+        append(&src, &user("peer wrote this", 900));
+        append(&src, &assistant("and this", 901));
+        append(&src, &user("committing turn", 902));
+        let (_, origin) = admit_and_fold(&peer, "s", &src);
+        assert!(
+            matches!(origin, Origin::Resumed { .. }),
+            "the peer resumes our entry, so it really does write to it"
+        );
+        peer.release_all();
+    }
+
+    let (again, origin) = admit_and_fold(&c, "s", &src);
+    assert!(
+        !matches!(origin, Origin::Retained { .. }),
+        "the backing moved under us: retention must be refused, got {origin:?}"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&ours, &again),
+        "and the stale session must be replaced, not re-armed"
+    );
+    let mut blocks: Vec<Block> = again
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    blocks.extend(again.pull_delta(again.epoch(), blocks.len()).provisional);
+    assert_eq!(
+        blocks,
+        cold(&src),
+        "however it rebuilt, it must equal a cold fold"
+    );
+    c.release_all();
+}
+
+/// A fold-version bump must defeat retention even when the backing length is unchanged — the one
+/// case a length comparison cannot see, and the worst one, since it would splice blocks built by
+/// two different folds into one session.
+#[test]
+fn a_version_change_defeats_retention() {
+    let root = tmp("retain-ver");
+    let src = root.join("t.jsonl");
+    transcript(&src, 4);
+
+    let c = cache(&root);
+    admit_and_fold(&c, "s", &src);
+    c.release("s");
+
+    // A cache on the same root, folding with a different version, must not retain the resident it
+    // shares the process with.
+    let newer: Cache = SessionCache::durable(
+        Presentation::Tui,
+        root.clone(),
+        Versions {
+            format: 1,
+            fold: u16::MAX,
+            flavor: None,
+        },
+    );
+    newer.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
+    // The resident belongs to `c`, so `newer` cannot retain it in any case; what this pins is the
+    // check itself — the header a re-admission reads no longer describes this fold.
+    assert!(
+        !claude_replay_present::cache::admit::stream_unchanged(
+            &claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s"),
+            &src,
+            &Versions {
+                format: 1,
+                fold: u16::MAX,
+                flavor: None,
+            },
+        ),
+        "a different fold version is not the entry we left"
+    );
+    assert!(
+        claude_replay_present::cache::admit::stream_unchanged(
+            &claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s"),
+            &src,
+            &Versions::current(None),
+        ),
+        "and the matching one still is"
+    );
+    c.release_all();
+}

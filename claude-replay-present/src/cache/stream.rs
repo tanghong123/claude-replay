@@ -115,6 +115,20 @@ impl MetaWriter {
         })
     }
 
+    /// Re-open an existing stream for appending, cutting **nothing**.
+    ///
+    /// [`open_append`](Self::open_append)'s cut exists to drop records a resume is about to
+    /// re-author. A *retained* entry (#109) re-authors nothing — its fold never stopped where the
+    /// stream stops, it simply stopped writing — so the same cut would discard real history and
+    /// the next reader would resume further back than it needs to.
+    pub fn reattach(dir: &Path, src: &Path) -> std::io::Result<Self> {
+        let file = OpenOptions::new().append(true).open(meta_path(dir))?;
+        Ok(Self {
+            file,
+            src: src.to_path_buf(),
+        })
+    }
+
     /// Append one record, filling the resume window the engine deliberately left unset.
     ///
     /// The engine authors records but cannot compute the window: the CRC covers **source

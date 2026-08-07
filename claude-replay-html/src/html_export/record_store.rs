@@ -172,20 +172,27 @@ impl BlockStore for RecordStore {
 impl DurableStore for RecordStore {
     type Note = HtmlNote;
 
-    /// Rebuild the committed locator table by walking the log's framing newlines.
+    /// Rebuild the committed locator table by walking the log's framing newlines, **from byte
+    /// `from` onward** (#109 — see [`DurableStore::load_from`]). `from` is clamped to the log's
+    /// length, so an offset past the end yields nothing rather than extending the file.
     ///
     /// A **torn trailing record** is dropped *and* cut, so `log_len` stays an honest append
     /// offset: appending after a fragment would splice a new record onto half an old one and
     /// every locator past it would address garbage.
-    fn load(&mut self) -> std::io::Result<Vec<RecordLocator>> {
+    fn load_from(&mut self, from: u64) -> std::io::Result<Vec<RecordLocator>> {
         let mut buf = Vec::new();
-        match std::fs::File::open(&self.log.path) {
-            Ok(mut f) => f.read_to_end(&mut buf)?,
+        let from = match std::fs::File::open(&self.log.path) {
+            Ok(mut f) => {
+                let from = from.min(f.metadata()?.len());
+                f.seek(SeekFrom::Start(from))?;
+                f.read_to_end(&mut buf)?;
+                from
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
         let mut out = Vec::new();
-        let mut at = 0u64;
+        let mut at = from;
         for line in buf.split_inclusive(|b| *b == b'\n') {
             if !line.ends_with(b"\n") {
                 break; // the writer died mid-append
@@ -196,10 +203,14 @@ impl DurableStore for RecordStore {
             });
             at += line.len() as u64;
         }
-        if at != self.log.len || at != buf.len() as u64 {
+        if at != self.log.len || at != from + buf.len() as u64 {
             self.cut_to(at)?;
         }
         Ok(out)
+    }
+
+    fn backing_len(&self) -> u64 {
+        self.log.len
     }
 
     /// Cut the log to `n` records and **derive** the render continuation from the prefix that

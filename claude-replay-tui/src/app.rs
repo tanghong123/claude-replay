@@ -322,6 +322,11 @@ fn picker_viewer_loop<B: ratatui::backend::Backend>(
 /// that bounds TUI memory by navigation recency, not by the agent tree's size.
 const MAX_RESIDENT_SUBAGENTS: usize = 4;
 
+/// How many ROOTS an `s`-switch leaves resident behind it (#109). Each one holds that session's
+/// whole committed block vector, so this is a memory cap, not a policy preference: two covers the
+/// A→B→A toggle the retention exists for, and the third-oldest is dropped rather than accumulated.
+const MAX_RETAINED_ROOTS: usize = 2;
+
 /// One level of the sub-agent navigation stack: a `View` (or `None` when evicted) plus its tail
 /// reader, agent, path, and the parent block index it was descended *from* (so ascending lands the
 /// cursor back on that spawn). The root's `from` is unused.
@@ -359,20 +364,13 @@ fn run_view_loop<B: ratatui::backend::Backend>(
 ) -> Result<Outcome> {
     let mut tick: u64 = 0;
     // The session domain (live followers + their residency) lives in the cache; frames keep only
-    // presentation state. `s`-switching to a different session replaces the cache wholesale.
-    let mut cache = make_cache(args);
-    // Root layouts kept across `s`-switches, keyed by session id. The CACHE is dropped on a
-    // switch (it holds locks — see the `Outcome::Switch` arm), so the sidecar slot inside it
-    // cannot carry a root's geometry the way it carries an evicted sub-agent's. This map lives
-    // in the loop instead, outside the cache, and holds no lock and no blocks: just the
-    // per-block heights + their prefix sums, ~24 bytes a block (300 KB for the 12,469-block
-    // session this exists for).
-    //
-    // It only helps a RE-visit — the first switch to a session still measures. `adopt_sidecar`
-    // refuses a stale entry (different block count, and `layout` re-measures from 0 on a width
-    // change), so a session that grew while you were away is re-measured rather than mismeasured.
-    let mut layouts: std::collections::HashMap<String, crate::view::ViewSidecar> =
-        std::collections::HashMap::new();
+    // presentation state. ONE cache for the whole loop, including across `s`-switches (#109) —
+    // see the `Outcome::Switch` arm for what a switch does instead of replacing it.
+    let cache = make_cache(args);
+    // Roots this loop has left behind, least-recently-visited first: released (unlocked,
+    // quiesced) but still RESIDENT, so switching back to one costs a lock and a `stat` instead of
+    // a resume. Capped, because each entry holds that session's whole committed block vector.
+    let mut retained: Vec<String> = Vec::new();
     let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
@@ -440,33 +438,42 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             Outcome::Ascend => {} // at root: nothing above to ascend to
             // `s`-switch resets the whole stack to the newly chosen session.
             Outcome::Switch(p) => {
-                // Flush and unlock everything this cache holds BEFORE dropping it: the next
-                // session's cache is a different object, and a lock left behind would deny the
-                // session to the next run of this very binary.
+                // RELEASE the session we are leaving — but keep the cache and everything in it
+                // (#109). Releasing is what #107 actually needed: a session merely browsed past
+                // must not stay locked against a second terminal. Dropping the whole cache was
+                // collateral damage — it took the blocks and the sidecar with the lock, so every
+                // switch back paid a full resume and a full measure pass for state that was
+                // sitting in memory. `release` now quiesces instead: the writer detaches, the
+                // lock goes, the blocks stay.
                 //
-                // Deliberately NOT keeping the cache across a switch (#107). Retaining it would
-                // make switching BACK skip a re-resume, but a resume is 47 ms of a switch — the
-                // cost was always the measure pass, and that is now parallel. What retention
-                // would really cost is locks: every session the reader browsed through would
-                // stay held for the life of the process, so a second terminal could not open a
-                // session this one merely visited. Refusing a session in use is the behaviour we
-                // want; refusing one we walked past is not, and 47 ms does not buy it.
-                // The one thing worth carrying across: the ROOT's measured geometry. Park it
-                // before the stack is replaced, so switching back to a session you already
-                // opened skips the measure pass entirely (118 ms of the 182 ms switch on the
-                // 107 MB session). Locks are not carried — only integers.
-                if let Some(root) = stack.first_mut() {
-                    if let Some(view) = root.view.take() {
-                        layouts.insert(root.id.clone(), view.into_sidecar());
-                    }
+                // Sub-agent residents go with the stack that owned them. None of them is durable
+                // (they are opened uncached), and the new stack rebuilds whichever it needs.
+                for f in stack.iter().skip(1) {
+                    cache.remove_pull(&f.id);
                 }
-                cache.release_all();
-                cache = make_cache(args);
+                if let Some(root) = stack.first_mut() {
+                    // The root's derived geometry parks in the cache's own sidecar slot, beside
+                    // the blocks it describes — the same home an evicted sub-agent's uses.
+                    // `adopt_sidecar` refuses a stale entry (different block count; a width
+                    // change re-measures from 0), so a session that grew while you were away is
+                    // re-measured rather than mismeasured.
+                    if let Some(view) = root.view.take() {
+                        cache.aux_put(&root.id, view.into_sidecar());
+                    }
+                    cache.release(&root.id);
+                    retained.retain(|id| id != &root.id);
+                    retained.push(root.id.clone());
+                }
                 let mut frame = build_frame(args, &cache, &p, can_go_back, 0)?;
-                if let (Some(view), Some(sc)) = (frame.view.as_mut(), layouts.remove(&frame.id)) {
+                if let (Some(view), Some(sc)) = (frame.view.as_mut(), cache.aux_take(&frame.id)) {
                     view.adopt_sidecar(sc);
                 }
                 stack = vec![frame];
+                // The session we just entered is no longer "left behind"; then trim the rest.
+                retained.retain(|id| id != &stack[0].id);
+                while retained.len() > MAX_RETAINED_ROOTS {
+                    cache.remove_pull(&retained.remove(0));
+                }
             }
             other => {
                 // Quit / Back — the loop's ONLY other exit, and both lead to a
@@ -539,7 +546,9 @@ fn enforce_cap(cache: &TuiCache, stack: &mut [Frame]) {
     }
     // The followers obey the same budget in the cache (the root is pinned there too); an evicted
     // follower re-materializes from the registry on its next poll.
-    cache.reap_over_budget(MAX_RESIDENT_SUBAGENTS, &stack[0].id);
+    // The retained roots (#109) share this registry, so the budget has to cover both — otherwise
+    // opening a few sub-agents would silently evict the sessions the switch just parked.
+    cache.reap_over_budget(MAX_RESIDENT_SUBAGENTS + MAX_RETAINED_ROOTS, &stack[0].id);
 }
 
 /// Build the root frame for `path`: detect the agent, stream-parse, build the `View`
@@ -594,16 +603,27 @@ fn build_frame(
             blocks.extend(d.provisional);
             (blocks, discover::session_cwd(path), d.metrics, d.tasks)
         }
-        // An idle first poll means an empty (or unreadable) transcript; re-read it directly so a
-        // genuinely unreadable file still reports its error instead of opening blank.
+        // An idle first poll no longer means "empty or unreadable transcript". A RETAINED session
+        // (#109) is already folded to EOF, so its first tick after a re-admit has nothing to
+        // report — and re-parsing here would throw away the entire state retention exists to
+        // keep, on every switch back. So read the session first; a parse is the fallback for a
+        // session that genuinely holds nothing, which is where an unreadable file still reports
+        // its error instead of opening blank.
         None => {
-            let s = transcript.parse()?;
-            (
-                s.blocks().into_iter().map(std::sync::Arc::new).collect(),
-                s.cwd,
-                s.metrics,
-                s.tasks,
-            )
+            let mut blocks = session.committed_arcs();
+            let d = session.pull_delta(session.epoch(), blocks.len());
+            if blocks.is_empty() && d.provisional.is_empty() {
+                let s = transcript.parse()?;
+                (
+                    s.blocks().into_iter().map(std::sync::Arc::new).collect(),
+                    s.cwd,
+                    s.metrics,
+                    s.tasks,
+                )
+            } else {
+                blocks.extend(d.provisional.into_iter().map(std::sync::Arc::new));
+                (blocks, discover::session_cwd(path), d.metrics, d.tasks)
+            }
         }
     };
     // Always live: the viewer tails, full stop (`-f` is deprecated and ignored).
@@ -1333,22 +1353,39 @@ mod switch_cost {
             view.blocks_for_measure().len(),
             fallbacks as f64 / view.blocks_for_measure().len() as f64 * 100.0
         );
-        // A RE-visit: the switch parks the root's geometry and the rebuilt view adopts it, so
-        // the measure pass is skipped entirely. This is what `layouts` in `run_view_loop` buys.
+        // A RE-VISIT — the whole of what `Outcome::Switch` does on the way back (#109): park the
+        // geometry in the cache's sidecar slot, RELEASE (quiesce + unlock, blocks stay resident),
+        // then re-admit and re-adopt. Nothing here is a stand-in: this is the same sequence the
+        // switch arm runs, so the number is the switch-back a user feels.
+        let id = again_id(&path);
         let parked =
             std::mem::replace(view, View::new_shared(vec![], "", true, Default::default()))
                 .into_sidecar();
+        cache.aux_put(&id, parked);
+        cache.release(&id);
+
+        let t = Instant::now();
         let mut again = build_frame(&args, &cache, &path, true, 0).expect("frame");
+        let t_re_frame = t.elapsed();
         let v2 = again.view.as_mut().expect("loaded");
         let t = Instant::now();
-        let adopted = v2.adopt_sidecar(parked);
+        let adopted = cache.aux_take(&id).map(|sc| v2.adopt_sidecar(sc));
         v2.layout(width(), HEIGHT);
+        let t_re_layout = t.elapsed();
         eprintln!(
-            "\n  re-visit layout (sidecar adopted = {adopted}): {:.1} ms",
-            t.elapsed().as_secs_f64() * 1e3
+            "\n  RE-VISIT (release → re-admit): frame {:.1} ms + layout {:.1} ms (sidecar adopted = {adopted:?})",
+            t_re_frame.as_secs_f64() * 1e3,
+            t_re_layout.as_secs_f64() * 1e3
         );
 
         cache.release_all();
+    }
+
+    /// The cache id `build_frame` derives for a transcript — its stem.
+    fn again_id(path: &std::path::Path) -> String {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 }
 

@@ -40,8 +40,29 @@ pub enum Claim<N> {
         /// The recovered state, when this was a resume. `None` on a cold start.
         resumed: Option<Box<Aligned>>,
     },
+    /// Ours again, and the caller's **resident** state still describes it exactly (#109): the
+    /// lock is back and nothing was loaded, aligned or recovered. See [`Backing::Retained`].
+    Retained { dir: PathBuf },
     /// Not the owner. **Nothing was opened, nothing is shared.**
     Denied(Denial<N>),
+}
+
+/// What the frontend's backing says about an entry, decided **after** the lock is ours.
+///
+/// Three outcomes rather than an `Option<usize>`, because a re-admission has a third answer that
+/// is neither a length nor a failure: *the state I already hold IS this entry*. Only the caller
+/// can reach that conclusion — it is the one holding the resident session — so the decision is
+/// made inside the callback rather than by a rule here.
+pub enum Backing {
+    /// The caller holds a resident, quiesced session whose blocks are byte-for-byte the durable
+    /// entry: same backing length, same stream versions, same source anchor. Nothing was opened
+    /// and nothing needs to be: [`claim`] short-circuits to [`Claim::Retained`].
+    Retained,
+    /// How far the content stream reaches — I1's sole authority over what the meta stream may
+    /// claim.
+    Committed(usize),
+    /// The backing could not be opened; the lock is handed straight back.
+    Unusable,
 }
 
 #[derive(Debug)]
@@ -95,7 +116,16 @@ pub fn entry_dir(root: &Path, p: Presentation, session: &str) -> PathBuf {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Origin {
-    Resumed { committed: usize, replay_from: u64 },
+    Resumed {
+        committed: usize,
+        replay_from: u64,
+    },
+    /// Neither resumed nor cold: the session was **never rebuilt**. Its blocks stayed resident
+    /// across a release and the entry was found unchanged, so re-admitting cost one lock and one
+    /// `stat` (#109). Distinct from `Resumed` because no folding happened at all.
+    Retained {
+        committed: usize,
+    },
     Cold(ColdReason),
 }
 
@@ -116,11 +146,10 @@ pub enum ColdReason {
 
 /// Take exclusive ownership of a session's durable entry, or say why not.
 ///
-/// `committed_len` is a **callback**, not a value, and that is the whole ordering argument: it
-/// opens the frontend's backing and reports how far the content stream reaches (I1, the sole
-/// authority), so it must run *after* the lock is ours — otherwise a denial would leave a
-/// backing open for a session another process owns, and "nothing was opened" would be a lie.
-/// `None` from it means the backing could not be opened, and the lock is handed back.
+/// `open` is a **callback**, not a value, and that is the whole ordering argument: it opens the
+/// frontend's backing and reports what it finds (see [`Backing`]), so it must run *after* the
+/// lock is ours — otherwise a denial would leave a backing open for a session another process
+/// owns, and "nothing was opened" would be a lie.
 ///
 /// The callback is also what keeps this function free of `BV` decoding, and therefore one
 /// implementation for every presentation (R5).
@@ -130,7 +159,7 @@ pub fn claim<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
     session: &str,
     src: &Path,
     versions: Versions,
-    committed_len: impl FnOnce(&Path) -> Option<usize>,
+    open: impl FnOnce(&Path) -> Backing,
     alive: impl Fn(&Holder<N>) -> bool,
 ) -> Claim<N> {
     let Some(root) = root else {
@@ -150,9 +179,13 @@ pub fn claim<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
         Ok(Taken::Owned) => {}
         Err(_) => return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot)),
     }
-    let Some(committed_len) = committed_len(&dir) else {
-        lock::release::<N>(&dir); // we took it and cannot use it — do not pin the session
-        return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+    let committed_len = match open(&dir) {
+        Backing::Committed(n) => n,
+        Backing::Retained => return Claim::Retained { dir },
+        Backing::Unusable => {
+            lock::release::<N>(&dir); // we took it and cannot use it — do not pin the session
+            return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+        }
     };
 
     let (origin, resumed) = match recover(&dir, src, &versions, committed_len) {
@@ -215,17 +248,44 @@ pub(crate) fn recover(
     Ok(Some(a))
 }
 
-/// Open the writer for an entry [`claim`] granted, starting a fresh stream when the cache was
-/// not reusable.
+/// Whether a durable entry is still the one this process left behind — the half of the #109
+/// witness that does not depend on the frontend's store: the stream's fold version and the
+/// source's identity, checked without reading a single record.
+///
+/// Cheap on purpose (one line of the meta stream, one line of the transcript), because it runs on
+/// every re-admission and the whole point of a retained entry is to touch nothing. The other half
+/// is the backing LENGTH, which only the caller can compare — it is the one holding the resident
+/// store.
+pub fn stream_unchanged(dir: &Path, src: &Path, versions: &Versions) -> bool {
+    let Ok(Some((header, _))) = MetaReader::open(dir) else {
+        return false;
+    };
+    header.versions == *versions && anchor_of(src).is_ok_and(|a| a == header.anchor)
+}
+
+/// Where a writer picks the record stream up, for an entry [`claim`] granted.
+pub enum Rewind {
+    /// A cold start: begin a fresh stream, discarding whatever was there.
+    Fresh,
+    /// A resume: keep the first `n` records and cut the rest (I6) — the run that wrote them is
+    /// about to re-author them from `replay_from`, and counting both would double the totals.
+    Keep(usize),
+    /// A retained entry (#109): keep **everything**. Nothing is being re-authored — the fold
+    /// never restarted, it only stopped writing — so a cut here would discard real history.
+    All,
+}
+
+/// Open the writer for an entry [`claim`] granted.
 pub fn writer_for(
     dir: &Path,
     src: &Path,
     versions: Versions,
-    resumed: Option<usize>,
+    how: Rewind,
 ) -> std::io::Result<MetaWriter> {
-    match resumed {
-        Some(keep) => MetaWriter::open_append(dir, src, keep),
-        None => MetaWriter::create(dir, src, versions),
+    match how {
+        Rewind::Fresh => MetaWriter::create(dir, src, versions),
+        Rewind::Keep(keep) => MetaWriter::open_append(dir, src, keep),
+        Rewind::All => MetaWriter::reattach(dir, src),
     }
 }
 
@@ -351,7 +411,7 @@ mod tests {
             "s1",
             src,
             versions(),
-            |_| Some(committed),
+            |_| Backing::Committed(committed),
             |_| true,
         )
     }
@@ -364,7 +424,7 @@ mod tests {
             "s",
             Path::new("/nope"),
             versions(),
-            |_| Some(0),
+            |_| Backing::Committed(0),
             |_| true,
         );
         assert!(matches!(
@@ -482,7 +542,7 @@ mod tests {
             "s1",
             &src,
             newer,
-            |_| Some(3),
+            |_| Backing::Committed(3),
             |_| true,
         ) {
             Claim::Ours { origin, .. } => {
@@ -576,7 +636,7 @@ mod tests {
             "s",
             &src,
             versions(),
-            |_| Some(0),
+            |_| Backing::Committed(0),
             |_| true,
         );
         let html = claim::<Note>(
@@ -585,7 +645,7 @@ mod tests {
             "s",
             &src,
             versions(),
-            |_| Some(0),
+            |_| Backing::Committed(0),
             |_| true,
         );
         assert!(matches!(tui, Claim::Ours { .. }));

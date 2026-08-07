@@ -120,6 +120,15 @@ struct Inner<S: BlockStore> {
     /// that produced them: content reaches disk before the meta describing it (I1's ordering),
     /// and there is no "remember to record after advancing" for a caller to get wrong.
     meta: Option<super::stream::MetaWriter>,
+    /// Set while this session is RESIDENT but no longer OWNED — [`quiesce`](SharedSession::quiesce)d
+    /// so its blocks survive a release (#109). A frozen session must not fold, and the reason is
+    /// not only the detached `meta`: `put` appends to the frontend's content backing too, so a
+    /// fold here would write to an entry another process may now own — the two-writers outcome
+    /// the lock exists to prevent. Reads are unaffected; the state is still fully servable.
+    ///
+    /// It is deliberately NOT `meta.is_none()`: a cache-less session has no writer either and
+    /// must keep folding.
+    frozen: bool,
 }
 
 impl<S: BlockStore> Inner<S> {
@@ -168,6 +177,7 @@ impl<S: BlockStore> SharedSession<S> {
                 n_provisional: 0,
                 prev_provisional: Vec::new(),
                 meta: None,
+                frozen: false,
             }),
         }
     }
@@ -179,6 +189,9 @@ impl<S: BlockStore> SharedSession<S> {
     /// stay owned by the accumulator and are read delta-sized at pull time.
     pub fn advance(&self) -> std::io::Result<bool> {
         let mut g = super::lock_recover(&self.inner);
+        if g.frozen {
+            return Ok(false); // released: resident and readable, but no longer writing
+        }
         let follower = &mut g.follower;
         // A commit is visible as growth of the append-only committed prefix (compare BEFORE the
         // fold). Reset takes priority (it also invalidates committed).
@@ -222,6 +235,9 @@ impl<S: BlockStore> SharedSession<S> {
         S: BlockStore<Bv = std::sync::Arc<Block>>,
     {
         let mut g = super::lock_recover(&self.inner);
+        if g.frozen {
+            return Ok(None); // see `advance`
+        }
         let follower = &mut g.follower;
         let prev_committed = follower.committed_len();
         let Some((reset, patch_floor)) = follower.advance_stream()? else {
@@ -433,7 +449,8 @@ impl<S: BlockStore> SharedSession<S> {
         super::lock_recover(&self.inner).follower.tasks()
     }
 
-    /// Make this session durable: every later advance appends its records through `w`.
+    /// Make this session durable: every later advance appends its records through `w`. Thaws a
+    /// [`quiesce`](Self::quiesce)d session, so it is also the re-arm half of a re-admission.
     ///
     /// Records authored BEFORE this call are drained and written straight away, which matters on
     /// a cold start — the load itself folds the whole transcript, and those commits would
@@ -441,13 +458,47 @@ impl<S: BlockStore> SharedSession<S> {
     pub fn attach_writer(&self, w: super::stream::MetaWriter) {
         let mut g = super::lock_recover(&self.inner);
         g.meta = Some(w);
+        g.frozen = false;
         g.record();
     }
 
-    /// Flush the record stream — before a `process::exit(0)`, which skips destructors.
-    pub fn flush_meta(&self) {
+    /// **Freeze this session**: flush what the fold has authored, detach the writer, and stop
+    /// folding — all in ONE critical section, so the final record and the detach cannot be
+    /// interleaved with a concurrent advance that would author records with nowhere to go.
+    ///
+    /// This is what a durable [`release`](super::SessionCache::release) does, and it is what lets
+    /// residency outlive ownership (#109): a frozen session touches neither stream, so the entry
+    /// is genuinely free for a peer while its blocks stay in memory for us. Flushing without
+    /// detaching — which is what release did before — leaves a writer armed on an entry this
+    /// process no longer owns.
+    pub fn quiesce(&self) {
         let mut g = super::lock_recover(&self.inner);
         g.record();
+        g.meta = None;
+        g.frozen = true;
+    }
+
+    /// Whether this session is frozen (see [`quiesce`](Self::quiesce)).
+    pub fn frozen(&self) -> bool {
+        super::lock_recover(&self.inner).frozen
+    }
+
+    /// Resume folding with **no** writer — the undurable half of a re-admission, when the lock
+    /// came back but the record stream could not be opened. Without it a retained session would
+    /// stay frozen and silently stop following its transcript, which is a worse failure than
+    /// serving it uncached.
+    pub fn thaw(&self) {
+        super::lock_recover(&self.inner).frozen = false;
+    }
+
+    /// The committed `Bv` table as the caller's own vector — the already-decoded prefix a
+    /// re-admission hands back to a rebuilt session instead of reading it off disk again (#109).
+    /// O(N) clones of a locator or an `Arc`, never of block content.
+    pub fn committed_bvs(&self) -> Vec<S::Bv> {
+        super::lock_recover(&self.inner)
+            .follower
+            .committed()
+            .to_vec()
     }
 
     /// The current session epoch (bumped on reset).
@@ -486,9 +537,32 @@ pub trait DurableStore: BlockStore + Sized {
     /// leaking into a shared type.
     type Note: serde::Serialize + serde::de::DeserializeOwned + Clone;
 
-    /// Reload the committed `Bv`s from the backing — the ONE frontend-specific step in the load
-    /// (§6.2). HTML scans its record log for locators; the TUI decodes serialized blocks.
-    fn load(&mut self) -> std::io::Result<Vec<Self::Bv>>;
+    /// Reload the committed `Bv`s **from byte `at` onward** — the ONE frontend-specific step in
+    /// the load (§6.2). HTML scans its record log for locators; the TUI decodes serialized blocks.
+    ///
+    /// `at` is what makes a re-admission cheap (#109): a caller that already holds the blocks
+    /// occupying the first `at` bytes — a resident session's own
+    /// [`backing_len`](Self::backing_len) — gets back only what follows, and pays nothing per
+    /// block it already has. Decoding is the expensive half of a resume (23 MB of records for a
+    /// 107 MB transcript), so **reading from the middle is the difference between a resume that
+    /// costs O(session) and one that costs O(what a peer appended)**.
+    ///
+    /// `at` must be a record boundary; an `at` past the end of the backing yields nothing rather
+    /// than extending the file. Neither is a licence to skip the caller's own check that the
+    /// prefix is still ITS prefix — only the caller knows that (see
+    /// [`Backing::Retained`](super::admit::Backing::Retained)).
+    fn load_from(&mut self, at: u64) -> std::io::Result<Vec<Self::Bv>>;
+
+    /// The whole backing, from byte 0.
+    fn load(&mut self) -> std::io::Result<Vec<Self::Bv>> {
+        self.load_from(0)
+    }
+
+    /// Bytes this store has written — the **witness** a re-admission compares against the file on
+    /// disk (#109). A [`quiesce`](SharedSession::quiesce)d session cannot change it, so "the
+    /// backing is still exactly this long" is the whole test for "nobody has written this entry
+    /// since we let go", and it costs one `stat`.
+    fn backing_len(&self) -> u64;
 
     /// Adopt a restored prefix of exactly `n` committed blocks whose header is `meta`.
     ///
@@ -531,6 +605,7 @@ impl<S: DurableStore> SharedSession<S> {
                 n_provisional: 0,
                 prev_provisional: Vec::new(),
                 meta: None,
+                frozen: false,
             }),
         }
     }

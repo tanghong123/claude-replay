@@ -303,6 +303,10 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         let Some(src) = self.resolve(id) else {
             return Admission::Denied(Denial::Unavailable(Unavailable::UnknownSession));
         };
+        // A session this process RELEASED but kept resident (#109). `frozen` is the precise test:
+        // a quiesced session has stopped writing, so its backing length cannot drift while we
+        // decide what to do with it.
+        let resident = self.shared_peek(id).filter(|ss| ss.frozen());
         // The store is opened INSIDE the claim, after the lock is ours — see `claim`'s docs for
         // why the ordering is load-bearing. It comes back out through this slot.
         let mut store: Option<P> = None;
@@ -314,16 +318,64 @@ impl<P: DurableStore, A> SessionCache<P, A> {
             src.path(),
             d.versions.clone(),
             |dir| {
-                let mut s = make_store(dir).ok()?;
-                loaded = s.load().ok()?;
-                let n = loaded.len();
+                let Ok(mut s) = make_store(dir) else {
+                    return admit::Backing::Unusable;
+                };
+                let on_disk = s.backing_len();
+                let ours = resident
+                    .as_ref()
+                    .map(|ss| ss.store_read(|_, st| st.backing_len()));
+                // THE WITNESS (#109). Our blocks describe this entry exactly when the backing is
+                // still the length we left it at, the fold is ours, and the source is the same
+                // file — so nothing has been written here since we let go. Then there is nothing
+                // to load, nothing to align, and nothing to fold.
+                if ours == Some(on_disk) && admit::stream_unchanged(dir, src.path(), &d.versions) {
+                    return admit::Backing::Retained;
+                }
+                // Otherwise rebuild — but a resident prefix the backing still BEGINS with is
+                // already decoded, so read only from where it ends. `ours <= on_disk` is what
+                // makes that sound: a shorter backing means a peer cut below us and the prefix is
+                // no longer ours to trust. (A stale fold cannot slip through: `committed_len`
+                // reaches `align` only after `recover` has matched versions and anchor.)
+                let at = match (ours, resident.as_ref()) {
+                    (Some(ours), Some(ss)) if ours <= on_disk => {
+                        loaded = ss.committed_bvs();
+                        ours
+                    }
+                    _ => 0,
+                };
+                let Ok(tail) = s.load_from(at) else {
+                    return admit::Backing::Unusable;
+                };
+                loaded.extend(tail);
                 store = Some(s);
-                Some(n)
+                admit::Backing::Committed(loaded.len())
             },
             alive,
         );
         let (dir, origin, resumed) = match claimed {
             admit::Claim::Denied(x) => return Admission::Denied(x),
+            admit::Claim::Retained { dir } => {
+                let session = resident.expect("Retained is only reachable with a resident");
+                let origin = Origin::Retained {
+                    committed: session.counters().2,
+                };
+                // Re-arm and thaw in one step: `attach_writer` drains anything the fold authored
+                // before the freeze and clears it. If the stream cannot be reopened the session
+                // must still THAW — a retained session left frozen would silently stop following
+                // its transcript, which is worse than serving it undurable.
+                match admit::writer_for(&dir, src.path(), d.versions.clone(), admit::Rewind::All) {
+                    Ok(w) => {
+                        session.attach_writer(w);
+                        lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
+                    }
+                    Err(_) => {
+                        session.thaw();
+                        lock::release_any(&dir);
+                    }
+                }
+                return Admission::Owned { session, origin };
+            }
             admit::Claim::Ours {
                 dir,
                 origin,
@@ -335,7 +387,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         // I6, both halves: the content stream is cut to what the records corroborate, and the
         // record stream to the alignment point. Skipping the second lets a resumed writer's
         // re-folded commits be counted twice.
-        let (session, keep) = match resumed {
+        let (session, rewind) = match resumed {
             Some(a) => {
                 let a = *a;
                 if store.adopt(a.committed, &a.meta.session_meta).is_err() {
@@ -352,19 +404,19 @@ impl<P: DurableStore, A> SessionCache<P, A> {
                         a.meta,
                         &a.resume,
                     ),
-                    Some(keep),
+                    admit::Rewind::Keep(keep),
                 )
             }
             None => {
                 store.reset(); // a rejected cache keeps nothing
                 (
                     SharedSession::with_store(src.agent(), src.path(), store),
-                    None,
+                    admit::Rewind::Fresh,
                 )
             }
         };
         let session = self.install(id, session);
-        match admit::writer_for(&dir, src.path(), d.versions.clone(), keep) {
+        match admit::writer_for(&dir, src.path(), d.versions.clone(), rewind) {
             Ok(writer) => {
                 session.attach_writer(writer);
                 lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
@@ -391,7 +443,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
             SharedSession::with_store(src.agent(), src.path(), store),
         );
         if let Some(d) = &self.durable {
-            match admit::writer_for(&dir, src.path(), d.versions.clone(), None) {
+            match admit::writer_for(&dir, src.path(), d.versions.clone(), admit::Rewind::Fresh) {
                 Ok(writer) => {
                     session.attach_writer(writer);
                     lock_recover(&d.owned).insert(id.to_string(), Owned { dir });
@@ -444,10 +496,16 @@ impl<P: DurableStore, A> SessionCache<P, A> {
 /// lock outliving its process denies the session to the next run until the pid dies, which for a
 /// recycled pid can be never.
 impl<P: BlockStore, A> SessionCache<P, A> {
-    /// Flush and unlock ONE session — the TUI's `Outcome::Switch`, or a server dropping a root.
+    /// **Quiesce** and unlock ONE session — the TUI's `Outcome::Switch`, or a server dropping a
+    /// root. The session stays RESIDENT and readable; what stops is every write, so re-admitting
+    /// it later can retain its blocks instead of rebuilding them (#109).
+    ///
+    /// Quiescing, not merely flushing: a released session that kept its writer would append to an
+    /// entry this process no longer owns — two writers on one entry, which is what #96's
+    /// single-writer coordination exists to prevent. See [`SharedSession::quiesce`].
     pub fn release(&self, id: &str) {
         if let Some(ss) = self.shared_peek(id) {
-            ss.flush_meta();
+            ss.quiesce();
         }
         let Some(d) = &self.durable else { return };
         if let Some(o) = lock_recover(&d.owned).remove(id) {
