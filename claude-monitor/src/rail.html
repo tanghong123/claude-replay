@@ -48,6 +48,7 @@
   .gsec{font:9.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .gmeta{flex:none;font:9.5px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:99px;padding:2px 8px;margin-left:auto}
   .gkind{flex:none;font:8.5px var(--mono);color:var(--kw);border:1px solid var(--kw);border-radius:4px;padding:0 5px;opacity:.75;margin-left:2px;align-self:center}
+  .term{flex:none;font:9px var(--mono);color:var(--link);border:1px solid var(--border);border-radius:4px;padding:0 5px}
   .row{margin:3px 10px;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid transparent;outline:none}
   .row:hover{background:var(--hover)}
   .row.sel{background:var(--hover);border-color:var(--accent)}
@@ -140,6 +141,12 @@
     if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
     return parts.join(" · ");
   }
+  function termTip(r){
+    // Named, never used: the monitor is read-only — this says WHERE the agent lives.
+    return r.term==="tmux"
+      ?"a live agent (pid "+r.pid+") in a controllable tmux pane — target: "+r.target+(r.sock?" (server -L "+r.sock+")":"")
+      :"a live agent (pid "+r.pid+") in a controllable screen session: "+r.target;
+  }
   function rowTitle(r){
     var t=r.state==="growing"?"growing — the transcript grew since the last scan"
       :r.state==="idle"?(r.conf==="unconfirmed"
@@ -169,6 +176,7 @@
           +'<div class="r1"><span class="'+dot+'"></span>'
           +'<span class="rname">'+esc(r.name)+'</span>'
           +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
+          +(r.target?'<span class="term" title="'+esc(termTip(r))+'">⌘ '+esc(r.term)+' '+esc(r.target)+'</span>':"")
           +(multi?'<span class="achip">'+esc(r.agent)+'</span>':"")
           +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r))+'</span>'
           +'<span class="age">'+esc(r.activity)+'</span></div></div>';

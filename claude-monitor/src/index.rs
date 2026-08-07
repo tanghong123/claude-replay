@@ -87,11 +87,85 @@ struct Counters {
     cost: Option<f64>,
 }
 
-/// One row of the process table: pid, executable basename, full argv, cwd (filled lazily).
+/// One process, with the session-mapping and terminal facts #112's link resolution
+/// consumes — all gathered per the VERIFIED mechanisms of design/session-liveness-probe.md.
+/// The expensive facts (env, fds, tty) are filled for AGENT processes only.
 struct Proc {
+    pid: u32,
     argv: String,
     exe_base: String,
+    /// Working directory (`lsof -Fpfn`, the `cwd` fd) — the Claude heuristic link.
     cwd: Option<String>,
+    /// Open `.jsonl` paths — Codex holds its rollout open, the probe's exact fd link.
+    open_jsonl: Vec<String>,
+    /// Controlling tty (`ps -o tty=`); `None` when detached (`??`).
+    tty: Option<String>,
+    /// `TMUX_PANE=%N` from the process ENVIRONMENT (`ps eww`) — the probe's finding: the
+    /// multiplexer is visible nowhere else, and `%N` is the injection target.
+    pane: Option<String>,
+    /// The socket path from `TMUX=/path,pid,idx` — pane ids are unique per SERVER, so two
+    /// servers each have a `%0` and the socket is what disambiguates the target.
+    tmux_sock: Option<String>,
+    /// `STY=<name>` — GNU screen's equivalent.
+    screen: Option<String>,
+}
+
+/// How a live agent process maps to a session row, and what hosts it.
+struct AgentLink {
+    pid: u32,
+    /// Exact link (sid in argv, or the transcript held open) vs the cwd+recency heuristic.
+    confirmed: bool,
+    terminal: Terminal,
+}
+
+/// What hosts the agent — and therefore whether it can be CONTROLLED (§3 of the probe:
+/// injection is the multiplexer's property; a bare tty is not controllable, deliberately).
+enum Terminal {
+    Tmux {
+        pane: String,
+        /// Socket basename when it is not the default server — the disambiguator a
+        /// `tmux -L <name>` target needs.
+        sock: Option<String>,
+    },
+    Screen(String),
+    Tty,
+    Detached,
+}
+
+impl Terminal {
+    fn of(p: &Proc) -> Terminal {
+        match (&p.pane, &p.screen, &p.tty) {
+            (Some(pane), _, _) => Terminal::Tmux {
+                pane: pane.clone(),
+                sock: p
+                    .tmux_sock
+                    .as_deref()
+                    .and_then(|s| s.rsplit('/').next())
+                    .filter(|b| *b != "default")
+                    .map(str::to_string),
+            },
+            (None, Some(sty), _) => Terminal::Screen(sty.clone()),
+            (None, None, Some(_)) => Terminal::Tty,
+            (None, None, None) => Terminal::Detached,
+        }
+    }
+    fn kind(&self) -> &'static str {
+        match self {
+            Terminal::Tmux { .. } => "tmux",
+            Terminal::Screen(_) => "screen",
+            Terminal::Tty => "tty",
+            Terminal::Detached => "detached",
+        }
+    }
+    /// The controllable target — a tmux pane or a screen session name; `None` when the
+    /// host shape has no supported control channel.
+    fn target(&self) -> Option<&str> {
+        match self {
+            Terminal::Tmux { pane, .. } => Some(pane),
+            Terminal::Screen(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl Index {
@@ -207,6 +281,17 @@ impl Index {
             growing: usize,
         }
         let now = SystemTime::now();
+        // The probe's heuristic rule: a cwd maps to its NEWEST session, so only that row
+        // may claim a process by cwd.
+        let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
+        for (sid, row) in &st.rows {
+            if let (Some(cwd), Some(m)) = (row.cwd.as_deref(), row.tree_mtime) {
+                let e = newest_by_cwd.entry(cwd).or_insert((sid, m));
+                if m > e.1 {
+                    *e = (sid, m);
+                }
+            }
+        }
         let mut groups: HashMap<String, Group> = HashMap::new();
         for (sid, row) in &st.rows {
             let anchored = adapter(row.agent).workspace_anchored();
@@ -231,13 +316,22 @@ impl Index {
                     .and_then(|m| now.duration_since(m).ok())
                     .is_some_and(|d| d < INFLIGHT_WINDOW)
                     && inflight_tool_in_tail(&row.path));
+            // The process link now resolves for EVERY row (#112): growing rows need it as
+            // the prerequisite for the controllable-terminal fact, idle rows for the
+            // alive/finished split it always drove.
+            let heuristic_ok = row
+                .cwd
+                .as_deref()
+                .and_then(|c| newest_by_cwd.get(c))
+                .is_some_and(|(newest, _)| *newest == sid.as_str());
+            let link = link(&st.procs, sid, &row.path, row.cwd.as_deref(), heuristic_ok);
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
-                match liveness(&st.procs, sid, row.cwd.as_deref()) {
-                    Liveness::Confirmed => ("idle", "confirmed"),
-                    Liveness::Heuristic => ("idle", "unconfirmed"),
-                    Liveness::None => ("finished", ""),
+                match &link {
+                    Some(l) if l.confirmed => ("idle", "confirmed"),
+                    Some(_) => ("idle", "unconfirmed"),
+                    None => ("finished", ""),
                 }
             };
 
@@ -257,6 +351,22 @@ impl Index {
                 "activityTs": mtime_secs,
                 "activity": human_age(row.tree_mtime, now),
             });
+            if let Some(l) = &link {
+                j["pid"] = json!(l.pid);
+                j["term"] = json!(l.terminal.kind());
+                if let Terminal::Tmux {
+                    sock: Some(sock), ..
+                } = &l.terminal
+                {
+                    j["sock"] = json!(sock);
+                }
+                if let Some(t) = l.terminal.target() {
+                    // The controllable target (#112): a tmux pane or screen session name.
+                    // NAMED, never used — the monitor is read-only (R8); §4 of the probe
+                    // gates any future injection on per-target consent.
+                    j["target"] = json!(t);
+                }
+            }
             if let Some((_, c)) = &row.counters {
                 j["turns"] = json!(c.turns);
                 j["tools"] = json!(c.tools);
@@ -380,47 +490,105 @@ fn fold_counters(dir: &Path) -> Option<Counters> {
     })
 }
 
-enum Liveness {
-    Confirmed,
-    Heuristic,
-    None,
-}
-
-/// §5.2's honest process→session link: an argv carrying the session UUID is exact
-/// (confirmed); an agent binary whose cwd matches the session's is a heuristic
-/// (unconfirmed — the hollow dot). No argv keyword matching, ever: an agent's own tool
-/// shells carry `claude` in theirs, which is the trap that loses agents silently.
-fn liveness(procs: &[Proc], sid: &str, cwd: Option<&str>) -> Liveness {
-    if procs.iter().any(|p| p.argv.contains(sid)) {
-        return Liveness::Confirmed;
+/// Resolve which live agent process (if any) is behind session `sid` — the probe's §1
+/// precedence, each mechanism verified there:
+///   1. `sid` in a process's argv (`--resume <uuid>`) — exact.
+///   2. The session's transcript held OPEN by an agent process — exact (Codex holds its
+///      rollout `.jsonl` open; Claude appends-and-closes, so this never fires for it).
+///   3. An agent-binary process whose cwd matches the session's — the heuristic. Two
+///      exclusions keep it honest: a process whose argv carries a uuid belongs to THAT
+///      session and never heuristically claims another; and `heuristic_ok` is true only for
+///      the NEWEST session of its cwd — the probe's actual rule ("the newest transcript
+///      there is the session"), without which one process claims every row of its project.
+fn link(
+    procs: &[Proc],
+    sid: &str,
+    transcript: &Path,
+    cwd: Option<&str>,
+    heuristic_ok: bool,
+) -> Option<AgentLink> {
+    let mk = |p: &Proc, confirmed: bool| AgentLink {
+        pid: p.pid,
+        confirmed,
+        terminal: Terminal::of(p),
+    };
+    if let Some(p) = procs.iter().find(|p| p.argv.contains(sid)) {
+        return Some(mk(p, true));
     }
-    if let Some(cwd) = cwd {
-        if procs
-            .iter()
-            .any(|p| is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd))
-        {
-            return Liveness::Heuristic;
+    let t = transcript.to_string_lossy();
+    if let Some(p) = procs
+        .iter()
+        .find(|p| p.open_jsonl.iter().any(|f| f.as_str() == t))
+    {
+        return Some(mk(p, true));
+    }
+    if let Some(cwd) = cwd.filter(|_| heuristic_ok) {
+        if let Some(p) = procs.iter().find(|p| {
+            is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd) && !has_uuid(&p.argv)
+        }) {
+            return Some(mk(p, false));
         }
     }
-    Liveness::None
+    None
+}
+
+/// Whether `s` contains a UUID (8-4-4-4-12 hex) anywhere — the exclusion that keeps a
+/// resumed-elsewhere process out of the cwd heuristic.
+fn has_uuid(s: &str) -> bool {
+    s.split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+        .any(is_uuid)
+}
+
+fn is_uuid(t: &str) -> bool {
+    t.len() == 36
+        && t.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
 }
 
 fn is_agent_exe(base: &str) -> bool {
     matches!(base, "claude" | "codex" | "qoderwork" | "qoder")
 }
 
-/// The process table, full argv per pid (`command=`, NEVER `comm=` — bulk `comm` truncates
-/// absolute paths and silently drops agents launched by one, #99's measured trap), plus cwd
-/// for the agent-binary rows via one batched `lsof`.
+/// The process table (full `command=` argv — NEVER bulk `comm=`, which truncates absolute
+/// paths and silently drops agents launched by one; the probe measured losing 2 of 4), plus
+/// the per-AGENT-pid facts: tty, environment multiplexer markers, cwd and open `.jsonl`
+/// fds — each from the probe's verified source, all batched so a refresh is a fixed handful
+/// of subprocesses however many sessions exist.
 fn scan_procs() -> Vec<Proc> {
-    let Ok(out) = std::process::Command::new("ps")
-        .args(["-axo", "pid=,command="])
-        .output()
-    else {
-        return Vec::new();
+    let run = |args: &[&str]| -> String {
+        std::process::Command::new(args[0])
+            .args(&args[1..])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
     };
-    let mut procs: Vec<(u32, Proc)> = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    let mut procs = parse_ps(&run(&["ps", "-axo", "pid=,command="]));
+    let agent_pids: Vec<String> = procs
+        .iter()
+        .filter(|p| is_agent_exe(&p.exe_base))
+        .map(|p| p.pid.to_string())
+        .collect();
+    if agent_pids.is_empty() {
+        return procs;
+    }
+    let pids = agent_pids.join(",");
+    apply_tty(&mut procs, &run(&["ps", "-o", "pid=,tty=", "-p", &pids]));
+    // The multiplexer is visible ONLY in the environment (§2 of the probe): `ps eww`
+    // appends `K=V` pairs after the command.
+    apply_env(
+        &mut procs,
+        &run(&["ps", "eww", "-o", "pid=,command=", "-p", &pids]),
+    );
+    apply_lsof(&mut procs, &run(&["lsof", "-p", &pids, "-Fpfn"]));
+    procs
+}
+
+/// `pid command…` lines → bare [`Proc`]s (identity facts only).
+fn parse_ps(out: &str) -> Vec<Proc> {
+    let mut procs = Vec::new();
+    for line in out.lines() {
         let line = line.trim_start();
         let Some((pid, argv)) = line.split_once(' ') else {
             continue;
@@ -434,41 +602,86 @@ fn scan_procs() -> Vec<Proc> {
             .and_then(|exe| exe.rsplit('/').next())
             .unwrap_or("")
             .to_string();
-        procs.push((
+        procs.push(Proc {
             pid,
-            Proc {
-                argv: argv.to_string(),
-                exe_base,
-                cwd: None,
-            },
-        ));
+            argv: argv.to_string(),
+            exe_base,
+            cwd: None,
+            open_jsonl: Vec::new(),
+            tty: None,
+            pane: None,
+            tmux_sock: None,
+            screen: None,
+        });
     }
-    // cwd only for the handful of agent-binary rows — one lsof, not one per process.
-    let agent_pids: Vec<String> = procs
-        .iter()
-        .filter(|(_, p)| is_agent_exe(&p.exe_base))
-        .map(|(pid, _)| pid.to_string())
-        .collect();
-    if !agent_pids.is_empty() {
-        if let Ok(out) = std::process::Command::new("lsof")
-            .args(["-a", "-d", "cwd", "-p", &agent_pids.join(","), "-Fpn"])
-            .output()
-        {
-            let mut cur: Option<u32> = None;
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if let Some(pid) = line.strip_prefix('p') {
-                    cur = pid.parse().ok();
-                } else if let Some(cwd) = line.strip_prefix('n') {
-                    if let Some(pid) = cur {
-                        if let Some((_, p)) = procs.iter_mut().find(|(id, _)| *id == pid) {
-                            p.cwd = Some(cwd.to_string());
-                        }
-                    }
-                }
+    procs
+}
+
+/// `pid tty` lines → the controlling tty; `??` means detached and stays `None`.
+fn apply_tty(procs: &mut [Proc], out: &str) {
+    for line in out.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(tty)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if tty != "??" {
+            if let Some(p) = procs.iter_mut().find(|p| p.pid == pid) {
+                p.tty = Some(tty.to_string());
             }
         }
     }
-    procs.into_iter().map(|(_, p)| p).collect()
+}
+
+/// `ps eww` lines (command + environment, space-separated) → `TMUX_PANE` / `STY` markers.
+fn apply_env(procs: &mut [Proc], out: &str) {
+    for line in out.lines() {
+        let line = line.trim_start();
+        let Some((pid, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
+            continue;
+        };
+        for tok in rest.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("TMUX_PANE=") {
+                p.pane = Some(v.to_string());
+            } else if let Some(v) = tok.strip_prefix("TMUX=") {
+                p.tmux_sock = v.split(',').next().map(str::to_string);
+            } else if let Some(v) = tok.strip_prefix("STY=") {
+                p.screen = Some(v.to_string());
+            }
+        }
+    }
+}
+
+/// `lsof -Fpfn` records → per-pid cwd (the `cwd` fd) and open `.jsonl` paths (the Codex
+/// rollout link). Field format: `p<pid>`, then repeating `f<fd>` + `n<name>` pairs.
+fn apply_lsof(procs: &mut [Proc], out: &str) {
+    let mut cur: Option<u32> = None;
+    let mut fd = String::new();
+    for line in out.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            cur = pid.parse().ok();
+        } else if let Some(f) = line.strip_prefix('f') {
+            fd = f.to_string();
+        } else if let Some(name) = line.strip_prefix('n') {
+            let Some(pid) = cur else { continue };
+            let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
+                continue;
+            };
+            if fd == "cwd" {
+                p.cwd = Some(name.to_string());
+            } else if name.ends_with(".jsonl") && fd.chars().all(|c| c.is_ascii_digit()) {
+                p.open_jsonl.push(name.to_string());
+            }
+        }
+    }
 }
 
 fn stem_of(path: &Path) -> String {
@@ -707,5 +920,112 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+    /// The #112 parsers and link precedence, against fixture strings shaped exactly like
+    /// the probe's verified sources — no live processes needed.
+    #[test]
+    fn probe_parsers_and_link_precedence() {
+        let mut procs = parse_ps(
+            "  101 /Users/x/.local/bin/claude --resume 99999999-1111-2222-3333-444444444444\n\
+             102 /opt/homebrew/bin/codex exec\n\
+             103 /Users/x/.local/bin/claude\n\
+             104 bash -c cargo test claude\n",
+        );
+        assert_eq!(procs.len(), 4);
+        assert_eq!(procs[0].exe_base, "claude");
+        assert_eq!(
+            procs[3].exe_base, "bash",
+            "a tool shell is not an agent exe"
+        );
+
+        apply_tty(&mut procs, "  101 ttys006\n  102 ??\n  103 ttys009\n");
+        assert_eq!(procs[0].tty.as_deref(), Some("ttys006"));
+        assert!(procs[1].tty.is_none(), "?? is detached");
+
+        apply_env(
+            &mut procs,
+            "  101 claude TERM=xterm TMUX=/tmp/tmux-501/work,89,0 TMUX_PANE=%7 HOME=/Users/x\n\
+             103 claude STY=1234.pts-0.host TERM=screen\n",
+        );
+        assert_eq!(procs[0].pane.as_deref(), Some("%7"));
+        assert_eq!(procs[2].screen.as_deref(), Some("1234.pts-0.host"));
+
+        apply_lsof(
+            &mut procs,
+            "p102\nfcwd\nn/Users/x/code/repo\nf12\nn/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl\np103\nfcwd\nn/Users/x/other\n",
+        );
+        assert_eq!(procs[1].cwd.as_deref(), Some("/Users/x/code/repo"));
+        assert_eq!(procs[1].open_jsonl.len(), 1, "the Codex rollout fd");
+        assert!(procs[2].open_jsonl.is_empty());
+
+        // Precedence 1: sid in argv — exact, tmux terminal from the env.
+        let l = link(
+            &procs,
+            "99999999-1111-2222-3333-444444444444",
+            Path::new("/nope.jsonl"),
+            None,
+            false,
+        )
+        .expect("argv link");
+        assert!(l.confirmed);
+        assert_eq!(l.pid, 101);
+        assert_eq!(l.terminal.target(), Some("%7"));
+        assert_eq!(l.terminal.kind(), "tmux");
+        assert!(
+            matches!(&l.terminal, Terminal::Tmux { sock: Some(s), .. } if s == "work"),
+            "a non-default socket names the server the pane id is scoped to"
+        );
+
+        // Precedence 2: the transcript held open — exact even with no argv id (Codex).
+        let l = link(
+            &procs,
+            "rollout-abc",
+            Path::new("/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl"),
+            None,
+            false,
+        )
+        .expect("fd link");
+        assert!(l.confirmed);
+        assert_eq!(l.pid, 102);
+        assert_eq!(l.terminal.kind(), "detached", "?? tty, no multiplexer");
+
+        // Precedence 3: cwd heuristic — unconfirmed, screen terminal; and pid 101 (which
+        // carries ANOTHER session's uuid) must never heuristically claim this one.
+        let l = link(
+            &procs,
+            "some-other-sid",
+            Path::new("/n.jsonl"),
+            Some("/Users/x/other"),
+            true,
+        )
+        .expect("cwd link");
+        assert!(
+            link(
+                &procs,
+                "some-other-sid",
+                Path::new("/n.jsonl"),
+                Some("/Users/x/other"),
+                false,
+            )
+            .is_none(),
+            "only the NEWEST session of a cwd may claim a process heuristically"
+        );
+        assert!(!l.confirmed, "cwd+recency is the hedged match");
+        assert_eq!(l.pid, 103);
+        assert_eq!(l.terminal.target(), Some("1234.pts-0.host"));
+        // 102 (codex, no uuid in argv) heuristically matches its own cwd…
+        let l = link(
+            &procs,
+            "zzz",
+            Path::new("/n.jsonl"),
+            Some("/Users/x/code/repo"),
+            true,
+        )
+        .expect("codex cwd heuristic");
+        assert!(!l.confirmed);
+        assert_eq!(l.pid, 102);
+        // …while 101, which carries ANOTHER session's uuid, is excluded from the heuristic
+        // pool entirely (the probe's UNCONFIRMED cross-check as a hard rule).
+        assert!(has_uuid(&procs[0].argv) && !has_uuid(&procs[1].argv));
     }
 }
