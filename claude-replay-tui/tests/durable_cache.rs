@@ -849,9 +849,61 @@ fn a_peer_writing_while_released_defeats_retention() {
     c.release_all();
 }
 
-/// A fold-version bump must defeat retention even when the backing length is unchanged — the one
-/// case a length comparison cannot see, and the worst one, since it would splice blocks built by
-/// two different folds into one session.
+/// A fold-version bump must defeat retention **through the wired path**, at an unchanged backing
+/// length — the one case the length comparison cannot see, and the worst one, since retaining
+/// here would splice blocks built by two different folds into one session with no visible seam.
+///
+/// The peer is simulated by rewriting the stream HEADER in place (same fold, same bytes below
+/// it), which is exactly the state a differently-versioned binary would leave while the content
+/// stream happens to end at the same offset.
+#[test]
+fn a_version_change_defeats_retention_end_to_end() {
+    let root = tmp("retain-ver-e2e");
+    let src = root.join("t.jsonl");
+    transcript(&src, 4);
+
+    let c = cache(&root);
+    let (ours, _) = admit_and_fold(&c, "s", &src);
+    c.release("s");
+    let before = stream_lens(&root, "s");
+
+    // Rewrite ONLY the header's fold version; every record and every block byte stays put.
+    let dir = claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "s");
+    let meta = dir.join("meta.jsonl");
+    let raw = std::fs::read_to_string(&meta).unwrap();
+    let (head, rest) = raw.split_once('\n').unwrap();
+    let mut h: serde_json::Value = serde_json::from_str(head).unwrap();
+    h["versions"]["fold"] = serde_json::json!(u16::MAX);
+    std::fs::write(
+        &meta,
+        format!("{}\n{rest}", serde_json::to_string(&h).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(
+        stream_lens(&root, "s").0,
+        before.0,
+        "the content stream is untouched — only the header moved"
+    );
+
+    let (again, origin) = admit_and_fold(&c, "s", &src);
+    assert_eq!(
+        origin,
+        Origin::Cold(claude_replay_present::cache::ColdReason::VersionChanged),
+        "a foreign fold must rebuild cold, never be retained"
+    );
+    assert!(!std::sync::Arc::ptr_eq(&ours, &again));
+    let mut blocks: Vec<Block> = again
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    blocks.extend(again.pull_delta(again.epoch(), blocks.len()).provisional);
+    assert_eq!(blocks, cold(&src), "and the rebuild equals a cold fold");
+    c.release_all();
+}
+
+/// The guard itself, in isolation: `stream_unchanged` accepts this build's versions and rejects
+/// any other. The end-to-end test above is what pins the WIRING; this pins the predicate.
 #[test]
 fn a_version_change_defeats_retention() {
     let root = tmp("retain-ver");

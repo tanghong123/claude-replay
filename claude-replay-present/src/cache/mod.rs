@@ -337,15 +337,31 @@ impl<P: DurableStore, A> SessionCache<P, A> {
                 // makes that sound: a shorter backing means a peer cut below us and the prefix is
                 // no longer ours to trust. (A stale fold cannot slip through: `committed_len`
                 // reaches `align` only after `recover` has matched versions and anchor.)
-                let at = match (ours, resident.as_ref()) {
-                    (Some(ours), Some(ss)) if ours <= on_disk => {
-                        loaded = ss.committed_bvs();
-                        ours
-                    }
-                    _ => 0,
+                let reuse = match (ours, resident.as_ref()) {
+                    (Some(ours), Some(ss)) if ours <= on_disk => Some((ours, ss)),
+                    _ => None,
                 };
-                let Ok(tail) = s.load_from(at) else {
-                    return admit::Backing::Unusable;
+                let tail = match reuse {
+                    Some((at, ss)) => match s.load_from(at) {
+                        Ok(tail) => {
+                            loaded = ss.committed_bvs();
+                            tail
+                        }
+                        // `at` is not a record boundary — a `put` whose write failed part-way
+                        // left the store's length behind the file's. The prefix below it is then
+                        // not the record sequence we think it is, so reuse is off and the whole
+                        // backing is read instead. (This is also what keeps the reuse from
+                        // *assuming* a peer's re-fold produced byte-identical records: if it did
+                        // not, `at` is not a boundary and we land here.)
+                        Err(_) => match s.load_from(0) {
+                            Ok(all) => all,
+                            Err(_) => return admit::Backing::Unusable,
+                        },
+                    },
+                    None => match s.load_from(0) {
+                        Ok(all) => all,
+                        Err(_) => return admit::Backing::Unusable,
+                    },
                 };
                 loaded.extend(tail);
                 store = Some(s);

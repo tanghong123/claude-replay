@@ -291,7 +291,10 @@ fn first_user_snippet(path: &Path) -> String {
             .join(" ");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if !compact.is_empty() {
-            return compact.chars().take(72).collect();
+            return compact
+                .chars()
+                .take(claude_replay_engine::seam::SNIPPET_CHARS)
+                .collect();
         }
     }
     fallback.unwrap_or_else(|| "(no user prompt)".to_string())

@@ -20,6 +20,33 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Check that `at` sits immediately after a framing newline — that it names a record BOUNDARY.
+///
+/// Not a nicety. A mid-record `at` makes the first slice below it a fragment: it fails to parse,
+/// the load stops at once, and the torn-tail cut then truncates the backing to `at`, silently
+/// discarding every complete record above — a peer's included. A `put` whose `write_all` failed
+/// part-way leaves exactly that state (bytes on disk, the tracked length behind them), so it is
+/// reachable without any exotic race.
+///
+/// Erroring rather than clamping is deliberate: only the CALLER knows what it was going to do
+/// with the prefix below `at`, and quietly returning a whole load where a tail was asked for
+/// would have it splice the same blocks in twice.
+fn ends_a_record(f: &mut File, at: u64) -> std::io::Result<()> {
+    if at == 0 {
+        return Ok(());
+    }
+    f.seek(SeekFrom::Start(at - 1))?;
+    let mut b = [0u8; 1];
+    f.read_exact(&mut b)?;
+    if b[0] != b'\n' {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "load_from: offset is not a record boundary",
+        ));
+    }
+    Ok(())
+}
+
 pub struct ArcLog {
     path: PathBuf,
     /// The append handle. `None` only when the backing could not be opened — the store then
@@ -87,6 +114,7 @@ impl ArcLog {
         let at = match File::open(&self.path) {
             Ok(mut f) => {
                 let at = at.min(f.metadata()?.len());
+                ends_a_record(&mut f, at)?;
                 f.seek(SeekFrom::Start(at))?;
                 f.read_to_end(&mut buf)?;
                 at
@@ -334,6 +362,31 @@ mod tests {
         let end = r.backing_len();
         assert!(r.load_from(end * 4).unwrap().is_empty());
         assert_eq!(std::fs::metadata(&p).unwrap().len(), end, "file untouched");
+    }
+
+    /// **A mid-record offset must be refused, not honoured.** Honouring it makes the first slice
+    /// a fragment: the parse fails, the load stops, and the torn-tail cut truncates the backing
+    /// to the offset — silently destroying every complete record above it. (Measured before the
+    /// guard: a 68-byte log cut to 5.) Reachable via a `put` whose write failed part-way, which
+    /// leaves the tracked length behind the file's.
+    #[test]
+    fn a_mid_record_offset_is_refused_and_the_file_survives() {
+        let p = tmp("mid-record.jsonl");
+        let mut s = ArcLog::create(&p).unwrap();
+        for t in ["a", "b", "c", "d"] {
+            s.put(blk(t), 0, &[]);
+        }
+        let full = std::fs::metadata(&p).unwrap().len();
+
+        let mut r = ArcLog::open_append(&p).unwrap();
+        let e = r.load_from(5).expect_err("5 is inside the first record");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().len(),
+            full,
+            "the refusal must leave every record where it was"
+        );
+        assert_eq!(r.load().unwrap().len(), 4, "and they all still load");
     }
 
     /// A missing backing is an empty load, not an error — the cold-start path.

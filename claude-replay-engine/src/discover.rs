@@ -115,6 +115,16 @@ impl SessionCard {
     }
 }
 
+/// How much of a first prompt a [`Candidate::snippet`] keeps.
+///
+/// A **memory** bound, not a display width. Every discovered session holds one of these, and a
+/// first prompt can be an entire pasted file, so the cap has to exist — but a frontend is what
+/// knows how much room it has. This was 72, which is roughly one 80-column row minus the
+/// picker's fixed columns, and the result was that a session title stopped ~107 columns in
+/// however wide the terminal was. Set it well past any real terminal and let the picker's own
+/// width-fitting do the truncating it already does correctly (double-width glyphs included).
+pub const SNIPPET_CHARS: usize = 512;
+
 /// A pickable session — one transcript on disk plus the metadata the fuzzy session picker
 /// shows and ranks by. Produced by the facade's `candidates_all` / the per-agent discovery.
 #[derive(Clone)]
@@ -132,9 +142,9 @@ pub struct Candidate {
     /// path, and not guaranteed unique (two dirs can share a leaf name).
     pub project: String,
     /// A preview of *what the session was about*, so you can recognise it at a glance: its
-    /// **first genuine user prompt**, whitespace-collapsed and truncated to ~one line (e.g.
-    /// `"add a --width flag to the CLI"`). Host-context / boilerplate messages are skipped;
-    /// empty when the session has no user prompt yet.
+    /// **first genuine user prompt**, whitespace-collapsed and capped at [`SNIPPET_CHARS`]
+    /// (e.g. `"add a --width flag to the CLI"`). Host-context / boilerplate messages are
+    /// skipped; empty when the session has no user prompt yet.
     pub snippet: String,
     /// Whether this session belongs to the directory you're launching from **right now** —
     /// `true` iff its `project` matches the current working directory's. It's purely a

@@ -184,6 +184,21 @@ impl DurableStore for RecordStore {
         let from = match std::fs::File::open(&self.log.path) {
             Ok(mut f) => {
                 let from = from.min(f.metadata()?.len());
+                // `from` must name a record BOUNDARY. Mid-record, the first slice below is a
+                // fragment, the walk stops at once, and the torn-tail cut truncates the log to
+                // `from` — discarding every complete record above it. The caller is told rather
+                // than clamped: only it knows what it meant to do with the prefix.
+                if from > 0 {
+                    f.seek(SeekFrom::Start(from - 1))?;
+                    let mut b = [0u8; 1];
+                    f.read_exact(&mut b)?;
+                    if b[0] != b'\n' {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "load_from: offset is not a record boundary",
+                        ));
+                    }
+                }
                 f.seek(SeekFrom::Start(from))?;
                 f.read_to_end(&mut buf)?;
                 from

@@ -1571,4 +1571,66 @@ mod tests {
         assert_eq!(hex.len(), 6, "pathhash is 6 hex chars: {hex:?}");
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()), "hex: {hex:?}");
     }
+    /// **The switch-back path, end to end** (#109): park the geometry, `release`, then rebuild
+    /// the frame. What is pinned is that the second frame comes back with the SAME blocks — a
+    /// retained session is already folded to EOF, so its first poll is idle, and the branch that
+    /// used to read "idle ⇒ empty or unreadable transcript" would re-parse the whole file here.
+    /// On a 107 MB session that is a multi-second stall on every switch back, and no cheaper
+    /// test reaches it: the cache-level suite never goes through `build_frame`.
+    #[test]
+    fn a_released_frame_rebuilds_from_the_retained_session() {
+        let dir = std::env::temp_dir().join(format!("cr-retain-frame-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("s.jsonl");
+        std::fs::write(
+            &src,
+            "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"first\"}]},\"timestamp\":\"2026-08-07T10:00:00Z\"}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"reply\"}]},\"timestamp\":\"2026-08-07T10:00:01Z\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]},\"timestamp\":\"2026-08-07T10:00:02Z\"}\n",
+        )
+        .unwrap();
+
+        // A durable cache rooted in this test's own directory (never the user's real one).
+        let cache: TuiCache = TuiCache::durable(
+            Presentation::Tui,
+            dir.join("cache"),
+            Versions::current(None),
+        );
+        let args = Args::default();
+
+        let mut first = build_frame(&args, &cache, &src, false, 0).expect("frame");
+        let id = first.id.clone();
+        let view = first.view.as_mut().expect("loaded");
+        view.layout(80, 24);
+        let before = view.blocks_for_measure().to_vec();
+        assert!(!before.is_empty(), "the fixture has blocks");
+        // Only the COMMITTED prefix is retained by identity; the open turn is re-wrapped in
+        // fresh `Arc`s on every tick by design (`ViewDelta::provisional`).
+        let committed = cache.shared_peek(&id).expect("resident").counters().2;
+        assert!(committed > 0, "the fixture commits a turn");
+
+        // Exactly what `Outcome::Switch` does to the session it leaves.
+        cache.aux_put(&id, first.view.take().expect("loaded").into_sidecar());
+        cache.release(&id);
+
+        let mut again = build_frame(&args, &cache, &src, false, 0).expect("frame");
+        let v2 = again.view.as_mut().expect("loaded");
+        assert!(
+            cache.aux_take(&id).is_some_and(|sc| v2.adopt_sidecar(sc)),
+            "the parked geometry still fits the retained blocks"
+        );
+        // POINTER equality, not block equality: a cold re-parse of the same file yields blocks
+        // that COMPARE equal, so only the `Arc` identity separates "retained the resident copy"
+        // from "silently re-read 107 MB and got the same answer".
+        let after = v2.blocks_for_measure();
+        assert_eq!(after, &before[..], "the same blocks, in the same order");
+        assert!(
+            before[..committed]
+                .iter()
+                .zip(after)
+                .all(|(a, b)| std::sync::Arc::ptr_eq(a, b)),
+            "the rebuilt frame must hold the SAME committed copies — a re-parse allocates new ones"
+        );
+        cache.release_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

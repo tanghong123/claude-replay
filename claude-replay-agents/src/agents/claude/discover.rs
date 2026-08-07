@@ -152,7 +152,10 @@ fn first_user_snippet(path: &Path) -> String {
         if v.get("type").and_then(|t| t.as_str()) == Some("user") {
             if let Some(s) = v.pointer("/message/content").and_then(|c| c.as_str()) {
                 let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-                return s.chars().take(72).collect();
+                return s
+                    .chars()
+                    .take(claude_replay_engine::seam::SNIPPET_CHARS)
+                    .collect();
             }
         }
     }
@@ -424,6 +427,43 @@ mod tests {
         let cands = candidates_scoped_in(&root, Agent::QODERWORK, &cwd, Some(home));
         assert_eq!(cands.len(), 1);
         assert!(cands[0].cwd_affinity);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A picker title must not stop short of a wide terminal. The snippet cap is a MEMORY bound,
+    /// not a display width — it used to be 72 chars, which with the picker's ~35 fixed columns
+    /// made every title end around column 107 however wide the window was. The picker fits each
+    /// row to the terminal itself, so discovery's job is only to keep enough for it to fit.
+    #[test]
+    fn a_long_first_prompt_survives_past_one_terminal_row() {
+        let root = std::env::temp_dir().join(format!("cr-snippet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = Path::new("/Users/dev");
+        let cwd = home.join("w").join("repo");
+        // 400 characters of prompt — longer than any single row, shorter than the cap.
+        let prompt: String = std::iter::repeat_n("word ", 80).collect::<String>();
+        let prompt = prompt.trim();
+        let dir = root.join(slug_for(&cwd));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s1.jsonl"),
+            format!(
+                "{{\"sessionId\":\"s1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{prompt}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let cands = candidates_scoped_in(&root, Agent::CLAUDE, &cwd, Some(home));
+        assert_eq!(cands.len(), 1);
+        assert_eq!(
+            cands[0].snippet.chars().count(),
+            prompt.chars().count(),
+            "a prompt under the cap must survive whole — a 200-column terminal has room for it"
+        );
+        assert!(
+            cands[0].snippet.chars().count() > 72,
+            "the old cap would have stopped here"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
