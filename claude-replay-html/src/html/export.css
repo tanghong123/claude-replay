@@ -358,6 +358,11 @@ a.crumb:hover { text-decoration: underline; }
 .plan-body.shown { display: block; }
 .urow { display: flex; justify-content: space-between; gap: 8px; }
 .urow span:first-child { color: var(--faint); }
+/* The VALUE column is right-aligned, so a value long enough to wrap (the #108 compaction
+   row, `11× compacted, 12.2M dropped`) keeps its second line flush right with the first
+   instead of ragging back to the left under the label. `space-between` alone only places
+   the span; it does not align text inside it once wrapped. */
+.urow span:last-child { text-align: right; }
 .urow.total { padding-top: 4px; border-top: 1px dashed var(--border); color: var(--fg); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10.5px; color: var(--faint); }
 .legend .key { border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
