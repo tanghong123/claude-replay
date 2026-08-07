@@ -1514,20 +1514,52 @@ impl View {
         self.match_pos = 0;
         self.search_origin = self.scroll;
     }
-    /// The match the search should START on: the first hit block that BEGINS at or below the
-    /// viewport top where the search was opened — the nearest hit that is on screen or reached
-    /// by scrolling down. Every hit block strictly above wraps around to the end of the cycle,
-    /// so when the whole document's hits are behind the reader the pick loops to the first.
-    /// (Matches vim's `/`: search forward from here, wrap at the end.)
+    /// The match the search should START on: [`first_match_from`](Self::first_match_from) the
+    /// viewport top where the search was opened. (Matches vim's `/`: search forward from here,
+    /// wrap at the end.)
     fn initial_match(&self) -> usize {
+        self.first_match_from(self.search_origin)
+    }
+    /// The first hit block that BEGINS at or below display row `origin` — the forward entry
+    /// point into the match cycle for a viewport anchored there: the nearest hit that is on
+    /// screen or reached by scrolling down. Every hit block strictly above wraps around to the
+    /// end of the cycle, so when the whole document's hits are behind the reader the pick loops
+    /// to the first.
+    fn first_match_from(&self, origin: usize) -> usize {
         let below = self
             .matches
-            .partition_point(|&b| self.prefix.get(b).copied().unwrap_or(0) < self.search_origin);
+            .partition_point(|&b| self.prefix.get(b).copied().unwrap_or(0) < origin);
         if below == self.matches.len() {
             0 // every hit is above the viewpoint — loop around
         } else {
             below
         }
+    }
+    /// The backward mirror of [`first_match_from`](Self::first_match_from): the LAST hit block
+    /// that begins above display row `limit` (exclusive) — the bottom-most on-screen hit for a
+    /// `limit` at the viewport bottom, else the nearest hit above. Wraps to the final hit when
+    /// every one is below.
+    fn last_match_before(&self, limit: usize) -> usize {
+        let above = self
+            .matches
+            .partition_point(|&b| self.prefix.get(b).copied().unwrap_or(0) < limit);
+        if above == 0 {
+            self.matches.len() - 1 // every hit is below the viewport — loop around
+        } else {
+            above - 1
+        }
+    }
+    /// Whether the CURRENT hit's block is anywhere on screen — the test that decides if
+    /// `n`/`N` continue the walk or re-anchor it at the viewport. Any overlap counts: a hit
+    /// the reader can still see is a position they are still AT; one scrolled fully away is
+    /// not, and stepping relative to it would yank the view somewhere unrelated.
+    fn current_match_on_screen(&self) -> bool {
+        let Some(&b) = self.matches.get(self.match_pos) else {
+            return false;
+        };
+        let top = self.prefix.get(b).copied().unwrap_or(0);
+        let h = self.heights.get(b).copied().unwrap_or(0);
+        top < self.scroll + self.view_h && top + h > self.scroll
     }
     pub fn search_input(&mut self, c: char) {
         self.query.push(c);
@@ -1554,18 +1586,35 @@ impl View {
         self.matches.clear();
         self.occurrences = 0;
     }
+    /// Step to the next hit — FROM THE VIEWPORT when the reader has scrolled away from the
+    /// current one (`less`'s `n`, and the same rule that anchors a fresh search at the
+    /// viewpoint): the first hit at or below the top, which is the first on-screen hit when
+    /// one is visible and the next below otherwise. With the current hit still on screen it
+    /// is the plain sequential step. Match order is document order, so re-anchoring only
+    /// changes where the cycle is entered — never the walk itself.
     pub fn search_next(&mut self) {
         if self.matches.is_empty() {
             return;
         }
-        self.match_pos = (self.match_pos + 1) % self.matches.len();
+        self.match_pos = if self.current_match_on_screen() {
+            (self.match_pos + 1) % self.matches.len()
+        } else {
+            self.first_match_from(self.scroll)
+        };
         self.jump_to_current_match();
     }
+    /// [`search_next`](Self::search_next)'s backward mirror: scrolled away, `N` re-anchors to
+    /// the bottom-most hit beginning above the viewport bottom — the last on-screen hit when
+    /// one is visible, the nearest above otherwise.
     pub fn search_prev(&mut self) {
         if self.matches.is_empty() {
             return;
         }
-        self.match_pos = (self.match_pos + self.matches.len() - 1) % self.matches.len();
+        self.match_pos = if self.current_match_on_screen() {
+            (self.match_pos + self.matches.len() - 1) % self.matches.len()
+        } else {
+            self.last_match_before(self.scroll + self.view_h)
+        };
         self.jump_to_current_match();
     }
     #[cfg(test)]
@@ -4226,6 +4275,110 @@ mod tests {
         assert!(v.scroll() > origin, "reaching it means scrolling DOWN");
         let body: String = (0..9).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n");
         assert!(body.contains("UNIQUEMATCH beta"), "{body}");
+    }
+
+    /// Scrolled away from the current hit, `n` re-anchors AT THE VIEWPORT (`less`'s `n`,
+    /// extending the v1.43.0 rule that a fresh search starts at the viewpoint): the first hit
+    /// at or below the top — 3/4 here, not the sequential 2/4 the old walk would give. And an
+    /// already-visible hit is selected WITHOUT yanking the view.
+    #[test]
+    fn n_after_scrolling_reanchors_at_the_viewport() {
+        let mut bs = blocks(60);
+        for i in [5usize, 20, 35, 50] {
+            bs[i] = Block::AssistantText(format!("UNIQUEMATCH {i}"));
+        }
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10);
+        v.scroll_by(-9999); // to the top (clears follow)
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        v.search_confirm();
+        let buf = draw(&mut v, 40, 10);
+        assert!(row(&buf, 9).contains("block 1/4"), "{}", row(&buf, 9));
+
+        // Scroll so the viewport top sits exactly on hit 3 (block 35): the current hit
+        // (block 5) is far off screen, hit 3 is visible from its first row.
+        let target = v.prefix[35];
+        v.scroll_by(target as isize - v.scroll() as isize);
+        v.search_next();
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 3/4"),
+            "n re-anchors to the first hit at the viewport, not the sequential next:\n{}",
+            row(&buf, 9)
+        );
+        assert_eq!(
+            v.scroll(),
+            target,
+            "an on-screen hit is selected without moving the view"
+        );
+
+        // From here the walk is sequential again — the hit is on screen.
+        v.search_next();
+        let buf = draw(&mut v, 40, 10);
+        assert!(row(&buf, 9).contains("block 4/4"), "{}", row(&buf, 9));
+    }
+
+    /// The backward mirror: scrolled away, `N` re-anchors to the bottom-most hit above the
+    /// viewport bottom — 2/3 here, where the sequential prev from 1/3 would wrap to 3/3.
+    #[test]
+    fn shift_n_after_scrolling_reanchors_backward() {
+        let mut bs = blocks(60);
+        for i in [10usize, 25, 55] {
+            bs[i] = Block::AssistantText(format!("UNIQUEMATCH {i}"));
+        }
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10);
+        v.scroll_by(-9999);
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        v.search_confirm();
+        let buf = draw(&mut v, 40, 10);
+        assert!(row(&buf, 9).contains("block 1/3"), "{}", row(&buf, 9));
+
+        // Park the viewport between hits 2 and 3 (top on block 40): nothing matching is on
+        // screen, hit 2 is the nearest ABOVE.
+        let target = v.prefix[40];
+        v.scroll_by(target as isize - v.scroll() as isize);
+        v.search_prev();
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 2/3"),
+            "N re-anchors to the nearest hit above the viewport, not the sequential wrap:\n{}",
+            row(&buf, 9)
+        );
+        assert!(v.scroll() < target, "reaching it means scrolling UP");
+    }
+
+    /// With the current hit still ON SCREEN the walk is untouched: `n` steps sequentially
+    /// even when an earlier hit sits nearer the viewport top — re-anchoring is only for a
+    /// reader who scrolled AWAY.
+    #[test]
+    fn n_walks_sequentially_while_the_current_hit_is_on_screen() {
+        let mut bs = blocks(30);
+        for i in [5usize, 6, 7] {
+            bs[i] = Block::AssistantText(format!("UNIQUEMATCH {i}"));
+        }
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 40, 10);
+        v.scroll_by(-9999);
+        v.search_start();
+        for c in "UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        v.search_confirm();
+        v.search_next(); // 2/3, on screen beside 1 and 3
+        v.search_next(); // must be the SEQUENTIAL 3/3, not a re-anchor back to 1/3
+        let buf = draw(&mut v, 40, 10);
+        assert!(
+            row(&buf, 9).contains("block 3/3"),
+            "on-screen hit => plain sequential walk:\n{}",
+            row(&buf, 9)
+        );
     }
 
     /// Every hit behind the viewpoint: the pick loops around to the document's first hit —
