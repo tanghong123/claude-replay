@@ -1,14 +1,19 @@
 # Design: `claude-monitor` — every session on the machine, over HTTP
 
-> **v4 — for review.** Three rounds of owner review have made this design *smaller* each time,
-> which is the direction to want. v3's two central proposals were both rejected and both replaced
-> with less: the session title left the meta record for the monitor's own store (§4.1), and the
-> page's host-owned rail slot became no extension point at all (§6.3).
+> **v5 — settled.** The 2026-08-07 owner review closed the design, and closed it *smaller*
+> again: the background sweep is **gone** (§3 — the owner rejected an upfront fold of every
+> transcript on startup-delay and storage grounds; population is now a side effect of visiting),
+> the overview lists **main sessions only** (§4.2/§13), grouping is **per agent kind** — project
+> for workspace-anchored agents, agent for desktop-collaboration agents like QoderWork (§4.2) —
+> and the monitor is confirmed as a **web service on a loopback port** (§7, §11). The remaining
+> §13 items were settled with implementer's calls recorded there; none block building.
 >
-> What survived is a shorter list of changes to `claude-replay` (§6.6) and one of them —
-> `session_card` — now pays for itself in the shipped frontends before the monitor exists.
+> v4's history: three rounds of review each made the design smaller — v3's two central
+> proposals were both rejected and replaced with less (the title left the meta record for the
+> monitor's own store, §4.1; the host-owned rail slot became no extension point at all, §6.3).
+> One survivor, `session_card`, already ships in both frontends (#106).
 >
-> Unblocked by #96, shipped v1.35.0–v1.39.0. Read §2, §3 and §6.
+> Unblocked by #96 (v1.35.0–v1.39.0) and #109/v1.46+ (release/retention). Read §2, §3 and §6.
 
 Today's viewer answers *"show me this session"*. This answers **"what is happening on this
 machine"** — one page over every agent's store, with enough per row to triage, and a click
@@ -52,6 +57,11 @@ Measured on the largest real session here:
 An index row is therefore a sub-millisecond read of a small append-only file. A hundred sessions
 is a directory walk plus a hundred small reads.
 
+Under §3's lazy population the stream only EXISTS for sessions that have been visited: a
+never-visited row shows the card columns (title, project/agent, state, last activity — none of
+which fold) and leaves the counters blank. That is the owner's accepted trade (2026-08-07):
+recognition needs no fold, and richness follows use.
+
 > **The rule that keeps it true.** If the monitor ever wants to parse a transcript to render
 > something on the index, that is a signal the *record* is missing a field — not that the reader
 > needs a fold. Adding the field to Part I is the fix.
@@ -86,38 +96,48 @@ it removes v1's largest open question with it.
 `$XDG_CACHE_HOME/claude-monitor`, else `~/.cache/claude-monitor` — using `claude-replay`'s durable
 cache machinery, at a root the viewer never touches.
 
-What this buys, and it is more than isolation:
+What the root holds — and deliberately does NOT hold — changed in the 2026-08-07 review.
+v2–v4 populated it with a background **sweep**: fold every transcript once, so every row is
+uniformly rich. The owner rejected that on two grounds that compound at scale: a first launch
+that folds a machine's whole history is a **long delay** before the tool is useful, and the
+durable entries it writes (content stream + meta stream per session) are **real storage** —
+tens of MB for one large session, GBs for a machine's worth — most of it for sessions nobody
+will ever open. So:
 
-- **No cold-index gap.** v1's worst problem was that the viewer's cache only holds sessions
-  someone *opened*, while a machine-wide index is exactly the tool you point at sessions nobody
-  has. Owning the cache makes populating it the monitor's job, so the **sweep is the design, not
-  an edge case**, and every row is uniformly complete.
-- **No lock contention with viewers, at all.** Locks are keyed by presentation; a different root
-  means the monitor and a running `claude-replay` cannot collide even in principle. R9 stops
-  being something to be careful about.
-- **Its own eviction policy.** The monitor wants to retain the *index* for sessions it has not
-  shown in weeks; a viewer wants to reclaim space. Different policies, now independently settable.
-- **Its own `FOLD_VERSION` rollout.** A `claude-replay` upgrade invalidates the viewer's cache;
-  the monitor's invalidates on its own schedule and re-sweeps in the background rather than making
-  a user wait.
+**Population is lazy.** The root holds exactly two kinds of state:
 
-The cost is honest and one-time: **the monitor folds each session once, itself.** ~20 sessions ×
-~0.8 s ≈ 16 s of background work on this machine, spread out, then never again — each subsequent
-scan is a resume from the last committed block.
+- **The card index** — one small persisted file (title, path, agent, project, mtime per
+  session; a few hundred bytes each). Cards come from §4's bounded tail read — **no fold, no
+  BVs, nothing per-session beyond the row itself** — and re-derive when a transcript's mtime
+  moves. This is what every row is born from, and for a never-visited session it is all there
+  is.
+- **Durable entries for VISITED sessions only.** Opening a row serves it through the existing
+  HTML presentation (§6) against this root — and that serve IS the fold, writing the entry as
+  its ordinary side effect (#96). The monitor never folds anything itself; there is **no sweep
+  worker at all**. From the first visit on, that session's row reads counters from its meta
+  stream (§2, lock-free) and stays current: subsequent serves resume, and the row rides along.
 
-### 3.1 The sweep
+What owning the root still buys:
 
-One worker, strictly lowest priority, bounded:
+- **No lock contention with viewers, at all.** A different root means the monitor and a running
+  `claude-replay` cannot collide even in principle. R9 stops being something to be careful about.
+- **Its own eviction policy.** Card entries are near-free and keep long; visited entries GC on
+  the ordinary durable-cache sweep at this root.
+- **Its own `FOLD_VERSION` rollout.** An upgrade invalidates visited entries only; they rebuild
+  on next visit rather than in a re-sweep nobody asked for.
 
-- one session at a time — never a thread per session;
-- **skip anything currently growing** (§5): folding a moving target wastes the work, and the
-  session will be swept when it settles;
-- newest-first, because the sessions you want indexed are the ones you were just working in;
-- yields to serving — an index request never waits on the sweep.
+The accepted costs, stated plainly rather than discovered later: **counters are blank until a
+session's first visit**, and **the first visit to a large never-opened session pays its cold
+fold interactively** (~0.8 s for 107 MB in the TUI's presentation; the HTML render-to-record
+fold is heavier). If the second cost ever matters, the bolt-on is to pre-fold only *currently
+growing* sessions — the handful you are about to open — which changes no architecture and is
+explicitly **not** in v1.
 
-A session that has never been swept still gets a row (§4 gives it identity from a bounded read);
-it is missing counters, not presence. **The index is complete from the first page load; it becomes
-*rich* as the sweep catches up.**
+### 3.1 What replaced the sweep
+
+Nothing runs in the background but the §8 scan (a `stat` walk + card re-derives for moved
+mtimes). The fold pipeline is exercised exactly as the viewer already exercises it — by
+serving — so the monitor adds **no new fold call sites** to keep correct.
 
 ## 4. The session card (R2) — a general capability the monitor consumes
 
@@ -242,14 +262,31 @@ no caller-side mtime rule could be correct for both agents.
 
 ### 4.2 Organization
 
-Grouping, in priority order — a display concern, not a stored one:
+**The overview lists MAIN sessions only** (owner decision, 2026-08-07). Sub-agents are the
+session view's job — the drill-down that exists today — not rows in the index. The one thing
+the index still tells you about them: a visited session's row carries its sub-agent count and
+running state from `MaterializedMeta.session_meta.children`, so "something is still working
+under this session" is visible on the parent without child rows.
 
-1. **project** (`Candidate::project`, the working directory's leaf) — the axis people think in;
-2. **agent** within a project, when more than one is present;
-3. **state** (§5) by sort rather than grouping: growing first, then idle, then finished.
+Grouping is **per agent kind** (owner decision, same review) — a display concern, not a stored
+one:
 
-**Open (§13 Q2):** whether the project leaf is enough. Two checkouts of one repo in different
-directories share a leaf and would merge; the full cwd disambiguates but is too long to show.
+- **Workspace-anchored agents** (Claude Code, Codex — sessions belong to a repo/directory):
+  grouped by **project** (`Candidate::project`, the working directory's leaf), the axis people
+  think in. Agent shown within the group when more than one is present.
+- **Desktop-collaboration agents** (QoderWork): grouped by **agent**. Their sessions are not
+  repo-anchored — cwd is often `$HOME` or meaningless — so a project grouping would manufacture
+  junk groups out of noise.
+- Within a group, **state** (§5) by sort rather than grouping: growing first, then idle, then
+  finished.
+
+The kind is a one-bit fact about the agent, supplied through the adapter seam (a
+`TranscriptAdapter` method with a workspace-anchored default) — the same place every other
+per-agent fact lives, so a new adapter states it in its own family.
+
+On the leaf-merge case (two checkouts of one repo share a leaf): keep the leaf as the group and
+show the full cwd as the group's secondary line. Watch rather than pre-solve — settled as an
+implementer's call (§13).
 
 ## 5. Change detection (R3, R4)
 
@@ -454,28 +491,31 @@ direction a design should move in.
 ## 7. Shape
 
 ```
- claude-monitor  (separate crate — §10)
-   ├── scan       discover::candidates_all(filter)     every agent by default (R1)
+ claude-monitor  (separate crate — §10) — a web service on one loopback port (§11)
+   ├── scan       discover::candidates_all(filter)     every agent by default (R1);
+   │                                                   incremental by mtime (§8)
    ├── diff       previous scan vs this one            new (R4) + growing (R3)
-   ├── card       per-agent title/description          bounded tail read (§4)
-   ├── index      own cache root, lock-free reads      MaterializedMeta per session (§2, §3)
-   ├── sweep      fold-once, background, skips growing populates its own cache (§3.1)
+   ├── card       per-agent title/description          bounded tail read (§4); persisted as
+   │                                                   ONE small index file (§3)
+   ├── index      main sessions only (§4.2)            cards for every row; MaterializedMeta
+   │                                                   read lock-free for VISITED rows (§2, §3)
    ├── liveness   process, only to split idle/finished secondary (§5.1)
-   └── serve      index page + hand-off                loopback; view via claude-replay-html
+   └── serve      index page + hand-off                loopback; view via claude-replay-html;
+                                                       serving a visit IS the fold (§3)
 ```
 
 Row model — the table is the acceptance test for R7, since every source is a listing, a `stat`, a
 bounded tail read, or the meta stream:
 
-| column | source | folds? |
-|---|---|---|
-| title · description | §4 per-agent card | no — bounded tail |
-| project · agent | `Candidate` | no |
-| last activity | tree mtime | no |
-| state | §5 | no |
-| turns · tools · sub-agents | `MaterializedMeta.session_meta` | no |
-| cost | `MaterializedMeta.tokens` + `metrics::total_cost` | no |
-| tasks | `MaterializedMeta.tasks` | no |
+| column | source | folds? | present |
+|---|---|---|---|
+| title · description | §4 per-agent card | no — bounded tail | every row |
+| project · agent | `Candidate` | no | every row |
+| last activity | tree mtime | no | every row |
+| state | §5 | no | every row |
+| turns · tools · sub-agents | `MaterializedMeta.session_meta` | no | visited rows |
+| cost | `MaterializedMeta.tokens` + `metrics::total_cost` | no | visited rows |
+| tasks | `MaterializedMeta.tasks` | no | visited rows |
 
 ## 8. Refresh
 
@@ -486,8 +526,9 @@ construction; and the liveness fallback has no event to subscribe to anyway.
 The server re-scans on a floor of ~2 s and serves a cached snapshot in between, so N open tabs
 cost one scan. Per-session views keep tailing through the existing pull protocol, untouched.
 
-**Open (§13 Q3):** whether the scan is incremental (only sessions whose mtime moved) or a full
-re-read per cycle. Full is simpler and fine at ~100; unmeasured at 1000.
+The scan is **incremental by mtime** — settled by §3's lazy design, which forces it anyway:
+a cycle is a `stat` walk, and only sessions whose mtime moved get a card re-derive. A full
+per-cycle re-read of anything is exactly the shape the review removed.
 
 ## 9. Interaction with a running viewer (R9)
 
@@ -518,15 +559,15 @@ the current API does not survive the move:
 Neither is large. Both are worth doing before the monitor exists rather than after, because both
 are API decisions and the second run of an API is the expensive one.
 
-**Open (§13 Q4):** whether the per-agent card (§4) should be a hook on `TranscriptAdapter` — which
-would make it available to every consumer and keep agent knowledge behind the one seam — or a
-monitor-side trait, which keeps a display concern out of the parser. I lean toward the adapter
-hook, because "what is this session called" is a fact about the agent's format, not about the
-monitor.
+The per-agent card is an adapter hook (`session_card` on the seam) — resolved in the v4 review
+and since SHIPPED (#106): both frontends already show agent-supplied titles through it, so the
+monitor consumes an API that exists rather than one designed for it.
 
 ## 11. Exposure
 
-**Loopback only.** `127.0.0.1`, as `--html` does today, with no bind-address flag in the design.
+**A web service on one loopback port** (owner decision, 2026-08-07): `127.0.0.1` with a stable
+default port so the monitor is a bookmarkable place, `--port` to override, and no bind-address
+flag in the design.
 The page aggregates every session on the machine — prompts, file contents, tool output, working
 directories — so a careless bind exposes the machine's whole body of work, not one session. If
 remote access is ever wanted it is a separate decision with its own review, and the honest
@@ -546,28 +587,37 @@ of it and should keep needing none of it.
 
 ## 13. Open questions
 
-1. **How stale may a title get?** (§4.1) The refresh trigger is "turns advanced by ≥ N since
-   derivation", because the turn count is already on the row and costs nothing to test. N wants
-   watching rather than deciding up front — guessing 10–20.
-2. **Is the project leaf the right grouping key?** (§4.2) Two checkouts of one repo share a leaf
-   and would merge; the full cwd disambiguates but is too long to show.
-3. **Scan strategy at scale.** (§8) Full re-read per cycle vs incremental by mtime; unmeasured at
-   ~1000 sessions.
-4. **What is the sweep's completion signal?** A session whose fold *fails* (corrupt transcript,
-   unknown agent) must not be retried every cycle forever. Some negative cache with a reason, but
-   its shape and invalidation are undesigned.
-5. **A session whose transcript was deleted but whose index entry survives.** A ghost row is
-   arguably useful history and arguably confusing. Undecided.
-6. **Sub-agent rows.** A session with 40 sub-agents has 40 child transcripts. List, nest, or leave
-   to drill-down? Leaning drill-down — but a long-running child is exactly what you would want to
-   see from the index.
-7. **Configuration surface for R1.** A flag, a config file, or both — and whether "which agents"
-   is the only axis worth configuring (versus store roots, or projects).
-8. **Keyboard focus across the frame boundary.** (§6.3) The rail wants `↑/↓` and `/`; the view
-   already binds `j k`, `/`, `[ ]`, `space`. Same-origin `postMessage` handles it, but who owns a
-   keystroke when the rail has focus and the view does not is a decision, not a detail.
+**None block building.** The 2026-08-07 owner review settled the four structural questions
+(main-sessions-only overview; per-agent-kind grouping; lazy population, no sweep; a web service
+on a loopback port), and the rest are settled below as implementer's calls — recorded so a veto
+is one line, not an excavation.
 
-**Resolved by review** — kept as a record of what moved and why:
+**Settled 2026-08-07** (owner decisions marked ◆, implementer's calls ◇):
+
+1. ◆ **No upfront sweep** (was Q3/Q4's whole context). Lazy population per §3: cards for every
+   row, durable entries only for visited sessions. Rejected on startup delay + storage.
+2. ◆ **Main sessions only in the overview** (was Q6). Sub-agents are drill-down; a visited
+   parent's row still shows child count + running state, which covers the long-running-child
+   case for exactly the sessions that can show it.
+3. ◆ **Grouping per agent kind** (was Q2's axis): project for workspace-anchored agents, agent
+   for desktop-collaboration agents (QoderWork). One adapter-supplied bit.
+4. ◆ **A web service at `localhost:<port>`** — stable default port, `--port` override (§11).
+5. ◇ **Title staleness** (was Q1): dissolved by lazy — a card re-derives when its transcript's
+   mtime moves, at the §8 scan cadence. The turn-count trigger died with the sweep (turns need
+   the fold; mtime does not).
+6. ◇ **Leaf merge** (was Q2's remainder): keep the leaf as the group key, full cwd as the
+   group's secondary line. Watch; two checkouts sharing a group is mildly wrong, not broken.
+7. ◇ **Failed reads** (was Q4): no sweep, so no retry loop to guard. A failed card read =
+   a stem-titled row; a failed fold surfaces on visit, in front of the user, once.
+8. ◇ **Ghost rows** (was Q5): presence comes from the scan, so a deleted transcript's row
+   simply vanishes; its card entry is dead weight until the card file's next compaction.
+9. ◇ **Configuration** (was Q7): CLI flags only for v1 (`--agents`, `--port`,
+   `$CLAUDE_MONITOR_CACHE`); a config file when someone actually asks.
+10. ◇ **Cross-frame keyboard** (was Q8): v1 is click-focus only — the rail is plain clickable
+    HTML with a filter input; `postMessage` keyboard unification is a nicety deferred until the
+    rail exists to want it.
+
+**Resolved by earlier review** — kept as a record of what moved and why:
 
 - *Should the title live in the meta record?* No (§4.1). It would put I/O in the sans-io fold,
   bump `FOLD_VERSION` for every user to serve one consumer, and couple an occasional refresh to a
@@ -586,6 +636,7 @@ of it and should keep needing none of it.
 | shape | why |
 |---|---|
 | Fold every transcript on index load | O(bytes) per page load — the entire reason #96 came first |
+| The background sweep itself (v2–v4) | rejected by the owner 2026-08-07: a first launch that folds a machine's history is a long delay, and its durable entries are GBs of storage mostly for sessions nobody opens. Presence and recognition need no fold (cards); richness follows visits (§3) |
 | Share the viewer's cache | R5; and it left the index permanently partial for sessions nobody opened, which is the population a machine-wide monitor exists for |
 | Read the frontend's `BV` table for counters | drags `BV` decoding into a reader R7 wants free of it, and makes the index presentation-specific for no gain |
 | Take the entry lock while indexing | R9 — the monitor must never be able to deny a session to anything |
