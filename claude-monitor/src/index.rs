@@ -15,10 +15,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-/// How long after the last observed growth a row keeps reading **growing** — absorbs the
-/// gap between an agent's writes so an actively-working session doesn't flicker
-/// growing→idle between tool results.
-const GROW_LINGER: Duration = Duration::from_secs(12);
+/// How long after the last observed growth a row keeps reading **growing**. An agent's
+/// writes land in BURSTS — a long generation appends nothing and has no tool in flight, so
+/// gaps of 30–120 s between writes are the working norm — and a linger shorter than that
+/// gap makes an actively-working session flap growing→idle→growing, hopping around a
+/// sort that puts growing first. A minute absorbs the cadence; a session that truly
+/// stopped reads idle at most a minute late.
+const GROW_LINGER: Duration = Duration::from_secs(60);
 
 /// Only transcripts touched this recently get the in-flight tail read (256 KiB): a session
 /// idle for an hour is not mid-tool, and reading every historical transcript's tail each
@@ -272,14 +275,36 @@ impl Index {
         }
 
         let mut gs: Vec<Group> = groups.into_values().collect();
-        // Groups: most recent activity first. Rows within: growing first, then recency.
-        gs.sort_by_key(|g| std::cmp::Reverse(((g.growing > 0) as u64 * (1 << 62)) | g.latest));
+        // ORDER MUST BE A PURE FUNCTION OF THE DATA. Both collections come out of HashMaps,
+        // whose iteration order is randomized per rebuild — without a total tiebreak, rows
+        // tied on the key (same state, same mtime second) swap places between polls with
+        // nothing changing on disk, and the rail looks like it reshuffles for no reason.
+        //
+        // Groups: any-growing first, then most recent activity, then label as the tiebreak.
+        gs.sort_by(|a, b| {
+            ((b.growing > 0), b.latest, &a.label, &a.secondary).cmp(&(
+                (a.growing > 0),
+                a.latest,
+                &b.label,
+                &b.secondary,
+            ))
+        });
+        // Rows: the §4.2 state TIERS — growing, then idle, then finished — most recent
+        // first within a tier, id as the total tiebreak.
+        fn tier(r: &Value) -> u8 {
+            match r["state"].as_str() {
+                Some("growing") => 2,
+                Some("idle") => 1,
+                _ => 0,
+            }
+        }
         for g in &mut gs {
-            g.rows.sort_by_key(|r| {
-                std::cmp::Reverse(
-                    (r["state"] == "growing") as u64 * (1 << 62)
-                        + r["activityTs"].as_u64().unwrap_or(0),
-                )
+            g.rows.sort_by(|a, b| {
+                (tier(b), b["activityTs"].as_u64(), a["id"].as_str()).cmp(&(
+                    tier(a),
+                    a["activityTs"].as_u64(),
+                    b["id"].as_str(),
+                ))
             });
         }
         let out: Vec<Value> = gs
@@ -543,6 +568,53 @@ mod tests {
         assert_eq!(r["visited"], true, "{r}");
         assert_eq!(r["turns"], 5, "counters are the folded deltas: {r}");
         assert_eq!(r["tools"], 8);
+
+        // ── ordering is a pure function of the data ──────────────────────────────
+        // Two sessions with IDENTICAL mtimes: their relative order must be the id
+        // tiebreak, and two consecutive scans must serve the SAME order — the HashMap
+        // iteration behind the rows must never leak (the reshuffling-rail bug).
+        let same = SystemTime::now() - Duration::from_secs(3600);
+        for tie in [
+            "aaaaaaaa-0000-0000-0000-000000000001",
+            "bbbbbbbb-0000-0000-0000-000000000002",
+        ] {
+            let p = proj.join(format!("{tie}.jsonl"));
+            std::fs::write(
+                &p,
+                "{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/fixture-repo\",\"message\":{\"role\":\"user\",\"content\":\"tied\"}}\n",
+            )
+            .unwrap();
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(same)
+                .unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(2100));
+        let order = |json: &str| -> Vec<String> {
+            let v: Value = serde_json::from_str(json).unwrap();
+            v["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["rows"].as_array().unwrap().clone())
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let first = order(&idx.sessions_json(|_| {}));
+        std::thread::sleep(Duration::from_millis(2100));
+        let second = order(&idx.sessions_json(|_| {}));
+        assert_eq!(first, second, "order must not move when nothing changed");
+        let a = first
+            .iter()
+            .position(|x| x.starts_with("aaaaaaaa"))
+            .expect("tied row a listed");
+        let b = first
+            .iter()
+            .position(|x| x.starts_with("bbbbbbbb"))
+            .expect("tied row b listed");
+        assert!(a < b, "identical mtimes break the tie by id: {first:?}");
 
         let _ = std::fs::remove_dir_all(&base);
     }
