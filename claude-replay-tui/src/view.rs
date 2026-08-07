@@ -1383,6 +1383,14 @@ impl View {
         }
     }
 
+    /// Show a transient one-line notice in the status row — the same surface the `y`
+    /// attachment-save path uses, cleared on the next input. This is the TUI's only
+    /// in-viewer message channel (#110): anything that must be SAID without leaving the
+    /// session (a refused switch, a failed reveal) goes through here.
+    pub fn set_flash(&mut self, msg: impl Into<String>) {
+        self.flash = Some(msg.into());
+    }
+
     /// Clear the transient status flash (called on the next input so a "Saved …"
     /// message doesn't linger).
     pub fn clear_flash(&mut self) {
@@ -2606,6 +2614,34 @@ mod tests {
         assert!(!blocks.is_empty(), "parsed an agent spawn");
         let pol = crate::Args::default().fold_policy();
         assert!(pol.collapses(&blocks[0]), "agent spawn default-folds");
+    }
+
+    /// The transient flash (#110): `set_flash` takes over the status row on the next draw,
+    /// `clear_flash` (what any keystroke calls) hands the row back. This is the surface a
+    /// refused mid-session switch reports through, so it must actually reach the screen.
+    #[test]
+    fn a_flash_takes_the_status_row_and_clears() {
+        let mut v = View::new(
+            vec![Block::UserText("hello".into())],
+            "s",
+            false,
+            FoldPolicy::default(),
+        );
+        v.set_flash("in use by another claude-replay (pid 42)");
+        let buf = draw(&mut v, 60, 6);
+        let status = row(&buf, buf.area.height - 1);
+        assert!(
+            status.contains("in use by another claude-replay (pid 42)"),
+            "flash owns the status row: {status:?}"
+        );
+
+        v.clear_flash();
+        let buf = draw(&mut v, 60, 6);
+        let status = row(&buf, buf.area.height - 1);
+        assert!(
+            !status.contains("in use"),
+            "cleared on input, the ordinary footer returns: {status:?}"
+        );
     }
 
     fn draw(v: &mut View, w: u16, h: u16) -> Buffer {

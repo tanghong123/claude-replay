@@ -596,7 +596,10 @@ resolve a denial differently, and the asymmetry is why the holder's note is *fro
 pane, because two instances would each fold and hold the same growing session in RAM
 invisibly; the HTML server serves cache-less, because partial success is normal for a
 multi-root server. A one-shot read is never refused — the refusal's argument is about
-following.
+following. WHERE the refusal lands also differs (#110): at launch it prints and exits —
+the shell is where you want to be — but on a mid-session `s`-switch the viewer builds the
+target *before* touching the current stack, so a refusal costs nothing torn down: it stays
+on the session you were reading and flashes who holds the other one.
 
 **Residency outlives ownership** (#109). Releasing a session gives up the *lock*, not the
 blocks. `release` **quiesces** it — flush the records, detach the writer, stop folding, all in

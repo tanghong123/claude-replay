@@ -389,3 +389,141 @@ fn picker_merges_claude_and_codex_sessions() {
         "picker should merge claude + codex rows; last screen:\n{screen}"
     );
 }
+
+/// #110: `s`-switching to a session ANOTHER live claude-replay holds must not kill the viewer.
+/// Two real binaries on one durable root: viewer 1 opens (and locks) session A; viewer 2, on
+/// session B, picks A in the switcher. Viewer 2 must stay alive on B, showing the one-line
+/// "in use" flash — the pre-#110 behavior was an `anyhow::bail!` straight out of the event
+/// loop, dead at the shell.
+#[test]
+#[ignore = "needs tmux; run with --ignored"]
+fn switching_to_a_held_session_flashes_and_stays() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux not installed");
+        return;
+    }
+    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let dir = std::env::temp_dir().join(format!("peekv2-held-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Same fixture shape as `s_opens_session_switcher_on_latest` (#69 home-scoped discovery).
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let work = std::fs::canonicalize(&work).unwrap();
+    let work_str = work.to_string_lossy().to_string();
+    let home = work.parent().unwrap().to_path_buf();
+    let proj = dir.join(work_str.replace(['/', '.'], "-"));
+    std::fs::create_dir_all(&proj).unwrap();
+    let write = |name: &str, marker: &str| -> std::path::PathBuf {
+        let p = proj.join(name);
+        std::fs::write(
+            &p,
+            format!(
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{marker} hello\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        p
+    };
+    let a = write("a.jsonl", "AAAMARKER");
+    // A must be OLDER than B so viewer 2's `--latest` opens B, leaving A to be picked.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(30))
+        .unwrap();
+    write("b.jsonl", "BBBMARKER");
+
+    let socket = format!("peekv2-held-{}", std::process::id());
+    tmux(&socket, &["kill-server"]);
+
+    let capture = |target: &str| -> String {
+        let cap = tmux(&socket, &["capture-pane", "-p", "-t", target]);
+        String::from_utf8_lossy(&cap.stdout).to_string()
+    };
+    let wait = |target: &str, pred: &dyn Fn(&str) -> bool| -> (bool, String) {
+        let mut screen = String::new();
+        for _ in 0..30 {
+            sleep(Duration::from_millis(150));
+            screen = capture(target);
+            if pred(&screen) {
+                return (true, screen);
+            }
+        }
+        (false, screen)
+    };
+
+    // Viewer 1: opens A directly and takes its durable lock (HOME fixes the cache root).
+    let out = tmux(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "v1",
+            "-x",
+            "120",
+            "-y",
+            "30",
+            &format!("HOME={} {bin} {}", home.display(), a.display()),
+        ],
+    );
+    assert!(out.status.success(), "tmux new-session v1 failed (no TTY?)");
+    let (v1_ok, s1) = wait("v1", &|s| s.contains("AAAMARKER"));
+    assert!(v1_ok, "viewer 1 must open A (and lock it):\n{s1}");
+
+    // Viewer 2: `--latest` in the work dir opens B (newest), with the SAME durable root.
+    let out = tmux(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "v2",
+            "-c",
+            &work_str,
+            "-x",
+            "120",
+            "-y",
+            "30",
+            &format!(
+                "HOME={} CLAUDE_PROJECTS_DIR={} {bin} --latest",
+                home.display(),
+                dir.display()
+            ),
+        ],
+    );
+    assert!(out.status.success(), "tmux new-session v2 failed");
+    let (v2_ok, s2) = wait("v2", &|s| s.contains("BBBMARKER"));
+    assert!(v2_ok, "viewer 2 must open B:\n{s2}");
+
+    // Pick A in viewer 2's switcher: `s`, filter to A, Enter.
+    tmux(&socket, &["send-keys", "-t", "v2", "s"]);
+    wait("v2", &|s| s.contains("pick a session"));
+    tmux(&socket, &["send-keys", "-t", "v2", "AAA"]);
+    sleep(Duration::from_millis(200));
+    tmux(&socket, &["send-keys", "-t", "v2", "Enter"]);
+
+    // The refusal: viewer 2 stays ALIVE on B, flashing who holds A. The dead-viewer failure
+    // mode shows as a closed pane / a shell prompt / no BBBMARKER.
+    let (refused_ok, s3) = wait("v2", &|s| s.contains("in use") && s.contains("BBBMARKER"));
+
+    // And the viewer still WORKS: the next keystroke clears the flash and the footer returns.
+    tmux(&socket, &["send-keys", "-t", "v2", "g"]);
+    let (alive_ok, s4) = wait("v2", &|s| !s.contains("in use") && s.contains("BBBMARKER"));
+
+    tmux(&socket, &["send-keys", "-t", "v1", "q"]);
+    tmux(&socket, &["send-keys", "-t", "v2", "q"]);
+    sleep(Duration::from_millis(200));
+    tmux(&socket, &["kill-server"]);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        refused_ok,
+        "a held pick must flash and stay on B; screen:\n{s3}"
+    );
+    assert!(
+        alive_ok,
+        "the viewer must keep working after the refusal; screen:\n{s4}"
+    );
+}

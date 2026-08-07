@@ -48,15 +48,10 @@ fn admit_root(
             let _ = cache.publish(id, crate::store::TuiNote::here());
             Ok(session)
         }
-        Admission::Denied(Denial::Held(h)) => anyhow::bail!(
-            "session already open in another claude-replay (pid {}){}\n\
-             or pass --no-cache for a second read-only view",
-            h.pid,
-            h.note
-                .and_then(|n| n.pane)
-                .map(|p| format!("; attach with `tmux attach -t {p}`"))
-                .unwrap_or_default()
-        ),
+        Admission::Denied(Denial::Held(h)) => Err(anyhow::Error::new(HeldElsewhere {
+            pid: h.pid,
+            pane: h.note.and_then(|n| n.pane),
+        })),
         // Nothing to compete for: `--no-cache`, an unwritable root, or a host with no liveness
         // check. Run cache-less — the same call for every one of those reasons.
         Admission::Denied(Denial::Unavailable(_)) => cache
@@ -64,6 +59,52 @@ fn admit_root(
             .ok_or_else(|| anyhow::anyhow!("session {id} is not registered")),
     }
 }
+
+/// A session another live claude-replay holds — **typed**, not a bare message, because the two
+/// places it surfaces need opposite outcomes (#110). At LAUNCH it propagates out of `run` and is
+/// printed with the full guidance below — exiting to the shell is where you want to be. On a
+/// mid-session `s`-switch it must NOT kill the viewer you were reading: the switch arm downcasts
+/// to this, stays on the current session, and shows [`flash`](Self::flash) instead.
+#[derive(Debug)]
+struct HeldElsewhere {
+    pid: u32,
+    /// The holder's `$TMUX_PANE`, when it published one — `tmux attach` being the real
+    /// sharing primitive the refusal defers to (#96 §8.4).
+    pane: Option<String>,
+}
+
+impl HeldElsewhere {
+    /// The one-line form for the viewer's status flash. No `--no-cache` guidance here — that is
+    /// launch advice; mid-session, the viewer you are in IS the session you keep.
+    fn flash(&self) -> String {
+        format!(
+            "in use by another claude-replay (pid {}){}",
+            self.pid,
+            self.pane
+                .as_deref()
+                .map(|p| format!(" — tmux attach -t {p}"))
+                .unwrap_or_default()
+        )
+    }
+}
+
+impl std::fmt::Display for HeldElsewhere {
+    /// The launch-path message, byte-for-byte what the pre-#110 `bail!` printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "session already open in another claude-replay (pid {}){}\n\
+             or pass --no-cache for a second read-only view",
+            self.pid,
+            self.pane
+                .as_deref()
+                .map(|p| format!("; attach with `tmux attach -t {p}`"))
+                .unwrap_or_default()
+        )
+    }
+}
+
+impl std::error::Error for HeldElsewhere {}
 use crate::tui::picker::Picker;
 use crate::tui::view::View;
 use crate::{discover, discover::Candidate, Agent, Args};
@@ -438,17 +479,56 @@ fn run_view_loop<B: ratatui::backend::Backend>(
             Outcome::Ascend => {} // at root: nothing above to ascend to
             // `s`-switch resets the whole stack to the newly chosen session.
             Outcome::Switch(p) => {
-                // RELEASE the session we are leaving — but keep the cache and everything in it
-                // (#109). Releasing is what #107 actually needed: a session merely browsed past
-                // must not stay locked against a second terminal. Dropping the whole cache was
-                // collateral damage — it took the blocks and the sidecar with the lock, so every
-                // switch back paid a full resume and a full measure pass for state that was
-                // sitting in memory. `release` now quiesces instead: the writer detaches, the
-                // lock goes, the blocks stay.
+                // Re-picking the session you are on is a NO-OP, and the guard is load-bearing:
+                // the general path below builds the target BEFORE releasing the current root,
+                // which for the same id would install a fresh session and then quiesce it —
+                // leaving the viewer on a frozen session that silently stops following.
+                let new_id = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("session")
+                    .to_string();
+                if stack.first().is_some_and(|r| r.id == new_id) {
+                    continue; // the switcher already closed itself on confirm
+                }
+                // Build the TARGET first (#110): admission is where a `Held` refusal surfaces,
+                // and until the target is actually ours nothing of the current stack may be
+                // torn down — a refused pick must leave the viewer exactly where it was, not
+                // dead at the shell. Building against the shared cache needs no teardown to
+                // have happened; the ids differ (guarded above), so the entries are disjoint.
+                let mut frame = match build_frame(args, &cache, &p, can_go_back, 0) {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        let held = e.downcast_ref::<HeldElsewhere>().map(HeldElsewhere::flash);
+                        if held.is_none() {
+                            // Not a refusal: the build may have got PAST admission and failed
+                            // reading (an unreadable transcript). Undo the partial open, or we
+                            // stay on the old session while silently holding the target's lock.
+                            // Both calls are no-ops when admission never happened; on a Held
+                            // refusal nothing was opened AND a resident for that id is a legit
+                            // retained one (#109) worth keeping — hence the `if`.
+                            cache.release(&new_id);
+                            cache.remove_pull(&new_id);
+                        }
+                        let msg = held.unwrap_or_else(|| {
+                            format!("cannot open that session: {e:#}").replace('\n', " · ")
+                        });
+                        if let Some(v) = stack.last_mut().and_then(|f| f.view.as_mut()) {
+                            v.set_flash(msg);
+                        }
+                        continue; // stay put — the stack was never touched
+                    }
+                };
+                // The target is ours: RELEASE the session we are leaving — but keep the cache
+                // and everything in it (#109). Releasing is what #107 actually needed: a session
+                // merely browsed past must not stay locked against a second terminal. `release`
+                // quiesces: the writer detaches, the lock goes, the blocks stay resident.
                 //
                 // Sub-agent residents go with the stack that owned them. None of them is durable
                 // (they are opened uncached), and the new stack rebuilds whichever it needs.
-                for f in stack.iter().skip(1) {
+                // Except an id that IS the target (a session open here as a descended child):
+                // dropping that would evict the resident the build just installed.
+                for f in stack.iter().skip(1).filter(|f| f.id != frame.id) {
                     cache.remove_pull(&f.id);
                 }
                 if let Some(root) = stack.first_mut() {
@@ -464,7 +544,6 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                     retained.retain(|id| id != &root.id);
                     retained.push(root.id.clone());
                 }
-                let mut frame = build_frame(args, &cache, &p, can_go_back, 0)?;
                 if let (Some(view), Some(sc)) = (frame.view.as_mut(), cache.aux_take(&frame.id)) {
                     view.adopt_sidecar(sc);
                 }
@@ -1631,6 +1710,77 @@ mod tests {
             "the rebuilt frame must hold the SAME committed copies — a re-parse allocates new ones"
         );
         cache.release_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The Held refusal is TYPED (#110): the switch arm downcasts to `HeldElsewhere` to stay
+    /// put with a one-line flash, while the launch path keeps the full printed guidance. The
+    /// holder is a real live process (a spawned `sleep`), because `admit` believes a lock only
+    /// when its pid is alive — a made-up pid is reclaimed, not refused.
+    #[test]
+    #[cfg(unix)]
+    fn a_held_refusal_is_typed_with_both_message_forms() {
+        use claude_replay_present::cache::lock;
+        let dir = std::env::temp_dir().join(format!("cr-held-typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("s.jsonl");
+        std::fs::write(
+            &src,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+
+        let mut holder = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let entry = claude_replay_present::cache::admit::entry_dir(
+            &dir.join("cache"),
+            Presentation::Tui,
+            "s",
+        );
+        std::fs::create_dir_all(&entry).unwrap();
+        std::fs::write(
+            lock::lock_path(&entry),
+            serde_json::to_string(&claude_replay_present::cache::Holder {
+                pid: holder.id(),
+                dir: entry.clone(),
+                note: Some(crate::store::TuiNote {
+                    pane: Some("%7".into()),
+                }),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let cache: TuiCache = TuiCache::durable(
+            Presentation::Tui,
+            dir.join("cache"),
+            Versions::current(None),
+        );
+        cache.register("s", crate::Transcript::open(Agent::CLAUDE, src));
+        let e = match admit_root(&cache, "s") {
+            Err(e) => e,
+            Ok(_) => panic!("a live holder must refuse"),
+        };
+        let h = e
+            .downcast_ref::<HeldElsewhere>()
+            .expect("the refusal must be typed, or the switch path cannot catch it");
+        assert_eq!(h.pid, holder.id());
+        let flash = h.flash();
+        assert!(
+            flash.contains("in use") && flash.contains("tmux attach -t %7"),
+            "one-line form names the pane: {flash:?}"
+        );
+        assert!(!flash.contains('\n'), "a flash must fit the one status row");
+        let launch = e.to_string();
+        assert!(
+            launch.contains("already open") && launch.contains("--no-cache"),
+            "the launch form keeps the full guidance: {launch:?}"
+        );
+
+        let _ = holder.kill();
+        let _ = holder.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
