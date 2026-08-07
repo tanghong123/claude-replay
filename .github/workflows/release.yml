@@ -244,7 +244,7 @@ jobs:
           if [ -z "$(git status --porcelain -- Formula/claude-replay.rb Formula/agent-jdi.rb)" ]; then
             echo "formulas already at ${ver}; nothing to do"
           else
-            git add Formula/claude-replay.rb Formula/agent-jdi.rb
-            git commit -m "claude-replay + agent-jdi ${ver}"
+            git add Formula/claude-replay.rb Formula/agent-jdi.rb Formula/claude-monitor.rb
+            git commit -m "claude-replay + agent-jdi + claude-monitor ${ver}"
             git push
           fi
