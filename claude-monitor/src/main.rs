@@ -98,9 +98,14 @@ fn main() -> Result<()> {
     let url = format!("http://127.0.0.1:{bound}/");
     eprintln!("claude-monitor serving {url} (loopback only — Ctrl-C to stop)");
     println!("{url}");
-    #[cfg(target_os = "macos")]
     if open_browser {
-        let _ = std::process::Command::new("open")
+        #[cfg(target_os = "macos")]
+        let prog = "open";
+        #[cfg(target_os = "windows")]
+        let prog = "explorer";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let prog = "xdg-open";
+        let _ = std::process::Command::new(prog)
             .arg(&url)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
