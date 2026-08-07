@@ -361,6 +361,18 @@ fn run_view_loop<B: ratatui::backend::Backend>(
     // The session domain (live followers + their residency) lives in the cache; frames keep only
     // presentation state. `s`-switching to a different session replaces the cache wholesale.
     let mut cache = make_cache(args);
+    // Root layouts kept across `s`-switches, keyed by session id. The CACHE is dropped on a
+    // switch (it holds locks — see the `Outcome::Switch` arm), so the sidecar slot inside it
+    // cannot carry a root's geometry the way it carries an evicted sub-agent's. This map lives
+    // in the loop instead, outside the cache, and holds no lock and no blocks: just the
+    // per-block heights + their prefix sums, ~24 bytes a block (300 KB for the 12,469-block
+    // session this exists for).
+    //
+    // It only helps a RE-visit — the first switch to a session still measures. `adopt_sidecar`
+    // refuses a stale entry (different block count, and `layout` re-measures from 0 on a width
+    // change), so a session that grew while you were away is re-measured rather than mismeasured.
+    let mut layouts: std::collections::HashMap<String, crate::view::ViewSidecar> =
+        std::collections::HashMap::new();
     let mut stack: Vec<Frame> = vec![build_frame(args, &cache, &path, can_go_back, 0)?];
     loop {
         // The current top must be loaded to view it (an ascent may have landed on an evicted
@@ -439,9 +451,22 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                 // stay held for the life of the process, so a second terminal could not open a
                 // session this one merely visited. Refusing a session in use is the behaviour we
                 // want; refusing one we walked past is not, and 47 ms does not buy it.
+                // The one thing worth carrying across: the ROOT's measured geometry. Park it
+                // before the stack is replaced, so switching back to a session you already
+                // opened skips the measure pass entirely (118 ms of the 182 ms switch on the
+                // 107 MB session). Locks are not carried — only integers.
+                if let Some(root) = stack.first_mut() {
+                    if let Some(view) = root.view.take() {
+                        layouts.insert(root.id.clone(), view.into_sidecar());
+                    }
+                }
                 cache.release_all();
                 cache = make_cache(args);
-                stack = vec![build_frame(args, &cache, &p, can_go_back, 0)?];
+                let mut frame = build_frame(args, &cache, &p, can_go_back, 0)?;
+                if let (Some(view), Some(sc)) = (frame.view.as_mut(), layouts.remove(&frame.id)) {
+                    view.adopt_sidecar(sc);
+                }
+                stack = vec![frame];
             }
             other => {
                 // Quit / Back — the loop's ONLY other exit, and both lead to a
@@ -1308,6 +1333,21 @@ mod switch_cost {
             view.blocks_for_measure().len(),
             fallbacks as f64 / view.blocks_for_measure().len() as f64 * 100.0
         );
+        // A RE-visit: the switch parks the root's geometry and the rebuilt view adopts it, so
+        // the measure pass is skipped entirely. This is what `layouts` in `run_view_loop` buys.
+        let parked =
+            std::mem::replace(view, View::new_shared(vec![], "", true, Default::default()))
+                .into_sidecar();
+        let mut again = build_frame(&args, &cache, &path, true, 0).expect("frame");
+        let v2 = again.view.as_mut().expect("loaded");
+        let t = Instant::now();
+        let adopted = v2.adopt_sidecar(parked);
+        v2.layout(width(), HEIGHT);
+        eprintln!(
+            "\n  re-visit layout (sidecar adopted = {adopted}): {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
+
         cache.release_all();
     }
 }
