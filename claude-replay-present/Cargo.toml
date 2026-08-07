@@ -21,3 +21,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # fancy-regex backend keeps syntect pure-Rust (no oniguruma/C build).
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Display WIDTH (not char count) for the measure path's fits-unwrapped rule.
+unicode-width = "0.2"

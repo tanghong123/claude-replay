@@ -2,7 +2,7 @@
 //! block index so the viewer can fold/expand and hit-test mouse clicks.
 
 use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
-use crate::highlight;
+use crate::highlight::{self, Hl};
 use crate::model::{Attachment, Block};
 use crate::present::{
     display_name, edit_summary, spawn_chip, thinking_summary, turn_summary, write_content,
@@ -11,6 +11,7 @@ use crate::present::{
 use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Rendered lines plus a parallel "which block produced this line" vector. Test-only now: the
 /// flat pass survives as the ORACLE the windowed `assemble_one` is proven against; production
@@ -222,7 +223,13 @@ pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
 /// `+` gutter): `{6 spaces}{num right-aligned} {code}`. `limit` caps the shown
 /// lines (the collapsed preview shows `Some(WRITE_PREVIEW)` then `     … +N lines`,
 /// like Claude Code; the expanded view passes `None` to dump the whole file).
-fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Vec<Line<'static>>) {
+fn write_numbered(
+    content: &str,
+    token: &str,
+    limit: Option<usize>,
+    hl: Hl,
+    out: &mut Vec<Line<'static>>,
+) {
     let lines: Vec<&str> = content.lines().collect();
     let shown = limit.map_or(lines.len(), |cap| lines.len().min(cap));
     // Gutter width from the largest *shown* number (min 2), as CC does.
@@ -241,7 +248,7 @@ fn write_numbered(content: &str, token: &str, limit: Option<usize>, out: &mut Ve
             .map_or(content.len(), |(i, _)| i + 1);
         &content[..end]
     };
-    let hl = highlight::highlight_spans(head, token);
+    let hl = highlight::highlight_spans_with(head, token, hl);
     for (i, l) in lines.iter().take(shown).enumerate() {
         // 6-space margin + right-aligned number + one space, then the code.
         let mut spans = vec![
@@ -276,6 +283,7 @@ fn diff_row(
     marker: char,
     text: &str,
     token: &str,
+    hl: Hl,
     bg: Option<Color>,
 ) -> Line<'static> {
     let gutter = match num {
@@ -303,8 +311,20 @@ fn diff_row(
     // +/- rows, dim on context).
     spans.push(Span::styled(format!("{gutter} "), patch(marker_style)));
     spans.push(Span::styled(marker.to_string(), patch(marker_style)));
-    for sp in highlight::highlight_one(text, token) {
-        spans.push(theme::hl_span(sp, patch));
+    // Measuring: a row narrower than the terminal occupies one display line however the
+    // highlighter split it, so skip syntect for it entirely — that is the whole optimisation
+    // (edit diffs were 97% of the first layout's cost). Rows that CAN wrap are highlighted
+    // exactly as the render does, because their span split is what decides the break.
+    let prefix = spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum::<usize>();
+    if highlight::fits_unwrapped(text, prefix, hl) {
+        spans.push(Span::raw(text.to_string()));
+    } else {
+        for sp in highlight::highlight_one_with(text, token, Hl::Styled) {
+            spans.push(theme::hl_span(sp, patch));
+        }
     }
     Line::from(spans)
 }
@@ -365,6 +385,7 @@ fn render_diff(
     diffs: &[(String, String)],
     patch: Option<&[crate::model::Hunk]>,
     token: &str,
+    hl: Hl,
     out: &mut Vec<Line<'static>>,
 ) {
     for group in diff_row_groups(diffs, patch) {
@@ -375,7 +396,7 @@ fn render_diff(
                 DiffKind::Add => ('+', Some(theme::diff_add_bg())),
                 DiffKind::Del => ('-', Some(theme::diff_del_bg())),
             };
-            out.push(diff_row(gw, r.num, marker, &r.text, token, bg));
+            out.push(diff_row(gw, r.num, marker, &r.text, token, hl, bg));
         }
     }
 }
@@ -396,7 +417,7 @@ fn attachment_line(a: &Attachment) -> Line<'static> {
 
 /// Render a single block's content lines (no trailing blank separator). `width`
 /// is the terminal width, used for width-aware table layout in assistant text.
-fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
+fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match b {
         Block::Attachment(a) => out.push(attachment_line(a)),
@@ -522,7 +543,7 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                     )));
                 }
                 for t in tools {
-                    out.extend(render_one(t, width));
+                    out.extend(render_one(t, width, hl));
                 }
             }
             // Faintest font (dim thinking fg) on the shared turn bg, ✻ glyph (CC's
@@ -558,7 +579,7 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 ));
                 // Expanded: the whole file (folding controls cost). The collapsed
                 // preview caps at WRITE_PREVIEW — see `render_collapsed`.
-                write_numbered(content, token, None, &mut out);
+                write_numbered(content, token, None, hl, &mut out);
             } else if overwrite || matches!(name.as_str(), "Edit" | "MultiEdit") {
                 out.push(tool_header(name, target, None));
                 let (adds, dels) = if overwrite {
@@ -575,7 +596,7 @@ fn render_one(b: &Block, width: usize) -> Vec<Line<'static>> {
                 ));
                 // Prefer the transcript's structuredPatch (real file line numbers);
                 // `diff_row_groups` falls back to our own line-diff (local numbering) when absent.
-                render_diff(diffs, patch.as_deref(), token, &mut out);
+                render_diff(diffs, patch.as_deref(), token, hl, &mut out);
             } else {
                 // Bash / Read / other tools — header + (capped) output, on the
                 // expanded shell/read background block (medium-dark gray, full
@@ -781,7 +802,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
                     theme::result(),
                 ),
             ];
-            write_numbered(content, token, Some(WRITE_PREVIEW), &mut v);
+            write_numbered(content, token, Some(WRITE_PREVIEW), Hl::Styled, &mut v);
             v
         }
         Block::ToolUse {
@@ -953,11 +974,11 @@ fn body_len(b: &Block) -> usize {
 /// Render a single block's body: its one-line summary when `is_collapsed`, else its
 /// full expanded lines. This is the syntax-highlighting-heavy part, so the viewer
 /// caches it per block (keyed by collapsed state) to keep fold toggles cheap.
-pub fn block_body(b: &Block, is_collapsed: bool, width: usize) -> Vec<Line<'static>> {
+pub fn block_body(b: &Block, is_collapsed: bool, width: usize, hl: Hl) -> Vec<Line<'static>> {
     if is_collapsed {
         render_collapsed(b)
     } else {
-        render_one(b, width)
+        render_one(b, width, hl)
     }
 }
 
@@ -1031,7 +1052,7 @@ pub fn render_blocks_folded(blocks: &[Block], collapsed: &[bool], width: usize) 
         .enumerate()
         .map(|(i, b)| {
             let is_collapsed = collapsed.get(i).copied().unwrap_or(false) && foldable(b);
-            block_body(b, is_collapsed, width)
+            block_body(b, is_collapsed, width, Hl::Styled)
         })
         .collect();
     assemble(bodies)
@@ -1137,7 +1158,7 @@ mod tests {
             status: AgentStatus::Completed,
             result: Some("Proposal written.".into()),
         };
-        let dlines = texts(&render_one(&done, 200));
+        let dlines = texts(&render_one(&done, 200, Hl::Styled));
         assert!(
             dlines[0].contains("Agent(general-purpose: Design the engine)")
                 && dlines[0].contains("completed"),
@@ -1186,7 +1207,7 @@ mod tests {
             patch: None,
             read_lines: None,
         };
-        let lines = render_one(&b, 200);
+        let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
         let all = t.join("\n");
 
@@ -1222,6 +1243,7 @@ mod tests {
             &[("a\nb\nc".into(), "a\nb\nX\nc".into())],
             None,
             "",
+            Hl::Styled,
             &mut out,
         );
         let t = texts(&out);
@@ -1246,6 +1268,7 @@ mod tests {
             &[("hello world".into(), "hello brave world".into())],
             None,
             "txt",
+            Hl::Styled,
             &mut out,
         );
         let del = out
@@ -1273,7 +1296,7 @@ mod tests {
             patch: None,
             read_lines: None,
         };
-        let lines = render_one(&block, 80);
+        let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content == "+"))
@@ -1317,7 +1340,7 @@ mod tests {
             }]),
             read_lines: None,
         };
-        let e = texts(&render_one(&block, 100));
+        let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
         assert!(
             all.contains("Added 1 line, removed 1 line"),
@@ -1372,7 +1395,7 @@ mod tests {
         );
 
         // Expanded → the whole file, no cap marker.
-        let e = texts(&render_one(&block, 80));
+        let e = texts(&render_one(&block, 80, Hl::Styled));
         let eall = e.join("\n");
         assert!(
             e.iter().any(|l| l.contains("row11")),
@@ -1437,7 +1460,7 @@ mod tests {
             patch: None,
             read_lines: None,
         };
-        let lines = render_one(&block, 80);
+        let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
         let all = t.join("\n");
         assert!(
@@ -1484,7 +1507,7 @@ mod tests {
             }]),
             read_lines: None,
         };
-        let lines = render_one(&block, 80);
+        let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content == "+"))
@@ -1570,7 +1593,7 @@ mod tests {
             .map(|i| format!("out{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let lines = render_one(&bash("ls", Some(&out)), 80);
+        let lines = render_one(&bash("ls", Some(&out)), 80, Hl::Styled);
         let t = texts(&lines);
         let all = t.join("\n");
         assert!(t.iter().any(|l| l.contains("out1")), "first output line");
@@ -1619,7 +1642,7 @@ mod tests {
     /// align two spaces under it), and every line carries the user background.
     #[test]
     fn user_message_has_caret_and_block_bg() {
-        let lines = render_one(&Block::UserText("hello\nworld".into()), 80);
+        let lines = render_one(&Block::UserText("hello\nworld".into()), 80, Hl::Styled);
         let t = texts(&lines);
         assert!(t[0].starts_with("❯ hello"), "first line caret: {:?}", t[0]);
         assert!(
@@ -1641,7 +1664,7 @@ mod tests {
     /// (bg fainter and fg dimmer than user) with the ∴ glyph.
     #[test]
     fn user_and_thinking_background_tiers() {
-        let user = render_one(&Block::UserText("hello".into()), 80);
+        let user = render_one(&Block::UserText("hello".into()), 80, Hl::Styled);
         assert!(
             user[0]
                 .spans
@@ -1657,6 +1680,7 @@ mod tests {
                 tools: vec![],
             },
             80,
+            Hl::Styled,
         );
         let t0 = &think[0];
         assert!(
@@ -1686,7 +1710,7 @@ mod tests {
             text: "fix the table\nsecond line".into(),
         };
         assert!(!foldable(&b), "queue marker must not be foldable");
-        let lines = render_one(&b, 80);
+        let lines = render_one(&b, 80, Hl::Styled);
         let t = texts(&lines);
         assert!(t[0].starts_with("⧗ queued: fix the table"), "{t:?}");
         assert!(t[1].contains("second line"), "{t:?}");
@@ -1703,7 +1727,11 @@ mod tests {
     /// following non-blank line is indented two spaces to align under it.
     #[test]
     fn assistant_body_lines_indented_two_spaces() {
-        let lines = render_one(&Block::AssistantText("- a\n- b\n- c".into()), 80);
+        let lines = render_one(
+            &Block::AssistantText("- a\n- b\n- c".into()),
+            80,
+            Hl::Styled,
+        );
         let t = texts(&lines);
         assert!(
             t[0].starts_with("⏺ "),
@@ -1726,7 +1754,7 @@ mod tests {
             args: String::new(),
             output: vec!["Compacted (ctrl+o to see full summary)".into()],
         };
-        let lines = render_one(&block, 80);
+        let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
         assert_eq!(t[0], "❯ /compact", "header: {:?}", t[0]);
         assert!(
@@ -1754,7 +1782,7 @@ mod tests {
             post_tokens: 18_000,
             summary: "This session is being continued…\nsecond line".into(),
         };
-        let t = texts(&render_one(&block, 80));
+        let t = texts(&render_one(&block, 80, Hl::Styled));
         assert_eq!(
             t[0], "── context compacted · auto · 996.0k → 18.0k ──",
             "rule: {:?}",
@@ -1771,7 +1799,10 @@ mod tests {
         assert_eq!(body_len(&block), t.len() - 1);
         // Dim, so the seam reads as chrome between turns rather than as a speaker. (Line-level
         // style like the other bg-less markers — there is no block background to survive.)
-        assert_eq!(render_one(&block, 80)[0].style.fg, theme::dim().fg);
+        assert_eq!(
+            render_one(&block, 80, Hl::Styled)[0].style.fg,
+            theme::dim().fg
+        );
     }
 
     /// A boundary whose summary never arrived (the transcript ended mid-compaction, or an
@@ -1786,7 +1817,7 @@ mod tests {
             post_tokens: 0,
             summary: String::new(),
         };
-        let t = texts(&render_one(&block, 80));
+        let t = texts(&render_one(&block, 80, Hl::Styled));
         assert_eq!(
             t,
             vec!["── context compacted · manual ──"],
@@ -1805,7 +1836,7 @@ mod tests {
             args: "drive parity\nWORKING DIR:\n/tmp/peek".into(),
             output: vec![],
         };
-        let t = texts(&render_one(&block, 80));
+        let t = texts(&render_one(&block, 80, Hl::Styled));
         assert_eq!(t[0], "❯ /loop drive parity", "first line: {:?}", t[0]);
         assert_eq!(t[1], "  WORKING DIR:", "continuation 1: {:?}", t[1]);
         assert_eq!(t[2], "  /tmp/peek", "continuation 2: {:?}", t[2]);
@@ -1875,7 +1906,7 @@ mod tests {
             coll[0]
         );
         // Expanded shows the two tool headers and the thinking text.
-        let exp = texts(&render_one(&turn, 80)).join("\n");
+        let exp = texts(&render_one(&turn, 80, Hl::Styled)).join("\n");
         assert!(
             exp.contains("Bash") && exp.contains("Read"),
             "tools missing:\n{exp}"
@@ -1899,7 +1930,7 @@ mod tests {
             }]),
             read_lines: None,
         };
-        let lines = render_one(&block, 80);
+        let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content == "+"))

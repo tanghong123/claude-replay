@@ -97,6 +97,64 @@ fn syn() -> &'static Syn {
 /// only (no background). Multi-line state (strings, comments) is preserved
 /// across lines within the call.
 pub fn highlight_spans(code: &str, token: &str) -> Vec<Vec<HlSpan>> {
+    highlight_spans_with(code, token, Hl::Styled)
+}
+
+/// Whether to actually run syntect.
+///
+/// `Plain` returns each line as ONE uncoloured span carrying **exactly the text** `Styled`
+/// would have split into many — same lines, same characters, same display width — without
+/// parsing anything. That is what a MEASURE pass needs: syntect parsing is ~150 µs/line and
+/// dominates the first layout of a large session (#107), yet a row's HEIGHT depends only on
+/// its width, not on how it was coloured.
+///
+/// The one thing span segmentation *does* change is where a row wraps, because `wrap_line`
+/// breaks words per span. So a caller measuring with `Plain` may only trust the result when
+/// nothing wrapped; see the TUI's `measure_block`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hl {
+    /// Render for display: always highlight.
+    Styled,
+    /// Measure only. `width` is the terminal width the result will be wrapped to; see
+    /// [`fits_unwrapped`] for the rule that decides, per line, whether syntect runs at all.
+    Measure { width: usize },
+}
+
+/// Can a line `cols` columns wide be emitted as ONE raw span without changing where it wraps?
+///
+/// Yes exactly when it cannot wrap at all: a line that fits the width occupies one display row
+/// however it was segmented. A line that does NOT fit must be highlighted for real, because
+/// `wrap_line` splits words per span, so `["abcdef"]` and `["abc","def"]` break differently.
+/// A tab is treated as never fitting — `sanitize_line` expands it later, so its rendered width
+/// is not the width measured here.
+pub fn fits_unwrapped(text: &str, cols: usize, hl: Hl) -> bool {
+    match hl {
+        Hl::Styled => false,
+        Hl::Measure { width } => {
+            !text.contains('\t') && cols + unicode_width::UnicodeWidthStr::width(text) <= width
+        }
+    }
+}
+
+/// [`highlight_spans`] with the mode chosen explicitly; see [`Hl`].
+pub fn highlight_spans_with(code: &str, token: &str, hl: Hl) -> Vec<Vec<HlSpan>> {
+    // Measuring: emit each line that cannot wrap as ONE uncoloured span carrying exactly the
+    // text the styled path would have split — same characters, same width, no syntect. Lines
+    // that CAN wrap still go through the highlighter, because their span split decides where.
+    if let Hl::Measure { width } = hl {
+        if LinesWithEndings::from(code)
+            .all(|l| fits_unwrapped(l.trim_end_matches('\n'), 0, Hl::Measure { width }))
+        {
+            return LinesWithEndings::from(code)
+                .map(|line| {
+                    vec![HlSpan {
+                        text: line.trim_end_matches('\n').to_string(),
+                        fg: None,
+                    }]
+                })
+                .collect();
+        }
+    }
     let s = syn();
     let syntax = (!token.is_empty())
         .then(|| s.ps.find_syntax_by_token(token))
@@ -140,7 +198,12 @@ fn cc_index(r: u8, g: u8, b: u8) -> Option<u8> {
 /// Highlight a single line into styled spans (fg only). Convenience for diff
 /// rows; empty input yields no spans.
 pub fn highlight_one(line: &str, token: &str) -> Vec<HlSpan> {
-    highlight_spans(line, token)
+    highlight_one_with(line, token, Hl::Styled)
+}
+
+/// [`highlight_one`] with the mode chosen explicitly; see [`Hl`].
+pub fn highlight_one_with(line: &str, token: &str, hl: Hl) -> Vec<HlSpan> {
+    highlight_spans_with(line, token, hl)
         .into_iter()
         .next()
         .unwrap_or_default()

@@ -1151,6 +1151,167 @@ fn color_sgr(c: ratatui::style::Color, fg: bool) -> Vec<String> {
     }
 }
 
+/// Where a session SWITCH's time actually goes — the follow-up measurement to #107, which took
+/// the 102 MB case from 5.9 s to 816 ms and left it still perceptible.
+///
+/// It times the REAL [`build_frame`] a switch calls (`Outcome::Switch` → `make_cache` →
+/// `build_frame`), then the first layout and draw, against a real transcript — a synthetic one
+/// would not reproduce the block mix that drives the cost. `#[ignore]`d: a measurement, not an
+/// assertion. Run with:
+///   SWITCH_COST_PATH=~/.claude/projects/<proj>/<id>.jsonl \
+///   cargo test -p claude-replay-tui --release switch_phase_breakdown -- --ignored --nocapture
+#[cfg(test)]
+mod switch_cost {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Pin the width: a wider terminal wraps less and measures faster, so inheriting the
+    /// harness's happens-to-be width would make runs incomparable.
+    fn width() -> u16 {
+        std::env::var("SWITCH_COST_WIDTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120)
+    }
+    const HEIGHT: u16 = 40;
+
+    #[test]
+    #[ignore]
+    fn switch_phase_breakdown() {
+        let Some(path) = std::env::var_os("SWITCH_COST_PATH").map(std::path::PathBuf::from) else {
+            eprintln!("set SWITCH_COST_PATH=<transcript.jsonl>");
+            return;
+        };
+        let mb = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as f64 / 1e6;
+        let args = Args {
+            latest: true,
+            ..Default::default()
+        };
+
+        // A switch drops the old cache and builds a fresh one (#107), so the resume below is a
+        // genuine cold-process resume off the durable stream, not a warm in-memory hit.
+        let t = Instant::now();
+        let cache = make_cache(&args);
+        let t_cache = t.elapsed();
+
+        let t = Instant::now();
+        let mut frame = build_frame(&args, &cache, &path, true, 0).expect("frame");
+        let t_frame = t.elapsed();
+
+        let view = frame.view.as_mut().expect("loaded");
+
+        let t = Instant::now();
+        view.layout(width(), HEIGHT);
+        let t_layout = t.elapsed();
+
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width(), HEIGHT)).unwrap();
+        let t = Instant::now();
+        term.draw(|f| view.draw(f)).unwrap();
+        let t_draw = t.elapsed();
+
+        let total = t_cache + t_frame + t_layout + t_draw;
+        eprintln!("\n{} MB, {}x{HEIGHT}", mb.round(), width());
+        let row = |name: &str, d: Duration| {
+            eprintln!(
+                "  {name:<26} {:>8.1} ms  {:>5.1}%",
+                d.as_secs_f64() * 1e3,
+                d.as_secs_f64() / total.as_secs_f64() * 100.0
+            )
+        };
+        row("make_cache", t_cache);
+        row("build_frame (resume+fold)", t_frame);
+        row("FIRST LAYOUT (measure)", t_layout);
+        row("first draw", t_draw);
+        row("TOTAL", total);
+
+        // WHERE inside the measure: charge each block's serial measure cost to its kind, so the
+        // answer to "measure fewer blocks vs measure each block more cheaply" is read off the
+        // data rather than guessed. Serial on purpose — parallel timings would attribute wall
+        // clock, not work.
+        let mut by_kind: std::collections::BTreeMap<&str, (usize, f64, usize)> = Default::default();
+        for (b, blk) in view.blocks_for_measure().iter().enumerate() {
+            let t = Instant::now();
+            let h = view.measure_one_for_probe(b);
+            let e = by_kind
+                .entry(claude_replay_core::model::fold_key(blk))
+                .or_default();
+            e.0 += 1;
+            e.1 += t.elapsed().as_secs_f64() * 1e3;
+            e.2 += h;
+        }
+        let mut rows: Vec<_> = by_kind.into_iter().collect();
+        rows.sort_by(|a, b| b.1 .1.partial_cmp(&a.1 .1).unwrap());
+        eprintln!(
+            "\n  {:<12} {:>7} {:>10} {:>10} {:>9}",
+            "kind", "count", "ms", "ms/block", "lines"
+        );
+        for (k, (n, ms, lines)) in rows {
+            eprintln!(
+                "  {k:<12} {n:>7} {ms:>10.1} {:>10.3} {lines:>9}",
+                ms / n as f64
+            );
+        }
+
+        // How often does a row actually WRAP? A row narrower than the terminal occupies exactly
+        // one line however the highlighter split it into spans, so its height needs no syntect at
+        // all. This says what fraction of the work that observation can remove.
+        // Per KIND, because the fallback is per block: a kind whose blocks nearly always contain
+        // one over-wide row keeps paying full price, and `edit` is the only kind whose cost
+        // matters. `ms_clean` is the measure time that a plain-first pass could actually avoid.
+        let mut wrap_by_kind: std::collections::BTreeMap<&str, (usize, usize, f64)> =
+            Default::default();
+        let (mut pre_t, mut post_t) = (0usize, 0usize);
+        for (b, blk) in view.blocks_for_measure().iter().enumerate() {
+            let t = Instant::now();
+            let (pre, post) = view.wrap_ratio_for_probe(b);
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            pre_t += pre;
+            post_t += post;
+            let e = wrap_by_kind
+                .entry(claude_replay_core::model::fold_key(blk))
+                .or_default();
+            e.0 += 1;
+            if post > pre {
+                e.1 += 1;
+            } else {
+                e.2 += ms;
+            }
+        }
+        eprintln!(
+            "\n  rows {pre_t} -> {post_t} after wrapping ({:.1}% growth)",
+            (post_t - pre_t) as f64 / pre_t as f64 * 100.0
+        );
+        eprintln!(
+            "  {:<12} {:>7} {:>10} {:>9} {:>12}",
+            "kind", "blocks", "wrapping", "%", "ms_clean"
+        );
+        let mut wr: Vec<_> = wrap_by_kind.into_iter().collect();
+        wr.sort_by(|a, b| b.1 .2.partial_cmp(&a.1 .2).unwrap());
+        for (k, (n, w, ms)) in wr {
+            eprintln!(
+                "  {k:<12} {n:>7} {w:>10} {:>8.1}% {ms:>11.1}",
+                w as f64 / n as f64 * 100.0
+            );
+        }
+        // The equality the optimisation rests on, over EVERY block of a real transcript — the
+        // synthetic cases in `measure_matches_render_for_every_block_and_width` cannot cover
+        // the block mix a 107 MB session actually contains.
+        let mut fallbacks = 0usize;
+        for b in 0..view.blocks_for_measure().len() {
+            let (fast, real, fell_back) = view.measure_check_for_probe(b);
+            assert_eq!(fast, real, "block {b} measured {fast}, renders {real}");
+            fallbacks += usize::from(fell_back);
+        }
+        eprintln!(
+            "\n  measure == render for all {} blocks; {fallbacks} took the styled fallback ({:.1}%)",
+            view.blocks_for_measure().len(),
+            fallbacks as f64 / view.blocks_for_measure().len() as f64 * 100.0
+        );
+        cache.release_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

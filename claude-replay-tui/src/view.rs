@@ -3,6 +3,7 @@
 
 use crate::discover::Candidate;
 use crate::fold::FoldPolicy;
+use crate::highlight::Hl;
 use crate::metrics::Metrics;
 use crate::model::{Attachment, AttachmentContent, Block, LoadedAttachment};
 use crate::tui::picker::Picker;
@@ -40,10 +41,48 @@ fn wrapped_lines_of(
     width: usize,
     carry_in: bool,
 ) -> Vec<Line<'static>> {
-    let body = render::block_body(block, is_collapsed, width);
+    assembled_lines_of(block, is_collapsed, width, carry_in, Hl::Styled).1
+}
+
+/// One block's wrapped HEIGHT, skipping the syntax highlighter on every row where it provably
+/// cannot change the answer — the measure pass's unit, shared by the serial prefix walk and the
+/// parallel workers so there is exactly one implementation of the rule.
+///
+/// Measuring used to render the block for real and throw the styled lines away, and syntect
+/// parsing (~150 µs/line) is what that costs: on this project's 107 MB session `edit` blocks are
+/// 16% of the blocks and 97% of the measure time. But a row's height depends only on its WIDTH,
+/// and [`Hl::Measure`] emits a row that cannot wrap as ONE uncoloured span carrying exactly the
+/// text the styled path would have split — same characters, same width, no parse.
+///
+/// Span segmentation matters in exactly one place: `wrap_line` breaks words per span, so
+/// `["abcdef"]` and `["abc","def"]` break differently. That can only bite a row wide enough to
+/// wrap, and those rows ARE highlighted, identically to the render. So the result is exact on
+/// both sides of the rule, and — unlike a per-BLOCK fallback, which re-rendered the whole block
+/// and gave the win back at narrow widths (47% of blocks fell back at 80 columns) — nothing is
+/// ever rendered twice.
+///
+/// `measure_matches_render_for_every_block_and_width` pins the equality this rests on; the byte
+/// gate cannot, because heights drive scroll geometry rather than printed output.
+fn measure_one(block: &Block, is_collapsed: bool, width: usize, carry_in: bool) -> usize {
+    assembled_lines_of(block, is_collapsed, width, carry_in, Hl::Measure { width })
+        .1
+        .len()
+}
+
+/// `(unwrapped row count, wrapped lines)` for one block. Split out so the MEASURE pass can pass
+/// [`Hl::Measure`] and so tests can compare the two counts; see [`measure_one`].
+fn assembled_lines_of(
+    block: &Block,
+    is_collapsed: bool,
+    width: usize,
+    carry_in: bool,
+    hl: Hl,
+) -> (usize, Vec<Line<'static>>) {
+    let body = render::block_body(block, is_collapsed, width, hl);
     let assembled = render::assemble_one(body, carry_in);
-    let tags = vec![0usize; assembled.len()];
-    wrap::wrap_all_tagged(&assembled, &tags, width).0
+    let rows = assembled.len();
+    let tags = vec![0usize; rows];
+    (rows, wrap::wrap_all_tagged(&assembled, &tags, width).0)
 }
 
 /// Footer measurement is in terminal COLUMNS, not `char`s. Session titles are agent-supplied
@@ -649,6 +688,83 @@ impl View {
         wrapped_lines_of(&self.blocks[b], is_collapsed, self.width as usize, carry_in)
     }
 
+    /// Block `b`'s wrapped HEIGHT, without syntax-highlighting it when that provably cannot
+    /// change the answer.
+    ///
+    /// Measuring used to render the block for real and throw the styled lines away, and syntect
+    /// parsing (~150 µs/line) is what that costs: on this project's 107 MB session, `edit`
+    /// blocks are 16% of the blocks and 97% of the measure time (#107 follow-up). But a row's
+    /// height depends only on its WIDTH, and `Hl::Plain` produces the very same rows with the
+    /// very same text — it differs from `Hl::Styled` in colour alone.
+    ///
+    /// Span segmentation does matter in exactly one place: `wrap_line` breaks words per span, so
+    /// a row wide enough to wrap can break differently depending on how the highlighter split
+    /// it. So the plain count is trusted **only when nothing wrapped** — then every row fitted
+    /// the width, and a row that fits occupies one line however it was segmented. Anything else
+    /// falls back to the real, highlighted measure. Measured: 6.6% of edit blocks fall back.
+    fn measure_block(&self, b: usize, carry_in: bool) -> usize {
+        let is_collapsed =
+            self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]);
+        measure_one(&self.blocks[b], is_collapsed, self.width as usize, carry_in)
+    }
+
+    /// The blocks, for the `switch_cost` probe to attribute measure time by kind. Measurement
+    /// scaffolding, not view API.
+    #[cfg(test)]
+    pub(crate) fn blocks_for_measure(&self) -> &[std::sync::Arc<Block>] {
+        &self.blocks
+    }
+
+    /// Measure ONE block exactly as the layout pass does, returning its height — the
+    /// `switch_cost` probe's unit of attribution.
+    #[cfg(test)]
+    pub(crate) fn measure_one_for_probe(&self, b: usize) -> usize {
+        self.wrapped_block_lines(b, true).len()
+    }
+
+    /// `(fast measure, real render height, took the fallback)` for block `b` — lets the
+    /// `switch_cost` probe assert the measure/render equality over a whole real transcript.
+    #[cfg(test)]
+    pub(crate) fn measure_check_for_probe(&self, b: usize) -> (usize, usize, bool) {
+        let is_collapsed =
+            self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]);
+        let w = self.width as usize;
+        let (rows, wrapped) = assembled_lines_of(
+            &self.blocks[b],
+            is_collapsed,
+            w,
+            true,
+            Hl::Measure { width: w },
+        );
+        (
+            measure_one(&self.blocks[b], is_collapsed, w, true),
+            self.wrapped_block_lines(b, true).len(),
+            wrapped.len() != rows,
+        )
+    }
+
+    /// `(rows before wrapping, rows after)` for block `b` — the probe that decides whether
+    /// skipping the highlighter is worth building: a row only needs its spans measured when it
+    /// is wide enough to wrap, and this says how often that happens.
+    #[cfg(test)]
+    pub(crate) fn wrap_ratio_for_probe(&self, b: usize) -> (usize, usize) {
+        let is_collapsed =
+            self.collapsed.get(b).copied().unwrap_or(false) && render::foldable(&self.blocks[b]);
+        let body = render::block_body(
+            &self.blocks[b],
+            is_collapsed,
+            self.width as usize,
+            Hl::Styled,
+        );
+        let assembled = render::assemble_one(body, true);
+        let pre = assembled.len();
+        let tags = vec![0usize; pre];
+        let post = wrap::wrap_all_tagged(&assembled, &tags, self.width as usize)
+            .0
+            .len();
+        (pre, post)
+    }
+
     /// Wrapped HEIGHTS for `[from, to)`, every block of which is known to have `carry_in = true`
     /// — spread across the machine's cores. Rendering a block is pure (it reads the block, the
     /// fold bit and the width, and shares only syntect's immutable `SyntaxSet`), so the split is
@@ -664,9 +780,7 @@ impl View {
             .map_or(1, |p| p.get())
             .min(n.div_ceil(MIN_PER_THREAD));
         if workers <= 1 {
-            return (from..to)
-                .map(|b| self.wrapped_block_lines(b, true).len())
-                .collect();
+            return (from..to).map(|b| self.measure_block(b, true)).collect();
         }
         let (blocks, folds, width) = (&self.blocks, &self.collapsed, self.width as usize);
         let mut out = vec![0usize; n];
@@ -678,7 +792,7 @@ impl View {
                         let b = base + i;
                         let is_collapsed =
                             folds.get(b).copied().unwrap_or(false) && render::foldable(&blocks[b]);
-                        *h = wrapped_lines_of(&blocks[b], is_collapsed, width, true).len();
+                        *h = measure_one(&blocks[b], is_collapsed, width, true);
                     }
                 });
             }
@@ -710,7 +824,7 @@ impl View {
         let mut b = d;
         let mut measured: Vec<usize> = Vec::with_capacity(n - d);
         while b < n && !carry {
-            let h = self.wrapped_block_lines(b, carry).len();
+            let h = self.measure_block(b, carry);
             carry |= h > 0;
             measured.push(h);
             b += 1;
@@ -2214,6 +2328,80 @@ mod tests {
         (0..n)
             .map(|i| Block::AssistantText(format!("line {i}")))
             .collect()
+    }
+
+    /// An `Edit` whose diff turns `old` into `new` — the block kind the plain-first measure
+    /// exists for (16% of a big session's blocks, 97% of its old measure cost).
+    fn edit(old: &str, new: &str) -> Block {
+        Block::ToolUse {
+            name: "Edit".into(),
+            target: "src/lib.rs".into(),
+            diffs: vec![(old.into(), new.into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+        }
+    }
+
+    /// The measure/render equality the plain-first path rests on: `measure_one` must return
+    /// exactly what rendering-and-wrapping returns, for every block, at every width — including
+    /// the two branches (nothing wrapped → trust the plain count; something wrapped → fall back)
+    /// and the `==` boundary between them.
+    ///
+    /// This is THE verification for the optimisation. The byte-identical gate cannot catch a
+    /// height error: `--dump` prints every block top to bottom, while heights only drive
+    /// `prefix` → scroll geometry, so a wrong height passes the gate and shows up later as the
+    /// TUI drawing the wrong block for a line.
+    #[test]
+    fn measure_matches_render_for_every_block_and_width() {
+        // A diff row is `INSET? + gutter + ' ' + marker + code`, so sweeping widths across the
+        // code lengths below walks the fits/overflows boundary one column at a time.
+        let long = "x".repeat(200);
+        let cases = vec![
+            edit("a\nb\nc", "a\nB\nc"),                       // short rows, never wrap
+            edit(&long, &format!("{long}!")),                 // rows far wider than any width
+            edit("fn main() {}", "fn main() { let x = 1; }"), // real code, real tokens
+            edit("", "added\nlines\nhere"),                   // pure insert
+            edit("removed\nlines", ""),                       // pure delete
+            edit("tab\there", "tab\tthere"),                  // tabs: sanitize expands them
+            edit("héllo wörld", "héllo wörld!"),              // multi-byte
+            Block::AssistantText("some **markdown** with `code`".into()),
+            Block::UserText("a user turn".into()),
+            Block::ToolResult("result text".into()),
+        ];
+        for (i, b) in cases.iter().enumerate() {
+            for width in [1usize, 2, 10, 20, 21, 22, 23, 24, 40, 80, 120, 400] {
+                for collapsed in [false, true] {
+                    for carry in [false, true] {
+                        let is_collapsed = collapsed && render::foldable(b);
+                        let fast = measure_one(b, is_collapsed, width, carry);
+                        let real = assembled_lines_of(b, is_collapsed, width, carry, Hl::Styled)
+                            .1
+                            .len();
+                        assert_eq!(
+                            fast, real,
+                            "case {i} width {width} collapsed {collapsed} carry {carry}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The plain-first path must actually TAKE both branches in the test above — an
+    /// optimisation that silently always fell back would pass the equality test while doing
+    /// nothing, and one that never fell back would not be exercising the fallback.
+    #[test]
+    fn both_measure_branches_are_exercised() {
+        let short = edit("a\nb", "a\nB");
+        let long = "x".repeat(200);
+        let wide = edit(&long, &format!("{long}!"));
+        let fits = |b: &Block, w: usize| {
+            let (rows, wrapped) = assembled_lines_of(b, false, w, true, Hl::Measure { width: w });
+            wrapped.len() == rows
+        };
+        assert!(fits(&short, 120), "short rows must take the fast path");
+        assert!(!fits(&wide, 120), "over-wide rows must take the fallback");
     }
 
     /// The live-delta `apply_poll` (engine-provided `changed_from`) yields the exact same view
