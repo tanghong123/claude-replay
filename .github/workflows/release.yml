@@ -111,6 +111,10 @@ jobs:
           jdi_mac_x86=$(sha agent-jdi x86_64-apple-darwin)
           jdi_lin_arm=$(sha agent-jdi aarch64-unknown-linux-musl)
           jdi_lin_x86=$(sha agent-jdi x86_64-unknown-linux-musl)
+          mon_mac_arm=$(sha claude-monitor aarch64-apple-darwin)
+          mon_mac_x86=$(sha claude-monitor x86_64-apple-darwin)
+          mon_lin_arm=$(sha claude-monitor aarch64-unknown-linux-musl)
+          mon_lin_x86=$(sha claude-monitor x86_64-unknown-linux-musl)
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/tanghong123/homebrew-tap.git" tap
           cat > tap/Formula/claude-replay.rb <<EOF
@@ -190,6 +194,46 @@ jobs:
 
             test do
               assert_match "agent-jdi #{version}", shell_output("#{bin}/agent-jdi --version")
+            end
+          end
+          EOF
+
+          cat > tap/Formula/claude-monitor.rb <<EOF
+          class ClaudeMonitor < Formula
+            desc "Every AI-agent session on this machine, one page, over loopback HTTP"
+            homepage "https://github.com/tanghong123/claude-replay"
+            version "${ver}"
+            license "MIT"
+            head "https://github.com/tanghong123/claude-replay.git", branch: "main"
+
+            on_macos do
+              on_arm do
+                url "${base}/claude-monitor-aarch64-apple-darwin.tar.gz"
+                sha256 "${mon_mac_arm}"
+              end
+              on_intel do
+                url "${base}/claude-monitor-x86_64-apple-darwin.tar.gz"
+                sha256 "${mon_mac_x86}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/claude-monitor-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${mon_lin_arm}"
+              end
+              on_intel do
+                url "${base}/claude-monitor-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${mon_lin_x86}"
+              end
+            end
+
+            def install
+              bin.install "claude-monitor"
+            end
+
+            test do
+              assert_match "claude-monitor", shell_output("#{bin}/claude-monitor --help")
             end
           end
           EOF
