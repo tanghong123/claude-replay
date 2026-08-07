@@ -162,6 +162,31 @@ fn first_user_snippet(path: &Path) -> String {
     String::new()
 }
 
+/// Every MAIN transcript in a Claude-format store, MACHINE-WIDE (#98): the top-level
+/// `*.jsonl` of every project directory. Sub-agent transcripts live under
+/// `<project>/<stem>/subagents/` — subdirectories, excluded by construction.
+pub(crate) fn store_transcripts_in(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for p in projects.flatten() {
+        if !p.path().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(p.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let path = f.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") && path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 /// The newest Claude transcript for `cwd` **or its nearest ancestor that has one**:
 /// the session id (filename stem), path, and mtime — never a session from an
 /// unrelated directory. Used by the `agent-jdi` Claude adapter to pick a resume

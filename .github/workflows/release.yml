@@ -67,6 +67,17 @@ jobs:
           checksum: sha256
           dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      # claude-monitor (#98): the machine-wide session index, its own crate and binary,
+      # released beside the viewer it embeds.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: claude-monitor
+          manifest-path: claude-monitor/Cargo.toml
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          checksum: sha256
+          dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   homebrew:
     name: Bump Homebrew formula

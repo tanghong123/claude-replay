@@ -1,0 +1,14 @@
+[package]
+name = "claude-monitor"
+description = "What is happening on this machine: every agent session, one page, over loopback HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+claude-replay-core = { path = "../claude-replay-core" }
+claude-replay-present = { path = "../claude-replay-present" }
+claude-replay-html = { path = "../claude-replay-html" }
+anyhow = "1"
+serde_json = "1"

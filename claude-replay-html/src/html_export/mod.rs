@@ -34,7 +34,10 @@ mod bundle;
 mod record_store;
 mod serve;
 pub use bundle::{dump_all_html, dump_html};
-pub use serve::{serve, start_server, LiveServer};
+pub use serve::{
+    existing_server, handoff_url, serve, service_routes, spawn_listener, start_server,
+    HttpResponse, LiveServer, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
+};
 
 const CSS: &str = include_str!("../html/export.css");
 const JS: &str = include_str!("../html/export.js");
@@ -861,7 +864,7 @@ fn build_jsonl_inner(
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
 fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
-    build_page(title, jsonl, turns, live, None)
+    build_page(title, jsonl, turns, live, None, None)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -869,7 +872,34 @@ fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>)
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
 pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live, pull)))
+    build_page(title, "", &[], None, Some((root_id, live, pull)), None)
+}
+
+/// Host-selectable chrome for a SERVED page (`/session?id=…`, #98 §6.3) — URL parameters,
+/// never CSS reaching into the frame.
+///
+/// `embed` swaps the page's own `claude-replay` brand for the session's title and hides the
+/// theme toggle (both are host-owned globals when the page lives inside a host's layout).
+/// `theme` stamps `data-theme` after the page's own boot, overriding the localStorage pick
+/// WITHOUT writing to it — the host owns the theme, the visitor's standalone preference
+/// survives. Every dump path passes no chrome and emits byte-identical output — the byte
+/// gate needs no new argument, and no re-baseline.
+#[derive(Clone, Debug, Default)]
+pub struct PageChrome {
+    pub embed: bool,
+    pub theme: Option<String>,
+}
+
+/// [`build_shell`] with host chrome — the `/session?id=…&chrome=embed&theme=…` page.
+pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome) -> String {
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, true, true)),
+        Some(chrome),
+    )
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
@@ -881,6 +911,7 @@ fn build_page(
     turns: &[SideEntry],
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
+    chrome: Option<&PageChrome>,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -915,6 +946,33 @@ fn build_page(
         (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
         (None, None) => String::new(),
     };
+    // Host chrome (#98 §6.3): the served `/session` page may swap the brand for the
+    // session title, hide the theme toggle, and stamp a host-picked theme AFTER the page's
+    // own boot. Every no-chrome caller emits today's exact bytes — `brand`/`theme_btn`
+    // reproduce the original lines verbatim and `chrome_stamp` is empty.
+    let embed = chrome.is_some_and(|c| c.embed);
+    let brand = if embed {
+        let t = esc(title);
+        format!(r#"  <div class="brand" id="embed-title" title="{t}">{t}</div>"#)
+    } else {
+        format!(
+            r#"  <div class="brand">claude-replay <span class="brand-sub">v{}</span></div>"#,
+            env!("CARGO_PKG_VERSION")
+        )
+    };
+    let theme_btn = if embed {
+        r#"  <button id="btn-theme" class="tbtn" style="display:none">◐ Dark</button>"#
+    } else {
+        r#"  <button id="btn-theme" class="tbtn">◐ Dark</button>"#
+    };
+    let chrome_stamp = match chrome.and_then(|c| c.theme.as_deref()) {
+        // After the main script on purpose: export.js has applied the localStorage theme by
+        // now, so this wins — and the visitor's stored standalone preference is never written.
+        Some(t @ ("light" | "dark")) => format!(
+            "<script>document.documentElement.setAttribute(\"data-theme\",\"{t}\");</script>\n"
+        ),
+        _ => String::new(),
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -928,7 +986,7 @@ fn build_page(
 </head>
 <body{live_attrs}>
 <div id="topbar">
-  <div class="brand">claude-replay <span class="brand-sub">v{version}</span></div>
+{brand}
   <div class="toolfilter">
     <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-prev" title="Previous match (N)">‹</span><span class="tf-next" title="Next match (n)">›</span><span class="tf-x" title="Clear filter">✕</span></button>
     <div id="toolmenu">
@@ -956,7 +1014,7 @@ fn build_page(
   <button id="btn-exp" class="tbtn" data-full="Expand all">Expand all</button>
   <button id="btn-col" class="tbtn" data-full="Collapse all">Collapse all</button>
   <button id="btn-wide" class="tbtn" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔ Wide</button>
-  <button id="btn-theme" class="tbtn">◐ Dark</button>
+{theme_btn}
 </div>
 <div id="taskpanel">
   <div class="taskpanel-head">
@@ -998,12 +1056,10 @@ fn build_page(
 <script>
 {JS}
 </script>
-</body>
+{chrome_stamp}</body>
 </html>
 "#,
         title_esc = esc(title),
-        // Which build wrote this page (#55) — a dumped file identifies its producer.
-        version = env!("CARGO_PKG_VERSION"),
         // `</script>` inside the payload would close the tag early.
         jsonl_esc = jsonl.replace("</", "<\\/"),
     )
@@ -1109,7 +1165,7 @@ fn repo_name(cwd: &str) -> Option<String> {
 /// recorded cwd); a transcript the user named and pointed at directly keeps its **file stem**.
 /// The session name leads (it's the part that survives tab truncation) and the agent label is
 /// appended, so a Claude and a Codex view of the same repo stay distinct.
-pub(super) fn display_title(agent: Agent, path: &Path) -> String {
+pub fn display_title(agent: Agent, path: &Path) -> String {
     let stem = session_id(path);
     let name = if looks_like_session_id(&stem) {
         // A machine-generated stem names nothing. Ask the agent what the session is called

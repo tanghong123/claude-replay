@@ -6,7 +6,10 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::record_store::{HtmlNote, RecordStore};
-use super::{assemble_meta, build_shell, display_title, render_blocks, session_id, AgentInfo};
+use super::{
+    assemble_meta, build_shell, build_shell_chrome, display_title, render_blocks, session_id,
+    AgentInfo, PageChrome,
+};
 use crate::cache::{self, Presentation};
 use crate::cache::{lock, pull_indices, Admission, Cursor, SharedSession};
 use crate::engine::meta_stream::Versions;
@@ -27,14 +30,14 @@ const TAIL_TTL_MS: u128 = 30_000;
 /// incremental followers + the materialized `Session`s + idle reaping) is owned by
 /// [`SessionCache`]; `Live` keeps only the *presentation* state — the
 /// per-agent titles, parent pointers, and cached open-turn renders — layered over it.
-struct Live {
+pub struct SessionService {
     dir: std::path::PathBuf,
     fold: FoldPolicy,
     /// Every ROOT this server hosts. Usually one (`--html <session>`); the `-f --html`
     /// picker registers every discovered session so they are all live at once, each
     /// reachable at `?session=<id>` on this one server. Roots may span agents AND
     /// working directories, so agent/cwd are per-session, never server-wide.
-    roots: Vec<Root>,
+    roots: std::sync::Mutex<Vec<Root>>,
     /// The session domain: id→source registry + resident followers + TTL reaping.
     cache: SessionCache<RecordStore, ServeAux>,
     /// This server's port, set once the listener binds.
@@ -110,7 +113,7 @@ struct Root {
 /// The live server's per-session presentation sidecar, held in the cache's aux slot (#76 —
 /// "the cache IS the data layer"). `title`: the non-source half of the descriptor (a child's
 /// derives once, on its first resolve). `parent`: child → parent session id, recorded when
-/// the parent's pull registers the child's source ([`derive_title`](Live::derive_title)
+/// the parent's pull registers the child's source ([`derive_title`](SessionService::derive_title)
 /// follows it).
 #[derive(Default)]
 struct ServeAux {
@@ -138,7 +141,108 @@ struct TitleInfo {
     ancestors: Vec<(String, String)>,
 }
 
-impl Live {
+/// What a HOST decides for a [`SessionService`] (#98 §6.2) — everything `start_server`
+/// used to hardcode. `--html` passes claude-replay's own values; the monitor passes its
+/// root and scratch. One implementation either way, so the byte gate keeps covering it.
+pub struct ServiceConfig {
+    /// Durable cache root. `None` ⇒ ephemeral (exactly `--no-cache`).
+    pub cache_root: Option<std::path::PathBuf>,
+    /// Namespace within that root. Both known hosts pass [`Presentation::Html`] — they
+    /// differ by ROOT, not by namespace (§10).
+    pub presentation: Presentation,
+    /// Render parameters — also the flavor the durable stream is validated against.
+    pub fold: FoldPolicy,
+    /// Scratch directory for the cache-less fallback and the static shell.
+    pub scratch: std::path::PathBuf,
+}
+
+impl SessionService {
+    /// Stand the session service up from a host's config. Creates the scratch dir; binds
+    /// nothing (the host owns the listener; see [`spawn_listener`]).
+    pub fn new(cfg: ServiceConfig) -> Result<Self> {
+        std::fs::create_dir_all(&cfg.scratch)
+            .with_context(|| format!("create {}", cfg.scratch.display()))?;
+        let cache = match cfg.cache_root {
+            Some(root) => SessionCache::durable(
+                cfg.presentation,
+                root,
+                Versions::current(Some(render_flavor(&cfg.fold))),
+            ),
+            None => SessionCache::ephemeral(),
+        };
+        Ok(Self {
+            dir: cfg.scratch,
+            fold: cfg.fold,
+            roots: std::sync::Mutex::new(Vec::new()),
+            cache,
+            port: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Register a ROOT session this service hosts (children register themselves as their
+    /// parents' pulls discover them). Safe to call any time — the monitor registers new
+    /// sessions as its scans find them. Returns the session id.
+    pub fn register_root(&self, path: &Path) -> String {
+        let id = session_id(path);
+        {
+            // Idempotent and CHEAP for a known id: a monitor re-registers every session on
+            // every scan, and the sniffing below reads transcript heads.
+            let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            if roots.iter().any(|r| r.id == id) {
+                return id;
+            }
+        }
+        let agent = discover::detect_agent(path);
+        let cwd = discover::session_cwd(path)
+            .map(|c| c.display().to_string())
+            .unwrap_or_default();
+        {
+            let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            if !roots.iter().any(|r| r.id == id) {
+                roots.push(Root {
+                    id: id.clone(),
+                    agent,
+                    path: path.to_path_buf(),
+                    cwd: cwd.clone(),
+                });
+            }
+        }
+        self.cache
+            .register_new(&id, Transcript::open(agent, path.to_path_buf()));
+        let title = display_title(agent, path);
+        // EVERY root needs its own title: `derive_title` follows a parent pointer, and a
+        // root has none, so an untitled root would show as its bare session id.
+        self.cache.aux_with(&id, |a| {
+            if a.title.is_none() {
+                a.title = Some(TitleInfo {
+                    title,
+                    ..Default::default()
+                });
+            }
+            if a.cwd.is_none() {
+                a.cwd = Some(cwd);
+            }
+        });
+        id
+    }
+
+    /// The port this service is reachable on — published into each admitted session's lock
+    /// as the #96 rendezvous note. Set once, after the host's listener binds.
+    pub fn set_port(&self, port: u16) {
+        let _ = self.port.set(port);
+    }
+
+    /// The complete session view for `id` at a URL (#98 §6.3) — exactly the page `--html`
+    /// serves, with optional host [`PageChrome`]. `None` for an id this service cannot
+    /// resolve.
+    pub fn page(&self, id: &str, chrome: Option<&PageChrome>) -> Option<String> {
+        let (_, t) = self.resolve_id(id)?;
+        Some(match chrome {
+            Some(c) => build_shell_chrome(&t.title, id, c),
+            None => build_shell(&t.title, id, true, true),
+        })
+    }
+
     /// Reconstruct the `AgentInfo` that `render_agent_stream` / `child_info` expect from the
     /// split state: the source (owned by the cache) + the title (owned by `titles`) + the id.
     fn agent_info(&self, id: &str, source: std::path::PathBuf, t: &TitleInfo) -> AgentInfo {
@@ -163,6 +267,8 @@ impl Live {
         // deep link into a child) sniffs the transcript head, once.
         let cwd = self
             .roots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|r| r.id == id)
             .map(|r| r.cwd.clone())
@@ -195,9 +301,12 @@ impl Live {
         // deep link (the common path is `register_child_sources`, one batch per parent),
         // and it stops at the first hit — but it is O(roots) resolves, so keep it off the
         // hot path.
-        let (agent, source) = self.roots.iter().find_map(|r| {
-            discover::subagent_source(r.agent, &r.path, id).map(|path| (r.agent, path))
-        })?;
+        let (agent, source) = {
+            let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            roots.iter().find_map(|r| {
+                discover::subagent_source(r.agent, &r.path, id).map(|path| (r.agent, path))
+            })?
+        };
         if !source.exists() {
             return None;
         }
@@ -345,7 +454,7 @@ impl Live {
     /// domain lives in the [`SessionCache`]: it materializes the id's [`SharedSession`] on first
     /// pull and TTL-reaps idle residents (no background thread — folding rides this request's
     /// thread, so a session nobody is pulling costs nothing). `None` for an unknown/unreadable id.
-    fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
+    pub fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
         let (src, title) = self.resolve_id(id)?;
         if !src.path().exists() {
             return None;
@@ -473,19 +582,25 @@ impl Live {
     }
 
     /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
-    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(())` → **409**
+    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(StaleEpoch)` → **409**
     /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
     /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
     /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the session
     /// lock so a concurrent reset can't swap the log mid-read (#74: through the store).
-    fn records_bytes(&self, id: &str, from: u64, len: u64, epoch: u64) -> Result<Vec<u8>, ()> {
+    pub fn records_bytes(
+        &self,
+        id: &str,
+        from: u64,
+        len: u64,
+        epoch: u64,
+    ) -> Result<Vec<u8>, StaleEpoch> {
         // Through the resident store, under the session lock — the epoch check can't tear
         // against a concurrent reset. A reaped resident yields 409; the client's next pull
         // rematerializes it and reissues the pointer.
-        let ss = self.cache.shared_peek(id).ok_or(())?;
+        let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
         ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch {
-                return Err(());
+                return Err(StaleEpoch);
             }
             Ok(store.read_range(from, from.saturating_add(len)))
         })
@@ -566,7 +681,7 @@ pub struct LiveServer {
     /// Session ids of the hosted roots, in the order they were passed in.
     pub root_ids: Vec<String>,
     /// Keeps the server state alive for the process's lifetime.
-    _live: std::sync::Arc<Live>,
+    _live: std::sync::Arc<SessionService>,
 }
 
 impl LiveServer {
@@ -596,91 +711,51 @@ impl LiveServer {
 pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveServer> {
     use std::sync::Arc;
     anyhow::ensure!(!paths.is_empty(), "no sessions to serve");
-    let fold = args.fold_policy();
-    let roots: Vec<Root> = paths
-        .iter()
-        .map(|p| {
-            let agent = discover::detect_agent(p);
-            Root {
-                id: session_id(p),
-                agent,
-                path: p.clone(),
-                cwd: discover::session_cwd(p)
-                    .map(|c| c.display().to_string())
-                    .unwrap_or_default(),
-            }
-        })
-        .collect();
 
     // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
     // wipe any streams left by a previous run of this session so lazy materialization
     // starts clean (only the root exists until a child is requested). One root keeps the
     // historical session-keyed name; several get a run-scoped dir so concurrent runs (and
     // a single-root run of any of the same sessions) can never wipe each other's bundle.
-    let dir = if let [only] = &roots[..] {
-        std::env::temp_dir().join("claude-replay").join(&only.id)
+    let dir = if let [only] = paths {
+        std::env::temp_dir()
+            .join("claude-replay")
+            .join(session_id(only))
     } else {
         std::env::temp_dir()
             .join("claude-replay")
             .join(format!("multi-{}", std::process::id()))
     };
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
 
-    // The shared live state. The registry starts with the roots; children are
-    // discovered + registered lazily as their parents' streams are generated. Streams are
-    // generated ONLY on first request (`/stream?session=<id>`), and only *requested* agents
-    // are re-parsed by the background tailer — so opening a huge tree costs one parse.
-    let title = display_title(roots[0].agent, &roots[0].path);
-    let root_ids: Vec<String> = roots.iter().map(|r| r.id.clone()).collect();
-    // The durable cache (#96) lives OUTSIDE the temp bundle dir wiped above — surviving the
-    // process is the entire point. `--no-cache`, or no resolvable cache home, means ephemeral:
-    // exactly today's behaviour.
-    let cache = match (args.no_cache, cache::admit::default_root()) {
-        (false, Some(root)) => SessionCache::durable(
-            Presentation::Html,
-            root,
-            Versions::current(Some(render_flavor(&fold))),
-        ),
-        _ => SessionCache::ephemeral(),
-    };
-    let live = Arc::new(Live {
-        dir: dir.clone(),
-        fold,
-        roots,
-        cache,
-        port: std::sync::OnceLock::new(),
-    });
-    for root in &live.roots {
-        live.cache
-            .register(&root.id, Transcript::open(root.agent, root.path.clone()));
-        let root_title = display_title(root.agent, &root.path);
-        let cwd = root.cwd.clone();
-        // EVERY root needs its own title: `derive_title` follows a parent pointer, and a
-        // root has none, so an untitled root would show as its bare session id.
-        live.cache.aux_with(&root.id, |a| {
-            a.title = Some(TitleInfo {
-                title: root_title.clone(),
-                ..Default::default()
-            });
-            a.cwd = Some(cwd.clone());
-        });
-    }
-    let sid = live.roots[0].id.clone();
+    // The service, from claude-replay's OWN config (#98 §6.2): the durable cache at
+    // claude-replay's root (`--no-cache` ⇒ ephemeral), the CLI's fold policy, the bundle
+    // dir as scratch. The monitor is the other caller, with its own values — one
+    // implementation either way, which is what keeps the byte gate covering this path.
+    let live = Arc::new(SessionService::new(ServiceConfig {
+        cache_root: (!args.no_cache).then(cache::admit::default_root).flatten(),
+        presentation: Presentation::Html,
+        fold: args.fold_policy(),
+        scratch: dir.clone(),
+    })?);
+    let root_ids: Vec<String> = paths.iter().map(|p| live.register_root(p)).collect();
+
     // ONE transport (#85): every server-backed page — static or live — is a pull client
     // (a static page pulls once; a live page keeps polling). One protocol exercised by all
     // traffic, protected by one test suite, folded on the requester's own thread.
+    let first = paths[0].clone();
+    let title = display_title(discover::detect_agent(&first), &first);
     std::fs::write(
         dir.join("index.html"),
         // Always live: a served page tails its session, full stop.
-        build_shell(&title, &sid, true, true),
+        build_shell(&title, &root_ids[0], true, true),
     )
     .with_context(|| "write index.html")?;
 
     let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
     // Hand the port to the session path, which publishes it as each session is admitted. Not a
     // publish loop here: nothing is admitted yet.
-    let _ = live.port.set(port);
+    live.set_port(port);
     Ok(LiveServer {
         dir,
         port,
@@ -708,16 +783,73 @@ fn open_in_browser(url: &str) {
 /// serving files by basename out of `root`. Returns the chosen port; the accept
 /// loop runs on a detached thread (dies with the process on Ctrl-C). Loopback +
 /// basename-only paths keep it from exposing anything beyond the two export files.
-fn spawn_http_server(root: std::path::PathBuf, live: Option<std::sync::Arc<Live>>) -> Result<u16> {
+fn spawn_http_server(
+    root: std::path::PathBuf,
+    live: Option<std::sync::Arc<SessionService>>,
+) -> Result<u16> {
+    spawn_listener(
+        0,
+        std::sync::Arc::new(move |name: &str, query: &str| {
+            service_routes(live.as_deref(), &root, name, query)
+        }),
+    )
+}
+
+/// A `/records` range read against an epoch the store has since left — the client drops
+/// the reply whole and re-pulls (the 409 path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleEpoch;
+
+/// One HTTP reply — what a [`spawn_listener`] handler returns. Plain data so a host's own
+/// routes and [`service_routes`] compose without either knowing the socket.
+pub struct HttpResponse {
+    /// e.g. `"200 OK"`.
+    pub code: &'static str,
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    pub fn ok(content_type: &'static str, body: Vec<u8>) -> Self {
+        Self {
+            code: "200 OK",
+            content_type,
+            body,
+        }
+    }
+    pub fn html(body: String) -> Self {
+        Self::ok("text/html; charset=utf-8", body.into_bytes())
+    }
+    pub fn json(body: String) -> Self {
+        Self::ok("application/json; charset=utf-8", body.into_bytes())
+    }
+    pub fn not_found(msg: &'static str) -> Self {
+        Self {
+            code: "404 Not Found",
+            content_type: "text/plain",
+            body: msg.as_bytes().to_vec(),
+        }
+    }
+}
+
+/// A minimal read-only loopback HTTP listener whose ROUTING is the caller's (#98 §6.6:
+/// "the listener takes a handler"). `port` 0 picks an ephemeral port; a host wanting a
+/// stable address passes its own. Returns the bound port; the accept loop runs on a
+/// detached thread (dies with the process). One listener implementation for `--html` and
+/// every host, so a header fix lands everywhere at once.
+/// A route handler: `(path, query) -> reply`. Shared by the listener and any host chaining
+/// its own routes in front of [`service_routes`].
+pub type RouteHandler = std::sync::Arc<dyn Fn(&str, &str) -> HttpResponse + Send + Sync>;
+
+pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
     use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").context("bind loopback HTTP server")?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let root = root.clone();
-            let live = live.clone();
+            let handler = handler.clone();
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &root, live.as_deref());
+                let _ = serve_connection(stream, &*handler);
             });
         }
     });
@@ -756,8 +888,7 @@ pub(super) fn percent_decode(s: &str) -> String {
 
 fn serve_connection(
     mut stream: std::net::TcpStream,
-    root: &Path,
-    live: Option<&Live>,
+    handler: &(dyn Fn(&str, &str) -> HttpResponse + Send + Sync),
 ) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
     let mut line = String::new();
@@ -766,41 +897,64 @@ fn serve_connection(
     let target = line.split_whitespace().nth(1).unwrap_or("/");
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
-    let respond = |stream: &mut std::net::TcpStream, code: &str, ct: &str, body: &[u8]| {
-        let head = format!(
-            "HTTP/1.1 {code}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream
-            .write_all(head.as_bytes())
-            .and_then(|_| stream.write_all(body))
-    };
+    let r = handler(name, query);
+    let head = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        r.code,
+        r.content_type,
+        r.body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|_| stream.write_all(&r.body))
+}
+
+/// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/session`, `/pull`,
+/// `/records`, `/__reveal`, then static files out of `static_dir`. Returns a plain
+/// [`HttpResponse`], so a host chains its own routes in front and falls back to this —
+/// `--html`'s listener is exactly that with zero routes of its own.
+pub fn service_routes(
+    live: Option<&SessionService>,
+    static_dir: &Path,
+    name: &str,
+    query: &str,
+) -> HttpResponse {
+    // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
+    // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
+    if name == "session" {
+        let Some(live) = live else {
+            return HttpResponse::not_found("no live server");
+        };
+        let id = query_get(query, "id").unwrap_or("");
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return HttpResponse::not_found("no such session");
+        }
+        let chrome = PageChrome {
+            embed: query_get(query, "chrome") == Some("embed"),
+            theme: query_get(query, "theme").map(str::to_string),
+        };
+        let chrome = (chrome.embed || chrome.theme.is_some()).then_some(chrome);
+        return match live.page(id, chrome.as_ref()) {
+            Some(page) => HttpResponse::html(page),
+            None => HttpResponse::not_found("no such session"),
+        };
+    }
     // `/pull?session=<id>&cursor=<epoch.committed.gen.index>` — the pull-client feed. Materialize
     // the id on first pull, borrow this thread to tail it, and return the self-describing PullReply
     // JSON (committed append + provisional truncate/extend). Costs nothing when no client pulls.
     if name == "pull" {
         let Some(live) = live else {
-            return respond(
-                &mut stream,
-                "404 Not Found",
-                "text/plain",
-                b"no live server",
-            );
+            return HttpResponse::not_found("no live server");
         };
         let id = query_get(query, "session").unwrap_or("");
         let cursor = Cursor::from_query(query_get(query, "cursor").unwrap_or(""));
         if id.is_empty() || id.contains('/') || id.contains("..") {
-            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+            return HttpResponse::not_found("no such agent");
         }
         return match live.pull_response(id, cursor) {
-            Some(body) => respond(
-                &mut stream,
-                "200 OK",
-                "application/json; charset=utf-8",
-                body.as_bytes(),
-            ),
-            None => respond(&mut stream, "404 Not Found", "text/plain", b"no such agent"),
+            Some(body) => HttpResponse::json(body),
+            None => HttpResponse::not_found("no such agent"),
         };
     }
     // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
@@ -808,12 +962,7 @@ fn serve_connection(
     // reset since the pointer was issued) — the client drops the reply and re-pulls.
     if name == "records" {
         let Some(live) = live else {
-            return respond(
-                &mut stream,
-                "404 Not Found",
-                "text/plain",
-                b"no live server",
-            );
+            return HttpResponse::not_found("no live server");
         };
         let id = query_get(query, "session").unwrap_or("");
         let num = |k| {
@@ -822,16 +971,15 @@ fn serve_connection(
                 .unwrap_or(0)
         };
         if id.is_empty() || id.contains('/') || id.contains("..") {
-            return respond(&mut stream, "404 Not Found", "text/plain", b"no such agent");
+            return HttpResponse::not_found("no such agent");
         }
         return match live.records_bytes(id, num("from"), num("len"), num("epoch")) {
-            Ok(bytes) => respond(
-                &mut stream,
-                "200 OK",
-                "application/json; charset=utf-8",
-                &bytes,
-            ),
-            Err(()) => respond(&mut stream, "409 Conflict", "text/plain", b"stale epoch"),
+            Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
+            Err(StaleEpoch) => HttpResponse {
+                code: "409 Conflict",
+                content_type: "text/plain",
+                body: b"stale epoch".to_vec(),
+            },
         };
     }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
@@ -842,10 +990,10 @@ fn serve_connection(
             let path = Path::new(&p);
             if path.exists() {
                 crate::sys::reveal_in_file_manager(path);
-                return respond(&mut stream, "200 OK", "text/plain", b"revealed");
+                return HttpResponse::ok("text/plain", b"revealed".to_vec());
             }
         }
-        return respond(&mut stream, "404 Not Found", "text/plain", b"no such path");
+        return HttpResponse::not_found("no such path");
     }
     // Static files: the shell, per-agent `<id>.jsonl` (static bundle), and `assets/<file>`.
     // Allow a single `assets/` subdir; block any other traversal.
@@ -856,9 +1004,13 @@ fn serve_connection(
                 .strip_prefix("assets/")
                 .is_some_and(|r| !r.contains('/')));
     if !allowed {
-        return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
+        return HttpResponse {
+            code: "403 Forbidden",
+            content_type: "text/plain",
+            body: b"forbidden".to_vec(),
+        };
     }
-    match std::fs::read(root.join(name)) {
+    match std::fs::read(static_dir.join(name)) {
         Ok(bytes) => {
             let ct = if name.ends_with(".html") {
                 "text/html; charset=utf-8"
@@ -867,9 +1019,9 @@ fn serve_connection(
             } else {
                 "application/octet-stream"
             };
-            respond(&mut stream, "200 OK", ct, &bytes)
+            HttpResponse::ok(ct, bytes)
         }
-        Err(_) => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+        Err(_) => HttpResponse::not_found("not found"),
     }
 }
 
@@ -960,7 +1112,7 @@ mod tests {
         }
         /// One full client poll against the live server: pull, then (phase two) range-read the
         /// committed pointer; a failed/stale range read drops the whole reply, like the browser.
-        fn poll(&mut self, live: &Live, id: &str) {
+        fn poll(&mut self, live: &SessionService, id: &str) {
             let reply = live.pull_response(id, self.cursor()).expect("pull reply");
             let r: Value = serde_json::from_str(&reply).expect("valid reply JSON");
             let committed: Vec<Value> = match &r["committed_ext"] {
@@ -972,7 +1124,7 @@ mod tests {
                         r["epoch"].as_u64().unwrap(),
                     );
                     match live.records_bytes(id, from, len, epoch) {
-                        Err(()) => return, // 409: drop the reply whole; re-pull next tick
+                        Err(StaleEpoch) => return, // 409: drop the reply whole; re-pull next tick
                         Ok(bytes) => std::str::from_utf8(&bytes)
                             .expect("utf8 records")
                             .lines()
@@ -1106,15 +1258,15 @@ mod tests {
         )
         .unwrap();
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![Root {
+            roots: std::sync::Mutex::new(vec![Root {
                 id: "nid".into(),
                 agent: Agent::CLAUDE,
                 path: sess.clone(),
                 cwd: "/r".into(),
-            }],
+            }]),
             cache: SessionCache::durable(
                 Presentation::Html,
                 root.clone(),
@@ -1156,15 +1308,15 @@ mod tests {
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::write(&sess, "").unwrap();
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![Root {
+            roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
                 agent: Agent::CLAUDE,
                 path: sess.clone(),
                 cwd: "/r".into(),
-            }],
+            }]),
             cache: SessionCache::new(),
             port: std::sync::OnceLock::new(),
         };
@@ -1259,15 +1411,15 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-07-26T10:00:02Z"}"#, "\n",
         )).unwrap();
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![Root {
+            roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
                 agent: Agent::CLAUDE,
                 path: sess.clone(),
                 cwd: "/r".into(),
-            }],
+            }]),
             cache: SessionCache::new(),
             port: std::sync::OnceLock::new(),
         };
@@ -1343,15 +1495,15 @@ mod tests {
         )
         .unwrap();
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![Root {
+            roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
                 agent: Agent::CLAUDE,
                 path: sess.clone(),
                 cwd: "/r".into(),
-            }],
+            }]),
             cache: SessionCache::new(),
             port: std::sync::OnceLock::new(),
         };
@@ -1514,10 +1666,10 @@ mod tests {
             r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codex"}]}}"#, "\n",
         )).unwrap();
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![
+            roots: std::sync::Mutex::new(vec![
                 Root {
                     id: "c1".into(),
                     agent: Agent::CLAUDE,
@@ -1530,7 +1682,7 @@ mod tests {
                     path: codex.clone(),
                     cwd: "/b".into(),
                 },
-            ],
+            ]),
             cache: SessionCache::new(),
             port: std::sync::OnceLock::new(),
         };
@@ -1622,15 +1774,15 @@ mod tests {
             .unwrap();
         }
 
-        let live = Live {
+        let live = SessionService {
             dir: bundle,
             fold: FoldPolicy::default(),
-            roots: vec![Root {
+            roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
                 agent: Agent::CODEX,
                 path: parent.clone(),
                 cwd: "/repo".into(),
-            }],
+            }]),
             cache: SessionCache::new(),
             port: std::sync::OnceLock::new(),
         };
@@ -1709,6 +1861,82 @@ mod tests {
             serde_json::from_slice::<Value>(&one).is_ok(),
             "locator-exact read parses"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The `/session?id=` page (#98 §6.3): with no chrome it is byte-identical to the shell
+    /// `--html` writes; `chrome=embed` swaps the brand for the session title and hides the
+    /// theme toggle; `theme=` appends the post-boot stamp. The no-chrome equality is the
+    /// whole reuse argument — one page, one renderer, zero drift.
+    #[test]
+    fn session_route_serves_the_shell_with_optional_chrome() {
+        let dir = std::env::temp_dir().join(format!("cr-sess-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sess = dir.join("s.jsonl");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &sess,
+            "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n",
+        )
+        .unwrap();
+        let live = SessionService::new(ServiceConfig {
+            cache_root: None,
+            presentation: Presentation::Html,
+            fold: FoldPolicy::default(),
+            scratch: dir.join("scratch"),
+        })
+        .unwrap();
+        let id = live.register_root(&sess);
+
+        let plain = live.page(&id, None).expect("resolvable");
+        let title = display_title(Agent::CLAUDE, &sess);
+        assert_eq!(
+            plain,
+            build_shell(&title, &id, true, true),
+            "no chrome ⇒ exactly the page --html serves"
+        );
+        assert!(plain.contains("claude-replay <span class=\"brand-sub\""));
+        assert!(!plain.contains("data-theme\",\""), "no stamp by default");
+
+        let embedded = live
+            .page(
+                &id,
+                Some(&PageChrome {
+                    embed: true,
+                    theme: Some("light".into()),
+                }),
+            )
+            .unwrap();
+        assert!(
+            embedded.contains(&format!(
+                "id=\"embed-title\" title=\"{title}\">{title}</div>"
+            )),
+            "embed shows the session title where the brand was"
+        );
+        assert!(
+            !embedded.contains("claude-replay <span class=\"brand-sub\""),
+            "and the brand is gone"
+        );
+        assert!(
+            embedded.contains("id=\"btn-theme\" class=\"tbtn\" style=\"display:none\""),
+            "theme toggle hidden — the host owns the theme"
+        );
+        assert!(
+            embedded.ends_with(
+                "<script>document.documentElement.setAttribute(\"data-theme\",\"light\");</script>\n</body>\n</html>\n"
+            ),
+            "the stamp runs AFTER the page's own boot"
+        );
+
+        // The route itself: unknown ids 404; a valid id serves the page.
+        let r = service_routes(
+            Some(&live),
+            &dir,
+            "session",
+            &format!("id={id}&chrome=embed"),
+        );
+        assert_eq!(r.code, "200 OK");
+        let r = service_routes(Some(&live), &dir, "session", "id=nope");
+        assert_eq!(r.code, "404 Not Found");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

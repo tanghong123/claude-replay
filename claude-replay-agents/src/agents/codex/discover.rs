@@ -300,6 +300,49 @@ fn first_user_snippet(path: &Path) -> String {
     fallback.unwrap_or_else(|| "(no user prompt)".to_string())
 }
 
+/// Every MAIN rollout in the Codex store, MACHINE-WIDE (#98): the dated
+/// `YYYY/MM/DD/rollout-*.jsonl` tree, minus sub-agent rollouts (their `session_meta` head
+/// names a subagent thread source — the same marker the picker snippet uses).
+pub(crate) fn store_transcripts_machine() -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() && depth < 4 {
+                walk(&p, depth + 1, out);
+            } else if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
+                && !head_is_subagent(&p)
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&sessions_dir(), 0, &mut out);
+    out
+}
+
+/// Whether a rollout's HEAD marks it as a sub-agent thread — one bounded line read.
+fn head_is_subagent(path: &Path) -> bool {
+    use std::io::{BufRead, BufReader};
+    let Ok(f) = File::open(path) else {
+        return false;
+    };
+    let mut line = String::new();
+    if BufReader::new(f).read_line(&mut line).is_err() {
+        return false;
+    }
+    serde_json::from_str::<Value>(&line)
+        .ok()
+        .and_then(|v| subagent_snippet(&v))
+        .is_some()
+}
+
 fn subagent_snippet(value: &Value) -> Option<String> {
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {
         return None;
@@ -758,6 +801,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The machine-wide walk (#98): main rollouts listed, SUB-AGENT rollouts excluded by
+    /// their `session_meta` head — the monitor's overview is main sessions only (§4.2).
+    #[test]
+    fn store_walk_lists_main_rollouts_and_skips_subagents() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let main = fixture.rollout_with_user("m1", &cwd, "build the thing");
+        let sub = fixture.subagent_rollout("s1", &cwd, "agents/reviewer");
+        std::env::set_var("CODEX_SESSIONS_DIR", &fixture.sessions);
+        let got = store_transcripts_machine();
+        std::env::remove_var("CODEX_SESSIONS_DIR");
+        assert!(got.contains(&main), "main rollout listed: {got:?}");
+        assert!(!got.contains(&sub), "subagent rollout excluded: {got:?}");
     }
 
     #[test]

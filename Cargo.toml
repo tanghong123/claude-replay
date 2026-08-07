@@ -19,6 +19,7 @@ members = [
     "claude-replay-html",
     "claude-replay-engine",
     "claude-replay-agents",
+    "claude-monitor",
 ]
 # `cargo test` from the repo root must run EVERY crate (#63) — without this it
 # silently tested only the root crate, skipping the library suites.
@@ -30,6 +31,7 @@ default-members = [
     "claude-replay-html",
     "claude-replay-engine",
     "claude-replay-agents",
+    "claude-monitor",
 ]
 
 # One version for the whole workspace, bumped in ONE place per release (#71).

@@ -27,8 +27,13 @@ the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PA
 changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
 ## Layout
-A Cargo **workspace** with seven crates, layered for multi-level reuse (#71, #87):
-engine → agents → core (facade) → present → {tui, html} → the root binary crate. Each
+A Cargo **workspace** with eight crates, layered for multi-level reuse (#71, #87):
+engine → agents → core (facade) → present → {tui, html} → the root binary crate, plus
+**`claude-monitor/`** — the machine-wide session index (#98): a loopback web service whose
+page is a session-list rail beside the html crate's session view in an iframe; scan/state/
+cards in `src/index.rs`, the rail in `src/rail.html`; lazy population — a session's durable
+entry (at the monitor's OWN root, `~/.cache/claude-monitor`) is written by VISITING it,
+never by a sweep. Each
 crate re-exports the lower layers' modules at its root (`crate::model`, `crate::present`,
 …), so moved code reads unchanged. One shared version: bump `[workspace.package] version`
 in the root Cargo.toml — the single spot per release.

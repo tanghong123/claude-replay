@@ -1,6 +1,10 @@
 # Design: `claude-monitor` — every session on the machine, over HTTP
 
-> **v5 — settled.** The 2026-08-07 owner review closed the design, and closed it *smaller*
+> **v5 — settled, and BUILT (v1.49.0).** The crate exists (`claude-monitor/`); §6.6's library
+> changes all landed (SessionService/ServiceConfig, /session?id + embed chrome, listener takes
+> a handler, liveness helpers in core, `store_transcripts` + `workspace_anchored` on the seam).
+>
+> Original settlement note: The 2026-08-07 owner review closed the design, and closed it *smaller*
 > again: the background sweep is **gone** (§3 — the owner rejected an upfront fold of every
 > transcript on startup-delay and storage grounds; population is now a side effect of visiting),
 > the overview lists **main sessions only** (§4.2/§13), grouping is **per agent kind** — project

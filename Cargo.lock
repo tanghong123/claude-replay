@@ -216,6 +216,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "claude-monitor"
+version = "1.48.0"
+dependencies = [
+ "anyhow",
+ "claude-replay-core",
+ "claude-replay-html",
+ "claude-replay-present",
+ "serde_json",
+]
+
+[[package]]
 name = "claude-replay"
 version = "1.48.0"
 dependencies = [

@@ -14,6 +14,7 @@
 
 mod adapter;
 pub mod discover;
+pub mod liveness; // transcript-tree liveness signals (moved from jdi, #98 §10)
 mod session_entry;
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 

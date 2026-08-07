@@ -163,6 +163,24 @@ pub trait TranscriptAdapter: Sync {
         None
     }
 
+    /// Every MAIN session transcript in this agent's store, MACHINE-WIDE (#98 R1) — the
+    /// monitor's scan surface, deliberately unscoped where
+    /// [`candidates_scoped`](Self::candidates_scoped) is cwd-scoped. Sub-agent transcripts
+    /// are excluded by the family that knows how they are stored. Defaulted empty: an
+    /// adapter without a machine-wide answer simply contributes no rows.
+    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    /// Whether this agent's sessions are ANCHORED to a workspace — a repo or working
+    /// directory that identifies them (#98 §4.2). A monitor groups anchored agents'
+    /// sessions by project; a desktop-collaboration agent (QoderWork) whose cwd is noise
+    /// groups under the agent itself. Defaulted `true`: coding agents are the common case,
+    /// and a new adapter that forgets this gets the harmless grouping, not a junk one.
+    fn workspace_anchored(&self) -> bool {
+        true
+    }
+
     /// What this agent calls the session at `path` — see [`SessionCard`](crate::discover::SessionCard).
     ///
     /// Same class as [`load_tasks`](Self::load_tasks): it takes a path, it may do I/O, and the

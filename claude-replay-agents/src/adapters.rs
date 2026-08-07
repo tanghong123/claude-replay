@@ -64,6 +64,12 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
 /// Claude adapter — delegates to the `claude_model` / `claude_discover` implementations.
 pub struct ClaudeAdapter;
 impl TranscriptAdapter for ClaudeAdapter {
+    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+        crate::agents::claude::discover::store_transcripts_in(
+            &crate::agents::claude::discover::projects_dir(),
+        )
+    }
+
     fn agent(&self) -> Agent {
         Agent::CLAUDE
     }
@@ -123,6 +129,10 @@ impl TranscriptAdapter for ClaudeAdapter {
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.
 pub struct CodexAdapter;
 impl TranscriptAdapter for CodexAdapter {
+    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+        crate::agents::codex::discover::store_transcripts_machine()
+    }
+
     fn agent(&self) -> Agent {
         Agent::CODEX
     }
@@ -171,8 +181,20 @@ impl TranscriptAdapter for CodexAdapter {
 /// per-line token usage, so metrics honestly fold to zero tokens/cost.
 pub struct QoderWorkAdapter;
 impl TranscriptAdapter for QoderWorkAdapter {
+    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+        crate::agents::claude::discover::store_transcripts_in(
+            &crate::agents::qoderwork::discover::projects_dir(),
+        )
+    }
+
     fn agent(&self) -> Agent {
         Agent::QODERWORK
+    }
+
+    /// QoderWork is a DESKTOP-collaboration agent: its sessions' cwd is usually `$HOME` or
+    /// nothing meaningful, so a monitor groups them under the agent, not a project (#98 §4.2).
+    fn workspace_anchored(&self) -> bool {
+        false
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
         if head.get("type").and_then(Value::as_str) == Some("runtime-config") {
