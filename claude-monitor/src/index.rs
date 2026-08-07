@@ -35,6 +35,13 @@ const PROC_REFRESH: Duration = Duration::from_secs(10);
 /// Scan floor (§8): N open tabs cost one scan.
 const SCAN_FLOOR: Duration = Duration::from_secs(2);
 
+/// The ordering's ONE moving part (owner rule, 2026-08-08), applied at BOTH levels —
+/// groups, and the sessions inside each group: anything active within this window sits in
+/// a top bucket sorted BY NAME (active items are all "tied", so write jitter cannot
+/// reorder them), and everything else sorts by recency, which is stable by construction
+/// because stale mtimes are frozen. An item moves only by crossing this line.
+const ACTIVE_WINDOW: Duration = Duration::from_secs(10 * 60);
+
 pub struct Index {
     /// The monitor's OWN durable root (R5) — counters are read from `html/<sid>/meta.jsonl`
     /// under it; an entry existing at all is what "visited" means.
@@ -275,36 +282,63 @@ impl Index {
         }
 
         let mut gs: Vec<Group> = groups.into_values().collect();
-        // ORDER MUST BE A PURE FUNCTION OF THE DATA. Both collections come out of HashMaps,
-        // whose iteration order is randomized per rebuild — without a total tiebreak, rows
-        // tied on the key (same state, same mtime second) swap places between polls with
-        // nothing changing on disk, and the rail looks like it reshuffles for no reason.
-        //
-        // Groups: any-growing first, then most recent activity, then label as the tiebreak.
+        // ORDER MUST BE A PURE FUNCTION OF THE DATA — the collections come out of HashMaps,
+        // so every comparison bottoms out in a stable unique key — and it must be CALM.
+        // State-first ordering was rejected by the owner (2026-08-08): growing flaps with
+        // an agent's bursty write cadence, and an absolute growing-first rule turns that
+        // flap into rows hopping. Instead, TWO BUCKETS on one line (`ACTIVE_WINDOW`):
+        // active items are all tied and sort by NAME; stale items sort by recency, which
+        // is stable because their mtimes are frozen. State still paints the dot and the
+        // tint — it just no longer drives position.
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let active = |ts: u64| now_secs.saturating_sub(ts) < ACTIVE_WINDOW.as_secs();
         gs.sort_by(|a, b| {
-            ((b.growing > 0), b.latest, &a.label, &a.secondary).cmp(&(
-                (a.growing > 0),
-                a.latest,
-                &b.label,
-                &b.secondary,
-            ))
+            // Active bucket first; recency compares only between two STALE items (an
+            // active pair passes 0 == 0 through to the name), name asc, secondary asc.
+            (
+                active(b.latest),
+                if active(a.latest) && active(b.latest) {
+                    0
+                } else {
+                    b.latest
+                },
+                a.label.to_lowercase(),
+                &a.secondary,
+            )
+                .cmp(&(
+                    active(a.latest),
+                    if active(a.latest) && active(b.latest) {
+                        0
+                    } else {
+                        a.latest
+                    },
+                    b.label.to_lowercase(),
+                    &b.secondary,
+                ))
         });
-        // Rows: the §4.2 state TIERS — growing, then idle, then finished — most recent
-        // first within a tier, id as the total tiebreak.
-        fn tier(r: &Value) -> u8 {
-            match r["state"].as_str() {
-                Some("growing") => 2,
-                Some("idle") => 1,
-                _ => 0,
-            }
-        }
         for g in &mut gs {
             g.rows.sort_by(|a, b| {
-                (tier(b), b["activityTs"].as_u64(), a["id"].as_str()).cmp(&(
-                    tier(a),
-                    a["activityTs"].as_u64(),
-                    b["id"].as_str(),
-                ))
+                let (ta, tb) = (
+                    a["activityTs"].as_u64().unwrap_or(0),
+                    b["activityTs"].as_u64().unwrap_or(0),
+                );
+                let name = |r: &Value| r["name"].as_str().unwrap_or("").to_lowercase();
+                let both_active = active(ta) && active(tb);
+                (
+                    active(tb),
+                    if both_active { 0 } else { tb },
+                    name(a),
+                    a["id"].as_str(),
+                )
+                    .cmp(&(
+                        active(ta),
+                        if both_active { 0 } else { ta },
+                        name(b),
+                        b["id"].as_str(),
+                    ))
             });
         }
         let out: Vec<Value> = gs
@@ -615,6 +649,62 @@ mod tests {
             .position(|x| x.starts_with("bbbbbbbb"))
             .expect("tied row b listed");
         assert!(a < b, "identical mtimes break the tie by id: {first:?}");
+
+        // ── the two-bucket rule (owner, 2026-08-08) ──────────────────────────────
+        // An ACTIVE group (any activity within 10 min) sits above every stale one even
+        // when the stale one wins alphabetically; and inside the active bucket order is
+        // BY NAME, not by which mtime is newer — active items are deliberately tied.
+        let mk = |slug: &str, sid: &str, when: SystemTime| {
+            let d = store.join(slug);
+            std::fs::create_dir_all(&d).unwrap();
+            let p = d.join(format!("{sid}.jsonl"));
+            let cwd = format!("/tmp/{}", slug.trim_start_matches("-tmp-"));
+            std::fs::write(
+                &p,
+                format!(
+                    "{{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        };
+        let now2 = SystemTime::now();
+        mk(
+            "-tmp-aaa-repo",
+            "cccccccc-0000-0000-0000-000000000001",
+            now2 - Duration::from_secs(7200),
+        );
+        mk(
+            "-tmp-zzz-repo",
+            "dddddddd-0000-0000-0000-000000000002",
+            now2 + Duration::from_secs(5),
+        );
+        // Make the original fixture group active too (newer than zzz's mtime — the active
+        // bucket must STILL order fixture before zzz, by name).
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(now2 + Duration::from_secs(30))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2100));
+        let v: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
+        let labels: Vec<String> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["label"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            labels,
+            ["fixture-repo", "zzz-repo", "aaa-repo"],
+            "active bucket (by name, mtime-blind) above stale (by recency)"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

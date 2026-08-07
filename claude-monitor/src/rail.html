@@ -47,6 +47,7 @@
   .glabel{font:700 12.5px var(--sans);color:var(--fg)}
   .gsec{font:9.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .gmeta{flex:none;font:9.5px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:99px;padding:2px 8px;margin-left:auto}
+  .gkind{flex:none;font:8.5px var(--mono);color:var(--kw);border:1px solid var(--kw);border-radius:4px;padding:0 5px;opacity:.75;margin-left:2px;align-self:center}
   .row{margin:3px 10px;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid transparent;outline:none}
   .row:hover{background:var(--hover)}
   .row.sel{background:var(--hover);border-color:var(--accent)}
@@ -177,6 +178,7 @@
         +'<div class="ghead"><span class="chev">▼</span>'
         +'<div class="glabels"><span class="glabel">'+esc(g.label)+'</span>'
         +'<span class="gsec">'+esc(g.secondary)+'</span></div>'
+        +(g.kind==="agent"?'<span class="gkind">desktop</span>':"")
         +'<span class="gmeta">'+esc(g.metaLine)+'</span></div>'
         +rowsHtml+'</div>';
     }
