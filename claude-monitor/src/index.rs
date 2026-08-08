@@ -306,6 +306,9 @@ impl Index {
             cost: f64,
             latest: u64,
             growing: usize,
+            /// Any session in this group whose live agent is in a controllable terminal —
+            /// the group-level badge (owner request).
+            has_term: bool,
         }
         let now = SystemTime::now();
         // The probe's heuristic rule: a cwd maps to its NEWEST session, so only that row
@@ -420,6 +423,7 @@ impl Index {
             }
             g.latest = g.latest.max(mtime_secs);
             g.growing += usize::from(state == "growing");
+            g.has_term |= link.as_ref().is_some_and(|l| l.terminal.target().is_some());
             g.rows.push(j);
         }
 
@@ -496,6 +500,7 @@ impl Index {
                     "label": g.label,
                     "secondary": g.secondary,
                     "metaLine": meta,
+                    "hasTerm": g.has_term,
                     "rows": g.rows,
                 })
             })
