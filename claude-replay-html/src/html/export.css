@@ -167,6 +167,18 @@ input::placeholder { color: var(--faint); }
 .tool-item.active { background: var(--hover); color: var(--fg); font-weight: 600; }
 .tool-item .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--tool); }
 .tool-item .tname { flex: 1; }
+/* #122: nested MCP rows read as CHILDREN — indent per depth, with a tree guide, so a
+   server/tool never looks like a top-level tool. The guide is a left border on the indent. */
+.tool-item.tool-sub1 { margin-left: 14px; border-left: 1px solid var(--border); border-radius: 0 6px 6px 0; padding-left: 12px; }
+.tool-item.tool-sub2 { margin-left: 28px; border-left: 1px solid var(--border); border-radius: 0 6px 6px 0; padding-left: 12px; }
+.tool-item.tool-sub2 .tname { font-size: 12px; }
+/* #122: the MCP/server disclosure caret was a bare 12.5px glyph in the dot's slot — too small
+   to read as a control. Give it the dot's fixed slot, a larger glyph, and a hover cue. */
+.tool-item .tool-tw {
+  flex: none; width: 12px; text-align: center; font-size: 15px; line-height: 1;
+  color: var(--muted); cursor: pointer;
+}
+.tool-item .tool-tw:hover { color: var(--fg); }
 .tool-count {
   font: 10.5px var(--mono); border: 1px solid var(--border); border-radius: 99px;
   padding: 0 6px; color: var(--faint);
