@@ -306,6 +306,7 @@ impl Index {
             cost: f64,
             latest: u64,
             growing: usize,
+            idle: usize,
             /// Any session in this group whose live agent is in a controllable terminal —
             /// the group-level badge (owner request).
             has_term: bool,
@@ -423,6 +424,7 @@ impl Index {
             }
             g.latest = g.latest.max(mtime_secs);
             g.growing += usize::from(state == "growing");
+            g.idle += usize::from(state == "idle");
             g.has_term |= link.as_ref().is_some_and(|l| l.terminal.target().is_some());
             g.rows.push(j);
         }
@@ -495,12 +497,16 @@ impl Index {
                 } else {
                     g.rows.len().to_string()
                 };
+                let total = g.rows.len();
                 json!({
                     "kind": g.kind,
                     "label": g.label,
                     "secondary": g.secondary,
                     "metaLine": meta,
                     "hasTerm": g.has_term,
+                    "growing": g.growing,
+                    "idle": g.idle,
+                    "total": total,
                     "rows": g.rows,
                 })
             })
