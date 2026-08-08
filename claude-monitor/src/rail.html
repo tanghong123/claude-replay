@@ -85,7 +85,9 @@
   .gdot.idle{background:var(--amber)}
   .gdot.finished{background:var(--gut)}
   .gkind{flex:none;font:8.5px var(--mono);color:var(--kw);border:1px solid var(--kw);border-radius:4px;padding:0 5px;opacity:.75;margin-left:2px;align-self:center}
-  .term{flex:none;font:9px var(--mono);color:var(--link);border:1px solid var(--border);border-radius:4px;padding:0 5px}
+  .term{flex:none;font:9px var(--mono);color:var(--link);border:1px solid var(--border);border-radius:4px;padding:0 5px;cursor:copy}
+  .term:hover{border-color:var(--link);background:var(--hover)}
+  .term.copied{color:var(--tool);border-color:var(--tool);background:var(--addbg)}
   .gterm{flex:none;font:9px var(--mono);color:var(--link);border:1px solid var(--link);border-radius:4px;padding:0 4px;opacity:.7}
   .row{margin:3px 10px;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid transparent;outline:none}
   .row:hover{background:var(--hover)}
@@ -181,7 +183,7 @@
   var view=document.getElementById("view");
   var empty=document.getElementById("empty");
   var search=document.getElementById("search");
-  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},famOpen:{},dark:false,showHidden:false,ignoredCount:0};
+  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},famOpen:{},copied:null,dark:false,showHidden:false,ignoredCount:0};
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
@@ -277,6 +279,37 @@
     if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
     return parts.join(" · ");
   }
+  // #148 (design/compose-to-terminal.md §5.1): the R8-safe half of "reach this session" —
+  // hand the user the command that ATTACHES to it and let them run it themselves. The
+  // monitor still only NAMES the target; nothing is sent anywhere.
+  //
+  // A pane id resolves as a target-session (verified: `has-session -t %0` exits 0), so the
+  // socket and pane the row already carries are enough — no extra read of another tmux
+  // server, which keeps this purely presentational.
+  function attachCmd(r){
+    if(r.term==="screen")return "screen -r "+r.target;
+    if(r.term!=="tmux")return null;
+    return "tmux "+(r.sock?"-L "+r.sock+" ":"")+"attach -t "+r.target;
+  }
+  function copyText(t){
+    // The API can be PRESENT and still reject — it needs a focused document and a trusted
+    // gesture — so the fallback hangs off the rejection, not off feature detection. Getting
+    // that wrong is what made the first version report failure on a perfectly good copy
+    // (and is the same trap #81 fixed in the viewer).
+    var legacy=function(){
+      return new Promise(function(res,rej){
+        var a=document.createElement("textarea");
+        a.value=t;a.style.position="fixed";a.style.opacity="0";
+        document.body.appendChild(a);a.select();
+        var ok=false; try{ok=document.execCommand("copy");}catch(e){}
+        a.remove(); ok?res():rej();
+      });
+    };
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(t).catch(legacy);
+    }
+    return legacy();
+  }
   function termTip(r){
     // Named, never used: the monitor is read-only — this says WHERE the agent lives.
     var t=r.term==="tmux"
@@ -287,6 +320,8 @@
     if(r.conf==="unconfirmed"&&r.ambig>1){
       t+=" — matched by directory, which holds "+r.ambig+" sessions, so this terminal may belong to another of them";
     }
+    var c=attachCmd(r);
+    if(c)t+="\n\nClick to copy:  "+c;
     return t;
   }
   function rowTitle(r){
@@ -359,7 +394,8 @@
       +agentBadge(r)
       +'<span class="rname">'+esc(r.name)+'</span>'
       +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
-      +(r.target?'<span class="term" title="'+esc(termTip(r))+'">&gt;_ '+esc(r.term)+'</span>':"")
+      +(r.target?'<span class="term'+(state.copied&&state.copied.id===r.id?" copied":"")+'" data-attach="'+esc(attachCmd(r)||"")+'" title="'+esc(termTip(r))+'">'
+    +(state.copied&&state.copied.id===r.id?(state.copied.ok?"copied":"⌘C it"):"&gt;_ "+esc(r.term))+'</span>':"")
       +forks+rowx
       +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r,g))+'</span>'
       +'<span class="age">'+esc(fam?famActivity(fam,r):r.activity)+'</span></div></div>';
@@ -511,6 +547,22 @@
   list.addEventListener("click",function(e){
     var hx=e.target.closest("[data-hide],[data-show]");
     if(hx){e.stopPropagation();var hk=hx.dataset.hide||hx.dataset.show;ignore(hk,!!hx.dataset.hide);return;}
+    var at=e.target.closest("[data-attach]");
+    if(at&&at.dataset.attach){
+      e.stopPropagation();
+      var row=at.closest(".row"), id=row&&row.dataset.id;
+      // The poll rebuilds this node every couple of seconds, so the acknowledgement is
+      // STATE the next render draws — not a textContent tweak that the next render erases.
+      copyText(at.dataset.attach)
+        .then(function(){state.copied={id:id,ok:true};})
+        .catch(function(){state.copied={id:id,ok:false};})
+        .then(function(){
+          render();
+          clearTimeout(window.__copyT);
+          window.__copyT=setTimeout(function(){state.copied=null;render();},1600);
+        });
+      return;
+    }
     var fk=e.target.closest("[data-fam]");
     if(fk){e.stopPropagation();var fkey=fk.dataset.fam;state.famOpen[fkey]=!state.famOpen[fkey];render();return;}
     var sm=e.target.closest(".showmore");
