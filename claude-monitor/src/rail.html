@@ -93,6 +93,12 @@
   #hiddentoggle{display:none;margin-left:auto;font:11px var(--sans);padding:4px 12px;border:1px solid var(--border);border-radius:99px;background:transparent;color:var(--muted);cursor:pointer}
   #hiddentoggle.on{border-color:var(--accent);background:var(--hover);color:var(--fg)}
   @keyframes mon-pulse{0%{box-shadow:0 0 0 0 rgba(46,125,85,.4)}70%{box-shadow:0 0 0 5px rgba(46,125,85,0)}100%{box-shadow:0 0 0 0 rgba(46,125,85,0)}}
+  /* #114: adjustable rail width — a slim col-resize handle straddling the rail border. */
+  #drag{flex:none;width:5px;margin:0 -2px 0 -3px;cursor:col-resize;z-index:5}
+  #drag:hover,body.dragging #drag{background:var(--accent);opacity:.35}
+  body.railless #drag{display:none}
+  body.dragging{cursor:col-resize;user-select:none}
+  body.dragging #view{pointer-events:none}
   #view{flex:1;min-width:0;border:none;background:var(--bg)}
   #empty{flex:1;display:flex;align-items:center;justify-content:center;font:13px var(--sans);color:var(--faint)}
   /* Rail hidden: a slim strip carries the show-again control (the view's chrome belongs to
@@ -127,6 +133,7 @@
   </div>
   <div id="list"></div>
 </aside>
+<div id="drag" title="Drag to resize the session list"></div>
 <div id="strip"><button class="toggle" id="showrail" title="Show the session list">»</button><span id="stripproj" title="current project — click to show the list"></span></div>
 <div id="empty">select a session</div>
 <iframe id="view" style="display:none"></iframe>
@@ -143,6 +150,26 @@
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
+
+  // #114: adjustable rail width, persisted. The iframe goes pointer-events:none while
+  // dragging (body.dragging) or it would swallow the mousemoves.
+  var RAILW_KEY="claude-monitor-railw";
+  var rail=document.querySelector("aside");
+  var clampW=function(w){return Math.max(220,Math.min(Math.max(320,window.innerWidth-360),w));};
+  try{var rw=parseInt(localStorage.getItem(RAILW_KEY)||"",10);if(rw)rail.style.width=clampW(rw)+"px";}catch(e){}
+  document.getElementById("drag").addEventListener("mousedown",function(e){
+    e.preventDefault();
+    document.body.classList.add("dragging");
+    var mv=function(ev){rail.style.width=clampW(ev.clientX)+"px";};
+    var up=function(){
+      document.body.classList.remove("dragging");
+      document.removeEventListener("mousemove",mv);
+      document.removeEventListener("mouseup",up);
+      try{localStorage.setItem(RAILW_KEY,parseInt(rail.style.width,10)||326);}catch(e2){}
+    };
+    document.addEventListener("mousemove",mv);
+    document.addEventListener("mouseup",up);
+  });
 
   // ── data ─────────────────────────────────────────────────────────────────
   function poll(){
