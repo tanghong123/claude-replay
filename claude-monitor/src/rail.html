@@ -350,16 +350,29 @@
   // if any member is, and a root can be older than the fork that continued past it.
   // Counters are deliberately NOT summed: 82–99% of every fork replays the root, so adding
   // them would count the same tokens once per member.
+  // #153: what counts as ONE row. For most agents that is the fork family (#142). For
+  // QoderWork it is the TITLE: measured, its 37 sessions carry 19 distinct titles, and six
+  // titles span SEPARATE fork families — four sessions of one interview-prep task in four
+  // families — which family grouping cannot merge because they are not forks of each other.
+  // A title is a label rather than an identity, so two genuinely distinct chats sharing a
+  // name will cluster; they are indistinguishable to the reader anyway, and the row expands.
+  function clusterKey(r){
+    if((r.agent||"").toLowerCase().indexOf("qoder")>=0){
+      var t=(r.name||"").replace(" (Fork)","").trim();
+      if(t)return "t:"+t;
+    }
+    return r.family||r.id;
+  }
   function families(rows){
     var by={},order=[];
     for(var r of rows){
-      var k=r.family||r.id;
+      var k=clusterKey(r);
       if(!by[k]){by[k]={key:k,rep:null,members:[],latest:0,growing:false};order.push(k);}
       var f=by[k];
       f.members.push(r);
       if((r.activityTs||0)>f.latest)f.latest=r.activityTs||0;
       if(r.state==="growing")f.growing=true;
-      if(!r.isFork)f.rep=r;
+      if(!r.isFork&&!f.rep)f.rep=r;
     }
     return order.map(function(k){
       var f=by[k];
