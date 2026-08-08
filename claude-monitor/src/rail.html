@@ -30,6 +30,10 @@
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
   .picon{font:16px/1 var(--sans);padding:2px 9px}
+  /* #131: ⊕/⊖ read as font-size controls. Doubled group chevrons instead — the same
+     ▼-that-rotates the rows already use, so the icon names the thing it acts on. */
+  .pchev{font:12px/1 var(--sans);letter-spacing:-1.5px;padding:3px 10px 3px 8px;color:var(--muted)}
+  .pchev:hover{color:var(--fg)}
   #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:5px}
   #scan i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tool);animation:mon-pulse 2.4s infinite}
   #searchbox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:0 10px;background:var(--panel)}
@@ -116,8 +120,8 @@
   <div id="head">
     <div id="titlebar">
       <b>Monitor</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span>
-      <button class="pill picon" id="collapseall" title="Collapse all groups">⊖</button>
-      <button class="pill picon" id="expandall" title="Expand all groups">⊕</button>
+      <button class="pill pchev" id="collapseall" title="Collapse all groups">▸▸</button>
+      <button class="pill pchev" id="expandall" title="Expand all groups">▾▾</button>
       <span style="flex:1"></span>
       <button class="pill picon" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐</button>
       <span id="scan" title="live — the monitor re-scans every couple of seconds"><i></i></span>
