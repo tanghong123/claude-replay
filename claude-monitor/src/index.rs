@@ -716,9 +716,17 @@ fn apply_lsof(procs: &mut [Proc], out: &str) {
     }
 }
 
-/// The last CONTENT timestamp in a transcript's tail: scan the final 32 KiB line-wise and
-/// keep the last line whose timestamp parses (each agent's format goes through the shared
-/// `parse_ts`). `None` for a file with no parseable timestamp in the window.
+/// Line `"type"`s that CARRY a timestamp but are not session ACTIVITY — housekeeping the
+/// agent writes long after the user stopped. The bug they cause: a session last worked at
+/// 00:55 grew a `file-history-snapshot` (a git snapshot) at 21:55, and the rail read it as
+/// activity 11 h ago instead of the true ~32 h. Denylist, not allowlist: an unknown agent's
+/// real turns still count; only these named noise rows are skipped.
+const NON_ACTIVITY_TYPES: &[&str] = &["file-history-snapshot", "summary"];
+
+/// The last ACTIVITY timestamp in a transcript's tail: scan the final 32 KiB line-wise and
+/// keep the latest timestamp on a line that is NOT [housekeeping](NON_ACTIVITY_TYPES). Each
+/// agent's format goes through the shared `parse_ts`; `None` when the window holds no
+/// parseable activity timestamp.
 fn last_event_ts(path: &Path) -> Option<u64> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 32 * 1024;
@@ -731,13 +739,15 @@ fn last_event_ts(path: &Path) -> Option<u64> {
     }
     let mut last = None;
     for line in buf.lines() {
-        // Field-level: `"timestamp":"…"` — the shape every supported agent writes; a full
-        // JSON parse per line would be pure cost here.
+        // Field-level (no per-line JSON parse — pure cost here). Skip housekeeping rows by
+        // their `"type"`; take the newest timestamp on everything else.
+        let ty = field_after(line, "\"type\":\"").next();
+        if ty.is_some_and(|t| NON_ACTIVITY_TYPES.contains(&t)) {
+            continue;
+        }
         for ts in field_after(line, "\"timestamp\":\"") {
-            if let Some(secs) = metrics::parse_ts(ts) {
-                if secs > 0 {
-                    last = Some(secs as u64);
-                }
+            if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
+                last = Some(last.map_or(secs as u64, |cur: u64| cur.max(secs as u64)));
             }
         }
     }
@@ -1029,6 +1039,37 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+    /// A `file-history-snapshot` (git housekeeping Claude writes long after the last turn)
+    /// must NOT count as activity — the kwire bug: last real turn 00:55, a snapshot at
+    /// 21:55, and the rail read 11 h ago instead of the true ~32 h.
+    #[test]
+    fn housekeeping_lines_do_not_advance_the_activity_clock() {
+        let d = std::env::temp_dir().join(format!("cm-ts-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("s.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-06T16:55:00Z\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n\
+             {\"type\":\"assistant\",\"timestamp\":\"2026-08-06T16:55:05Z\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}\n\
+             {\"type\":\"file-history-snapshot\",\"timestamp\":\"2026-08-07T13:55:48Z\"}\n",
+        )
+        .unwrap();
+        let got = last_event_ts(&p).expect("has activity");
+        assert_eq!(
+            got as i64,
+            metrics::parse_ts("2026-08-06T16:55:05Z").unwrap(),
+            "the last TURN wins, not the later snapshot"
+        );
+        // A file with ONLY housekeeping has no activity clock at all.
+        std::fs::write(
+            &p,
+            "{\"type\":\"file-history-snapshot\",\"timestamp\":\"2026-08-07T13:55:48Z\"}\n",
+        )
+        .unwrap();
+        assert!(last_event_ts(&p).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// The #112 parsers and link precedence, against fixture strings shaped exactly like
     /// the probe's verified sources — no live processes needed.
     #[test]
