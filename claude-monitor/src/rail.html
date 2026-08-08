@@ -279,15 +279,28 @@
   }
   function termTip(r){
     // Named, never used: the monitor is read-only — this says WHERE the agent lives.
-    return r.term==="tmux"
+    var t=r.term==="tmux"
       ?"live agent pid "+r.pid+" in a controllable tmux pane "+r.target+(r.sock?" on server -L "+r.sock:"")
       :"live agent pid "+r.pid+" in a controllable screen session "+r.target;
+    // #145: the pane is certain; WHOSE pane it is may not be. An unconfirmed link was
+    // matched by directory, and that directory holds more than one session.
+    if(r.conf==="unconfirmed"&&r.ambig>1){
+      t+=" — matched by directory, which holds "+r.ambig+" sessions, so this terminal may belong to another of them";
+    }
+    return t;
   }
   function rowTitle(r){
+    // #145: an idle row linked by cwd is the COMMON case — most agents are launched without
+    // a session id — so the tooltip says what is actually known rather than just "unconfirmed".
+    // When the directory holds several sessions the count is the size of the doubt: `--resume`
+    // offers a picker, so the live agent may be driving any of them.
     var t=r.state==="growing"?"growing — the transcript grew since the last scan"
       :r.state==="idle"?(r.conf==="unconfirmed"
-        ?"idle · probably alive — process matched by cwd + recency (unconfirmed)"
-        :"idle · alive — a live process maps to this session")
+        ?(r.ambig>1
+          ?"idle · a live agent is in this directory — but it was started without a session id, "
+            +"and `--resume` picks from a list, so it may be driving any of these "+r.ambig+" sessions"
+          :"idle · alive — the only session in this directory, and a live agent is in it")
+        :"idle · alive — a live process names this session")
       :"finished — no growth, no process";
     if(!r.visited)t+="  ·  counters appear after first open (lazy fold)";
     return t;
@@ -329,7 +342,7 @@
     var st=(fam&&fam.growing)?"growing":r.state;
     var cls="row"+(st==="growing"?" grow":"")+(state.sel===r.id?" sel":"")
       +(r.hidden?" hidden":"")+(fam?"":" forkrow");
-    var dot="dot "+st+(r.conf==="unconfirmed"?" unconfirmed":"");
+    var dot="dot "+st+(r.conf==="unconfirmed"&&r.ambig>1?" unconfirmed":"");
     // #113: a row hidden by its OWN key gets a restore; a visible row gets a hide. A row
     // hidden because its whole GROUP is hidden shows nothing — the group header owns it.
     var rowx=g.hidden?""

@@ -390,14 +390,20 @@ impl Index {
             }
             cur.to_string()
         };
-        // The probe's heuristic rule: a cwd maps to its NEWEST session, so only that row
-        // may claim a process by cwd.
+        // A cwd's NEWEST session is the one allowed to claim a process heuristically — and
+        // `siblings` counts how many sessions that cwd holds, which is the size of the doubt
+        // (#145). One session in the directory means the heuristic has nothing to get wrong;
+        // several means the claim is a pick among them.
         let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
+        let mut siblings: HashMap<&str, usize> = HashMap::new();
         for (sid, row) in &st.rows {
-            if let (Some(cwd), Some(m)) = (row.cwd.as_deref(), row.tree_mtime) {
-                let e = newest_by_cwd.entry(cwd).or_insert((sid, m));
-                if m > e.1 {
-                    *e = (sid, m);
+            if let Some(cwd) = row.cwd.as_deref() {
+                *siblings.entry(cwd).or_insert(0) += 1;
+                if let Some(m) = row.tree_mtime {
+                    let e = newest_by_cwd.entry(cwd).or_insert((sid, m));
+                    if m > e.1 {
+                        *e = (sid, m);
+                    }
                 }
             }
         }
@@ -443,6 +449,22 @@ impl Index {
                     None => ("finished", ""),
                 }
             };
+            // #145: how many sessions the heuristic was choosing BETWEEN. Launching without a
+            // session id is the common case (measured: 5 of 8 live agents carry no uuid in
+            // argv), and `claude --resume` then offers a PICKER — so the agent may be driving
+            // any session in the directory, not the newest. Nothing on disk records which:
+            // the process holds no fd to its transcript (measured: 0 `.jsonl` fds across every
+            // live agent), and start-time does not separate them either (measured: in the one
+            // ambiguous directory here, BOTH sessions have activity after the process began).
+            // So the count is the honest statement — the size of the doubt, not a guess.
+            let ambiguity = match link.as_ref().filter(|l| !l.confirmed) {
+                Some(_) => row
+                    .cwd
+                    .as_deref()
+                    .and_then(|c| siblings.get(c).copied())
+                    .unwrap_or(1),
+                None => 1,
+            };
 
             let visited = row.counters.is_some();
             let mtime_secs = row.last_event.unwrap_or_else(|| {
@@ -472,6 +494,9 @@ impl Index {
             });
             if let Some(start) = row.first_event {
                 j["startTs"] = json!(start);
+            }
+            if ambiguity > 1 {
+                j["ambig"] = json!(ambiguity);
             }
             // #142: the family this session belongs to. Emitted on EVERY row (a session with
             // no forks is a family of one) so the client groups by one rule, not two.
@@ -707,8 +732,21 @@ fn fold_counters(dir: &Path) -> Option<Counters> {
 ///   3. An agent-binary process whose cwd matches the session's — the heuristic. Two
 ///      exclusions keep it honest: a process whose argv carries a uuid belongs to THAT
 ///      session and never heuristically claims another; and `heuristic_ok` is true only for
-///      the NEWEST session of its cwd — the probe's actual rule ("the newest transcript
-///      there is the session"), without which one process claims every row of its project.
+///      the NEWEST session of its cwd, without which one process claims every row of its
+///      project.
+///
+/// Step 3 is the COMMON path, not a fallback: launching without a session id is normal
+/// (measured: 5 of 8 live agents here have no uuid in argv), and Claude never holds its
+/// transcript open, so steps 1–2 cannot fire for them.
+///
+/// **"Newest session of the cwd" is a tie-break, not a truth.** `claude --resume` with no id
+/// opens a PICKER, so the user may resume any session in that directory — the newest is
+/// merely the likeliest. Nothing available resolves it: the process holds no fd naming its
+/// session (measured: 0 `.jsonl` fds across every live agent), and its start time does not
+/// separate the candidates either (measured: in the one ambiguous directory on this machine,
+/// BOTH sessions have activity postdating the process). So the link stays `confirmed: false`
+/// and the row reports how many sessions it was choosing between (#145) rather than implying
+/// a certainty the data cannot support.
 fn link(
     procs: &[Proc],
     sid: &str,
