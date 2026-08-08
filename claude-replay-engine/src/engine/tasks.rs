@@ -170,6 +170,15 @@ impl TaskFold {
                         // An update for a task we never saw created (created before
                         // this transcript / by another session) — materialize a stub
                         // so its status still shows.
+                        //
+                        // The subject stays EMPTY on purpose (#125). It is not recoverable:
+                        // the tool result carries only "Updated task #5 status", and the
+                        // on-disk store is keyed by session with per-queue integer ids that
+                        // COLLIDE — measured, `#8` is "P1: agent-agnostic applications" in
+                        // one queue and "Fix pre-existing docscroll fixture regression" in
+                        // another. Scanning sibling task directories for a matching id would
+                        // attach a confidently WRONG title, which is worse than none. The
+                        // frontends render the absence honestly instead.
                         items.push(TaskItem {
                             id: task_id.clone(),
                             ..TaskItem::default()
@@ -397,6 +406,43 @@ mod tests {
         assert_eq!(m.items[0].subject, "from disk (richer)", "disk wins for #3");
         assert_eq!(m.items[0].status, TaskStatus::Completed);
         assert_eq!(m.items[1].id, "7", "op-log fills the pruned file");
+    }
+
+    /// #125: an UPDATE for a task this transcript never created yields a stub whose
+    /// subject stays EMPTY — the fold must never invent one, because the only place a
+    /// title could come from is another queue whose integer ids mean different tasks.
+    /// A real disk record for the SAME session still wins through `merged`.
+    #[test]
+    fn an_update_without_a_create_keeps_an_empty_subject() {
+        let mut f = TaskFold::default();
+        f.apply(&TaskOp::Update {
+            task_id: "5".into(),
+            status: Some("in_progress".into()),
+            subject: None,
+            description: None,
+            active_form: None,
+            add_blocks: vec![],
+            add_blocked_by: vec![],
+        });
+        let list = f.snapshot();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].id, "5");
+        assert_eq!(
+            list.items[0].subject, "",
+            "no title is honest; a borrowed one would be wrong"
+        );
+        assert_eq!(list.items[0].status, TaskStatus::InProgress, "status shows");
+
+        // The session's OWN store is the one safe source, and it still fills the title.
+        let disk = TaskList {
+            items: vec![TaskItem {
+                id: "5".into(),
+                subject: "the real subject".into(),
+                ..TaskItem::default()
+            }],
+        };
+        let m = merged(f.snapshot(), Some(disk));
+        assert_eq!(m.items[0].subject, "the real subject");
     }
 
     /// The file-schema parser maps Claude's task JSON onto the neutral shape.

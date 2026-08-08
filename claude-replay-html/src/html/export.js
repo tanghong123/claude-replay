@@ -905,7 +905,11 @@
       var row = el("div", "task-row" + (t.status === "Completed" ? " done" : t.status === "InProgress" ? " active" : ""));
       row.appendChild(el("span", "task-glyph", glyph));
       row.appendChild(el("span", "task-id", "#" + t.id));
-      var subj = t.subject || "(untitled)";
+      // #125: a transcript that only ever UPDATED a task never saw its subject, and the
+      // title is not recoverable — the tool result says "Updated task #5 status" and
+      // nothing more. "(untitled)" read as a broken task; this says what is actually
+      // true, beside the #id that already identifies the row.
+      var subj = t.subject || "(no title recorded in this session)";
       if (t.status === "InProgress" && t.active_form) subj += " · " + t.active_form;
       row.appendChild(el("span", "task-subj", subj));
       it.appendChild(row);

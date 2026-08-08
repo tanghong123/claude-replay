@@ -2071,11 +2071,18 @@ fn render_tasks_popup(f: &mut Frame, area: Rect, tasks: &crate::engine::TaskList
         } else {
             String::new()
         };
+        // #125: same phrasing as the HTML panel — a task this transcript only UPDATED
+        // has no recoverable subject, and a blank row read as a rendering fault.
+        let subject = if t.subject.is_empty() {
+            "(no title recorded in this session)"
+        } else {
+            &t.subject
+        };
         let row = format!(
             "{} {glyph} #{}  {}{active}",
             if i == sel { "❯" } else { " " },
             t.id,
-            t.subject
+            subject
         );
         let style = if i == sel {
             match t.status {
