@@ -181,6 +181,9 @@ impl TranscriptAdapter for CodexAdapter {
 /// per-line token usage, so metrics honestly fold to zero tokens/cost.
 pub struct QoderWorkAdapter;
 impl TranscriptAdapter for QoderWorkAdapter {
+    fn fork_origin(&self, path: &Path) -> Option<String> {
+        agents::qoderwork::discover::fork_origin(path)
+    }
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::qoderwork::discover::store_transcripts()
     }

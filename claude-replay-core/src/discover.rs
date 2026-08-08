@@ -100,6 +100,16 @@ pub fn subagent_sources(agent: Agent, root: &Path, ids: &[&str]) -> Vec<Option<P
     crate::adapter::adapter(agent).subagent_sources(root, ids)
 }
 
+/// The session `path` was FORKED from, if its agent records forks (#142) — the
+/// agent-neutral facade over each adapter's `fork_origin` hook.
+///
+/// Follow it transitively to reach a family ROOT: a fork's transcript is largely a replay of
+/// its origin's, so a consumer that lists sessions can show one row per family instead of a
+/// dozen near-identical ones. `None` means this session is its own root.
+pub fn fork_origin(agent: Agent, path: &Path) -> Option<String> {
+    crate::adapter::adapter(agent).fork_origin(path)
+}
+
 /// The LIVE on-disk task list for the session at `path` (#15) — the agent-neutral
 /// facade over each adapter's `load_tasks` hook (Claude reads
 /// `~/.claude/tasks/<session-id>/*.json`; agents with no task store return `None`).

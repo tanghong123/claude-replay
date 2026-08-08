@@ -88,6 +88,10 @@ struct Row {
     /// re-read a megabyte forever for the one session that has no head timestamp).
     first_event: Option<u64>,
     start_probed: bool,
+    /// The session this one was forked from (#142), and whether we have looked. Read once:
+    /// a fork's origin is fixed when it is created and no later write changes it.
+    fork_from: Option<String>,
+    fork_probed: bool,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
@@ -269,6 +273,8 @@ impl Index {
                     last_event: None,
                     first_event: None,
                     start_probed: false,
+                    fork_from: None,
+                    fork_probed: false,
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
@@ -305,6 +311,12 @@ impl Index {
                     }
                 }
                 row.tree_mtime = now_mtime;
+                // #142: which session this one was forked from. Read ONCE — a fork's origin
+                // is fixed when it is created, so no later write changes the answer.
+                if !row.fork_probed {
+                    row.fork_from = discover::fork_origin(row.agent, &path);
+                    row.fork_probed = true;
+                }
                 // The card re-derives when the transcript moves (§4.1 under lazy) — a
                 // bounded tail read, so mtime-triggered is affordable.
                 let t_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -360,6 +372,24 @@ impl Index {
             has_term: bool,
         }
         let now = SystemTime::now();
+        // #142: every session's FAMILY root — follow `fork_from` until a session that is not
+        // itself a fork. A fork's transcript is 82–99% a replay of its origin's, so the rail
+        // shows one row per family rather than a dozen near-identical ones.
+        //
+        // Guarded against the two ways the chain can fail to reach a root: a dangling edge
+        // (the origin is not in the store — pruned, or a different agent) and a cycle, which
+        // the data should never contain but which would hang the scan. Either way the session
+        // becomes its own root, which is exactly the "unknown provenance" answer.
+        let family_root = |sid: &str| -> String {
+            let mut cur = sid;
+            for _ in 0..64 {
+                match st.rows.get(cur).and_then(|r| r.fork_from.as_deref()) {
+                    Some(next) if st.rows.contains_key(next) && next != cur => cur = next,
+                    _ => break,
+                }
+            }
+            cur.to_string()
+        };
         // The probe's heuristic rule: a cwd maps to its NEWEST session, so only that row
         // may claim a process by cwd.
         let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
@@ -442,6 +472,13 @@ impl Index {
             });
             if let Some(start) = row.first_event {
                 j["startTs"] = json!(start);
+            }
+            // #142: the family this session belongs to. Emitted on EVERY row (a session with
+            // no forks is a family of one) so the client groups by one rule, not two.
+            let root = family_root(sid);
+            j["family"] = json!(root);
+            if root != *sid {
+                j["isFork"] = json!(true);
             }
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);

@@ -214,10 +214,31 @@ fn tail_last_prompt(memo: &CardMemo) -> Option<String> {
 ///
 /// A forked session's own title is `"<root title> (Fork)"`, which is what it should read as;
 /// grouping forks into families is a separate concern (design/qoderwork-fork-families.md).
-fn sidecar_title(path: &Path) -> Option<(String, i64)> {
+/// The session this one was forked from, from the same sidecar (#142).
+///
+/// `fork_from` is QoderWork's own record of the copy, so the family is exact rather than
+/// inferred from overlapping content — which matters, because a fork's transcript shares no
+/// BYTES with its origin (every line carries its own ids and timestamps) even where 99% of
+/// the conversation is identical.
+///
+/// An empty value means "not a fork" and is normalized to `None`, so a root never claims to
+/// descend from nothing-in-particular.
+pub(crate) fn fork_origin(path: &Path) -> Option<String> {
+    let v = sidecar(path)?;
+    let from = v.get("fork_from")?.as_str()?.trim();
+    (!from.is_empty()).then(|| from.to_string())
+}
+
+/// The `<sid>-session.json` beside a transcript, parsed. `None` when absent or unreadable —
+/// a store that predates the sidecar simply has no metadata here.
+fn sidecar(path: &Path) -> Option<serde_json::Value> {
     let stem = path.file_stem()?.to_str()?;
     let side = path.with_file_name(format!("{stem}-session.json"));
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(side).ok()?).ok()?;
+    serde_json::from_str(&std::fs::read_to_string(side).ok()?).ok()
+}
+
+fn sidecar_title(path: &Path) -> Option<(String, i64)> {
+    let v = sidecar(path)?;
     let title = v.get("title")?.as_str()?.trim();
     if title.is_empty() {
         return None;

@@ -156,6 +156,20 @@ pub trait TranscriptAdapter: Sync {
     fn store_contains(&self, _path: &Path) -> bool {
         false
     }
+    /// The session this one was FORKED from, if the agent records forks (#142).
+    ///
+    /// Forking copies the conversation up to the fork point, so a fork's transcript is
+    /// largely a replay of its origin's — measured on QoderWork, 82–99% of every fork.
+    /// Returning the origin's id lets a consumer group a fork FAMILY instead of showing a
+    /// dozen near-identical sessions. Default `None`: an agent without forks says nothing
+    /// and every session is its own family.
+    ///
+    /// Ids only — resolving them to paths is [`resolve_id`](Self::resolve_id)'s job, and
+    /// keeping this id-shaped means a consumer can build the whole family map from one pass.
+    fn fork_origin(&self, _path: &Path) -> Option<String> {
+        None
+    }
+
     /// The LIVE on-disk task list for the session at `path` (#15). Default `None` —
     /// an agent with no task store (Codex) has none; Claude reads
     /// `~/.claude/tasks/<session-id>/*.json`. Backs `discover::session_tasks`.
