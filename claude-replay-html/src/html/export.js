@@ -828,7 +828,8 @@
     box.textContent = "";
     // Some agents (QoderWork) emit a usage object that is ALL ZEROS with no model — no real
     // token accounting. Showing "0 tok / 0 tok" and no cost is noise, so omit the whole Usage
-    // block when there is nothing to report. (`compacted` is a real signal even at 0 tokens.)
+    // block when there is nothing to report. (`compacted` is a real signal even at 0 tokens —
+    // it keeps the block, but not the token rows; see #152 below.)
     var hasTokens = (u.input && u.input !== "0") || (u.output && u.output !== "0") ||
                     (u.cache_read && u.cache_read !== "0") || u.cost;
     if (!hasTokens && !u.compacted) return;
@@ -839,9 +840,15 @@
       r.appendChild(el("span", null, v));
       box.appendChild(r);
     }
-    row("input", (u.input || "0") + " tok");
-    row("output", (u.output || "0") + " tok");
-    row("cache read", (u.cache_read || "0") + " tok");
+    // #152: the token rows are drawn only when there ARE tokens. `compacted` keeps the
+    // block alive (it is real information — "24× compacted, 4.0M dropped"), but it must not
+    // drag three "0 tok" rows in with it: QoderWork never reports usage, so for its
+    // compacted sessions — 17 of them here — the panel was three zeros and one fact.
+    if (hasTokens) {
+      row("input", (u.input || "0") + " tok");
+      row("output", (u.output || "0") + " tok");
+      row("cache read", (u.cache_read || "0") + " tok");
+    }
     // #108: only sessions that actually compacted get a row, so the panel keeps its shape.
     // Without it the token totals look inexplicable beside a short-looking replay.
     if (u.compacted) row("compacted", u.compacted);
