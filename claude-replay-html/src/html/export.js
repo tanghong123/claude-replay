@@ -785,6 +785,12 @@
     var u = m.usage || {};
     var box = $("usage");
     box.textContent = "";
+    // Some agents (QoderWork) emit a usage object that is ALL ZEROS with no model — no real
+    // token accounting. Showing "0 tok / 0 tok" and no cost is noise, so omit the whole Usage
+    // block when there is nothing to report. (`compacted` is a real signal even at 0 tokens.)
+    var hasTokens = (u.input && u.input !== "0") || (u.output && u.output !== "0") ||
+                    (u.cache_read && u.cache_read !== "0") || u.cost;
+    if (!hasTokens && !u.compacted) return;
     box.appendChild(el("div", "side-head", "Usage"));
     function row(k, v, cls) {
       var r = el("div", "urow" + (cls ? " " + cls : ""));
