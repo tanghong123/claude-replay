@@ -182,9 +182,7 @@ impl TranscriptAdapter for CodexAdapter {
 pub struct QoderWorkAdapter;
 impl TranscriptAdapter for QoderWorkAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
-        crate::agents::claude::discover::store_transcripts_in(
-            &crate::agents::qoderwork::discover::projects_dir(),
-        )
+        crate::agents::qoderwork::discover::store_transcripts()
     }
 
     fn agent(&self) -> Agent {

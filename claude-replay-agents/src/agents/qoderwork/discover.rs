@@ -29,6 +29,67 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
     )
 }
 
+/// A transcript smaller than this is single-prompt junk (measured: QoderWork's throwaway
+/// sessions are ~2–3 KB with one user line; the smallest REAL session on this store is
+/// ~60 KB). A cheap `stat` gate that cuts the noise the monitor's desktop-agent group drowns
+/// in (#111).
+const MIN_TRANSCRIPT_BYTES: u64 = 4096;
+
+/// Whether a project-dir slug is a MOUNTED-account/session artifact — `-accounts-*-mnt` or
+/// `-sessions-*-mnt`. QoderWork writes these as SYMLINKS into the real workspace dirs, so
+/// walking them double-counts sessions under a junk slug (owner decision #111: hide them).
+fn is_mount_slug(name: &str) -> bool {
+    (name.starts_with("-accounts-") || name.starts_with("-sessions-")) && name.ends_with("-mnt")
+}
+
+/// Every MAIN transcript in the QoderWork store the monitor should show (#111) — its OWN
+/// walk, not the Claude shim, because QoderWork's store has junk the others do not:
+///   - `-accounts-*-mnt` / `-sessions-*-mnt` project slugs are skipped ([`is_mount_slug`]);
+///   - symlinked project dirs are skipped outright (the mount slugs are symlinks, and
+///     following them re-walks the workspace sessions they point at);
+///   - transcripts below [`MIN_TRANSCRIPT_BYTES`] are dropped as single-prompt junk.
+///
+/// It walks top-level `<project>/*.jsonl` only — the shape the picker already discovers. The
+/// deeper `<project>/<uuid>/<uuid>.jsonl` sessions (QoderWork's `$HOME`-cwd sessions, #69) are
+/// left for a later coverage pass: surfacing them would ADD rows to an already-crowded group
+/// rather than cut the noise this task targets.
+pub(crate) fn store_transcripts() -> Vec<PathBuf> {
+    let root = projects_dir();
+    let mut out = Vec::new();
+    let Ok(projects) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for proj in projects.flatten() {
+        if is_mount_slug(&proj.file_name().to_string_lossy()) {
+            continue;
+        }
+        let dir = proj.path();
+        if std::fs::symlink_metadata(&dir)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            continue; // a symlinked project dir duplicates a real one
+        }
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let path = f.path();
+            let big_enough = f
+                .metadata()
+                .map(|m| m.len() >= MIN_TRANSCRIPT_BYTES)
+                .unwrap_or(false);
+            if big_enough
+                && path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 /// Find a QoderWork transcript by session id (`<id>.jsonl`) anywhere under its projects dir.
 pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
     crate::agents::claude::discover::transcript_by_id_in(&projects_dir(), id)
@@ -192,6 +253,44 @@ mod tests {
     /// to parsing it as Claude (same blocks, times, metrics) — the adapter adds detection and a
     /// store, never a format fork. Fixture mirrors the real shape: runtime-config head,
     /// multi-text user line, a tool call + result.
+    /// The #111 store walk: `-accounts-*-mnt` / `-sessions-*-mnt` slugs and symlinked
+    /// project dirs are skipped, and transcripts below the junk floor are dropped — only
+    /// the real, big-enough workspace sessions come back.
+    #[test]
+    fn store_walk_skips_mounts_symlinks_and_junk() {
+        let root = std::env::temp_dir().join(format!("qw-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("QODERWORK_PROJECTS_DIR", &root);
+        let big = vec![b'x'; (MIN_TRANSCRIPT_BYTES + 10) as usize];
+
+        // A real workspace project with one real and one junk transcript.
+        let ws = root.join("-Users-hong--qoderwork-workspace-abc");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("real.jsonl"), &big).unwrap();
+        std::fs::write(ws.join("junk.jsonl"), b"{\"type\":\"user\"}\n").unwrap();
+
+        // A mounted-account slug with a big transcript — excluded by name.
+        let acct = root.join("-accounts-deadbeef-mnt");
+        std::fs::create_dir_all(&acct).unwrap();
+        std::fs::write(acct.join("x.jsonl"), &big).unwrap();
+
+        // A mounted-session slug that is a SYMLINK into the real workspace — excluded, and
+        // must not re-surface real.jsonl under the junk slug.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&ws, root.join("-sessions-cafe-mnt")).unwrap();
+
+        let got = store_transcripts();
+        assert_eq!(
+            got.len(),
+            1,
+            "only the one real workspace transcript: {got:?}"
+        );
+        assert!(got[0].ends_with("real.jsonl"));
+
+        std::env::remove_var("QODERWORK_PROJECTS_DIR");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn qoderwork_parse_is_byte_identical_to_claude_parse() {
         let f = std::env::temp_dir().join(format!("qw-equiv-{}.jsonl", std::process::id()));
