@@ -92,6 +92,12 @@ struct Row {
     /// a fork's origin is fixed when it is created and no later write changes it.
     fork_from: Option<String>,
     fork_probed: bool,
+    /// The agent process this session was matched to by GROWTH (#146), and that process's
+    /// cwd at the time. Growth is the strongest signal available for a no-id launch — a
+    /// transcript only advances because its own agent wrote to it — so once a session is the
+    /// only grower in its directory the pairing is banked and outlives the growth that
+    /// proved it. Dropped as soon as the pid is gone or has moved.
+    proved_pid: Option<(u32, String)>,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
@@ -275,6 +281,7 @@ impl Index {
                     start_probed: false,
                     fork_from: None,
                     fork_probed: false,
+                    proved_pid: None,
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
@@ -348,8 +355,65 @@ impl Index {
         }
         // Presence comes from the scan (§13): a deleted transcript's row vanishes.
         st.rows.retain(|sid, _| seen.contains(sid));
+        self.prove_by_growth(st);
 
         st.snapshot = self.assemble(st);
+    }
+
+    /// Bank the pairing that GROWTH proves (#146).
+    ///
+    /// A no-id launch leaves nothing on disk naming its session — no fd, no argv id — so the
+    /// directory match alone cannot say WHICH session an agent is driving (#145). Growth can:
+    /// a transcript advances only because its own agent wrote to it. So when a directory has
+    /// exactly ONE growing session and exactly ONE agent process, the pairing is forced, and
+    /// it is remembered rather than recomputed — the evidence appears while the user is
+    /// working and would otherwise evaporate the moment they stop typing, taking the row back
+    /// to "which of these N is it?".
+    ///
+    /// Deliberately strict: more than one grower, or more than one candidate process, proves
+    /// nothing and banks nothing. The record is dropped as soon as the pid is gone or its cwd
+    /// has moved, so a reused pid cannot inherit another session's identity.
+    fn prove_by_growth(&self, st: &mut State) {
+        let mut growers: HashMap<String, Vec<String>> = HashMap::new();
+        for (sid, row) in &st.rows {
+            if row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER) {
+                if let Some(cwd) = row.cwd.as_deref() {
+                    growers
+                        .entry(cwd.to_string())
+                        .or_default()
+                        .push(sid.clone());
+                }
+            }
+        }
+        for (cwd, sids) in growers {
+            if sids.len() != 1 {
+                continue; // two sessions writing in one directory prove nothing
+            }
+            let mut cands = st
+                .procs
+                .iter()
+                .filter(|p| is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd.as_str()));
+            let (Some(p), None) = (cands.next(), cands.next()) else {
+                continue; // zero or several candidates — no forced pairing
+            };
+            let pid = p.pid;
+            if let Some(row) = st.rows.get_mut(&sids[0]) {
+                row.proved_pid = Some((pid, cwd.clone()));
+            }
+        }
+        // Forget a proof whose process is gone or has moved on.
+        let alive: Vec<(u32, Option<String>)> =
+            st.procs.iter().map(|p| (p.pid, p.cwd.clone())).collect();
+        for row in st.rows.values_mut() {
+            if let Some((pid, cwd)) = &row.proved_pid {
+                let still = alive
+                    .iter()
+                    .any(|(q, c)| q == pid && c.as_deref() == Some(cwd.as_str()));
+                if !still {
+                    row.proved_pid = None;
+                }
+            }
+        }
     }
 
     /// Rows → grouped JSON. Grouping is per agent KIND (§4.2): workspace-anchored agents by
@@ -439,7 +503,22 @@ impl Index {
                 .as_deref()
                 .and_then(|c| newest_by_cwd.get(c))
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
-            let link = link(&st.procs, sid, &row.path, row.cwd.as_deref(), heuristic_ok);
+            // A pairing that growth proved (#146) outranks the directory heuristic — it is
+            // evidence about THIS session, not a pick among the directory's sessions.
+            let link = row
+                .proved_pid
+                .as_ref()
+                .and_then(|(pid, cwd)| {
+                    st.procs
+                        .iter()
+                        .find(|p| p.pid == *pid && p.cwd.as_deref() == Some(cwd.as_str()))
+                })
+                .map(|p| AgentLink {
+                    pid: p.pid,
+                    confirmed: true,
+                    terminal: Terminal::of(p),
+                })
+                .or_else(|| link(&st.procs, sid, &row.path, row.cwd.as_deref(), heuristic_ok));
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
@@ -1537,6 +1616,121 @@ mod tests {
         // …while 101, which carries ANOTHER session's uuid, is excluded from the heuristic
         // pool entirely (the probe's UNCONFIRMED cross-check as a hard rule).
         assert!(has_uuid(&procs[0].argv) && !has_uuid(&procs[1].argv));
+    }
+
+    /// #146: growth is the one signal that says WHICH session a no-id agent is driving —
+    /// a transcript advances only because its own agent wrote to it. Strict on purpose: a
+    /// forced pairing needs exactly one grower AND exactly one candidate, and the record is
+    /// dropped the moment the process is gone.
+    fn growth_row(cwd: &str, growing: bool) -> Row {
+        Row {
+            path: PathBuf::from("/tmp/x.jsonl"),
+            agent: Agent::CLAUDE,
+            cwd: Some(cwd.to_string()),
+            title: "t".into(),
+            tree_mtime: None,
+            last_event: None,
+            first_event: None,
+            start_probed: true,
+            fork_from: None,
+            fork_probed: true,
+            proved_pid: None,
+            grew_at: growing.then(Instant::now),
+            counters: None,
+            title_mtime: None,
+        }
+    }
+
+    #[test]
+    fn growth_proves_which_session_an_agent_is_driving() {
+        let idx = Index::new(std::env::temp_dir().join("cm-proof"), Vec::new());
+        let cwd = "/Users/x/proj";
+        let procs = |spec: &str, lsof: &str| {
+            let mut p = parse_ps(spec);
+            apply_lsof(&mut p, lsof);
+            p
+        };
+
+        // One grower, one candidate — the pairing is forced.
+        let mut st = State {
+            procs: procs(
+                "  900 claude
+",
+                "p900
+fcwd
+n/Users/x/proj
+",
+            ),
+            ..State::default()
+        };
+        st.rows.insert("live".into(), growth_row(cwd, true));
+        st.rows.insert("old".into(), growth_row(cwd, false));
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["live"].proved_pid.as_ref().map(|(p, _)| *p),
+            Some(900),
+            "the growing session is the one being written"
+        );
+        assert!(
+            st.rows["old"].proved_pid.is_none(),
+            "the quiet one proves nothing"
+        );
+
+        // The proof OUTLIVES the growth that established it — that is the point.
+        st.rows.get_mut("live").unwrap().grew_at = None;
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["live"].proved_pid.is_some(),
+            "banked, not recomputed"
+        );
+
+        // …but not the process. A dead pid takes its proof with it.
+        st.procs.clear();
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows["live"].proved_pid.is_none(), "no process, no proof");
+
+        // Two growers in one directory force nothing.
+        let mut st2 = State {
+            procs: procs(
+                "  900 claude
+",
+                "p900
+fcwd
+n/Users/x/proj
+",
+            ),
+            ..State::default()
+        };
+        st2.rows.insert("a".into(), growth_row(cwd, true));
+        st2.rows.insert("b".into(), growth_row(cwd, true));
+        idx.prove_by_growth(&mut st2);
+        assert!(
+            st2.rows["a"].proved_pid.is_none() && st2.rows["b"].proved_pid.is_none(),
+            "ambiguous growth is not evidence"
+        );
+
+        // Neither do two candidate processes.
+        let mut st3 = State {
+            procs: procs(
+                "  900 claude
+  901 claude
+",
+                "p900
+fcwd
+n/Users/x/proj
+p901
+fcwd
+n/Users/x/proj
+",
+            ),
+            ..State::default()
+        };
+        st3.rows.insert("live".into(), growth_row(cwd, true));
+        idx.prove_by_growth(&mut st3);
+        assert!(
+            st3.rows["live"].proved_pid.is_none(),
+            "which process wrote it?"
+        );
     }
 
     /// The knack bug: a session really hosted in a `tmux -L knack` pane reported "detached"
