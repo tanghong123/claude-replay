@@ -685,9 +685,26 @@ fn link(
         return Some(mk(p, true));
     }
     if let Some(cwd) = cwd.filter(|_| heuristic_ok) {
-        if let Some(p) = procs.iter().find(|p| {
-            is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd) && !has_uuid(&p.argv)
-        }) {
+        // Several agent processes can share a cwd — a leftover from an earlier run, a helper,
+        // and the one the user is actually sitting in front of. Taking the FIRST match meant
+        // taking the lowest pid, i.e. usually the oldest: a real knack session hosted in a
+        // `tmux -L knack` pane reported "detached" because a stale sibling won. Rank by how
+        // the process is HOSTED — a multiplexer target beats a bare tty beats detached — and
+        // break ties on pid so the choice stays a pure function of the data.
+        if let Some(p) = procs
+            .iter()
+            .filter(|p| {
+                is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd) && !has_uuid(&p.argv)
+            })
+            .max_by_key(|p| {
+                let host = match Terminal::of(p) {
+                    Terminal::Tmux { .. } | Terminal::Screen(_) => 2,
+                    Terminal::Tty => 1,
+                    Terminal::Detached => 0,
+                };
+                (host, std::cmp::Reverse(p.pid))
+            })
+        {
             return Some(mk(p, false));
         }
     }
@@ -1420,5 +1437,57 @@ mod tests {
         // …while 101, which carries ANOTHER session's uuid, is excluded from the heuristic
         // pool entirely (the probe's UNCONFIRMED cross-check as a hard rule).
         assert!(has_uuid(&procs[0].argv) && !has_uuid(&procs[1].argv));
+    }
+
+    /// The knack bug: a session really hosted in a `tmux -L knack` pane reported "detached"
+    /// because an OLDER agent process sharing its cwd matched the heuristic first. Among
+    /// equally-eligible candidates the one with a real terminal wins.
+    #[test]
+    fn the_cwd_heuristic_prefers_a_terminal_hosted_process() {
+        let mut procs = parse_ps("  700 claude\n  900 claude\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/Users/hong/code/knack\np900\nfcwd\nn/Users/hong/code/knack\n",
+        );
+        // The older pid is detached; the newer one is the pane the user is sitting in.
+        apply_env(
+            &mut procs,
+            "  900 claude TMUX=/private/tmp/tmux-502/knack-98db47,8436,0 TMUX_PANE=%0\n",
+        );
+
+        let l = link(
+            &procs,
+            "sid",
+            Path::new("/n.jsonl"),
+            Some("/Users/hong/code/knack"),
+            true,
+        )
+        .expect("cwd link");
+        assert_eq!(l.pid, 900, "the tmux-hosted process, not the first match");
+        assert_eq!(l.terminal.kind(), "tmux");
+        assert_eq!(l.terminal.target(), Some("%0"));
+        assert!(
+            matches!(&l.terminal, Terminal::Tmux { sock: Some(s), .. } if s == "knack-98db47"),
+            "a per-project tmux server names the socket its pane id is scoped to"
+        );
+
+        // With no terminal anywhere the choice must still be deterministic, not ps order.
+        let mut bare = parse_ps("  900 claude\n  700 claude\n");
+        apply_lsof(
+            &mut bare,
+            "p700\nfcwd\nn/Users/hong/code/knack\np900\nfcwd\nn/Users/hong/code/knack\n",
+        );
+        let l = link(
+            &bare,
+            "sid",
+            Path::new("/n.jsonl"),
+            Some("/Users/hong/code/knack"),
+            true,
+        )
+        .expect("cwd link");
+        assert_eq!(
+            l.pid, 700,
+            "ties break on pid, whatever order ps listed them"
+        );
     }
 }
