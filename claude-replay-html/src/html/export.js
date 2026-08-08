@@ -966,8 +966,21 @@
     var nav = $("crumbs");
     if (!nav) return;
     nav.textContent = "";
-    if (!ancestors || !ancestors.length) { nav.style.display = "none"; return; }
+    // #140: the crumb lives in the masthead, which scrolls away — and inside the monitor
+    // the view is an iframe, so the browser's Back button is not a way up either. The
+    // toolbar carries a persistent twin of the same step-up.
+    var btn = $("btn-up");
+    if (!ancestors || !ancestors.length) {
+      nav.style.display = "none";
+      if (btn) btn.style.display = "none";
+      return;
+    }
     var parent = ancestors[ancestors.length - 1]; // the immediate (spawning) parent
+    if (btn) {
+      btn.style.display = "";
+      btn.dataset.parent = parent.id;
+      btn.title = "Back to the parent session — " + (parent.title || parent.id);
+    }
     var up = el("a", "crumb crumb-up", "↑ " + (parent.title || parent.id));
     up.href = "?session=" + encodeURIComponent(parent.id);
     up.dataset.parent = parent.id;
@@ -2040,11 +2053,18 @@
     // opener still showing the parent), return to parent = close this tab and refocus the
     // opener, rather than navigating a duplicate. Same-tab views (no opener) just follow the
     // link to the parent session.
-    if (e.target.closest(".crumb-up")) {
+    // The toolbar's persistent ↑ (#140) is the same step, so it shares this router.
+    var upEl = e.target.closest(".crumb-up, #btn-up");
+    if (upEl) {
       if (window.opener && !window.opener.closed) {
         e.preventDefault();
         try { window.opener.focus(); } catch (_) {}
         window.close();
+        return;
+      }
+      // The crumb is an <a> and navigates itself; the toolbar button has no href.
+      if (upEl.id === "btn-up" && upEl.dataset.parent) {
+        location.href = "?session=" + encodeURIComponent(upEl.dataset.parent);
       }
       return;
     }

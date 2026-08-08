@@ -1010,6 +1010,7 @@ fn build_page(
         <div id="toolitems"></div>
       </div>
     </div>
+    <button id="btn-up" class="tbtn ticon" style="display:none" title="Back to the parent session">↑</button>
     <div class="toolfilter" id="agentnav" style="display:none">
       <button id="btn-agents" class="tbtn disabled"><span class="tf-label">Agents ▾</span></button>
       <div id="agentmenu">
