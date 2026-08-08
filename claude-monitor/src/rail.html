@@ -13,6 +13,9 @@
     --bg:#faf9f7;--fg:#26241f;--muted:#716a5c;--faint:#a69e8e;--border:#e6e1d5;
     --card:#f0ede3;--panel:#f4f2ec;--hover:#edeade;--tool:#2e7d55;--link:#3a6ea5;
     --kw:#6d4fa1;--gut:#b3ab9b;--amber:#b0842f;--addbg:#e5f1e2;--accent:#6d4fa1;
+    /* #115: mirrors the embedded viewer's own --topbar-h (export.css) so the rail's
+       header band and the viewer's topbar are the same height and end on one line. */
+    --topbar-h:78px;
   }
   :root[data-theme="dark"]{
     --bg:#1b1915;--fg:#ece7dd;--muted:#a59c8c;--faint:#6f6656;--border:#322e27;
@@ -26,7 +29,15 @@
      the right edge. The floor is what the title row actually needs (measured: ~265px);
      CSS owns it and the drag reads it back, so there is no second copy to drift. */
   aside{width:326px;min-width:272px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)}
-  #head{padding:15px 15px 12px;flex:none;display:flex;flex-direction:column;gap:11px}
+  /* #115: the rail's header and the embedded viewer's topbar are two halves of one bar,
+     so they use ONE geometry — same total height, same 38px rows, same bottom border on
+     the same line. Before this the two search boxes sat 15px apart and the eye read a
+     stagger where there should be a single horizontal band. The token mirrors the
+     viewer's own --topbar-h (export.css); the FILTER pills are rail-only and therefore
+     live below the shared border, not inside the band. */
+  #head{height:var(--topbar-h);flex:none;display:flex;flex-direction:column;justify-content:center;
+        padding:0 15px;border-bottom:1px solid var(--border)}
+  .railrow{display:flex;align-items:center;gap:9px;height:38px}
   #titlebar{display:flex;align-items:center;gap:9px}
   #titlebar b{font:700 15px var(--sans);letter-spacing:-.01em;display:block}
   /* #137: the version sits UNDER the wordmark. Side by side it cost ~46px of a pane the
@@ -42,14 +53,16 @@
   .pchev:hover{color:var(--fg)}
   #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:5px}
   #scan i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tool);animation:mon-pulse 2.4s infinite}
-  #searchbox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:0 10px;background:var(--panel)}
+  /* Same box as the viewer's search (export.css .searchbox): 6px radius, 28px input. */
+  #searchbox{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:6px;padding:0 8px;background:var(--panel)}
   #searchbox span{color:var(--faint);font-size:12px}
   /* #132: "/" focuses this box, but nothing said so. Same cue the embedded view's search
      uses (export.css .searchbox:focus-within) — one vocabulary across both panes. */
   #searchbox:focus-within{border-color:var(--link);box-shadow:0 0 0 1px var(--link);background:var(--bg)}
   #searchbox:focus-within span{color:var(--link)}
-  #search{flex:1;min-width:0;border:none;outline:none;background:transparent;font:12.5px var(--sans);color:var(--fg);height:32px}
-  #filters{display:flex;gap:5px}
+  #search{flex:1;min-width:0;border:none;outline:none;background:transparent;font:13px var(--sans);color:var(--fg);height:28px}
+  /* Rail-only, so it sits BELOW the band the two headers share (#115). */
+  #filters{display:flex;flex-wrap:wrap;gap:5px;padding:10px 15px 8px}
   #filters button{font:11px var(--sans);padding:4px 12px;border:1px solid var(--border);border-radius:99px;background:transparent;color:var(--muted);cursor:pointer}
   #filters button.on{border-color:var(--accent);background:var(--hover);color:var(--fg)}
   #list{flex:1;overflow-y:auto;padding:0 0 16px}
@@ -131,7 +144,7 @@
 <body>
 <aside>
   <div id="head">
-    <div id="titlebar">
+    <div id="titlebar" class="railrow">
       <span id="wordmark"><b>Monitor</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span></span>
       <button class="pill pchev" id="collapseall" title="Collapse all groups">▸▸</button>
       <button class="pill pchev" id="expandall" title="Expand all groups">▾▾</button>
@@ -140,13 +153,13 @@
       <span id="scan" title="live — the monitor re-scans every couple of seconds"><i></i></span>
       <button class="toggle" id="hiderail" title="Collapse the session list">«</button>
     </div>
-    <div id="searchbox"><span>⌕</span><input id="search" placeholder="Filter sessions  ( / )" autocomplete="off"></div>
-    <div id="filters">
-      <button data-f="all" class="on">All</button>
-      <button data-f="growing">Active</button>
-      <button data-f="idle">Idle</button>
-      <button id="hiddentoggle" title="Show sessions, projects and agents you've hidden">Hidden</button>
-    </div>
+    <div class="railrow"><div id="searchbox"><span>⌕</span><input id="search" placeholder="Filter sessions  ( / )" autocomplete="off"></div></div>
+  </div>
+  <div id="filters">
+    <button data-f="all" class="on">All</button>
+    <button data-f="growing">Active</button>
+    <button data-f="idle">Idle</button>
+    <button id="hiddentoggle" title="Show sessions, projects and agents you've hidden">Hidden</button>
   </div>
   <div id="list"></div>
 </aside>
