@@ -57,6 +57,20 @@ Neither is exact on its own. A monitor (#98) should use argv when present, then 
 and **cross-check the transcript's recorded `session_id`** against the argv id — the probe
 prints `[id UNCONFIRMED]` when a filename matched but the head did not.
 
+> **Refined by #145/#146 — "newest" is a tie-break, not a rule.** The three processes above
+> happened to agree with recency; that is weaker than it reads. `claude --resume` with no id
+> opens a **picker**, so the user may resume ANY session in that directory. When the guess
+> misses it costs twice: the newest row claims a process it does not own, and the session
+> actually being driven reads *finished*. Two further discriminators were tried and both
+> failed — an agent holds **zero** `.jsonl` fds (so nothing correlates by descriptor), and
+> process start time does not separate candidates (in the one ambiguous directory measured,
+> *both* sessions had activity postdating the process).
+>
+> What does work is **growth**: a transcript advances only because its own agent wrote to it,
+> so a directory with exactly one growing session and one candidate process forces the pairing
+> (#146). The monitor banks that proof so it outlives the growth, and where no proof exists it
+> reports how many sessions it is choosing between rather than implying certainty.
+
 ## 2. Is it attached to a terminal, and which?
 
 `ps -o tty=` gives the controlling terminal (`ttys006`, …; `??` when detached). That alone
@@ -112,7 +126,11 @@ Anything built on §3 must, at minimum:
    outside, and from where. Silent injection is indistinguishable from the user typing, which
    is exactly what makes it dangerous.
 3. **Be local-only.** No network-reachable path to §3, ever, without a separate and much
-   harder security review than this note.
+   harder security review than this note. **"Loopback" is not automatically local**: the
+   monitor's server parses only the request line — no `Origin`, no `Host`, no CSRF token, and
+   mutations are GET — so any web page the user visits can already reach its endpoints. That
+   is harmless for a hide-a-row endpoint and disqualifying for this one. See
+   `design/compose-to-terminal.md` §3.2.
 4. **Refuse by default.** The prototype prints a capability, never performs an injection —
    that asymmetry is deliberate and should survive productisation.
 
