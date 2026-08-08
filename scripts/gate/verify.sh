@@ -1,26 +1,32 @@
 #!/bin/bash
 # Byte-identical gate dumper: render the fixed transcript set with $1 into $2/.
 # Fixture inputs live in $SC_GATE_DIR — see gate-dir.sh / README.md.
+#
+# Every input is a FROZEN copy in $SC_GATE_DIR, never a path into a live agent store
+# (#147). The gate must measure the BINARY; an input that can take a turn while the
+# gate runs measures the machine instead. That is not theoretical: `claude_sa` pointed
+# at a session that was still being used, and a turn landing mid-run reported the dumps,
+# the HTML and the bundle's whole FILE SET as regressions — reproduced with the working
+# tree stashed, so no code change was involved.
+#
+# Re-freezing changes the fixture (the path and the derived session id are IN the
+# rendered output), so BASE must be regenerated in the same step — see README.md.
 set -u
 BIN="$1"; OUT="$2"
 . "$(cd "$(dirname "$0")" && pwd)/gate-dir.sh"
 mkdir -p "$OUT"
-CLAUDE_SA=/Users/hong/.claude/projects/-Users-hong-code-crux/19432415-3f0e-434e-8255-fa84407109db.jsonl
-CLAUDE_SELF=/Users/hong/.claude/projects/-Users-hong-personal-claude-replay/094539f2-40d7-4703-a510-8c3ee69657a4.jsonl
-CODEX=/Users/hong/.codex/sessions/2026/07/20/rollout-2026-07-20T22-37-46-019f7ff6-2664-7263-99dd-af17d013015b.jsonl
 W=120
-for name in claude_sa claude_self codex; do
-  case $name in
-    claude_sa) T=$CLAUDE_SA;;
-    claude_self) T=$CLAUDE_SELF;;
-    codex) T=$CODEX;;
-  esac
-  # These fixtures are live agent-store transcripts, so they can disappear (a store
-  # pruned, a machine changed). Fail loudly: rendering a MISSING input writes 0 bytes,
-  # which the gate would otherwise report as a whole-file content regression.
+# `claude_self` used to be rendered here from a 107 MB live transcript and then SKIPPED by
+# gate.sh's comparison — four renders per run for no signal. `self` already covers a Claude
+# session of this shape from a frozen copy, so the redundant one is gone (#147).
+for name in claude_sa codex; do
+  T="$GATE_DIR/frozen_${name}.jsonl"
+  # A frozen fixture can still go missing (a cache wiped, a machine changed). Fail loudly:
+  # rendering a MISSING input writes 0 bytes, which the gate would otherwise report as a
+  # whole-file content regression.
   if [ ! -f "$T" ]; then
     echo "MISSING FIXTURE: $name -> $T" >&2
-    echo "  the gate cannot measure anything against it; re-point verify.sh or re-baseline." >&2
+    echo "  re-freeze it and regenerate BASE in the same step — see scripts/gate/README.md." >&2
     exit 1
   fi
   "$BIN" "$T" --dump - --width $W          > "$OUT/${name}.dump.txt"   2>"$OUT/${name}.dump.err"

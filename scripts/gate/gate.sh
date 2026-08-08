@@ -16,15 +16,18 @@ if [ ! -d "$GATE_DIR/BASE" ]; then
   echo "BYTE-IDENTICAL: FAIL"
   exit 1
 fi
-# Guard the INPUT too, symmetrically. Without this the dumps below write 0 bytes and the
+# Guard the INPUTS too, symmetrically. Without this the dumps below write 0 bytes and the
 # run reports a whole-file DIFF — a missing fixture masquerading as a huge regression.
-if [ ! -f "$GATE_DIR/frozen_self.jsonl" ]; then
-  echo "NO INPUT at $GATE_DIR/frozen_self.jsonl — the frozen fixture is gone."
-  echo "  re-freeze + regenerate BASE from a known-good binary:"
-  echo "  scripts/gate/rebaseline.sh \"\$(command -v claude-replay)\" <a-transcript.jsonl>"
-  echo "BYTE-IDENTICAL: FAIL"
-  exit 1
-fi
+# ALL of them are frozen copies (#147): the gate measures the binary, never the machine.
+for f in frozen_self frozen_claude_sa frozen_codex; do
+  if [ ! -f "$GATE_DIR/$f.jsonl" ]; then
+    echo "NO INPUT at $GATE_DIR/$f.jsonl — the frozen fixture is gone."
+    echo "  re-freeze + regenerate BASE from a known-good binary:"
+    echo "  scripts/gate/rebaseline.sh \"\$(command -v claude-replay)\" <a-transcript.jsonl>"
+    echo "BYTE-IDENTICAL: FAIL"
+    exit 1
+  fi
+done
 cargo build --release 2>&1 | tail -1
 BIN=./target/release/claude-replay
 OUT="$GATE_DIR/NOW"; rm -rf "$OUT"; mkdir -p "$OUT"
@@ -44,12 +47,10 @@ cmp_norm() { # $1=base file, $2=now file — normalized for html/jsonl, raw othe
 FAIL=0
 for f in "$GATE_DIR"/BASE/*.txt "$GATE_DIR"/BASE/*.html; do
   b=$(basename "$f")
-  case "$b" in claude_self.*) continue;; esac
   cmp_norm "$f" "$OUT/$b" || { echo "DIFF: $b"; FAIL=1; }
 done
 for d in "$GATE_DIR"/BASE/*.bundle; do
   b=$(basename "$d")
-  case "$b" in claude_self.*) continue;; esac
   if ! diff <(cd "$d" && find . -type f | sort) <(cd "$OUT/$b" && find . -type f | sort) >/dev/null 2>&1; then
     echo "DIFF bundle (file set): $b"; FAIL=1; continue
   fi
