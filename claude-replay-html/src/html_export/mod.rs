@@ -953,17 +953,17 @@ fn build_page(
     let embed = chrome.is_some_and(|c| c.embed);
     let brand = if embed {
         let t = esc(title);
-        format!(r#"  <div class="brand" id="embed-title" title="{t}">{t}</div>"#)
+        format!(r#"    <div class="brand" id="embed-title" title="{t}">{t}</div>"#)
     } else {
         format!(
-            r#"  <div class="brand">claude-replay <span class="brand-sub">v{}</span></div>"#,
+            r#"    <div class="brand">claude-replay <span class="brand-sub">v{}</span></div>"#,
             env!("CARGO_PKG_VERSION")
         )
     };
     let theme_btn = if embed {
-        r#"  <button id="btn-theme" class="tbtn" style="display:none">◐ Dark</button>"#
+        r#"    <button id="btn-theme" class="tbtn" style="display:none">◐ Dark</button>"#
     } else {
-        r#"  <button id="btn-theme" class="tbtn">◐ Dark</button>"#
+        r#"    <button id="btn-theme" class="tbtn">◐ Dark</button>"#
     };
     let chrome_stamp = match chrome.and_then(|c| c.theme.as_deref()) {
         // After the main script on purpose: export.js has applied the localStorage theme by
@@ -987,35 +987,40 @@ fn build_page(
 </head>
 <body{live_attrs}>
 <div id="topbar">
+  <div class="tbrow">
 {brand}
-  <div class="toolfilter">
-    <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-prev" title="Previous match (N)">‹</span><span class="tf-next" title="Next match (n)">›</span><span class="tf-x" title="Clear filter">✕</span></button>
-    <div id="toolmenu">
-      <div class="menu-head">Filter by type / tool</div>
-      <div id="toolitems"></div>
-    </div>
-  </div>
-  <div class="toolfilter" id="agentnav" style="display:none">
-    <button id="btn-agents" class="tbtn disabled"><span class="tf-label">Agents ▾</span></button>
-    <div id="agentmenu">
-      <div class="menu-head">Sub-agents of this session</div>
-      <div id="agentitems"></div>
-    </div>
-  </div>
-  <div class="toolfilter" id="tasknav" style="display:none">
-    <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
-  </div>
-  <div class="searchbox">
-    <span class="mag">⌕</span>
-    <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
-    <span id="qcount"></span>
-    <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
-    <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
-  </div>
-  <button id="btn-exp" class="tbtn" data-full="Expand all">Expand all</button>
-  <button id="btn-col" class="tbtn" data-full="Collapse all">Collapse all</button>
-  <button id="btn-wide" class="tbtn" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔ Wide</button>
+    <div class="sessionbits" id="sessionbits"></div>
+    <button id="btn-exp" class="tbtn ticon" title="Expand all">▾▾</button>
+    <button id="btn-col" class="tbtn ticon" title="Collapse all">▸▸</button>
+    <button id="btn-wide" class="tbtn ticon" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔</button>
 {theme_btn}
+  </div>
+  <div class="tbrow">
+    <div class="searchbox">
+      <span class="mag">⌕</span>
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
+      <span id="qcount"></span>
+      <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
+      <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
+    </div>
+    <div class="toolfilter">
+      <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-prev" title="Previous match (N)">‹</span><span class="tf-next" title="Next match (n)">›</span><span class="tf-x" title="Clear filter">✕</span></button>
+      <div id="toolmenu">
+        <div class="menu-head">Filter by type / tool</div>
+        <div id="toolitems"></div>
+      </div>
+    </div>
+    <div class="toolfilter" id="agentnav" style="display:none">
+      <button id="btn-agents" class="tbtn disabled"><span class="tf-label">Agents ▾</span></button>
+      <div id="agentmenu">
+        <div class="menu-head">Sub-agents of this session</div>
+        <div id="agentitems"></div>
+      </div>
+    </div>
+    <div class="toolfilter" id="tasknav" style="display:none">
+      <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
+    </div>
+  </div>
 </div>
 <div id="taskpanel">
   <div class="taskpanel-head">

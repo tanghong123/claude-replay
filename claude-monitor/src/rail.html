@@ -22,11 +22,17 @@
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;display:flex;background:var(--bg);color:var(--fg);font-family:var(--sans)}
-  aside{width:326px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)}
+  /* #137: the drag handle (#114) could squeeze the pane until the toolbar icons fell off
+     the right edge. The floor is what the title row actually needs (measured: ~265px);
+     CSS owns it and the drag reads it back, so there is no second copy to drift. */
+  aside{width:326px;min-width:272px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)}
   #head{padding:15px 15px 12px;flex:none;display:flex;flex-direction:column;gap:11px}
   #titlebar{display:flex;align-items:center;gap:9px}
-  #titlebar b{font:700 15px var(--sans);letter-spacing:-.01em}
-  #ver{font:400 10px var(--mono);color:var(--faint);align-self:flex-end;margin:0 0 2px -4px}
+  #titlebar b{font:700 15px var(--sans);letter-spacing:-.01em;display:block}
+  /* #137: the version sits UNDER the wordmark. Side by side it cost ~46px of a pane the
+     user can now drag narrow (#114), and the toolbar icons were what got pushed out. */
+  #wordmark{flex:none;line-height:1.05}
+  #ver{display:block;font:400 9.5px var(--mono);color:var(--faint)}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
   .picon{font:16px/1 var(--sans);padding:2px 9px}
@@ -126,7 +132,7 @@
 <aside>
   <div id="head">
     <div id="titlebar">
-      <b>Monitor</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span>
+      <span id="wordmark"><b>Monitor</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span></span>
       <button class="pill pchev" id="collapseall" title="Collapse all groups">▸▸</button>
       <button class="pill pchev" id="expandall" title="Expand all groups">▾▾</button>
       <span style="flex:1"></span>
@@ -166,7 +172,9 @@
   // dragging (body.dragging) or it would swallow the mousemoves.
   var RAILW_KEY="claude-monitor-railw";
   var rail=document.querySelector("aside");
-  var clampW=function(w){return Math.max(220,Math.min(Math.max(320,window.innerWidth-360),w));};
+  // The floor comes from the stylesheet (#137) — the one place it is stated.
+  var railMin=parseInt(getComputedStyle(rail).minWidth,10)||272;
+  var clampW=function(w){return Math.max(railMin,Math.min(Math.max(railMin+48,window.innerWidth-360),w));};
   try{var rw=parseInt(localStorage.getItem(RAILW_KEY)||"",10);if(rw)rail.style.width=clampW(rw)+"px";}catch(e){}
   document.getElementById("drag").addEventListener("mousedown",function(e){
     e.preventDefault();
@@ -219,17 +227,18 @@
     var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0?"a-qoderwork":"a-other";
     return '<span class="abadge '+cls+'" title="'+esc(r.agent)+'">'+esc(code)+'</span>';
   }
-  // #129: a session's start→last-activity span. Same-day sessions are told by their
-  // clock times; a span across days is told by its dates — carrying both made the line
-  // overflow the rail and ellipsize away the cost that follows it.
+  // #129/#138: a session's start→last-activity span, said the shortest true way.
+  // Clock times only earn their space for a session you might still be in TODAY; one that
+  // began and ended on some earlier day is just that day (never "8/5–8/5"); and a session
+  // spanning days is its two dates. Carrying date AND time always overflowed the rail and
+  // ellipsized away the cost behind it.
   function fmtSpan(a,b){
     if(!a||!b)return null;
     var da=new Date(a*1000),db=new Date(b*1000);
     var hm=function(d){return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");};
     var md=function(d){return (d.getMonth()+1)+"/"+d.getDate();};
-    return da.toDateString()===db.toDateString()
-      ? hm(da)+"–"+hm(db)
-      : md(da)+"–"+md(db);
+    if(da.toDateString()!==db.toDateString())return md(da)+"–"+md(db);
+    return da.toDateString()===new Date().toDateString() ? hm(da)+"–"+hm(db) : md(da);
   }
   function subLine(r,g){
     if(g&&g.kind!=="agent"){

@@ -762,25 +762,39 @@
     if (renderedSession != null && cur !== renderedSession) location.reload();
   });
 
+  // A session id is a uuid; its first group identifies it among a machine's sessions
+  // without eating the bar. The full value stays in the title and on the clipboard.
+  function snipId(s) { return s.length > 12 ? s.slice(0, 8) : s; }
+
   function renderMeta(m) {
     if (m.title) {
       document.title = m.title;
       $("title").textContent = m.title;
     }
-    var meta = $("meta");
-    meta.textContent = "";
-    var sid = el("span", null, m.sid || "");
+    // #127: which session, where, and how big now live in the fixed top bar, so they stay
+    // readable at any scroll depth. The masthead below keeps the title and the duration —
+    // showing the same four facts twice, both visible at once, is worse than either.
+    var bar = $("sessionbits");
+    bar.textContent = "";
+    var sid = el("span", null, snipId(m.sid || ""));
     sid.id = "sid";
-    sid.title = "Click to copy transcript path";
+    sid.title = (m.sid || "") + " — click to copy transcript path";
     sid.dataset.path = m.path || "";
-    meta.appendChild(sid);
-    if (m.cwd) meta.appendChild(el("span", null, m.cwd));
-    var d = fmtDur(m.duration_secs);
+    bar.appendChild(sid);
+    if (m.cwd) {
+      var cwd = el("span", "sb-cwd", m.cwd);
+      cwd.title = m.cwd;
+      bar.appendChild(cwd);
+    }
     var bits = [];
     if (m.turns != null) bits.push(m.turns + " turn" + (m.turns === 1 ? "" : "s"));
-    if (m.tools != null) bits.push(m.tools + " tool call" + (m.tools === 1 ? "" : "s"));
+    if (m.tools != null) bits.push(m.tools + " call" + (m.tools === 1 ? "" : "s"));
+    if (bits.length) bar.appendChild(el("span", "sb-counts", bits.join(" · ")));
+
+    var meta = $("meta");
+    meta.textContent = "";
+    var d = fmtDur(m.duration_secs);
     if (d) meta.appendChild(el("span", null, d));
-    if (bits.length) meta.appendChild(el("span", null, bits.join(" · ")));
 
     var u = m.usage || {};
     var box = $("usage");
@@ -1859,25 +1873,18 @@
     if (mn) mn.style.maxWidth = on ? "none" : "820px";
     var b = $("btn-wide");
     if (b) {
-      b.textContent = on ? "⇔ Narrow" : "⇔ Wide";
+      // #127: icon-only. The tinted state, not a word, says which mode is on.
       b.style.color = on ? "var(--tool)" : "";
       b.style.borderColor = on ? "var(--tool)" : "";
       b.title = on ? "Back to reading width" : "Wide mode — drop the reading-width cap for diff-heavy sessions";
     }
   }
-  // §8.6 Progressive shedding so the fixed bar never clips its trailing control.
+  // §8.6 kept the bar from clipping its trailing control by shedding button labels as the
+  // window narrowed. #127 removed the cause: two rows, and those buttons are icons at every
+  // width. Only the version chip still earns its keep by stepping aside.
   function fitBar() {
-    var w = window.innerWidth;
-    ["btn-exp", "btn-col"].forEach(function (id) {
-      var b = $(id);
-      if (!b) return;
-      var full = b.dataset.full;
-      b.textContent = w < 1000 ? (id === "btn-exp" ? "⌄" : "⌃") : full;
-      b.title = full;
-      b.style.minWidth = w < 1000 ? "30px" : "";
-    });
     var bs = document.querySelector("#topbar .brand-sub");
-    if (bs) bs.style.display = w < 820 ? "none" : "";
+    if (bs) bs.style.display = window.innerWidth < 820 ? "none" : "";
   }
 
   // Where goTo lands a target's top (px from the viewport top). `[`/`]` reference

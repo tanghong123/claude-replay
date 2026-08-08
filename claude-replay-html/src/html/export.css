@@ -7,6 +7,9 @@
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --fs: 15.5px;
+  /* The fixed top bar's height (#127: two rows). The sidebar, the sticky turn bar and
+     the task panel all hang off its bottom edge — one definition, no drift. */
+  --topbar-h: 78px;
   --ms: 12.5px;
   --bg: #faf9f7;
   --fg: #26241f;
@@ -89,13 +92,32 @@ input::placeholder { color: var(--faint); }
 
 /* ── top bar ─────────────────────────────────────────────────────────── */
 
+/* #127 two rows: WHO this is (title, id, directory, size) on top, WHAT YOU DO TO IT
+   (search, filter, agents, tasks) below. One row could not hold both without the
+   identity being the thing that got shed. The height is a variable because the sidebar,
+   the sticky turn bar and the task panel all hang off the bar's bottom edge. */
 #topbar {
-  position: fixed; top: 0; left: 0; right: 0; height: 48px; z-index: 30;
-  display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  position: fixed; top: 0; left: 0; right: 0; height: var(--topbar-h); z-index: 30;
+  display: flex; flex-direction: column; justify-content: center; padding: 0 16px;
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
+.tbrow { display: flex; align-items: center; gap: 10px; height: 38px; }
 .brand { font: 600 13px var(--mono); white-space: nowrap; }
 .brand span { color: var(--faint); font-weight: 400; }
+/* The embedded page puts the SESSION TITLE here, which is the one thing in the bar with
+   no natural length — let it be what shrinks. */
+#embed-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Session identity, always on screen (#127): the id snippet, the directory, and how big
+   the session is. These used to live only in the masthead, which scrolls away. */
+.sessionbits {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px;
+  font: 11px var(--mono); color: var(--faint);
+}
+.sessionbits > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sessionbits #sid { flex: none; cursor: pointer; }
+.sessionbits #sid:hover { color: var(--link); }
+.sessionbits .sb-cwd { min-width: 0; }
+.sessionbits .sb-counts { flex: none; }
 /* §8.6 the search box is the flexible element (no spacer div), so the fixed bar's
    trailing controls can never be pushed off-screen; it shrinks first. */
 .searchbox {
@@ -127,7 +149,13 @@ input::placeholder { color: var(--faint); }
 .tbtn:hover { background: var(--hover); }
 .tbtn.disabled { opacity: 0.4; cursor: default; }
 .tbtn.disabled:hover { background: transparent; }
-#btn-theme { min-width: 88px; }
+/* #127: expand / collapse / wide are icon-only — their words cost more room than they
+   earn, and the shapes reuse the fold chevrons the turns already use. */
+.ticon {
+  flex: none; min-width: 32px; text-align: center;
+  font: 12px/1 var(--sans); letter-spacing: -1.5px; padding: 7px 8px;
+}
+#btn-theme { min-width: 88px; flex: none; }
 
 /* ── tool-use filter (dropdown + banner) ─────────────────────────────── */
 
@@ -259,11 +287,11 @@ a.crumb:hover { text-decoration: underline; }
 
 /* ── layout ──────────────────────────────────────────────────────────── */
 
-.layout { display: flex; padding-top: 48px; max-width: 1160px; margin: 0 auto; }
+.layout { display: flex; padding-top: var(--topbar-h); max-width: 1160px; margin: 0 auto; }
 
 #sidebar {
-  width: 240px; flex: none; position: sticky; top: 48px; align-self: flex-start;
-  height: calc(100vh - 48px); padding: 20px 8px 20px 16px;
+  width: 240px; flex: none; position: sticky; top: var(--topbar-h); align-self: flex-start;
+  height: calc(100vh - var(--topbar-h)); padding: 20px 8px 20px 16px;
   display: flex; flex-direction: column;
 }
 /* The "TURNS" header and the USAGE/hot-key footer stay pinned; only the turn
@@ -310,7 +338,7 @@ a.crumb:hover { text-decoration: underline; }
    marks .user-sized, which lifts the 5-row default so the row area fills the new height. */
 #taskpanel {
   display: none; position: fixed; z-index: 60;
-  top: 56px; right: 12px; width: min(420px, 92vw);
+  top: calc(var(--topbar-h) + 8px); right: 12px; width: min(420px, 92vw);
   min-height: 84px; max-height: min(64vh, 680px);
   resize: vertical; overflow: hidden;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -401,7 +429,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 }
 
 #stickybar {
-  position: sticky; top: 48px; z-index: 20; display: flex; align-items: center; gap: 8px;
+  position: sticky; top: var(--topbar-h); z-index: 20; display: flex; align-items: center; gap: 8px;
   margin: 0 -12px; padding: 6px 12px; background: var(--bg);
   border-bottom: 1px solid var(--border); cursor: pointer;
   opacity: 0; pointer-events: none; transition: opacity 0.15s;
