@@ -119,8 +119,8 @@
       <button class="pill picon" id="collapseall" title="Collapse all groups">⊖</button>
       <button class="pill picon" id="expandall" title="Expand all groups">⊕</button>
       <span style="flex:1"></span>
-      <button class="pill" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐ Dark</button>
-      <span id="scan" title="the monitor re-scans every couple of seconds"><i></i>live</span>
+      <button class="pill picon" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐</button>
+      <span id="scan" title="live — the monitor re-scans every couple of seconds"><i></i></span>
       <button class="toggle" id="hiderail" title="Collapse the session list">«</button>
     </div>
     <div id="searchbox"><span>⌕</span><input id="search" placeholder="Filter sessions  ( / )" autocomplete="off"></div>
@@ -370,7 +370,10 @@
   function applyTheme(dark,reframe){
     state.dark=dark;
     if(dark)root.setAttribute("data-theme","dark");else root.removeAttribute("data-theme");
-    document.getElementById("themebtn").textContent=dark?"◐ Light":"◐ Dark";
+    // #128: icon only — the split circle carries the meaning; the title says which
+    // mode a click switches TO.
+    var tb=document.getElementById("themebtn");
+    tb.title="Theme — switch to "+(dark?"light":"dark")+" (rail and embedded view)";
     try{localStorage.setItem(THEME_KEY,dark?"dark":"light");}catch(e){}
     // Re-theme the live iframe in place (covers a child that navigated past the initial src).
     try{view.contentDocument.documentElement.setAttribute("data-theme",dark?"dark":"light");}catch(e){}
