@@ -256,6 +256,39 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
             add_blocks: [list("addBlocks"), list("blocks")].concat(),
             add_blocked_by: [list("addBlockedBy"), list("blockedBy")].concat(),
         }),
+        // #126: `TodoWrite` sends the WHOLE list every time — `{todos:[{description,status}]}`.
+        // Mapped here, in the shared decoder, deliberately: QoderWork delegates `decode_line`
+        // to this tokenizer, so this is what lights up its panel (measured: 268 calls in one
+        // session where the panel was otherwise blank), and a tool name should mean the same
+        // thing across Claude-format agents. It is inert for Claude today — 0 of 133
+        // transcripts use it.
+        "TodoWrite" => Some(TaskOp::Snapshot {
+            todos: input
+                .get("todos")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    let f = |t: &Value, k: &str| {
+                        t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                    };
+                    a.iter()
+                        .map(|t| {
+                            // `description` or `content` depending on the caller's version —
+                            // measured across 6323 real items: 5285 vs 1048, never both.
+                            let text = match f(t, "description") {
+                                s if s.is_empty() => f(t, "content"),
+                                s => s,
+                            };
+                            claude_replay_engine::seam::Todo {
+                                text,
+                                status: f(t, "status"),
+                                active_form: f(t, "activeForm"),
+                            }
+                        })
+                        .filter(|t| !t.text.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }),
         _ => None,
     }
 }

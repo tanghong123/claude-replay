@@ -48,7 +48,7 @@ pub const COMPACT_AFTER: usize = 256;
 ///
 /// The byte-identical gate is what catches a change that needs a bump: an intentional output
 /// change re-baselines the gate, and that is the moment to bump here too.
-pub const FOLD_VERSION: u16 = 3;
+pub const FOLD_VERSION: u16 = 4;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

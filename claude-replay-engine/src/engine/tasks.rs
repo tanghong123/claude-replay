@@ -104,6 +104,30 @@ pub enum TaskOp {
         add_blocks: Vec<String>,
         add_blocked_by: Vec<String>,
     },
+    /// A `TodoWrite` call — the whole list, replacing whatever was there (#126).
+    ///
+    /// A SNAPSHOT, not an increment, and that is the point: `TodoWrite` carries no ids, so
+    /// item *k* of one call has no relation to item *k* of the next, and the list must be
+    /// able to SHRINK when a todo is dropped. An append-only op-log can express neither, so
+    /// forcing it onto `Create`/`Update` would either strand everything in `pending` (no
+    /// `Resolve` ids exist) or leave deleted todos behind forever.
+    Snapshot { todos: Vec<Todo> },
+}
+
+/// One entry of a [`TaskOp::Snapshot`] — the neutral shape a `TodoWrite` item maps onto.
+///
+/// A struct rather than a tuple because this is a PERSISTED schema (#96): the meta stream
+/// carries these, and a named field can be added later without the reader guessing which
+/// slot moved.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct Todo {
+    /// The todo's text. The tool spells this `description` or `content` depending on the
+    /// caller's version — measured across 6323 real items, 5285 vs 1048, never both.
+    pub text: String,
+    pub status: String,
+    /// The in-progress phrasing ("正在读取…"), when the caller sends one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub active_form: String,
 }
 
 /// The op-log reducer: replays [`TaskOp`]s (and watches tool results for the create→id
@@ -126,6 +150,18 @@ impl TaskFold {
     /// `recorded` at each committing drain. Separated from [`apply_recorded`](Self::apply_recorded) so a replay of
     /// the persisted log does not re-record what it is replaying.
     pub fn apply(&mut self, op: &TaskOp) {
+        // A `Snapshot` that says nothing new is not recorded (#126). `TodoWrite` is rewritten
+        // constantly — 268 calls in one measured session, most of them the identical list —
+        // and every recorded op is persisted into the meta stream (#96). Dropping the no-ops
+        // keeps the stream proportional to what actually CHANGED. Applying it is still fine
+        // (it is idempotent), so only the recording is skipped.
+        if let TaskOp::Snapshot { .. } = op {
+            let mut probe = self.clone();
+            probe.apply_recorded(op);
+            if probe.list == self.list {
+                return;
+            }
+        }
         self.recorded.push(op.clone());
         self.apply_recorded(op);
     }
@@ -210,7 +246,48 @@ impl TaskFold {
                 }
                 self.list.sort();
             }
+            TaskOp::Snapshot { todos } => {
+                // Replace-all — but only over a list this op is entitled to own. A session
+                // mixing `TaskCreate` with `TodoWrite` would otherwise have its op-log list
+                // wiped by the first snapshot. Measured across 133 Claude transcripts: none
+                // use `TodoWrite`, and none mix the two — so this guard is for the future,
+                // and it degrades by ignoring the snapshot rather than by losing tasks.
+                if !Self::is_snapshot_built(&self.list) {
+                    return;
+                }
+                self.list.items = todos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| TaskItem {
+                        id: i.to_string(),
+                        subject: t.text.clone(),
+                        active_form: t.active_form.clone(),
+                        status: TaskStatus::parse(&t.status),
+                        ..TaskItem::default()
+                    })
+                    .collect();
+                // Already in index order, and `sort` would reorder "10" before "2" only if
+                // the ids were non-numeric — they are indices, so sorting is a no-op that
+                // keeps the invariant honest if that ever changes.
+                self.list.sort();
+            }
         }
+    }
+
+    /// Whether `list` is one a [`Snapshot`](TaskOp::Snapshot) may replace: empty, or built by
+    /// an earlier snapshot.
+    ///
+    /// DERIVED rather than tracked, on purpose. A flag would have to survive the checkpoint
+    /// path, which serializes `TaskFold` wholesale — a `#[serde(skip)]` field would silently
+    /// come back `false` after a checkpoint and quietly stop the todo list updating. The
+    /// shape of the ids answers the question with no state at all: a snapshot numbers its
+    /// items `0..n`, while op-log ids are server-assigned and start at **1**, so any real
+    /// op-log list fails at index 0.
+    fn is_snapshot_built(list: &TaskList) -> bool {
+        list.items
+            .iter()
+            .enumerate()
+            .all(|(i, t)| t.id == i.to_string())
     }
 
     /// Feed every tool result through here: a pending `TaskCreate`'s result text
@@ -443,6 +520,85 @@ mod tests {
         };
         let m = merged(f.snapshot(), Some(disk));
         assert_eq!(m.items[0].subject, "the real subject");
+    }
+
+    fn snap(todos: &[(&str, &str)]) -> TaskOp {
+        TaskOp::Snapshot {
+            todos: todos
+                .iter()
+                .map(|(d, s)| Todo {
+                    text: d.to_string(),
+                    status: s.to_string(),
+                    ..Todo::default()
+                })
+                .collect(),
+        }
+    }
+
+    /// #126: `TodoWrite` is a replace-all. The list must be able to SHRINK — the thing an
+    /// append-only op-log cannot express, and the reason this is its own op.
+    #[test]
+    fn a_snapshot_replaces_the_whole_list() {
+        let mut f = TaskFold::default();
+        f.apply(&snap(&[
+            ("读取配置文件内容", "in_progress"),
+            ("读取模板文件内容", "pending"),
+            ("对比分析并输出结论报告", "pending"),
+        ]));
+        let l = f.snapshot();
+        assert_eq!(l.items.len(), 3);
+        assert_eq!(l.items[0].id, "0", "synthetic index ids");
+        assert_eq!(l.items[0].subject, "读取配置文件内容");
+        assert_eq!(l.items[0].status, TaskStatus::InProgress);
+
+        // A later snapshot with FEWER todos shrinks the list rather than leaving orphans.
+        f.apply(&snap(&[("读取配置文件内容", "completed")]));
+        let l = f.snapshot();
+        assert_eq!(l.items.len(), 1, "the dropped todos are gone");
+        assert_eq!(l.items[0].status, TaskStatus::Completed);
+    }
+
+    /// An unchanged snapshot is applied but NOT recorded: 268 identical rewrites must not
+    /// each cost a line in the persisted meta stream (#96).
+    #[test]
+    fn an_unchanged_snapshot_is_not_recorded() {
+        let mut f = TaskFold::default();
+        f.apply(&snap(&[("a", "pending")]));
+        assert_eq!(f.drain_recorded().len(), 1);
+
+        f.apply(&snap(&[("a", "pending")]));
+        f.apply(&snap(&[("a", "pending")]));
+        assert!(
+            f.drain_recorded().is_empty(),
+            "no-op rewrites add nothing to the stream"
+        );
+
+        f.apply(&snap(&[("a", "completed")]));
+        assert_eq!(f.drain_recorded().len(), 1, "a real change still records");
+    }
+
+    /// The guard: a snapshot must never wipe a list the op-log built. Measured as
+    /// unreachable today (no Claude transcript mixes the two), so it degrades by IGNORING
+    /// the snapshot — losing a todo view is recoverable, losing the task list is not.
+    #[test]
+    fn a_snapshot_never_clobbers_an_op_log_list() {
+        let mut f = TaskFold::default();
+        let (op, tuid, _) = create("12", "a real task");
+        f.apply(&op);
+        f.on_tool_result(&tuid, "Created task #12: a real task");
+        assert_eq!(f.snapshot().items.len(), 1);
+
+        f.apply(&snap(&[("a todo", "pending")]));
+        let l = f.snapshot();
+        assert_eq!(l.items.len(), 1, "the op-log list survives");
+        assert_eq!(l.items[0].id, "12");
+        assert_eq!(l.items[0].subject, "a real task");
+
+        // …and a list built only by snapshots is still replaceable.
+        let mut g = TaskFold::default();
+        g.apply(&snap(&[("x", "pending")]));
+        g.apply(&snap(&[("y", "pending"), ("z", "pending")]));
+        assert_eq!(g.snapshot().items.len(), 2);
     }
 
     /// The file-schema parser maps Claude's task JSON onto the neutral shape.

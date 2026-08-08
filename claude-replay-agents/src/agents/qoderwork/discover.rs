@@ -491,7 +491,7 @@ mod tests {
         rusqlite::Connection::open(&db)
             .unwrap()
             .execute(
-                "insert into sub_chats values ('s1','初筛候选人简历','mchat01','aaaa-bbbb',100)",
+                "insert into sub_chats values ('s1','重构解析器模块','mchat01','aaaa-bbbb',100)",
                 [],
             )
             .unwrap();
@@ -500,7 +500,7 @@ mod tests {
         let CardOutcome::Fresh { card, .. } = card_of(&src, None) else {
             panic!("named")
         };
-        assert_eq!(card.title.as_deref(), Some("初筛候选人简历"));
+        assert_eq!(card.title.as_deref(), Some("重构解析器模块"));
         assert_eq!(
             card.last_prompt.as_deref(),
             Some("do the thing"),
