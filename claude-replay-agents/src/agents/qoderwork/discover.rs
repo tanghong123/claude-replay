@@ -119,15 +119,19 @@ struct Memo {
     /// Claude, because QoderWork writes `last-prompt` lines too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tail: Option<serde_json::Value>,
-    /// `sub_chats.updated_at` at the time the title was read. The title lives in the DATABASE, so
-    /// this is what "unchanged" means for it — the transcript can sit still while a rename lands.
+    /// The title source's `updated_at` when the title was read — the sidecar's, or the
+    /// database's when there is no sidecar. The title lives OUTSIDE the transcript either
+    /// way, so this is what "unchanged" means for it: the transcript can sit still while a
+    /// rename lands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    db_at: Option<i64>,
+    title_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
 }
 
-const MEMO_V: u8 = 1;
+/// Bumped to 2 when the title source gained the sidecar (#143): a v1 memo's stamp came from
+/// the database, so comparing it against a sidecar stamp would be meaningless.
+const MEMO_V: u8 = 2;
 
 /// QoderWork's half of `TranscriptAdapter::session_card`.
 ///
@@ -160,22 +164,22 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         CardOutcome::Absent => (None, None, prev.is_some()),
     };
 
-    // The title half, from the database.
-    let (title, db_at) = match db_title(path) {
+    // The title half: the sidecar first, the database as the fallback (#143).
+    let (title, title_at) = match sidecar_title(path).or_else(|| db_title(path)) {
         Some((t, at)) => (Some(t), Some(at)),
         None => (None, None),
     };
-    let db_changed = prev.as_ref().map(|m| m.db_at) != Some(db_at);
+    let title_changed = prev.as_ref().map(|m| m.title_at) != Some(title_at);
 
     let card = SessionCard { title, last_prompt };
     let next = CardMemo::encode(&Memo {
         v: MEMO_V,
         tail: tail_next.map(|m| m.value().clone()),
-        db_at,
+        title_at,
         title: card.title.clone(),
     });
 
-    if prev.is_some() && !tail_changed && !db_changed {
+    if prev.is_some() && !tail_changed && !title_changed {
         if let Some(memo) = next {
             return CardOutcome::Unchanged { memo };
         }
@@ -197,6 +201,31 @@ fn tail_last_prompt(memo: &CardMemo) -> Option<String> {
         .get("last_prompt")
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// The title QoderWork writes beside the transcript, as `<sid>-session.json` (#143), with its
+/// `updated_at` as the staleness stamp.
+///
+/// Preferred over the database because it costs nothing this crate does not already have: a
+/// plain JSON read, no `qoderwork-titles` feature (so no bundled SQLite), and no macOS-only
+/// `db_path()` — measured, 31 of 31 sidecars on a real install carry a non-empty title, and
+/// the DB path can only ever be consulted on macOS. The DB stays as the fallback for a store
+/// that predates the sidecar.
+///
+/// A forked session's own title is `"<root title> (Fork)"`, which is what it should read as;
+/// grouping forks into families is a separate concern (design/qoderwork-fork-families.md).
+fn sidecar_title(path: &Path) -> Option<(String, i64)> {
+    let stem = path.file_stem()?.to_str()?;
+    let side = path.with_file_name(format!("{stem}-session.json"));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(side).ok()?).ok()?;
+    let title = v.get("title")?.as_str()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    // `updated_at` is epoch millis, the same shape the DB's column has, so the memo's
+    // staleness comparison is unchanged.
+    let at = v.get("updated_at").and_then(serde_json::Value::as_i64);
+    Some((title.to_string(), at.unwrap_or(0)))
 }
 
 /// `sub_chats.name` + `updated_at` for the session at `path`, or `None`.
@@ -329,6 +358,50 @@ mod tests {
             "identity is the only difference"
         );
         let _ = std::fs::remove_file(&f);
+    }
+
+    /// #143: the title comes from `<sid>-session.json` beside the transcript — no database,
+    /// no feature flag, no platform assumption. A blank or absent sidecar yields nothing so
+    /// the DB fallback still gets its turn.
+    #[test]
+    fn the_sidecar_supplies_the_title() {
+        let d = std::env::temp_dir().join(format!("qw-side-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let t = d.join("abc123.jsonl");
+        std::fs::write(&t, b"{}\n").unwrap();
+
+        assert_eq!(sidecar_title(&t), None, "no sidecar, no title");
+
+        std::fs::write(
+            d.join("abc123-session.json"),
+            r#"{"id":"abc123","title":"安装MCP服务器 (Fork)","updated_at":1780315233809,
+                "fork_from":"fcd5fe45"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            sidecar_title(&t),
+            Some(("安装MCP服务器 (Fork)".to_string(), 1780315233809)),
+            "the fork's own title, with updated_at as the staleness stamp"
+        );
+
+        // A blank title must not shadow the database fallback.
+        std::fs::write(
+            d.join("abc123-session.json"),
+            br#"{"id":"abc123","title":"   ","updated_at":1}"#,
+        )
+        .unwrap();
+        assert_eq!(sidecar_title(&t), None, "blank is not a title");
+
+        // A sidecar with no updated_at is still usable — the stamp just never moves.
+        std::fs::write(
+            d.join("abc123-session.json"),
+            br#"{"id":"abc123","title":"no stamp"}"#,
+        )
+        .unwrap();
+        assert_eq!(sidecar_title(&t), Some(("no stamp".to_string(), 0)));
+
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Discovery over a fake QoderWork store: candidates come back tagged `QoderWork`, scoped
