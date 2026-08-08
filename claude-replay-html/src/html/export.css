@@ -477,7 +477,20 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .aimg {
   display: block; flex-basis: 100%; max-width: min(520px, 100%); height: auto;
   margin-top: 6px; border: 1px solid var(--border); border-radius: 6px;
+  cursor: zoom-in;
 }
+/* #139 full-size view. Above every other layer (the topbar is 30, menus 40, the task
+   panel 60) because it is modal: while it is open nothing behind it is clickable. */
+.lightbox {
+  position: fixed; inset: 0; z-index: 100; cursor: zoom-out;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 24px; background: rgba(0, 0, 0, 0.82);
+}
+.lightbox img {
+  max-width: 100%; max-height: calc(100% - 28px); object-fit: contain;
+  cursor: default; border-radius: 4px; background: #fff;
+}
+.lb-cap { font: 11.5px var(--mono); color: #e8e4dc; }
 .ts { flex: none; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
 .alink { flex: none; color: var(--faint); opacity: 0.45; font: 12px var(--mono); }
 .uturn:not(.fold) > .alink { margin-top: 3px; }

@@ -618,6 +618,10 @@
         if (imgsrc != null) {
             var img = el("img", "aimg");
             img.src = imgsrc; img.alt = h.att_name || "image";
+            // #139: inline images are capped at 520px, which for a screenshot means
+            // unreadable. Click opens it at full size — the bytes are already here, so
+            // this replaces "download it, then open Preview".
+            img.title = "Click to view full size";
             ac.appendChild(img);
         }
         return ac;
@@ -765,6 +769,29 @@
   // A session id is a uuid; its first group identifies it among a machine's sessions
   // without eating the bar. The full value stays in the title and on the clipboard.
   function snipId(s) { return s.length > 12 ? s.slice(0, 8) : s; }
+
+  // #139: show an image at full size over the page. Built on demand and torn down on
+  // close, so a session with hundreds of screenshots carries no standing DOM for them.
+  function lightbox(src, alt) {
+    var box = el("div", "lightbox");
+    var img = el("img");
+    img.src = src;
+    img.alt = alt || "";
+    box.appendChild(img);
+    var cap = el("div", "lb-cap", alt || "");
+    box.appendChild(cap);
+    function close() {
+      box.remove();
+      document.removeEventListener("keydown", onKey, true);
+    }
+    function onKey(ev) {
+      if (ev.key === "Escape") { ev.stopPropagation(); close(); }
+    }
+    // Anywhere outside the image closes; the image itself is a safe place to click.
+    box.addEventListener("click", function (ev) { if (ev.target !== img) close(); });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(box);
+  }
 
   function renderMeta(m) {
     if (m.title) {
@@ -2054,6 +2081,10 @@
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);
+
+    // #139: an inline image opens full size.
+    var aimg = e.target.closest(".aimg");
+    if (aimg) { lightbox(aimg.src, aimg.alt); return; }
 
 
     var sid = e.target.closest("#sid");
