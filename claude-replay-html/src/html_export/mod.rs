@@ -35,7 +35,7 @@ mod record_store;
 mod serve;
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::{
-    existing_server, handoff_url, serve, service_routes, spawn_listener, start_server,
+    existing_server, handoff_url, query_get, serve, service_routes, spawn_listener, start_server,
     HttpResponse, LiveServer, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
 };
 

@@ -249,6 +249,12 @@
   function frameSrc(id){
     return "/session?id="+encodeURIComponent(id)+"&chrome=embed&theme="+(state.dark?"dark":"light");
   }
+  // A sub-agent nav inside the view uses a relative ?session= href that drops the theme
+  // param (#124). The view is same-origin, so stamp the monitor's theme on every load —
+  // the same data-theme attribute the theme param sets.
+  view.addEventListener("load",function(){
+    try{view.contentDocument.documentElement.setAttribute("data-theme",state.dark?"dark":"light");}catch(e){}
+  });
   function select(id,noFocus){
     state.sel=id;
     empty.style.display="none";view.style.display="";
@@ -298,7 +304,8 @@
     if(dark)root.setAttribute("data-theme","dark");else root.removeAttribute("data-theme");
     document.getElementById("themebtn").textContent=dark?"◐ Light":"◐ Dark";
     try{localStorage.setItem(THEME_KEY,dark?"dark":"light");}catch(e){}
-    if(reframe&&state.sel){view.src=frameSrc(state.sel);}
+    // Re-theme the live iframe in place (covers a child that navigated past the initial src).
+    try{view.contentDocument.documentElement.setAttribute("data-theme",dark?"dark":"light");}catch(e){}
   }
   document.getElementById("themebtn").addEventListener("click",function(){applyTheme(!state.dark,true)});
 

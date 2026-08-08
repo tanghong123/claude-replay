@@ -8,9 +8,9 @@
 pub mod html_export;
 
 pub use html_export::{
-    display_title, dump_all_html, dump_html, existing_server, handoff_url, serve, service_routes,
-    spawn_listener, start_server, HttpResponse, LiveServer, PageChrome, RouteHandler,
-    ServiceConfig, SessionService, StaleEpoch,
+    display_title, dump_all_html, dump_html, existing_server, handoff_url, query_get, serve,
+    service_routes, spawn_listener, start_server, HttpResponse, LiveServer, PageChrome,
+    RouteHandler, ServiceConfig, SessionService, StaleEpoch,
 };
 
 // Aliases so the moved module keeps referring to `crate::model`, `crate::cache`, …

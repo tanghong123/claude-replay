@@ -857,7 +857,7 @@ pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
 }
 
 /// Parse a `k=v&…` query string value for `key` (already past the `?`).
-pub(super) fn query_get<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+pub fn query_get<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
         (k == key).then_some(v)

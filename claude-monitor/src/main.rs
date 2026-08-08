@@ -11,7 +11,7 @@ mod index;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;
-use claude_replay_html::{service_routes, spawn_listener, HttpResponse, ServiceConfig};
+use claude_replay_html::{query_get, service_routes, spawn_listener, HttpResponse, ServiceConfig};
 use claude_replay_present::cache::Presentation;
 use std::sync::Arc;
 
@@ -87,6 +87,18 @@ fn main() -> Result<()> {
                     HttpResponse::json(idx.sessions_json(|path| {
                         service.register_root(path);
                     }))
+                }
+                // The monitor ONLY ever serves the view EMBEDDED. The view navigates
+                // sub-agents with a relative `?session=<child>` href that drops the
+                // `chrome=embed` param, so default it back here — a drilled-in child keeps
+                // embed chrome instead of flashing the full claude-replay brand (#124).
+                "session" if query_get(query, "chrome").is_none() => {
+                    let q = if query.is_empty() {
+                        "chrome=embed".to_string()
+                    } else {
+                        format!("{query}&chrome=embed")
+                    };
+                    service_routes(Some(&service), &scratch, name, &q)
                 }
                 // Everything else is the session service's own wire surface —
                 // /session, /pull, /records, /__reveal, static assets (§6.3).
