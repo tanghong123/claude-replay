@@ -35,6 +35,23 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
 /// in (#111).
 const MIN_TRANSCRIPT_BYTES: u64 = 4096;
 
+/// The store slug for `$HOME` — e.g. `/Users/hong` → `-Users-hong`.
+///
+/// A QoderWork session filed under it did NOT run in a workspace: QoderWork's own workspaces
+/// live at `~/.qoderwork/workspace/<id>`, so `$HOME` is where everything *else* lands. On this
+/// machine that is 31 of 68 visible sessions, and every one is scheduled automation — a
+/// memory-reflection worker, three stereotyped prompts, four of them byte-identical repeats
+/// (design/qoderwork-rail-noise.md). They are an order of magnitude smaller than real sessions
+/// on every axis: median 6 user turns against 70, 84 KB against 910 KB.
+///
+/// Excluded on WHERE they ran, never on what they said: a prompt-text rule would work today
+/// and break silently the moment the user renames their own tooling, and it would bake one
+/// person's automation into a general viewer. The slug comparison needs no file read.
+fn home_slug() -> Option<String> {
+    let home = claude_replay_engine::seam::home_dir()?;
+    Some(home.to_string_lossy().replace('/', "-"))
+}
+
 /// Whether a project-dir slug is a MOUNTED-account/session artifact — `-accounts-*-mnt` or
 /// `-sessions-*-mnt`. QoderWork writes these as SYMLINKS into the real workspace dirs, so
 /// walking them double-counts sessions under a junk slug (owner decision #111: hide them).
@@ -59,8 +76,14 @@ pub(crate) fn store_transcripts() -> Vec<PathBuf> {
     let Ok(projects) = std::fs::read_dir(&root) else {
         return out;
     };
+    let home = home_slug();
     for proj in projects.flatten() {
-        if is_mount_slug(&proj.file_name().to_string_lossy()) {
+        let slug = proj.file_name().to_string_lossy().to_string();
+        if is_mount_slug(&slug) {
+            continue;
+        }
+        // Sessions that ran outside any workspace — automation, not conversations (#151).
+        if home.as_deref() == Some(slug.as_str()) {
             continue;
         }
         let dir = proj.path();
