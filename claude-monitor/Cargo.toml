@@ -15,7 +15,7 @@ serde_json = "1"
 
 [features]
 # Surface QoderWork session titles from its SQLite store (#119, reader from #106) so the rail
-# shows "初筛候选人简历" instead of a bare UUID. Opt-in, NOT default: it pulls in bundled SQLite,
+# shows "重构解析器模块" instead of a bare UUID. Opt-in, NOT default: it pulls in bundled SQLite,
 # and QoderWork's DB path is macOS-only — the release enables it only on the apple-darwin targets
 # (a Linux binary would compile SQLite to reach a file that cannot exist). Local macOS check:
 # `cargo run -p claude-monitor --features qoderwork-titles`.

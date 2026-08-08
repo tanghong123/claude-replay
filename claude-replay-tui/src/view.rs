@@ -86,7 +86,7 @@ fn assembled_lines_of(
 }
 
 /// Footer measurement is in terminal COLUMNS, not `char`s. Session titles are agent-supplied
-/// (#106) and routinely CJK — "初筛候选人简历" is 7 chars but 14 columns, so counting chars
+/// (#106) and routinely CJK — "重构解析器模块" is 7 chars but 14 columns, so counting chars
 /// would let the footer overrun its line and wrap.
 fn cols(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
@@ -4111,14 +4111,14 @@ mod tests {
         assert!(title_budget(30) < title_budget(200));
     }
 
-    /// QoderWork titles are Chinese ("初筛候选人简历"): 7 chars, 14 COLUMNS. Measuring the
+    /// QoderWork titles are Chinese ("重构解析器模块"): 7 chars, 14 COLUMNS. Measuring the
     /// footer in `char`s would under-count by half and overrun the line into a wrap.
     #[test]
     fn a_cjk_title_is_measured_in_columns_not_chars() {
         use unicode_width::UnicodeWidthStr;
-        assert_eq!(cols("初筛候选人简历"), 14);
+        assert_eq!(cols("重构解析器模块"), 14);
         assert_eq!(
-            UnicodeWidthStr::width(clip_cols("初筛候选人简历", 7).as_str()),
+            UnicodeWidthStr::width(clip_cols("重构解析器模块", 7).as_str()),
             7
         );
 
@@ -4127,11 +4127,11 @@ mod tests {
         for w in [40u16, 60, 120] {
             let mut v = View::new(
                 vec![Block::UserText("x".into())],
-                "初筛候选人简历初筛候选人简历初筛候选人简历",
+                "重构解析器模块重构解析器模块重构解析器模块",
                 false,
                 FoldPolicy::default(),
             );
-            v.set_session_name("初筛候选人简历初筛候选人简历初筛候选人简历");
+            v.set_session_name("重构解析器模块重构解析器模块重构解析器模块");
             let buf = draw(&mut v, w, 10);
             let f = row(&buf, 9);
             assert!(

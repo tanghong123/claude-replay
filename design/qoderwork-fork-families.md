@@ -82,7 +82,7 @@ several families plus unrelated singletons.
 
 ## Secondary finding, relevant to #119
 
-Every one of the 31 sidecars has a **non-empty title** (`安装MCP服务器`, `孵化项目定义OKR`, …).
+Every one of the 31 sidecars has a **non-empty title** (`安装MCP服务器`, `整理项目文档目录`, …).
 #119 currently gets QoderWork titles from `sub_chats.name` in the SQLite store, which costs the
 `qoderwork-titles` feature (bundled rusqlite) and is macOS-only via `db_path()`. The sidecar is
 a plain JSON file next to the transcript: no feature flag, no database, no platform assumption,

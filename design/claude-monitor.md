@@ -163,8 +163,8 @@ outside the transcript entirely, in its own store. So the derivation is a **per-
 lives in SQLite at `~/Library/Application Support/QoderWork/data/agents.db`, table `sub_chats`,
 column `name`, joined to a transcript by `sub_chats.session_id = <file stem>` (with a
 `chats.name` fallback via the `…workspace-<chat_id>` slug). Measured on this machine: **30/30**
-`sub_chats` rows carry a non-empty, human-chosen name — Chinese task titles (`初筛候选人简历`,
-`生成魏世龙面试报告`) and English skill names (`Read skill documentation`) — every one joining
+`sub_chats` rows carry a non-empty, human-chosen name — Chinese task titles (`重构解析器模块`,
+`整理接口迁移记录`) and English skill names (`Read skill documentation`) — every one joining
 cleanly to a real transcript stem. The reader already ships behind the **`qoderwork-titles`**
 feature (#106): `QoderWorkAdapter::session_card` → `db_title`, reached the same way every other
 frontend gets a title (`display_title` → `Transcript::card`). The only gap #119 found was that

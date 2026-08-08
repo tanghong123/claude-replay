@@ -19,9 +19,9 @@ Real `TodoWrite` input (QoderWork, verbatim):
 
 ```json
 {"name":"TodoWrite","input":{"todos":[
-  {"description":"读取简历页面内容","status":"in_progress"},
-  {"description":"读取JD页面内容","status":"pending"},
-  {"description":"对比分析并输出初筛结论","status":"pending"}]}}
+  {"description":"读取配置文件内容","status":"in_progress"},
+  {"description":"读取模板文件内容","status":"pending"},
+  {"description":"对比分析并输出结论报告","status":"pending"}]}}
 ```
 
 ## Why it matters (the panel is dead today)
