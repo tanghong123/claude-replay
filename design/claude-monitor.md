@@ -159,6 +159,21 @@ the session evolves**:
 Codex carries `session_meta`/`turn_context` instead and no title at all; QoderWork may hold one
 outside the transcript entirely, in its own store. So the derivation is a **per-agent seam**.
 
+**#119 — QoderWork's title, confirmed empirically.** The transcript has none; the DB does. It
+lives in SQLite at `~/Library/Application Support/QoderWork/data/agents.db`, table `sub_chats`,
+column `name`, joined to a transcript by `sub_chats.session_id = <file stem>` (with a
+`chats.name` fallback via the `…workspace-<chat_id>` slug). Measured on this machine: **30/30**
+`sub_chats` rows carry a non-empty, human-chosen name — Chinese task titles (`初筛候选人简历`,
+`生成魏世龙面试报告`) and English skill names (`Read skill documentation`) — every one joining
+cleanly to a real transcript stem. The reader already ships behind the **`qoderwork-titles`**
+feature (#106): `QoderWorkAdapter::session_card` → `db_title`, reached the same way every other
+frontend gets a title (`display_title` → `Transcript::card`). The only gap #119 found was that
+nothing enabled the feature, so the monitor rail showed bare UUIDs. Resolution: the monitor turns
+`qoderwork-titles` **on**, but only on the macOS release targets — `db_path` is a macOS-only path
+(QoderWork is a macOS Electron app), so a Linux binary would compile bundled SQLite to reach a
+file that cannot exist. Caveat carried forward: the rail caches the title on the transcript's
+mtime, so a DB-only rename of an *idle* session does not refresh until the transcript next moves.
+
 ### 4.1 The title is derived OUTSIDE the fold, on its own cadence
 
 v3 put the title in the meta record as a gauge. That was wrong, and the reason is sharper than
