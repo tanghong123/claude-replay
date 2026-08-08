@@ -29,6 +29,7 @@
   #ver{font:400 10px var(--mono);color:var(--faint);align-self:flex-end;margin:0 0 2px -4px}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
+  .picon{font:13px var(--sans);line-height:1;padding:2px 7px}
   #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:5px}
   #scan i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tool);animation:mon-pulse 2.4s infinite}
   #searchbox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:0 10px;background:var(--panel)}
@@ -74,6 +75,8 @@
   .counters{min-width:0;font:10.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .counters.unvisited{opacity:.65}
   .age{flex:none;font:10.5px var(--mono);color:var(--faint)}
+  .showmore{margin:2px 10px 4px 28px;font:10.5px var(--sans);color:var(--link);cursor:pointer;user-select:none}
+  .showmore:hover{text-decoration:underline}
   @keyframes mon-pulse{0%{box-shadow:0 0 0 0 rgba(46,125,85,.4)}70%{box-shadow:0 0 0 5px rgba(46,125,85,0)}100%{box-shadow:0 0 0 0 rgba(46,125,85,0)}}
   #view{flex:1;min-width:0;border:none;background:var(--bg)}
   #empty{flex:1;display:flex;align-items:center;justify-content:center;font:13px var(--sans);color:var(--faint)}
@@ -92,7 +95,8 @@
   <div id="head">
     <div id="titlebar">
       <b>Monitor</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span>
-      <button class="pill" id="collapseall" title="Fold every group to just its project / agent">Collapse</button>
+      <button class="pill picon" id="collapseall" title="Collapse all groups">⊖</button>
+      <button class="pill picon" id="expandall" title="Expand all groups">⊕</button>
       <span style="flex:1"></span>
       <button class="pill" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐ Dark</button>
       <span id="scan" title="the monitor re-scans every couple of seconds"><i></i>live</span>
@@ -119,7 +123,7 @@
   var view=document.getElementById("view");
   var empty=document.getElementById("empty");
   var search=document.getElementById("search");
-  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},dark:false};
+  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},dark:false};
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
@@ -177,19 +181,29 @@
     if(!r.visited)t+="  ·  counters appear after first open (lazy fold)";
     return t;
   }
+  function capOf(g){return g.kind==="agent"?7:3;}
   function render(){
     var scroll=list.scrollTop;
     var html="";
     for(var g of state.groups){
       var gkey=g.kind+":"+g.label+":"+g.secondary;
       var collapsed=!!state.collapsed[gkey];
+      var expanded=!!state.expanded[gkey];
       var multi=g.rows.some(function(r){return r.agent!==g.rows[0].agent})&&g.kind!=="agent";
-      var rowsHtml="",any=false;
-      for(var r of g.rows){
+      var vis=g.rows.filter(function(r){
         var okState=state.filter==="all"||r.state===state.filter;
         var okText=!state.q||(r.name+" "+g.label+" "+r.agent).toLowerCase().indexOf(state.q)>=0;
-        if(!okState||!okText)continue;
-        any=true;
+        return okState&&okText;
+      });
+      var cap=capOf(g), hidden=0;
+      if(!expanded&&vis.length>cap){
+        var active=vis.filter(function(r){return r.state==="growing";});
+        var keep=Math.max(cap,active.length);
+        hidden=vis.length-keep;
+        vis=vis.slice(0,keep);
+      }
+      var rowsHtml="",any=vis.length>0;
+      for(var r of vis){
         if(collapsed)continue;
         var cls="row"+(r.state==="growing"?" grow":"")+(state.sel===r.id?" sel":"");
         var dot="dot "+r.state+(r.conf==="unconfirmed"?" unconfirmed":"");
@@ -203,6 +217,9 @@
           +'<span class="age">'+esc(r.activity)+'</span></div></div>';
       }
       if(!any&&!collapsed)continue;
+      if(!collapsed&&(hidden>0||expanded)){
+        rowsHtml+="<div class=\"showmore\" data-more=\""+esc(gkey)+"\">"+(expanded?"show less":"show "+hidden+" more")+"</div>";
+      }
       html+='<div class="group'+(collapsed?" gcol":"")+'" data-g="'+esc(gkey)+'">'
         +'<div class="ghead"><span class="chev">▼</span>'
         +'<span class="gdot '+(g.growing?'growing':g.idle?'idle':'finished')+'" title="'+esc(gStatusTip(g))+'"></span>'
@@ -231,16 +248,19 @@
     if(!noFocus){var el=list.querySelector('[data-id="'+CSS.escape(id)+'"]');if(el)el.focus({preventScroll:true});}
   }
   list.addEventListener("click",function(e){
+    var sm=e.target.closest(".showmore");
+    if(sm){var k=sm.dataset.more;state.expanded[k]=!state.expanded[k];render();return;}
     var gh=e.target.closest(".ghead");
     if(gh){var k=gh.parentElement.dataset.g;state.collapsed[k]=!state.collapsed[k];render();return;}
     var row=e.target.closest(".row");
     if(row)select(row.dataset.id);
   });
   document.getElementById("collapseall").addEventListener("click",function(){
-    var keys=state.groups.map(function(g){return g.kind+":"+g.label+":"+g.secondary});
-    var anyOpen=keys.some(function(k){return !state.collapsed[k]});
-    keys.forEach(function(k){state.collapsed[k]=anyOpen;});
-    this.textContent=anyOpen?"Expand":"Collapse";
+    state.groups.forEach(function(g){state.collapsed[g.kind+":"+g.label+":"+g.secondary]=true;});
+    render();
+  });
+  document.getElementById("expandall").addEventListener("click",function(){
+    state.collapsed={};
     render();
   });
   document.querySelectorAll("#filters button").forEach(function(b){
