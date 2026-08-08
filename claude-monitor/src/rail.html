@@ -341,16 +341,61 @@
   function frameSrc(id){
     return "/session?id="+encodeURIComponent(id)+"&chrome=embed&theme="+(state.dark?"dark":"light");
   }
+  // #136: where you were in each session, remembered across switches. IN MEMORY ONLY —
+  // this is the live tab's state, not a preference, so a reload starts clean.
+  var viewport={};   // session id → scrollY
+  var chase=null;    // {id, y, until} while a restore is being pursued
+  // Key by the session PARAM, not the iframe URL: the URL also carries the theme (so a
+  // theme toggle would orphan the entry) and a sub-agent drill-down keeps `dataset.sid`
+  // while showing a different session — the param is the identity that matters.
+  function viewKey(){
+    try{
+      var q=new URLSearchParams(view.contentWindow.location.search);
+      return q.get("session")||q.get("id")||view.dataset.sid||"";
+    }catch(e){return view.dataset.sid||"";}
+  }
+  function rememberViewport(){
+    var k=viewKey();
+    if(!k)return;
+    try{viewport[k]=view.contentWindow.scrollY;}catch(e){}
+  }
+  // Two things move the target after load and BOTH must be outlasted: the document grows
+  // as blocks stream in (an early scrollTo clamps against a page that is not tall enough
+  // yet), and the viewer then pins itself to the bottom to follow live. So re-assert until
+  // the position HOLDS — landing on it once and stopping just hands the page back.
+  function chaseViewport(){
+    if(!chase)return;
+    if(chase.id!==view.dataset.sid||Date.now()>chase.until){chase=null;return;}
+    try{
+      var w=view.contentWindow;
+      if(Math.abs(w.scrollY-chase.y)<=2){
+        if(++chase.held>=4){chase=null;return;}   // ~240ms undisturbed: it stuck
+      }else{
+        chase.held=0;
+        w.scrollTo(0,chase.y);
+      }
+    }catch(e){chase=null;return;}
+    setTimeout(chaseViewport,60);
+  }
   // A sub-agent nav inside the view uses a relative ?session= href that drops the theme
   // param (#124). The view is same-origin, so stamp the monitor's theme on every load —
   // the same data-theme attribute the theme param sets.
   view.addEventListener("load",function(){
     try{view.contentDocument.documentElement.setAttribute("data-theme",state.dark?"dark":"light");}catch(e){}
+    // The user taking over scrolling ends the pursuit — never fight a live hand.
+    try{view.contentWindow.addEventListener("wheel",function(){chase=null;},{passive:true});}catch(e){}
+    chaseViewport();
   });
   function select(id,noFocus){
     state.sel=id;
     empty.style.display="none";view.style.display="";
-    if(view.dataset.sid!==id){view.dataset.sid=id;view.src=frameSrc(id);}
+    if(view.dataset.sid!==id){
+      rememberViewport();                       // #136: bank where we were leaving from
+      view.dataset.sid=id;
+      var y=viewport[id]||0;
+      chase=y>0?{id:id,y:y,held:0,until:Date.now()+4000}:null;
+      view.src=frameSrc(id);
+    }
     var g=groupOf(id);
     document.getElementById("stripproj").textContent=g?g.label:"";
     render();
