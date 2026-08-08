@@ -1243,6 +1243,46 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+    /// The session START (#129) is found even when the transcript opens with a wall of
+    /// housekeeping — the real shape that motivated the escalating windows: 22
+    /// `file-history-snapshot` lines of ~25 KiB each, first real line 424 KiB in. Covers
+    /// both hazards: the 64 KiB pass must not return a snapshot's timestamp, and a real
+    /// line STRADDLING a window boundary must not be read from its truncated half.
+    #[test]
+    fn session_start_survives_a_wall_of_housekeeping() {
+        let d = std::env::temp_dir().join(format!("cm-start-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+
+        // A real line whose first byte lands just before 64 KiB, so it spans the boundary.
+        let straddle = d.join("straddle.jsonl");
+        let pad = 64 * 1024 - 200;
+        let filler = format!(
+            "{{\"type\":\"file-history-snapshot\",\"timestamp\":\"2026-08-01T00:00:00Z\",\"pad\":\"{}\"}}\n",
+            "x".repeat(pad)
+        );
+        std::fs::write(
+            &straddle,
+            format!(
+                "{filler}{{\"type\":\"user\",\"timestamp\":\"2026-08-02T10:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"go\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            first_event_ts(&straddle),
+            metrics::parse_ts("2026-08-02T10:00:00Z").map(|s| s as u64),
+            "a real line spanning the 64 KiB boundary resolves via the wide window, and \
+             the snapshot's own timestamp is never mistaken for the start"
+        );
+
+        // Beyond even the wide window there is nothing to find — and saying so is correct
+        // (the rail then shows no span rather than a wrong one).
+        let far = d.join("far.jsonl");
+        std::fs::write(&far, filler.repeat(45)).unwrap();
+        assert_eq!(first_event_ts(&far), None, "housekeeping only: no start");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A `file-history-snapshot` (git housekeeping Claude writes long after the last turn)
     /// must NOT count as activity — the kwire bug: last real turn 00:55, a snapshot at
     /// 21:55, and the rail read 11 h ago instead of the true ~32 h.
