@@ -29,8 +29,8 @@
   #ver{font:400 10px var(--mono);color:var(--faint);align-self:flex-end;margin:0 0 2px -4px}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
-  #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:4px}
-  #scan i{width:6px;height:6px;border-radius:50%;background:var(--tool);display:inline-block}
+  #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:5px}
+  #scan i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tool);animation:mon-pulse 2.4s infinite}
   #searchbox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:0 10px;background:var(--panel)}
   #searchbox span{color:var(--faint);font-size:12px}
   #search{flex:1;min-width:0;border:none;outline:none;background:transparent;font:12.5px var(--sans);color:var(--fg);height:32px}
@@ -75,7 +75,8 @@
   #empty{flex:1;display:flex;align-items:center;justify-content:center;font:13px var(--sans);color:var(--faint)}
   /* Rail hidden: a slim strip carries the show-again control (the view's chrome belongs to
      the embedded page — never overlay it). */
-  #strip{display:none;width:26px;flex:none;border-right:1px solid var(--border);background:var(--bg);align-items:flex-start;justify-content:center;padding-top:9px}
+  #strip{display:none;width:26px;flex:none;border-right:1px solid var(--border);background:var(--bg);flex-direction:column;align-items:center;padding-top:9px;gap:10px}
+  #stripproj{writing-mode:vertical-rl;font:600 11px var(--sans);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:calc(100vh - 60px);cursor:pointer}
   body.railless aside{display:none}
   body.railless #strip{display:flex}
   .toggle{font:13px var(--mono);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer}
@@ -90,7 +91,7 @@
       <button class="pill" id="collapseall" title="Fold every group to just its project / agent">Collapse</button>
       <span style="flex:1"></span>
       <button class="pill" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐ Dark</button>
-      <span id="scan"><i></i><span id="scantext">⟳ –</span></span>
+      <span id="scan" title="the monitor re-scans every couple of seconds"><i></i>live</span>
       <button class="toggle" id="hiderail" title="Hide the session list">⇤</button>
     </div>
     <div id="searchbox"><span>⌕</span><input id="search" placeholder="Filter sessions  ( / )" autocomplete="off"></div>
@@ -102,7 +103,7 @@
   </div>
   <div id="list"></div>
 </aside>
-<div id="strip"><button class="toggle" id="showrail" title="Show the session list">⇥</button></div>
+<div id="strip"><button class="toggle" id="showrail" title="Show the session list">⇥</button><span id="stripproj" title="current project — click to show the list"></span></div>
 <div id="empty">select a session</div>
 <iframe id="view" style="display:none"></iframe>
 <script>
@@ -114,7 +115,7 @@
   var view=document.getElementById("view");
   var empty=document.getElementById("empty");
   var search=document.getElementById("search");
-  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},dark:false,lastData:0};
+  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},dark:false};
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
@@ -122,7 +123,7 @@
   // ── data ─────────────────────────────────────────────────────────────────
   function poll(){
     fetch("/api/sessions",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
-      state.groups=d.groups||[];state.lastData=Date.now();render();
+      state.groups=d.groups||[];render();
       if(!state.sel){var first=firstRow("growing")||firstRow(null);if(first){select(first.id,true);}}
     }).catch(function(){});
   }
@@ -132,6 +133,10 @@
   }
   function rowById(id){
     for(var g of state.groups)for(var r of g.rows)if(r.id===id)return r;
+    return null;
+  }
+  function groupOf(id){
+    for(var g of state.groups)for(var r of g.rows)if(r.id===id)return g;
     return null;
   }
 
@@ -206,6 +211,8 @@
     state.sel=id;
     empty.style.display="none";view.style.display="";
     if(view.dataset.sid!==id){view.dataset.sid=id;view.src=frameSrc(id);}
+    var g=groupOf(id);
+    document.getElementById("stripproj").textContent=g?g.label:"";
     render();
     if(!noFocus){var el=list.querySelector('[data-id="'+CSS.escape(id)+'"]');if(el)el.focus({preventScroll:true});}
   }
@@ -253,12 +260,7 @@
   // ── rail hide (the strip carries the way back — never an overlay on the frame) ──
   document.getElementById("hiderail").addEventListener("click",function(){document.body.classList.add("railless")});
   document.getElementById("showrail").addEventListener("click",function(){document.body.classList.remove("railless")});
-
-  // ── scan chip: seconds since the data last changed hands ─────────────────
-  setInterval(function(){
-    var s=state.lastData?Math.max(0,Math.round((Date.now()-state.lastData)/1000)):null;
-    document.getElementById("scantext").textContent="⟳ "+(s==null?"–":s+"s");
-  },1000);
+  document.getElementById("stripproj").addEventListener("click",function(){document.body.classList.remove("railless")});
 
   poll();
   setInterval(poll,2500);
