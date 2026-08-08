@@ -82,6 +82,16 @@
   .age{flex:none;font:10.5px var(--mono);color:var(--faint)}
   .showmore{margin:2px 10px 4px 28px;font:10.5px var(--sans);color:var(--link);cursor:pointer;user-select:none}
   .showmore:hover{text-decoration:underline}
+  /* #113 hide/restore: a small control that appears on hover; a hidden item (revealed by the
+     "Hidden (N)" toggle) renders greyed with its restore control always visible. */
+  .rowx,.ghx{flex:none;font:13px/1 var(--sans);color:var(--faint);border:none;background:transparent;cursor:pointer;padding:1px 5px;border-radius:5px;opacity:0}
+  .row:hover .rowx,.ghead:hover .ghx{opacity:.65}
+  .rowx:hover,.ghx:hover{opacity:1;background:var(--hover);color:var(--fg)}
+  .row.hidden{opacity:.5}
+  .group.ghidden>.ghead{opacity:.55}
+  .row.hidden .rowx,.group.ghidden>.ghead .ghx{opacity:.7}
+  #hiddentoggle{display:none;margin-left:auto;font:11px var(--sans);padding:4px 12px;border:1px solid var(--border);border-radius:99px;background:transparent;color:var(--muted);cursor:pointer}
+  #hiddentoggle.on{border-color:var(--accent);background:var(--hover);color:var(--fg)}
   @keyframes mon-pulse{0%{box-shadow:0 0 0 0 rgba(46,125,85,.4)}70%{box-shadow:0 0 0 5px rgba(46,125,85,0)}100%{box-shadow:0 0 0 0 rgba(46,125,85,0)}}
   #view{flex:1;min-width:0;border:none;background:var(--bg)}
   #empty{flex:1;display:flex;align-items:center;justify-content:center;font:13px var(--sans);color:var(--faint)}
@@ -112,6 +122,7 @@
       <button data-f="all" class="on">All</button>
       <button data-f="growing">Active</button>
       <button data-f="idle">Idle</button>
+      <button id="hiddentoggle" title="Show sessions, projects and agents you've hidden">Hidden</button>
     </div>
   </div>
   <div id="list"></div>
@@ -128,7 +139,7 @@
   var view=document.getElementById("view");
   var empty=document.getElementById("empty");
   var search=document.getElementById("search");
-  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},dark:false};
+  var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},dark:false,showHidden:false,ignoredCount:0};
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
@@ -136,12 +147,12 @@
   // ── data ─────────────────────────────────────────────────────────────────
   function poll(){
     fetch("/api/sessions",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
-      state.groups=d.groups||[];render();
+      state.groups=d.groups||[];state.ignoredCount=d.ignoredCount||0;render();
       if(!state.sel){var first=firstRow("growing")||firstRow(null);if(first){select(first.id,true);}}
     }).catch(function(){});
   }
   function firstRow(st){
-    for(var g of state.groups)for(var r of g.rows)if(!st||r.state===st)return r;
+    for(var g of state.groups){if(g.hidden)continue;for(var r of g.rows)if(!r.hidden&&(!st||r.state===st))return r;}
     return null;
   }
   function rowById(id){
@@ -197,14 +208,16 @@
     var scroll=list.scrollTop;
     var html="";
     for(var g of state.groups){
+      if(g.hidden&&!state.showHidden)continue;  // #113: a hidden group vanishes until revealed
       var gkey=g.kind+":"+g.label+":"+g.secondary;
       var collapsed=!!state.collapsed[gkey];
       var expanded=!!state.expanded[gkey];
       var multi=g.rows.some(function(r){return r.agent!==g.rows[0].agent})&&g.kind!=="agent";
       var vis=g.rows.filter(function(r){
+        var okHidden=state.showHidden||!r.hidden;
         var okState=state.filter==="all"||r.state===state.filter;
         var okText=!state.q||(r.name+" "+g.label+" "+r.agent).toLowerCase().indexOf(state.q)>=0;
-        return okState&&okText;
+        return okHidden&&okState&&okText;
       });
       var cap=capOf(g), hidden=0;
       if(!expanded&&vis.length>cap){
@@ -216,14 +229,21 @@
       var rowsHtml="",any=vis.length>0;
       for(var r of vis){
         if(collapsed)continue;
-        var cls="row"+(r.state==="growing"?" grow":"")+(state.sel===r.id?" sel":"");
+        var cls="row"+(r.state==="growing"?" grow":"")+(state.sel===r.id?" sel":"")+(r.hidden?" hidden":"");
         var dot="dot "+r.state+(r.conf==="unconfirmed"?" unconfirmed":"");
+        // #113: a row hidden by its OWN key gets a restore; a visible row gets a hide. A row
+        // hidden because its whole GROUP is hidden shows nothing — the group header owns it.
+        var rowx=g.hidden?""
+          :(r.hidden
+            ?'<button class="rowx" data-show="'+esc(r.ignoreKey)+'" title="Restore this session">↩</button>'
+            :'<button class="rowx" data-hide="'+esc(r.ignoreKey)+'" title="Hide this session">×</button>');
         rowsHtml+='<div class="'+cls+'" tabindex="0" data-id="'+esc(r.id)+'" title="'+esc(rowTitle(r))+'">'
           +'<div class="r1"><span class="'+dot+'"></span>'
           +agentBadge(r)
           +'<span class="rname">'+esc(r.name)+'</span>'
           +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
           +(r.target?'<span class="term" title="'+esc(termTip(r))+'">&gt;_ '+esc(r.term)+'</span>':"")
+          +rowx
           +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r))+'</span>'
           +'<span class="age">'+esc(r.activity)+'</span></div></div>';
       }
@@ -231,18 +251,28 @@
       if(!collapsed&&(hidden>0||expanded)){
         rowsHtml+="<div class=\"showmore\" data-more=\""+esc(gkey)+"\">"+(expanded?"show less":"show "+hidden+" more")+"</div>";
       }
-      html+='<div class="group'+(collapsed?" gcol":"")+'" data-g="'+esc(gkey)+'">'
+      var ghx=g.hidden
+        ?'<button class="ghx" data-show="'+esc(g.ignoreKey)+'" title="Restore this '+(g.kind==="agent"?"agent":"project")+'">↩</button>'
+        :'<button class="ghx" data-hide="'+esc(g.ignoreKey)+'" title="Hide this '+(g.kind==="agent"?"agent":"project")+'">×</button>';
+      html+='<div class="group'+(collapsed?" gcol":"")+(g.hidden?" ghidden":"")+'" data-g="'+esc(gkey)+'">'
         +'<div class="ghead"><span class="chev">▼</span>'
         +'<span class="gdot '+(g.growing?'growing':g.idle?'idle':'finished')+'" title="'+esc(gStatusTip(g))+'"></span>'
         +'<div class="glabels"><span class="glabel">'+esc(g.label)+'</span>'
         +'<span class="gsec">'+esc(g.secondary)+'</span></div>'
         +(g.kind==="agent"?'<span class="gkind">desktop</span>':"")
         +(g.hasTerm?'<span class="gterm" title="a live agent in this project is in a controllable terminal">&gt;_</span>':"")
-        +'<span class="gmeta" title="'+esc(gStatusTip(g))+'">'+esc(gMeta(g))+'</span></div>'
+        +'<span class="gmeta" title="'+esc(gStatusTip(g))+'">'+esc(gMeta(g))+'</span>'
+        +ghx+'</div>'
         +rowsHtml+'</div>';
     }
     list.innerHTML=html;
     list.scrollTop=scroll;
+    // #113: the reveal toggle only appears once something is hidden.
+    var ht=document.getElementById("hiddentoggle");
+    if(state.ignoredCount>0){
+      ht.style.display="inline-block";ht.textContent="Hidden ("+state.ignoredCount+")";
+      ht.classList.toggle("on",state.showHidden);
+    }else{ht.style.display="none";state.showHidden=false;ht.classList.remove("on");}
   }
 
   // ── selection / navigation ───────────────────────────────────────────────
@@ -264,7 +294,15 @@
     render();
     if(!noFocus){var el=list.querySelector('[data-id="'+CSS.escape(id)+'"]');if(el)el.focus({preventScroll:true});}
   }
+  // #113: hide/restore. The server persists the key and re-emits everything with
+  // hidden flags; the click only toggles the key and re-polls.
+  function ignore(key,add){
+    fetch("/api/ignore?"+(add?"add":"remove")+"="+encodeURIComponent(key),{cache:"no-store"})
+      .then(function(){poll();}).catch(function(){});
+  }
   list.addEventListener("click",function(e){
+    var hx=e.target.closest("[data-hide],[data-show]");
+    if(hx){e.stopPropagation();var hk=hx.dataset.hide||hx.dataset.show;ignore(hk,!!hx.dataset.hide);return;}
     var sm=e.target.closest(".showmore");
     if(sm){var k=sm.dataset.more;state.expanded[k]=!state.expanded[k];render();return;}
     var gh=e.target.closest(".ghead");
@@ -280,11 +318,14 @@
     state.collapsed={};
     render();
   });
-  document.querySelectorAll("#filters button").forEach(function(b){
+  document.querySelectorAll("#filters button[data-f]").forEach(function(b){
     b.addEventListener("click",function(){
-      document.querySelectorAll("#filters button").forEach(function(x){x.classList.remove("on")});
+      document.querySelectorAll("#filters button[data-f]").forEach(function(x){x.classList.remove("on")});
       b.classList.add("on");state.filter=b.dataset.f;render();
     });
+  });
+  document.getElementById("hiddentoggle").addEventListener("click",function(){
+    state.showHidden=!state.showHidden;render();
   });
   search.addEventListener("input",function(){state.q=search.value.trim().toLowerCase();render();});
   document.addEventListener("keydown",function(e){

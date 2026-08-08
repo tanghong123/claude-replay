@@ -11,7 +11,7 @@ use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
 use claude_replay_core::{adapter, adapters, discover, metrics, Agent};
 use claude_replay_present::cache::{admit, MetaReader, Presentation};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -58,6 +58,13 @@ struct State {
     snapshot: String,
     procs: Vec<Proc>,
     procs_at: Option<Instant>,
+    /// The user's hide list (#113): keys are `s:<sid>` (one session), `p:<cwd>` (a whole
+    /// project group), or `a:<label>` (a whole desktop-agent group) — the SAME strings the
+    /// group map is keyed by, so a group's key IS its hide key. Loaded once from
+    /// `<cache_root>/ignored.json` and rewritten on every toggle. This is monitor UI state at
+    /// the monitor's OWN root (the same place visited entries are written) — it never touches
+    /// an agent's data or a terminal, so it stays inside the read-only contract (R8).
+    ignored: BTreeSet<String>,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -177,11 +184,38 @@ impl Terminal {
 
 impl Index {
     pub fn new(cache_root: PathBuf, only: Vec<Agent>) -> Self {
+        let ignored = load_ignored(&ignore_path(&cache_root));
         Self {
             cache_root,
             only,
-            state: std::sync::Mutex::new(State::default()),
+            state: std::sync::Mutex::new(State {
+                ignored,
+                ..Default::default()
+            }),
         }
+    }
+
+    /// Toggle a hide key (#113): `add` inserts, else removes. Persists the set to the
+    /// monitor's own root and re-assembles the snapshot in place so the very next
+    /// `/api/sessions` (the client re-polls right after) reflects the change. Returns a tiny
+    /// JSON ack with the current hide count.
+    pub fn set_ignore(&self, key: &str, add: bool) -> String {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = if add {
+            st.ignored.insert(key.to_string())
+        } else {
+            st.ignored.remove(key)
+        };
+        if changed {
+            save_ignored(&ignore_path(&self.cache_root), &st.ignored);
+            // Re-derive the snapshot from the unchanged rows under the new hide set (no
+            // rescan needed — hiding is a view filter, not a discovery change).
+            if st.scanned_at.is_some() {
+                let snap = self.assemble(&st);
+                st.snapshot = snap;
+            }
+        }
+        json!({ "ok": true, "ignored": st.ignored.len() }).to_string()
     }
 
     /// The `/api/sessions` body: a cached snapshot, re-scanned on a ~2 s floor (§8) so any
@@ -300,6 +334,8 @@ impl Index {
         #[derive(Default)]
         struct Group {
             kind: &'static str,
+            /// The group map's key AND its hide key (#113): `p:<cwd>` / `a:<label>`.
+            key: String,
             label: String,
             secondary: String,
             rows: Vec<Value>,
@@ -373,6 +409,9 @@ impl Index {
                     .map(|d| d.as_secs())
                     .unwrap_or(0)
             });
+            // #113: a row is hidden if its OWN key is on the list, or its whole group is.
+            let row_key = format!("s:{sid}");
+            let hidden = st.ignored.contains(&row_key) || st.ignored.contains(&key);
             let mut j = json!({
                 "id": sid,
                 "name": row.title,
@@ -386,6 +425,8 @@ impl Index {
                         .then(|| SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_secs)),
                     now,
                 ),
+                "ignoreKey": row_key,
+                "hidden": hidden,
             });
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
@@ -413,8 +454,9 @@ impl Index {
                 }
             }
 
-            let g = groups.entry(key).or_insert_with(|| Group {
+            let g = groups.entry(key.clone()).or_insert_with(|| Group {
                 kind,
+                key,
                 label,
                 secondary,
                 ..Default::default()
@@ -489,6 +531,9 @@ impl Index {
                     ))
             });
         }
+        // #113: a session is hidden by its own key OR its group's — count once for the
+        // "Hidden (N)" reveal, and mark each group so the client can grey a whole hidden group.
+        let mut hidden_count = 0usize;
         let out: Vec<Value> = gs
             .into_iter()
             .map(|g| {
@@ -498,6 +543,12 @@ impl Index {
                     g.rows.len().to_string()
                 };
                 let total = g.rows.len();
+                hidden_count += g
+                    .rows
+                    .iter()
+                    .filter(|r| r["hidden"].as_bool().unwrap_or(false))
+                    .count();
+                let group_hidden = st.ignored.contains(&g.key);
                 json!({
                     "kind": g.kind,
                     "label": g.label,
@@ -507,11 +558,64 @@ impl Index {
                     "growing": g.growing,
                     "idle": g.idle,
                     "total": total,
+                    "ignoreKey": g.key,
+                    "hidden": group_hidden,
                     "rows": g.rows,
                 })
             })
             .collect();
-        json!({ "groups": out }).to_string()
+        json!({ "groups": out, "ignoredCount": hidden_count }).to_string()
+    }
+}
+
+/// Decode a `%XX`-percent-encoded query value (hide keys arrive via `encodeURIComponent` —
+/// a `p:<cwd>` key carries `/`, `:` and spaces). Unknown/short escapes pass through literally.
+pub(crate) fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (
+                (b[i + 1] as char).to_digit(16),
+                (b[i + 2] as char).to_digit(16),
+            ) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Where the hide list lives (#113): a plain JSON array at the monitor's OWN root, beside the
+/// `html/` durable entries — never the viewer's root, never an agent's data (R5/R8).
+fn ignore_path(cache_root: &Path) -> PathBuf {
+    cache_root.join("ignored.json")
+}
+
+/// Load the hide list; a missing or unparsable file is simply an empty set (never fatal —
+/// the monitor must start regardless of a corrupt preference file).
+fn load_ignored(path: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Persist the hide list (best-effort: a write failure leaves the in-memory set authoritative
+/// for this run rather than crashing the server).
+fn save_ignored(path: &Path, set: &BTreeSet<String>) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let keys: Vec<&String> = set.iter().collect();
+    if let Ok(json) = serde_json::to_string(&keys) {
+        let _ = std::fs::write(path, json);
     }
 }
 
@@ -841,6 +945,31 @@ pub fn default_root() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Format a `SystemTime` as the ISO-8601 UTC shape transcripts carry
+    /// (`2026-08-08T10:00:00Z`) — the inverse of `time::epoch_secs` (civil_from_days).
+    /// The fixtures need timestamps RELATIVE to real now: the activity clock is the
+    /// content clock, and the two-bucket rule compares it against real time, so a
+    /// hardcoded stamp ages out of `ACTIVE_WINDOW` and time-bombs the test.
+    fn iso_utc(st: SystemTime) -> String {
+        let e = st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let (days, rem) = (e.div_euclid(86_400), e.rem_euclid(86_400));
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        )
+    }
+
     /// One env-configured fixture run covering the index end to end — a SINGLE test because
     /// env vars are process-global and these assertions share a store. Asserts: a row is
     /// born from the card pass alone (unvisited, no counters — R7/§3); growth is a two-scan
@@ -867,7 +996,9 @@ mod tests {
                 "{{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/fixture-repo\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"{content}\"}}}}\n"
             )
         };
-        std::fs::write(&t, line("build the thing", "2026-08-08T10:00:00Z")).unwrap();
+        let ts0 = iso_utc(SystemTime::now() - Duration::from_secs(7200));
+        let ts1 = iso_utc(SystemTime::now() - Duration::from_secs(6900));
+        std::fs::write(&t, line("build the thing", &ts0)).unwrap();
 
         let root = base.join("monitor-cache");
         let idx = Index::new(root.clone(), Vec::new());
@@ -908,7 +1039,7 @@ mod tests {
         // …and the reported activity is the CONTENT time, not "just now".
         assert_eq!(
             r["activityTs"].as_u64().unwrap(),
-            crate::index::metrics::parse_ts("2026-08-08T10:00:00Z").unwrap() as u64,
+            crate::index::metrics::parse_ts(&ts0).unwrap() as u64,
             "activity tracks the last event, not the file mtime: {r}"
         );
 
@@ -917,8 +1048,7 @@ mod tests {
         {
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
-            f.write_all(line("more", "2026-08-08T10:05:00Z").as_bytes())
-                .unwrap();
+            f.write_all(line("more", &ts1).as_bytes()).unwrap();
             f.set_modified(SystemTime::now() + Duration::from_secs(4))
                 .unwrap();
         }
@@ -1026,14 +1156,16 @@ mod tests {
             "dddddddd-0000-0000-0000-000000000002",
             now2 + Duration::from_secs(5),
         );
-        // Make the original fixture group active too (newer than zzz's mtime — the active
-        // bucket must STILL order fixture before zzz, by name).
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&t)
-            .unwrap()
-            .set_modified(now2 + Duration::from_secs(30))
-            .unwrap();
+        // Make the original fixture group active too — via the CONTENT clock (a bare
+        // mtime touch cannot activate a transcript whose lines carry timestamps), and
+        // deliberately OLDER than zzz's clock: the active bucket must STILL order
+        // fixture before zzz, by name, not recency.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+            f.write_all(line("ping", &iso_utc(now2 - Duration::from_secs(60))).as_bytes())
+                .unwrap();
+        }
         std::thread::sleep(Duration::from_millis(2100));
         let v: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
         let labels: Vec<String> = v["groups"]

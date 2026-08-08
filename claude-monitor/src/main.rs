@@ -88,6 +88,19 @@ fn main() -> Result<()> {
                         service.register_root(path);
                     }))
                 }
+                // #113: toggle a hide key (`s:<sid>` / `p:<cwd>` / `a:<label>`). A GET with a
+                // query param, because the loopback listener only parses the request line —
+                // no method, no body (serve.rs). Persisting a local hide preference at the
+                // monitor's own root is UI state, not agent/terminal control, so it stays
+                // inside the read-only contract (R8).
+                "api/ignore" => {
+                    let resp = match (query_get(query, "add"), query_get(query, "remove")) {
+                        (Some(k), _) => idx.set_ignore(&index::percent_decode(k), true),
+                        (_, Some(k)) => idx.set_ignore(&index::percent_decode(k), false),
+                        _ => r#"{"ok":false}"#.to_string(),
+                    };
+                    HttpResponse::json(resp)
+                }
                 // The monitor ONLY ever serves the view EMBEDDED. The view navigates
                 // sub-agents with a relative `?session=<child>` href that drops the
                 // `chrome=embed` param, so default it back here — a drilled-in child keeps
