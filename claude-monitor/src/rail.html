@@ -51,7 +51,10 @@
   .chev{flex:none;font-size:9px;color:var(--faint);transition:transform .15s;display:inline-block;width:9px}
   .gcol .chev{transform:rotate(-90deg)}
   .glabels{min-width:0;display:flex;flex-direction:column;gap:1px}
-  .glabel{font:700 12.5px var(--sans);color:var(--fg)}
+  /* #130: the group header is the PARENT — it must read larger and heavier than the rows
+     under it. It was 12.5px bold against 13.5px rows, so the child outranked the parent
+     and the list read flat. */
+  .glabel{font:700 13.5px var(--sans);color:var(--fg);letter-spacing:-.01em}
   .gsec{font:9.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .gmeta{flex:none;font:9.5px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:99px;padding:2px 8px;margin-left:auto}
   .gdot{flex:none;width:7px;height:7px;border-radius:50%}
@@ -72,7 +75,7 @@
   .dot.idle{background:var(--amber)}
   .dot.idle.unconfirmed{background:transparent;border:2px solid var(--amber)}
   .dot.finished{background:var(--gut)}
-  .rname{flex:1;min-width:0;font:13.5px var(--sans);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rname{flex:1;min-width:0;font:12px var(--sans);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .live{flex:none;font:9px var(--mono);color:var(--tool);background:var(--addbg);border-radius:99px;padding:1px 7px}
   .achip{flex:none;font:9px var(--mono);color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:0 5px}
   .abadge{flex:none;font:8.5px/1 var(--mono);font-weight:600;border-radius:3px;padding:2px 3px;color:#fff}
@@ -212,8 +215,9 @@
     var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0?"a-qoderwork":"a-other";
     return '<span class="abadge '+cls+'" title="'+esc(r.agent)+'">'+esc(code)+'</span>';
   }
-  // #129: what a session's start→last-activity span reads like — "09:12–11:45" same-day,
-  // "8/6 09:12 – 8/8 11:45" across days. Browser-local time, from epoch seconds.
+  // #129: a session's start→last-activity span. Same-day sessions are told by their
+  // clock times; a span across days is told by its dates — carrying both made the line
+  // overflow the rail and ellipsize away the cost that follows it.
   function fmtSpan(a,b){
     if(!a||!b)return null;
     var da=new Date(a*1000),db=new Date(b*1000);
@@ -221,7 +225,7 @@
     var md=function(d){return (d.getMonth()+1)+"/"+d.getDate();};
     return da.toDateString()===db.toDateString()
       ? hm(da)+"–"+hm(db)
-      : md(da)+" "+hm(da)+" – "+md(db)+" "+hm(db);
+      : md(da)+"–"+md(db);
   }
   function subLine(r,g){
     if(g&&g.kind!=="agent"){
