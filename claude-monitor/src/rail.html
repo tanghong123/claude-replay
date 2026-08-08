@@ -434,6 +434,15 @@
         fams=fams.slice(0,keep);
       }
       var rowsHtml="",any=fams.length>0;
+      // #150: a collapsed group still shows the SELECTED session, so "which project is this
+      // one in?" is answerable with everything collapsed — otherwise the rail becomes a list
+      // of headers with nothing marking the one you have open. Taken from g.rows rather than
+      // the filtered/capped set: selecting a session is an explicit act and outranks a filter
+      // that would otherwise hide the very row being viewed.
+      if(collapsed){
+        var selRow=g.rows.filter(function(r){return r.id===state.sel;})[0];
+        if(selRow)rowsHtml+=rowHtml(selRow,g,null);
+      }
       for(var fam of fams){
         if(collapsed)continue;
         rowsHtml+=rowHtml(fam.rep,g,fam);
