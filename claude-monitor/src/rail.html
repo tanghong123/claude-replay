@@ -29,7 +29,7 @@
   #ver{font:400 10px var(--mono);color:var(--faint);align-self:flex-end;margin:0 0 2px -4px}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
-  .picon{font:13px var(--sans);line-height:1;padding:2px 7px}
+  .picon{font:16px/1 var(--sans);padding:2px 9px}
   #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:5px}
   #scan i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tool);animation:mon-pulse 2.4s infinite}
   #searchbox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:0 10px;background:var(--panel)}
@@ -71,6 +71,11 @@
   .rname{flex:1;min-width:0;font:13.5px var(--sans);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .live{flex:none;font:9px var(--mono);color:var(--tool);background:var(--addbg);border-radius:99px;padding:1px 7px}
   .achip{flex:none;font:9px var(--mono);color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:0 5px}
+  .abadge{flex:none;font:8.5px/1 var(--mono);font-weight:600;border-radius:3px;padding:2px 3px;color:#fff}
+  .abadge.a-claude{background:var(--kw)}
+  .abadge.a-codex{background:var(--link)}
+  .abadge.a-qoderwork{background:var(--tool)}
+  .abadge.a-other{background:var(--gut)}
   .r2{display:flex;justify-content:space-between;gap:8px;margin-top:6px;padding-left:18px}
   .counters{min-width:0;font:10.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .counters.unvisited{opacity:.65}
@@ -159,6 +164,12 @@
     var p=[];if(g.growing)p.push(g.growing+" active");if(g.idle)p.push(g.idle+" idle");if(fin)p.push(fin+" finished");
     return p.join(" · ")+"  ("+g.total+" total)";
   }
+  function agentBadge(r){
+    var a=(r.agent||"").toLowerCase();
+    var code=a.indexOf("claude")>=0?"cc":a.indexOf("codex")>=0?"cx":a.indexOf("qoder")>=0?"qw":(r.agent||"?").slice(0,2);
+    var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0?"a-qoderwork":"a-other";
+    return '<span class="abadge '+cls+'" title="'+esc(r.agent)+'">'+esc(code)+'</span>';
+  }
   function subLine(r){
     if(!r.visited)return "—   ·   —   ·   —";
     var parts=[r.turns+" turns",r.tools+" tools"];
@@ -209,10 +220,10 @@
         var dot="dot "+r.state+(r.conf==="unconfirmed"?" unconfirmed":"");
         rowsHtml+='<div class="'+cls+'" tabindex="0" data-id="'+esc(r.id)+'" title="'+esc(rowTitle(r))+'">'
           +'<div class="r1"><span class="'+dot+'"></span>'
+          +agentBadge(r)
           +'<span class="rname">'+esc(r.name)+'</span>'
           +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
           +(r.target?'<span class="term" title="'+esc(termTip(r))+'">&gt;_ '+esc(r.term)+'</span>':"")
-          +(multi?'<span class="achip">'+esc(r.agent)+'</span>':"")
           +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r))+'</span>'
           +'<span class="age">'+esc(r.activity)+'</span></div></div>';
       }
