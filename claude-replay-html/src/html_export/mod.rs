@@ -979,6 +979,7 @@ fn build_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%236d4fa1'/><path d='M12 9l12 7-12 7z' fill='%23fff'/></svg>">
 <title>{title_esc}</title>
 <style>
 {CSS}
