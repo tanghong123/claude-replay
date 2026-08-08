@@ -25,6 +25,7 @@
   #head{padding:15px 15px 12px;flex:none;display:flex;flex-direction:column;gap:11px}
   #titlebar{display:flex;align-items:center;gap:9px}
   #titlebar b{font:700 15px var(--sans);letter-spacing:-.01em}
+  #ver{font:400 10px var(--mono);color:var(--faint);align-self:flex-end;margin:0 0 2px -4px}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
   #scan{font:9.5px var(--mono);color:var(--faint);display:inline-flex;align-items:center;gap:4px}
@@ -83,7 +84,7 @@
 <aside>
   <div id="head">
     <div id="titlebar">
-      <b>Sessions</b>
+      <b>Sessions</b><span id="ver" title="claude-monitor version">v{{VERSION}}</span>
       <button class="pill" id="collapseall" title="Fold every group to just its project / agent">Collapse</button>
       <span style="flex:1"></span>
       <button class="pill" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐ Dark</button>

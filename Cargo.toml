@@ -78,3 +78,12 @@ serde_json = "1"
 [profile.release]
 opt-level = 2
 strip = true
+
+[profile.dev]
+debug = "line-tables-only"   # file:line in panics and test failures
+
+[profile.dev.package."*"]
+debug = false                # dependencies only — not my own crates
+
+[profile.test]
+debug = "line-tables-only"

@@ -18,8 +18,9 @@ use std::sync::Arc;
 /// The stable default port (§11): the monitor is a bookmarkable place.
 const DEFAULT_PORT: u16 = 2727;
 
-/// The rail page — self-contained, its own markup and script (§6.3).
-const RAIL: &str = include_str!("rail.html");
+/// The rail page — self-contained, its own markup and script (§6.3). `{{VERSION}}` is the
+/// only server-side substitution: which build is running (mirrors the HTML viewer's brand).
+const RAIL_TEMPLATE: &str = include_str!("rail.html");
 
 fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
@@ -72,13 +73,15 @@ fn main() -> Result<()> {
     })?);
     let idx = Arc::new(index::Index::new(root, only));
 
+    let rail = RAIL_TEMPLATE.replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
     let handler = {
         let service = service.clone();
         let idx = idx.clone();
+        let rail = rail.clone();
         let scratch = std::env::temp_dir().join("claude-monitor");
         Arc::new(move |name: &str, query: &str| -> HttpResponse {
             match name {
-                "" | "index.html" => HttpResponse::html(RAIL.to_string()),
+                "" | "index.html" => HttpResponse::html(rail.clone()),
                 "api/sessions" => {
                     let service = &service;
                     HttpResponse::json(idx.sessions_json(|path| {
