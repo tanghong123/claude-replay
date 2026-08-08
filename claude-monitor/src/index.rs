@@ -6,7 +6,7 @@
 //! entry for a session is written by SERVING it, never by the monitor itself).
 
 use anyhow::Result;
-use claude_replay_core::engine::meta_stream::MaterializedMeta;
+use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
 use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
 use claude_replay_core::{adapter, adapters, discover, metrics, Agent};
 use claude_replay_present::cache::{admit, MetaReader, Presentation};
@@ -636,8 +636,18 @@ fn save_ignored(path: &Path, set: &BTreeSet<String>) {
 
 /// Fold a visited entry's meta stream into row counters — `MaterializedMeta` over every
 /// record (§2.2: the index displays, it never resumes, so it does not align).
+///
+/// A stream folded by a DIFFERENT fold version is refused (#144). The viewer never had this
+/// problem — `admit::recover` compares the header's versions and re-authors on a mismatch —
+/// but the rail reads the stream directly, and discarding the header meant a `fold: 1` stream
+/// was happily folded by version-3 code. The row then showed counters that a bump had already
+/// invalidated, labelled as current. Returning `None` is the honest answer: the row reads
+/// "tbd" (#134) until a visit re-authors the entry at the current version.
 fn fold_counters(dir: &Path) -> Option<Counters> {
-    let (_, reader) = MetaReader::open(dir).ok()??;
+    let (header, reader) = MetaReader::open(dir).ok()??;
+    if header.versions.fold != FOLD_VERSION {
+        return None;
+    }
     let mut mm = MaterializedMeta::default();
     for r in reader {
         mm.push(&r);
@@ -1140,13 +1150,28 @@ mod tests {
         // folded from the stream (§2 — no transcript read, no alignment).
         let entry = admit::entry_dir(&root, Presentation::Html, sid);
         std::fs::create_dir_all(&entry).unwrap();
+        let stream = |fold: u16| {
+            format!(
+                "{{\"anchor\":1,\"versions\":{{\"format\":1,\"fold\":{fold}}}}}\n\
+                 {{\"turns\":3,\"tools\":7}}\n\
+                 {{\"turns\":2,\"tools\":1}}\n"
+            )
+        };
+        // #144: a stream folded by ANOTHER version is refused — its numbers were produced by
+        // logic this build no longer runs, and showing them as current is the bug.
         std::fs::write(
             entry.join("meta.jsonl"),
-            "{\"anchor\":1,\"versions\":{\"format\":1,\"fold\":1}}\n\
-             {\"turns\":3,\"tools\":7}\n\
-             {\"turns\":2,\"tools\":1}\n",
+            stream(FOLD_VERSION.wrapping_add(1)),
         )
         .unwrap();
+        std::thread::sleep(Duration::from_millis(2100));
+        let r = find(&idx.sessions_json(|_| {}));
+        assert!(
+            r.get("turns").is_none(),
+            "a stale-fold stream yields no counters: {r}"
+        );
+
+        std::fs::write(entry.join("meta.jsonl"), stream(FOLD_VERSION)).unwrap();
         std::thread::sleep(Duration::from_millis(2100));
         let r = find(&idx.sessions_json(|_| {}));
         assert_eq!(r["visited"], true, "{r}");
