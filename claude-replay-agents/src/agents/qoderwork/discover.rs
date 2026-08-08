@@ -249,6 +249,13 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// `QODERWORK_PROJECTS_DIR` is a PROCESS-global override, and cargo runs these tests on
+    /// parallel threads in one binary: without this, whichever test called `remove_var`
+    /// first unset it for the other mid-walk, and that one silently scanned the developer's
+    /// REAL store (68 live transcripts where the fixture has 1) — a flake that failed a
+    /// different test on each run. Hold this for the whole env-scoped window.
+    static STORE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The delegation guarantee: parsing a QoderWork transcript AS QoderWork is byte-identical
     /// to parsing it as Claude (same blocks, times, metrics) — the adapter adds detection and a
     /// store, never a format fork. Fixture mirrors the real shape: runtime-config head,
@@ -258,7 +265,10 @@ mod tests {
     /// the real, big-enough workspace sessions come back.
     #[test]
     fn store_walk_skips_mounts_symlinks_and_junk() {
-        let root = std::env::temp_dir().join(format!("qw-store-{}", std::process::id()));
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // Distinct from the other env-scoped test's root: they used to share one path and
+        // delete each other's fixtures.
+        let root = std::env::temp_dir().join(format!("qw-walk-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("QODERWORK_PROJECTS_DIR", &root);
         let big = vec![b'x'; (MIN_TRANSCRIPT_BYTES + 10) as usize];
@@ -326,6 +336,7 @@ mod tests {
     /// bare-id surface the Claude store already has, on the QoderWork root.
     #[test]
     fn discovers_and_resolves_from_the_qoderwork_store() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("qw-store-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let cwd = Path::new("/Users/dev/proj");

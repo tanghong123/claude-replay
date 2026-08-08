@@ -208,8 +208,31 @@
     var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0?"a-qoderwork":"a-other";
     return '<span class="abadge '+cls+'" title="'+esc(r.agent)+'">'+esc(code)+'</span>';
   }
-  function subLine(r){
-    if(!r.visited)return "—   ·   —   ·   —";
+  // #129: what a session's start→last-activity span reads like — "09:12–11:45" same-day,
+  // "8/6 09:12 – 8/8 11:45" across days. Browser-local time, from epoch seconds.
+  function fmtSpan(a,b){
+    if(!a||!b)return null;
+    var da=new Date(a*1000),db=new Date(b*1000);
+    var hm=function(d){return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");};
+    var md=function(d){return (d.getMonth()+1)+"/"+d.getDate();};
+    return da.toDateString()===db.toDateString()
+      ? hm(da)+"–"+hm(db)
+      : md(da)+" "+hm(da)+" – "+md(db)+" "+hm(db);
+  }
+  function subLine(r,g){
+    if(g&&g.kind!=="agent"){
+      // #129: project sessions — span, subagent count, dollars (in that order);
+      // turns/tools stay for desktop-agent rows only.
+      var pp=[];
+      var span=fmtSpan(r.startTs,r.activityTs);
+      if(span)pp.push(span);
+      if(r.visited){
+        if(r.subs)pp.push(r.subs+" sub");
+        if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
+      }
+      return pp.length?pp.join(" · "):"tbd";
+    }
+    if(!r.visited)return "tbd";
     var parts=[r.turns+" turns",r.tools+" tools"];
     if(r.subs)parts.push(r.subs+" sub");
     if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
@@ -271,7 +294,7 @@
           +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
           +(r.target?'<span class="term" title="'+esc(termTip(r))+'">&gt;_ '+esc(r.term)+'</span>':"")
           +rowx
-          +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r))+'</span>'
+          +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r,g))+'</span>'
           +'<span class="age">'+esc(r.activity)+'</span></div></div>';
       }
       if(!any&&!collapsed)continue;

@@ -82,6 +82,12 @@ struct Row {
     /// means. Re-derived only when the mtime trigger fires; drives the display, the
     /// active-bucket ordering, and the growth diff.
     last_event: Option<u64>,
+    /// The FIRST content timestamp — the session's start, for the rail's span display
+    /// (#129), and `start_probed` so it is derived exactly ONCE: an append-only log's head
+    /// never changes, and a miss costs the wide window (a re-probe per mtime tick would
+    /// re-read a megabyte forever for the one session that has no head timestamp).
+    first_event: Option<u64>,
+    start_probed: bool,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
@@ -261,6 +267,8 @@ impl Index {
                     title: String::new(),
                     tree_mtime: None,
                     last_event: None,
+                    first_event: None,
+                    start_probed: false,
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
@@ -274,6 +282,10 @@ impl Index {
                 if row.tree_mtime != now_mtime {
                     let prev_event = row.last_event;
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
+                    if !row.start_probed {
+                        row.first_event = first_event_ts(&row.path);
+                        row.start_probed = true;
+                    }
                     match (prev_event, row.last_event) {
                         // The honest signal: the content clock advanced.
                         (Some(prev), Some(now_ev)) if now_ev > prev => {
@@ -428,6 +440,9 @@ impl Index {
                 "ignoreKey": row_key,
                 "hidden": hidden,
             });
+            if let Some(start) = row.first_event {
+                j["startTs"] = json!(start);
+            }
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
                 j["term"] = json!(l.terminal.kind());
@@ -837,6 +852,52 @@ fn apply_lsof(procs: &mut [Proc], out: &str) {
 /// activity 11 h ago instead of the true ~32 h. Denylist, not allowlist: an unknown agent's
 /// real turns still count; only these named noise rows are skipped.
 const NON_ACTIVITY_TYPES: &[&str] = &["file-history-snapshot", "summary"];
+
+/// The FIRST activity timestamp — `last_event_ts`'s head-side sibling, the start of the
+/// rail's session span (#129). Escalating windows, because the head is where an agent
+/// parks its bulk housekeeping: one real transcript here opens with 22 `file-history-
+/// snapshot` lines of ~25 KiB each and its first real line sits 424 KiB in. The cheap
+/// window resolves every other session on this machine; the wide one is the fallback, and
+/// the caller probes ONCE per session (an append-only log's head never changes).
+fn first_event_ts(path: &Path) -> Option<u64> {
+    [64 * 1024, 1024 * 1024]
+        .into_iter()
+        .find_map(|cap| first_event_within(path, cap))
+}
+
+fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
+    use std::io::Read;
+    let mut buf = vec![0u8; cap];
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut n = 0;
+    while n < cap {
+        match f.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(n);
+    let text = String::from_utf8_lossy(&buf);
+    // The last line of a truncated window may be cut mid-record — never trust it.
+    let complete = text.len() == n && n < cap;
+    let mut lines: Vec<&str> = text.lines().collect();
+    if !complete {
+        lines.pop();
+    }
+    for line in lines {
+        let ty = field_after(line, "\"type\":\"").next();
+        if ty.is_some_and(|t| NON_ACTIVITY_TYPES.contains(&t)) {
+            continue;
+        }
+        for ts in field_after(line, "\"timestamp\":\"") {
+            if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
+                return Some(secs as u64);
+            }
+        }
+    }
+    None
+}
 
 /// The last ACTIVITY timestamp in a transcript's tail: scan the final 32 KiB line-wise and
 /// keep the latest timestamp on a line that is NOT [housekeeping](NON_ACTIVITY_TYPES). Each
