@@ -66,8 +66,15 @@ struct Row {
     agent: Agent,
     cwd: Option<String>,
     title: String,
-    /// Tree mtime at the last scan — growth is this moving.
+    /// Tree mtime at the last scan — the cheap CHANGE TRIGGER, and deliberately nothing
+    /// more: an attached-but-idle agent client re-touches its transcript without appending
+    /// (measured: mtime today, last content three weeks old), so mtime is when the FILE
+    /// moved, not when the SESSION did.
     tree_mtime: Option<SystemTime>,
+    /// The last CONTENT timestamp in the transcript's tail — what "activity" actually
+    /// means. Re-derived only when the mtime trigger fires; drives the display, the
+    /// active-bucket ordering, and the growth diff.
+    last_event: Option<u64>,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
@@ -219,16 +226,36 @@ impl Index {
                     cwd: discover::session_cwd(&path).map(|p| p.display().to_string()),
                     title: String::new(),
                     tree_mtime: None,
+                    last_event: None,
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
                 });
-                // Growth = the tree mtime MOVED since the previous scan (§5). The first
-                // sighting of a session sets the baseline without claiming growth — a
-                // monitor started over an idle machine must not paint everything green.
-                if let (Some(prev), Some(now)) = (row.tree_mtime, now_mtime) {
-                    if now > prev {
-                        row.grew_at = Some(Instant::now());
+                // The mtime is only the TRIGGER. Growth — and the activity clock — come
+                // from the transcript's CONTENT: an attached idle client touches the file
+                // without appending, and trusting mtime made three-week-old sessions read
+                // "13m" and flip growing on housekeeping. The first sighting sets the
+                // baseline without claiming growth — a monitor started over an idle
+                // machine must not paint everything green.
+                if row.tree_mtime != now_mtime {
+                    let prev_event = row.last_event;
+                    row.last_event = last_event_ts(&row.path).or(row.last_event);
+                    match (prev_event, row.last_event) {
+                        // The honest signal: the content clock advanced.
+                        (Some(prev), Some(now_ev)) if now_ev > prev => {
+                            row.grew_at = Some(Instant::now());
+                        }
+                        (Some(_), Some(_)) => {} // touched, nothing new said — NOT growth
+                        // No content clock at all (a transcript format with no timestamps):
+                        // fall back to the mtime diff rather than never showing growth.
+                        (None, None) => {
+                            if let (Some(prev), Some(now_m)) = (row.tree_mtime, now_mtime) {
+                                if now_m > prev {
+                                    row.grew_at = Some(Instant::now());
+                                }
+                            }
+                        }
+                        _ => {} // the clock just appeared — a baseline, not growth
                     }
                 }
                 row.tree_mtime = now_mtime;
@@ -336,11 +363,12 @@ impl Index {
             };
 
             let visited = row.counters.is_some();
-            let mtime_secs = row
-                .tree_mtime
-                .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let mtime_secs = row.last_event.unwrap_or_else(|| {
+                row.tree_mtime
+                    .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            });
             let mut j = json!({
                 "id": sid,
                 "name": row.title,
@@ -349,7 +377,11 @@ impl Index {
                 "conf": conf,
                 "visited": visited,
                 "activityTs": mtime_secs,
-                "activity": human_age(row.tree_mtime, now),
+                "activity": human_age(
+                    (mtime_secs > 0)
+                        .then(|| SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_secs)),
+                    now,
+                ),
             });
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
@@ -684,6 +716,50 @@ fn apply_lsof(procs: &mut [Proc], out: &str) {
     }
 }
 
+/// The last CONTENT timestamp in a transcript's tail: scan the final 32 KiB line-wise and
+/// keep the last line whose timestamp parses (each agent's format goes through the shared
+/// `parse_ts`). `None` for a file with no parseable timestamp in the window.
+fn last_event_ts(path: &Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 32 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut buf = String::new();
+    if f.read_to_string(&mut buf).is_err() {
+        return None; // a seek into a multi-byte char — treat as unknown
+    }
+    let mut last = None;
+    for line in buf.lines() {
+        // Field-level: `"timestamp":"…"` — the shape every supported agent writes; a full
+        // JSON parse per line would be pure cost here.
+        for ts in field_after(line, "\"timestamp\":\"") {
+            if let Some(secs) = metrics::parse_ts(ts) {
+                if secs > 0 {
+                    last = Some(secs as u64);
+                }
+            }
+        }
+    }
+    last
+}
+
+/// Every quoted value following `pat` on `line`.
+fn field_after<'a>(line: &'a str, pat: &str) -> impl Iterator<Item = &'a str> {
+    let mut rest = line;
+    let mut out = Vec::new();
+    while let Some(i) = rest.find(pat) {
+        let v = &rest[i + pat.len()..];
+        if let Some(end) = v.find('"') {
+            out.push(&v[..end]);
+            rest = &v[end..];
+        } else {
+            break;
+        }
+    }
+    out.into_iter()
+}
+
 fn stem_of(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
@@ -763,11 +839,14 @@ mod tests {
 
         let sid = "11111111-2222-3333-4444-555555555555";
         let t = proj.join(format!("{sid}.jsonl"));
-        std::fs::write(
-            &t,
-            "{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/fixture-repo\",\"message\":{\"role\":\"user\",\"content\":\"build the thing\"}}\n",
-        )
-        .unwrap();
+        // A realistic transcript CARRIES a timestamp — activity comes from that content
+        // clock, not the file mtime (an attached idle client re-touches without appending).
+        let line = |content: &str, ts: &str| {
+            format!(
+                "{{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/fixture-repo\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"{content}\"}}}}\n"
+            )
+        };
+        std::fs::write(&t, line("build the thing", "2026-08-08T10:00:00Z")).unwrap();
 
         let root = base.join("monitor-cache");
         let idx = Index::new(root.clone(), Vec::new());
@@ -791,13 +870,42 @@ mod tests {
         assert_eq!(r["visited"], false);
         assert!(r.get("turns").is_none(), "no counters without a visit (R7)");
 
-        // Growth: the tree mtime moves between two scans.
+        // A bare TOUCH — mtime moves, content clock does NOT — is not growth (the crux
+        // bug: an attached idle client re-touches its weeks-old transcript).
         std::thread::sleep(Duration::from_millis(2100)); // past the scan floor
-        let f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
-        f.set_modified(SystemTime::now() + Duration::from_secs(2))
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(2))
             .unwrap();
         let r = find(&idx.sessions_json(|_| {}));
-        assert_eq!(r["state"], "growing", "an mtime that moved is growth: {r}");
+        assert_ne!(
+            r["state"], "growing",
+            "a touch with no new content is not growth: {r}"
+        );
+        // …and the reported activity is the CONTENT time, not "just now".
+        assert_eq!(
+            r["activityTs"].as_u64().unwrap(),
+            crate::index::metrics::parse_ts("2026-08-08T10:00:00Z").unwrap() as u64,
+            "activity tracks the last event, not the file mtime: {r}"
+        );
+
+        // Real growth: a new line with a LATER content timestamp.
+        std::thread::sleep(Duration::from_millis(2100));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+            f.write_all(line("more", "2026-08-08T10:05:00Z").as_bytes())
+                .unwrap();
+            f.set_modified(SystemTime::now() + Duration::from_secs(4))
+                .unwrap();
+        }
+        let r = find(&idx.sessions_json(|_| {}));
+        assert_eq!(
+            r["state"], "growing",
+            "a later content clock IS growth: {r}"
+        );
 
         // A visit: a meta stream at the monitor root turns the row visited, with counters
         // folded from the stream (§2 — no transcript read, no alignment).
