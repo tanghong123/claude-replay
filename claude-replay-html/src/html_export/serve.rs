@@ -926,7 +926,14 @@ pub fn service_routes(
         let Some(live) = live else {
             return HttpResponse::not_found("no live server");
         };
-        let id = query_get(query, "id").unwrap_or("");
+        // Accept BOTH `id` (the documented monitor API, §6.3) and `session` — the served
+        // page navigates BETWEEN sessions with a relative `?session=<child>` href
+        // (export.js), so a sub-agent click on a page served at `/session?id=X` becomes
+        // `/session?session=<child>`. Reading only `id` 404'd every drill-down under the
+        // monitor (it worked under `--html`, whose shell lives at `index.html?session=`).
+        let id = query_get(query, "id")
+            .or_else(|| query_get(query, "session"))
+            .unwrap_or("");
         if id.is_empty() || id.contains('/') || id.contains("..") {
             return HttpResponse::not_found("no such session");
         }
@@ -1937,6 +1944,11 @@ mod tests {
         assert_eq!(r.code, "200 OK");
         let r = service_routes(Some(&live), &dir, "session", "id=nope");
         assert_eq!(r.code, "404 Not Found");
+        // `session=` is accepted as an alias for `id` (#120): the embedded view navigates
+        // sub-agents with a relative `?session=<child>` href, so the drill-down URL becomes
+        // `/session?session=<child>` — reading only `id` 404'd every drill-down.
+        let r = service_routes(Some(&live), &dir, "session", &format!("session={id}"));
+        assert_eq!(r.code, "200 OK", "session= is an alias for id=");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
