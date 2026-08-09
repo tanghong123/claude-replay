@@ -57,7 +57,7 @@ Four smells fall out of that one field:
 
 None of this is *wrong* today; it works and it is well tested. It is in the wrong place, and the
 cost of that shows up as: a third party cannot use the cache without accepting a directory layout,
-tests reach for a real filesystem to exercise pure residency logic, and — see §8 — a missing lock
+tests reach for a real filesystem to exercise pure residency logic, and — see §9 — a missing lock
 hid inside a function that does six unrelated things.
 
 ---
@@ -128,7 +128,7 @@ pub trait Entries<P: BlockStore> {
 }
 
 pub enum Opened<P: BlockStore, N> {
-    /// Ours. `origin` stays as rich as it is today — a denial is a support question (§7.4).
+    /// Ours. `origin` stays as rich as it is today — a denial is a support question (§8.4).
     Owned { store: P, loaded: Vec<P::Bv>, origin: Origin },
     /// Nothing was opened: held by a live peer, or nothing here to open.
     Denied(Denial<N>),
@@ -359,7 +359,7 @@ the **liveness rule** (provider config now, and it needs the server's bound port
 provider gets as a shared `Arc<OnceLock<u16>>` rather than by capturing `self`).
 
 `Admission` and `Denial` are unchanged, so every `match` at every call site keeps compiling. That
-is deliberate: it is what makes §10's steps small.
+is deliberate: it is what makes §11's steps small.
 
 ### 5.4 The provider, sketched
 
@@ -449,7 +449,7 @@ let (delta, extra) = shared.open_delta_with(|store, committed, d| { … });  // 
 
 `advance()` is where folding actually happens, and it holds that session's lock for its duration —
 a cold fold of a large transcript can hold it for a minute. That is by design (the requester pays,
-an idle session costs nothing) and is why §8's concurrency rules matter.
+an idle session costs nothing) and is why §9's concurrency rules matter.
 
 **TUI — per tick:**
 
@@ -582,7 +582,7 @@ thing the lock exists to prevent.
 - **Deleting an entry.** Nothing exposes "forget this session's durable state". Entries go by age
   through `admit::gc` (`KEEP_FOR`, 14 days; a lock buys another 16), swept once when a durable
   cache is built. A client that wants an entry gone deletes the directory itself — which is one
-  reason `entry_dir` stays public (§9).
+  reason `entry_dir` stays public (§10).
 - **Sharing an entry.** There is no read-only open, no shared mode. One writer, always; a second
   asker is `Denied` and routes to the holder (#163).
 - **Asking whether an id is admitted.** `is_registered` answers *known*, not *owned*. The honest
@@ -659,7 +659,128 @@ That gap between what these three mean and what they are named after is the audi
 | `release_all` | `Drop` | explicit at exit | — |
 | `resident_tasks` | — | — | rail counters, without materializing |
 
-## 7. Four reductions this is really made of
+## 7. Two levels of exclusion, and one of them is a convention
+
+### 7.1 The two levels
+
+There are two different questions being answered by things both called "the lock", and keeping
+them apart explains most of the last three bugs:
+
+| level | question | mechanism | who owns it | needed when |
+|---|---|---|---|---|
+| **process** | may this PROCESS write the entry? | the `LOCK` file + note; `Denied` → redirect | the **provider** | only on a **shared** root (§3.1) |
+| **thread** | may this THREAD write the session? | the `admitting` gate (#169); `Arc::strong_count` in `reap` (#168); the `SharedSession` inner mutex | the **cache** (and the session) | **always** |
+
+The process-level lock is deliberately **blind to your own process**:
+
+```rust
+// lock.rs — acquire()
+if h.pid != std::process::id() && alive(&h) {
+    return Ok(Taken::Held(h));     // a peer holds it
+}
+// ours already, or the holder is gone — reclaim
+```
+
+That is correct — a process must be able to re-take an entry it already owns, or a reap-then-
+re-admit would deadlock against itself — and it means the file lock offers **exactly zero
+thread-level guarantee**. Every in-process bug this month lived in that gap: #168 (reap dropped a
+resident still being folded) and #169 (N concurrent admissions each opened a store) were both
+*thread*-level failures while the *process*-level lock was working perfectly. The durable path did
+not cause them; it made them loud, by turning "two folds" into "a corrupt file".
+
+Two consequences for the target:
+
+- **Thread-level exclusion stays on the cache**, always, for every provider. It is not a
+  durability feature: two folds of one session in RAM is still double the CPU and two tails that
+  need not agree. This is why §9 puts the `admitting` gate on the cache rather than the provider.
+- **Process-level exclusion is the provider's, and only some providers have one.** An in-memory or
+  private-root provider (§3.1) has no `LOCK`, no note, no `Denied` — and loses nothing, because
+  there is no other process to exclude.
+
+The rest of this section is about the **process-level** lock, whose lifetime is managed by hand.
+
+### 7.2 What is actually loose today
+
+Everything about who holds an entry is enforced by **calling the right methods in the right
+order**. `admit` takes the lock and records it in a side map; `release` drops it, keyed by a
+string; `Drop` catches whatever was forgotten. Nothing in the type system ties *holding the lock*
+to *being the thing that writes*. In a single-threaded client that is merely fragile. In a
+multi-threaded one — which both frontends are — it is a live hazard.
+
+```rust
+// the lock lives HERE, keyed by a string, in a map beside the sessions
+struct Durable { owned: Mutex<HashMap<String, Owned /* { dir: PathBuf } */>>, … }
+
+// the writer lives HERE, inside the session
+pub fn attach_writer(&self, w: MetaWriter) { g.meta = Some(w); g.frozen = false; }
+pub fn quiesce(&self)                      { g.meta = None;    g.frozen = true;  }
+```
+
+Two facts that must agree — *we hold the entry* and *we are writing to it* — are stored in two
+places and kept in step by hand. Three ways that goes wrong:
+
+1. **`remove_pull(id)` alone is a footgun.** It removes the resident and does *nothing else*: no
+   quiesce, no unlock. So the lock stays held, and any thread still holding an `Arc` to that
+   session keeps **writing** — while the next `admit` finds nothing resident, is granted (same
+   pid), and opens a **second store on the same backing**. That is #169 again, reachable through
+   one public method called on its own. Today it is safe only because its one caller happens to
+   call `release` first, and only since #163 put them in that order.
+2. **`release(id)` from another thread stops a fold silently.** Thread A is inside `advance()`;
+   thread B releases. A's session is frozen, so A's next `advance()` returns `Ok(false)` — *"no
+   new data"*, indistinguishable from an idle session. Nothing errors. The session simply stops
+   following, which is the exact failure `thaw`'s doc comment describes as "worse than serving it
+   uncached".
+3. **The two release paths disagree** (§6.8): `release` quiesces even with no durable wiring;
+   `release_all` returns before quiescing anything. Harmless today, but the difference is
+   accidental — the `Option` check sits in a different place in each.
+
+`Drop` covers the honest mistake (forgetting to release). It cannot cover any of these, because
+each is a *correctly compiling call sequence* that means something different from what the caller
+intended.
+
+### 7.3 The fix falls out of the refactor: the lock lives in the writer
+
+`quiesce` already drops the `MetaWriter`. Make the writer **own the lock**, and the two facts
+become one:
+
+```rust
+// The provider hands back a writer that HOLDS the entry. There is no other way to have one.
+pub enum Opened<P: BlockStore, N> {
+    Owned { store: P, loaded: Vec<P::Bv>, origin: Origin, writer: EntryWriter },
+    Denied(Denial<N>),
+}
+
+/// Dropping this releases the entry. That is the whole mechanism.
+pub struct EntryWriter { meta: MetaWriter, _lease: EntryLease }
+impl Drop for EntryLease { fn drop(&mut self) { lock::release_any(&self.dir) } }
+```
+
+Then:
+
+- **`release(id)` becomes "drop the writer"** — one operation instead of two that must agree, and
+  the unlock happens at exactly the moment writing stops, not near it.
+- **`remove_pull` stops being dangerous.** Dropping the last `Arc` drops the writer, which drops
+  the lease. A thread still holding an `Arc` still holds the lock — which is *correct*: it is
+  still writing.
+- **The `release` / `release_all` asymmetry disappears**, because neither exists as a separate
+  step.
+- **`Durable::owned` disappears** — the map of "which directories we hold" was only ever a way to
+  find the lock again from a string, and there is nothing left to find.
+- **#109 retention still works.** The lock is tied to the WRITER, not to the session: `quiesce`
+  drops the writer (unlocking) and the session stays resident and readable, which is precisely
+  what retention means. Re-admission calls `attach_writer` with a fresh lease.
+
+The remaining hazard is hazard 2, and it is not fixable by ownership — a caller that deliberately
+stops another thread's fold is asking for what it gets. What ownership fixes is that it can no
+longer happen *by accident*, through a method that looks unrelated.
+
+### 7.4 Why this belongs to this refactor rather than after it
+
+The lease has to be created where the lock is taken, and after this change that is the provider —
+so `Entries::open` is the only place it can come from. Retrofitting RAII later would mean touching
+the same `admit` body twice. Step 2 of §11 is where it lands.
+
+## 8. Four reductions this is really made of
 
 The value here is mostly **deletion**. It is not a new abstraction so much as putting one name on
 a thing that is already there, and then dropping what it makes redundant.
@@ -684,7 +805,7 @@ a thing that is already there, and then dropping what it makes redundant.
 
 ---
 
-## 8. What #169 adds
+## 9. What #169 adds
 
 `admit` turned out to have no mutual exclusion: between a caller finding no resident and the cache
 installing one, every other caller also found none — so N concurrent first-pulls opened N stores
@@ -708,7 +829,7 @@ Two consequences the migration must carry, both easy to lose when a body moves b
 
 ---
 
-## 9. What deliberately does NOT move behind the provider
+## 10. What deliberately does NOT move behind the provider
 
 `entry_dir`, `Presentation` and `lock::read` have consumers that never touch the cache and must
 keep working:
@@ -723,7 +844,7 @@ the layout, and other tools legitimately read that layout.
 
 ---
 
-## 10. Migration
+## 11. Migration
 
 Four steps, each independently gateable. Two tests are the oracles at **every** step, not just the
 last:
@@ -740,7 +861,7 @@ last:
 | 3 | Flip to `SessionCache::new(entries)`; frontends and the monitor build their own; `gc` moves out | call-site churn, mechanical |
 | 4 | Delete `Option<Durable>`, `ephemeral()`, `Default`, `NoCacheFlag`; add `Memory` for the tests that used `ephemeral()` as a type-level state | test-only |
 
-## 11. Open questions
+## 12. Open questions
 
 1. **Does `cache_home()` / `default_root()` belong to the cache at all?** They live in
    `cache::admit` today and are already called by clients. Candidates: move to `present::sys`
@@ -751,7 +872,7 @@ last:
 3. **Does `admit` keep its name?** Once it is "become the single owner of this session's
    tailer" rather than "claim a lock on a directory", the word is doing less work than it looks
    like it is (§6.8). `own` / `claim` / `take` are candidates. Renaming touches every call site
-   and every test that matches on `Admission`, so it is worth deciding at step 3 of §10 or not at
+   and every test that matches on `Admission`, so it is worth deciding at step 3 of §11 or not at
    all.
 4. **Does `A` (the sidecar slot) stay on the cache?** It is view state keyed by session, so
    probably yes — but it is the third map on a type we are trying to narrow.
