@@ -26,6 +26,22 @@ fn tmux(socket: &str, args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
+/// Kills a test's private tmux server when the test ends — **including when it ends by
+/// panicking**. The explicit `kill-server` calls below are all on the happy path, so a failed
+/// assertion stranded the server and the viewer running inside it: one such pair was found still
+/// alive 3.5 days later, holding a cache entry's lock (#164).
+struct Server(String);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.0, "kill-server"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 #[test]
 #[ignore = "needs tmux; run with --ignored"]
 fn drives_real_binary_in_headless_tmux() {
@@ -44,6 +60,8 @@ fn drives_real_binary_in_headless_tmux() {
     .unwrap();
 
     let socket = format!("peekv2-e2e-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]); // ignore failure
 
     let out = tmux(
@@ -114,6 +132,8 @@ fn esc_returns_from_viewer_to_session_list() {
     write("b.jsonl", "BBBMARKER");
 
     let socket = format!("peekv2-switch-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
 
     // No args → picker, launched in the sessions' cwd.
@@ -221,6 +241,8 @@ fn s_opens_session_switcher_on_latest() {
     write("b.jsonl", "BBBMARKER");
 
     let socket = format!("peekv2-slatest-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
 
     let out = tmux(
@@ -342,6 +364,8 @@ fn picker_merges_claude_and_codex_sessions() {
     .unwrap();
 
     let socket = format!("peekv2-multi-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
     let out = tmux(
         &socket,
@@ -435,6 +459,8 @@ fn switching_to_a_held_session_flashes_and_stays() {
     write("b.jsonl", "BBBMARKER");
 
     let socket = format!("peekv2-held-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
 
     let capture = |target: &str| -> String {

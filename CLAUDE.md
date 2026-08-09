@@ -19,6 +19,18 @@ never skip, stub, or defer a feature "because it needs a terminal."
   `--width N`; bare `--dump` deduces the stem.) `--dump` renders through the View
   pipeline and applies the TUI's default fold policy (add `--full` to expand all).
 
+## Test scratch
+Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
+crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,
+so all of it stays inside the repo and `cargo clean` clears it (#164). It used to
+land in macOS's opaque `/var/folders/…`, which nothing sweeps: 8,014 directories
+and 267 MB had accumulated there. A full run leaves ~3.4 MB.
+Scratch inside the repo is scratch inside a GIT repo, so the same file sets
+`GIT_CEILING_DIRECTORIES=target` — a fixture that shells out to `git` sees no
+repository, exactly as it did in the system temp. A test that spawns a `tmux`
+server must hold the `Server` Drop guard (`tests/tmux_smoke.rs`), or a failed
+assertion strands the server and whatever runs inside it.
+
 ## Gate every change on
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
 (runs BOTH crates via workspace default-members; deterministic — no terminal needed;

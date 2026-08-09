@@ -40,6 +40,22 @@ fn tmux(socket: &str, args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
+/// Kills a test's private tmux server when the test ends — **including when it ends by
+/// panicking**. The explicit `kill-server` calls below are all on the happy path, so a failed
+/// assertion stranded the server and the viewer running inside it: one such pair was found still
+/// alive 3.5 days later, holding a cache entry's lock (#164).
+struct Server(String);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.0, "kill-server"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 fn user(t: &str, s: u32) -> String {
     format!("{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-07-26T10:{:02}:{:02}Z\"}}\n", s / 60, s % 60)
 }
@@ -134,6 +150,8 @@ fn kill_at(kill_after: Duration, label: &str) {
     }
 
     let socket = format!("cr-kill-{}-{label}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
     let out = tmux(
         &socket,
@@ -239,6 +257,8 @@ fn a_killed_holders_lock_is_reclaimed_by_the_next_run() {
     }
 
     let socket = format!("cr-kill-lock-{}", std::process::id());
+
+    let _server = Server(socket.clone());
     tmux(&socket, &["kill-server"]);
     tmux(
         &socket,

@@ -4,3 +4,28 @@
 # always in sync with the code. Add `--open` to view it. See docs/developer-guide.md.
 [alias]
 apidoc = "doc --workspace --no-deps --document-private-items"
+
+# **Test scratch stays inside the repo.** Every test in this workspace builds its scratch under
+# `std::env::temp_dir()` — a hundred call sites across eight crates — and the helpers wipe on
+# ENTRY with a pid-keyed name, so the wipe only ever targets a pid no future run has. On macOS
+# `$TMPDIR` is an opaque `/var/folders/…` path nothing sweeps, and the leftovers were found
+# 8,014 directories and 267 MB deep (#164).
+#
+# Pointing `TMPDIR` at the workspace's own `target/` moves all of it somewhere disposable,
+# gitignored, findable, and cleared by `cargo clean` — without touching a single call site, and
+# covering every site added later. `target/` rather than a subdirectory of it because tests write
+# bare files straight into `temp_dir()` and nothing would create the parent first; `target/`
+# always exists by the time a test binary runs. `force` because macOS always sets `$TMPDIR`.
+#
+# Cargo applies this to what IT runs — `cargo test`, `cargo run`, build scripts — and not to an
+# installed binary or the release build the byte gate drives, which keep the real system temp.
+[env]
+TMPDIR = { value = "target", relative = true, force = true }
+# Scratch inside the repo is scratch inside a GIT REPO, and that is not the same place. The jdi
+# supervisor's no-progress guard fingerprints `git rev-parse HEAD` of the session's cwd and turns
+# ITSELF OFF when there is no repo — so a fixture that used to be in `/var/folders` (no repo, guard
+# off) started seeing claude-replay's own HEAD and took a different branch. A ceiling at `target/`
+# stops git's repo discovery from walking above it, so every fixture under there is outside a
+# repository again, exactly as it was — for every test at once, rather than one `git init` per
+# fixture and a hazard waiting for the next one.
+GIT_CEILING_DIRECTORIES = { value = "target", relative = true, force = true }
