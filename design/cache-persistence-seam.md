@@ -138,7 +138,60 @@ pub enum Opened<P: BlockStore, N> {
 Today's `cache::admit` + `cache::lock` become **`FsEntries`** — the one implementation shipped,
 and the only thing that knows `Presentation`, `Versions`, `gc`, `KEEP_FOR`, or a `PathBuf`.
 
-### 3.1 One Rust wrinkle, named up front
+### 3.1 Two axes, not one: persistence and sharing
+
+The ceremony in §6.1 — lock, note, publish, deny, redirect — exists for exactly one reason:
+**another process might want the same entry**. It has nothing to do with whether the bytes survive
+this process. Those are independent:
+
+| | not shared | shared |
+|---|---|---|
+| **not persistent** | in-memory cache — a library consumer, a test | *(no such thing: nothing to contend for)* |
+| **persistent** | `--no-cache`'s private root; a single-tool bundle | the shared root: two viewers, a monitor |
+
+Three of those four are real, and only ONE of them needs the protocol. A provider that cannot be
+contended for should not be made to perform it:
+
+- **`open` always returns `Owned`** — `Denied`, `Denial`, `Holder` and the redirect path never
+  arise, because no peer exists.
+- **`publish` is meaningless** — there is nobody to announce to. `Note` is `()`.
+- **`release` still matters**, but only its quiesce half: stop writing. There is no lock to drop.
+
+So `publish` and `release` get **default method bodies** on the trait, and a minimal provider is
+one function:
+
+```rust
+struct Memory;
+
+impl Entries<ArcLog> for Memory {
+    type Note = ();                        // nothing to publish
+    fn open(&self, _id, _src, _ours, make_store) -> Opened<ArcLog, ()> {
+        // Nobody else can have it. There is nothing to align, resume, or refuse.
+        Ok(Opened::Owned { store: make_store(…)?, loaded: vec![], origin: Origin::Cold(NoPriorCache) })
+    }
+    // publish → false, release → no-op: both defaulted.
+}
+```
+
+This is worth stating because it is not hypothetical today. **`--no-cache` already pays the full
+ceremony for entries nobody can ever see**: #165 gives it a pid-keyed private root, and every
+session in it still takes a `LOCK`, writes a note, and can in principle be `Denied` — by a peer
+that cannot exist. The protocol is not wrong there, it is simply unreachable, which is a good sign
+it belongs to a *kind* of provider rather than to all of them.
+
+**The wart this exposes.** `make_store: &dyn Fn(&Path) -> io::Result<P>` bakes a directory into
+the seam — a memory provider has no path to hand it. Three ways out, undecided:
+
+| | approach | cost |
+|---|---|---|
+| a | pass a meaningless path (`Path::new("")`) and let memory stores ignore it | one line, and exactly the sort of quiet lie this refactor exists to remove |
+| b | an enum: `Where::Dir(&Path)` / `Where::Nowhere` | honest; one `match` in every store factory that does not need it |
+| c | an associated `type Place<'a>` on the trait (GAT) | most precise; the heaviest to read, and it infects every signature |
+
+Leaning **b**: it says the true thing without asking a reader to know what a GAT is, and the
+`Nowhere` arm is a one-line `unreachable`/ignore in the two factories that would ever see it.
+
+### 3.2 One Rust wrinkle, named up front
 
 `Entries` has an associated type (`Note`), so the cache cannot hold it as a bare
 `Box<dyn Entries<P>>` — a trait object must name its associated types. Two ways out:
@@ -485,7 +538,55 @@ thing the lock exists to prevent.
 - **Asking whether an id is admitted.** `is_registered` answers *known*, not *owned*. The honest
   test is to call `admit` and read the outcome.
 
-### 6.8 Every method, and who calls it
+### 6.8 Which of these are durable-only (today: most of them)
+
+A fair reading of §6.1 is *"this is the lifecycle of a **durable** cache"* — and today that is
+exactly right, which is itself part of the problem:
+
+| method | with durable wiring | without it |
+|---|---|---|
+| `register` / `resolve` / `aux_*` | works | works |
+| `shared_session` / `poll_view` / `reap` | works | works |
+| **`admit`** | the only path to a session | **always `Denied(NoCacheFlag)`** |
+| **`publish`** | writes the note | **silently `false`** |
+| **`release`** | quiesce **+** unlock | quiesce only |
+| **`release_all`** (and `Drop`) | quiesce + unlock everything | **returns immediately — quiesces nothing** |
+
+So there are really **two lifecycles** today, and `poll_view` picks between them with a branch on
+the cache's own field:
+
+```rust
+let ss = if self.durable.is_some() {
+    self.touch(id)?                       // durable: only `admit` may materialize
+} else {
+    self.shared_session(id, || …)         // otherwise: materialize on demand, no lock
+};
+```
+
+That branch is the smell in one line. A type that behaves as two different things depending on
+whether one `Option` field is `Some` is two types.
+
+(Also visible in the table: `release` quiesces regardless, `release_all` does not quiesce at all
+without durable wiring. Harmless today — a cache with no wiring has no writer attached, so there
+is nothing to stop — but the two disagree, and only because the `Option` check sits in different
+places in each.)
+
+**In the target this collapses to one lifecycle** — but not by making everyone pay for it. The
+provider is mandatory (§7.1), so `admit` is never a no-op; and a provider that cannot be contended
+for implements one function and defaults the rest (§3.1), so an in-memory or private-root client
+gets `open → Owned` and nothing else. `poll_view` loses its branch: every session comes into being
+the same way, and what varies is how much the provider has to do about it.
+
+The deeper point is that **`admit` is not a durability concept at all**. It reads as one because
+its implementation is "claim a lock on a directory". What it actually establishes is *one owner,
+therefore one tailer* — and #169 proved that matters with zero disk involved: two folds of one
+session in one process means double the CPU, two tails that need not agree, and (only
+incidentally, because this store happens to be durable) a corrupt log. Persistence made the
+symptom loud; the rule was never about persistence.
+
+That gap between what these three mean and what they are named after is the audit in miniature.
+
+### 6.9 Every method, and who calls it
 
 | method | HTML server | TUI | monitor |
 |---|---|---|---|
@@ -515,8 +616,8 @@ a thing that is already there, and then dropping what it makes redundant.
    #163 removed the fallback, #165 made `--no-cache` a real cache at its own root. The provider
    becomes mandatory, and `Unavailable::NoCacheFlag`, `Default`, and `ephemeral()` go with it. A
    host that genuinely wants nothing on disk implements a `Memory` provider that grants every
-   request and locks nothing — which is a better answer than a `None` that makes every method
-   check whether it is real.
+   request and locks nothing (§3.1 — it is one function) — a better answer than a `None` that
+   makes every method check whether it is real.
 2. **`Note` moves off `DurableStore` onto `Entries`.** A note describes the *process holding the
    lock* — a port, a tmux pane — not the store that writes blocks. Every use already proves it:
    `lock::read::<HtmlNote>`, `Holder<HtmlNote>`, `cache.publish(id, HtmlNote { port })`. It sits
@@ -595,5 +696,10 @@ last:
 2. **Is `Presentation` the provider's business or the client's?** After this change the cache never
    sees it. It could equally be folded into the root the client passes (`<root>/html`), leaving
    the enum to the two places that need to *name* the namespace (the monitor's rail read).
-3. **Does `A` (the sidecar slot) stay on the cache?** It is view state keyed by session, so
+3. **Does `admit` keep its name?** Once it is "become the single owner of this session's
+   tailer" rather than "claim a lock on a directory", the word is doing less work than it looks
+   like it is (§6.8). `own` / `claim` / `take` are candidates. Renaming touches every call site
+   and every test that matches on `Admission`, so it is worth deciding at step 3 of §10 or not at
+   all.
+4. **Does `A` (the sidecar slot) stay on the cache?** It is view state keyed by session, so
    probably yes — but it is the third map on a type we are trying to narrow.
