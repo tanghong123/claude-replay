@@ -22,6 +22,66 @@ const DEFAULT_PORT: u16 = 2727;
 /// only server-side substitution: which build is running (mirrors the HTML viewer's brand).
 const RAIL_TEMPLATE: &str = include_str!("rail.html");
 
+/// Refuse to start when another monitor already holds this cache root (#160).
+///
+/// **One monitor per root.** The cache root is single-writer by construction (#96), and every
+/// entry a peer holds is one this process would be DENIED — served instead from an uncached
+/// store that re-folds and re-appends a full render on each TTL cycle (#158), while disagreeing
+/// with the owner about the tail (#159). None of that is visible from the page, which is what
+/// made it cost 14 GB before anyone noticed. `claude-replay --html` had a guard for this all
+/// along — [`claude_replay_html::existing_server`] hands a second invocation to the first — and
+/// the monitor simply never had one. Binding 2727 twice fails, but `--port` walks past it.
+///
+/// The note is where we serve, published once the listener binds, so the refusal can name it.
+/// A holder that has not bound yet still counts (it is a real window, not a dead process); a
+/// dead holder is reclaimed by `acquire`, which is what makes a killed monitor's lock harmless.
+/// A lock we cannot WRITE is reported and ignored — a temp I/O fault should not stop the tool.
+fn claim_root(root: &std::path::Path) -> Result<()> {
+    use claude_replay_present::cache::lock;
+    let holder = match lock::acquire::<serde_json::Value>(root, |h| {
+        lock::pid_alive(h.pid) && port_answers(note_port(h.note.as_ref()))
+    }) {
+        Ok(lock::Taken::Owned) => return Ok(()),
+        Ok(lock::Taken::Held(h)) => h,
+        Err(e) => {
+            eprintln!(
+                "warning: could not take the root lock at {}: {e}",
+                root.display()
+            );
+            return Ok(());
+        }
+    };
+    let at = match note_port(holder.note.as_ref()) {
+        Some(p) => format!(" at http://127.0.0.1:{p}/"),
+        None => String::new(),
+    };
+    anyhow::bail!(
+        "claude-monitor is already running (pid {}){at}.\n\
+         One monitor per cache root: a second one is denied every session the first holds and \
+         serves them uncached, which grows its scratch without bound and reports a stale tail. \
+         Open the running one, or stop it first.",
+        holder.pid
+    )
+}
+
+/// The port out of a root lock's note, which is plain JSON here — the monitor has no serde
+/// derive and needs exactly one field.
+fn note_port(note: Option<&serde_json::Value>) -> Option<u16> {
+    note?.get("port")?.as_u64().map(|p| p as u16)
+}
+
+/// Whether a holder's published port still answers. Same rule the html server's rendezvous
+/// uses: a pid alone is not enough (pids are recycled), and a holder that has taken the lock
+/// but not yet bound (`None`) counts as live.
+fn port_answers(port: Option<u16>) -> bool {
+    let Some(port) = port else { return true };
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(150),
+    )
+    .is_ok()
+}
+
 /// Drop the scratch of monitor runs that are no longer alive (#157).
 ///
 /// Per-run scratch fixes the sharing, but nothing would ever collect a dead run's copy: a
@@ -97,6 +157,8 @@ fn main() -> Result<()> {
     }
 
     let root = index::default_root()?;
+    // Before anything is opened: one monitor per root (#160).
+    claim_root(&root)?;
     // Scratch is RUN-scoped and wiped on the way in, the same contract `--html` gives its own
     // bundle dir (html_export::serve::start_server) and for the same two reasons (#157).
     //
@@ -120,7 +182,7 @@ fn main() -> Result<()> {
         fold: Default::default(),
         scratch: scratch.clone(),
     })?);
-    let idx = Arc::new(index::Index::new(root, only));
+    let idx = Arc::new(index::Index::new(root.clone(), only));
 
     let rail = RAIL_TEMPLATE.replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
     let handler = {
@@ -172,6 +234,10 @@ fn main() -> Result<()> {
     let bound = spawn_listener(port, handler)
         .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;
     service.set_port(bound);
+    // Now the root lock can say where we serve, so the next invocation's refusal names a URL
+    // instead of just a pid (#160). Only reachable once bound — the same reason the html
+    // server publishes its per-session notes late.
+    let _ = claude_replay_present::cache::lock::publish(&root, serde_json::json!({"port": bound}));
     let url = format!("http://127.0.0.1:{bound}/");
     eprintln!("claude-monitor serving {url} (loopback only — Ctrl-C to stop)");
     println!("{url}");
