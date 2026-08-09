@@ -212,6 +212,9 @@ impl DurableStore for RecordStore {
             if !line.ends_with(b"\n") {
                 break; // the writer died mid-append
             }
+            if !one_record(&line[..line.len() - 1]) {
+                break; // two records share this line (#168) — torn, in the same sense
+            }
             out.push(RecordLocator {
                 offset: at,
                 len: line.len() as u32 - 1, // the locator excludes the framing newline
@@ -245,6 +248,47 @@ impl DurableStore for RecordStore {
         self.emit = EmitState::resumed(n, meta.turns);
         Ok(())
     }
+}
+
+/// Whether `line` (its framing newline already stripped) holds exactly ONE complete JSON value.
+///
+/// A brace scan, not a parse: 30 MB of `serde_json` on every resume would be paid by every
+/// admission, where this is a byte walk over bytes already in memory. It has one job — catch a
+/// line carrying TWO records because two writers interleaved their record/newline pairs (#168).
+/// That damage is invisible to the framing walk (a merged pair reads as one locator) and fatal in
+/// the browser, where each line goes through `JSON.parse`, so without a check here an entry
+/// corrupted once serves a blank page forever.
+fn one_record(line: &[u8]) -> bool {
+    let (mut depth, mut in_str, mut escaped, mut closed) = (0i32, false, false, false);
+    for &b in line {
+        if escaped {
+            escaped = false;
+        } else if in_str {
+            match b {
+                b'\\' => escaped = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
+        } else {
+            match b {
+                b'"' => in_str = true,
+                b'{' | b'[' => {
+                    if closed {
+                        return false; // a second value on this line
+                    }
+                    depth += 1;
+                }
+                b'}' | b']' => {
+                    depth -= 1;
+                    if depth <= 0 {
+                        closed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    closed && depth == 0 && !in_str && !escaped
 }
 
 /// What a second server finds when it discovers this one already holds a session (#96 §8.4):
@@ -344,6 +388,80 @@ mod tests {
         let log =
             crate::cache::admit::entry_dir(root, Presentation::Html, "s").join("records.jsonl");
         (std::fs::read_to_string(log).unwrap_or_default(), origin)
+    }
+
+    /// The brace scan, on the shapes it has to separate: one record, two records sharing a line,
+    /// and the string contents that must not fool it (braces and escaped quotes are ordinary
+    /// characters inside a rendered HTML body, and every record carries one).
+    #[test]
+    fn one_record_separates_a_single_value_from_a_merged_pair() {
+        assert!(one_record(br#"{"id":"b1","t":"block"}"#));
+        assert!(
+            one_record(br#"{"h":"<p>a } { b</p>","p":"md"}"#),
+            "braces in a string"
+        );
+        assert!(
+            one_record(br#"{"h":"he said \"}{\" once"}"#),
+            "escaped quotes"
+        );
+        assert!(
+            !one_record(br#"{"id":"b1"}{"id":"b2"}"#),
+            "two writers, one line"
+        );
+        assert!(
+            !one_record(br#"{"id":"b1"}{"id":"#),
+            "…and a torn second one"
+        );
+        assert!(!one_record(br#"{"id":"b1""#), "unterminated");
+        assert!(!one_record(b""));
+    }
+
+    /// #168: a log where two writers interleaved leaves a line carrying TWO records. The framing
+    /// walk cannot see it — a merged pair reads as one locator — and the browser's `JSON.parse`
+    /// dies on it, so an entry damaged once served a blank page forever with nothing logged.
+    /// Re-admitting must treat that line the way it treats a torn tail: stop, cut, refold.
+    #[test]
+    fn a_merged_record_line_is_cut_and_refolded() {
+        let root = tmp("merged");
+        let src = root.join("t.jsonl");
+        write_transcript(&src, 6);
+        let reference = {
+            let c = cache(&root);
+            let (log, _) = open_and_fold(&c, &root, &src);
+            c.release_all();
+            log
+        };
+        let log_path =
+            crate::cache::admit::entry_dir(&root, Presentation::Html, "s").join("records.jsonl");
+
+        // Damage it exactly as the race does: drop ONE framing newline, so two records share a
+        // line and the file keeps the extra newline that the second writer's `write("\n")` left.
+        let lines: Vec<&str> = reference.lines().collect();
+        let at = lines.len() / 2;
+        let damaged = format!(
+            "{}\n{}{}\n\n{}\n",
+            lines[..at].join("\n"),
+            lines[at],
+            lines[at + 1],
+            lines[at + 2..].join("\n")
+        );
+        std::fs::write(&log_path, &damaged).unwrap();
+        assert!(
+            damaged.lines().any(|l| !one_record(l.as_bytes())),
+            "the fixture must actually be corrupt"
+        );
+
+        // Re-admit: the entry heals instead of serving what it cannot parse.
+        let c = cache(&root);
+        let (healed, _) = open_and_fold(&c, &root, &src);
+        c.release_all();
+        for line in healed.lines() {
+            assert!(
+                one_record(line.as_bytes()),
+                "every served line must be one record: {line}"
+            );
+        }
+        assert_eq!(healed, reference, "and the refold restores the same log");
     }
 
     /// **The HTML half of the resume oracle** (#96 R5). The wire records a resumed server

@@ -221,13 +221,28 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// that re-materialization is a RESUME, not a re-fold, which is what makes an aggressive TTL
     /// affordable. Returns the evicted residents so the owner can act on the reference before it
     /// drops.
+    ///
+    /// **In use is not idle** (#168). The idle clock is stamped when a request TAKES the session,
+    /// not when it finishes with it, so a fold longer than the TTL — a cold 132 MB transcript
+    /// comfortably exceeds 30 s — leaves its own resident evictable while it is still writing to
+    /// it. Evicting it there is not a lost cache entry, it is a lost *lock*: the next admission
+    /// finds no resident, and `lock::acquire` never denies its own pid, so it opens a SECOND store
+    /// on the same log. Two `SharedSession`s are two mutexes, so nothing serializes them, and
+    /// `put`'s record-then-newline pair interleaves into `recA recB \n \n` — a line the browser's
+    /// `JSON.parse` cannot read and the server never re-parses, i.e. a page that stays blank
+    /// forever with nothing logged anywhere.
+    ///
+    /// `strong_count` is exact here, not a heuristic: every clone of a resident (`touch`,
+    /// `shared_peek`, `shared_session`) is handed out under this same map lock, so no new
+    /// reference can appear while the count is being read.
     pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<P>>)> {
         let mut evicted = Vec::new();
         self.pull_residents
             .lock()
             .unwrap()
             .retain(|id, (last_seen, ss)| {
-                let keep = last_seen.elapsed().as_millis() < ttl_ms;
+                let in_use = std::sync::Arc::strong_count(ss) > 1;
+                let keep = in_use || last_seen.elapsed().as_millis() < ttl_ms;
                 if !keep {
                     evicted.push((id.clone(), ss.clone()));
                 }
@@ -620,6 +635,36 @@ mod tests {
         f.write_all(s.as_bytes()).unwrap();
     }
 
+    /// #168: a resident someone is STILL USING is not idle, whatever its clock says.
+    ///
+    /// The clock is stamped when a request takes the session, not when it finishes, so a fold
+    /// longer than the TTL leaves its own resident evictable mid-write. Dropping it there costs
+    /// the entry's lock, not just its cache: the next admission finds nothing resident and
+    /// `lock::acquire` never denies its own pid, so it opens a SECOND store on the same log and
+    /// the two interleave into records no client can parse.
+    #[test]
+    fn reap_spares_a_resident_that_is_still_held() {
+        let path = tmp();
+        std::fs::write(&path, CLAUDE_1).unwrap();
+        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
+        let src = Transcript::open(Agent::CLAUDE, path.clone());
+        cache.register("s", src.clone());
+
+        let held = cache.shared_session("s", || {
+            SharedSession::with_store(src.agent(), src.path(), crate::engine::ArcStore)
+        });
+        assert!(
+            cache.reap(0).is_empty(),
+            "a zero TTL still cannot evict a session a request is holding"
+        );
+        assert!(cache.shared_peek("s").is_some(), "and it stays resident");
+
+        drop(held);
+        let evicted = cache.reap(0);
+        assert_eq!(evicted.len(), 1, "once nobody holds it, the TTL applies");
+        assert!(cache.shared_peek("s").is_none());
+    }
+
     /// The unified live tier's in-process surface (#85): registered → first `poll_view`
     /// materializes the resident and hands the WHOLE file as the delta (`changed_from` 0);
     /// an unchanged file is idle (`None`); an append hands only the delta with the boundary
@@ -686,7 +731,8 @@ mod tests {
 
     /// The pull-resident lifecycle: `shared_session` materializes once (same `Arc` back on every
     /// call), `shared_peek` sees it without materializing, `reap` evicts it alongside the follower
-    /// residents, and a later `shared_session` re-materializes fresh.
+    /// residents **once nobody holds it** (#168), and a later `shared_session` re-materializes
+    /// fresh — on a genuinely new session, the old one having been dropped and its store closed.
     #[test]
     fn pull_resident_lifecycle_materialize_peek_reap() {
         use std::sync::Arc;
@@ -705,12 +751,22 @@ mod tests {
             "peek sees the resident without materializing"
         );
 
+        // Let go before reaping: a held resident is in USE, and eviction under a live reference
+        // is what lets a second store open on the same log.
+        let gone = Arc::downgrade(&a);
+        drop(a);
+        drop(b);
         cache.reap(0);
         assert!(cache.shared_peek("s").is_none(), "reaped with the rest");
+        assert!(
+            gone.upgrade().is_none(),
+            "and really dropped — its store is closed before anything reopens the entry"
+        );
         let c = cache.shared_session("s", || {
             SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::new())
         });
-        assert!(!Arc::ptr_eq(&a, &c), "re-admit re-materializes");
+        assert!(gone.upgrade().is_none(), "re-admit re-materializes");
+        drop(c);
         let _ = std::fs::remove_file(&path);
     }
 
