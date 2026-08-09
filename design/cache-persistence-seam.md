@@ -499,8 +499,58 @@ cache.aux_with(id, |a| a.parent = Some(parent_id.to_string()));
 
 Two properties worth knowing: sidecars have **registry lifetime** — reaping a resident does *not*
 drop its sidecar, which is exactly why park-and-take works across an eviction — and **the consumer
-owns validity**. The cache cannot know that a terminal resize invalidated measured heights, so a
-sidecar carries its own validity key and the adopter discards on mismatch.
+owns validity**.
+
+#### There is no way to INVALIDATE a sidecar, by design
+
+The cache never touches the contents, so it can never notice they went stale. Nothing says *"the
+state you parked is wrong now"* — a producer's only lever is `aux_take` (take it out and drop it)
+or `aux_put` (overwrite). Which means validity is decided **at adopt time, by the adopter, from
+what it can see** — and the answer is always *discard and recompute*, never *update in place*.
+
+That is defensible: the parked state is derived, so recomputing it is always available, and the
+alternative (the cache learning enough about `A` to patch it) would put view geometry inside a
+cache. But it puts the whole weight on the validity key, and **the two consumers key on very
+different things**:
+
+```rust
+// HTML — a CONTENT key. `(epoch, gen, len)`: within a gen the finalized provisional is
+// append-only and the committed prefix frozen, so an equal key means identical records.
+// A tail reshape bumps `gen`, so the cached render is dropped exactly when it stops being true.
+let prov_key = (d.epoch, d.provisional_gen, d.provisional.len());
+let cached = self.cache.aux_with(id, |a| {
+    a.prov_render.as_ref().filter(|(k, _)| *k == prov_key).map(|(_, l)| l.clone())
+});
+
+// TUI — a LENGTH key. `adopt_sidecar` compares nothing but counts:
+if sc.heights.len() != self.blocks.len() || sc.collapsed.len() != self.blocks.len() {
+    return false;   // "the session changed shape while evicted — fresh measure"
+}
+```
+
+**The question this raises** (and the doc had glossed): what about a reshape that preserves the
+count? A tool result back-patching its call, or a finalization that regroups the tail, can change
+a block's rendered height with `blocks.len()` unchanged — and then stale `heights` are adopted
+*and marked current* (`dirty_from = None`). Width is not the hole: `adopt_sidecar` takes the
+parked width and `layout` re-measures when the real one differs. Content is.
+
+In practice the TUI is mostly saved by two things, neither of them the key: a re-descended child
+is usually **completed** (its blocks cannot change), and a **live** one gets a delta on the next
+poll that sets `dirty_from` and re-measures from the change point. So this is a latent sharp edge
+rather than a standing bug — but "mostly saved by the next event" is not a validity discipline,
+and it is exactly the sort of thing that becomes a bug when someone parks a sidecar somewhere new.
+
+Three ways to close it, for whoever picks this up:
+
+| | approach | cost |
+|---|---|---|
+| a | give the TUI a content key like the HTML side's — park the session's `(epoch, gen, committed_len)` with the sidecar and compare on adopt | small, symmetric with the existing HTML discipline, and it makes the two consumers explicable as one rule |
+| b | adopt conservatively: keep folds and scroll (position-keyed, cheap to re-apply), always re-measure heights | loses the measure-pass saving that is the sidecar's main point |
+| c | let the cache invalidate on session change — a generation counter it bumps on every commit, stamped into the slot | the cache would be enforcing a validity rule for state it cannot read; rejected on the same grounds as everything else in this doc |
+
+Leaning **a**. It is the one that makes `aux` a single concept rather than a slot two clients use
+with different rigor — and it is a change to the TUI, not to the cache, which is the right side of
+the seam for it.
 
 ### 6.5 Residency: keeping a lid on memory
 
@@ -537,6 +587,8 @@ thing the lock exists to prevent.
   asker is `Denied` and routes to the holder (#163).
 - **Asking whether an id is admitted.** `is_registered` answers *known*, not *owned*. The honest
   test is to call `admit` and read the outcome.
+- **Invalidating a sidecar.** The cache cannot read `A`, so it can never know it went stale. See
+  §6.4 — validity is the adopter's job, and today the two consumers do it with different rigor.
 
 ### 6.8 Which of these are durable-only (today: most of them)
 
