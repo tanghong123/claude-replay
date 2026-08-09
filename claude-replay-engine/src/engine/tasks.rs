@@ -347,6 +347,19 @@ impl TaskFold {
 /// Merge the live on-disk state over the op-log reconstruction: disk wins per task id
 /// (it is the queue's current truth and carries full detail); op-log items fill in for
 /// pruned/gc'd files. The result keeps id order.
+/// **This viewer MIRRORS the agent's task store; it is not the archive of record.**
+///
+/// Recorded because the tempting fix keeps presenting itself (owner decision, #155). Claude
+/// Code DELETES a task's JSON when it completes — the queue directory holds only the open
+/// ones — so a task completed in an earlier session has no subject in any local source: no
+/// `Create` op in this transcript, no file on disk, nothing in the transcript text. It is
+/// therefore easy to propose that the durable meta stream (#96) retain every subject it has
+/// ever seen, so titles survive the agent pruning them.
+///
+/// Don't. That would make the viewer a second source of truth for data its subject
+/// deliberately discards, and quietly commit it to a durability promise it never made. When a
+/// title is gone, the honest render is [`TaskItem::subject`] left empty and the frontends
+/// saying so (#125) — a visible gap, not an invented one.
 pub fn merged(oplog: &TaskList, disk: Option<TaskList>) -> TaskList {
     let Some(disk) = disk else {
         return oplog.clone();
