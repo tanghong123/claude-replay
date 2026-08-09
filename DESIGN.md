@@ -677,114 +677,12 @@ The residual diff is **not** decision-free rendering:
     per-session cost is *opening the database*, which a memo cannot fix but a batch can.
   - Five open questions in §8.
 
-### #167 — the cache should not know what persistence is (design)
+### #167 — the cache should not know what persistence is
 
-**The rule** (the user, 2026-08-08): *"session cache itself should have no knowledge of
-persistency. The persistency (and durability) are provided by the BlockStore and other
-interfaces. So persistent/durable cache directory should not be tied to the main cache API."*
-
-**Where it stands.** `SessionCache<P, A>` is a keyed registry of sessions plus their residents —
-and also a filesystem client. It carries `durable: Option<Durable { presentation, root: PathBuf,
-versions, owned: HashMap<String, Owned { dir: PathBuf }> }>`; its constructor
-`durable(presentation, root, versions)` takes a directory and runs `admit::gc(&root)` as a side
-effect of *building a cache*; `admit` interleaves registry lookup, residency, lock acquisition,
-entry-dir computation, backing open and stream alignment in one call; `publish`/`release`/
-`release_all`/`Drop` run the lock lifecycle; and `Presentation` (a frontend enum) and `Versions`
-(a fold stamp) appear in the cache's own signature. `Denial::Unavailable::{UnwritableRoot,
-NoCacheFlag}` name filesystem and CLI conditions in its public vocabulary.
-
-**The target.** The cache keeps ids → `Transcript` sources and `SharedSession` residents, with a
-TTL/budget residency policy, and nothing else. Everything about *where blocks survive a process*
-moves behind one client-supplied interface:
-
-```rust
-/// What a client provides so the cache can hand out sessions that outlive the process.
-/// The cache never names a directory, a lock, or a file — it asks for a backing and is told
-/// either what it got or who has it.
-pub trait Entries<P: BlockStore>: Send + Sync {
-    type Note: Serialize + DeserializeOwned + Clone;
-    /// `ours` is the caller's half of the #109 witness: how many bytes the resident it already
-    /// holds has written, or `None` when it holds nothing.
-    fn open(&self, id: &str, src: &Transcript, ours: Option<u64>) -> Opened<P, Self::Note>;
-    fn publish(&self, id: &str, note: Self::Note) -> bool;
-    fn release(&self, id: &str);
-}
-
-pub enum Opened<P: BlockStore, N> {
-    /// Ours. `origin` stays as rich as it is today — a denial is a support question.
-    Owned { store: P, loaded: Vec<P::Bv>, origin: Origin },
-    /// Nothing was opened. Held by a live peer, or nothing here to open.
-    Denied(Denial<N>),
-}
-```
-
-`SessionCache::durable(presentation, root, versions)` becomes `SessionCache::new(entries)`.
-Today's `cache::admit` + `cache::lock` become **the** implementation of `Entries` for a filesystem
-root — the only one shipped, and the only thing that knows `Presentation`, `Versions`, `gc`,
-`KEEP_FOR` or a `PathBuf`.
-
-**The one factoring that makes it work.** `admit`'s retained / resume-from-middle / cold decision
-needs three facts held by three parties: the frozen resident's `backing_len` (cache), the backing
-on disk (store), and the meta stream's versions + anchor (provider). The seam is only honest if
-the cache computes its own half and passes a NUMBER — `ours: Option<u64>` — rather than handing
-the provider an `&SharedSession<P>`. Pass the session and `SharedSession` leaks across the seam
-and nothing has been separated.
-
-**Four reductions this is really made of.** The audit's value is mostly deletion, not a new
-abstraction:
-1. **`Option<Durable>` goes away.** No production caller selects an ephemeral cache any more
-   (#163 removed the fallback, #165 made `--no-cache` a real cache at its own root), so the
-   provider is mandatory. `Unavailable::NoCacheFlag`, `Default`, and `ephemeral()` go with it; an
-   in-memory host becomes a `Memory` provider that grants everything and locks nothing.
-2. **`Note` moves off `DurableStore` and onto `Entries`.** A note describes the *process holding
-   the lock* — a port, a tmux pane — not the store that writes blocks. Every use already proves
-   it: `lock::read::<HtmlNote>`, `Holder<HtmlNote>`, `cache.publish(id, HtmlNote { port })`. It
-   sits on the store today only because the store was the nearest per-frontend type.
-3. **`gc` moves to the client.** It is a constructor side effect of `durable()` today; with no
-   root on the cache it belongs where the provider is built. #165 moving `throwaway_root` /
-   `run_dir` / `reclaim` out of `cache::admit` into `present::sys` — because *the client picks its
-   own directories* — is the precedent.
-4. **`Origin` / `ColdReason` survive intact.** They are diagnosable on purpose and the rejection
-   tests assert on them; an opaque "here is a store" return would kill that.
-
-**What deliberately does NOT move behind the provider.** `entry_dir`, `Presentation` and
-`lock::read` have consumers that never touch the cache and must keep working:
-`claude-monitor/src/index.rs` reads each visited entry's `meta.jsonl` lock-free for the rail's
-counters (R7 — no fold on the index path), and `html_export::existing_server` reads a lock's note
-to decide a hand-off *before* any session is admitted. They stay public on the filesystem
-provider's own module.
-
-**What #169 adds (2026-08-08, after this was written).** `admit` turned out to have no mutual
-exclusion: between a caller finding no resident and the cache installing one, every other caller
-also found none, so N concurrent first-pulls opened N stores on one backing and folded into it at
-once. That is evidence FOR this refactor, not against it — the reason a missing lock was invisible
-for so long is that `admit` interleaves registry lookup, residency, lock acquisition, entry-dir
-computation, backing open and stream alignment in a single function, where "who may open a store"
-is nobody's stated job. Two consequences for the target:
-
-- **The gate stays on the CACHE, not the provider.** `admitting: Mutex<()>` guards the window
-  between "no resident" and "installed", and residents are the cache's own state — a provider that
-  serialized itself would still let two callers race to `install`. The provider's `open()` is
-  called *under* the cache's gate; it does not need one.
-- **The double-check is part of `admit`'s contract and must survive the move.** A live (non-frozen)
-  resident IS the admission: the caller that loses the race takes the winner's session rather than
-  opening a second one beside it. Written down because it is the half that is easy to drop when
-  the body moves behind a trait, and dropping it restores the bug with no test failing except the
-  one written for it (`concurrent_admissions_of_one_session_open_exactly_one_store`).
-
-**Migration order** — each step gateable on its own. The byte gate never renders a *resumed* fold,
-so `a_resumed_record_log_is_byte_identical_to_a_cold_one` is the only oracle for the code this
-touches most: it must stay green at every step, not just at the end. So must
-`concurrent_admissions_of_one_session_open_exactly_one_store` — step 2 moves the body the gate
-protects, and that test is the only thing that notices if the protection is left behind.
-1. Move `Note` from `DurableStore` to a standalone per-frontend type. No behaviour change.
-2. Extract `Entries` with exactly one implementation (`FsEntries`), still constructed from
-   `(presentation, root, versions)`; `SessionCache::durable` keeps its signature and builds one
-   internally. Pure re-plumbing, all tests unchanged.
-3. Flip the constructor to `SessionCache::new(entries)`; the two frontends and the monitor build
-   their own `FsEntries`. `gc` moves to that construction.
-4. Delete `Option<Durable>`, `ephemeral()`, `Default`, `NoCacheFlag`; add `Memory` for the tests
-   that used `ephemeral()` as a type-level state.
+Design doc: **[`design/cache-persistence-seam.md`](design/cache-persistence-seam.md)** — the rule,
+the `Entries<P>` seam, before/after code at every call site, the #109 witness factoring (pass a
+number, not a `SharedSession`), what #169 adds, what deliberately does not move behind the
+provider, and a four-step migration. Proposed; nothing built.
 
 ### Cleanup tasks
 
