@@ -66,10 +66,17 @@ pub fn run_dir() -> PathBuf {
 /// Take back what dead runs left behind: `throwaway/<pid>` and `runs/<pid>` whose pid is gone,
 /// plus the legacy `$TMPDIR/claude-replay` tree both used to live in.
 ///
-/// Called once per run, from each frontend's startup. A crashed run leaves its directory and the
-/// next start reclaims it — the same shape as the monitor's scratch (#162), and the reason these
-/// trees need no cleanup logic of their own.
+/// Called from the CLI entry point and from each frontend's startup — whichever comes first, and
+/// only ONCE per process: the walk costs a `readdir` and a liveness probe per candidate, and
+/// nothing it finds can appear again mid-run. A crashed run leaves its directory and the next
+/// start reclaims it — the same shape as the monitor's scratch (#162), and the reason these trees
+/// need no cleanup logic of their own.
 pub fn reclaim() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(reclaim_now);
+}
+
+fn reclaim_now() {
     for kind in ["throwaway", "runs"] {
         let Ok(entries) = std::fs::read_dir(run_space().join(kind)) else {
             continue;
@@ -220,7 +227,7 @@ mod tests {
             std::fs::create_dir_all(p).unwrap();
             std::fs::write(p.join("x"), b"x").unwrap();
         }
-        reclaim();
+        reclaim_now(); // not `reclaim`: its once-per-process guard would make this order-dependent
         assert!(!dead.exists(), "a dead run's cache is taken back");
         assert!(!bundle_dead.exists(), "and its bundle with it");
         assert!(mine.exists(), "a live run's is not");

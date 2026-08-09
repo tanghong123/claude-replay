@@ -24,6 +24,11 @@ use clap::Parser;
 /// Entry point for the `claude-replay` viewer binary.
 pub fn run_viewer() -> Result<()> {
     let args = Args::parse();
+    // Take back what dead runs left behind (#165), on EVERY invocation — the frontends each do
+    // this when they build a cache, which leaves the `--dump*` modes never reclaiming anything.
+    // A machine used only for dumps would keep the leftovers forever, and those are exactly the
+    // ones nobody is watching.
+    sys::reclaim();
     // `--html`: open a browser instead of the TUI, but with the SAME session
     // selection as the terminal viewer — an explicit id/path or `--latest` resolves
     // directly (cwd-scoped for `--latest`); otherwise show the picker (like a bare
