@@ -754,9 +754,29 @@ counters (R7 — no fold on the index path), and `html_export::existing_server` 
 to decide a hand-off *before* any session is admitted. They stay public on the filesystem
 provider's own module.
 
+**What #169 adds (2026-08-08, after this was written).** `admit` turned out to have no mutual
+exclusion: between a caller finding no resident and the cache installing one, every other caller
+also found none, so N concurrent first-pulls opened N stores on one backing and folded into it at
+once. That is evidence FOR this refactor, not against it — the reason a missing lock was invisible
+for so long is that `admit` interleaves registry lookup, residency, lock acquisition, entry-dir
+computation, backing open and stream alignment in a single function, where "who may open a store"
+is nobody's stated job. Two consequences for the target:
+
+- **The gate stays on the CACHE, not the provider.** `admitting: Mutex<()>` guards the window
+  between "no resident" and "installed", and residents are the cache's own state — a provider that
+  serialized itself would still let two callers race to `install`. The provider's `open()` is
+  called *under* the cache's gate; it does not need one.
+- **The double-check is part of `admit`'s contract and must survive the move.** A live (non-frozen)
+  resident IS the admission: the caller that loses the race takes the winner's session rather than
+  opening a second one beside it. Written down because it is the half that is easy to drop when
+  the body moves behind a trait, and dropping it restores the bug with no test failing except the
+  one written for it (`concurrent_admissions_of_one_session_open_exactly_one_store`).
+
 **Migration order** — each step gateable on its own. The byte gate never renders a *resumed* fold,
 so `a_resumed_record_log_is_byte_identical_to_a_cold_one` is the only oracle for the code this
-touches most: it must stay green at every step, not just at the end.
+touches most: it must stay green at every step, not just at the end. So must
+`concurrent_admissions_of_one_session_open_exactly_one_store` — step 2 moves the body the gate
+protects, and that test is the only thing that notices if the protection is left behind.
 1. Move `Note` from `DurableStore` to a standalone per-frontend type. No behaviour change.
 2. Extract `Entries` with exactly one implementation (`FsEntries`), still constructed from
    `(presentation, root, versions)`; `SessionCache::durable` keeps its signature and builds one
