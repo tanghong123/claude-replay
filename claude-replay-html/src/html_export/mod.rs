@@ -995,14 +995,11 @@ fn build_page(
     <button id="btn-wide" class="tbtn ticon" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔</button>
 {theme_btn}
   </div>
+  <!-- Filter and Agents sit LEFT of the search box (#156). The box is the only thing here that
+       flexes, so anything after it is pinned to the right edge — which is exactly where the task
+       panel is anchored, and their menus opened underneath it. Tasks stays on the right, beside
+       the panel it opens; it has no menu of its own to be covered. -->
   <div class="tbrow">
-    <div class="searchbox">
-      <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
-      <span id="qcount"></span>
-      <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
-      <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
-    </div>
     <div class="toolfilter">
       <button id="btn-tools" class="tbtn"><span class="tf-label">Filter ▾</span><span class="tf-prev" title="Previous match (N)">‹</span><span class="tf-next" title="Next match (n)">›</span><span class="tf-x" title="Clear filter">✕</span></button>
       <div id="toolmenu">
@@ -1017,6 +1014,13 @@ fn build_page(
         <div class="menu-head">Sub-agents of this session</div>
         <div id="agentitems"></div>
       </div>
+    </div>
+    <div class="searchbox">
+      <span class="mag">⌕</span>
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
+      <span id="qcount"></span>
+      <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
+      <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
     </div>
     <div class="toolfilter" id="tasknav" style="display:none">
       <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>

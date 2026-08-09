@@ -180,7 +180,10 @@ input::placeholder { color: var(--faint); }
 }
 #agentmenu { min-width: 260px; }
 #taskmenu { min-width: 340px; max-width: min(560px, 90vw); }
-#toolmenu.on, #agentmenu.on, #taskmenu.on { display: flex; }
+/* An open menu sits ABOVE the task panel (z-index 60). Moving Filter/Agents left of the search
+   box (#156) takes them out from under it on any normal window, but the panel is up to 92vw on a
+   narrow one — and a menu you just opened should never be the thing that is covered. */
+#toolmenu.on, #agentmenu.on, #taskmenu.on { display: flex; z-index: 70; }
 .menu-head {
   flex: none; position: sticky; top: 0; background: var(--bg);
   font: 600 10px var(--sans); letter-spacing: 0.08em; text-transform: uppercase;
