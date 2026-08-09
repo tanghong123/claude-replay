@@ -707,30 +707,48 @@ That gap between what these three mean and what they are named after is the audi
 | `release_all` | `Drop` | explicit at exit | — |
 | `resident_tasks` | — | — | rail counters, without materializing |
 
-## 7. Two levels of exclusion, and one of them is a convention
+## 7. Which lock is which, and why only one of them is a convention
 
-### 7.1 The two levels
+### 7.1 The levels
 
-There are two different questions being answered by things both called "the lock", and keeping
-them apart explains most of the last three bugs:
+Three different questions get answered by things all called "the lock", and keeping them apart
+explains most of the last three bugs:
 
 | level | question | acquired by | released by | who owns it | needed when |
 |---|---|---|---|---|---|
 | **process** | may this PROCESS write the entry? | `admit` (→ `LOCK` file) | `release` / `release_all` / `Drop` | the **provider** | only on a **shared** root (§3.1) |
-| **thread** | may this THREAD use the session? | holding the `Arc<SharedSession>` that `admit`/`touch` returns | **dropping it** — no call | the **cache** (and the session) | **always** |
+| **thread — ownership** | may this THREAD keep the session alive? | holding the `Arc<SharedSession>` that `admit`/`touch` returns | **dropping it** — no call | the **cache** | **always** |
+| **thread — exclusion** | may this THREAD touch it *right now*? | the session's own `inner: Mutex<Inner>`, taken inside every method | released when that method returns | the **session** | **always** |
 
-**So `admit` / `release` / `publish` are the PROCESS-level protocol.** The thread level has no
-protocol: it is ownership by value, already RAII. You get a reference and you drop it; `reap` sees
-the difference through `Arc::strong_count` (#168), and concurrent writes through one session are
-serialized by that session's own mutex.
+**`admit` / `release` / `publish` are the PROCESS-level protocol.** Neither thread-level row has a
+protocol to call: ownership is by value (hold the `Arc`, drop the `Arc`) and exclusion is taken and
+released inside each call.
 
-Which leaves a third thing, easy to mistake for a lock and not one: the `admitting` gate is a
-**critical section**, not a claim. It is held only for the duration of `admit` — long enough to
-stop two callers both concluding "no resident, I will make one" (#169) — and released the moment
-`admit` returns. Nothing owns it afterwards.
+### So how is it guaranteed that only one thread pulls?
 
-`admit` is confusing precisely because it is the entry point to all three at once: it takes the
-gate, takes the file lock, and hands back the `Arc`. Three lifetimes, three scopes, one call.
+**It is not — and it does not need to be.** Any number of threads may pull one session at once.
+What is guaranteed is that they all pull the *same* session, and that only one is inside it at a
+time:
+
+- **One resident per id** — the singleton in `pull_residents`, protected at creation by the
+  `admitting` gate (#169). Every puller gets an `Arc` to the same `SharedSession`, so there is one
+  follower, one store, one writer, however many callers.
+- **One thread inside it at a time** — every public method on `SharedSession` takes `inner`
+  (`advance`, `poll_view`, `open_delta_with`, `counters`, `store_read`, `quiesce`,
+  `attach_writer`, `committed_arcs`; `pull` takes it twice). `advance()` holds it for **the whole
+  fold**, so a second puller blocks, and then advances from where the first left off — usually
+  finding nothing new, which is exactly right.
+
+That is why several browser tabs on one session are fine, and always were: they are not N tailers
+racing, they are N readers of one. The bugs were never concurrent *pulling* — they were concurrent
+**creation** (#169: N callers each built a session because none had been installed yet) and
+premature **destruction** (#168: a resident dropped while a thread was still folding into it).
+Both are lifetime problems around the singleton, not exclusion problems inside it.
+
+The property worth knowing, because it is a real cost rather than a bug: a cold fold holds that
+session's mutex for its whole duration — a minute or more for a large transcript — and every other
+puller of that session waits. They are not doing redundant work while they wait, which is the
+point, but they are waiting.
 
 The process-level lock is deliberately **blind to your own process**:
 
