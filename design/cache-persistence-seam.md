@@ -57,7 +57,7 @@ Four smells fall out of that one field:
 
 None of this is *wrong* today; it works and it is well tested. It is in the wrong place, and the
 cost of that shows up as: a third party cannot use the cache without accepting a directory layout,
-tests reach for a real filesystem to exercise pure residency logic, and — see §7 — a missing lock
+tests reach for a real filesystem to exercise pure residency logic, and — see §8 — a missing lock
 hid inside a function that does six unrelated things.
 
 ---
@@ -128,7 +128,7 @@ pub trait Entries<P: BlockStore> {
 }
 
 pub enum Opened<P: BlockStore, N> {
-    /// Ours. `origin` stays as rich as it is today — a denial is a support question (§5.4).
+    /// Ours. `origin` stays as rich as it is today — a denial is a support question (§7.4).
     Owned { store: P, loaded: Vec<P::Bv>, origin: Origin },
     /// Nothing was opened: held by a live peer, or nothing here to open.
     Denied(Denial<N>),
@@ -306,7 +306,7 @@ the **liveness rule** (provider config now, and it needs the server's bound port
 provider gets as a shared `Arc<OnceLock<u16>>` rather than by capturing `self`).
 
 `Admission` and `Denial` are unchanged, so every `match` at every call site keeps compiling. That
-is deliberate: it is what makes §8's steps small.
+is deliberate: it is what makes §10's steps small.
 
 ### 5.4 The provider, sketched
 
@@ -341,7 +341,172 @@ Almost all of this body already exists — it is today's `admit::claim`, `recove
 
 ---
 
-## 6. Four reductions this is really made of
+## 6. Using the cache: the whole lifecycle
+
+**Read this first if the seam is what confused you.** Almost none of the lifecycle changes. A
+client builds the cache differently (§5.1–5.2) and drops one argument from `admit` (§5.3);
+everything below is the same before and after, and is shown as it works today.
+
+There is exactly **one resident per session**, and both frontends share it. What differs is how
+they read it: the HTML server serves any number of stateless clients from it over the cursor
+**pull** protocol; the TUI ticks it in-process for a **`ViewDelta`** it splices into a view.
+
+### 6.1 The order of operations
+
+```
+   register ──▶ admit ──▶ publish ─┬─▶ [ serve / tick ]  ──▶ release
+   (know it)   (own it)  (announce)│      touch                (let go, stay resident)
+                                   │      advance
+                                   └──────┘ every request/tick
+```
+
+1. **`register(id, src)`** — *"this id exists, and here is its transcript."* Cheap: a map entry,
+   nothing opened, nothing folded. Use `register_new` for a source that may already be known —
+   it preserves the first, richest descriptor against a later bare one (a child registered by its
+   parent's pull keeps its ancestry).
+2. **`admit(id, make_store)`** — *"and I want to own it."* The only path that takes the entry's
+   lock, and therefore the only way a durable session comes into being. Returns `Owned { session,
+   origin }` or `Denied`. Registration alone is **not** enough: `poll_view` will not materialize a
+   session `admit` never granted, so a registered-but-unadmitted id ticks forever without ever
+   producing anything.
+3. **`publish(id, note)`** — *"and here is where I serve it."* Separate from `admit` because the
+   useful fact arrives later: a server has no port until it binds. Returns `false` if this process
+   does not own `id` — worth checking, since publishing before admitting is silently a no-op.
+4. **serve / tick** — §6.2.
+5. **`release(id)`** — *"I am done writing."* The session stays **resident and readable**; what
+   stops is every write. That is what lets a later re-admission keep the blocks instead of
+   rebuilding them (#109).
+
+### 6.2 Reading it: the two shapes
+
+**HTML server — per `/pull` request:**
+
+```rust
+self.cache.reap(TAIL_TTL_MS);                      // lazy eviction; no background thread
+let shared = match self.cache.touch(id) {          // resident? bump its clock, take it
+    Some(ss) => ss,
+    None => /* admit it — §5.3 */,
+};
+shared.advance()?;                                 // fold newly-appended source lines, HERE,
+                                                   // on this request's thread
+let (epoch, gen, n_committed, n_provisional) = shared.counters();   // idle fast-path: is there
+                                                   // anything to send at all?
+let (delta, extra) = shared.open_delta_with(|store, committed, d| { … });  // one consistent read
+```
+
+`advance()` is where folding actually happens, and it holds that session's lock for its duration —
+a cold fold of a large transcript can hold it for a minute. That is by design (the requester pays,
+an idle session costs nothing) and is why §8's concurrency rules matter.
+
+**TUI — per tick:**
+
+```rust
+if let Some(Ok(delta)) = cache.poll_view(id, ArcLog::memory) {
+    view.splice(delta);        // committed_delta + provisional, spliced at `changed_from`
+}
+```
+
+`poll_view` returns `None` for *"nothing to do"* — either the id is not resident (on a durable
+cache: never admitted) or the file has not changed. `Some(Ok(delta))` carries only what moved.
+
+### 6.3 Getting blocks out
+
+Three accessors, and picking the wrong one is the usual mistake:
+
+| you want | call | cost |
+|---|---|---|
+| the blocks themselves, to render now | `committed_arcs()` → `Vec<Arc<Block>>` | `Arc` clones — cheap; the cache keeps the authoritative copy |
+| what the STORE holds, to hand to a resume | `committed_bvs()` → `Vec<S::Bv>` | cheap; for `RecordStore` these are `{offset, len}` locators, not content |
+| the open turn plus store facts, atomically | `open_delta_with(\|store, committed, d\| …)` | one lock, one consistent read — use this when you need two facts that must agree |
+
+The rule behind the table: `Bv` is the *storage* projection and `Arc<Block>` is the *content* one.
+The HTML store deliberately cannot read its `Bv`s back into blocks (a wire record is a one-way
+projection), so a consumer that wants content must use `committed_arcs` or the pull protocol —
+the type system enforces it.
+
+### 6.4 Sidecars — per-session state the cache holds for you
+
+The `A` type parameter is an opaque slot the cache stores per session and never interprets. Two
+usage shapes, and they are not interchangeable:
+
+```rust
+// PARK-AND-TAKE — for state that survives an eviction and is re-adopted once.
+// The TUI parks a child's measured heights + fold/scroll when the frame is evicted:
+cache.aux_put(&key, view.into_sidecar());
+if let Some(sc) = cache.aux_take(&key) { view.adopt_sidecar(sc); }   // move semantics: taking
+                                                                    // it out is the point —
+                                                                    // a sidecar is never
+                                                                    // stale-shared
+
+// ALWAYS-ON — for state read and mutated in place every request.
+// The HTML server keeps titles, parent pointers, cwd and the cached open-turn render:
+let title = cache.aux_with(id, |a| a.title.clone());
+cache.aux_with(id, |a| a.parent = Some(parent_id.to_string()));
+```
+
+Two properties worth knowing: sidecars have **registry lifetime** — reaping a resident does *not*
+drop its sidecar, which is exactly why park-and-take works across an eviction — and **the consumer
+owns validity**. The cache cannot know that a terminal resize invalidated measured heights, so a
+sidecar carries its own validity key and the adopter discards on mismatch.
+
+### 6.5 Residency: keeping a lid on memory
+
+| call | who | policy |
+|---|---|---|
+| `reap(ttl_ms)` | HTML server, lazily on each `/pull` | drop residents idle longer than `ttl_ms` — but never one still in use (#168) |
+| `reap_over_budget(n, pinned)` | TUI, after a descend | keep at most `n` sub-agent residents, least-recently-touched go first; the pinned root never counts |
+| `remove_pull(id)` | either, rarely | drop one resident immediately — used when it turns out poisoned |
+
+An evicted resident is not a loss: its registry entry survives, so the next `admit`/`poll_view`
+re-materializes it — and on a durable cache that is a **resume**, not a re-fold, which is what
+makes an aggressive TTL affordable.
+
+### 6.6 Letting go
+
+```rust
+cache.release(id);      // quiesce + unlock ONE session; it stays resident and readable
+cache.release_all();    // everything — both `process::exit(0)` sites call this explicitly,
+                        // because they skip destructors
+// Drop does release_all() too: it covers every `?` on every error path.
+```
+
+`release` **quiesces** rather than merely flushing: a released session that kept its writer would
+append to an entry this process no longer owns — two writers on one entry, which is the whole
+thing the lock exists to prevent.
+
+### 6.7 What there is deliberately NO API for
+
+- **Deleting an entry.** Nothing exposes "forget this session's durable state". Entries go by age
+  through `admit::gc` (`KEEP_FOR`, 14 days; a lock buys another 16), swept once when a durable
+  cache is built. A client that wants an entry gone deletes the directory itself — which is one
+  reason `entry_dir` stays public (§9).
+- **Sharing an entry.** There is no read-only open, no shared mode. One writer, always; a second
+  asker is `Denied` and routes to the holder (#163).
+- **Asking whether an id is admitted.** `is_registered` answers *known*, not *owned*. The honest
+  test is to call `admit` and read the outcome.
+
+### 6.8 Every method, and who calls it
+
+| method | HTML server | TUI | monitor |
+|---|---|---|---|
+| `register` / `register_new` | roots at startup, children on a parent's pull | root + each descended child | via the service, per scan |
+| `admit` | first `/pull` of a session | opening a session, descending into a child | via the service |
+| `publish` | after bind, on admission (`{port}`) | at startup (`{pane}`) | via the service |
+| `touch` | every `/pull` | — | — |
+| `shared_peek` | `/records` range reads (no clock bump) | — | — |
+| `advance` | every `/pull` | via `poll_view` | — |
+| `poll_view` | — | every tick | — |
+| `open_delta_with` / `counters` | every `/pull` | — | — |
+| `committed_arcs` | — | building a view | — |
+| `aux_with` | titles, parents, cwd, render cache | — | — |
+| `aux_put` / `aux_take` | — | park/adopt evicted frame state | — |
+| `reap` | every `/pull` | — | — |
+| `reap_over_budget` | — | after a descend | — |
+| `release` | poisoned-session recovery | on switch | — |
+| `release_all` | `Drop` | explicit at exit | — |
+| `resident_tasks` | — | — | rail counters, without materializing |
+
+## 7. Four reductions this is really made of
 
 The value here is mostly **deletion**. It is not a new abstraction so much as putting one name on
 a thing that is already there, and then dropping what it makes redundant.
@@ -366,7 +531,7 @@ a thing that is already there, and then dropping what it makes redundant.
 
 ---
 
-## 7. What #169 adds
+## 8. What #169 adds
 
 `admit` turned out to have no mutual exclusion: between a caller finding no resident and the cache
 installing one, every other caller also found none — so N concurrent first-pulls opened N stores
@@ -390,7 +555,7 @@ Two consequences the migration must carry, both easy to lose when a body moves b
 
 ---
 
-## 8. What deliberately does NOT move behind the provider
+## 9. What deliberately does NOT move behind the provider
 
 `entry_dir`, `Presentation` and `lock::read` have consumers that never touch the cache and must
 keep working:
@@ -405,7 +570,7 @@ the layout, and other tools legitimately read that layout.
 
 ---
 
-## 9. Migration
+## 10. Migration
 
 Four steps, each independently gateable. Two tests are the oracles at **every** step, not just the
 last:
@@ -422,7 +587,7 @@ last:
 | 3 | Flip to `SessionCache::new(entries)`; frontends and the monitor build their own; `gc` moves out | call-site churn, mechanical |
 | 4 | Delete `Option<Durable>`, `ephemeral()`, `Default`, `NoCacheFlag`; add `Memory` for the tests that used `ephemeral()` as a type-level state | test-only |
 
-## 10. Open questions
+## 11. Open questions
 
 1. **Does `cache_home()` / `default_root()` belong to the cache at all?** They live in
    `cache::admit` today and are already called by clients. Candidates: move to `present::sys`
