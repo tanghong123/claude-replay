@@ -24,11 +24,11 @@ Concretely, today:
 
 ```rust
 pub struct SessionCache<P: BlockStore, A = ()> {
-    registry:       Mutex<HashMap<String, Transcript>>,   // ids → sources          — a cache
-    pull_residents: Mutex<HashMap<String, PullResident<P>>>, // ids → live folders  — a cache
-    aux:            Mutex<HashMap<String, A>>,            // ids → sidecars         — a cache
-    admitting:      Mutex<()>,                            // one admission at a time — a cache
-    durable:        Option<Durable>,                      // ← everything below is NOT
+    registry:       Mutex<HashMap<String, Transcript>>,      // ids → sources           — a cache
+    pull_residents: Mutex<HashMap<String, PullResident<P>>>, // ids → LIVE SESSIONS     — a cache
+    aux:            Mutex<HashMap<String, A>>,               // ids → sidecars          — a cache
+    admitting:      Mutex<()>,                               // one admission at a time — a cache
+    durable:        Option<Durable>,                         // ← everything below is NOT
 }
 
 struct Durable {
@@ -38,6 +38,42 @@ struct Durable {
     owned:        Mutex<HashMap<String, Owned>>,  // which directories we hold locks on
 }
 ```
+
+**Where the session itself is**, since the type alias hides it — this is the resident everything
+else in this doc talks about:
+
+```rust
+type PullResident<P> = (Instant, Arc<SharedSession<P>>);
+//                      ▲         ▲
+//                      │         └── the live session: `Arc` so any number of request threads
+//                      │             share ONE of them (§7.1). This is what `admit` and `touch`
+//                      │             hand back, what `reap` counts references to (#168), and
+//                      │             what the `admitting` gate exists to keep singular (#169).
+//                      └── the idle clock `reap` reads; stamped when a request TAKES the session,
+//                          which is why a fold longer than the TTL once looked idle (#168).
+
+pub struct SharedSession<S: BlockStore = InMemoryStore> {
+    inner: Mutex<Inner<S>>,   // the thread-level EXCLUSION lock of §7.1 — every public
+}                             // method takes it; `advance()` holds it for the whole fold
+
+struct Inner<S: BlockStore> {
+    follower: Box<FollowParser<S>>,  // the incremental fold — and, inside it, the store `S`
+    epoch: u64,                      // the cursor-protocol facts the pull reply is built from
+    provisional_gen: u64,
+    n_provisional: usize,
+    meta: Option<MetaWriter>,        // present ⇔ we are writing; `quiesce` sets it to None
+    frozen: bool,                    //   …and this to true (#109 retention)
+    …
+}
+```
+
+Four layers, and it is worth keeping them straight because the doc moves between them:
+`Transcript` (where the session's bytes come FROM) → `SharedSession` (the live fold, one per
+session) → `S: BlockStore` (where folded blocks GO — `RecordStore` on disk, `ArcLog` in memory) →
+`Bv` (what the store hands back per block: a locator, or an `Arc<Block>`).
+
+The `meta: Option<MetaWriter>` field is the one §7.3 proposes to make own the process lock —
+"present ⇔ we are writing" would become "present ⇔ we hold the entry", which is the same fact.
 
 Four smells fall out of that one field:
 
@@ -81,7 +117,13 @@ PROVIDER│ FsEntries: root, Presentation, Versions,      │   locks, meta stre
 CACHE   │ SessionCache: ids → sources, ids → residents,│   residency, TTL, sidecars,
         │ TTL/budget, one-admission-at-a-time          │   one tailer per session
         └───────────────────┬──────────────────────────┘
-                            │ owns
+                            │ holds one Arc per session
+                            ▼
+        ┌──────────────────────────────────────────────┐
+SESSION │ SharedSession: the follower + epoch/gen,      │   ONE per session, shared by every
+        │ behind one Mutex                             │   request thread (§7.1)
+        └───────────────────┬──────────────────────────┘
+                            │ folds into
                             ▼
         ┌──────────────────────────────────────────────┐
 STORE   │ RecordStore / ArcLog (BlockStore)            │   the bytes themselves
