@@ -82,40 +82,25 @@ fn port_answers(port: Option<u16>) -> bool {
     .is_ok()
 }
 
-/// Drop the scratch of monitor runs that are no longer alive (#157).
+/// Reclaim the scratch locations this crate used before #162, once.
 ///
-/// Per-run scratch fixes the sharing, but nothing would ever collect a dead run's copy. The
-/// name of each run dir IS its pid, so liveness is the whole decision, and
-/// [`claude_replay_present::cache::lock::pid_alive`] is the audited answer the cache already
-/// trusts for exactly this question. Where liveness cannot be decided (non-Unix) nothing is
-/// swept — deleting a live run's log would be far worse than keeping a dead one's.
-///
-/// Also called on the legacy `$TMPDIR/claude-monitor`, so the runs that predate #161 are
-/// reclaimed once and that directory is then left empty and unused.
-fn sweep_dead_runs(runs: &std::path::Path) {
-    if !claude_replay_present::cache::lock::liveness_decidable() {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(runs) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let Some(name) = name.to_str() else { continue };
-        // Pre-#157 layout: shared `<id>.records` logs directly under the runs dir, the ones
-        // that reached gigabytes. No version reads them any more, and unlinking is safe even
-        // if an old binary is still running — its open fd keeps the inode alive until it exits.
-        if name.ends_with(".records") {
-            let _ = std::fs::remove_file(e.path());
-            continue;
-        }
-        let Ok(pid) = name.parse::<u32>() else {
-            continue;
-        };
-        if pid != std::process::id() && !claude_replay_present::cache::lock::pid_alive(pid) {
-            let _ = std::fs::remove_dir_all(e.path());
+/// `$TMPDIR/claude-monitor` (pre-#161) and `<root>/scratch/<pid>` (pre-#162). Nothing reads
+/// either any more. `remove_dir` — not `_all` — on the temp parent, so anything unexpected
+/// there is left for a person rather than deleted by a tool.
+fn reclaim_legacy_scratch() {
+    let legacy = std::env::temp_dir().join("claude-monitor");
+    if let Ok(entries) = std::fs::read_dir(&legacy) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.ends_with(".records") {
+                let _ = std::fs::remove_file(e.path());
+            } else if name.parse::<u32>().is_ok() {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
         }
     }
+    let _ = std::fs::remove_dir(&legacy);
 }
 
 fn main() -> Result<()> {
@@ -161,27 +146,20 @@ fn main() -> Result<()> {
     let root = index::default_root()?;
     // Before anything is opened: one monitor per root (#160).
     claim_root(&root)?;
-    // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR`. Everything this tool
-    // writes is then in one place a person can find, inspect and delete — `du -sh` on the cache
-    // root is the whole answer. It was in `$TMPDIR/claude-monitor`, which on macOS resolves to
-    // an opaque `/var/folders/…` path nothing sweeps for days; that is where 14 GB accumulated
-    // unnoticed. "Temporary" described its LIFETIME, and the directory delivered neither.
+    // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR` — everything this tool
+    // writes is then in one place a person can find, inspect and delete. It was in
+    // `$TMPDIR/claude-monitor`, which on macOS resolves to an opaque `/var/folders/…` path
+    // nothing sweeps for days; that is where 14 GB accumulated unnoticed. "Temporary" described
+    // its LIFETIME, and the directory delivered neither.
     //
-    // RUN-scoped and wiped on the way in (#157), the same contract `--html` gives its bundle
-    // dir. The store appends and deliberately never truncates in its constructor (#96 — a
-    // durable log must survive to be resumed), and a session that falls off the 30s tail TTL is
-    // re-materialized by RE-FOLDING, which appends a complete re-render (+29 MB per cycle,
-    // still open as #158). Per-pid and wiped, a run cannot inherit another's log or write into
-    // a live peer's — and since #160 there is no live peer to begin with.
-    let runs = root.join("scratch");
-    let scratch = runs.join(std::process::id().to_string());
+    // ONE directory, no pid (#162). The monitor's cache is a single entity under a single root
+    // lock: `claim_root` above has already established that no other monitor is running, so
+    // there is nobody to segregate from, and a wipe here cannot destroy a live peer's log. A
+    // crashed run leaves scratch behind and the next start simply wipes it — which is why the
+    // pid-keyed layout and its liveness sweep bought nothing but names to reap.
+    let scratch = root.join("scratch");
     let _ = std::fs::remove_dir_all(&scratch);
-    sweep_dead_runs(&runs);
-    // Reclaim the pre-#161 location once. Nothing writes there any more, so after this it stays
-    // empty; `remove_dir` (not `_all`) so anything unexpected is left alone rather than deleted.
-    let legacy = std::env::temp_dir().join("claude-monitor");
-    sweep_dead_runs(&legacy);
-    let _ = std::fs::remove_dir(&legacy);
+    reclaim_legacy_scratch();
     // The session service at the MONITOR's root (§3/§10): same presentation namespace,
     // different root — a running `claude-replay --html` and this server cannot contend.
     let service = Arc::new(claude_replay_html::SessionService::new(ServiceConfig {
