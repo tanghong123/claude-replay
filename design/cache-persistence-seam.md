@@ -191,7 +191,55 @@ the seam — a memory provider has no path to hand it. Three ways out, undecided
 Leaning **b**: it says the true thing without asking a reader to know what a GAT is, and the
 `Nowhere` arm is a one-line `unreachable`/ignore in the two factories that would ever see it.
 
-### 3.2 One Rust wrinkle, named up front
+### 3.2 Granularity is the provider's choice too
+
+Sharing is not one thing either: the two shipped clients exclude peers at **different
+granularities**, and both are right.
+
+| client | granularity | why |
+|---|---|---|
+| `claude-replay` (viewer) | per `<session, frontend>` | two viewers on different sessions must both work; only the same session collides |
+| `claude-monitor` | the whole root, one lock (#160) | it serves *every* session on the machine, so "one monitor per root" is the useful statement |
+
+That was a deliberate decision (DESIGN.md, Decisions — *"the former will have lock granularity of
+`<session, frontend>`, the latter will just be a single entity (one big lock)"*). What was not
+decided is that the monitor ends up paying **both**, because it reaches its entries through the
+same `admit` path:
+
+```
+~/.cache/claude-monitor/LOCK                      ← the root lock (#160): one monitor per root
+~/.cache/claude-monitor/html/<session>/LOCK       ← and a per-entry lock. 56 of 56 entries have one.
+```
+
+The per-entry locks there can never be contended. The root lock already guarantees no second
+monitor, and nothing else on the machine reads that root — the viewer's is
+`~/.cache/claude-replay/sessions`. So an entire protocol (take, note, publish, `Denied`, redirect)
+runs for peers that cannot exist. Exactly the `--no-cache` observation above, arrived at from the
+other direction.
+
+**And it is not free.** The only way the monitor can be `Denied` its own entry is a FALSE
+positive: a stale entry lock naming a pid that has since been recycled, whose published port
+(2727) happens to answer — because the monitor itself is answering on it. That is why #163 had to
+add a self-guard (*"a note naming OUR OWN port is not evidence of a peer"*). A protocol that
+cannot succeed at its job here, but can still fail at it.
+
+So the provider should say what its granularity is, and a root-locked provider's per-entry
+protocol should be a no-op:
+
+```rust
+// the viewer: contention is per session
+FsEntries::per_session(root, Presentation::Html)
+
+// the monitor: one lock at the root, taken once at startup; entries need no protocol of their own
+FsEntries::single_writer(root, Presentation::Html)   // open → always Owned; no note, no Denied
+```
+
+Note what this does NOT change: entries still get their own **directories**, meta streams and
+record logs — that is layout, and the rail reads it lock-free (§10). What goes is the per-entry
+*exclusion*, which the root lock has already provided.
+
+
+### 3.3 One Rust wrinkle, named up front
 
 `Entries` has an associated type (`Note`), so the cache cannot hold it as a bare
 `Box<dyn Entries<P>>` — a trait object must name its associated types. Two ways out:
@@ -666,10 +714,23 @@ That gap between what these three mean and what they are named after is the audi
 There are two different questions being answered by things both called "the lock", and keeping
 them apart explains most of the last three bugs:
 
-| level | question | mechanism | who owns it | needed when |
-|---|---|---|---|---|
-| **process** | may this PROCESS write the entry? | the `LOCK` file + note; `Denied` → redirect | the **provider** | only on a **shared** root (§3.1) |
-| **thread** | may this THREAD write the session? | the `admitting` gate (#169); `Arc::strong_count` in `reap` (#168); the `SharedSession` inner mutex | the **cache** (and the session) | **always** |
+| level | question | acquired by | released by | who owns it | needed when |
+|---|---|---|---|---|---|
+| **process** | may this PROCESS write the entry? | `admit` (→ `LOCK` file) | `release` / `release_all` / `Drop` | the **provider** | only on a **shared** root (§3.1) |
+| **thread** | may this THREAD use the session? | holding the `Arc<SharedSession>` that `admit`/`touch` returns | **dropping it** — no call | the **cache** (and the session) | **always** |
+
+**So `admit` / `release` / `publish` are the PROCESS-level protocol.** The thread level has no
+protocol: it is ownership by value, already RAII. You get a reference and you drop it; `reap` sees
+the difference through `Arc::strong_count` (#168), and concurrent writes through one session are
+serialized by that session's own mutex.
+
+Which leaves a third thing, easy to mistake for a lock and not one: the `admitting` gate is a
+**critical section**, not a claim. It is held only for the duration of `admit` — long enough to
+stop two callers both concluding "no resident, I will make one" (#169) — and released the moment
+`admit` returns. Nothing owns it afterwards.
+
+`admit` is confusing precisely because it is the entry point to all three at once: it takes the
+gate, takes the file lock, and hands back the `Arc`. Three lifetimes, three scopes, one call.
 
 The process-level lock is deliberately **blind to your own process**:
 
@@ -769,6 +830,11 @@ Then:
 - **#109 retention still works.** The lock is tied to the WRITER, not to the session: `quiesce`
   drops the writer (unlocking) and the session stays resident and readable, which is precisely
   what retention means. Re-admission calls `attach_writer` with a fresh lease.
+
+What this really does is make the two levels **symmetric**: the thread level is already ownership
+by value (hold the `Arc`, drop the `Arc`), and this gives the process level the same shape (hold
+the writer, drop the writer). `release(id)` — a string-keyed side-channel call that mutates state
+somewhere else — stops existing, and with it the whole class of "called in the wrong order".
 
 The remaining hazard is hazard 2, and it is not fixable by ownership — a caller that deliberately
 stops another thread's fold is asking for what it gets. What ownership fixes is that it can no
