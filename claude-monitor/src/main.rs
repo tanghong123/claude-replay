@@ -22,6 +22,40 @@ const DEFAULT_PORT: u16 = 2727;
 /// only server-side substitution: which build is running (mirrors the HTML viewer's brand).
 const RAIL_TEMPLATE: &str = include_str!("rail.html");
 
+/// Drop the scratch of monitor runs that are no longer alive (#157).
+///
+/// Per-run scratch fixes the sharing, but nothing would ever collect a dead run's copy: a
+/// crashed monitor's gigabytes would sit in `$TMPDIR` until the OS cleaned it, which on macOS
+/// means days. The name of each run dir IS its pid, so liveness is the whole decision, and
+/// [`claude_replay_present::cache::lock::pid_alive`] is the audited answer the cache already
+/// trusts for exactly this question. Where liveness cannot be decided (non-Unix) nothing is
+/// swept — deleting a live run's log would be far worse than keeping a dead one's.
+fn sweep_dead_runs(runs: &std::path::Path) {
+    if !claude_replay_present::cache::lock::liveness_decidable() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(runs) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Pre-#157 layout: shared `<id>.records` logs directly under the runs dir, the ones
+        // that reached gigabytes. No version reads them any more, and unlinking is safe even
+        // if an old binary is still running — its open fd keeps the inode alive until it exits.
+        if name.ends_with(".records") {
+            let _ = std::fs::remove_file(e.path());
+            continue;
+        }
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if pid != std::process::id() && !claude_replay_present::cache::lock::pid_alive(pid) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
     let mut only: Vec<Agent> = Vec::new();
@@ -63,13 +97,28 @@ fn main() -> Result<()> {
     }
 
     let root = index::default_root()?;
+    // Scratch is RUN-scoped and wiped on the way in, the same contract `--html` gives its own
+    // bundle dir (html_export::serve::start_server) and for the same two reasons (#157).
+    //
+    // It was a fixed `$TMPDIR/claude-monitor`, so every monitor this machine has ever run
+    // shared one record log per session and nothing ever reset it. The store appends and
+    // deliberately never truncates in its constructor (#96 — a durable log must survive to be
+    // resumed), and a session that falls off the 30s tail TTL is re-materialized by re-folding,
+    // which appends a COMPLETE re-render. Measured: +29 MB per reap cycle, a log born at 03:56
+    // that reached 14 GB by 18:00 for one 29 MB session, and two live monitors appending to it
+    // at once. Per-pid, wiped at startup: a run cannot inherit another's log or write into a
+    // peer's, and a run's growth ends with the run.
+    let runs = std::env::temp_dir().join("claude-monitor");
+    let scratch = runs.join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&scratch);
+    sweep_dead_runs(&runs);
     // The session service at the MONITOR's root (§3/§10): same presentation namespace,
     // different root — a running `claude-replay --html` and this server cannot contend.
     let service = Arc::new(claude_replay_html::SessionService::new(ServiceConfig {
         cache_root: Some(root.clone()),
         presentation: Presentation::Html,
         fold: Default::default(),
-        scratch: std::env::temp_dir().join("claude-monitor"),
+        scratch: scratch.clone(),
     })?);
     let idx = Arc::new(index::Index::new(root, only));
 
@@ -78,7 +127,7 @@ fn main() -> Result<()> {
         let service = service.clone();
         let idx = idx.clone();
         let rail = rail.clone();
-        let scratch = std::env::temp_dir().join("claude-monitor");
+        let scratch = scratch.clone();
         Arc::new(move |name: &str, query: &str| -> HttpResponse {
             match name {
                 "" | "index.html" => HttpResponse::html(rail.clone()),
