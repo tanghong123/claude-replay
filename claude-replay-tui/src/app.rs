@@ -11,19 +11,25 @@ pub(crate) type TuiCache = claude_replay_present::SessionCache<
     crate::view::ViewSidecar, // aux slot: evicted frames' derived state (#75)
 >;
 
-/// This run's cache. Durable unless `--no-cache` or no resolvable cache home — in which case it
-/// is exactly the pre-#96 cache: no lock, no directory, nothing written.
+/// This run's cache. Always a real cache; what `--no-cache` chooses is a different ROOT (#165) —
+/// this run's own [`throwaway_root`](crate::sys::throwaway_root) instead of the shared one, so a
+/// second view of a session someone else holds folds, locks and resumes exactly like the first,
+/// just without coordinating with it. Same root when the cache home cannot be resolved at all:
+/// there is then nowhere to coordinate, which is a fact about the machine, not a degraded mode.
 fn make_cache(args: &Args) -> TuiCache {
-    match (args.no_cache, cache::admit::default_root()) {
-        (false, Some(root)) => TuiCache::durable(
-            Presentation::Tui,
-            root,
-            // The TUI has no render parameters baked into a stored block: `Block`s are stored,
-            // and fold/scroll are applied at draw time. So no flavor.
-            Versions::current(None),
-        ),
-        _ => TuiCache::ephemeral(),
-    }
+    // Take back what dead runs left behind, once per run.
+    crate::sys::reclaim();
+    let root = match args.no_cache {
+        true => crate::sys::throwaway_root(),
+        false => cache::admit::default_root().unwrap_or_else(crate::sys::throwaway_root),
+    };
+    TuiCache::durable(
+        Presentation::Tui,
+        root,
+        // The TUI has no render parameters baked into a stored block: `Block`s are stored,
+        // and fold/scroll are applied at draw time. So no flavor.
+        Versions::current(None),
+    )
 }
 
 /// Bring `id`'s session into the cache, or explain why we will not.

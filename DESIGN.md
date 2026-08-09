@@ -25,6 +25,24 @@ the spec/scope of record.
   unchanged.
 - **v1 scope:** the six core features below **plus** session picker, in-transcript
   search, word-level Edit diffs, and a metrics line.
+- **Cache and locking (settled 2026-08-08).** One cache implementation, one very simple
+  locking model — no second, bespoke "private" cache anywhere.
+  - **Where.** The viewer's durable entries are `~/.cache/claude-replay/sessions/<frontend>/<session-id>`;
+    the monitor's are its own root `~/.cache/claude-monitor/` (R5 — deliberately not the
+    viewer's). Both roots are overridable through the API and through
+    `$CLAUDE_REPLAY_CACHE` / `$CLAUDE_MONITOR_CACHE`, which is how tests get an isolated
+    root instead of contending with a running instance.
+  - **Granularity.** The viewer locks per `<session, frontend>`; the monitor's root is a
+    single entity under one lock. No pid in any durable path.
+  - **`--no-cache` does not mean "no cache".** It means *don't use the shared root*: the
+    run builds a throw-away cache with the same implementation at a **discoverable**
+    location, so it can be found and swept later. An opaque per-pid temp path is not
+    discoverable — that is how 8 GB and then 8,014 stray directories accumulated unseen.
+  - **Denied ⇒ redirect, never a second tail.** A process that cannot take the lock does
+    not fall back to its own copy. It redirects to the holder, whose URL comes from the
+    lock's note: `claude-replay --html` serving one session redirects and quits; a picker
+    stays on the picker (only the sessions it opens redirect); `claude-monitor` redirects
+    and quits.
 
 ## Core feature requirements (the six)
 

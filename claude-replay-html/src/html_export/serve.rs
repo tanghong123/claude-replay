@@ -712,28 +712,33 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     use std::sync::Arc;
     anyhow::ensure!(!paths.is_empty(), "no sessions to serve");
 
-    // A private temp dir holds the bundle (shell + per-agent streams). Fresh per run —
-    // wipe any streams left by a previous run of this session so lazy materialization
-    // starts clean (only the root exists until a child is requested). One root keeps the
-    // historical session-keyed name; several get a run-scoped dir so concurrent runs (and
-    // a single-root run of any of the same sessions) can never wipe each other's bundle.
-    let dir = if let [only] = paths {
-        std::env::temp_dir()
-            .join("claude-replay")
-            .join(session_id(only))
-    } else {
-        std::env::temp_dir()
-            .join("claude-replay")
-            .join(format!("multi-{}", std::process::id()))
-    };
+    // Take back what dead runs left behind before adding this run's own directory (#165).
+    crate::sys::reclaim();
+
+    // This run's bundle (shell + per-agent artifacts), under the cache home rather than
+    // `$TMPDIR` — everything the tool writes then lives in one place a person can find, and
+    // `reclaim` above can take it back when the run is gone. Per-RUN, not per-session: a pid
+    // is what makes concurrent runs unable to wipe each other's bundle, and it made the
+    // one-root/several-roots split unnecessary. Fresh per run — wipe anything a previous run
+    // with this pid left, so lazy materialization starts clean.
+    let dir = crate::sys::run_dir();
     let _ = std::fs::remove_dir_all(&dir);
 
     // The service, from claude-replay's OWN config (#98 §6.2): the durable cache at
-    // claude-replay's root (`--no-cache` ⇒ ephemeral), the CLI's fold policy, the bundle
-    // dir as scratch. The monitor is the other caller, with its own values — one
-    // implementation either way, which is what keeps the byte gate covering this path.
+    // claude-replay's root, the CLI's fold policy, the bundle dir as scratch. The monitor is
+    // the other caller, with its own values — one implementation either way, which is what
+    // keeps the byte gate covering this path.
+    //
+    // `--no-cache` selects a private cache root, NOT the absence of one (#165): the same
+    // implementation, at a root no other viewer coordinates over. That is what makes the flag
+    // a genuine second view rather than a degraded mode — and it is why nothing here needs a
+    // fallback for "the cache said no".
     let live = Arc::new(SessionService::new(ServiceConfig {
-        cache_root: (!args.no_cache).then(cache::admit::default_root).flatten(),
+        cache_root: Some(if args.no_cache {
+            crate::sys::throwaway_root()
+        } else {
+            cache::admit::default_root().unwrap_or_else(crate::sys::throwaway_root)
+        }),
         presentation: Presentation::Html,
         fold: args.fold_policy(),
         scratch: dir.clone(),
@@ -1560,13 +1565,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// `$CLAUDE_REPLAY_CACHE` is a PROCESS-global override and cargo runs these tests on
+    /// parallel threads in one binary, so any test that points it somewhere holds this for the
+    /// whole window. Without it, a test could scan — or write into — the developer's REAL cache
+    /// home, which is the one thing the isolation rule forbids.
+    static CACHE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering
-    /// `/pull` for its own `?session=` — the server half of "stay on the picker, open a tab
-    /// per session". Also pins the run-scoped bundle dir for the multi-root case, so a
-    /// concurrent single-root run of any of the same sessions can't wipe it.
+    /// `/pull` for its own `?session=`  — the server half of "stay on the picker, open a tab
+    /// per session". Also pins where a `--no-cache` run puts things (#165): a real cache at its
+    /// OWN root, and a per-run bundle dir, both under the cache home rather than `$TMPDIR`.
     #[test]
     fn start_server_hosts_every_root_on_one_port() {
         use clap::Parser as _;
+        let _env = CACHE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!(
             "cr-start-multi-{}-{:?}",
             std::process::id(),
@@ -1574,6 +1586,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
+        // The cache home for this run — the API/env override the design keeps for exactly this
+        // (§ Decisions). Everything `--no-cache` writes then lands under `base`, so the suite
+        // touches neither the shared root nor a running viewer's locks.
+        std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
         let mut paths = Vec::new();
         for (n, text) in [("one", "first root"), ("two", "second root")] {
             let p = base.join(format!("{n}.jsonl"));
@@ -1588,21 +1604,14 @@ mod tests {
             paths.push(p);
         }
 
-        // `--no-cache`: this test is about multi-root SERVING, and a durable run would put its
-        // records under the user's real cache home — a test suite must not write there, nor
-        // contend for locks with a concurrently running viewer.
+        // `--no-cache` is a different ROOT, not the absence of one (#165).
         let args = crate::Args::parse_from(["claude-replay", "--html", "--no-cache"]);
         let server = start_server(&args, &paths).expect("server starts");
         assert_eq!(server.root_ids, vec!["one".to_string(), "two".to_string()]);
-        assert!(
-            server
-                .dir
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("multi-"),
-            "several roots get a run-scoped bundle dir: {}",
-            server.dir.display()
+        assert_eq!(
+            server.dir,
+            base.join("runs").join(std::process::id().to_string()),
+            "the bundle is a per-RUN directory under the cache home, not $TMPDIR"
         );
         // Distinct URLs, one port.
         let (u0, u1) = (
@@ -1612,21 +1621,37 @@ mod tests {
         assert_ne!(u0, u1);
         assert!(u0.contains("?session=one") && u1.contains("?session=two"));
 
-        // Each root really answers for itself, over the wire.
+        // Each root really answers for itself, over the wire — and its records land in its own
+        // durable entry under the run's PRIVATE cache root, which is what `--no-cache` now
+        // selects. Nothing is written to the shared root, and nothing is served from a store
+        // opened outside a cache entry.
+        let private = base.join("throwaway").join(std::process::id().to_string());
         for (sid, want) in [("one", "first root"), ("two", "second root")] {
             let body = http_post(server.port, &format!("/pull?session={sid}&cursor=0"))
                 .unwrap_or_else(|| panic!("{sid} pull"));
             let v: Value = serde_json::from_str(&body).unwrap();
             assert_eq!(v["meta"]["sid"], json!(sid));
-            let records = std::fs::read_to_string(server.dir.join(format!("{sid}.records")))
-                .unwrap_or_default();
+            let entry = private.join("html").join(sid);
+            let records =
+                std::fs::read_to_string(entry.join("records.jsonl")).unwrap_or_else(|e| {
+                    panic!("{sid} has a durable entry at {}: {e}", entry.display())
+                });
             assert!(
                 body.contains(want) || records.contains(want),
                 "{sid} serves its own transcript"
             );
+            assert!(
+                entry.join("LOCK").exists(),
+                "{sid} is locked like any other entry — a private cache is still a cache"
+            );
+            assert!(
+                !base.join("sessions").exists(),
+                "--no-cache never touches the shared root"
+            );
         }
+        drop(server); // release the entry locks before the root goes
+        std::env::remove_var("CLAUDE_REPLAY_CACHE");
         let _ = std::fs::remove_dir_all(&base);
-        let _ = std::fs::remove_dir_all(&server.dir);
     }
 
     /// Minimal loopback HTTP POST for the test above (the server speaks HTTP/1.0-style

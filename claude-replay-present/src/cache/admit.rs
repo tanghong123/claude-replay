@@ -85,16 +85,23 @@ pub enum Unavailable {
     UnknownSession,
 }
 
-/// Where durable entries live.
+/// Everything this tool writes, under ONE directory a person can find, inspect and delete.
 ///
 /// `$CLAUDE_REPLAY_CACHE` wins outright when set — the explicit override, mirroring
 /// `agent-jdi`'s `AGENT_JDI_HOME`; otherwise `$XDG_CACHE_HOME` (or `~/.cache`)
-/// `/claude-replay/sessions`.
-///
-/// Deliberately NOT the temp bundle dir a serve run wipes on startup — the whole point is to
-/// survive the process. `None` when nothing resolves, which denies durability rather than
+/// `/claude-replay`. `None` when nothing resolves, which denies durability rather than
 /// guessing at a writable location.
-pub fn default_root() -> Option<PathBuf> {
+///
+/// The cache's own child of it is `sessions/` ([`default_root`]). A CLIENT that wants a private
+/// cache of its own — a `--no-cache` run — picks its own directory under this home and passes it
+/// to [`SessionCache::durable`](super::SessionCache::durable); where that goes is the client's
+/// business, not the cache's (see `sys::throwaway_root`). It must be a SIBLING of `sessions/`,
+/// never nested inside it: [`gc`] walks `<root>/<presentation>/<entry>`, so a directory under
+/// `sessions/` would read as a presentation namespace and its contents as reapable entries.
+///
+/// `$TMPDIR` is not an option for any of them: on macOS it resolves to an opaque `/var/folders/…`
+/// path nothing sweeps and nobody finds, which is where 14 GB accumulated unnoticed (#161).
+pub fn cache_home() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("CLAUDE_REPLAY_CACHE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -105,7 +112,15 @@ pub fn default_root() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("claude-replay").join("sessions"))
+    Some(base.join("claude-replay"))
+}
+
+/// Where SHARED durable entries live — the cache two viewers coordinate over.
+///
+/// Deliberately NOT a temp dir a serve run wipes on startup: the whole point is to survive the
+/// process.
+pub fn default_root() -> Option<PathBuf> {
+    Some(cache_home()?.join("sessions"))
 }
 
 /// A durable entry's directory. A pure function of the three, so the caller can name the entry
