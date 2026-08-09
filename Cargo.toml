@@ -36,7 +36,7 @@ default-members = [
 
 # One version for the whole workspace, bumped in ONE place per release (#71).
 [workspace.package]
-version = "1.57.2"
+version = "1.58.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tanghong123/claude-replay"

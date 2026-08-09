@@ -11,7 +11,9 @@ use super::{
     AgentInfo, PageChrome,
 };
 use crate::cache::{self, Presentation};
-use crate::cache::{lock, pull_indices, Admission, Cursor, SharedSession};
+use crate::cache::{
+    lock, pull_indices, Admission, Cursor, Denial, Holder, SharedSession, Unavailable,
+};
 use crate::engine::meta_stream::Versions;
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
@@ -31,7 +33,6 @@ const TAIL_TTL_MS: u128 = 30_000;
 /// [`SessionCache`]; `Live` keeps only the *presentation* state — the
 /// per-agent titles, parent pointers, and cached open-turn renders — layered over it.
 pub struct SessionService {
-    dir: std::path::PathBuf,
     fold: FoldPolicy,
     /// Every ROOT this server hosts. Usually one (`--html <session>`); the `-f --html`
     /// picker registers every discovered session so they are all live at once, each
@@ -71,6 +72,43 @@ pub fn existing_server(root: Option<&std::path::Path>, sid: &str) -> Option<u16>
 /// The browser URL a hand-off points at.
 pub fn handoff_url(port: u16, sid: &str) -> String {
     format!("http://127.0.0.1:{port}/index.html?session={sid}")
+}
+
+/// Why this server is not serving a session, when it is not (#163). One entry has one writer, so
+/// a process that is not it never serves a second copy — it either routes the client to the
+/// owner or says what went wrong.
+enum Unserved {
+    /// A live peer owns the entry and published where it serves. The client must NAVIGATE there.
+    ///
+    /// Deliberately not an HTTP 302: `fetch` follows a redirect transparently, so the pull loop
+    /// would carry on polling the peer with a cursor (`epoch.committed.gen.index`) minted against
+    /// THIS server's record stream — and #159 is the standing evidence that two folds of one
+    /// transcript need not agree. A reply the client acts on is a reply it can act on correctly.
+    Elsewhere(String),
+    /// Nothing here, and nowhere to send anyone. The text says which, because the alternative is
+    /// the failure mode this whole task exists to remove: a page that shows nothing and explains
+    /// nothing.
+    Nowhere(String),
+}
+
+/// A pull reply that routes the client elsewhere instead of feeding it.
+fn redirect_reply(url: &str) -> String {
+    json!({"t": "redirect", "url": url}).to_string()
+}
+
+/// Plain English for a denial that is nobody's fault but the machine's.
+fn reason(why: Unavailable) -> &'static str {
+    match why {
+        Unavailable::NoCacheFlag => "this server has no cache root",
+        Unavailable::UnwritableRoot => {
+            "its cache directory cannot be written — set $CLAUDE_REPLAY_CACHE somewhere writable"
+        }
+        Unavailable::NoLivenessCheck => {
+            "this platform cannot tell whether a lock's holder is still running, so entries \
+             cannot be shared safely"
+        }
+        Unavailable::UnknownSession => "no transcript is registered under that id",
+    }
 }
 
 /// The render fingerprint a durable stream is validated against: change what a wire record
@@ -123,6 +161,9 @@ struct ServeAux {
     /// inherited from the parent (children, which run in the parent's cwd), so a pull
     /// never re-reads a transcript head just to render paths relative to it.
     cwd: Option<String>,
+    /// Whether this session's "cannot serve it" reason has already been logged. A client that
+    /// cannot be served keeps polling, and one line per poll would bury the first (#163).
+    unserved: bool,
     /// Rendered open-turn records, keyed by `(epoch, gen, len)` (#85): within a gen the
     /// finalized provisional is append-only and the committed prefix frozen, so an equal
     /// key ⇒ identical records — concurrent clients (or fast re-pulls) reuse the render
@@ -152,7 +193,9 @@ pub struct ServiceConfig {
     pub presentation: Presentation,
     /// Render parameters — also the flavor the durable stream is validated against.
     pub fold: FoldPolicy,
-    /// Scratch directory for the cache-less fallback and the static shell.
+    /// Where the host keeps this run's static shell. Created here so a host does not have to;
+    /// the service itself writes nothing to it — it once held the cache-less fallback's private
+    /// record logs, and that is gone (#163).
     pub scratch: std::path::PathBuf,
 }
 
@@ -171,7 +214,6 @@ impl SessionService {
             None => SessionCache::ephemeral(),
         };
         Ok(Self {
-            dir: cfg.scratch,
             fold: cfg.fold,
             roots: std::sync::Mutex::new(Vec::new()),
             cache,
@@ -395,19 +437,20 @@ impl SessionService {
 
     /// This session's resident, admitting it into the durable cache on first use (#96).
     ///
-    /// A denial is never fatal here: partial success is normal for a multi-root server, so a
-    /// session another process holds — or one with no durable slot at all — is simply served
-    /// **cache-less**, out of the run's own temp bundle. The pick-time redirect a holder's note
-    /// enables is a routing decision made before this point; by the time a client is pulling,
-    /// the page is already open and cannot be handed off.
+    /// A denial ends here — it never becomes a second copy of the session (#163). There used to
+    /// be a fallback that opened a private record log and re-folded from scratch, and it was the
+    /// worst of both: it re-appended a whole render on every TTL cycle (#158) and disagreed with
+    /// the owner about the tail (#159), with nothing on the page to say so. One entry has one
+    /// writer, so a process that is not it has exactly two honest answers: send the client where
+    /// the owner serves, or say why it cannot.
     fn session_for(
         &self,
         id: &str,
         src: &Transcript,
         cwd: &str,
-    ) -> Option<Arc<SharedSession<RecordStore>>> {
+    ) -> Result<Arc<SharedSession<RecordStore>>, Unserved> {
         if let Some(ss) = self.cache.touch(id) {
-            return Some(ss);
+            return Ok(ss);
         }
         let agent = src.agent();
         let path = src.path().to_path_buf();
@@ -422,30 +465,42 @@ impl SessionService {
                 Transcript::open(agent, path.clone()),
             )
         };
-        match self.cache.admit(
-            id,
-            |dir| open(&dir.join("records.jsonl")),
-            |h| lock::pid_alive(h.pid) && port_open(h.note.as_ref().map(|n| n.port)),
-        ) {
+        // A lock's note names where its holder serves — but a note naming OUR OWN port is not
+        // evidence of a peer. A recycled pid plus our own listener answering would otherwise
+        // satisfy both halves of this predicate forever, and we would deny ourselves an entry we
+        // could take and then "redirect" the client to the server it is already talking to.
+        let ours = self.port.get().copied();
+        let alive = |h: &Holder<HtmlNote>| {
+            let port = h.note.as_ref().map(|n| n.port);
+            port != ours && lock::pid_alive(h.pid) && port_open(port)
+        };
+        match self
+            .cache
+            .admit(id, |dir| open(&dir.join("records.jsonl")), alive)
+        {
             Admission::Owned { session, .. } => {
                 // Now that the entry is ours, say where we serve it. This is the first moment
                 // both facts are true: the lock is held AND the port is known.
                 if let Some(&port) = self.port.get() {
                     let _ = self.cache.publish(id, HtmlNote { port });
                 }
-                Some(session)
+                Ok(session)
             }
-            Admission::Denied(_) => {
-                // Cache-less: the run's own temp bundle, wiped at startup. Range reads go
-                // through the store's own path, so this serves fully.
-                let at = self.dir.join(format!("{id}.records"));
-                let store = open(&at).or_else(|_| {
-                    open(
-                        &std::env::temp_dir()
-                            .join(format!("cr-records-{}-{id}.records", std::process::id())),
-                    )
-                });
-                self.cache.open_uncached(id, store.ok()?)
+            // A live peer owns it. If it has published a port, that is where this session is —
+            // send the client there.
+            Admission::Denied(Denial::Held(h)) => Err(match h.note {
+                Some(n) => Unserved::Elsewhere(handoff_url(n.port, id)),
+                // It took the lock but has not bound yet, so there is no URL to name. Say so
+                // rather than inventing a target or quietly serving a second copy.
+                None => Unserved::Nowhere(format!(
+                    "session {id} is held by pid {} — it has not published where it serves yet",
+                    h.pid
+                )),
+            }),
+            // No peer, no entry: the cache root is unusable or the id is unknown. Nothing here is
+            // recoverable by serving the session another way.
+            Admission::Denied(Denial::Unavailable(why)) => {
+                Err(Unserved::Nowhere(format!("session {id}: {}", reason(why))))
             }
         }
     }
@@ -453,11 +508,19 @@ impl SessionService {
     /// The `/pull` handler: serve the pull-client wire reply for `id` at `cursor`. The session
     /// domain lives in the [`SessionCache`]: it materializes the id's [`SharedSession`] on first
     /// pull and TTL-reaps idle residents (no background thread — folding rides this request's
-    /// thread, so a session nobody is pulling costs nothing). `None` for an unknown/unreadable id.
-    pub fn pull_response(&self, id: &str, cursor: Cursor) -> Option<String> {
-        let (src, title) = self.resolve_id(id)?;
+    /// thread, so a session nobody is pulling costs nothing).
+    ///
+    /// `Err` for a session this server will not serve: [`Unserved::Elsewhere`] carries the owner's
+    /// URL for the client to navigate to, [`Unserved::Nowhere`] the reason there is nothing to go
+    /// to. Both reach the client — a blank page that says nothing is the bug (#163).
+    fn pull_response_for(&self, id: &str, cursor: Cursor) -> Result<String, Unserved> {
+        let unknown = || Unserved::Nowhere(format!("session {id}: no such transcript"));
+        let (src, title) = self.resolve_id(id).ok_or_else(unknown)?;
         if !src.path().exists() {
-            return None;
+            return Err(Unserved::Nowhere(format!(
+                "session {id}: {} is gone",
+                src.path().display()
+            )));
         }
         // Per-SESSION context: this server can host several unrelated roots at once, so the
         // agent comes from the session's own `Transcript` and the cwd from its aux note
@@ -471,8 +534,14 @@ impl SessionService {
         if shared.poisoned() {
             // A panic poisoned it mid-update (#56 — its state may be torn). Drop it and refold
             // fresh; the new epoch resyncs clients. Never serve torn state, never brick.
-            self.cache.remove_pull(id);
+            //
+            // Order matters (#168): `release` FIRST, while the session is still resident, because
+            // it finds it through the map and quiesces it — that is what stops the old writer
+            // before the re-admission below opens another store on the same log. Then let go of
+            // it, so the store is closed rather than merely silent.
             self.cache.release(id);
+            self.cache.remove_pull(id);
+            drop(shared);
             shared = self.session_for(id, &src, &cwd)?;
         }
         // Borrow-to-tail: fold newly-appended source lines on this request's own thread.
@@ -485,16 +554,14 @@ impl SessionService {
         let (cf, pf) = pull_indices(epoch, nc, np, gen, cursor);
         if cursor.epoch == epoch && cf == nc && pf == np {
             // Nothing to send: empty zones, no `meta` (the client ignores an idle reply's meta).
-            return Some(
-                json!({
-                    "t": "pull", "epoch": epoch,
-                    "committed_from": cf, "committed_ext": Value::Null,
-                    "provisional_gen": gen,
-                    "provisional_from": pf, "provisional": [],
-                    "meta": Value::Null,
-                })
-                .to_string(),
-            );
+            return Ok(json!({
+                "t": "pull", "epoch": epoch,
+                "committed_from": cf, "committed_ext": Value::Null,
+                "provisional_gen": gen,
+                "provisional_from": pf, "provisional": [],
+                "meta": Value::Null,
+            })
+            .to_string());
         }
         let info = self.agent_info(id, src.path().to_path_buf(), &title);
         // Attachments load from THIS agent's own transcript.
@@ -570,7 +637,7 @@ impl SessionService {
             .iter()
             .map(String::as_str)
             .collect();
-        Some(pull_reply_json(
+        Ok(pull_reply_json(
             d.epoch,
             d.provisional_gen,
             cf,
@@ -579,6 +646,27 @@ impl SessionService {
             &provisional_records,
             &meta,
         ))
+    }
+
+    /// The `/pull` body for `id`, whichever kind it is: a feed, a hand-off to the owner, or the
+    /// reason there is neither. Every one of the three reaches the client — that is the whole
+    /// point of #163, since the alternative was a page that showed nothing and said nothing.
+    pub fn pull_response(&self, id: &str, cursor: Cursor) -> String {
+        match self.pull_response_for(id, cursor) {
+            Ok(body) => body,
+            Err(Unserved::Elsewhere(url)) => redirect_reply(&url),
+            Err(Unserved::Nowhere(why)) => {
+                // Once per session, not once per poll: a client that cannot be served keeps
+                // asking, and a line a second would bury the one that matters.
+                if self
+                    .cache
+                    .aux_with(id, |a| !std::mem::replace(&mut a.unserved, true))
+                {
+                    eprintln!("claude-replay: {why}");
+                }
+                json!({"t": "error", "message": why}).to_string()
+            }
+        }
     }
 
     /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
@@ -680,6 +768,10 @@ pub struct LiveServer {
     pub port: u16,
     /// Session ids of the hosted roots, in the order they were passed in.
     pub root_ids: Vec<String>,
+    /// The SHARED cache root, when this run uses one — what [`open`](Self::open) consults to see
+    /// whether a session is already served elsewhere. `None` for `--no-cache`, whose whole
+    /// purpose is a view that does not defer to the holder.
+    shared_root: Option<std::path::PathBuf>,
     /// Keeps the server state alive for the process's lifetime.
     _live: std::sync::Arc<SessionService>,
 }
@@ -696,8 +788,16 @@ impl LiveServer {
     }
 
     /// Open a hosted session in the default browser (best-effort).
+    ///
+    /// The PICKER stays up (#163) — it is not a session and defers to nobody — but a session it
+    /// opens that another viewer already holds belongs to that viewer: send the browser straight
+    /// there. Without this the tab would still arrive, one hop later, when its first `/pull`
+    /// answered with a redirect; checking here spares the user a page that appears and leaves.
     pub fn open(&self, sid: &str) {
-        open_in_browser(&self.url_for(sid));
+        match existing_server(self.shared_root.as_deref(), sid) {
+            Some(port) => open_in_browser(&handoff_url(port, sid)),
+            None => open_in_browser(&self.url_for(sid)),
+        }
     }
 }
 
@@ -733,11 +833,13 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     // implementation, at a root no other viewer coordinates over. That is what makes the flag
     // a genuine second view rather than a degraded mode — and it is why nothing here needs a
     // fallback for "the cache said no".
+    // `None` under `--no-cache`: the flag opts out of the shared root AND of deferring to whoever
+    // holds it, or it would send you back to the process you were trying to bypass.
+    let shared_root = (!args.no_cache).then(cache::admit::default_root).flatten();
     let live = Arc::new(SessionService::new(ServiceConfig {
-        cache_root: Some(if args.no_cache {
-            crate::sys::throwaway_root()
-        } else {
-            cache::admit::default_root().unwrap_or_else(crate::sys::throwaway_root)
+        cache_root: Some(match &shared_root {
+            Some(root) => root.clone(),
+            None => crate::sys::throwaway_root(),
         }),
         presentation: Presentation::Html,
         fold: args.fold_policy(),
@@ -765,6 +867,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
         dir,
         port,
         root_ids,
+        shared_root,
         _live: live,
     })
 }
@@ -964,10 +1067,7 @@ pub fn service_routes(
         if id.is_empty() || id.contains('/') || id.contains("..") {
             return HttpResponse::not_found("no such agent");
         }
-        return match live.pull_response(id, cursor) {
-            Some(body) => HttpResponse::json(body),
-            None => HttpResponse::not_found("no such agent"),
-        };
+        return HttpResponse::json(live.pull_response(id, cursor));
     }
     // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
     // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
@@ -1125,7 +1225,7 @@ mod tests {
         /// One full client poll against the live server: pull, then (phase two) range-read the
         /// committed pointer; a failed/stale range read drops the whole reply, like the browser.
         fn poll(&mut self, live: &SessionService, id: &str) {
-            let reply = live.pull_response(id, self.cursor()).expect("pull reply");
+            let reply = live.pull_response(id, self.cursor());
             let r: Value = serde_json::from_str(&reply).expect("valid reply JSON");
             let committed: Vec<Value> = match &r["committed_ext"] {
                 Value::Null => Vec::new(),
@@ -1271,7 +1371,6 @@ mod tests {
         .unwrap();
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![Root {
                 id: "nid".into(),
@@ -1296,7 +1395,7 @@ mod tests {
             "nothing is owned before the first pull"
         );
 
-        live.pull_response("nid", Cursor::default()).expect("pull");
+        live.pull_response("nid", Cursor::default());
 
         let held = lock::read::<HtmlNote>(&entry).expect("the pull admitted and locked it");
         assert_eq!(held.pid, std::process::id());
@@ -1308,11 +1407,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// #163: a session a live peer owns is ROUTED, never served a second time.
+    ///
+    /// The pull answers with a `redirect` record the client acts on by NAVIGATING — deliberately
+    /// not an HTTP 302, which `fetch` would follow transparently, leaving the page pulling
+    /// another server with a cursor minted against this one's record stream. And when the holder
+    /// has taken the lock but not yet published a port there is nowhere to send anyone, so the
+    /// reply says that instead of inventing a target or quietly opening a second copy.
+    #[test]
+    fn a_session_a_peer_holds_is_redirected_not_served() {
+        use crate::cache::{admit, lock};
+        use crate::engine::meta_stream::Versions;
+        use crate::{SessionCache, Transcript};
+
+        let base = std::env::temp_dir().join(format!("cr-redirect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        let root = base.join("cache"); // never the developer's real cache
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            &sess,
+            "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n",
+        )
+        .unwrap();
+
+        // A peer that really exists: a live pid that is not ours, and a port that really answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer_port = listener.local_addr().unwrap().port();
+        let mut peer = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+
+        let service = |port: u16| SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: SessionCache::durable(
+                Presentation::Html,
+                root.clone(),
+                Versions::current(Some(render_flavor(&FoldPolicy::default()))),
+            ),
+            port: {
+                let c = std::sync::OnceLock::new();
+                let _ = c.set(port);
+                c
+            },
+        };
+        let entry = admit::entry_dir(&root, Presentation::Html, "sid");
+        let hold = |note: Option<HtmlNote>| {
+            std::fs::create_dir_all(&entry).unwrap();
+            std::fs::write(
+                lock::lock_path(&entry),
+                serde_json::to_string(&Holder {
+                    pid: peer.id(),
+                    dir: entry.clone(),
+                    note,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        hold(Some(HtmlNote { port: peer_port }));
+        let live = service(9999);
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        assert_eq!(v["t"], json!("redirect"), "held ⇒ route, never serve: {v}");
+        assert_eq!(v["url"], json!(handoff_url(peer_port, "sid")));
+        assert!(
+            !entry.join("records.jsonl").exists(),
+            "and nothing of ours was written into the peer's entry"
+        );
+        drop(live);
+
+        // Same holder, no published port: a real window (it took the lock before it bound).
+        hold(None);
+        let live = service(9999);
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        assert_eq!(v["t"], json!("error"), "nowhere to send anyone: {v}");
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains(&peer.id().to_string()),
+            "the reason names the holder: {msg:?}"
+        );
+        drop(live);
+
+        // THE SELF-GUARD. The note names OUR port — which a recycled pid plus our own listener
+        // would produce — so it is not evidence of a peer. Take the entry; redirecting here would
+        // send the page to the server it is already talking to.
+        hold(Some(HtmlNote { port: peer_port }));
+        let live = service(peer_port);
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        assert_eq!(
+            v["t"],
+            json!("pull"),
+            "a note naming our own port is us: {v}"
+        );
+        assert_eq!(
+            lock::read::<HtmlNote>(&entry).expect("locked").pid,
+            std::process::id(),
+            "and the entry is now genuinely ours"
+        );
+
+        peer.kill().ok();
+        peer.wait().ok();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// sub-agent spawn + async completion (queue-op), commits, plus a lagging second client
     /// (missed ticks) and an interleaved third client (a second tab).
     #[test]
     fn incremental_client_always_equals_a_fresh_reload() {
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
         let base = std::env::temp_dir().join(format!("cr-sim-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let sess = base.join("sid.jsonl");
@@ -1321,7 +1537,6 @@ mod tests {
         std::fs::write(&sess, "").unwrap();
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
@@ -1329,7 +1544,7 @@ mod tests {
                 path: sess.clone(),
                 cwd: "/r".into(),
             }]),
-            cache: SessionCache::new(),
+            cache: test_cache(&base),
             port: std::sync::OnceLock::new(),
         };
         live.cache
@@ -1411,7 +1626,7 @@ mod tests {
     #[test]
     fn pull_committed_pointer_round_trips_via_records() {
         use crate::cache::Cursor;
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
         let base = std::env::temp_dir().join(format!("cr-serve-p2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let sess = base.join("sid.jsonl");
@@ -1424,7 +1639,6 @@ mod tests {
         )).unwrap();
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
@@ -1432,7 +1646,7 @@ mod tests {
                 path: sess.clone(),
                 cwd: "/r".into(),
             }]),
-            cache: SessionCache::new(),
+            cache: test_cache(&base),
             port: std::sync::OnceLock::new(),
         };
         live.cache
@@ -1440,7 +1654,7 @@ mod tests {
 
         // Fresh cursor: turn 1 committed (the second user turn opened turn 2) ⇒ the reply carries
         // a pointer, not inline committed records.
-        let reply = live.pull_response("sid", Cursor::default()).expect("reply");
+        let reply = live.pull_response("sid", Cursor::default());
         let v: Value = serde_json::from_str(&reply).unwrap();
         let ext = &v["committed_ext"];
         assert!(!ext.is_null(), "committed delta ⇒ pointer present");
@@ -1472,7 +1686,7 @@ mod tests {
             provisional_index: v["provisional_from"].as_u64().unwrap() as usize
                 + v["provisional"].as_array().unwrap().len(),
         };
-        let idle: Value = serde_json::from_str(&live.pull_response("sid", next).unwrap()).unwrap();
+        let idle: Value = serde_json::from_str(&live.pull_response("sid", next)).unwrap();
         assert!(idle["committed_ext"].is_null(), "idle ⇒ null pointer");
         assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
 
@@ -1488,7 +1702,7 @@ mod tests {
     #[test]
     fn pull_registers_child_source_only_and_child_derives_title_lazily() {
         use crate::cache::Cursor;
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
         let base = std::env::temp_dir().join(format!("cr-serve-inv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let sess = base.join("proj").join("sid.jsonl");
@@ -1508,7 +1722,6 @@ mod tests {
         .unwrap();
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
@@ -1516,7 +1729,7 @@ mod tests {
                 path: sess.clone(),
                 cwd: "/r".into(),
             }]),
-            cache: SessionCache::new(),
+            cache: test_cache(&base),
             port: std::sync::OnceLock::new(),
         };
         live.cache
@@ -1530,9 +1743,7 @@ mod tests {
 
         // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
         // registration + the parent pointer — no title write for the child.
-        let reply = live
-            .pull_response("sid", Cursor::default())
-            .expect("parent reply");
+        let reply = live.pull_response("sid", Cursor::default());
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["meta"]["children"][0]["id"], "achild01");
         assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
@@ -1570,6 +1781,23 @@ mod tests {
     /// whole window. Without it, a test could scan — or write into — the developer's REAL cache
     /// home, which is the one thing the isolation rule forbids.
     static CACHE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A durable cache at the TEST's own root. Since #163 there is no cache-less path: an
+    /// ephemeral cache denies every session and the server answers with the reason instead of a
+    /// feed, so a test that expects to be served needs a real entry. Its own root, never the
+    /// developer's — the isolation rule is the same one the suite has always had.
+    fn test_cache(base: &Path) -> SessionCache<RecordStore, ServeAux> {
+        SessionCache::durable(
+            Presentation::Html,
+            base.join("cache"),
+            Versions::current(Some(render_flavor(&FoldPolicy::default()))),
+        )
+    }
+
+    /// Where `test_cache` puts `sid`'s record log.
+    fn test_records(base: &Path, sid: &str) -> std::path::PathBuf {
+        cache::admit::entry_dir(&base.join("cache"), Presentation::Html, sid).join("records.jsonl")
+    }
 
     /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering
     /// `/pull` for its own `?session=`  — the server half of "stay on the picker, open a tab
@@ -1675,7 +1903,7 @@ mod tests {
     #[test]
     fn multi_root_server_serves_each_root_with_its_own_agent_and_cwd() {
         use crate::cache::Cursor;
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
         let base = std::env::temp_dir().join(format!(
             "cr-serve-multiroot-{}-{:?}",
             std::process::id(),
@@ -1699,7 +1927,6 @@ mod tests {
         )).unwrap();
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![
                 Root {
@@ -1715,7 +1942,7 @@ mod tests {
                     cwd: "/b".into(),
                 },
             ]),
-            cache: SessionCache::new(),
+            cache: test_cache(&base),
             port: std::sync::OnceLock::new(),
         };
         for (id, agent, path) in [("c1", Agent::CLAUDE, &claude), ("x1", Agent::CODEX, &codex)] {
@@ -1727,16 +1954,13 @@ mod tests {
             ("c1", "claude", "/a", "hello claude"),
             ("x1", "codex", "/b", "hello codex"),
         ] {
-            let reply = live
-                .pull_response(id, Cursor::default())
-                .unwrap_or_else(|| panic!("{id} reply"));
+            let reply = live.pull_response(id, Cursor::default());
             let v: Value = serde_json::from_str(&reply).unwrap();
             assert_eq!(v["meta"]["agent"], json!(want_agent), "{id} agent");
             assert_eq!(v["meta"]["cwd"], json!(want_cwd), "{id} cwd");
             assert_eq!(v["meta"]["sid"], json!(id));
             // …and it really served THAT transcript, not the other root's.
-            let records =
-                std::fs::read_to_string(live.dir.join(format!("{id}.records"))).unwrap_or_default();
+            let records = std::fs::read_to_string(test_records(&base, id)).unwrap_or_default();
             let inline = reply.contains(want_text);
             assert!(
                 inline || records.contains(want_text),
@@ -1749,7 +1973,7 @@ mod tests {
     #[test]
     fn codex_pull_registers_distinct_threads_with_the_same_agent_path() {
         use crate::cache::Cursor;
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
         let base = std::env::temp_dir().join(format!(
             "cr-serve-codex-{}-{:?}",
             std::process::id(),
@@ -1807,7 +2031,6 @@ mod tests {
         }
 
         let live = SessionService {
-            dir: bundle,
             fold: FoldPolicy::default(),
             roots: std::sync::Mutex::new(vec![Root {
                 id: "sid".into(),
@@ -1815,15 +2038,13 @@ mod tests {
                 path: parent.clone(),
                 cwd: "/repo".into(),
             }]),
-            cache: SessionCache::new(),
+            cache: test_cache(&base),
             port: std::sync::OnceLock::new(),
         };
         live.cache
             .register("parent", Transcript::open(Agent::CODEX, parent));
 
-        let reply = live
-            .pull_response("parent", Cursor::default())
-            .expect("parent reply");
+        let reply = live.pull_response("parent", Cursor::default());
         let value: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(
             value["meta"]["children"]

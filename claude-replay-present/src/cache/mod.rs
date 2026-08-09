@@ -78,8 +78,9 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// adopter discards on mismatch). Registry-lifetime: reaping a resident does NOT drop
     /// its sidecar.
     aux: Mutex<HashMap<String, A>>,
-    /// The durable wiring (#96), absent on an [`ephemeral`](Self::ephemeral) cache. `None` is
-    /// not a degraded mode: it is exactly today's behaviour, and `--no-cache` selects it.
+    /// The durable wiring (#96), absent on an [`ephemeral`](Self::ephemeral) cache. No flag
+    /// selects `None` any more — `--no-cache` builds a real cache at its own root (#165) — so in
+    /// production this is always `Some`, and a cache without it can only deny.
     durable: Option<Durable>,
 }
 
@@ -114,8 +115,10 @@ impl<P: BlockStore, A> Default for SessionCache<P, A> {
 }
 
 impl<P: BlockStore, A> SessionCache<P, A> {
-    /// A cache that persists nothing — today's behaviour exactly, and what `--no-cache` selects.
-    /// Every [`admit`](Self::admit) on one of these denies with `Unavailable(NoCacheFlag)`.
+    /// A cache that persists nothing. Every [`admit`](Self::admit) on one of these denies with
+    /// `Unavailable(NoCacheFlag)`, and since #163 a denial has nothing behind it — so this is a
+    /// cache that cannot hand out a session at all. `--no-cache` does NOT select it (#165): that
+    /// flag builds a real cache at a root of its own.
     pub fn ephemeral() -> Self {
         Self::default()
     }
@@ -510,16 +513,6 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         let Some(o) = owned.get(id) else { return false };
         lock::publish(&o.dir, note).is_ok()
     }
-
-    /// The cache-less path, chosen explicitly after a denial: no lock, no durable directory,
-    /// nothing written. The SAME call for every reason a denial can have.
-    pub fn open_uncached(&self, id: &str, store: P) -> Option<std::sync::Arc<SharedSession<P>>> {
-        let src = self.resolve(id)?;
-        Some(self.install(
-            id,
-            SharedSession::with_store(src.agent(), src.path(), store),
-        ))
-    }
 }
 
 /// Releasing needs no [`DurableStore`] bound — only a pid comparison — which is what lets
@@ -564,10 +557,13 @@ impl<P: BlockStore, A> Drop for SessionCache<P, A> {
 /// The outcome of asking a durable cache for a session (#96 §8.1).
 ///
 /// **Two** outcomes, not three. A cache entry is never shared, so you either own it or you do
-/// not — and on a denial *nothing was opened*. Falling back to a cache-less session is a
-/// separate, explicit [`open_uncached`](SessionCache::open_uncached) call, so "we gave up on
-/// caching" is visible at the call site rather than hidden in a third variant that would suggest
-/// a session might be handed out while another process owns it.
+/// not — and on a denial *nothing was opened*.
+///
+/// There is no third answer and no way to ask for one (#163). A `open_uncached` escape hatch used
+/// to sit beside this, handing back a session with no entry and no lock "explicitly at the call
+/// site"; every caller reached for it on denial, which is how one transcript ended up with two
+/// folds appending to one log. A session this process does not own is a session it does not
+/// serve — it routes the client to the owner, or says why it cannot.
 pub enum Admission<P: DurableStore> {
     /// Exclusive owner. Durable, and resumed when the cache was valid.
     Owned {

@@ -43,6 +43,14 @@ the spec/scope of record.
     lock's note: `claude-replay --html` serving one session redirects and quits; a picker
     stays on the picker (only the sessions it opens redirect); `claude-monitor` redirects
     and quits.
+  - **The redirect rides the pull reply, not an HTTP 302.** A page that is already open
+    learns it is in the wrong place through a `{"t":"redirect","url":…}` record it acts on
+    by navigating. A 302 would be worse than useless: `fetch` follows one transparently, so
+    the loop would keep pulling the new server with a cursor minted against the old one's
+    record stream, and two folds of one transcript are not guaranteed to agree. A denial
+    with no note — the holder took the lock but has not bound yet — has no target, so it
+    answers `{"t":"error"}` naming the pid. Both reach the page: a viewer that cannot serve
+    a session says so.
 
 ## Core feature requirements (the six)
 

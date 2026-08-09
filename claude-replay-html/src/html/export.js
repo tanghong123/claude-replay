@@ -1617,12 +1617,27 @@
       // failed or 409 (stale-epoch after a reset) range read drops the whole reply — the next tick
       // re-pulls with the old cursor and the protocol resyncs us.
       var inflightP = false;
+      var pullTimer = 0;
+      // A reply the page cannot act on, said out loud. The pull loop's own `.catch` retries
+      // quietly forever, which is right for a mid-write or a stale range and exactly wrong for
+      // "this session is not servable" — that used to render as a blank page with no clue.
+      var showFatal = function (msg) {
+        var box = el("div", "ablock blk");
+        box.appendChild(el("div", "blk-h", "This session is not being served here"));
+        box.appendChild(el("div", "pre", String(msg || "no reason given")));
+        stream.appendChild(box);
+      };
       var pullTick = function () {
         if (inflightP) return;
         inflightP = true;
         fetch("pull?session=" + encodeURIComponent(sess) + "&cursor=" + cursorStr(), { cache: "no-store" })
           .then(function (r) { return r.json(); })
           .then(function (reply) {
+            // Not a feed: this session lives on another server, or cannot be served at all.
+            // A full navigation, never a transparent redirect — our cursor was minted against
+            // THIS server's record stream and means nothing to another one.
+            if (reply.t === "redirect") { clearInterval(pullTimer); location.replace(reply.url); return null; }
+            if (reply.t === "error") { clearInterval(pullTimer); showFatal(reply.message); return null; }
             var ext = reply.committed_ext;
             if (!ext || !ext.len) { reply.committed = []; return reply; }
             return fetch("records?session=" + encodeURIComponent(sess) + "&from=" + ext.offset +
@@ -1637,6 +1652,7 @@
               });
           })
           .then(function (reply) {
+            if (!reply) return; // routed away, or nothing left to serve
             var anchor = captureAnchor();
             var before = records.length;
             var changed = false;
@@ -1657,7 +1673,7 @@
           .finally(function () { inflightP = false; });
       };
       pullTick();
-      if (pollMs > 0) setInterval(pullTick, pollMs);
+      if (pollMs > 0) pullTimer = setInterval(pullTick, pollMs);
       kickFeed = pullTick;
     } else {
       // Static bundle (served by any file server): fetch the whole stream file once.

@@ -58,11 +58,26 @@ fn admit_root(
             pid: h.pid,
             pane: h.note.and_then(|n| n.pane),
         })),
-        // Nothing to compete for: `--no-cache`, an unwritable root, or a host with no liveness
-        // check. Run cache-less — the same call for every one of those reasons.
-        Admission::Denied(Denial::Unavailable(_)) => cache
-            .open_uncached(id, crate::store::ArcLog::memory())
-            .ok_or_else(|| anyhow::anyhow!("session {id} is not registered")),
+        // Not a competitor — a machine that cannot host a cache entry at all (#163). This used to
+        // run cache-less, which is how a viewer could end up folding a session it did not own;
+        // since `--no-cache` became a real cache at its own root (#165) there is no benign reason
+        // left to reach here, so say which one it was rather than carry on regardless.
+        Admission::Denied(Denial::Unavailable(why)) => Err(anyhow::anyhow!(
+            "session {id} cannot be opened: {}",
+            match why {
+                Unavailable::NoCacheFlag => "this viewer has no cache root".to_string(),
+                Unavailable::UnwritableRoot => format!(
+                    "the cache directory is not writable{}",
+                    cache::admit::cache_home()
+                        .map(|h| format!(" ({})", h.display()))
+                        .unwrap_or_default()
+                ),
+                Unavailable::NoLivenessCheck =>
+                    "this platform cannot tell whether a lock's holder is still running".to_string(),
+                Unavailable::UnknownSession =>
+                    "no transcript is registered under that id".to_string(),
+            }
+        )),
     }
 }
 
@@ -116,7 +131,7 @@ use crate::tui::view::View;
 use crate::{discover, discover::Candidate, Agent, Args};
 use anyhow::Result;
 use claude_replay_core::engine::meta_stream::Versions;
-use claude_replay_present::cache::{self, Admission, Denial, Presentation};
+use claude_replay_present::cache::{self, Admission, Denial, Presentation, Unavailable};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -454,11 +469,19 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                     &path,
                     idx,
                 );
-                if let Some(mut child) = built {
-                    tick += 1;
-                    child.last_used = tick;
-                    stack.push(child);
-                    enforce_cap(&cache, &mut stack);
+                match built {
+                    Ok(Some(mut child)) => {
+                        tick += 1;
+                        child.last_used = tick;
+                        stack.push(child);
+                        enforce_cap(&cache, &mut stack);
+                    }
+                    Ok(None) => {} // not a descendable block
+                    Err(ChildUnavailable(msg)) => {
+                        if let Some(v) = stack.last_mut().and_then(|f| f.view.as_mut()) {
+                            v.set_flash(msg);
+                        }
+                    }
                 }
             }
             // Ascend: drop the child `View`, reload the parent if it was evicted, and land its
@@ -593,8 +616,16 @@ fn ensure_loaded(args: &Args, cache: &TuiCache, stack: &mut [Frame], i: usize) -
         &path,
         from,
     );
-    if let Some(f) = rebuilt {
-        stack[i].view = f.view;
+    match rebuilt {
+        Ok(Some(f)) => stack[i].view = f.view,
+        Ok(None) => {}
+        // The frame stays hollow and the next draw shows the flash; a rebuild that cannot admit
+        // must not leave a view that silently never ticks.
+        Err(ChildUnavailable(msg)) => {
+            if let Some(v) = stack[i - 1].view.as_mut() {
+                v.set_flash(msg);
+            }
+        }
     }
     Ok(())
 }
@@ -754,8 +785,10 @@ fn build_child_frame(
     agent: Agent,
     root_path: &Path,
     idx: crate::model::BlockIndex,
-) -> Option<Frame> {
-    let dref = parent_view.descend_ref_at(idx)?;
+) -> Result<Option<Frame>, ChildUnavailable> {
+    let Some(dref) = parent_view.descend_ref_at(idx) else {
+        return Ok(None);
+    };
     // Own the fields we need so the borrow of `parent_view` ends before we build the view.
     let mut blocks = dref.blocks;
     let agent_type = dref.agent_type;
@@ -783,26 +816,31 @@ fn build_child_frame(
         }
     }
     if blocks.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Live-tail an open child through the CACHE's follower for its id (registered here, polled
     // by the event loop): its first poll re-folds the child transcript (== the blocks just
     // loaded), then only deltas. The residency budget in `enforce_cap` bounds how many child
     // followers stay materialized.
     //
-    // A child is opened **cache-less**, explicitly. Registration alone is not enough on a
-    // durable cache: `poll_view` will not materialize a session `admit` never granted, because
-    // `admit` is the only path that takes the lock — so without this the child would register,
-    // never become resident, and silently stop ticking. Cache-less rather than admitted because
-    // a sub-agent is not the session the user opened: taking a durable entry and a lock per
-    // child would multiply both for state that is usually small and short-lived.
+    // A child is ADMITTED, exactly like the session the user opened (#163). Registration alone is
+    // not enough: `poll_view` will not materialize a session `admit` never granted, because
+    // `admit` is the only path that takes the lock. There used to be a cache-less shortcut here,
+    // on the reasoning that a sub-agent is small and short-lived and not worth an entry — but a
+    // session handed out without owning its entry is exactly the thing that produced two writers
+    // on one log, and a child is not special enough to keep a second way of doing it.
     let live = child_transcript.is_some() && !agent_id.is_empty();
     if live {
         cache.register_new(
             &agent_id,
             child_transcript.clone().expect("live ⇒ transcript"),
         );
-        cache.open_uncached(&agent_id, crate::store::ArcLog::memory());
+        if let Err(e) = admit_root(cache, &agent_id) {
+            // Nobody else can hold a child of the session we are reading, so this is a machine
+            // fault (an unwritable cache root, a lock naming a live stranger), not a normal
+            // outcome. Say so and stop, rather than open a view that silently never ticks.
+            return Err(ChildUnavailable(format!("sub-agent {agent_id}: {e}")));
+        }
     }
     // The sidecar key (#75): stable across evict/reload cycles of this same child.
     let sc_key = if agent_id.is_empty() {
@@ -837,7 +875,7 @@ fn build_child_frame(
         segs.push((format!("~${cost:.2}"), 7));
     }
     view.set_footer_segments(segs);
-    Some(Frame {
+    Ok(Some(Frame {
         view: Some(view),
         id: if live { agent_id } else { String::new() },
         sc_key,
@@ -845,8 +883,16 @@ fn build_child_frame(
         path: root_path.to_path_buf(),
         from: idx,
         last_used: 0,
-    })
+    }))
 }
+
+/// A sub-agent that cannot be opened, and why — the TUI's one-line status flash (#163).
+///
+/// Distinct from "nothing to descend into" (`Ok(None)`), which is an ordinary answer for a block
+/// that is not an agent. This one means the machine said no, and it must be visible: the whole
+/// point of removing the cache-less shortcut is that a session which cannot own its entry is not
+/// quietly opened anyway.
+struct ChildUnavailable(String);
 
 /// How the viewer's input loop ended.
 enum Outcome {

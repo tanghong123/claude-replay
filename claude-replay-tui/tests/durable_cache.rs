@@ -437,13 +437,17 @@ fn a_resumed_writers_checkpoints_cover_the_whole_session() {
     assert_eq!(got, cold(&src));
 }
 
-/// **A registered-but-never-admitted session must still tick.** Sub-agent frames in `-f` mode
-/// are `register_new`'d and then polled — they never go through `admit`, because a child is not
-/// the session the user opened. On a durable cache `poll_view` refuses to materialize (only
-/// `admit` may, since only `admit` takes the lock), so without an explicit cache-less open the
-/// child would silently stop live-tailing.
+/// **A sub-agent is admitted like anything else.** Sub-agent frames in `-f` mode are
+/// `register_new`'d and then polled, and registration alone is not enough: `poll_view` refuses to
+/// materialize a session `admit` never granted, because only `admit` takes the lock — so an
+/// unadmitted child would register and then silently stop live-tailing.
+///
+/// It used to be opened cache-less for that reason, on the grounds that a child is small and not
+/// the session the user opened. That was the last caller of the escape hatch which let a session
+/// be served without owning its entry, and #163 removed both. A child costs one entry and one
+/// lock, like every other session.
 #[test]
-fn a_registered_child_still_ticks_on_a_durable_cache() {
+fn a_child_is_admitted_like_any_other_session() {
     let root = tmp("child");
     let src = root.join("child.jsonl");
     transcript(&src, 2);
@@ -455,16 +459,25 @@ fn a_registered_child_still_ticks_on_a_durable_cache() {
         c.poll_view("child", ArcLog::memory).is_none(),
         "a durable cache must not materialize an unadmitted session behind the lock's back"
     );
-    // The explicit cache-less open is what a non-owned session needs.
-    c.open_uncached("child", ArcLog::memory())
-        .expect("registered");
+    assert!(matches!(
+        c.admit(
+            "child",
+            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+            |_: &Holder<TuiNote>| false,
+        ),
+        Admission::Owned { .. }
+    ));
     let d = c
         .poll_view("child", ArcLog::memory)
         .expect("resident now")
         .expect("readable");
     assert!(
         d.committed_len + d.provisional.len() > 0,
-        "the child folds and ticks once it is open"
+        "the child folds and ticks once it is admitted"
+    );
+    assert!(
+        claude_replay_present::cache::admit::entry_dir(&root, Presentation::Tui, "child").exists(),
+        "and it owns a durable entry, like every other session"
     );
 }
 
@@ -621,8 +634,11 @@ fn a_live_holder_denies_the_second_process() {
     ));
 }
 
-/// An ephemeral cache denies with `NoCacheFlag` and writes nothing — `--no-cache` is a real path,
-/// not a degraded one, and it must leave the durable root untouched.
+/// An ephemeral cache denies with `NoCacheFlag` and writes nothing.
+///
+/// No flag selects one any more: `--no-cache` builds a real cache at its own root (#165), and a
+/// denial no longer has a cache-less path behind it (#163). What is left is the type-level state
+/// — a cache with no durable wiring — and its one guarantee: it denies, and it touches nothing.
 #[test]
 fn an_ephemeral_cache_denies_and_writes_nothing() {
     let root = tmp("ephem");
@@ -642,21 +658,6 @@ fn an_ephemeral_cache_denies_and_writes_nothing() {
     assert!(
         !root.join("tui").exists(),
         "nothing was created for a session that was never admitted"
-    );
-
-    // The explicit cache-less path still serves a correct session.
-    let ss = c.open_uncached("s", ArcLog::memory()).expect("registered");
-    let d = c.poll_view("s", ArcLog::memory).unwrap().unwrap();
-    let mut got: Vec<Block> = ss
-        .committed_arcs()
-        .iter()
-        .map(|a| a.as_ref().clone())
-        .collect();
-    got.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
-    assert_eq!(got, cold(&src), "cache-less is still a correct session");
-    assert!(
-        !root.join("tui").exists(),
-        "and it still wrote nothing durable"
     );
 }
 
