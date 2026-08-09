@@ -892,6 +892,7 @@ fn build_child_frame(
 /// that is not an agent. This one means the machine said no, and it must be visible: the whole
 /// point of removing the cache-less shortcut is that a session which cannot own its entry is not
 /// quietly opened anyway.
+#[derive(Debug)]
 struct ChildUnavailable(String);
 
 /// How the viewer's input loop ended.
@@ -1525,6 +1526,77 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    /// **A descended sub-agent really ticks** — the whole path, not just `admit`.
+    ///
+    /// `build_child_frame` → `admit_root` → the event loop's poll for that child's id. It used to
+    /// open children cache-less, precisely because a durable cache will not materialize a session
+    /// `admit` never granted; #163 removed that shortcut, so a child now takes an entry and a lock
+    /// like anything else. If that wiring is wrong the failure is silent and specific — the child
+    /// opens, shows its already-parsed blocks, and never advances again — which is exactly what
+    /// the shortcut existed to prevent.
+    #[test]
+    fn a_descended_child_owns_its_entry_and_keeps_ticking() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("cr-descend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let sess = base.join("proj").join("sid.jsonl");
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(concat!(
+                r#"{"type":"user","cwd":"/w","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-01T10:00:00Z"}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]},"timestamp":"2026-08-01T10:00:01Z"}"#, "\n",
+                r#"{"type":"user","toolUseResult":{"agentId":"achild01","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]},"timestamp":"2026-08-01T10:00:02Z"}"#, "\n",
+            ).as_bytes())
+            .unwrap();
+        let child_path = sadir.join("agent-achild01.jsonl");
+        std::fs::File::create(&child_path)
+            .unwrap()
+            .write_all(concat!(
+                r#"{"type":"user","message":{"content":"go"},"timestamp":"2026-08-01T10:00:01Z"}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"Read","input":{"file_path":"/a"}}]},"timestamp":"2026-08-01T10:00:02Z"}"#, "\n",
+            ).as_bytes())
+            .unwrap();
+
+        // A durable cache at the TEST's own root — never the developer's.
+        let root = base.join("cache");
+        let cache = TuiCache::durable(Presentation::Tui, root.clone(), Versions::current(None));
+        let args = Args {
+            target: Some(sess.display().to_string()),
+            ..Default::default()
+        };
+        let parent = build_frame(&args, &cache, &sess, false, 0).expect("parent frame");
+        let view = parent.view.as_ref().expect("loaded");
+        let spawn = (0..view.block_kinds().len())
+            .find(|i| view.descend_ref_at(*i).is_some())
+            .expect("the fixture must have a descendable spawn");
+
+        let child = build_child_frame(&args, &cache, view, Agent::CLAUDE, &sess, spawn)
+            .expect("a free child entry must be admitted, not refused")
+            .expect("the spawn is descendable");
+        assert!(!child.id.is_empty(), "a live child is followed by id");
+        assert!(
+            cache::admit::entry_dir(&root, Presentation::Tui, &child.id).exists(),
+            "and it owns a durable entry, like every other session"
+        );
+
+        // The point of admitting it: the follower materializes and the child advances.
+        let delta = cache
+            .poll_view(&child.id, crate::store::ArcLog::memory)
+            .expect("registered")
+            .expect("readable");
+        assert!(
+            delta.committed_len + delta.provisional.len() > 0,
+            "an admitted child folds and ticks"
+        );
+
+        drop(child);
+        drop(parent);
+        cache.release_all();
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// The `-f --html` multi-open contract: a pick OPENS and the picker STAYS — only an
     /// explicit quit ends the loop. Drives the loop's real decision function with synthetic

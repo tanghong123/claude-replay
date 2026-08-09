@@ -651,20 +651,34 @@ impl SessionService {
     /// The `/pull` body for `id`, whichever kind it is: a feed, a hand-off to the owner, or the
     /// reason there is neither. Every one of the three reaches the client — that is the whole
     /// point of #163, since the alternative was a page that showed nothing and said nothing.
-    pub fn pull_response(&self, id: &str, cursor: Cursor) -> String {
+    /// The STATUS still means what it always meant, because `/pull` is a public wire surface and
+    /// not only the browser reads it: a feed and a hand-off are 200 (both are answers), a session
+    /// that cannot be served at all is 404. The body is JSON either way, so a client that
+    /// switches on `t` never has to look.
+    pub fn pull_response(&self, id: &str, cursor: Cursor) -> HttpResponse {
         match self.pull_response_for(id, cursor) {
-            Ok(body) => body,
-            Err(Unserved::Elsewhere(url)) => redirect_reply(&url),
+            Ok(body) => {
+                // A session that recovers may fail again later, and THAT one deserves a line too.
+                self.cache.aux_with(id, |a| a.unserved = false);
+                HttpResponse::json(body)
+            }
+            Err(Unserved::Elsewhere(url)) => HttpResponse::json(redirect_reply(&url)),
             Err(Unserved::Nowhere(why)) => {
-                // Once per session, not once per poll: a client that cannot be served keeps
-                // asking, and a line a second would bury the one that matters.
+                // Once per spell of failure, not once per poll: a client that cannot be served
+                // keeps asking, and a line a second would bury the one that matters.
                 if self
                     .cache
                     .aux_with(id, |a| !std::mem::replace(&mut a.unserved, true))
                 {
                     eprintln!("claude-replay: {why}");
                 }
-                json!({"t": "error", "message": why}).to_string()
+                HttpResponse {
+                    code: "404 Not Found",
+                    content_type: "application/json; charset=utf-8",
+                    body: json!({"t": "error", "message": why})
+                        .to_string()
+                        .into_bytes(),
+                }
             }
         }
     }
@@ -1067,7 +1081,7 @@ pub fn service_routes(
         if id.is_empty() || id.contains('/') || id.contains("..") {
             return HttpResponse::not_found("no such agent");
         }
-        return HttpResponse::json(live.pull_response(id, cursor));
+        return live.pull_response(id, cursor);
     }
     // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
     // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
@@ -1225,7 +1239,7 @@ mod tests {
         /// One full client poll against the live server: pull, then (phase two) range-read the
         /// committed pointer; a failed/stale range read drops the whole reply, like the browser.
         fn poll(&mut self, live: &SessionService, id: &str) {
-            let reply = live.pull_response(id, self.cursor());
+            let reply = body(live.pull_response(id, self.cursor()));
             let r: Value = serde_json::from_str(&reply).expect("valid reply JSON");
             let committed: Vec<Value> = match &r["committed_ext"] {
                 Value::Null => Vec::new(),
@@ -1395,7 +1409,7 @@ mod tests {
             "nothing is owned before the first pull"
         );
 
-        live.pull_response("nid", Cursor::default());
+        let _ = live.pull_response("nid", Cursor::default());
 
         let held = lock::read::<HtmlNote>(&entry).expect("the pull admitted and locked it");
         assert_eq!(held.pid, std::process::id());
@@ -1477,7 +1491,9 @@ mod tests {
         let live = service(9999);
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
-        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        let r = live.pull_response("sid", Cursor::default());
+        assert_eq!(r.code, "200 OK", "a hand-off is an answer, not a failure");
+        let v: Value = serde_json::from_str(&body(r)).unwrap();
         assert_eq!(v["t"], json!("redirect"), "held ⇒ route, never serve: {v}");
         assert_eq!(v["url"], json!(handoff_url(peer_port, "sid")));
         assert!(
@@ -1491,7 +1507,12 @@ mod tests {
         let live = service(9999);
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
-        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        let r = live.pull_response("sid", Cursor::default());
+        assert_eq!(
+            r.code, "404 Not Found",
+            "`/pull` is a wire surface: a session that cannot be served is not a 200"
+        );
+        let v: Value = serde_json::from_str(&body(r)).unwrap();
         assert_eq!(v["t"], json!("error"), "nowhere to send anyone: {v}");
         let msg = v["message"].as_str().unwrap_or_default();
         assert!(
@@ -1507,7 +1528,8 @@ mod tests {
         let live = service(peer_port);
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
-        let v: Value = serde_json::from_str(&live.pull_response("sid", Cursor::default())).unwrap();
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
         assert_eq!(
             v["t"],
             json!("pull"),
@@ -1654,7 +1676,7 @@ mod tests {
 
         // Fresh cursor: turn 1 committed (the second user turn opened turn 2) ⇒ the reply carries
         // a pointer, not inline committed records.
-        let reply = live.pull_response("sid", Cursor::default());
+        let reply = body(live.pull_response("sid", Cursor::default()));
         let v: Value = serde_json::from_str(&reply).unwrap();
         let ext = &v["committed_ext"];
         assert!(!ext.is_null(), "committed delta ⇒ pointer present");
@@ -1686,7 +1708,7 @@ mod tests {
             provisional_index: v["provisional_from"].as_u64().unwrap() as usize
                 + v["provisional"].as_array().unwrap().len(),
         };
-        let idle: Value = serde_json::from_str(&live.pull_response("sid", next)).unwrap();
+        let idle: Value = serde_json::from_str(&body(live.pull_response("sid", next))).unwrap();
         assert!(idle["committed_ext"].is_null(), "idle ⇒ null pointer");
         assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
 
@@ -1743,7 +1765,7 @@ mod tests {
 
         // Parent's pull: reply carries the child in its meta; the side effects are ONLY a source
         // registration + the parent pointer — no title write for the child.
-        let reply = live.pull_response("sid", Cursor::default());
+        let reply = body(live.pull_response("sid", Cursor::default()));
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["meta"]["children"][0]["id"], "achild01");
         assert_eq!(v["meta"]["children"][0]["title"], "review the auth module");
@@ -1792,6 +1814,12 @@ mod tests {
             base.join("cache"),
             Versions::current(Some(render_flavor(&FoldPolicy::default()))),
         )
+    }
+
+    /// A reply's body as text — `/pull` answers with a status now (#163), and every test here
+    /// is about what the body says.
+    fn body(r: HttpResponse) -> String {
+        String::from_utf8(r.body).expect("replies are utf-8 json")
     }
 
     /// Where `test_cache` puts `sid`'s record log.
@@ -1954,7 +1982,7 @@ mod tests {
             ("c1", "claude", "/a", "hello claude"),
             ("x1", "codex", "/b", "hello codex"),
         ] {
-            let reply = live.pull_response(id, Cursor::default());
+            let reply = body(live.pull_response(id, Cursor::default()));
             let v: Value = serde_json::from_str(&reply).unwrap();
             assert_eq!(v["meta"]["agent"], json!(want_agent), "{id} agent");
             assert_eq!(v["meta"]["cwd"], json!(want_cwd), "{id} cwd");
@@ -2044,7 +2072,7 @@ mod tests {
         live.cache
             .register("parent", Transcript::open(Agent::CODEX, parent));
 
-        let reply = live.pull_response("parent", Cursor::default());
+        let reply = body(live.pull_response("parent", Cursor::default()));
         let value: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(
             value["meta"]["children"]
