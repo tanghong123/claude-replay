@@ -84,12 +84,14 @@ fn port_answers(port: Option<u16>) -> bool {
 
 /// Drop the scratch of monitor runs that are no longer alive (#157).
 ///
-/// Per-run scratch fixes the sharing, but nothing would ever collect a dead run's copy: a
-/// crashed monitor's gigabytes would sit in `$TMPDIR` until the OS cleaned it, which on macOS
-/// means days. The name of each run dir IS its pid, so liveness is the whole decision, and
+/// Per-run scratch fixes the sharing, but nothing would ever collect a dead run's copy. The
+/// name of each run dir IS its pid, so liveness is the whole decision, and
 /// [`claude_replay_present::cache::lock::pid_alive`] is the audited answer the cache already
 /// trusts for exactly this question. Where liveness cannot be decided (non-Unix) nothing is
 /// swept — deleting a live run's log would be far worse than keeping a dead one's.
+///
+/// Also called on the legacy `$TMPDIR/claude-monitor`, so the runs that predate #161 are
+/// reclaimed once and that directory is then left empty and unused.
 fn sweep_dead_runs(runs: &std::path::Path) {
     if !claude_replay_present::cache::lock::liveness_decidable() {
         return;
@@ -159,21 +161,27 @@ fn main() -> Result<()> {
     let root = index::default_root()?;
     // Before anything is opened: one monitor per root (#160).
     claim_root(&root)?;
-    // Scratch is RUN-scoped and wiped on the way in, the same contract `--html` gives its own
-    // bundle dir (html_export::serve::start_server) and for the same two reasons (#157).
+    // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR`. Everything this tool
+    // writes is then in one place a person can find, inspect and delete — `du -sh` on the cache
+    // root is the whole answer. It was in `$TMPDIR/claude-monitor`, which on macOS resolves to
+    // an opaque `/var/folders/…` path nothing sweeps for days; that is where 14 GB accumulated
+    // unnoticed. "Temporary" described its LIFETIME, and the directory delivered neither.
     //
-    // It was a fixed `$TMPDIR/claude-monitor`, so every monitor this machine has ever run
-    // shared one record log per session and nothing ever reset it. The store appends and
-    // deliberately never truncates in its constructor (#96 — a durable log must survive to be
-    // resumed), and a session that falls off the 30s tail TTL is re-materialized by re-folding,
-    // which appends a COMPLETE re-render. Measured: +29 MB per reap cycle, a log born at 03:56
-    // that reached 14 GB by 18:00 for one 29 MB session, and two live monitors appending to it
-    // at once. Per-pid, wiped at startup: a run cannot inherit another's log or write into a
-    // peer's, and a run's growth ends with the run.
-    let runs = std::env::temp_dir().join("claude-monitor");
+    // RUN-scoped and wiped on the way in (#157), the same contract `--html` gives its bundle
+    // dir. The store appends and deliberately never truncates in its constructor (#96 — a
+    // durable log must survive to be resumed), and a session that falls off the 30s tail TTL is
+    // re-materialized by RE-FOLDING, which appends a complete re-render (+29 MB per cycle,
+    // still open as #158). Per-pid and wiped, a run cannot inherit another's log or write into
+    // a live peer's — and since #160 there is no live peer to begin with.
+    let runs = root.join("scratch");
     let scratch = runs.join(std::process::id().to_string());
     let _ = std::fs::remove_dir_all(&scratch);
     sweep_dead_runs(&runs);
+    // Reclaim the pre-#161 location once. Nothing writes there any more, so after this it stays
+    // empty; `remove_dir` (not `_all`) so anything unexpected is left alone rather than deleted.
+    let legacy = std::env::temp_dir().join("claude-monitor");
+    sweep_dead_runs(&legacy);
+    let _ = std::fs::remove_dir(&legacy);
     // The session service at the MONITOR's root (§3/§10): same presentation namespace,
     // different root — a running `claude-replay --html` and this server cannot contend.
     let service = Arc::new(claude_replay_html::SessionService::new(ServiceConfig {
