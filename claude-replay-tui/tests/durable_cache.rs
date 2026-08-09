@@ -951,3 +951,62 @@ fn a_version_change_defeats_retention() {
     );
     c.release_all();
 }
+
+/// **One admission, however many callers ask at once** (#169).
+///
+/// `admit` was not atomic: between a caller finding no resident and the cache installing one,
+/// every other caller found no resident either. Each opened its own store on the same backing,
+/// and `lock::acquire` denied none of them — none is a different process. So a session whose
+/// first admission is slow (a cold fold of a large transcript, with a browser polling every two
+/// seconds) got folded and WRITTEN by every request that arrived meanwhile. On disk that reads as
+/// a record log whose lines carry several records each, scrambled and duplicated — one line held
+/// six. Nothing detects it server-side; the page just never renders.
+///
+/// The property is exact and cheap to state: `make_store` runs ONCE, and every caller comes away
+/// holding the same session.
+#[test]
+fn concurrent_admissions_of_one_session_open_exactly_one_store() {
+    let root = tmp("race");
+    let src = root.join("t.jsonl");
+    transcript(&src, 6);
+
+    let c = cache(&root);
+    c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
+    let opened = AtomicUsize::new(0);
+
+    let sessions: Vec<_> = std::thread::scope(|scope| {
+        let hands: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    match c.admit(
+                        "s",
+                        |dir| {
+                            opened.fetch_add(1, Ordering::SeqCst);
+                            ArcLog::open_append(&dir.join("blocks.jsonl"))
+                        },
+                        |_: &Holder<TuiNote>| false,
+                    ) {
+                        Admission::Owned { session, .. } => session,
+                        Admission::Denied(_) => panic!("a free entry must be Owned"),
+                    }
+                })
+            })
+            .collect();
+        hands.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    assert_eq!(
+        opened.load(Ordering::SeqCst),
+        1,
+        "one backing, one writer — however many callers raced for it"
+    );
+    let first = &sessions[0];
+    for s in &sessions {
+        assert!(
+            std::sync::Arc::ptr_eq(first, s),
+            "every caller comes away with the SAME session"
+        );
+    }
+    c.release_all();
+    let _ = std::fs::remove_dir_all(&root);
+}

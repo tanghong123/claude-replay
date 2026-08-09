@@ -82,6 +82,14 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// selects `None` any more — `--no-cache` builds a real cache at its own root (#165) — so in
     /// production this is always `Some`, and a cache without it can only deny.
     durable: Option<Durable>,
+    /// **One admission at a time** (#169). [`admit`](Self::admit) is not atomic: between a
+    /// caller finding no resident and this cache installing one, every other caller finds no
+    /// resident too. They all open a store on the same backing, and `lock::acquire` grants every
+    /// one of them because none is a different process — so a session admitted by N concurrent
+    /// requests is folded and WRITTEN by N of them at once. A gate rather than per-id state
+    /// because an admission is short (open the backing, walk it) where a fold is long, and the
+    /// long part happens outside it.
+    admitting: Mutex<()>,
 }
 
 /// Everything a cache needs to be durable: where entries live, what it is folding with (so a
@@ -110,6 +118,7 @@ impl<P: BlockStore, A> Default for SessionCache<P, A> {
             pull_residents: Mutex::new(HashMap::new()),
             aux: Mutex::new(HashMap::new()),
             durable: None,
+            admitting: Mutex::new(()),
         }
     }
 }
@@ -315,6 +324,23 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         make_store: impl FnOnce(&Path) -> std::io::Result<P>,
         alive: impl Fn(&Holder<P::Note>) -> bool,
     ) -> Admission<P> {
+        // Admissions of ANY session are serialized, and the resident is re-checked once this
+        // caller is through the gate (#169). Without both halves, concurrent first-pulls of one
+        // session each open their own store on the same backing and each fold into it — every
+        // caller sees no resident because the winner has not installed one yet, and `acquire`
+        // denies none of them because none is a different process. The evidence is a record log
+        // whose lines carry up to six records, scrambled and duplicated: not two writers, N.
+        let _gate = lock_recover(&self.admitting);
+        if let Some(session) = self.shared_peek(id).filter(|ss| !ss.frozen()) {
+            // Someone admitted it while we waited. A live resident IS the admission — take it
+            // rather than opening a second one beside it.
+            let committed = session.counters().2;
+            let _ = self.touch(id);
+            return Admission::Owned {
+                session,
+                origin: Origin::Retained { committed },
+            };
+        }
         let Some(d) = &self.durable else {
             return Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
         };
