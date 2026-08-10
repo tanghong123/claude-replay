@@ -19,13 +19,15 @@ one, the viewer must **fold** it: parse every line and build the sequence of ren
 (user turns, tool calls, results). Folding a large transcript takes real time — up to a minute
 cold — so the result is worth keeping.
 
-Three programs display sessions, and they share one cache implementation:
+Three programs display sessions, and they share one cache implementation. In every one of them
+the cache holds **multiple entries at once** — what differs is how many a user *sees*
+concurrently, not how many are cached:
 
-| program | what it shows | how it reads the cache |
-|---|---|---|
-| `claude-replay` (terminal UI) | one session | polls each tick for a delta to splice into the view |
-| `claude-replay --html` | one or more sessions in a browser | serves any number of browser tabs from one folded copy, over a cursor protocol |
-| `claude-monitor` | every session on the machine | same HTML serving path, one long-running process |
+| program | on screen at once | in the cache | how it reads the cache |
+|---|---|---|---|
+| `claude-replay` (terminal UI) | one session (it takes over the screen) | several: the viewed session, its descended sub-agents, and recently-switched-away sessions kept warm | polls each tick for a delta to splice into the view |
+| `claude-replay --html` | any number — one browser tab per session | every session the server hosts | serves any number of tabs from one folded copy per session, over a cursor protocol |
+| `claude-monitor` | one at a time in the rail's frame | every session on the machine, populated as visited | same HTML serving path, one long-running process |
 
 The cache answers two different needs, and keeping them distinct is the whole subject of this
 document:
