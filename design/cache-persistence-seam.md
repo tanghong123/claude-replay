@@ -135,6 +135,106 @@ got or who has it.
 
 ---
 
+## 2b. End to end: one session, from a click to the disk and back
+
+Everything below this point is about pieces. This is the whole path once, so the pieces have
+somewhere to sit. Follow one session through a `claude-monitor` visit.
+
+### First visit — nothing exists yet
+
+```
+ browser                server                    cache                provider          disk
+    │  GET /session ──────▶ page(id)                                                       
+    │  ◀── the shell ──────┤  (no fold, no admission: just HTML)                          
+    │                      │                                                               
+    │  GET /pull?cursor=0 ─▶ pull_response_for(id, 0)                                      
+    │                      ├── reap(30s) ─────────▶ drop residents idle AND unreferenced   
+    │                      ├── touch(id) ─────────▶ None — nobody has it                   
+    │                      └── session_for ───────▶ admit(id, make_store)                  
+    │                                              ├─ gate: one admission at a time  (#169)
+    │                                              ├─ ours = None (no resident)      (#109)
+    │                                              └─ claim ──────────▶ entry_dir ────▶ mkdir
+    │                                                                   lock::acquire ─▶ LOCK
+    │                                                                   make_store ────▶ open
+    │                                                                                   records.jsonl
+    │                                                                   recover ───────▶ read
+    │                                                                    (no meta yet)   meta.jsonl
+    │                                              ◀── Owned { store, Cold(NoPriorCache) }
+    │                                              ├─ SharedSession::with_store         
+    │                                              ├─ install → pull_residents[id]      
+    │                                              └─ attach_writer(MetaWriter)         
+    │                      ├── publish(id, {port}) ───────────────────▶ note into ─────▶ LOCK
+    │                      ├── shared.advance() ──▶ FOLD the transcript
+    │                      │                        each committed block: store.put ──▶ append
+    │                      │                        each commit: meta record ─────────▶ append
+    │                      └── build the reply: counters + committed_ext {offset, len}
+    │  ◀── pull reply ─────┤
+    │  GET /records?from&len ─▶ records_bytes ────▶ shared_peek → store.read_range ───▶ read
+    │  ◀── the bytes ──────┘
+```
+
+Two things to notice, because the rest of the doc argues about them. The **lock is taken before
+the store is opened** — a denial must leave nothing open, or "nothing was opened" is a lie. And
+the **fold happens on the request's own thread**, holding that session's mutex: the requester
+pays, and a session nobody is pulling costs nothing.
+
+### Second pull, seconds later
+
+`touch(id)` finds the resident and returns the same `Arc`. No admission, no lock, no provider.
+`advance()` folds only what the transcript grew by; the reply's `committed_ext` points at the new
+bytes. This is the steady state, and it is why a second browser tab is free: it is another reader
+of one session (§7.1), not another tailer.
+
+### Idle 30 seconds, then a pull
+
+`reap(TAIL_TTL_MS)` drops the resident — **unless someone still holds it** (#168). The entry's
+lock is NOT released: this process still owns it. The next pull re-admits:
+
+```
+admit → gate → ours = None (the resident is gone) → claim
+                                   ├─ acquire: the LOCK is OURS already → granted (lock.rs:82)
+                                   ├─ make_store: open_append (never truncates)
+                                   ├─ load_from(0): walk the log, rebuild locators   ← a RESUME
+                                   │                (and since #168, stop at a line
+                                   │                 carrying two records)
+                                   └─ recover: versions + anchor + align → Resumed
+```
+
+Nothing is re-folded and nothing is re-rendered — the blocks are already on disk, and this reads
+them back as locators. That is what makes a 30-second TTL affordable, and it is the whole point of
+the durable entry.
+
+### A second process arrives
+
+```
+claude-replay --html <same session>
+    └─ existing_server(root, sid) ──▶ read LOCK ──▶ note {port} ──▶ open that URL instead, quit
+```
+
+If it gets past that (a session admitted lazily after a page is already open), `admit` returns
+`Denied(Held(holder))`, and the page is told to navigate rather than served a second copy (#163).
+**One entry, one writer, always.**
+
+### Tomorrow
+
+The process is gone; the entry is not. A new run's `admit` finds a lock naming a dead pid,
+reclaims it, and `recover` compares the meta stream's fold version and source anchor against
+today's. Same → resume from `replay_from`. Different → `Cold(VersionChanged)`, and the log is
+rebuilt from scratch. Untouched for 14 days → `gc` deletes it (30 if a lock is still there — §7).
+
+### Where each layer's responsibility starts and stops
+
+| layer | owns | does NOT know |
+|---|---|---|
+| **client** (viewer/monitor) | which root, which fold policy, when to gc | anything about locks or meta streams |
+| **cache** | ids → sources, ids → residents, TTL, one-admission-at-a-time | where an entry lives on disk |
+| **session** | the fold, the epoch/gen, one-thread-at-a-time | that its store is durable at all |
+| **store** | how a block becomes bytes, and back | who else might want the file |
+| **provider** (today: `admit`+`lock`) | entry dirs, locks, notes, resume/align, gc | what a `SharedSession` is |
+
+The last column is the design. Today the middle three rows are one type — §1 shows the cache
+holding the provider's whole job in a `durable` field, and §3 is about giving it back.
+
 ## 3. The seam
 
 ```rust
