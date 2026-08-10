@@ -42,6 +42,9 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)
     }
+    fn malformed_line(&mut self) {
+        agents::codex::metrics::CodexMetricsAcc::malformed_line(self)
+    }
     fn finish(&self) -> Metrics {
         self.clone().finish()
     }
@@ -156,8 +159,18 @@ impl TranscriptAdapter for CodexAdapter {
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::codex::model::decode_line(line, cwd, out)
     }
+    fn line_preprocessor(&self) -> Box<dyn claude_replay_engine::adapter::LinePreprocessor> {
+        Box::new(agents::codex::model::CodexLinePreprocessor::default())
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::codex::metrics::CodexMetricsAcc::default())
+    }
+    fn load_attachment(
+        &self,
+        line: &str,
+        index: usize,
+    ) -> Option<claude_replay_engine::model::LoadedAttachment> {
+        agents::codex::model::nth_loaded_attachment(line, index)
     }
     fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
         agents::codex::discover::candidates_scoped(cwd)

@@ -681,9 +681,10 @@ claude_replay_html::dump_all_html(&args, &transcript_path)?;  <span class="c">//
       built-in) a <code>model</code>/<code>metrics</code>/<code>discover</code> family under
       <code>claude-replay-agents/src/agents/&lt;agent&gt;/</code> + one <code>REGISTRY</code>
       row. The shared engine is never touched. Calibrate the cost by the three existing
-      adapters: Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's,
-      so it reuses Claude's decoder wholesale — its whole adapter is discovery + a
-      <code>sniff</code>). Say we're adding <code>Gemini</code> as a built-in.</p>
+      adapters: Claude and Codex both implement child-session trees (Claude via sibling
+      subagent files, Codex via rollout relationship metadata); QoderWork's format matches
+      Claude's, so it reuses Claude's decoder wholesale and mainly supplies discovery +
+      identity. Say we're adding <code>Gemini</code> as a built-in.</p>
     <ol class="steps">
       <li><b>mint the agent id</b> <span class="d">— <code>Agent</code> is an open interned id,
         not an enum: <code>const GEMINI: Agent = Agent::new("gemini")</code> — nothing to

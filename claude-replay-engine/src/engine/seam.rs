@@ -24,6 +24,7 @@
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
 //!   a seam concern (#87 step 3).
 
+pub use crate::adapter::{LinePreprocessor, PreprocessedLine};
 pub use crate::discover::{
     ancestors_below, home_dir, Candidate, CardMemo, CardOutcome, SessionCard, SNIPPET_CHARS,
 };

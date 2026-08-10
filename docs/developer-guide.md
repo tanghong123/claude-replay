@@ -487,10 +487,10 @@ The payoff of the [pipeline design](architecture.md#2-the-pipeline--and-where-it
 `impl TranscriptAdapter` over `claude-replay-engine`'s `seam`** — either in your own crate
 with your own registry slice, or (for a built-in) a `model` / `metrics` / `discover` family
 under `claude-replay-agents/src/agents/<agent>/` + one `REGISTRY` row. The shared engine is
-never touched. Calibrate the cost by the three existing adapters:
-Claude (full), Codex (no sub-agent tree), QoderWork (format matches Claude's, so it reuses
-Claude's decoder wholesale — its whole adapter is discovery + a `sniff`). Say we're adding
-`Gemini` as a built-in.
+never touched. Calibrate the cost by the three existing adapters: Claude and Codex both
+implement child-session trees (Claude via sibling subagent files, Codex via rollout relationship
+metadata); QoderWork's format matches Claude's, so it reuses Claude's decoder wholesale and
+mainly supplies discovery + identity. Say we're adding `Gemini` as a built-in.
 
 ### Step 1 — mint the agent id
 

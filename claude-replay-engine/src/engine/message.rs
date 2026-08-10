@@ -10,8 +10,8 @@
 //! normalized fields**, never raw agent strings. The agent-agnostic **replay / state
 //! builder** (Layer 2, `replay`) folds the stream into the block list — back-patch, thinking
 //! clock, user-turn stamping, queue lifecycle, turn grouping — and parses **no** raw agent
-//! format. An agent that has no analogue for a variant (Codex emits no `QueueOp`/
-//! `Completion`/`SkillBody`) simply never produces it.
+//! format. An agent that has no analogue for a variant (Codex emits no `QueueOp` or
+//! `SkillBody`) simply never produces it.
 //!
 //! Phase note: no variant carries a built `Block` (the M14 block-model lift) — `ToolUse`
 //! holds raw `name`/`input`/`cwd` and L2 shapes the block via `Shaping::build_tool`; the
