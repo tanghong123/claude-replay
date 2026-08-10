@@ -1,6 +1,7 @@
 # Design: taking persistence out of `SessionCache`
 
-> **Status:** proposed (not built). Tracked as task **#167**. Design-only; no code has moved.
+> **Status:** proposed (not built), **resolved to a shape — see §13**. Tracked as task **#167**.
+> Design-only; no code has moved. §3–§5 explore the space; §13 is the decision.
 > Builds on [`durable-session-cache.md`](durable-session-cache.md) (#96 — BUILT), which is the
 > design of the thing being re-cut here. Read §1 and §3; the rest follows from them.
 >
@@ -1182,6 +1183,183 @@ last:
    all.
 4. **Does `A` (the sidecar slot) stay on the cache?** It is view state keyed by session, so
    probably yes — but it is the third map on a type we are trying to narrow.
+
+---
+
+## 13. Resolution — one cache, three providers
+
+Reviewed end to end (2026-08-10) against four requirements: crate responsibilities, the three
+real use cases, the locking story, and an audit of every method. The shape that survives:
+
+**One `SessionCache`, one `Entries` trait, three implementations.** Not two cache classes, not
+three.
+
+### 13.1 The three use cases are three providers
+
+The deciding observation: every *thread-level* guarantee — one resident per id, one admission at
+a time, the session's own mutex, reap-vs-`strong_count` — is **identical across all three use
+cases** and sits above the seam. What differs is only what happens at the entry: whether there is
+a lock, a meta stream, a resume. That is provider-sized, not class-sized.
+
+| use case | provider | lock | meta/resume | on re-materialize |
+|---|---|---|---|---|
+| (a) `--no-cache`, one-off | `Transient` | none | none | `store.reset()` + cold refold |
+| (b) viewer, per-session durable | `PerSession { root, versions, alive, note }` | one `LOCK` per `<session, frontend>` entry | yes | resume from `replay_from` |
+| (c) monitor, whole-machine | `SingleWriter::claim(root)` | **one** root `LOCK`, taken at construction | yes | resume from `replay_from` |
+
+```rust
+pub trait Entries<P: BlockStore> {
+    type Note: Serialize + DeserializeOwned + Clone;
+    fn open(&self, id: &str, src: &Transcript, ours: Option<u64>,
+            make_store: &dyn Fn(&Path) -> io::Result<P>) -> Opened<P, Self::Note>;
+    fn publish(&self, id: &str, note: Self::Note) -> bool { false }   // defaulted
+}
+
+pub enum Opened<P: BlockStore, N> {
+    /// `writer` owns the entry lock (§13.3). `None` for Transient — nothing to record, nothing held.
+    Owned { store: P, loaded: Vec<P::Bv>, origin: Origin, writer: Option<EntryWriter> },
+    Denied(Denial<N>),
+}
+```
+
+**(a) revises #165, and is the better reading of the flag.** `--no-cache` means *no durable
+cache* — not "a durable cache at a private root". The on-disk artifacts a `--html --no-cache` run
+writes (the bundle, a `records.jsonl` the range reads serve from) are **serving artifacts in run
+scratch**, wiped at the next start (`start_server` already wipes `run_dir`); they are not a cache
+anyone resumes from. So `Transient` has no meta stream, no `LOCK`, no note, no `Denied` — `open`
+always returns `Owned { origin: Cold(NoPriorCache), writer: None }`, and the cache's cold path
+calls `store.reset()` first, which is what makes the old unbounded-growth path structurally
+impossible (the growth was append-without-reset). `throwaway/<pid>` as a *durable* root is
+retired; the `runs/<pid>` scratch and its `reclaim` sweep stay. A second `--no-cache` run of the
+same session is two independent views by design — no rendezvous, no redirect, which is exactly
+what the flag is for.
+
+**(c) dissolves three standing warts at once.** The monitor's provider takes the root lock in its
+constructor — `SingleWriter::claim(root)` returns `Ok(provider)` or `Served { url }` (#166's
+redirect becomes a constructor outcome, and `claim_root` in `main.rs` becomes provider
+construction). Per-entry `open` then never locks: process-level exclusivity is already
+established, so the 56-of-56 uncontendable entry locks disappear (§3.2), the only-possible-denial
+false positive disappears, and with it the #163 self-guard. Entries keep their directories and
+meta streams — the rail's lock-free read is layout, not locking.
+
+### 13.2 Why one cache class
+
+Two- and three-class designs were explored and rejected on the same grounds:
+
+- **The read path is the bulk of the API** — touch/peek, poll_view, reap, aux, the pull plumbing
+  — and it is byte-identical across use cases. Separate classes either duplicate it or forward
+  it; Rust has no inheritance, delegation is hand-written, and `Deref` abuse to fake it is worse
+  than the generic. The consumers (`serve.rs`, `app.rs`) are each written once against one type.
+- **A wrapper (`Durable<SessionCache>`) splits the admission from the residency it must guard.**
+  The #169 gate has to close the window between "no resident" and "installed", and the residents
+  map lives in the inner type — a wrapper serializing itself still races on `install`. The gate
+  and the map must be one type's business.
+- **Sharing at a lower level happens in the provider module, not in a cache hierarchy.**
+  `PerSession` and `SingleWriter` share `lock.rs`, the meta stream, `entry_dir`, `gc` — all in
+  `cache::fs`, which is also where `Presentation` retreats to and what the monitor's index and
+  `existing_server` keep reading (§10).
+
+A trait rather than an enum of providers because `Note` is deliberately typed per frontend (#96)
+and `Transient` must exist without any fs dependency. The third type parameter is absorbed by the
+per-frontend aliases exactly as §3.3 argued.
+
+### 13.3 The locking story, complete
+
+| moment | mechanism | level | owner |
+|---|---|---|---|
+| provider construction | `SingleWriter::claim` → root `LOCK` or `Served(url)` | process, whole cache | provider |
+| admission | `admitting` gate (a critical section, not a claim) | thread | cache |
+| admission | `PerSession` entry `LOCK` | process, per session | provider |
+| resident lifetime | `Arc` singleton; `reap` spares `strong_count > 1` | thread | cache |
+| serving | the session's `inner` mutex; `advance` holds it for the fold | thread | session |
+| release | **RAII**: `EntryWriter` = `MetaWriter` + lease; drop ⇒ unlock | process | writer |
+
+The last row is §7.3 adopted: `release(id)` stops being a string-keyed call that mutates state
+somewhere else. `quiesce` drops the writer, dropping the writer releases the lock at exactly the
+moment writing stops; `release_all` is "quiesce everything"; the `release`/`release_all`
+asymmetry (§6.9) and the `remove_pull` footgun (§7.2) both cease to exist. **The note lives
+wherever the lock lives**: on the entry for `PerSession`, on the root for `SingleWriter`, nowhere
+for `Transient`.
+
+### 13.4 The method audit — what survives, what dies
+
+Deleted, with the reason:
+
+- **`shared_session(id, open)`** — the get-or-create that bypasses admission. It has exactly one
+  production caller (`poll_view`'s non-durable branch), and it is the two-writers hazard as an
+  API. With `Transient`, `admit` is cheap for the cache-less case, so **`admit` becomes the only
+  creator** and `poll_view` loses its `durable.is_some()` branch — the §6.9 smell, gone.
+- **`admit`'s `alive` parameter** — a per-call closure rebuilding what is provider configuration.
+  `PerSession` takes the liveness rule (and the self-port guard) once, at construction.
+- **`ephemeral()` / `durable()` / `Default`** — one constructor, `SessionCache::new(entries)`.
+- **`Denial::Unavailable::NoCacheFlag`** — no flag selects a cache that cannot serve.
+  `NoLivenessCheck` and root-level `UnwritableRoot` move to provider *construction* errors — the
+  machine's problems surface when the client builds the provider, not per session at admit time.
+  `UnknownSession` stays (it is the registry's, i.e. the cache's). `Held` stays, `PerSession` only.
+- **`release(id)` as an unlock** — RAII (§13.3). The name survives as "quiesce".
+- **TUI's `publish` call** — its note (the tmux pane) is known at construction, so `PerSession`
+  takes an initial note and writes it at acquire. `publish` remains only for facts that arrive
+  late — the HTML port — which is the one caller that ever needed it.
+- **`DurableStore::Note`** — moves to `Entries::Note`; the store trait drops its serde bounds and
+  is again purely "how blocks become bytes".
+- **`Presentation` and `Versions` in the cache signature** — provider config, in `cache::fs`.
+
+Kept, deliberately: the registry four (`register`/`register_new`/`is_registered`/`resolve`);
+`touch`/`shared_peek` (the two honest getters); `reap`/`reap_over_budget` (two policies, two
+real owners); the `aux` trio (the TUI still parks view state; #170 moved only the *browser's*
+equivalent client-side); `make_store` as a per-call closure (cwd and fold are per-session facts
+only the caller has); `admit`'s name (it now means "become the sole owner of this session's
+tailer", and the churn of renaming every call site buys no clarity that doc comments cannot).
+
+### 13.5 The call sites, after
+
+```rust
+// TUI
+let entries = PerSession::new(root, Presentation::Tui)
+    .versions(Versions::current(None))
+    .note(TuiNote::here());                       // known now; written at acquire
+entries.gc();
+let cache = TuiCache::new(entries);
+…
+match cache.admit(id, |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))) { … }
+
+// HTML server (shared root)
+let entries = PerSession::new(root, Presentation::Html)
+    .versions(Versions::current(Some(render_flavor(&fold))))
+    .liveness(html_alive(port.clone()));          // pid + port probe + self-guard, once
+…
+match self.cache.admit(id, |dir| open(&dir.join("records.jsonl"))) { … }
+
+// HTML server (--no-cache): same calls, different provider — and NOTHING else changes
+let cache = SessionCache::new(Transient::in_dir(run_dir));   // wiped next start
+
+// monitor
+let entries = match SingleWriter::claim(&root)? {
+    Claimed::Ours(e) => e,
+    Claimed::Served { url } => { open_url(&url); return Ok(()); }   // #166, at construction
+};
+```
+
+The reading test for requirement 4: every remaining call says *what* it wants — never how the
+entry is found, guarded, or kept — and the same `admit`/`touch`/`poll_view` lines serve all three
+use cases with only the constructor differing.
+
+### 13.6 Open questions, closed
+
+1. `cache_home()`/`default_root()` → stay client-side in `present::sys` (#165's precedent).
+2. `Presentation` → lives in `cache::fs` as provider vocabulary; out of the cache's signature.
+3. `admit` keeps its name (§13.4).
+4. The sidecar slot `A` stays on the cache: registry-lifetime view state keyed by session is
+   residency's business; its validity discipline is the adopter's (§6.5) and is unchanged here.
+
+### 13.7 Migration, revised
+
+§11's four steps hold with two amendments: step 2 extracts `cache::fs` with **two** impls
+(`PerSession`, `SingleWriter`) and the `EntryWriter` lease lands there (§7.4 — same body, touch
+it once); step 4 adds `Transient`, rewires `--no-cache`, deletes `shared_session`, and converts
+the monitor — which is also the step that deletes its 56 entry locks and the self-guard. The two
+per-step oracles (§11) stand, joined by a third: `--no-cache` growth stays bounded across reap
+cycles (the test that would have caught #158 by construction).
 
 ---
 
