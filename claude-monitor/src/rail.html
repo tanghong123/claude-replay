@@ -498,56 +498,12 @@
 
   // ── selection / navigation ───────────────────────────────────────────────
   function frameSrc(id){
-    var a=anchor[id];
-    return "/session?id="+encodeURIComponent(id)+"&chrome=embed&theme="+(state.dark?"dark":"light")
-      +(a?"#"+a:"");
-  }
-  // #136: where you were in each session, remembered across switches. IN MEMORY ONLY —
-  // this is the live tab's state, not a preference, so a reload starts clean.
-  //
-  // What is banked is a BLOCK ANCHOR, and the restore is HANDED TO THE VIEWER as `#<block
-  // id>` rather than performed from out here. Both corrections come from one measurement
-  // (#154): a parent-side scrollTo does land, holds for seconds, and is then dragged back
-  // to the tail — every hash-less page boots with `setFollowing(true)`, and the viewer's
-  // ResizeObserver heals any later height change (a poll append, a late reflow, an
-  // estimate-vs-real pad shift) back to the bottom. Re-asserting from outside wins the
-  // sprint and loses the war; the viewer's hash branch never acquires the pin, so the
-  // landing simply stays. A pixel offset was the wrong invariant anyway — off-window
-  // heights are estimates the virtualizer corrects on materialization, so the same y maps
-  // to a different block on the next load. A block id doesn't drift.
-  var anchor={};   // session id → block id to land on
-  // Key by the session PARAM, not the iframe URL: the URL also carries the theme (so a
-  // theme toggle would orphan the entry) and a sub-agent drill-down keeps `dataset.sid`
-  // while showing a different session — the param is the identity that matters.
-  function viewKey(){
-    try{
-      var q=new URLSearchParams(view.contentWindow.location.search);
-      return q.get("session")||q.get("id")||view.dataset.sid||"";
-    }catch(e){return view.dataset.sid||"";}
-  }
-  // The block the reader is on. `[data-idx]` is the viewer's mark for a MATERIALIZED
-  // top-level record, and that window tracks the viewport, so a forward scan finds it.
-  // Measure against the line the viewer LANDS a target on (its GOTO_Y), not the viewport
-  // top: restoring puts the banked block at 120, so reading back "first block below 120"
-  // returns the same block and a session survives any number of round trips unmoved.
-  // Reading "first block still touching the top edge" instead names a block a little
-  // higher each time and the position walks backwards through the transcript.
-  var GOTO_Y=120;
-  function rememberAnchor(){
-    var k=viewKey();
-    if(!k)return;
-    try{
-      var d=view.contentDocument;
-      // A view left AT the live tail has no position worth restoring: coming back should
-      // resume following, not freeze the page at yesterday's bottom. Banking nothing is
-      // how that is said — frameSrc then emits no hash and the viewer pins as usual.
-      if(d.body.classList.contains("following")){delete anchor[k];return;}
-      var els=d.querySelectorAll("[data-idx]"),top=null;
-      for(var i=0;i<els.length;i++){
-        if(els[i].id&&els[i].getBoundingClientRect().bottom>GOTO_Y){top=els[i].id;break;}
-      }
-      if(top)anchor[k]=top;else delete anchor[k];
-    }catch(e){}
+    // No anchor hash any more (#170). The VIEWER now parks its own view state — position,
+    // folds, and how much had been read — under the session id in sessionStorage, and
+    // restores all three on boot. A block-id hash could only ever restore the first of the
+    // three, and it restored it by OPENING whatever fold enclosed the block, which changed
+    // the very thing it was supposed to preserve. `#` stays a deep link the user can paste.
+    return "/session?id="+encodeURIComponent(id)+"&chrome=embed&theme="+(state.dark?"dark":"light");
   }
   // A sub-agent nav inside the view uses a relative ?session= href that drops the theme
   // param (#124). The view is same-origin, so stamp the monitor's theme on every load —
@@ -559,7 +515,6 @@
     state.sel=id;
     empty.style.display="none";view.style.display="";
     if(view.dataset.sid!==id){
-      rememberAnchor();                         // #136: bank where we were leaving from
       view.dataset.sid=id;
       view.src=frameSrc(id);
     }

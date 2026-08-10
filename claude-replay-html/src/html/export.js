@@ -428,6 +428,10 @@
       var d = anchorEl.getBoundingClientRect().top - anchorTop;
       if (Math.abs(d) > 1) window.scrollBy(0, d);
     }
+    // The page's height is only true once a window has been measured, and `atBottom()` is
+    // a question about the height — so the pill has to be reconsidered wherever the height
+    // can move, not only on scroll (#170/#171). Guarded to a no-op unless it changed.
+    paintBadge();
   }
   // Re-render the materialized window in place (fold/filter state changed).
   function refreshWindow() {
@@ -1553,6 +1557,11 @@
   // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
   // the sidebar, and without this the active-turn highlight silently vanished.
   function settleAfterApply(anchor, added) {
+    if (pendingRestore) { // the first apply: land where we left off, not where we are
+      applyPendingRestore();
+      spy();
+      return;
+    }
     if (following) {
       toBottom();
       clearNew();
@@ -1570,6 +1579,7 @@
   // wording and already implies the jump.
   var badgeWant = null; // what the pill currently says, or null while hidden
   function paintBadge() {
+    if (!badge) return; // called from `updateView`, which can run before this is wired
     var want = atBottom() ? null
       : newCount ? "↓ " + newCount + " new message" + (newCount === 1 ? "" : "s")
       : "↓ Jump to bottom";
@@ -1595,6 +1605,108 @@
     toBottom();
     clearNew();
   });
+
+  // ── the same view you left, across a reload (#170) ──────────────────────────────
+  // The monitor reloads this page on every session switch, so "where I was" cannot live
+  // in memory. It parks in sessionStorage under the session id: per tab, gone when the
+  // tab closes, and never shared between two sessions.
+  //
+  // Three facts, because a view that LOOKS the same needs all three: where the viewport
+  // was, what was folded, and how much had been read (so the badge counts what arrived
+  // while you were away, not everything below you).
+  var VS_KEY = "cr:view:" +
+    (new URLSearchParams(location.search).get("session") || document.body.dataset.root || "");
+  var pendingRestore = null;
+  function saveView() {
+    try {
+      var a = captureAnchor(); // null while following — then the tail IS the position
+      sessionStorage.setItem(VS_KEY, JSON.stringify({
+        v: 1, following: following, anchor: a && a.id, dy: a ? Math.round(a.top) : 0,
+        y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
+        folds: userFolds, seen: records.length
+      }));
+    } catch (e) { /* private mode or quota: the view just starts fresh */ }
+  }
+  function loadView() {
+    try {
+      var st = JSON.parse(sessionStorage.getItem(VS_KEY));
+      return st && st.v === 1 ? st : null;
+    } catch (e) { return null; }
+  }
+  // `pagehide` covers the monitor swapping the iframe's src, a reload, and a close;
+  // `visibilitychange` covers a tab switch that never unloads the document.
+  window.addEventListener("pagehide", saveView);
+  document.addEventListener("visibilitychange", function () { if (document.hidden) saveView(); });
+
+  // Seed the fold overrides BEFORE anything is applied: `pushRecord` runs `applyUserFolds`
+  // over every record it builds (#61), so restoring the map here IS the fold restore —
+  // and it happens without opening anything, which `goToId` would.
+  if (!location.hash) { // a deep link is an explicit destination; it wins
+    var vs0 = loadView();
+    if (vs0) {
+      if (vs0.folds) userFolds = vs0.folds;
+      pendingRestore = vs0;
+    }
+  }
+
+  // `goToId`'s landing WITHOUT its chain-open, and to a remembered offset rather than
+  // GOTO_Y. Opening a fold to reveal the target is right for navigation and wrong for a
+  // restore: it changes what the page looks like, which is the one thing a restore must
+  // not do. Same convergence loop — the measure pass replaces estimated heights above the
+  // target, so the first landing is only approximate.
+  function landOn(id, dy) {
+    var ti = idIndex[id];
+    if (ti == null) return false;
+    lastUserInput = performance.now(); // this is the user's own position, not displacement
+    var y = streamTop() + P()[ti];
+    setWindow(idxAt(y - streamTop() - MARGIN_PX),
+              idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
+    window.scrollTo({ top: Math.max(0, streamTop() + P()[ti] - dy) });
+    updateView();
+    for (var i = 0; i < 3; i++) {
+      var t = document.getElementById(id);
+      if (!t) break;
+      var d = t.getBoundingClientRect().top - dy;
+      if (Math.abs(d) <= 2) break;
+      window.scrollBy(0, d);
+      updateView();
+    }
+    return true;
+  }
+
+  // Consumed by the first apply, which is the earliest moment there is anything to land on.
+  function applyPendingRestore() {
+    var st = pendingRestore;
+    pendingRestore = null;
+    if (!st.following) {
+      // A block id first: heights are estimates the virtualizer corrects on
+      // materialization, so the same y maps to a different block on the next load — an id
+      // does not drift. The raw offset is the fallback for a block that is no longer there
+      // (or was never captured), and it beats the alternative of dumping the reader at the
+      // tail, which is the one place they had already chosen not to be.
+      var landed = st.anchor ? landOn(st.anchor, st.dy) : false;
+      if (!landed && st.y != null) {
+        lastUserInput = performance.now();
+        window.scrollTo(0, st.y);
+        updateView();
+        landed = true;
+      }
+      if (landed) {
+        setFollowing(false);
+        // Everything that arrived while we were away is new — and nothing else is. This is
+        // the fix for a fresh page counting the WHOLE session as unread.
+        newCount = Math.max(0, records.length - (st.seen || 0));
+        paintBadge();
+        // …and once more when the layout has settled. The first apply lands before the
+        // measure pass has replaced estimated heights, so `atBottom()` can still read TRUE
+        // here and the pill would cache itself hidden until the next scroll.
+        setTimeout(paintBadge, 0);
+        return;
+      }
+    }
+    setFollowing(true); // following when we left, or nothing left to land on — the tail
+    toBottom();
+  }
 
   // Initial render from the inlined snapshot, then drop the inline copy: the
   // rendered DOM is the source of truth now, so keeping ~1× the payload as script
@@ -2638,7 +2750,11 @@
     // A live page OWNS its landing position (the tail) — stop the browser's async
     // scroll restoration from yanking the view to a stale offset seconds later (#89).
     if (pollMs > 0 && "scrollRestoration" in history) history.scrollRestoration = "manual";
-    setFollowing(true);
-    toBottom();
+    // With a restore pending, stay put: the first apply lands us (#170). Jumping to the
+    // tail here first would flash the bottom on every session switch.
+    if (!pendingRestore) {
+      setFollowing(true);
+      toBottom();
+    }
   }
 })();
