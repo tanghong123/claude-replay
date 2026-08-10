@@ -1077,3 +1077,123 @@ last:
    all.
 4. **Does `A` (the sidecar slot) stay on the cache?** It is view state keyed by session, so
    probably yes — but it is the third map on a type we are trying to narrow.
+
+---
+
+## Appendix A. The key types at a glance
+
+Fields and methods of everything this doc touches, so the prose above has somewhere to point.
+Private fields are shown because the argument is often *about* them; nothing outside the owning
+module can reach them.
+
+### `SessionCache<P: BlockStore, A = ()>` — the thing being re-cut
+
+```rust
+registry:       Mutex<HashMap<String, Transcript>>        // ids → sources
+pull_residents: Mutex<HashMap<String, (Instant, Arc<SharedSession<P>>)>>  // ids → live sessions
+aux:            Mutex<HashMap<String, A>>                 // ids → sidecars (opaque)
+admitting:      Mutex<()>                                 // the #169 admission critical section
+durable:        Option<Durable>                           // ← what §3 moves out
+```
+
+| group | methods |
+|---|---|
+| know a session | `register`, `register_new`, `is_registered`, `resolve` |
+| own a session | `admit`, `publish`, `release`, `release_all`, `Drop` |
+| use a session | `touch`, `shared_peek`, `shared_session`, `poll_view`, `resident_tasks` |
+| sidecars | `aux_put`, `aux_take`, `aux_with` |
+| residency | `reap`, `reap_over_budget`, `remove_pull` |
+| construction | `durable`, `ephemeral`, `new` |
+
+### `SharedSession<S: BlockStore>` — the live session, one per id
+
+```rust
+inner: Mutex<Inner<S>>        // the ONLY field; the thread-level exclusion lock of §7.1
+
+struct Inner<S> {             // private, zero public fields
+    follower: Box<FollowParser<S>>,  // the incremental fold — and the store `S` inside it
+    epoch: u64,                      // cursor-protocol validity token
+    provisional_gen: u64,            // open-turn generation
+    n_provisional: usize,            // finalized open-turn length (keeps `counters` O(1))
+    prev_provisional: …,             // last tick's finalized open turn — the reshape check
+    meta: Option<MetaWriter>,        // present ⇔ writing (§7.3 would make it ⇔ holding the entry)
+    frozen: bool,                    // quiesced: resident and readable, no longer writing (#109)
+}
+```
+
+| group | methods |
+|---|---|
+| advance the fold | `advance` (HTML), `poll_view` (TUI) |
+| read content | `committed_arcs`, `committed_bvs`, `session_meta`, `tasks` |
+| serve the cursor protocol | `pull`, `pull_delta`, `counters`, `end_cursor`, `epoch`, `provisional_gen` |
+| read under the lock | `open_delta_with(closure)`, `store_read(closure)` |
+| writer lifecycle | `attach_writer`, `quiesce`, `thaw`, `frozen`, `poisoned` |
+| construction | `open`, `with_store`, `resume` |
+
+Every one takes `&self` and locks internally (§6.3).
+
+### The store traits — where persistence actually lives
+
+```rust
+pub trait BlockStore {                  // engine: what a fold writes into
+    type Bv: Clone;                     // the stored form of a block
+    fn put(&mut self, b: Block, at: BlockIndex, user_times: &[Option<EpochSeconds>]) -> Self::Bv;
+    fn reset(&mut self);                // default no-op
+}
+
+pub trait DurableStore: BlockStore {    // …and what makes it survive a process
+    type Note;                          // ← §7.2 moves this to the provider
+    fn load_from(&mut self, at: u64) -> io::Result<Vec<Self::Bv>>;
+    fn load(&mut self) -> io::Result<Vec<Self::Bv>>;   // = load_from(0)
+    fn backing_len(&self) -> u64;       // the caller's half of the #109 witness
+    fn adopt(&mut self, n: usize, meta: &SessionMeta) -> io::Result<()>;
+}
+```
+
+### The two stores
+
+```rust
+pub struct RecordStore {          // HTML: Bv = RecordLocator { offset, len }
+    log: Log,                     //   path + append handle + length
+    cx:  RenderCx,                //   fold policy, cwd, transcript — the render context
+    emit: EmitState,              //   the resumable render continuation
+}
+// own methods: open_append, cut_to, log_len, emit_snapshot, read_range
+//   …plus one_record (#168's framing check) as a free function
+
+pub struct ArcLog {               // TUI: Bv = Arc<Block>
+    path: PathBuf,
+    file: Option<File>,           //   None ⇒ memory-only; a session that works, slower next time
+    len:  u64,
+}
+// own methods: memory, create, open_append, load_from, load, truncate_to, backing_len
+```
+
+`RecordStore` implements `BlockStore` but NOT `BlockRead`: a wire record is a one-way projection
+of its `Block`, so the type system keeps every committed consumer on the pointer path (§6.4).
+
+### `Transcript` — where a session's bytes come from
+
+```rust
+pub struct Transcript { agent: Agent, path: PathBuf }
+// open, detect, agent, path, parse, parse_enriched, follow, card, load_attachment
+```
+
+Cheap and cloneable: the cache stores one per registered id and hands copies out.
+
+### Proposed, not built (§3)
+
+```rust
+pub trait Entries<P: BlockStore> {
+    type Note;
+    fn open(&self, id: &str, src: &Transcript, ours: Option<u64>,
+            make_store: &dyn Fn(&Path) -> io::Result<P>) -> Opened<P, Self::Note>;
+    fn publish(&self, id: &str, note: Self::Note) -> bool;   // defaulted: false
+    fn release(&self, id: &str);                             // defaulted: no-op
+}
+
+pub enum Opened<P: BlockStore, N> {
+    Owned { store: P, loaded: Vec<P::Bv>, origin: Origin /*, writer: EntryWriter — §7.3 */ },
+    Denied(Denial<N>),
+}
+```
