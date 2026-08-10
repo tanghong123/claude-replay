@@ -679,7 +679,9 @@ The residual diff is **not** decision-free rendering:
 
 ### #167 — the cache should not know what persistence is
 
-Design doc: **[`design/cache-persistence-seam.md`](design/cache-persistence-seam.md)** — the rule,
+Spec: **[`design/session-cache-redesign.md`](design/session-cache-redesign.md)** — one cache,
+three providers; written for a general audience, with before/after of every definition and call
+site. Exploration record: **[`design/cache-persistence-seam.md`](design/cache-persistence-seam.md)** — the rule,
 the `Entries<P>` seam, before/after code at every call site, the #109 witness factoring (pass a
 number, not a `SharedSession`), what #169 adds, what deliberately does not move behind the
 provider, and a four-step migration. Proposed; nothing built.

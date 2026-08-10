@@ -1,7 +1,10 @@
 # Design: taking persistence out of `SessionCache`
 
-> **Status:** proposed (not built), **resolved to a shape — see §13**. Tracked as task **#167**.
-> Design-only; no code has moved. §3–§5 explore the space; §13 is the decision.
+> **Status:** proposed (not built), resolved to a shape (§13) — and the resolved design is now
+> **rewritten as a standalone spec for a general audience:
+> [`session-cache-redesign.md`](session-cache-redesign.md)**. Build against that; read THIS file
+> for the exploration — the dead ends, the bug post-mortems, and why the alternatives lost.
+> Tracked as task **#167**. Design-only; no code has moved.
 > Builds on [`durable-session-cache.md`](durable-session-cache.md) (#96 — BUILT), which is the
 > design of the thing being re-cut here. Read §1 and §3; the rest follows from them.
 >
