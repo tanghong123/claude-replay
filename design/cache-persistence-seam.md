@@ -552,7 +552,82 @@ if let Some(Ok(delta)) = cache.poll_view(id, ArcLog::memory) {
 `poll_view` returns `None` for *"nothing to do"* — either the id is not resident (on a durable
 cache: never admitted) or the file has not changed. `Some(Ok(delta))` carries only what moved.
 
-### 6.3 Getting blocks out
+### 6.3 How a client holds a session (and never locks it itself)
+
+The type looks alarming if you are new to Rust — a struct whose only field is a mutex — but the
+shape is doing something specific, and it is what lets many threads share one session safely.
+
+```rust
+pub struct SharedSession<S: BlockStore = InMemoryStore> {
+    inner: Mutex<Inner<S>>,     // private field, private type, zero public fields
+}
+```
+
+**A client never sees the lock, and never mutates the state.** `Inner` is private, all of its
+fields are private, and nothing outside `cache/shared.rs` so much as names `.inner`. Everything a
+client can do is a method on `SharedSession`, and every one of them looks like this:
+
+```rust
+pub fn counters(&self) -> (u64, u64, usize, usize) {   // ← `&self`, NOT `&mut self`
+    let g = super::lock_recover(&self.inner);          // lock taken HERE, inside
+    (g.epoch, g.provisional_gen, g.follower.committed_len(), g.n_provisional)
+}                                                      // guard dropped HERE, on return
+```
+
+Two things follow, and they are the whole reason for the design:
+
+- **`&self`, not `&mut self`.** Rust would normally require `&mut` to change a struct, and
+  `&mut` cannot be shared. Putting the `Mutex` *inside* means every method can take a plain shared
+  reference and still mutate what it guards — the pattern is called *interior mutability*. That is
+  what makes `Arc<SharedSession>` work: `Arc` gives you many owners but only shared (`&`) access,
+  which without the inner mutex would be read-only and useless.
+- **The lock is not part of the API.** A client cannot forget to lock, lock in the wrong order,
+  or hold the guard too long, because it never holds one. Compare the alternative shape,
+  `Mutex<Session>` handed to the client: every call site would then be responsible for the
+  discipline, in a codebase where two request threads and a TUI event loop all touch the same
+  session.
+
+So a client's whole interaction is:
+
+```rust
+let session: Arc<SharedSession<RecordStore>> = /* from admit or touch */;
+session.advance()?;                    // mutates: folds new bytes. No lock in sight.
+let (epoch, gen, nc, np) = session.counters();   // reads. Same.
+// …and when this Arc is dropped, this thread's claim on the session is over (§7.1).
+```
+
+**When you need two facts that must agree**, methods take a *closure* instead of returning the
+guard — the work happens while the lock is held, and the lock still cannot escape:
+
+```rust
+pub fn store_read<R>(&self, f: impl FnOnce(u64, &S) -> R) -> R {
+    let g = super::lock_recover(&self.inner);
+    f(g.epoch, g.follower.store())      // your closure runs HERE, under the lock
+}
+
+// so a caller reads an epoch and the bytes it describes, consistently, without ever
+// being able to keep either past the call:
+let bytes = session.store_read(|epoch, store| {
+    if epoch != want { return Err(StaleEpoch) }
+    Ok(store.read_range(from, to))
+});
+```
+
+Three practical notes, in rough order of how likely they are to bite:
+
+1. **Do not call another `SharedSession` method from inside one of those closures.** Rust's
+   `Mutex` is not re-entrant: the inner call would wait for a lock the outer call is still
+   holding, and the thread deadlocks — forever, with no error.
+2. **A long method blocks everyone else on that session.** `advance()` holds the lock for the
+   whole fold (§7.1). That is deliberate — the alternative is two folds — but it is why a cold
+   fold of a large transcript makes other pulls of that session wait.
+3. **`lock_recover`, not `.lock().unwrap()`.** If a thread panics while holding a `Mutex`, Rust
+   marks it *poisoned* and every later `.lock()` returns an error; `.unwrap()` would turn one
+   panic into a permanent failure for that session. `lock_recover` takes the guard anyway,
+   because the state it guards is either per-entry (and self-heals through the epoch/resync
+   protocol) or rebuilt by the owner via `poisoned()`.
+
+### 6.4 Getting blocks out
 
 Three accessors, and picking the wrong one is the usual mistake:
 
@@ -567,7 +642,7 @@ The HTML store deliberately cannot read its `Bv`s back into blocks (a wire recor
 projection), so a consumer that wants content must use `committed_arcs` or the pull protocol —
 the type system enforces it.
 
-### 6.4 Sidecars — per-session state the cache holds for you
+### 6.5 Sidecars — per-session state the cache holds for you
 
 The `A` type parameter is an opaque slot the cache stores per session and never interprets. Two
 usage shapes, and they are not interchangeable:
@@ -642,7 +717,7 @@ Leaning **a**. It is the one that makes `aux` a single concept rather than a slo
 with different rigor — and it is a change to the TUI, not to the cache, which is the right side of
 the seam for it.
 
-### 6.5 Residency: keeping a lid on memory
+### 6.6 Residency: keeping a lid on memory
 
 | call | who | policy |
 |---|---|---|
@@ -654,7 +729,7 @@ An evicted resident is not a loss: its registry entry survives, so the next `adm
 re-materializes it — and on a durable cache that is a **resume**, not a re-fold, which is what
 makes an aggressive TTL affordable.
 
-### 6.6 Letting go
+### 6.7 Letting go
 
 ```rust
 cache.release(id);      // quiesce + unlock ONE session; it stays resident and readable
@@ -667,7 +742,7 @@ cache.release_all();    // everything — both `process::exit(0)` sites call thi
 append to an entry this process no longer owns — two writers on one entry, which is the whole
 thing the lock exists to prevent.
 
-### 6.7 What there is deliberately NO API for
+### 6.8 What there is deliberately NO API for
 
 - **Deleting an entry.** Nothing exposes "forget this session's durable state". Entries go by age
   through `admit::gc` (`KEEP_FOR`, 14 days; a lock buys another 16), swept once when a durable
@@ -678,9 +753,9 @@ thing the lock exists to prevent.
 - **Asking whether an id is admitted.** `is_registered` answers *known*, not *owned*. The honest
   test is to call `admit` and read the outcome.
 - **Invalidating a sidecar.** The cache cannot read `A`, so it can never know it went stale. See
-  §6.4 — validity is the adopter's job, and today the two consumers do it with different rigor.
+  §6.5 — validity is the adopter's job, and today the two consumers do it with different rigor.
 
-### 6.8 Which of these are durable-only (today: most of them)
+### 6.9 Which of these are durable-only (today: most of them)
 
 A fair reading of §6.1 is *"this is the lifecycle of a **durable** cache"* — and today that is
 exactly right, which is itself part of the problem:
@@ -728,7 +803,7 @@ symptom loud; the rule was never about persistence.
 
 That gap between what these three mean and what they are named after is the audit in miniature.
 
-### 6.9 Every method, and who calls it
+### 6.10 Every method, and who calls it
 
 | method | HTML server | TUI | monitor |
 |---|---|---|---|
@@ -851,7 +926,7 @@ places and kept in step by hand. Three ways that goes wrong:
    new data"*, indistinguishable from an idle session. Nothing errors. The session simply stops
    following, which is the exact failure `thaw`'s doc comment describes as "worse than serving it
    uncached".
-3. **The two release paths disagree** (§6.8): `release` quiesces even with no durable wiring;
+3. **The two release paths disagree** (§6.9): `release` quiesces even with no durable wiring;
    `release_all` returns before quiescing anything. Harmless today, but the difference is
    accidental — the `Option` check sits in a different place in each.
 
