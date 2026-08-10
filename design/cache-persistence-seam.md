@@ -3,6 +3,11 @@
 > **Status:** proposed (not built). Tracked as task **#167**. Design-only; no code has moved.
 > Builds on [`durable-session-cache.md`](durable-session-cache.md) (#96 — BUILT), which is the
 > design of the thing being re-cut here. Read §1 and §3; the rest follows from them.
+>
+> For the API as it *is* — every type, field and method, always in sync because it is generated
+> from the source — see the rustdoc: <https://tanghong123.github.io/claude-replay/>
+> (`cargo apidoc --open` locally). This document is the argument for changing it; Appendix A is a
+> map of which pages to open.
 
 **The rule** (the user, 2026-08-08):
 
@@ -1182,11 +1187,17 @@ last:
 
 ## Appendix A. The key types at a glance
 
-Fields and methods of everything this doc touches, so the prose above has somewhere to point.
-Private fields are shown because the argument is often *about* them; nothing outside the owning
-module can reach them.
+> **The authority is the rustdoc, not this table.** It is generated from the source on every push
+> to main and denies warnings, so it cannot drift:
+> **<https://tanghong123.github.io/claude-replay/>** — or `cargo apidoc --open` locally. It
+> documents everything, `pub(crate)` and private included (`--document-private-items`).
+>
+> What follows is a *curated subset*: the handful of types this design turns on, grouped by what
+> each group is FOR, with the private fields the argument is actually about. Read it as a map of
+> which page to open, not as the definition. If the two ever disagree, the rustdoc is right and
+> this is stale.
 
-### `SessionCache<P: BlockStore, A = ()>` — the thing being re-cut
+### [`SessionCache<P, A>`](https://tanghong123.github.io/claude-replay/claude_replay_present/cache/struct.SessionCache.html) — the thing being re-cut
 
 ```rust
 registry:       Mutex<HashMap<String, Transcript>>        // ids → sources
@@ -1205,7 +1216,7 @@ durable:        Option<Durable>                           // ← what §3 moves 
 | residency | `reap`, `reap_over_budget`, `remove_pull` |
 | construction | `durable`, `ephemeral`, `new` |
 
-### `SharedSession<S: BlockStore>` — the live session, one per id
+### [`SharedSession<S>`](https://tanghong123.github.io/claude-replay/claude_replay_present/cache/struct.SharedSession.html) — the live session, one per id
 
 ```rust
 inner: Mutex<Inner<S>>        // the ONLY field; the thread-level exclusion lock of §7.1
@@ -1232,7 +1243,7 @@ struct Inner<S> {             // private, zero public fields
 
 Every one takes `&self` and locks internally (§6.3).
 
-### The store traits — where persistence actually lives
+### The store traits — where persistence actually lives ([`DurableStore`](https://tanghong123.github.io/claude-replay/claude_replay_present/cache/trait.DurableStore.html))
 
 ```rust
 pub trait BlockStore {                  // engine: what a fold writes into
