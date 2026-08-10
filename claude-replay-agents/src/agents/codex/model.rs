@@ -1,6 +1,7 @@
 use claude_replay_engine::seam::{
-    epoch_secs, parse_path_timed_for, relativize, AgentStatus, Block, Message, Metrics, Shaping,
-    SubAgent, UsdCost,
+    epoch_secs, parse_path_timed_for, relativize, AgentStatus, Attachment, AttachmentContent,
+    AttachmentKind, Block, LinePreprocessor, LoadedAttachment, Message, Metrics, PreprocessedLine,
+    Shaping, SubAgent, TaskOp, Todo, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
@@ -12,6 +13,116 @@ use std::path::{Path, PathBuf};
 
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
 const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
+
+#[derive(Default)]
+pub(crate) struct CodexLinePreprocessor {
+    child: Option<ChildRollout>,
+}
+
+struct ChildRollout {
+    session_started_at: f64,
+    agent_path: String,
+    skipping_parent_snapshot: bool,
+}
+
+impl LinePreprocessor for CodexLinePreprocessor {
+    fn process(&mut self, line: &str) -> PreprocessedLine {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return PreprocessedLine::Include;
+        };
+
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(spawn) = value.pointer("/payload/source/subagent/thread_spawn") {
+                if self.child.is_none() {
+                    self.child = Some(ChildRollout {
+                        session_started_at: value
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .and_then(epoch_secs)
+                            .unwrap_or_default(),
+                        agent_path: spawn
+                            .get("agent_path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        skipping_parent_snapshot: false,
+                    });
+                }
+                return PreprocessedLine::Include;
+            }
+            // A second session_meta in a child rollout starts a physical copy of the parent's
+            // transcript. It is bootstrap context, not authored child history.
+            if let Some(child) = self.child.as_mut() {
+                child.skipping_parent_snapshot = true;
+                return PreprocessedLine::Ignore;
+            }
+        }
+
+        if let Some(child) = self.child.as_mut() {
+            if child.skipping_parent_snapshot {
+                let starts_this_child = value.get("type").and_then(Value::as_str)
+                    == Some("event_msg")
+                    && value.pointer("/payload/type").and_then(Value::as_str)
+                        == Some("task_started")
+                    && value
+                        .pointer("/payload/started_at")
+                        .and_then(Value::as_f64)
+                        .is_some_and(|started| (started - child.session_started_at).abs() <= 5.0);
+                if starts_this_child {
+                    child.skipping_parent_snapshot = false;
+                    return PreprocessedLine::Include;
+                }
+                return PreprocessedLine::Ignore;
+            }
+        }
+
+        if value.get("type").and_then(Value::as_str) == Some("response_item")
+            && value.pointer("/payload/type").and_then(Value::as_str) == Some("agent_message")
+        {
+            let payload = &value["payload"];
+            let recipient = payload
+                .get("recipient")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let author = payload.get("author").and_then(Value::as_str).unwrap_or("");
+            let addressed_to_this_child = self
+                .child
+                .as_ref()
+                .is_some_and(|child| !child.agent_path.is_empty() && recipient == child.agent_path);
+            // A resumed fold starts above session_meta, so it cannot restore the child path.
+            // Parent→descendant direction is an equivalent fallback for incoming assignments;
+            // descendant→parent replies remain invisible in the parent's ordinary transcript.
+            let incoming_from_parent = !author.is_empty()
+                && recipient
+                    .strip_prefix(author)
+                    .is_some_and(|suffix| suffix.starts_with('/'));
+            if addressed_to_this_child || incoming_from_parent {
+                let text = payload
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .filter(|text| !text.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    let ts = value
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(epoch_secs);
+                    return PreprocessedLine::Messages(vec![
+                        Message::LineStart(ts),
+                        Message::UserText { text },
+                    ]);
+                }
+            }
+        }
+
+        PreprocessedLine::Include
+    }
+}
 
 pub(crate) fn encode_agent_path(path: &str) -> String {
     let encoded = path
@@ -154,30 +265,39 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 Some("message") => {
                     let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
                     if matches!(role, "user" | "assistant") {
-                        let wanted = if role == "user" {
-                            "input_text"
-                        } else {
-                            "output_text"
-                        };
-                        for text in payload
+                        for item in payload
                             .get("content")
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
-                            .filter(|item| item.get("type").and_then(Value::as_str) == Some(wanted))
-                            .filter_map(|item| item.get("text").and_then(Value::as_str))
-                            .filter(|text| !text.trim().is_empty())
-                            .filter(|text| role != "user" || !is_host_context(text))
                         {
-                            if role == "user" {
-                                // Codex user input is always a genuine human turn — it maps
-                                // straight to the shared `UserText` (no injected/skill/command
-                                // notions to classify, unlike Claude's L1).
-                                msgs.push(Message::UserText {
-                                    text: text.to_string(),
-                                });
-                            } else {
-                                msgs.push(Message::AssistantText(text.to_string()));
+                            match item.get("type").and_then(Value::as_str) {
+                                Some("input_text") if role == "user" => {
+                                    if let Some(text) =
+                                        item.get("text").and_then(Value::as_str).filter(|text| {
+                                            !text.trim().is_empty() && !is_host_context(text)
+                                        })
+                                    {
+                                        msgs.push(Message::UserText {
+                                            text: text.to_string(),
+                                        });
+                                    }
+                                }
+                                Some("output_text") if role == "assistant" => {
+                                    if let Some(text) = item
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .filter(|text| !text.trim().is_empty())
+                                    {
+                                        msgs.push(Message::AssistantText(text.to_string()));
+                                    }
+                                }
+                                Some("input_image") if role == "user" => {
+                                    if let Some(attachment) = input_image_attachment(item) {
+                                        msgs.push(Message::Attachment(attachment));
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -206,12 +326,16 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         .unwrap_or("tool");
                     // Raw fields only — the block is shaped in L2 via `codex_build_tool`.
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                    let input = call_input(payload);
                     msgs.push(Message::ToolUse {
                         id: call_id.to_string(),
                         name: raw_name.to_string(),
-                        input: call_input(payload),
+                        input: input.clone(),
                         cwd: cwd.to_string(),
                     });
+                    if let Some(op) = codex_task_op(raw_name, &input) {
+                        msgs.push(Message::TaskOp(op));
+                    }
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -222,6 +346,60 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         tur: Value::Null,
                     });
                 }
+                Some("tool_search_call") => {
+                    let id = specialized_call_id(payload);
+                    let input = payload.get("arguments").cloned().unwrap_or(Value::Null);
+                    msgs.push(Message::ToolUse {
+                        id,
+                        name: "ToolSearch".to_string(),
+                        input,
+                        cwd: cwd.to_string(),
+                    });
+                }
+                Some("tool_search_output") => msgs.push(Message::ToolResult {
+                    tool_use_id: specialized_call_id(payload),
+                    text: display_value(payload.get("tools").unwrap_or(&Value::Null)),
+                    tur: Value::Null,
+                }),
+                Some("web_search_call") => {
+                    let action = payload.get("action").cloned().unwrap_or(Value::Null);
+                    msgs.push(Message::ToolUse {
+                        id: specialized_call_id(payload),
+                        name: "WebSearch".to_string(),
+                        input: action,
+                        cwd: cwd.to_string(),
+                    });
+                }
+                Some("image_generation_call") => {
+                    let input = serde_json::json!({
+                        "description": payload
+                            .get("revised_prompt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("generate image")
+                    });
+                    let id = specialized_call_id(payload);
+                    msgs.push(Message::ToolUse {
+                        id: id.clone(),
+                        name: "ImageGeneration".to_string(),
+                        input,
+                        cwd: cwd.to_string(),
+                    });
+                    if let Some(result) = payload
+                        .get("result")
+                        .and_then(Value::as_str)
+                        .filter(|result| !result.trim().is_empty())
+                    {
+                        if let Some((mime, _)) = encoded_image(result) {
+                            msgs.push(Message::Attachment(deferred_image(mime)));
+                        } else {
+                            msgs.push(Message::ToolResult {
+                                tool_use_id: id,
+                                text: result.to_string(),
+                                tur: Value::Null,
+                            });
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -229,9 +407,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             let Some(payload) = value.get("payload") else {
                 return;
             };
-            if payload.get("type").and_then(Value::as_str) == Some("sub_agent_activity")
-                && payload.get("kind").and_then(Value::as_str) == Some("started")
-            {
+            if payload.get("type").and_then(Value::as_str) == Some("sub_agent_activity") {
                 let call_id = payload
                     .get("event_id")
                     .and_then(Value::as_str)
@@ -240,17 +416,182 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     .get("agent_thread_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if !call_id.is_empty() && !thread_id.is_empty() {
-                    msgs.push(Message::ToolResult {
-                        tool_use_id: call_id.to_string(),
-                        text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
-                        tur: Value::Null,
-                    });
+                match payload.get("kind").and_then(Value::as_str) {
+                    Some("started") if !call_id.is_empty() && !thread_id.is_empty() => {
+                        msgs.push(Message::ToolResult {
+                            tool_use_id: call_id.to_string(),
+                            text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
+                            tur: Value::Null,
+                        });
+                    }
+                    Some("interrupted") if !thread_id.is_empty() => {
+                        msgs.push(Message::Completion {
+                            tool_use_id: call_id.to_string(),
+                            task_id: thread_id.to_string(),
+                            status: Some(AgentStatus::Stopped),
+                            description: payload
+                                .get("agent_path")
+                                .and_then(Value::as_str)
+                                .unwrap_or("agent")
+                                .to_string(),
+                            result: None,
+                        });
+                    }
+                    // `interacted` is activity, not a lifecycle transition. Keeping the spawn
+                    // running is the accurate representation for a reusable Codex agent.
+                    _ => {}
                 }
             }
         }
         _ => {}
     }
+}
+
+fn specialized_call_id(payload: &Value) -> String {
+    payload
+        .get("call_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn codex_task_op(raw_name: &str, input: &Value) -> Option<TaskOp> {
+    match raw_name {
+        "update_plan" => Some(TaskOp::Snapshot {
+            todos: input
+                .get("plan")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    let text = item.get("step").and_then(Value::as_str)?.trim();
+                    (!text.is_empty()).then(|| Todo {
+                        text: text.to_string(),
+                        status: item
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("pending")
+                            .to_string(),
+                        active_form: String::new(),
+                    })
+                })
+                .collect(),
+        }),
+        "create_goal" => input
+            .get("objective")
+            .and_then(Value::as_str)
+            .filter(|objective| !objective.trim().is_empty())
+            .map(|objective| TaskOp::Snapshot {
+                todos: vec![Todo {
+                    text: objective.trim().to_string(),
+                    status: "in_progress".to_string(),
+                    active_form: String::new(),
+                }],
+            }),
+        "update_goal" => Some(TaskOp::Update {
+            task_id: "0".to_string(),
+            status: input.get("status").and_then(Value::as_str).map(|status| {
+                match status {
+                    "complete" | "blocked" => "completed",
+                    _ => "pending",
+                }
+                .to_string()
+            }),
+            subject: None,
+            description: input
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|status| *status == "blocked")
+                .map(|_| "blocked".to_string()),
+            active_form: None,
+            add_blocks: Vec::new(),
+            add_blocked_by: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
+fn input_image_attachment(item: &Value) -> Option<Attachment> {
+    let url = item.get("image_url").and_then(Value::as_str)?;
+    if let Some((mime, _)) = data_image(url) {
+        return Some(deferred_image(mime));
+    }
+    (!url.trim().is_empty()).then(|| Attachment {
+        kind: AttachmentKind::Image,
+        name: "remote-image".to_string(),
+        path: None,
+        content: AttachmentContent::None,
+    })
+}
+
+fn deferred_image(mime: &str) -> Attachment {
+    let ext = match mime {
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    Attachment {
+        kind: AttachmentKind::Image,
+        name: format!("image.{ext}"),
+        path: None,
+        content: AttachmentContent::Deferred { at: 0, index: 0 },
+    }
+}
+
+fn data_image(url: &str) -> Option<(&str, &str)> {
+    let (meta, b64) = url.strip_prefix("data:")?.split_once(',')?;
+    let mime = meta.strip_suffix(";base64")?;
+    (mime.starts_with("image/") && !b64.is_empty()).then_some((mime, b64))
+}
+
+fn encoded_image(value: &str) -> Option<(&'static str, &str)> {
+    if let Some((mime, b64)) = data_image(value) {
+        let mime = match mime {
+            "image/png" => "image/png",
+            "image/jpeg" => "image/jpeg",
+            "image/gif" => "image/gif",
+            "image/webp" => "image/webp",
+            _ => return None,
+        };
+        return Some((mime, b64));
+    }
+    let mime = if value.starts_with("iVBOR") {
+        "image/png"
+    } else if value.starts_with("/9j/") {
+        "image/jpeg"
+    } else if value.starts_with("R0lGOD") {
+        "image/gif"
+    } else if value.starts_with("UklGR") {
+        "image/webp"
+    } else {
+        return None;
+    };
+    Some((mime, value))
+}
+
+pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAttachment> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let payload = value.get("payload")?;
+    let (mime, b64) = match payload.get("type").and_then(Value::as_str) {
+        Some("message") => payload
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_image"))
+            .filter_map(|item| item.get("image_url").and_then(Value::as_str))
+            .filter_map(data_image)
+            .nth(index)?,
+        Some("image_generation_call") if index == 0 => {
+            encoded_image(payload.get("result")?.as_str()?)?
+        }
+        _ => return None,
+    };
+    Some(LoadedAttachment::Base64 {
+        mime: mime.to_string(),
+        b64: b64.to_string(),
+    })
 }
 
 fn is_timeline_event(value: &Value) -> bool {
@@ -738,6 +1079,168 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_subagent_activity_emits_a_stopped_lifecycle_event() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/review","kind":"started"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/review","kind":"interrupted"}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::AgentDone {
+                agent_id,
+                status: AgentStatus::Stopped,
+                ..
+            } if agent_id == "child-thread"
+        )));
+    }
+
+    #[test]
+    fn input_image_surfaces_as_a_deferred_attachment() {
+        let jsonl = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"},{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}}"#;
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Attachment(attachment)
+                if attachment.kind == AttachmentKind::Image
+                    && attachment.name == "image.png"
+                    && attachment.content == AttachmentContent::Deferred { at: 0, index: 0 }
+        )));
+        assert_eq!(
+            nth_loaded_attachment(jsonl, 0),
+            Some(claude_replay_engine::seam::LoadedAttachment::Base64 {
+                mime: "image/png".to_string(),
+                b64: "aGVsbG8=".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn remote_input_image_stays_visible_without_claiming_downloadable_content() {
+        let jsonl = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.test/image.png"}]}}"#;
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Attachment(attachment)
+                if attachment.kind == AttachmentKind::Image
+                    && attachment.name == "remote-image"
+                    && attachment.content == AttachmentContent::None
+        )));
+        assert_eq!(nth_loaded_attachment(jsonl, 0), None);
+    }
+
+    #[test]
+    fn update_plan_emits_a_replace_all_task_snapshot() {
+        let line = r#"{"type":"response_item","payload":{"type":"function_call","name":"update_plan","call_id":"plan-1","arguments":"{\"explanation\":\"now\",\"plan\":[{\"step\":\"inspect\",\"status\":\"completed\"},{\"step\":\"fix\",\"status\":\"in_progress\"}]}"}}"#;
+        let mut messages = Vec::new();
+        decode_line(line, &mut String::new(), &mut messages);
+
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            Message::TaskOp(TaskOp::Snapshot { todos })
+                if todos.len() == 2
+                    && todos[0].text == "inspect"
+                    && todos[0].status == "completed"
+                    && todos[1].text == "fix"
+                    && todos[1].status == "in_progress"
+        )));
+    }
+
+    #[test]
+    fn goal_calls_create_and_complete_the_single_task() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"create_goal","call_id":"goal-1","arguments":"{\"objective\":\"ship it\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"update_goal","call_id":"goal-2","arguments":"{\"status\":\"complete\"}"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"update_goal","call_id":"goal-3","arguments":"{\"status\":\"blocked\"}"}}"#,
+        );
+        let mut messages = Vec::new();
+        for line in jsonl.lines() {
+            decode_line(line, &mut String::new(), &mut messages);
+        }
+
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            Message::TaskOp(TaskOp::Snapshot { todos })
+                if todos.len() == 1
+                    && todos[0].text == "ship it"
+                    && todos[0].status == "in_progress"
+        )));
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            Message::TaskOp(TaskOp::Update { task_id, status: Some(status), .. })
+                if task_id == "0" && status == "completed"
+        )));
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            Message::TaskOp(TaskOp::Update {
+                task_id,
+                status: Some(status),
+                description: Some(description),
+                ..
+            }) if task_id == "0" && status == "completed" && description == "blocked"
+        )));
+    }
+
+    #[test]
+    fn specialized_search_items_join_like_an_ordinary_tool() {
+        let jsonl = concat!(
+            r#"{"type":"response_item","payload":{"type":"tool_search_call","id":"search-1","call_id":"search-1","arguments":{"query":"calendar tools"},"status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"tool_search_output","call_id":"search-1","status":"completed","tools":[{"name":"calendar.list","description":"List events"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"web_search_call","id":"web-1","status":"completed","action":{"type":"search","query":"rust releases"}}}"#,
+            "\n",
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, target, output: Some(output), .. }
+                if name == "ToolSearch" && target == "calendar tools" && output.contains("calendar.list")
+        )));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, target, .. }
+                if name == "WebSearch" && target == "rust releases"
+        )));
+    }
+
+    #[test]
+    fn image_generation_item_keeps_its_prompt_and_defers_the_image() {
+        let jsonl = r#"{"type":"response_item","payload":{"type":"image_generation_call","id":"image-1","revised_prompt":"a tiny crab","result":"iVBORw0KGgo="}}"#;
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, target, output: None, .. }
+                if name == "ImageGeneration" && target == "a tiny crab"
+        )));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Attachment(attachment)
+                if attachment.kind == AttachmentKind::Image
+                    && attachment.name == "image.png"
+                    && matches!(attachment.content, AttachmentContent::Deferred { .. })
+        )));
+        assert_eq!(
+            nth_loaded_attachment(jsonl, 0),
+            Some(LoadedAttachment::Base64 {
+                mime: "image/png".to_string(),
+                b64: "iVBORw0KGgo=".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn plain_text_spawn_output_preserves_resolved_subagent() {
         let jsonl = concat!(
             r#"{"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","call_id":"spawn-1","arguments":"{\"task_name\":\"review\",\"message\":\"review it\"}"}}"#,
@@ -872,6 +1375,58 @@ not json
                 ..
             } if text == "Inspect parser"
         )));
+    }
+
+    #[test]
+    fn child_rollout_hides_cloned_parent_history_and_counts_only_child_usage() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"child-thread","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1,"agent_path":"/root/review"}}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"parent-thread","cwd":"/repo","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.514Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"parent turn copied into child"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.515Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.645Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.660Z","type":"event_msg","payload":{"type":"task_started","turn_id":"child-turn","started_at":1786315684}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:05.000Z","type":"response_item","payload":{"type":"agent_message","author":"/root","recipient":"/root/review","content":[{"type":"input_text","text":"Message Type: NEW_TASK\nTask name: /root/review\nSender: /root\nPayload:\nreview current change"},{"type":"encrypted_content","encrypted_content":"opaque"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:06.000Z","type":"turn_context","payload":{"model":"gpt-5.6"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":5}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:08.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child answer"}]}}"#,
+            "\n",
+        );
+        let path = std::env::temp_dir().join(format!(
+            "codex-child-bootstrap-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, jsonl).unwrap();
+
+        let (blocks, _, metrics) =
+            parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let turns = blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::UserText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            turns,
+            ["Message Type: NEW_TASK\nTask name: /root/review\nSender: /root\nPayload:\nreview current change"]
+        );
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, Block::AssistantText(text) if text == "child answer")));
+        assert_eq!(metrics.input_tokens, 20);
+        assert_eq!(metrics.output_tokens, 5);
     }
 
     #[test]

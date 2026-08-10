@@ -11,7 +11,7 @@
 //! whole-file oracles (the equivalence gates in `claude_model`/`codex_model`) and to a full
 //! re-parse (the `follow_*` tests).
 
-use crate::adapter::{MetricsAccumulator, TranscriptAdapter};
+use crate::adapter::{LinePreprocessor, MetricsAccumulator, PreprocessedLine, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
 use crate::engine::session::{BlockRead, BlockStore, InMemoryStore, Session, SessionMeta};
@@ -34,6 +34,9 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     replayer: Replayer<'static>,
     /// The FOLD cwd — threaded across lines by `decode_line` for path relativization.
     cwd: String,
+    /// Agent-specific physical→logical line boundary state. Usually pass-through; Codex uses
+    /// it to exclude a child rollout's cloned parent bootstrap from content and metrics.
+    preprocessor: Box<dyn LinePreprocessor>,
     metrics: Box<dyn MetricsAccumulator>,
     /// The per-block storage policy — where each committed block's content goes.
     store: S,
@@ -151,6 +154,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             adapter,
             replayer: Replayer::new(adapter.shaping()),
             cwd: String::new(),
+            preprocessor: adapter.line_preprocessor(),
             metrics: adapter.metrics_acc(),
             store,
             committed: Vec::new(),
@@ -299,8 +303,15 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// drain below — makes it moot, since a grown committed prefix resets the provisional regardless;
     /// the caller reconciles.)
     pub fn advance_at(&mut self, offset: ByteOffset, line: &str) -> Option<usize> {
-        let mut delta: Vec<Message> = Vec::new();
-        self.adapter.decode_line(line, &mut self.cwd, &mut delta);
+        let mut delta: Vec<Message> = match self.preprocessor.process(line) {
+            PreprocessedLine::Include => {
+                let mut messages = Vec::new();
+                self.adapter.decode_line(line, &mut self.cwd, &mut messages);
+                messages
+            }
+            PreprocessedLine::Ignore => return None,
+            PreprocessedLine::Messages(messages) => messages,
+        };
         // Stamp `offset` (and a per-line ordinal) onto every content-bearing attachment this
         // line produced — the builder is the level that knows the byte offset; the L1 decoder
         // left the locators as placeholders. Path-only (`None`) attachments are untouched.
@@ -385,8 +396,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
             self.checkpoint_maybe(&mut rec);
             self.meta_out.push(rec);
         }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            self.metrics.push(&v);
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) => self.metrics.push(&v),
+            Err(_) => self.metrics.malformed_line(),
         }
         patched
     }
@@ -504,6 +516,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     pub(crate) fn reset(&mut self) {
         self.replayer = Replayer::new(self.adapter.shaping());
         self.cwd.clear();
+        self.preprocessor = self.adapter.line_preprocessor();
         self.metrics = self.adapter.metrics_acc();
         self.committed.clear();
         self.committed_meta = SessionMeta::default();

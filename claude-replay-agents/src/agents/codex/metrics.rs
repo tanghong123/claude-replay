@@ -20,11 +20,13 @@ pub(crate) struct CodexMetricsAcc {
 
 impl CodexMetricsAcc {
     /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
-    /// key) — the seam for a Codex-only counter. Nothing calls it yet; the interface is ready
-    /// for the first such metric (task #22).
-    #[allow(dead_code)]
+    /// key). Parse diagnostics use this for skipped malformed and unsupported records.
     pub(crate) fn bump(&mut self, key: &str, n: u64) {
         *self.extra.entry(key.to_string()).or_default() += n;
+    }
+
+    pub(crate) fn malformed_line(&mut self) {
+        self.bump("malformed_lines", 1);
     }
 
     pub(crate) fn push(&mut self, value: &Value) {
@@ -38,6 +40,28 @@ impl CodexMetricsAcc {
         if value.get("type").and_then(Value::as_str) == Some("turn_context") {
             if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
                 self.model = next.to_string();
+            }
+        }
+        if value.get("type").and_then(Value::as_str) == Some("response_item") {
+            let supported = matches!(
+                value.pointer("/payload/type").and_then(Value::as_str),
+                Some(
+                    "message"
+                        | "reasoning"
+                        | "function_call"
+                        | "custom_tool_call"
+                        | "function_call_output"
+                        | "custom_tool_call_output"
+                        | "tool_search_call"
+                        | "tool_search_output"
+                        | "web_search_call"
+                        | "image_generation_call"
+                        // A persistent sub-agent's reply is intentionally not a parent block.
+                        | "agent_message"
+                )
+            );
+            if !supported {
+                self.bump("unsupported_items", 1);
             }
         }
         if value.get("type").and_then(Value::as_str) == Some("event_msg")
@@ -197,5 +221,17 @@ mod tests {
         assert!(footer.contains("100 in"), "footer: {footer}");
         assert!(footer.contains("200 cached"), "footer: {footer}");
         assert!(footer.contains('$'), "footer: {footer}");
+    }
+
+    #[test]
+    fn malformed_and_unsupported_content_records_are_observable() {
+        let jsonl = concat!(
+            "not json\n",
+            r#"{"type":"response_item","payload":{"type":"future_content_item","value":1}}"#,
+            "\n",
+        );
+        let metrics = parse_codex_reader(jsonl);
+        assert_eq!(metrics.extra.get("malformed_lines"), Some(&1));
+        assert_eq!(metrics.extra.get("unsupported_items"), Some(&1));
     }
 }

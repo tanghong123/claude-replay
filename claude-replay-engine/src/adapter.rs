@@ -18,6 +18,38 @@ use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// What an agent-specific transcript preprocessor decided about one raw line.
+///
+/// Most agents pass every line through unchanged. Formats that physically embed another
+/// transcript (for example a Codex child rollout's fork snapshot) can suppress those records,
+/// or replace a transport-only record with canonical messages before the ordinary decoder sees
+/// it. The same decision gates metrics, keeping content and usage on one session boundary.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PreprocessedLine {
+    /// Run the adapter's ordinary [`TranscriptAdapter::decode_line`] and fold metrics.
+    Include,
+    /// The record belongs to embedded/bootstrap data, not this session.
+    Ignore,
+    /// Use these already-normalized messages instead of the ordinary decoder, while still
+    /// folding this line's timestamp/usage into metrics.
+    Messages(Vec<Message>),
+}
+
+/// Per-session raw-line state owned by the shared accumulator.
+pub trait LinePreprocessor: Send {
+    /// Classify or normalize one complete raw transcript line before decoding and metrics folding.
+    fn process(&mut self, line: &str) -> PreprocessedLine;
+}
+
+struct PassThrough;
+
+impl LinePreprocessor for PassThrough {
+    fn process(&mut self, _line: &str) -> PreprocessedLine {
+        PreprocessedLine::Include
+    }
+}
+
 /// A per-agent token/cost accumulator, folded one transcript line at a time. Object-safe
 /// (`Box<dyn>`) so the live follower can hold one without knowing the agent; `Send` so the
 /// follower can move between threads (the HTML live server tails on a background thread).
@@ -27,8 +59,11 @@ pub trait MetricsAccumulator: Send {
     /// This is also the seam for **agent-specific** metrics the shared [`Metrics`] shouldn't
     /// grow a typed field for: an accumulator folds such a counter into the accumulating
     /// [`Metrics::extra`] bag here (each impl has a `bump(key, n)` helper), and `finish` emits
-    /// it. No agent populates `extra` yet — the interface is ready for the first one.
+    /// it. Codex uses the bag for skipped-record diagnostics.
     fn push(&mut self, v: &Value);
+    /// One raw JSONL record could not be parsed. Default no-op for adapters that deliberately
+    /// expose no schema diagnostics; adapters with an observability counter record it here.
+    fn malformed_line(&mut self) {}
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;
 
@@ -94,13 +129,21 @@ pub trait TranscriptAdapter: Sync {
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
         let mut acc = self.metrics_acc();
+        let mut preprocessor = self.line_preprocessor();
         let mut line = String::new();
         while {
             line.clear();
             matches!(reader.read_line(&mut line), Ok(n) if n > 0)
         } {
-            if let Ok(v) = serde_json::from_str::<Value>(line.trim_end()) {
-                acc.push(&v);
+            if matches!(
+                preprocessor.process(line.trim_end()),
+                PreprocessedLine::Ignore
+            ) {
+                continue;
+            }
+            match serde_json::from_str::<Value>(line.trim_end()) {
+                Ok(v) => acc.push(&v),
+                Err(_) => acc.malformed_line(),
             }
         }
         acc.finish()
@@ -111,14 +154,20 @@ pub trait TranscriptAdapter: Sync {
     fn shaping(&self) -> &'static Shaping;
     /// Decode one raw line into 0+ canonical messages (`cwd` threads across lines).
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>);
+    /// A fresh per-session raw-line preprocessor. The default is a stateless pass-through;
+    /// adapters only override this when their physical transcript contains records outside the
+    /// logical session or transport records that need session context to decode.
+    fn line_preprocessor(&self) -> Box<dyn LinePreprocessor> {
+        Box::new(PassThrough)
+    }
     /// A fresh metrics accumulator for this agent.
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator>;
 
     /// Extract the `index`-th content-bearing attachment's bytes from one raw transcript
     /// `line` (the line a [`Deferred`](crate::model::AttachmentContent::Deferred) locator points
     /// at), for the facade's `Transcript::load_attachment`. Default
-    /// `None` — an agent whose transcripts embed no attachments (Codex) never produces a
-    /// `Deferred` locator, so this is never called for it.
+    /// `None` — an agent whose transcripts embed no attachments never produces a `Deferred`
+    /// locator, so this is never called for it.
     fn load_attachment(
         &self,
         _line: &str,

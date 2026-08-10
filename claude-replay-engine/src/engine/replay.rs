@@ -76,8 +76,8 @@ pub struct Shaping {
 /// transcript shapes onto these structured messages (completions, commands, skill bodies,
 /// injected notes, the queue lifecycle), so the fold is the same code for every agent. The
 /// one agent-specific seam is `shaping` (tool-block build, result back-patch, orphan policy,
-/// turn `finish`). Variants an agent doesn't produce (e.g. Codex emits no `QueueOp`/
-/// `Completion`/`SkillBody`) simply never reach their arms.
+/// turn `finish`). Variants an agent doesn't produce (e.g. Codex emits no `QueueOp` or
+/// `SkillBody`) simply never reach their arms.
 ///
 /// Single pass: a `tool_result` whose `tool_use` hasn't been seen yet is emitted inline as an
 /// orphan (forward-references — a result physically before its own tool_use — do not occur in

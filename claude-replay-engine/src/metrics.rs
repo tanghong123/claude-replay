@@ -18,10 +18,9 @@ use std::collections::BTreeMap;
 /// For a metric a *single* agent reports that the shared struct shouldn't grow a field for,
 /// the mechanism is the **accumulating extension bag** [`extra`](Self::extra) below — an
 /// agent's accumulator folds keys into it (via its `bump` helper) exactly like the typed
-/// counters. Data-only (the standard `footer` shows the typed fields), and it makes a brand-new
-/// category need *no* struct change — the complement to `#[non_exhaustive]`. The seam is wired
-/// through the `MetricsAccumulator` interface and ready to use; no agent
-/// currently populates it, so `extra` is empty in practice.
+/// counters. It makes a brand-new category need *no* struct change — the complement to
+/// `#[non_exhaustive]`. The seam is wired through the `MetricsAccumulator` interface; Codex
+/// currently uses it for skipped-record diagnostics rendered by the standard footer.
 /// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
@@ -403,12 +402,22 @@ impl Metrics {
             .compaction_label()
             .map(|s| format!(" · {s}"))
             .unwrap_or_default();
+        let diagnostics = self
+            .diagnostics_label()
+            .map(|label| format!(" · {label}"))
+            .unwrap_or_default();
         format!(
-            "{model}{} in · {cached}{} out · {}{cost}{compacted}",
+            "{model}{} in · {cached}{} out · {}{cost}{compacted}{diagnostics}",
             human_tokens(self.input_tokens),
             human_tokens(self.output_tokens),
             human_dur(self.duration_secs),
         )
+    }
+
+    fn diagnostics_label(&self) -> Option<String> {
+        let skipped = self.extra.get("malformed_lines").copied().unwrap_or(0)
+            + self.extra.get("unsupported_items").copied().unwrap_or(0);
+        (skipped > 0).then(|| format!("⚠ {skipped} skipped"))
     }
 }
 
@@ -450,6 +459,20 @@ mod price_tests {
             is_bare_opus_4("claude-opus-4-20250514"),
             "a DATE, not a minor version"
         );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn footer_surfaces_skipped_schema_records() {
+        let mut metrics = Metrics::default();
+        metrics.extra.insert("malformed_lines".into(), 2);
+        metrics.extra.insert("unsupported_items".into(), 3);
+        assert_eq!(metrics.diagnostics_label().as_deref(), Some("⚠ 5 skipped"));
+        assert!(metrics.footer().contains("⚠ 5 skipped"));
     }
 }
 

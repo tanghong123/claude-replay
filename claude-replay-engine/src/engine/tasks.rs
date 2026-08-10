@@ -1,11 +1,11 @@
 //! The **agent-neutral task/todo model** (#15): the [`TaskItem`]/[`TaskList`] vocabulary,
 //! the op-log fold (replaying `TaskCreate`/`TaskUpdate` calls from the transcript into
 //! point-in-time state), and the live/op-log merge. Per-agent knowledge stays thin and
-//! elsewhere: the Claude L1 emits `Message::TaskOp`s
-//! (only the tokenizer sees tool inputs), and the Claude adapter's `load_tasks` hook reads
+//! elsewhere: Claude task calls and Codex plan/goal calls emit `Message::TaskOp`s
+//! (only the tokenizer sees tool inputs), while the Claude adapter's `load_tasks` hook reads
 //! the on-disk `~/.claude/tasks/<session-id>/*.json` files — the same
-//! `TranscriptAdapter`-seam pattern as `subagent_source`. Codex has neither and simply
-//! never produces either source.
+//! `TranscriptAdapter`-seam pattern as `subagent_source`. Codex has no independent side store;
+//! its task panel is reconstructed from transcript snapshots.
 
 use serde::{Deserialize, Serialize};
 

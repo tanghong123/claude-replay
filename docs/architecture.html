@@ -486,9 +486,9 @@
       the registry, so a new agent mints its own with no variant to add and nothing to fork.</p>
     <p>Everything agent-neutral reaches per-agent behavior <em>only</em> through the registry —
       there is no <code>match agent</code> scattered across the engine. Three adapters exist
-      today and demonstrate the cost floor: Claude (full), Codex (no sub-agent tree ⇒ omits
-      those hooks), QoderWork (delegates decoding to Claude's family entirely; its adapter is
-      discovery + identity).</p>
+      today and demonstrate the cost floor: Claude (sibling child files), Codex
+      (relationship-indexed rollout trees), QoderWork (delegates decoding to Claude's family
+      entirely; its adapter is discovery + identity).</p>
     <div class="callout"><b>Mirror.</b> The <code>agent-jdi</code> supervisor mirrors this with
       its own <code>jdi::agent::AgentAdapter</code> registry.</div>
     <h3 id="discovery">Discovery, precisely</h3>
