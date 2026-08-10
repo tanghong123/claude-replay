@@ -21,6 +21,11 @@ use std::collections::BTreeMap;
 /// counters. It makes a brand-new category need *no* struct change — the complement to
 /// `#[non_exhaustive]`. The seam is wired through the `MetricsAccumulator` interface; Codex
 /// currently uses it for skipped-record diagnostics rendered by the standard footer.
+///
+/// Two keys are **reserved, cross-agent diagnostic names** rather than agent-private ones —
+/// `"malformed_lines"` and `"unsupported_items"` — because the shared footer sums exactly
+/// those into its `⚠ N skipped` label. Any agent may bump them; everything else in the bag
+/// stays opaque to the engine.
 /// (If `Metrics` is ever persisted — e.g. a `SessionAccumulator` checkpoint — add `serde(default)`
 /// per field and don't `deny_unknown_fields`; the bag then carries unknown keys for free.)
 #[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]

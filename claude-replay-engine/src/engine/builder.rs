@@ -398,7 +398,10 @@ impl<S: BlockStore> SessionAccumulator<S> {
         }
         match serde_json::from_str::<Value>(line) {
             Ok(v) => self.metrics.push(&v),
-            Err(_) => self.metrics.malformed_line(),
+            // The reader hands this path complete lines only, so unlike `parse_reader` there
+            // is no torn tail to excuse — but a blank line is still nothing, not drift.
+            Err(_) if !line.trim().is_empty() => self.metrics.malformed_line(),
+            Err(_) => {}
         }
         patched
     }

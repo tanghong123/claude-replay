@@ -1010,3 +1010,120 @@ fn concurrent_admissions_of_one_session_open_exactly_one_store() {
     c.release_all();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **Resume-equals-cold for a Codex CHILD rollout** (PR #13). The Codex preprocessor is
+/// stateful — the child's identity comes from the rollout's FIRST line — and a durable resume
+/// starts above `replay_from`, where that line is never re-read. The adapter's comment promises
+/// the author-prefix fallback classifies a post-resume `agent_message` equivalently; this pins
+/// the promise: the follow-up assignment lands in the APPENDED region, after the resume point,
+/// so it can only be classified by the fallback — and the result must equal a cold fold of the
+/// whole file. `Origin::Resumed` is asserted so a silent cold rebuild cannot fake the pass.
+#[test]
+fn a_codex_child_rollout_resumes_equal_to_cold() {
+    // Bootstrap (excluded from the child's view) + `task_started` + N completed child turns.
+    // Several turns, because the durability frontier trails the open window — a rollout with
+    // too few turns commits nothing, and a resume needs a committed prefix to resume FROM.
+    fn head(turns: usize) -> String {
+        let mut s = String::from(concat!(
+            r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"child-thread","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1,"agent_path":"/root/review"}}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"parent-thread","cwd":"/repo","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.514Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"parent turn copied into child"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T22:48:04.660Z","type":"event_msg","payload":{"type":"task_started","turn_id":"child-turn","started_at":1786315684}}"#,
+            "\n",
+        ));
+        for i in 0..turns {
+            let t = 5 + i * 2;
+            s.push_str(&format!(
+                concat!(
+                    r#"{{"timestamp":"2026-08-09T22:48:{:02}.000Z","type":"response_item","payload":{{"type":"agent_message","author":"/root","recipient":"/root/review","content":[{{"type":"input_text","text":"Message Type: TASK_{}\nPayload:\nstep {}"}}]}}}}"#,
+                    "\n",
+                    r#"{{"timestamp":"2026-08-09T22:48:{:02}.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"answer {}"}}]}}}}"#,
+                    "\n",
+                ),
+                t, i, i, t + 1, i
+            ));
+        }
+        s
+    }
+    const TAIL: &str = concat!(
+        r#"{"timestamp":"2026-08-09T22:48:40.000Z","type":"response_item","payload":{"type":"agent_message","author":"/root","recipient":"/root/review","content":[{"type":"input_text","text":"Message Type: FOLLOW_UP\nPayload:\nalso check the tests"}]}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-09T22:48:41.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":9}}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-09T22:48:42.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tests reviewed"}]}}"#,
+        "\n",
+    );
+
+    let root = tmp("codex-child");
+    let src = root.join("rollout-child.jsonl");
+    std::fs::write(&src, head(4)).unwrap();
+
+    // Run 1: fold to EOF — the parent snapshot is excluded here, and only here — then let go.
+    {
+        let c = cache(&root);
+        c.register("child", Transcript::open(Agent::CODEX, src.clone()));
+        assert!(matches!(
+            c.admit(
+                "child",
+                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+                |_: &Holder<TuiNote>| false,
+            ),
+            Admission::Owned { .. }
+        ));
+        let _ = c
+            .poll_view("child", ArcLog::memory)
+            .expect("registered")
+            .expect("readable");
+        c.release_all();
+    }
+
+    // The rollout grows while nobody holds it: a follow-up assignment plus its answer.
+    append(&src, TAIL);
+
+    // Run 2: must RESUME — and resume to exactly what a cold fold of the whole file produces.
+    let c = cache(&root);
+    c.register("child", Transcript::open(Agent::CODEX, src.clone()));
+    let (session, origin) = match c.admit(
+        "child",
+        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |_: &Holder<TuiNote>| false,
+    ) {
+        Admission::Owned { session, origin } => (session, origin),
+        Admission::Denied(_) => panic!("a free entry must be Owned"),
+    };
+    assert!(
+        matches!(origin, Origin::Resumed { .. }),
+        "must resume, not silently re-fold (a cold rebuild would fake the equality): {origin:?}"
+    );
+    let d = c
+        .poll_view("child", ArcLog::memory)
+        .expect("registered")
+        .expect("readable");
+    let mut got: Vec<Block> = session
+        .committed_arcs()
+        .iter()
+        .map(|a| a.as_ref().clone())
+        .collect();
+    got.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
+
+    let cold = parse_session_as(Agent::CODEX, &src).unwrap().blocks();
+    assert_eq!(
+        got, cold,
+        "a resumed Codex child fold must equal a cold one"
+    );
+    assert!(
+        got.iter()
+            .any(|b| matches!(b, Block::UserText(t) if t.contains("FOLLOW_UP"))),
+        "the post-resume assignment must classify as a user turn via the fallback"
+    );
+    assert!(
+        !got.iter()
+            .any(|b| matches!(b, Block::UserText(t) if t.contains("parent turn copied"))),
+        "and the cloned parent bootstrap must stay excluded"
+    );
+    c.release_all();
+    let _ = std::fs::remove_dir_all(&root);
+}

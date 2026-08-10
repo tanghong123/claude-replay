@@ -135,15 +135,21 @@ pub trait TranscriptAdapter: Sync {
             line.clear();
             matches!(reader.read_line(&mut line), Ok(n) if n > 0)
         } {
-            if matches!(
-                preprocessor.process(line.trim_end()),
-                PreprocessedLine::Ignore
-            ) {
+            let complete = line.ends_with('\n');
+            let body = line.trim_end();
+            if body.is_empty() {
+                continue; // a blank line carries nothing — neither content nor a diagnostic
+            }
+            if matches!(preprocessor.process(body), PreprocessedLine::Ignore) {
                 continue;
             }
-            match serde_json::from_str::<Value>(line.trim_end()) {
+            match serde_json::from_str::<Value>(body) {
                 Ok(v) => acc.push(&v),
-                Err(_) => acc.malformed_line(),
+                // A final line without its newline is a write IN PROGRESS — the agent is
+                // appending at this moment — not schema drift. Counting it would flash a
+                // "skipped" diagnostic on every one-shot parse of a live transcript.
+                Err(_) if complete => acc.malformed_line(),
+                Err(_) => {}
             }
         }
         acc.finish()

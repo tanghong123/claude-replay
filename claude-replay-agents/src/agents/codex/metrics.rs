@@ -223,6 +223,23 @@ mod tests {
         assert!(footer.contains('$'), "footer: {footer}");
     }
 
+    /// The complement of the observability test below: what must NOT count. A final line
+    /// without its newline is a write in progress — the agent is appending at that moment —
+    /// and a blank line is nothing. Counting either would flash "⚠ skipped" on a one-shot
+    /// parse of a LIVE transcript, reading as data corruption to the user.
+    #[test]
+    fn a_torn_tail_and_blank_lines_are_not_schema_drift() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"turn_context","payload":{"model":"gpt-5.6"}}"#,
+            "\n",
+            "\n",                                        // a blank line: nothing
+            r#"{"type":"response_item","payload":{"ty"#, // torn mid-write, no newline
+        );
+        let metrics = parse_codex_reader(jsonl);
+        assert_eq!(metrics.extra.get("malformed_lines"), None);
+        assert_eq!(metrics.extra.get("unsupported_items"), None);
+    }
+
     #[test]
     fn malformed_and_unsupported_content_records_are_observable() {
         let jsonl = concat!(
