@@ -1059,7 +1059,7 @@ fn build_page(
     <div id="stream"></div>
   </main>
 </div>
-<button id="newbadge">↓ new messages</button>
+<button id="newbadge">↓ Jump to bottom</button>
 <div id="livechip">⤓ following live</div>
 <script id="session-data" type="application/jsonl">
 {jsonl_esc}

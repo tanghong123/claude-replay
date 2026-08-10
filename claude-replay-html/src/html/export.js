@@ -1564,14 +1564,31 @@
   }
   var newCount = 0;
   var badge = $("newbadge");
+  // The pill answers ONE question — "how do I get back down" — and it has that answer whenever
+  // the view is scrolled up, not only when something arrived (#171). At the bottom there is
+  // nothing to offer, so it hides; scrolled up with arrivals, the count is the more useful
+  // wording and already implies the jump.
+  var badgeWant = null; // what the pill currently says, or null while hidden
+  function paintBadge() {
+    var want = atBottom() ? null
+      : newCount ? "↓ " + newCount + " new message" + (newCount === 1 ? "" : "s")
+      : "↓ Jump to bottom";
+    if (want === badgeWant) return; // scroll fires constantly — only touch the DOM on a change
+    badgeWant = want;
+    if (want === null) {
+      badge.classList.remove("on");
+      return;
+    }
+    badge.textContent = want;
+    badge.classList.add("on");
+  }
   function showNew(n) {
     newCount += n;
-    badge.textContent = "↓ " + newCount + " new message" + (newCount === 1 ? "" : "s");
-    badge.classList.add("on");
+    paintBadge();
   }
   function clearNew() {
     newCount = 0;
-    badge.classList.remove("on");
+    paintBadge();
   }
   badge.addEventListener("click", function () {
     setFollowing(true);
@@ -2595,12 +2612,16 @@
     } else if (following && !atBottom()) {
       toBottom(); // browser displacement (anchoring/clamp) while pinned — heal it
     }
+    if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
+    // NOT inside the rAF below: a background tab pauses `requestAnimationFrame`, and the pill
+    // has to be right the moment the tab is looked at. It is guarded to a no-op unless the
+    // state actually changed, so running it per scroll event costs a comparison.
+    paintBadge();
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
       updateView(); // #50: materialize the window the scroll landed on
       spy();
-      if (newCount && atBottom()) clearNew(); // caught up by scrolling down
     });
   }, { passive: true });
   window.addEventListener("resize", function () { updateView(); }, { passive: true });
@@ -2610,7 +2631,9 @@
   // show first (and live updates then follow the bottom).
   if (location.hash) {
     var hid = location.hash.slice(1);
-    setTimeout(function () { goToId(hid); }, 150);
+    // A deep link lands mid-history and stays there, so the offer has to be painted for it —
+    // no scroll follows to trigger the handler above.
+    setTimeout(function () { goToId(hid); paintBadge(); }, 150);
   } else {
     // A live page OWNS its landing position (the tail) — stop the browser's async
     // scroll restoration from yanking the view to a stale offset seconds later (#89).

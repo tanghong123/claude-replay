@@ -697,7 +697,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 mark.hl { background: #fde68a; color: #1a1a1a; border-radius: 2px; padding: 0 1px; }
 mark.hl.cur { background: #f59e0b; box-shadow: 0 0 0 2px #f59e0b; }
 
-/* "New messages" badge — shown when live content arrives while scrolled up. */
+/* The bottom pill: "Jump to bottom" whenever the view is scrolled up, and the arrival
+   count instead when there is one (#171). One control, one place, one answer. */
 #newbadge {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 40;
   display: none; align-items: center; gap: 6px;
