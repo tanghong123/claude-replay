@@ -797,6 +797,45 @@
     document.body.appendChild(box);
   }
 
+  // Total messages — what a reader means by the word: the top-level user and assistant
+  // records. Tool calls, thinking and activity are already counted separately ("calls" in
+  // the session bits). Counted CLIENT-side from the records the page already holds, so the
+  // number is live, identical across dump/live/monitor, and costs no wire or stream change
+  // (a SessionMeta counter would have to survive a durable resume, which means a fold-version
+  // bump and a machine-wide cache rebuild — not worth it for a display row).
+  function messageCount() {
+    var n = 0;
+    for (var i = 0; i < records.length; i++) {
+      var k = records[i].kind;
+      if (k === "user" || k === "assistant") n++;
+    }
+    return n;
+  }
+  // The value must track CONTENT, not meta refreshes: in the pull path renderMeta runs
+  // before this reply's blocks are applied, so the row it draws is one tick stale — and an
+  // idle tick carries no meta at all while a static page renders meta exactly once. This
+  // runs after every apply (from postRender), updating the row in place — or CREATING it,
+  // because on a no-usage session the first renderMeta saw zero records, drew an empty box,
+  // and no later meta refresh ever comes on a quiet session.
+  function refreshMessageRow() {
+    var n = messageCount();
+    var v = $("umsg-v");
+    if (v) {
+      v.textContent = String(n);
+      return;
+    }
+    if (!n) return;
+    var box = $("usage");
+    if (!box) return;
+    if (!box.children.length) box.appendChild(el("div", "side-head", "Usage"));
+    var r = el("div", "urow");
+    r.appendChild(el("span", null, "messages"));
+    var val = el("span", null, String(n));
+    val.id = "umsg-v";
+    r.appendChild(val);
+    box.insertBefore(r, box.children[1] || null); // first row, right under the head
+  }
+
   function renderMeta(m) {
     if (m.title) {
       document.title = m.title;
@@ -841,14 +880,23 @@
     // ancestor crumbs, the Back synthesis, and the Agents menu — for exactly the sessions the
     // guard targets: a QoderWork session that never compacted lost its 12 live todos and its
     // 7-child agent menu to a check about token rows.
-    if (hasTokens || u.compacted) {
+    //
+    // The message count keeps the box alive on its own: it is real information for every
+    // session, including the no-usage agents the token guard exists for.
+    var msgs = messageCount();
+    if (hasTokens || u.compacted || msgs > 0) {
       box.appendChild(el("div", "side-head", "Usage"));
-      var row = function (k, v, cls) {
+      var row = function (k, v, cls, vid) {
         var r = el("div", "urow" + (cls ? " " + cls : ""));
         r.appendChild(el("span", null, k));
-        r.appendChild(el("span", null, v));
+        var val = el("span", null, v);
+        if (vid) val.id = vid;
+        r.appendChild(val);
         box.appendChild(r);
       };
+      // Above the token rows: it exists for every agent where the tokens may not, and the
+      // value cell is addressable so `refreshMessageRow` can track live growth in place.
+      row("messages", String(msgs), null, "umsg-v");
       // #152: the token rows are drawn only when there ARE tokens. `compacted` keeps the
       // block alive (it is real information — "24× compacted, 4.0M dropped"), but it must not
       // drag three "0 tok" rows in with it: QoderWork never reports usage, so for its
@@ -1103,6 +1151,7 @@
   // After a batch of new records: rebuild the filter menu (from the records), refresh
   // the filter's hit map, and re-window (new tail records materialize if in range).
   function postRender() {
+    refreshMessageRow();
     buildToolMenu();
     if (filter) computeFilterHits();
     prefix = null;
