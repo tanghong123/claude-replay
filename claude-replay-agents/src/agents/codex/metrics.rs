@@ -173,27 +173,37 @@ impl CodexMetricsAcc {
 mod tests {
     use super::*;
 
+    /// A `token_count` event carrying Codex's CUMULATIVE usage — the totals so far, not a
+    /// per-turn delta. Tests push a SEQUENCE of these and assert on the banked increments.
+    /// Note `input` is the total that already CONTAINS `cached`.
+    fn token_count(input: u64, cached: u64, out: u64) -> Value {
+        serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {
+                "input_tokens": input,
+                "cached_input_tokens": cached,
+                "output_tokens": out,
+            }
+        }}})
+    }
+
+    /// The record that puts a model in force for every reading that follows it.
+    fn turn_context(model: &str) -> Value {
+        serde_json::json!({"type": "turn_context", "payload": {"model": model}})
+    }
+
     /// #104, Codex side. Codex reports RUNNING TOTALS, so per-model attribution means banking
     /// each event's INCREMENT against the model in force — not overwriting a flat counter.
     #[test]
     fn running_totals_bank_increments_against_the_model_in_force() {
-        let ctx = |m: &str| format!(r#"{{"type":"turn_context","payload":{{"model":"{m}"}}}}"#);
-        let count = |input: u64, out: u64| {
-            format!(
-                r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{
-                   "total_token_usage":{{"input_tokens":{input},"cached_input_tokens":0,
-                   "output_tokens":{out}}}}}}}}}"#
-            )
-        };
         let mut acc = CodexMetricsAcc::default();
         for l in [
-            ctx("gpt-a"),
-            count(100, 10),
-            count(300, 30),
-            ctx("gpt-b"),
-            count(400, 45),
+            turn_context("gpt-a"),
+            token_count(100, 0, 10),
+            token_count(300, 0, 30),
+            turn_context("gpt-b"),
+            token_count(400, 0, 45),
         ] {
-            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+            acc.push(&l);
         }
         let m = acc.finish();
         // gpt-a got the first two readings (cumulative 300/30); gpt-b only the INCREMENT.
@@ -215,16 +225,9 @@ mod tests {
     /// A total that goes BACKWARDS (a reset) must contribute nothing, never wrap.
     #[test]
     fn a_backwards_total_contributes_zero() {
-        let count = |out: u64| {
-            format!(
-                r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{
-                   "total_token_usage":{{"input_tokens":0,"cached_input_tokens":0,
-                   "output_tokens":{out}}}}}}}}}"#
-            )
-        };
         let mut acc = CodexMetricsAcc::default();
-        for l in [count(500), count(100)] {
-            acc.push(&serde_json::from_str::<Value>(&l).unwrap());
+        for l in [token_count(0, 0, 500), token_count(0, 0, 100)] {
+            acc.push(&l);
         }
         assert_eq!(acc.finish().output_tokens, 500, "no wrap, no loss");
     }
@@ -287,5 +290,79 @@ mod tests {
         let metrics = parse_codex_reader(jsonl);
         assert_eq!(metrics.extra.get("malformed_lines"), Some(&1));
         assert_eq!(metrics.extra.get("unsupported_items"), Some(&1));
+    }
+
+    /// Codex's cumulative `input_tokens` INCLUDES tokens served from cache. The adapter must
+    /// report uncached input and cache-read input as separate buckets so cost/footers are not
+    /// double-counted.
+    #[test]
+    fn input_tokens_total_includes_cached_and_cache_read_is_reported_separately() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&turn_context("gpt-5.6"));
+        acc.push(&token_count(1000, 600, 200));
+        let m = acc.finish();
+        assert_eq!(m.input_tokens, 400, "uncached input = total input - cached");
+        assert_eq!(m.cache_read_tokens, 600);
+        assert_eq!(m.output_tokens, 200);
+        // Footer must show BOTH buckets, not fold cache back into input.
+        let footer = m.footer();
+        assert!(footer.contains("400 in"), "footer: {footer}");
+        assert!(footer.contains("600 cached"), "footer: {footer}");
+    }
+
+    /// A cache-hit-only increase between two cumulative readings must advance `cache_read`
+    /// without changing the uncached input bucket.
+    #[test]
+    fn cache_read_increments_when_only_cached_input_grows() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&token_count(100, 50, 10));
+        acc.push(&token_count(300, 200, 80));
+        let m = acc.finish();
+        assert_eq!(m.input_tokens, 100); // 300 - 200
+        assert_eq!(m.cache_read_tokens, 200);
+        assert_eq!(m.output_tokens, 80);
+    }
+
+    /// Cache increments follow the same per-model rule as ordinary input/output: the delta
+    /// from the previous cumulative reading is banked against the model currently in force.
+    #[test]
+    fn cache_increments_are_attributed_to_the_model_in_force() {
+        let mut acc = CodexMetricsAcc::default();
+        for l in [
+            turn_context("gpt-a"),
+            token_count(100, 80, 10),
+            turn_context("gpt-b"),
+            token_count(400, 300, 20),
+        ] {
+            acc.push(&l);
+        }
+        let m = acc.finish();
+        // gpt-a saw one reading: uncached 100-80=20, cache 80, output 10.
+        assert_eq!(m.per_model["gpt-a"].input, 20);
+        assert_eq!(m.per_model["gpt-a"].cache_read, 80);
+        assert_eq!(m.per_model["gpt-a"].output, 10);
+        // gpt-b saw only the DELTA between the two cumulative readings:
+        //   uncached (400-300) - (100-80) = 100 - 20 = 80
+        //   cache     300 - 80           = 220
+        //   output    20 - 10            = 10
+        assert_eq!(m.per_model["gpt-b"].input, 80);
+        assert_eq!(m.per_model["gpt-b"].cache_read, 220);
+        assert_eq!(m.per_model["gpt-b"].output, 10);
+        // Flat totals equal the last cumulative reading's net/cache/output.
+        assert_eq!(m.input_tokens, 100);
+        assert_eq!(m.cache_read_tokens, 300);
+        assert_eq!(m.output_tokens, 20);
+    }
+
+    /// A backwards cache total must saturate, never wrap or erase earlier work.
+    #[test]
+    fn a_backwards_cached_total_is_saturated_to_zero() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&token_count(500, 300, 100));
+        acc.push(&token_count(400, 250, 80));
+        let m = acc.finish();
+        assert_eq!(m.input_tokens, 200, "no wrap on input");
+        assert_eq!(m.cache_read_tokens, 300, "no wrap on cache");
+        assert_eq!(m.output_tokens, 100, "no wrap on output");
     }
 }
