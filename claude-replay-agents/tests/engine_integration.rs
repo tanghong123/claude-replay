@@ -827,3 +827,216 @@ fn enriched_parse_populates_transcript() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// ─── The resumable metrics fold (#14) ───────────────────────────────────────────────────────
+
+/// A Codex CHILD rollout — the adversarial fixture for the metrics cursor: a stateful
+/// preprocessor (the cloned parent bootstrap must stay excluded), cumulative `token_count`
+/// records (the totals→increments conversion banks private state), and a mid-file model switch.
+const CODEX_CHILD_LINES: &[&str] = &[
+    r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"child-thread","cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1,"agent_path":"/root/review"}}}}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:04.513Z","type":"session_meta","payload":{"id":"parent-thread","cwd":"/repo","source":"cli"}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:04.514Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"parent turn copied into child"}]}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:04.515Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:04.660Z","type":"event_msg","payload":{"type":"task_started","turn_id":"child-turn","started_at":1786315684}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:05.000Z","type":"turn_context","payload":{"model":"gpt-5.6"}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":5}}}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":45,"cached_input_tokens":3,"output_tokens":11}}}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:08.000Z","type":"turn_context","payload":{"model":"gpt-5.6-mini"}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":60,"cached_input_tokens":3,"output_tokens":14}}}}"#,
+    r#"{"timestamp":"2026-08-09T22:48:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child answer"}]}}"#,
+];
+
+fn drain(fold: &mut claude_replay_engine::metrics_fold::MetricsFold) {
+    while fold.next_event().expect("fold reads").is_some() {}
+}
+
+/// **The property behind the whole API**: for a checkpoint at EVERY line boundary, folding a
+/// prefix, parking the cursor, growing the file, and resuming yields byte-for-byte the metrics
+/// a cold fold of the whole file produces. The boundaries include one BETWEEN two cumulative
+/// `token_count` records — where a reseed-only resume double-counts (`last_total` lost) — and
+/// several INSIDE the cloned-parent bootstrap, where a fresh preprocessor would replay parent
+/// usage as the child's.
+#[test]
+fn a_metrics_cursor_resumes_equal_to_cold_at_every_line_boundary() {
+    use claude_replay_engine::metrics_fold::{FoldStart, MetricsFold};
+    let full = CODEX_CHILD_LINES.join("\n") + "\n";
+    let cold = {
+        let p = tmp1(&full);
+        let mut f = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        drain(&mut f);
+        f.metrics()
+    };
+    assert!(
+        !cold.per_model.is_empty(),
+        "the fixture must produce metrics"
+    );
+
+    for split in 0..CODEX_CHILD_LINES.len() {
+        let prefix = CODEX_CHILD_LINES[..split]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect::<String>();
+        let p = tmp1(&prefix);
+        let cursor = {
+            let mut run1 = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+            drain(&mut run1);
+            run1.cursor().unwrap()
+        };
+        // The transcript grows between runs — the periodic collector's whole life.
+        std::fs::write(&p, &full).unwrap();
+        let mut run2 = MetricsFold::open(&CodexAdapter, &p, Some(&cursor)).unwrap();
+        assert_eq!(
+            run2.start(),
+            FoldStart::Resumed,
+            "a prefix cursor must validate (split {split})"
+        );
+        drain(&mut run2);
+        assert_eq!(
+            run2.metrics(),
+            cold,
+            "resumed-from-line-{split} must equal cold"
+        );
+    }
+}
+
+/// The per-event deltas SUM to the final totals — per model and for the extension bag — so a
+/// time-bucketing consumer can trust the events alone, never re-deriving from snapshots.
+#[test]
+fn metrics_events_sum_to_the_final_totals() {
+    use claude_replay_engine::metrics_fold::MetricsFold;
+    use std::collections::BTreeMap;
+    let mut body = CODEX_CHILD_LINES.join("\n") + "\n";
+    body.push_str("not json at all\n"); // one malformed COMPLETE line: an extra-bag event
+    let p = tmp1(&body);
+    let mut fold = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+    let mut tokens: BTreeMap<String, claude_replay_engine::metrics::TokenCounts> = BTreeMap::new();
+    let mut extra: BTreeMap<String, u64> = BTreeMap::new();
+    let mut saw_ts = false;
+    while let Some(ev) = fold.next_event().unwrap() {
+        saw_ts |= ev.ts.is_some();
+        for (m, d) in ev.tokens {
+            *tokens.entry(m).or_default() += d;
+        }
+        for (k, d) in ev.extra {
+            *extra.entry(k).or_default() += d;
+        }
+    }
+    let m = fold.metrics();
+    assert_eq!(
+        tokens, m.per_model,
+        "token deltas sum to the final per-model map"
+    );
+    assert_eq!(extra, m.extra, "extra deltas sum to the final bag");
+    assert_eq!(extra.get("malformed_lines"), Some(&1));
+    assert!(saw_ts, "events carry the line timestamps");
+}
+
+/// A rewritten prefix is detected and answered with a cold restart, not silent miscounting:
+/// same length, different bytes below the cursor ⇒ the window CRC mismatches.
+#[test]
+fn a_rewritten_prefix_demotes_the_cursor_to_a_cold_fold() {
+    use claude_replay_engine::metrics_fold::{CursorReject, FoldStart, MetricsFold};
+    let full = CODEX_CHILD_LINES.join("\n") + "\n";
+    let p = tmp1(&full);
+    let cursor = {
+        let mut f = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        drain(&mut f);
+        f.cursor().unwrap()
+    };
+    // Rewrite one byte inside the window (a timestamp digit): same length, different content.
+    let mut bytes = std::fs::read(&p).unwrap();
+    let at = full.find("22:48:04.514").unwrap();
+    bytes[at] = b'9';
+    std::fs::write(&p, &bytes).unwrap();
+
+    let mut f = MetricsFold::open(&CodexAdapter, &p, Some(&cursor)).unwrap();
+    assert_eq!(f.start(), FoldStart::Cold(CursorReject::SourceRewritten));
+    drain(&mut f);
+    let cold = {
+        let mut c = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        drain(&mut c);
+        c.metrics()
+    };
+    assert_eq!(
+        f.metrics(),
+        cold,
+        "the demoted fold is a full, correct cold one"
+    );
+}
+
+/// A torn final line — a write in progress — is left UNCONSUMED: the cursor holds at the last
+/// complete line, and once the line is finished the next run folds it. The periodic collector's
+/// steady state against a live transcript.
+#[test]
+fn a_torn_tail_is_left_for_the_next_run() {
+    use claude_replay_engine::metrics_fold::MetricsFold;
+    let complete = CODEX_CHILD_LINES[..7].join("\n") + "\n";
+    let (torn, rest) = CODEX_CHILD_LINES[7].split_at(40);
+    let p = tmp1(&format!("{complete}{torn}"));
+
+    let mut f = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+    drain(&mut f);
+    let cursor = f.cursor().unwrap();
+    assert_eq!(
+        cursor.offset,
+        complete.len() as u64,
+        "the cursor stops at the last complete line, not inside the torn one"
+    );
+    assert_eq!(f.metrics().extra.get("malformed_lines"), None);
+
+    // The agent finishes the line; the next run picks it up from the cursor.
+    let mut file = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+    file.write_all(format!("{rest}\n").as_bytes()).unwrap();
+    drop(file);
+    let mut f2 = MetricsFold::open(&CodexAdapter, &p, Some(&cursor)).unwrap();
+    drain(&mut f2);
+    let cold = {
+        let mut c = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        drain(&mut c);
+        c.metrics()
+    };
+    assert_eq!(f2.metrics(), cold);
+}
+
+/// The DEFAULT cursor path (no adapter override): Claude's accumulator resumes through
+/// `totals`/`reseed`, the fidelity the durable cache already trusts — proven here through the
+/// same grow-between-runs loop, via the facade entry point consumers actually call.
+#[test]
+fn the_default_cursor_path_resumes_a_claude_fold_equal_to_cold() {
+    use claude_replay_engine::metrics_fold::FoldStart;
+    let lines: Vec<String> = (0..4)
+        .flat_map(|i| {
+            [
+                format!(r#"{{"type":"user","cwd":"/r","message":{{"role":"user","content":[{{"type":"text","text":"ask {i}"}}]}},"timestamp":"2026-07-26T10:00:{:02}Z"}}"#, i * 2),
+                format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply {i}"}}],"usage":{{"input_tokens":{},"output_tokens":{}}}}},"timestamp":"2026-07-26T10:00:{:02}Z"}}"#, 5 + i, 8 + i, i * 2 + 1),
+            ]
+        })
+        .collect();
+    let full = lines.join("\n") + "\n";
+    let cold = {
+        let p = tmp1(&full);
+        let mut f = claude_replay_core::metrics_fold(Agent::CLAUDE, &p, None).unwrap();
+        drain(&mut f);
+        f.metrics()
+    };
+    assert!(cold.per_model.values().any(|t| t.output > 0));
+
+    for split in 1..lines.len() {
+        let prefix = lines[..split]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect::<String>();
+        let p = tmp1(&prefix);
+        let cursor = {
+            let mut f = claude_replay_core::metrics_fold(Agent::CLAUDE, &p, None).unwrap();
+            drain(&mut f);
+            f.cursor().unwrap()
+        };
+        std::fs::write(&p, &full).unwrap();
+        let mut f = claude_replay_core::metrics_fold(Agent::CLAUDE, &p, Some(&cursor)).unwrap();
+        assert_eq!(f.start(), FoldStart::Resumed);
+        drain(&mut f);
+        assert_eq!(f.metrics(), cold, "claude resumed-from-{split} equals cold");
+    }
+}

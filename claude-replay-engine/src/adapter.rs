@@ -40,6 +40,20 @@ pub enum PreprocessedLine {
 pub trait LinePreprocessor: Send {
     /// Classify or normalize one complete raw transcript line before decoding and metrics folding.
     fn process(&mut self, line: &str) -> PreprocessedLine;
+
+    /// This preprocessor's fold state as an **opaque, serializable** value (#14) — whatever
+    /// `process` reads that was learned from earlier lines. A stateless preprocessor returns
+    /// `Null`, the default. Consumers store it inside a
+    /// [`MetricsCursor`](crate::metrics_fold::MetricsCursor) and hand it back through
+    /// [`restore`](Self::restore); they never interpret it.
+    fn state(&self) -> Value {
+        Value::Null
+    }
+
+    /// Restore what [`state`](Self::state) captured. A value this implementation does not
+    /// recognize (foreign, stale format, `Null`) must be ignored — a cursor is a cache, and an
+    /// unreadable cache is a cold start, never an error.
+    fn restore(&mut self, _state: &Value) {}
 }
 
 struct PassThrough;
@@ -66,6 +80,26 @@ pub trait MetricsAccumulator: Send {
     fn malformed_line(&mut self) {}
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;
+
+    /// This accumulator's fold state as an **opaque, serializable** value (#14). The default
+    /// captures exactly what [`reseed`](Self::reseed) can restore — the shared totals — which is
+    /// the fidelity the durable cache already trusts for a resume. An adapter whose `push` reads
+    /// **private** fold state must override BOTH this and [`restore`](Self::restore) to carry it:
+    /// Codex banks cumulative usage against `last_total`/`model`, and a resume that lost those
+    /// double-counted the first usage record after the checkpoint.
+    fn state(&self) -> Value {
+        serde_json::to_value(self.totals()).unwrap_or(Value::Null)
+    }
+
+    /// Restore what [`state`](Self::state) captured. Unrecognized input must be ignored — a
+    /// cursor is a cache, and an unreadable one is a cold start, never an error.
+    fn restore(&mut self, state: &Value) {
+        if let Ok((tokens, extra, span)) =
+            serde_json::from_value::<crate::metrics::MetricsTotals>(state.clone())
+        {
+            self.reseed(tokens, extra, span);
+        }
+    }
 
     /// Running totals as of the last [`push`](Self::push) — per model, plus the agent-specific
     /// counter bag and the observed span (#96 §7).

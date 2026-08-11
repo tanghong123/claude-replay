@@ -10,13 +10,13 @@
 
 use crate::engine::meta_stream::{crc32, MetaRecord, StreamHeader};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-/// The window a resume validates: the bytes immediately below `replay_from`. Everything a
-/// resume restores derives from below that offset, so it is the only region a rewrite can
-/// silently corrupt — bytes at or after it are re-read and folded fresh.
-pub const WINDOW_BYTES: u64 = 64 * 1024;
+// The window CRC moved down into the engine (#14): the metrics cursor pairs it with a byte
+// offset exactly as `Resume` does, so both resumable folds now share one implementation.
+// The public path here survives as a re-export.
+pub use crate::engine::meta_stream::{window_at, WINDOW_BYTES};
 
 /// The meta stream file within a session's durable directory.
 pub fn meta_path(dir: &Path) -> PathBuf {
@@ -29,32 +29,6 @@ pub fn anchor_of(src: &Path) -> std::io::Result<u32> {
     let mut first = String::new();
     BufReader::new(File::open(src)?).read_line(&mut first)?;
     Ok(crc32(first.trim_end().as_bytes()))
-}
-
-/// CRC32 of the (up to) [`WINDOW_BYTES`] ending at `offset`.
-///
-/// A short file, or an offset below the window size, hashes what is there — the length check in
-/// [`claim`](super::admit::claim) is what catches a truncated source, so this need not also.
-pub fn window_at(src: &Path, offset: u64) -> std::io::Result<u32> {
-    let mut f = File::open(src)?;
-    let start = offset.saturating_sub(WINDOW_BYTES);
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = vec![0u8; (offset - start) as usize];
-    read_exact_or_short(&mut f, &mut buf)?;
-    Ok(crc32(&buf))
-}
-
-fn read_exact_or_short(f: &mut File, buf: &mut Vec<u8>) -> std::io::Result<()> {
-    use std::io::Read;
-    let mut filled = 0;
-    while filled < buf.len() {
-        match f.read(&mut buf[filled..])? {
-            0 => break,
-            n => filled += n,
-        }
-    }
-    buf.truncate(filled);
-    Ok(())
 }
 
 /// An append-only writer over one session's meta stream.

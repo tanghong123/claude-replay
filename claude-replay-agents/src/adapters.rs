@@ -45,6 +45,12 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn malformed_line(&mut self) {
         agents::codex::metrics::CodexMetricsAcc::malformed_line(self)
     }
+    fn state(&self) -> Value {
+        agents::codex::metrics::CodexMetricsAcc::state(self)
+    }
+    fn restore(&mut self, state: &Value) {
+        agents::codex::metrics::CodexMetricsAcc::restore(self, state)
+    }
     fn finish(&self) -> Metrics {
         self.clone().finish()
     }

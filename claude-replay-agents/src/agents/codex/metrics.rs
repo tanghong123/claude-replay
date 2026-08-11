@@ -1,4 +1,6 @@
-use claude_replay_engine::seam::{parse_ts, total_cost, Metrics, TimeSpan, TokenCounts};
+use claude_replay_engine::seam::{
+    parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan, TokenCounts,
+};
 use serde_json::Value;
 
 /// Codex's per-line token/cost accumulator, folded through the shared
@@ -95,6 +97,41 @@ impl CodexMetricsAcc {
             self.extra.clone(),
             self.span.endpoints().map(|(a, b)| (a as f64, b as f64)),
         )
+    }
+
+    /// This accumulator's cursor state (#14): the shared totals PLUS the two private fields
+    /// `push` reads — `last_total` (Codex reports cumulative usage, so each event banks its
+    /// difference from this) and the model in force. A resume that restored only the shared
+    /// half double-counted the first usage record after the checkpoint and misattributed
+    /// until the next `turn_context`; carrying these two is the whole point of the override.
+    pub(crate) fn state(&self) -> Value {
+        serde_json::json!({
+            "totals": self.totals(),
+            "last_total": self.last_total,
+            "model": self.model,
+        })
+    }
+
+    /// Restore [`state`](Self::state). Unrecognized input is ignored — a cursor is a cache,
+    /// and an unreadable one is a cold start, never an error.
+    pub(crate) fn restore(&mut self, state: &Value) {
+        let Some(totals) = state.get("totals") else {
+            return;
+        };
+        let Ok((tokens, extra, span)) = serde_json::from_value::<MetricsTotals>(totals.clone())
+        else {
+            return;
+        };
+        self.reseed(tokens, extra, span);
+        if let Some(t) = state
+            .get("last_total")
+            .and_then(|v| serde_json::from_value::<TokenCounts>(v.clone()).ok())
+        {
+            self.last_total = t;
+        }
+        if let Some(m) = state.get("model").and_then(Value::as_str) {
+            self.model = m.to_string();
+        }
     }
 
     /// Re-seed a resumed accumulator (#96 §7).

@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
 const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CodexLinePreprocessor {
     child: Option<ChildRollout>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ChildRollout {
     session_started_at: f64,
     agent_path: String,
@@ -26,6 +27,20 @@ struct ChildRollout {
 }
 
 impl LinePreprocessor for CodexLinePreprocessor {
+    /// Cursor state (#14): the whole self. The child-rollout boundary machine is learned from
+    /// the transcript's FIRST lines, which a resumed fold never re-reads — without this, a
+    /// resume inside the parent-snapshot region would replay the cloned parent as child
+    /// history, the exact bug the preprocessor exists to prevent.
+    fn state(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    fn restore(&mut self, state: &Value) {
+        if let Ok(p) = serde_json::from_value::<CodexLinePreprocessor>(state.clone()) {
+            *self = p;
+        }
+    }
+
     fn process(&mut self, line: &str) -> PreprocessedLine {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return PreprocessedLine::Include;

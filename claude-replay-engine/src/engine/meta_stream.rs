@@ -646,3 +646,32 @@ pub enum AlignError {
     /// A checkpoint disagreed with the state folded up to it (§6.6).
     CheckpointMismatch,
 }
+
+/// How many bytes below an offset the [`Resume::window`] CRC covers. Small enough to hash on
+/// every admission, large enough that "the same offset in a different file" cannot collide by
+/// luck on real transcripts.
+pub const WINDOW_BYTES: u64 = 64 * 1024;
+
+/// CRC32 of the (up to) [`WINDOW_BYTES`] ending at `offset` — the identity check a resume runs
+/// before trusting bytes it is NOT going to re-read. A short file, or an offset below the window
+/// size, hashes what is there; the caller's length check is what catches a truncated source.
+///
+/// Engine-level because both resumable folds need it: the durable cache's meta stream (which
+/// re-exports it from `present`) and the metrics cursor (#14), which pairs it with an offset so
+/// a periodic collector can prove the prefix it is skipping is the prefix it already folded.
+pub fn window_at(src: &std::path::Path, offset: u64) -> std::io::Result<u32> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(src)?;
+    let start = offset.saturating_sub(WINDOW_BYTES);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = vec![0u8; (offset - start) as usize];
+    let mut filled = 0;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    buf.truncate(filled);
+    Ok(crc32(&buf))
+}
