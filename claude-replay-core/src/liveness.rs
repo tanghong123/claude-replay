@@ -100,10 +100,17 @@ pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     if f.seek(SeekFrom::Start(start)).is_err() {
         return false;
     }
-    let mut buf = String::new();
-    if f.read_to_string(&mut buf).is_err() {
-        return false; // a seek into a multi-byte char etc. — treat as unknown/idle
+    // LOSSY on purpose. The window starts at a fixed byte offset, so it lands inside a
+    // multi-byte character whenever the transcript is not pure ASCII — measured at 7 of 558
+    // real rollouts (~1.3%), and CJK-heavy sessions are the norm for some users. Decoding
+    // strictly there discards the ENTIRE signal and answers "idle", which is the direction
+    // that gets a working session reaped (#82). A split character now costs one replacement
+    // char in one field, not the whole check.
+    let mut raw = Vec::new();
+    if f.read_to_end(&mut raw).is_err() {
+        return false;
     }
+    let buf = String::from_utf8_lossy(&raw);
     let mut uses: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Field-level extraction: `key":"value"` occurrences on each line. Claude marks calls
@@ -320,5 +327,23 @@ mod tests {
     fn missing_file_is_not_inflight() {
         let p = fixture("missing");
         assert!(!inflight_tool_in_tail(&p));
+    }
+
+    /// The window opens at a FIXED byte offset, so on any non-ASCII transcript it can open in
+    /// the middle of a character — the first bytes are then an invalid UTF-8 fragment. Decoding
+    /// strictly used to throw the whole tail away and report "idle", hiding a live tool call;
+    /// measured on 7 of 558 real rollouts. The split character must cost nothing but itself.
+    #[test]
+    fn a_window_opening_mid_character_still_sees_the_dangling_call() {
+        let p = fixture("split-char");
+        let mut bytes = "语".as_bytes()[1..].to_vec(); // the tail of a 3-byte char: invalid alone
+        bytes.extend_from_slice(
+            br#"","cwd":"/x"}
+{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"ct-split","name":"Read"}}
+"#,
+        );
+        std::fs::write(&p, &bytes).unwrap();
+        assert!(String::from_utf8(bytes).is_err(), "fixture must be invalid");
+        assert!(inflight_tool_in_tail(&p));
     }
 }
