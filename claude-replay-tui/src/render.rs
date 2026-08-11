@@ -790,7 +790,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             patch,
             ..
         } if (name == "Write" || name == "NotebookEdit")
-            && !patch.as_deref().is_some_and(|h| !h.is_empty()) =>
+            && patch.as_deref().is_none_or(|h| h.is_empty()) =>
         {
             let content = write_content(diffs);
             let n = content.lines().count();
@@ -928,7 +928,7 @@ fn body_len(b: &Block) -> usize {
             output,
             ..
         } => match name.as_str() {
-            "Write" | "NotebookEdit" if !patch.as_deref().is_some_and(|h| !h.is_empty()) => {
+            "Write" | "NotebookEdit" if patch.as_deref().is_none_or(|h| h.is_empty()) => {
                 // Expanded height: ⎿ result line + every content line (Write has its
                 // own `render_collapsed` arm, so this feeds only length checks).
                 let content = write_content(diffs);
