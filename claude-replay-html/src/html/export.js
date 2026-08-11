@@ -836,27 +836,33 @@
     // it keeps the block, but not the token rows; see #152 below.)
     var hasTokens = (u.input && u.input !== "0") || (u.output && u.output !== "0") ||
                     (u.cache_read && u.cache_read !== "0") || u.cost;
-    if (!hasTokens && !u.compacted) return;
-    box.appendChild(el("div", "side-head", "Usage"));
-    function row(k, v, cls) {
-      var r = el("div", "urow" + (cls ? " " + cls : ""));
-      r.appendChild(el("span", null, k));
-      r.appendChild(el("span", null, v));
-      box.appendChild(r);
+    // #152's guard, SCOPED to the usage box it is about. It used to `return` out of the whole
+    // meta renderer, which silently dropped everything rendered below it — the task panel, the
+    // ancestor crumbs, the Back synthesis, and the Agents menu — for exactly the sessions the
+    // guard targets: a QoderWork session that never compacted lost its 12 live todos and its
+    // 7-child agent menu to a check about token rows.
+    if (hasTokens || u.compacted) {
+      box.appendChild(el("div", "side-head", "Usage"));
+      var row = function (k, v, cls) {
+        var r = el("div", "urow" + (cls ? " " + cls : ""));
+        r.appendChild(el("span", null, k));
+        r.appendChild(el("span", null, v));
+        box.appendChild(r);
+      };
+      // #152: the token rows are drawn only when there ARE tokens. `compacted` keeps the
+      // block alive (it is real information — "24× compacted, 4.0M dropped"), but it must not
+      // drag three "0 tok" rows in with it: QoderWork never reports usage, so for its
+      // compacted sessions — 17 of them here — the panel was three zeros and one fact.
+      if (hasTokens) {
+        row("input", (u.input || "0") + " tok");
+        row("output", (u.output || "0") + " tok");
+        row("cache read", (u.cache_read || "0") + " tok");
+      }
+      // #108: only sessions that actually compacted get a row, so the panel keeps its shape.
+      // Without it the token totals look inexplicable beside a short-looking replay.
+      if (u.compacted) row("compacted", u.compacted);
+      if (u.cost) row("est. cost", u.cost, "total");
     }
-    // #152: the token rows are drawn only when there ARE tokens. `compacted` keeps the
-    // block alive (it is real information — "24× compacted, 4.0M dropped"), but it must not
-    // drag three "0 tok" rows in with it: QoderWork never reports usage, so for its
-    // compacted sessions — 17 of them here — the panel was three zeros and one fact.
-    if (hasTokens) {
-      row("input", (u.input || "0") + " tok");
-      row("output", (u.output || "0") + " tok");
-      row("cache read", (u.cache_read || "0") + " tok");
-    }
-    // #108: only sessions that actually compacted get a row, so the panel keeps its shape.
-    // Without it the token totals look inexplicable beside a short-looking replay.
-    if (u.compacted) row("compacted", u.compacted);
-    if (u.cost) row("est. cost", u.cost, "total");
 
     renderTasks(m.tasks);
     renderCrumbs(m.ancestors);
