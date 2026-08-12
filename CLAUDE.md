@@ -31,6 +31,14 @@ repository, exactly as it did in the system temp. A test that spawns a `tmux`
 server must hold the `Server` Drop guard (`tests/tmux_smoke.rs`), or a failed
 assertion strands the server and whatever runs inside it.
 
+## Merging external PRs
+CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
+needs its workflow runs approved in the GitHub UI, and until they run, the email
+guard has never seen the commits. Never `gh pr merge --admin` past pending
+checks: the pre-push hook cannot see a server-side merge, so CI's guard job is
+the ONLY identity check on that path (#16 leaked a work email exactly this way;
+the accepted commits are sha-allowlisted in ci.yml).
+
 ## Gate every change on
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
 (runs BOTH crates via workspace default-members; deterministic — no terminal needed;

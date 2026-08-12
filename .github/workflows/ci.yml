@@ -42,14 +42,23 @@ jobs:
         run: |
           # Must match .githooks/pre-push. Extend as needed.
           BLOCKED_EMAIL_DOMAINS="alibaba-inc.com"
+          # Commits KNOWINGLY accepted with a blocked committer email (PR #16; owner's call,
+          # 2026-08-12). The merge happened server-side, where no pre-push hook runs, and the
+          # owner chose to keep public history rather than rewrite it. Exempted by full sha so
+          # the guard still fails on any NEW leak — including new commits by the same author.
+          ALLOWED_SHAS="988c2b96a030ef18d890842cfce465072e0933a8 76ab2bc3409d9e5c3388346003f75b7d311a93bd ca9d16975ec1d783ca9426ae87175a2b60736ce8 59fc30e3daa9c98086e1f05dcd83f5dbf0b1a925 82db604d6b4320c00b79cab549af8b5f8793f5b9"
           fail=0
-          emails="$(git log --all --format='%ae%n%ce' | sort -u)"
           for dom in $BLOCKED_EMAIL_DOMAINS; do
-            if printf '%s\n' "$emails" | grep -qiF "@$dom"; then
-              echo "::error::A commit author/committer email at @$dom is present in history."
-              printf '%s\n' "$emails" | grep -iF "@$dom"
+            hits="$(git log --all --format='%H %ae %ce' | grep -iF "@$dom" || true)"
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              sha="${line%% *}"
+              case " $ALLOWED_SHAS " in *" $sha "*) continue ;; esac
+              echo "::error::A commit author/committer email at @$dom is present: $line"
               fail=1
-            fi
+            done <<-EOF
+          $hits
+          EOF
             if git grep -qiI "@$dom" -- . ':!.githooks' ':!.github'; then
               echo "::error::Blocked email @$dom appears in tracked file contents."
               fail=1
