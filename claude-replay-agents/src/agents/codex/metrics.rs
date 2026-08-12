@@ -17,6 +17,13 @@ pub(crate) struct CodexMetricsAcc {
     /// is its difference from this — the totals→increments conversion the record format wants,
     /// done here in the adapter because only it knows its agent reports totals at all.
     last_total: TokenCounts,
+    /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
+    /// counter INHERITS the parent's pre-fork history — its first reading can stand at
+    /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
+    /// The first event therefore banks only its own `last_token_usage`, with the remainder
+    /// of the total set aside as the baseline; measured over one machine's lumen rollouts,
+    /// banking that first total from zero over-counted 18 forked files by ~$476.
+    seen_usage: bool,
     model: String,
     /// The FIRST model the session named — not necessarily [`model`](Self::model), the one in
     /// force at the end. Usage reported before any name was seen is attributed to this one,
@@ -89,6 +96,27 @@ impl CodexMetricsAcc {
                 cache_read: cached,
                 output: field("output_tokens"),
             };
+            if !self.seen_usage {
+                self.seen_usage = true;
+                // The FIRST reading of a forked/sub-agent thread inherits the parent's
+                // cumulative counter: banking it from zero would price the parent's whole
+                // pre-fork history AGAIN (it is priced in the parent's own rollout, which the
+                // monitor rolls up). The event's `last_token_usage` is this thread's own share,
+                // so the baseline is `total − last` and the first banked delta is exactly that
+                // share. A rollout old enough to lack `last` keeps the from-zero behavior.
+                if let Some(last) = value.pointer("/payload/info/last_token_usage") {
+                    let lfield = |name: &str| last.get(name).and_then(Value::as_u64).unwrap_or(0);
+                    let lcached = lfield("cached_input_tokens");
+                    self.last_total = TokenCounts {
+                        input: now
+                            .input
+                            .saturating_sub(lfield("input_tokens").saturating_sub(lcached)),
+                        cache_creation: 0,
+                        cache_read: now.cache_read.saturating_sub(lcached),
+                        output: now.output.saturating_sub(lfield("output_tokens")),
+                    };
+                }
+            }
             // Bank the increment against the CURRENT model. `saturating_sub` because a total
             // that goes backwards (a reset) must contribute nothing, never wrap.
             let e = self.per_model.entry(self.model.clone()).or_default();
@@ -119,6 +147,7 @@ impl CodexMetricsAcc {
         serde_json::json!({
             "totals": self.totals(),
             "last_total": self.last_total,
+            "seen_usage": self.seen_usage,
             "model": self.model,
             "first_model": self.first_model,
         })
@@ -141,6 +170,12 @@ impl CodexMetricsAcc {
         {
             self.last_total = t;
         }
+        // A cursor from before `seen_usage` existed carries no flag; a fold that banked
+        // anything has a non-default `last_total`, which is the same evidence.
+        self.seen_usage = state
+            .get("seen_usage")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| self.last_total != TokenCounts::default());
         if let Some(m) = state.get("model").and_then(Value::as_str) {
             self.model = m.to_string();
         }
@@ -228,6 +263,77 @@ mod tests {
     /// The record that puts a model in force for every reading that follows it.
     fn turn_context(model: &str) -> Value {
         serde_json::json!({"type": "turn_context", "payload": {"model": model}})
+    }
+
+    /// A `token_count` event as MODERN Codex writes it: the cumulative total AND the call's
+    /// own `last_token_usage` side by side. On a forked thread the total INHERITS the
+    /// parent's history, so the two diverge wildly on the first event.
+    fn token_count_with_last(
+        total: (u64, u64, u64), // (input, cached, output) — cumulative
+        last: (u64, u64, u64),  // this call's own usage
+    ) -> Value {
+        serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {
+                "input_tokens": total.0, "cached_input_tokens": total.1, "output_tokens": total.2,
+            },
+            "last_token_usage": {
+                "input_tokens": last.0, "cached_input_tokens": last.1, "output_tokens": last.2,
+            }
+        }}})
+    }
+
+    /// A forked/sub-agent thread's first cumulative reading carries the PARENT's entire
+    /// pre-fork history — priced already in the parent's own rollout. The first event must
+    /// bank only its own `last_token_usage`; from-zero banking over-counted 18 real forked
+    /// rollouts by ~$476 on one audited project.
+    #[test]
+    fn a_forked_threads_inherited_total_is_a_baseline_not_a_delta() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&turn_context("gpt-5.6"));
+        // First reading: total stands at 1,000,000 inherited + this call's own 1,000/400/50.
+        acc.push(&token_count_with_last(
+            (1_001_000, 400, 50),
+            (1_000, 400, 50),
+        ));
+        // Second reading advances the total by its own last — ordinary delta banking.
+        acc.push(&token_count_with_last(
+            (1_003_000, 1_200, 80),
+            (2_000, 800, 30),
+        ));
+        let m = acc.finish();
+        assert_eq!(
+            m.input_tokens, 1_800,
+            "own uncached input only: (1000-400)+(2000-800)"
+        );
+        assert_eq!(m.cache_read_tokens, 1_200);
+        assert_eq!(m.output_tokens, 80);
+    }
+
+    /// The baseline is established ONCE: a resumed fold must not re-baseline against the
+    /// first post-checkpoint event (that would drop the delta since the checkpoint), so
+    /// `seen_usage` rides the cursor.
+    #[test]
+    fn the_fork_baseline_is_not_reapplied_after_a_cursor_round_trip() {
+        let mut head = CodexMetricsAcc::default();
+        head.push(&turn_context("gpt-5.6"));
+        head.push(&token_count_with_last(
+            (1_001_000, 400, 50),
+            (1_000, 400, 50),
+        ));
+        let cursor = head.state();
+
+        let mut tail = CodexMetricsAcc::default();
+        tail.restore(&cursor);
+        tail.push(&token_count_with_last(
+            (1_003_000, 1_200, 80),
+            (2_000, 800, 30),
+        ));
+        let m = tail.finish();
+        // Same figures as the unbroken fold above — the resume neither re-banks the
+        // inherited total nor re-baselines away the checkpointed delta.
+        assert_eq!(m.input_tokens, 1_800);
+        assert_eq!(m.cache_read_tokens, 1_200);
+        assert_eq!(m.output_tokens, 80);
     }
 
     /// #104, Codex side. Codex reports RUNNING TOTALS, so per-model attribution means banking
