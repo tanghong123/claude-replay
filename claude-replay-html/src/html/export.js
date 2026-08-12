@@ -2582,6 +2582,25 @@
   var curHit = null; // {rec, mark} — re-applied on rematerialization (postMat)
   function stepHit(dir) {
     if (!hitRecs.length) return;
+    // Continuing the SEQUENCE only makes sense while the reader is still at the current
+    // hit. If they moved — scrolled away, clicked a turn, jumped through the sidebar — the
+    // stored position is where the search was, not where they are, and "next" means next
+    // FROM HERE. So: current mark off-screen (or unmaterialized, which is the same fact
+    // seen by the virtualizer) ⇒ drop the sequence and re-enter through the viewport
+    // anchor below. On-screen keeps the sequence, so stepping match-to-match inside one
+    // screen never re-anchors out from under the reader.
+    if (navPos >= 0) {
+      var cur = document.querySelector("#stream mark.hl.cur");
+      var off = true;
+      if (cur) {
+        var cr = cur.getBoundingClientRect();
+        off = cr.bottom < 0 || cr.top > window.innerHeight;
+      }
+      if (off) {
+        navPos = -1;
+        navMark = -1;
+      }
+    }
     if (navPos < 0) {
       // Entering navigation: start from the viewport, not the top of the document. `k` is
       // the first hit record that BEGINS at or below the viewport top (stream coords) —
