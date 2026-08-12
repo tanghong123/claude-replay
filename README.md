@@ -272,6 +272,12 @@ URL fragment names the current machine so a bookmark points at it, and the dot b
 name is health this process polls (the tabs are cross-origin, so the browser can't ask them
 anything — this process can).
 
+One prompt is enough if you'd rather ask an agent: install the Skill with
+`./integrations/install-skill.sh monitor-fleet`, then `/monitor-fleet` in Claude Code or
+`$monitor-fleet` in Codex — see [`integrations/`](integrations/). Why this is a companion
+binary instead of a flag on the monitor is in
+[`design/monitor-fleet.md`](design/monitor-fleet.md).
+
 ## Develop
 
 It is **fully testable headless (no TTY)** — see [`CLAUDE.md`](CLAUDE.md).
