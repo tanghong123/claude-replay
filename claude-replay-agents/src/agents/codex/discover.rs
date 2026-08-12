@@ -300,10 +300,15 @@ fn first_user_snippet(path: &Path) -> String {
     fallback.unwrap_or_else(|| "(no user prompt)".to_string())
 }
 
-/// Every MAIN rollout in the Codex store, MACHINE-WIDE (#98): the dated
-/// `YYYY/MM/DD/rollout-*.jsonl` tree, minus sub-agent rollouts (their `session_meta` head
-/// names a subagent thread source — the same marker the picker snippet uses).
-pub(crate) fn store_transcripts_machine() -> Vec<PathBuf> {
+/// The archive Codex moves retired rollouts into (`~/.codex/archived_sessions`, flat).
+/// An archived session's spend is as real as a live one's — a machine-wide consumer
+/// that skipped it under-counted whole projects (measured: 144 files here).
+pub(crate) fn archived_dir() -> PathBuf {
+    codex_home().join("archived_sessions")
+}
+
+/// Every `rollout-*.jsonl` under `dir`, bounded to the dated tree's depth.
+fn rollout_files(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -316,31 +321,83 @@ pub(crate) fn store_transcripts_machine() -> Vec<PathBuf> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
-                && !head_is_subagent(&p)
             {
                 out.push(p);
             }
         }
     }
     let mut out = Vec::new();
-    walk(&sessions_dir(), 0, &mut out);
+    walk(dir, 0, &mut out);
     out
+}
+
+/// Every MAIN rollout in the Codex store, MACHINE-WIDE (#98): the dated
+/// `YYYY/MM/DD/rollout-*.jsonl` tree PLUS the flat archive, minus sub-agent rollouts
+/// (their `session_meta` head names a subagent thread source — the same marker the
+/// picker snippet uses).
+pub(crate) fn store_transcripts_machine() -> Vec<PathBuf> {
+    store_transcripts_machine_in(&[sessions_dir(), archived_dir()])
+}
+
+fn store_transcripts_machine_in(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|root| rollout_files(root))
+        .filter(|p| !head_is_subagent(p))
+        .collect()
+}
+
+/// Every SUB-AGENT rollout in the Codex store, MACHINE-WIDE, with its lineage:
+/// `(path, own session id, parent thread id)` — the complement of
+/// [`store_transcripts_machine`], for consumers that bank sub-agent spend onto the root
+/// session's account. A sub-agent head that names no parent is unattributable and is
+/// omitted (nothing to bank it on).
+pub(crate) fn subagent_transcripts_machine() -> Vec<(PathBuf, String, String)> {
+    subagent_transcripts_in(&[sessions_dir(), archived_dir()])
+}
+
+fn subagent_transcripts_in(roots: &[PathBuf]) -> Vec<(PathBuf, String, String)> {
+    roots
+        .iter()
+        .flat_map(|root| rollout_files(root))
+        .filter_map(|p| {
+            let (id, parent) = head_subagent_lineage(&p)?;
+            Some((p, id, parent?))
+        })
+        .collect()
 }
 
 /// Whether a rollout's HEAD marks it as a sub-agent thread — one bounded line read.
 fn head_is_subagent(path: &Path) -> bool {
+    head_subagent_lineage(path).is_some()
+}
+
+/// The head's sub-agent lineage — `(own session id, parent thread id)` — when the rollout
+/// at `path` IS a sub-agent thread. The SAME single-line read and the SAME marker
+/// ([`subagent_snippet`]) as the main-listing exclusion, deliberately: a file excluded
+/// from the main listing must be exactly the file this lineage listing surfaces, or a
+/// rollout falls between the two and its spend vanishes.
+fn head_subagent_lineage(path: &Path) -> Option<(String, Option<String>)> {
     use std::io::{BufRead, BufReader};
-    let Ok(f) = File::open(path) else {
-        return false;
-    };
+    let f = File::open(path).ok()?;
     let mut line = String::new();
-    if BufReader::new(f).read_line(&mut line).is_err() {
-        return false;
-    }
-    serde_json::from_str::<Value>(&line)
-        .ok()
-        .and_then(|v| subagent_snippet(&v))
-        .is_some()
+    BufReader::new(f).read_line(&mut line).ok()?;
+    let v = serde_json::from_str::<Value>(&line).ok()?;
+    subagent_snippet(&v)?;
+    let payload = v.get("payload")?;
+    // Prefer `id` over `session_id`: on real sub-agent heads `id` is the thread's OWN id
+    // while `session_id` carries the ROOT's (observed on Codex Desktop 0.147 rollouts).
+    let id = payload
+        .get("id")
+        .or_else(|| payload.get("session_id"))?
+        .as_str()?
+        .to_string();
+    let parent = payload
+        .pointer("/source/subagent/thread_spawn/parent_thread_id")
+        .or_else(|| payload.get("parent_thread_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((id, parent))
 }
 
 fn subagent_snippet(value: &Value) -> Option<String> {
@@ -803,19 +860,53 @@ mod tests {
         );
     }
 
-    /// The machine-wide walk (#98): main rollouts listed, SUB-AGENT rollouts excluded by
-    /// their `session_meta` head — the monitor's overview is main sessions only (§4.2).
+    /// The machine-wide walk (#98): main rollouts listed — from the dated tree AND the
+    /// flat archive — with SUB-AGENT rollouts excluded by their `session_meta` head; and
+    /// the lineage listing is the exact COMPLEMENT of the exclusion, preferring the
+    /// head's own `id` over `session_id` (which carries the ROOT's id on real heads).
     #[test]
     fn store_walk_lists_main_rollouts_and_skips_subagents() {
         let fixture = Fixture::new();
         let cwd = fixture.root.join("repo");
         let main = fixture.rollout_with_user("m1", &cwd, "build the thing");
-        let sub = fixture.subagent_rollout("s1", &cwd, "agents/reviewer");
-        std::env::set_var("CODEX_SESSIONS_DIR", &fixture.sessions);
-        let got = store_transcripts_machine();
-        std::env::remove_var("CODEX_SESSIONS_DIR");
+        let sub = fixture.related_rollout("s1", &cwd, "m1", "agents/reviewer");
+        // The flat archive: a retired MAIN session (its spend and row are as real as a
+        // live one's) and a retired sub-agent whose head carries BOTH ids — `id` is the
+        // thread's OWN, `session_id` the root's (observed on Codex Desktop 0.147).
+        let archive = fixture.root.join("archived_sessions");
+        fs::create_dir_all(&archive).unwrap();
+        let arch_main = archive.join("rollout-a1.jsonl");
+        fs::write(
+            &arch_main,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"a1\",\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+        let arch_sub = archive.join("rollout-s2.jsonl");
+        fs::write(
+            &arch_sub,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s2\",\"session_id\":\"m1\",\"thread_source\":\"subagent\",\"parent_thread_id\":\"s1\",\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+
+        let roots = [fixture.sessions.clone(), archive];
+        let got = store_transcripts_machine_in(&roots);
         assert!(got.contains(&main), "main rollout listed: {got:?}");
-        assert!(!got.contains(&sub), "subagent rollout excluded: {got:?}");
+        assert!(got.contains(&arch_main), "archived main listed: {got:?}");
+        assert!(
+            !got.contains(&sub) && !got.contains(&arch_sub),
+            "subagent rollouts excluded: {got:?}"
+        );
+
+        let mut lineage = subagent_transcripts_in(&roots);
+        lineage.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(
+            lineage,
+            vec![
+                (sub, "s1".to_string(), "m1".to_string()),
+                (arch_sub, "s2".to_string(), "s1".to_string()),
+            ],
+            "lineage is the complement of the main listing, own id preferred"
+        );
     }
 
     #[test]

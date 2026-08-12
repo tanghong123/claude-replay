@@ -141,6 +141,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::codex::discover::store_transcripts_machine()
     }
+    fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
+        crate::agents::codex::discover::subagent_transcripts_machine()
+    }
 
     fn agent(&self) -> Agent {
         Agent::CODEX

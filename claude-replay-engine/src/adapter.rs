@@ -275,6 +275,19 @@ pub trait TranscriptAdapter: Sync {
         Vec::new()
     }
 
+    /// Every SUB-AGENT transcript in this agent's store, MACHINE-WIDE, with its lineage:
+    /// `(path, own session id, parent thread id)`. The scan surface
+    /// ([`store_transcripts`](Self::store_transcripts)) deliberately excludes sub-agents
+    /// from rows — but their usage is real spend, and a cost consumer that only folds main
+    /// transcripts under-reports by whatever the sub-agents burned (measured on one Codex
+    /// project: 95% of the total). The parent id is what lets the consumer bank each
+    /// sub-agent's cost onto the ROOT session's account, chasing parent ids for nested
+    /// spawns. Defaulted empty: an agent whose sub-agent activity lives INSIDE the main
+    /// transcript (Claude's sidechains) has nothing separate to report.
+    fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
+        Vec::new()
+    }
+
     /// Whether this agent's sessions are ANCHORED to a workspace — a repo or working
     /// directory that identifies them (#98 §4.2). A monitor groups anchored agents'
     /// sessions by project; a desktop-collaboration agent (QoderWork) whose cwd is noise
