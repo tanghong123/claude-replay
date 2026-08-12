@@ -665,6 +665,79 @@ is one line, not an excavation.
 - *Must `Presentation` become an open id?* Not for this (§10) — the monitor reuses
   `Presentation::HTML` at its own root, and the root already isolates it.
 
+## 14. Cost — the ledger revision (2026-08-12)
+
+Cost used to be a counter like any other: read from a visited entry's meta stream, absent
+otherwise. An audit against one real project (lumen) showed why that cannot stand for THIS
+number: the rail showed **$120.95 of an actual $2,420.65 — 5%**. Three causes, in size order:
+sub-agent rollouts carry ~95% of the project's spend and were rolled up nowhere (they are not
+rows — §13.2 — and no row claimed their cost); the main sessions' own cost was gated on visits
+and 551 of 556 sessions had never been opened; and usage a rollout reports before naming a
+model was priced $0 by the monitor's own per-model re-derivation. Every other counter degrades
+gracefully when it is missing — "tbd" on an unvisited row is honest. A COST that silently
+reads 5% of reality is not a degraded answer; it is a wrong one, on the one number people
+quote out of the page.
+
+So cost moved off the meta stream onto its own ledger (`claude-monitor/src/cost.rs`):
+
+- **Mechanism.** The engine's resumable metrics fold (#14, `MetricsFold`) — a line scan that
+  folds only `token_count`-class records and stops at a serializable cursor. Pricing goes
+  through the accumulator's `finish()`, so attribution rules (the blank-model bucket claimed
+  by the first model named, #16) live in one place and the $0-blank-bucket bug cannot recur.
+- **Why this is a carve-out from R7, not a violation.** R7 bans the BLOCK fold, whose cost is
+  proportional to a transcript's full content on every load. The metrics fold reads each byte
+  once EVER: cursors persist at the monitor's own root (`<cache_root>/costs/`, R5), so every
+  later cycle costs a `stat` for a quiet file and the appended bytes for a growing one.
+  Measured cold: 837 files / 1.45 GB in ~3 s — and a per-cycle fresh-byte budget (256 MiB)
+  spreads even that across a few polls, so the first paint never stalls. No durable entry is
+  produced, so §3's no-sweep rule keeps its point: serving is still what writes entries.
+- **Sub-agent roll-up.** The adapter surface grew the complement of `store_transcripts`:
+  `store_subagent_transcripts` lists `(path, own id, parent thread id)` — same single-line
+  head read, same marker as the main-listing exclusion, so no rollout can fall between the
+  two listings. The scan prices each sub-agent rollout and chases `parent_thread_id` up
+  (a parent may itself be a sub-agent; 64-hop cap, as `family_root`) to the main row, which
+  reports `cost` (total) and `costSubs` (the rolled-up share). The overview stays
+  main-sessions-only (§13.2); it is the *money* that rolls up, not the rows.
+- **The archive.** `~/.codex/archived_sessions` joins the dated tree in both listings — an
+  archived session's spend is as real as a live one's, and it is a row at all now.
+
+The numbers stay **equivalent-API dollars** — Codex under a ChatGPT plan bills $0; the figure
+is what the same tokens would cost at API list price, and `costPartial` marks a mix containing
+a model the price table does not know (a `≥` lower bound, never a guess).
+
+### 14.1 Three scopes, three numbers
+
+The page now shows cost at three scopes, and they are *supposed* to differ — a reader who
+sums one against another is comparing different populations, not catching a bug:
+
+- **The detail pane's USAGE** is ONE transcript: the opened session's own tokens, nothing
+  rolled in. A root session that spent $70 itself shows $70 here even when its sub-agents
+  spent ten times that.
+- **The session row** is the TASK TREE: the root transcript plus every sub-agent rollout
+  whose `parent_thread_id` chain reaches it (§14's roll-up), reported as `cost` with
+  `costSubs` naming the delegated share. The same $70 session with $661 of sub-agent work
+  is a $731 row.
+- **The group header** is the PROJECT: the sum of its root rows. Sub-agents are already
+  inside their roots' rows, so the group adds nothing twice.
+
+A `≥` prefix on any of these is `costPartial` (above) — most commonly a LIVE session whose
+newest segment has not yet named a model, so its tokens cannot be priced *yet*. The figure
+is a lower bound that catches up on a later poll, never a guess.
+
+### 14.2 A metrics change bumps `FOLD_VERSION` too
+
+The rule used to read "bump on block-output changes." The ledger revision proved it is
+broader: a durable entry's meta stream persists the token DELTAS its drain observed, so a
+metrics-accumulator fix (the blank-model bucket, the fork-baseline double count) leaves the
+WRONG history in every already-written stream. The version gate is what decides whether a
+resume trusts that history — with `FOLD_VERSION` unbumped, the fixed binary spliced its
+correct increments onto the old binary's inflated base and served the sum as truth: one
+audited session showed **7.47 B cache-read tokens (~$1,177) off a 437 MB transcript whose
+real usage was 437 M (~$70)**. No amount of redeploying fixed code changes a cached number
+the code is told to trust. The bump (v6) forces a cold refold under the fixed accumulator;
+the byte-identical gate catches block-output changes, but a metrics change is invisible to
+it — the reviewer has to remember this rule, which is why it is written here.
+
 ## Rejected
 
 | shape | why |

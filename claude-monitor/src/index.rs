@@ -1,9 +1,13 @@
 //! The monitor's index: scan → diff → card → state → one JSON snapshot for the rail.
 //!
-//! Everything here respects the two prohibitions the design is built on (#98): **no fold on
-//! the index path** (R7 — rows are born from bounded reads; counters come from visited
-//! sessions' meta streams, read lock-free) and **no background sweep** (§3 — the durable
-//! entry for a session is written by SERVING it, never by the monitor itself).
+//! Everything here respects the two prohibitions the design is built on (#98): **no BLOCK
+//! fold on the index path** (R7 — rows are born from bounded reads; counters come from
+//! visited sessions' meta streams, read lock-free) and **no background sweep** (§3 — the
+//! durable entry for a session is written by SERVING it, never by the monitor itself).
+//! COST is the one deliberate carve-out (§14): it comes from the engine's cursor-resumable
+//! metrics fold via [`crate::cost::CostLedger`] — bounded, budgeted, and never producing a
+//! durable entry — because cost gated on visits under-reported a project 20× (measured:
+//! $121 shown of $2,421 real).
 
 use anyhow::Result;
 use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
@@ -65,6 +69,15 @@ struct State {
     /// the monitor's OWN root (the same place visited entries are written) — it never touches
     /// an agent's data or a terminal, so it stays inside the read-only contract (R8).
     ignored: BTreeSet<String>,
+    /// The cost ledger (§14) — every session's equivalent-API cost, folded incrementally
+    /// through `MetricsCursor`s persisted at the monitor's own root. Lazily built on the
+    /// first scan because it needs `cache_root`.
+    ledger: Option<crate::cost::CostLedger>,
+    /// Sub-agent spend banked onto each ROOT row's sid (§14): a sub-agent rollout is not a
+    /// row (it is excluded from `store_transcripts`), but its cost is real — measured 95%
+    /// of one project's total — so the scan prices every sub-agent transcript and chases
+    /// `parent_thread_id` up to the main session that spawned it.
+    sub_costs: HashMap<String, f64>,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -106,6 +119,9 @@ struct Row {
     /// Title re-derives when the transcript mtime moves past this (§4.1 under lazy: the
     /// mtime IS the refresh trigger).
     title_mtime: Option<SystemTime>,
+    /// The ledger's answer for this session's OWN transcript, `(cost, partial)` (§14).
+    /// Kept on the row so a cycle whose budget defers the fold still shows the last price.
+    cost: Option<(f64, bool)>,
 }
 
 #[derive(Clone)]
@@ -114,7 +130,6 @@ struct Counters {
     tools: usize,
     subs: usize,
     child_running: bool,
-    cost: Option<f64>,
 }
 
 /// One process, with the session-mapping and terminal facts #112's link resolution
@@ -285,6 +300,7 @@ impl Index {
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
+                    cost: None,
                 });
                 // The mtime is only the TRIGGER. Growth — and the activity clock — come
                 // from the transcript's CONTENT: an attached idle client touches the file
@@ -355,6 +371,61 @@ impl Index {
         }
         // Presence comes from the scan (§13): a deleted transcript's row vanishes.
         st.rows.retain(|sid, _| seen.contains(sid));
+
+        // ── The cost pass (§14, cost.rs) ─────────────────────────────────────────────
+        // Budgeted per CYCLE across all files: a cold start streams prices in over a few
+        // polls instead of stalling the first paint; steady-state appends are a few KiB
+        // and never feel the cap. A deferred fold keeps the row's previous price.
+        let mut budget = crate::cost::COST_BUDGET_BYTES;
+        let ledger = st
+            .ledger
+            .get_or_insert_with(|| crate::cost::CostLedger::new(&self.cache_root));
+        for row in st.rows.values_mut() {
+            if let Some(c) = ledger.cost(row.agent, &row.path, &mut budget) {
+                row.cost = Some(c);
+            }
+        }
+        // Sub-agent roll-up (§14): price every sub-agent rollout and bank it on the MAIN
+        // row that (transitively) spawned it. Rows are keyed by file STEM while a rollout
+        // names its parent by bare uuid, so the uuid embedded in each stem is the bridge;
+        // and a parent may itself be a sub-agent, so the chain is chased — with the same
+        // 64-hop cap as `family_root` — until it lands on a row.
+        let mut root_of: HashMap<String, String> = HashMap::new();
+        for sid in st.rows.keys() {
+            if let Some(u) = trailing_uuid(sid) {
+                root_of.insert(u, sid.clone());
+            }
+        }
+        st.sub_costs.clear();
+        for a in adapters() {
+            if !self.only.is_empty() && !self.only.contains(&a.agent()) {
+                continue;
+            }
+            let subs = a.store_subagent_transcripts();
+            let parent: HashMap<&str, &str> = subs
+                .iter()
+                .map(|(_, own, up)| (own.as_str(), up.as_str()))
+                .collect();
+            for (path, _own, first_up) in &subs {
+                let mut cur = first_up.as_str();
+                let mut root = None;
+                for _ in 0..64 {
+                    if let Some(stem) = root_of.get(cur) {
+                        root = Some(stem.clone());
+                        break;
+                    }
+                    match parent.get(cur) {
+                        Some(&next) if next != cur => cur = next,
+                        _ => break, // dangling lineage: its spend has no row to land on
+                    }
+                }
+                let Some(root) = root else { continue };
+                if let Some((c, _)) = ledger.cost(a.agent(), path, &mut budget) {
+                    *st.sub_costs.entry(root).or_default() += c;
+                }
+            }
+        }
+
         self.prove_by_growth(st);
 
         st.snapshot = self.assemble(st);
@@ -604,8 +675,19 @@ impl Index {
                 j["tools"] = json!(c.tools);
                 j["subs"] = json!(c.subs);
                 j["child"] = json!(c.child_running);
-                if let Some(cost) = c.cost {
-                    j["cost"] = json!(cost);
+            }
+            // Cost from the LEDGER (§14), not the visit-gated meta stream: the row's own
+            // transcript plus every sub-agent rollout banked on it. `costPartial` says some
+            // model in the mix was unpriced — the number is a `≥` lower bound.
+            let own = row.cost.map(|(c, _)| c).unwrap_or(0.0);
+            let sub = st.sub_costs.get(sid).copied().unwrap_or(0.0);
+            if row.cost.is_some() || sub > 0.0 {
+                j["cost"] = json!(own + sub);
+                if sub > 0.0 {
+                    j["costSubs"] = json!(sub);
+                }
+                if row.cost.is_some_and(|(_, partial)| partial) {
+                    j["costPartial"] = json!(true);
                 }
             }
 
@@ -616,9 +698,7 @@ impl Index {
                 secondary,
                 ..Default::default()
             });
-            if let Some((_, c)) = &row.counters {
-                g.cost += c.cost.unwrap_or(0.0);
-            }
+            g.cost += own + sub;
             g.latest = g.latest.max(mtime_secs);
             g.growing += usize::from(state == "growing");
             g.idle += usize::from(state == "idle");
@@ -792,13 +872,11 @@ fn fold_counters(dir: &Path) -> Option<Counters> {
     for r in reader {
         mm.push(&r);
     }
-    let (cost, _partial) = metrics::total_cost(&mm.tokens);
     Some(Counters {
         turns: mm.session_meta.turns,
         tools: mm.session_meta.tools,
         subs: mm.session_meta.children.len(),
         child_running: mm.session_meta.children.iter().any(|c| c.running),
-        cost,
     })
 }
 
@@ -881,6 +959,14 @@ fn link(
 fn has_uuid(s: &str) -> bool {
     s.split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
         .any(is_uuid)
+}
+
+/// The UUID a row's file STEM ends with — a Codex stem is `rollout-<ts>-<uuid>` and a
+/// Claude stem is bare. This is the bridge the sub-agent roll-up needs (§14): a rollout
+/// names its parent by bare uuid, but the index keys rows by stem.
+fn trailing_uuid(stem: &str) -> Option<String> {
+    let tail = stem.len().checked_sub(36).and_then(|i| stem.get(i..))?;
+    is_uuid(tail).then(|| tail.to_string())
 }
 
 fn is_uuid(t: &str) -> bool {
@@ -1498,6 +1584,93 @@ mod tests {
             "active bucket (by name, mtime-blind) above stale (by recency)"
         );
 
+        // ── Cost (§14): the ledger prices WITHOUT a visit, rolls sub-agents up, and sees
+        // the archive ─────────────────────────────────────────────────────────────────
+        // A Codex fixture store: a main rollout in the dated tree whose usage lands
+        // BEFORE any model is named (the blank-model bucket — priced via the
+        // accumulator's finish() attribution, #16); a sub-agent under it; that
+        // sub-agent's OWN sub-agent retired into the flat archive (the roll-up must
+        // chase the chain); and an archived MAIN session, which must be a row at all.
+        let codex = base.join("codex");
+        let dated = codex.join("sessions/2026/08/12");
+        let archive = codex.join("archived_sessions");
+        std::fs::create_dir_all(&dated).unwrap();
+        std::fs::create_dir_all(&archive).unwrap();
+        let meta_main = |id: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-08-12T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/codex-repo\"}}}}\n"
+            )
+        };
+        let meta_sub = |id: &str, parent: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-08-12T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/codex-repo\",\"thread_source\":\"subagent\",\"parent_thread_id\":\"{parent}\"}}}}\n"
+            )
+        };
+        let usage_1m = "{\"timestamp\":\"2026-08-12T01:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000000,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n";
+        let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6\"}}\n";
+        let main_id = "eeeeeeee-0000-0000-0000-00000000000e";
+        let sub1 = "eeeeeeee-1111-0000-0000-00000000000e";
+        let sub2 = "eeeeeeee-2222-0000-0000-00000000000e";
+        let arch_id = "ffffffff-0000-0000-0000-00000000000f";
+        // Main: usage FIRST, model named after — $1.25 only if the blank bucket is
+        // attributed, $0 under the old per-model re-derivation.
+        std::fs::write(
+            dated.join(format!("rollout-2026-08-12T01-00-00-{main_id}.jsonl")),
+            format!("{}{usage_1m}{named}", meta_main(main_id)),
+        )
+        .unwrap();
+        std::fs::write(
+            dated.join(format!("rollout-2026-08-12T01-00-10-{sub1}.jsonl")),
+            format!("{}{named}{usage_1m}", meta_sub(sub1, main_id)),
+        )
+        .unwrap();
+        std::fs::write(
+            archive.join(format!("rollout-2026-08-12T01-00-20-{sub2}.jsonl")),
+            format!("{}{named}{usage_1m}", meta_sub(sub2, sub1)),
+        )
+        .unwrap();
+        std::fs::write(
+            archive.join(format!("rollout-2026-08-12T01-01-00-{arch_id}.jsonl")),
+            format!("{}{named}{usage_1m}", meta_main(arch_id)),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(2100));
+        let v: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
+        let row = |id: &str| -> Value {
+            v["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["rows"].as_array().unwrap().clone())
+                .find(|r| r["id"].as_str().unwrap().ends_with(id))
+                .unwrap_or_else(|| panic!("row for {id}"))
+        };
+        let main = row(main_id);
+        assert_eq!(main["visited"], false, "never visited, yet priced: {main}");
+        assert!(
+            (main["cost"].as_f64().unwrap() - 3.75).abs() < 1e-9,
+            "own $1.25 (blank bucket attributed) + two sub-agents chased to the root: {main}"
+        );
+        assert!(
+            (main["costSubs"].as_f64().unwrap() - 2.50).abs() < 1e-9,
+            "the sub-agent share is named: {main}"
+        );
+        let archived = row(arch_id);
+        assert!(
+            (archived["cost"].as_f64().unwrap() - 1.25).abs() < 1e-9,
+            "an archived session is a row, and priced: {archived}"
+        );
+        let codex_group = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["label"] == "codex-repo")
+            .expect("codex group");
+        assert_eq!(
+            codex_group["metaLine"], "$5.00 · 2",
+            "the group sums own + rolled-up spend"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
     /// The session START (#129) is found even when the transcript opens with a wall of
@@ -1699,6 +1872,7 @@ mod tests {
             grew_at: growing.then(Instant::now),
             counters: None,
             title_mtime: None,
+            cost: None,
         }
     }
 

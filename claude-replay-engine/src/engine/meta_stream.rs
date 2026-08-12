@@ -48,7 +48,13 @@ pub const COMPACT_AFTER: usize = 256;
 ///
 /// The byte-identical gate is what catches a change that needs a bump: an intentional output
 /// change re-baselines the gate, and that is the moment to bump here too.
-pub const FOLD_VERSION: u16 = 5;
+///
+/// **Metrics changes need a bump too**, not just block changes: every meta record persists the
+/// token DELTAS its drain observed, so an accumulator fix (v6: the blank-model bucket and the
+/// fork-baseline double count) leaves the wrong history in every cached stream. Resuming such
+/// a stream keeps serving the inflated totals forever — one audited session showed 7.47B
+/// cache-read tokens off a 437M transcript. A bump refolds cold, with the fixed accumulator.
+pub const FOLD_VERSION: u16 = 6;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
