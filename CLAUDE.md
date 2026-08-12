@@ -31,6 +31,18 @@ repository, exactly as it did in the system temp. A test that spawns a `tmux`
 server must hold the `Server` Drop guard (`tests/tmux_smoke.rs`), or a failed
 assertion strands the server and whatever runs inside it.
 
+## Releasing
+After each completed CODE task (docs/design-only changes need no release): bump
+`[workspace.package] version` in the root Cargo.toml, `cargo build` to refresh
+Cargo.lock, commit, annotated signed tag (`git tag -a vX.Y.Z -m "..."`), push
+`origin main` then the tag — the tag push triggers the Release workflow, which
+publishes binaries and bumps the Homebrew tap. **Then mirror**: `git push alibaba
+main --tags` (the internal remote at code.alibaba-inc.com:project-h/claude-replay;
+its server-side push rule accepts the repo's gmail history, and the pre-push
+hook scans only commits origin does not already have, so mirror pushes are
+instant). Verify the commit really landed before tagging — a failed commit with
+the tag commands still running once shipped a tag pointing at the wrong commit.
+
 ## Merging external PRs
 CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
 needs its workflow runs approved in the GitHub UI, and until they run, the email
