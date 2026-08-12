@@ -613,7 +613,10 @@ of it and should keep needing none of it.
 
 - Not a scheduler or supervisor — `agent-jdi` owns unattended runs.
 - Not a second renderer; the session view is the existing HTML frontend.
-- Not multi-machine. Everything assumes one filesystem and one process table.
+- Not multi-machine. Everything assumes one filesystem and one process table. Several machines on
+  one page is `design/monitor-fleet.md`: a separate binary that takes §6.3's deal — N of these
+  monitors composed at the document level, each still loopback-only, reached over the SSH tunnel
+  §11 names. This crate is unchanged by it and gains no flag.
 - Not an auth boundary. §11's answer to "who can see this" is "whoever is on this machine".
 
 ## 13. Open questions
