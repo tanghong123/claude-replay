@@ -162,7 +162,11 @@ fn main() -> Result<()> {
                      USAGE: claude-monitor [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
                      Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
                      Cache root: $CLAUDE_MONITOR_CACHE, else ~/.cache/claude-monitor —\n\
-                     never the viewer's (R5)."
+                     never the viewer's (R5).\n\n\
+                     Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
+                     Extend with $CLAUDE_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
+                     argv:<substring>, or a bare <name> (a basename). Wrapper launches need argv:,\n\
+                     e.g. \"argv:npx codex,argv:node_modules/.bin/codex,basename:my-agent\"."
                 );
                 return Ok(());
             }

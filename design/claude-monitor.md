@@ -353,6 +353,18 @@ own tool shells carry `claude` in theirs), and do not read `comm` from a bulk `p
 truncates `/Users/hong/.local/bin/claude` to `/Users/hong/.loc`, dropping every agent launched by
 absolute path — this cost #99's prototype 2 of 4 resolvable sessions).
 
+**Recognition is extensible, and the extension keeps the argv trap closed.** The built-in
+basenames are `claude`, `codex`, `qoderwork`, `qoder`; a wrapper launch (`npx codex`,
+`node ./node_modules/.bin/codex`) has an interpreter's basename and is therefore invisible to
+them. `$CLAUDE_MONITOR_AGENT_PATTERNS` adds patterns, comma-separated: `basename:<name>`,
+`argv:<substring>`, or a bare `<name>` — which means `basename:`, not "either". The bare form has
+to be the safe one, because the paragraph above is exactly what an argv substring risks: a loose
+`node` or `codex` claims tool shells and helper processes as agents, and every consumer downstream
+(the growth proof, the cwd heuristic) then picks among candidates that were never agents. Matching
+a command line is available, but it has to be asked for by name. The variable is read ONCE per run:
+the check runs for every process in the table on every refresh, and the value cannot change
+mid-run.
+
 ## 6. Reusing the HTML presentation (R10)
 
 The page the owner wants is **a thin left rail listing sessions, plus today's session view**. So

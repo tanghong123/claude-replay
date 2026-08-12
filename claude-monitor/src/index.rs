@@ -389,10 +389,9 @@ impl Index {
             if sids.len() != 1 {
                 continue; // two sessions writing in one directory prove nothing
             }
-            let mut cands = st
-                .procs
-                .iter()
-                .filter(|p| is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd.as_str()));
+            let mut cands = st.procs.iter().filter(|p| {
+                is_agent_exe(&p.exe_base, &p.argv) && p.cwd.as_deref() == Some(cwd.as_str())
+            });
             let (Some(p), None) = (cands.next(), cands.next()) else {
                 continue; // zero or several candidates — no forced pairing
             };
@@ -858,7 +857,9 @@ fn link(
         if let Some(p) = procs
             .iter()
             .filter(|p| {
-                is_agent_exe(&p.exe_base) && p.cwd.as_deref() == Some(cwd) && !has_uuid(&p.argv)
+                is_agent_exe(&p.exe_base, &p.argv)
+                    && p.cwd.as_deref() == Some(cwd)
+                    && !has_uuid(&p.argv)
             })
             .max_by_key(|p| {
                 let host = match Terminal::of(p) {
@@ -890,8 +891,68 @@ fn is_uuid(t: &str) -> bool {
         })
 }
 
-fn is_agent_exe(base: &str) -> bool {
-    matches!(base, "claude" | "codex" | "qoderwork" | "qoder")
+/// Environment variable holding extra agent-recognition patterns, comma-separated. Each entry
+/// is `basename:<name>`, `argv:<substring>`, or a bare `<name>` (same as `basename:`).
+const AGENT_PATTERNS_ENV: &str = "CLAUDE_MONITOR_AGENT_PATTERNS";
+
+/// What an extra recognition pattern is matched against.
+///
+/// A bare entry means the BASENAME, deliberately: an argv substring is the loose end here —
+/// `node` or `sh` would claim every shell on the machine as an agent, and everything
+/// downstream (the growth proof, the cwd heuristic) then has a phantom candidate to pick
+/// among — so widening a pattern to the whole command line has to be asked for by name.
+enum AgentPattern {
+    /// Executable basename, compared case-insensitively like the built-ins.
+    Basename(String),
+    /// Substring of the full command line — the only way to see a wrapper whose basename is
+    /// the interpreter (`npx codex`, `node ./node_modules/.bin/codex`).
+    Argv(String),
+}
+
+impl AgentPattern {
+    /// Parse the variable's value. Entries are comma-separated with no escape, so a pattern
+    /// cannot contain a comma; match either side of it instead. Empty entries are skipped so
+    /// a trailing comma is harmless.
+    fn parse(spec: &str) -> Vec<Self> {
+        spec.split(',')
+            .filter_map(|entry| {
+                let entry = entry.trim();
+                let (make, value): (fn(String) -> Self, &str) = match entry.split_once(':') {
+                    Some(("argv", v)) => (Self::Argv, v.trim()),
+                    Some(("basename", v)) => (Self::Basename, v.trim()),
+                    _ => (Self::Basename, entry),
+                };
+                (!value.is_empty()).then(|| make(value.to_string()))
+            })
+            .collect()
+    }
+
+    fn matches(&self, exe_base: &str, argv: &str) -> bool {
+        match self {
+            Self::Basename(name) => exe_base.eq_ignore_ascii_case(name),
+            Self::Argv(needle) => argv.contains(needle.as_str()),
+        }
+    }
+}
+
+/// The parsed patterns, read ONCE. `is_agent_exe` is called for every process in the table on
+/// every refresh, and re-reading plus re-splitting the variable each time would pay that cost
+/// for an answer that cannot change within a run.
+fn extra_agent_patterns() -> &'static [AgentPattern] {
+    static PATTERNS: std::sync::OnceLock<Vec<AgentPattern>> = std::sync::OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        std::env::var(AGENT_PATTERNS_ENV)
+            .map(|spec| AgentPattern::parse(&spec))
+            .unwrap_or_default()
+    })
+}
+
+fn is_agent_exe(exe_base: &str, argv: &str) -> bool {
+    const BUILTINS: &[&str] = &["claude", "codex", "qoderwork", "qoder"];
+    BUILTINS.iter().any(|b| exe_base.eq_ignore_ascii_case(b))
+        || extra_agent_patterns()
+            .iter()
+            .any(|p| p.matches(exe_base, argv))
 }
 
 /// The process table (full `command=` argv — NEVER bulk `comm=`, which truncates absolute
@@ -910,7 +971,7 @@ fn scan_procs() -> Vec<Proc> {
     let mut procs = parse_ps(&run(&["ps", "-axo", "pid=,command="]));
     let agent_pids: Vec<String> = procs
         .iter()
-        .filter(|p| is_agent_exe(&p.exe_base))
+        .filter(|p| is_agent_exe(&p.exe_base, &p.argv))
         .map(|p| p.pid.to_string())
         .collect();
     if agent_pids.is_empty() {
@@ -1783,5 +1844,38 @@ n/Users/x/proj
             l.pid, 700,
             "ties break on pid, whatever order ps listed them"
         );
+    }
+
+    #[test]
+    fn is_agent_exe_recognizes_the_builtin_basenames_only() {
+        assert!(is_agent_exe("claude", "claude"));
+        assert!(is_agent_exe("codex", "codex --model gpt-5"));
+        assert!(is_agent_exe("qoderwork", "qoderwork"));
+        assert!(is_agent_exe("qoder", "qoder"));
+        // A wrapper is NOT an agent without a configured pattern: the interpreter's basename
+        // says nothing, and matching its command line by default would claim every `node`.
+        assert!(!is_agent_exe("npx", "npx codex --model gpt-5"));
+        assert!(!is_agent_exe("node", "node ./node_modules/.bin/codex"));
+    }
+
+    #[test]
+    fn agent_patterns_parse_by_kind_and_default_to_basename() {
+        // The parsed form is tested directly rather than through $CLAUDE_MONITOR_AGENT_PATTERNS:
+        // the variable is read once per process, and a test that mutates the environment would
+        // race every other test in the binary for a value none of them can restore in time.
+        let pats = AgentPattern::parse("argv:npx codex, basename:my-agent ,my-other-agent, ,");
+        assert_eq!(pats.len(), 3, "empty entries are skipped");
+
+        // argv: sees the wrapper's command line, whatever the interpreter is called.
+        assert!(pats[0].matches("npx", "npx codex --model gpt-5"));
+        assert!(!pats[0].matches("npx", "npx tsc"));
+
+        // basename: stays out of the command line entirely.
+        assert!(pats[1].matches("MY-AGENT", "anything"), "case-insensitive");
+        assert!(!pats[1].matches("bash", "bash /usr/local/bin/my-agent"));
+
+        // A bare entry is a basename, not a substring of argv.
+        assert!(pats[2].matches("my-other-agent", ""));
+        assert!(!pats[2].matches("bash", "bash /usr/local/bin/my-other-agent"));
     }
 }
