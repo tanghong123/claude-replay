@@ -227,6 +227,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-monitor-fleet"
+version = "1.65.0"
+dependencies = [
+ "anyhow",
+ "claude-replay-html",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "claude-replay"
 version = "1.65.0"
 dependencies = [

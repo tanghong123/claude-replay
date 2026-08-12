@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<!--
+  The fleet page. Composition at the document level, the same doctrine as claude-monitor's own
+  rail (#98 §6.3): this file renders a switcher and nothing else, and each environment is the
+  UNMODIFIED monitor page from that machine inside an <iframe>. No route of theirs is proxied,
+  no markup of theirs is reinterpreted, so a monitor that changes shape keeps working here.
+
+  Cross-origin by construction — every tab is a different loopback port — so nothing here can
+  read into a frame, and nothing needs to: the health strip comes from this server, which probes
+  each forward itself.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent fleet</title>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --line: #2c313b; --ink: #d7dae0;
+    --dim: #8b929e; --live: #4ec9a0; --dead: #e06c6c; --wait: #d2a24c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; align-items: stretch; gap: 2px; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 0 8px; overflow-x: auto; flex: none; }
+  .tab { display: flex; align-items: center; gap: 7px; padding: 8px 12px; border: 0;
+    background: transparent; color: var(--dim); font: inherit; cursor: pointer;
+    border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--live); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--wait); flex: none; }
+  .dot.up { background: var(--live); }
+  .dot.down { background: var(--dead); }
+  .key { color: var(--dim); font-size: 11px; opacity: .65; }
+  .via { color: var(--dim); font-size: 11px; }
+  .spacer { flex: 1 1 auto; }
+  .brand { display: flex; align-items: center; gap: 8px; color: var(--dim);
+    font-size: 11px; padding: 0 4px; white-space: nowrap; }
+  .brand a { color: var(--dim); }
+  main { position: relative; flex: 1 1 auto; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+  iframe[hidden] { display: none; }
+  .empty { padding: 32px; color: var(--dim); max-width: 62ch; }
+  .empty code { color: var(--ink); background: var(--panel); padding: 1px 5px; border-radius: 3px; }
+  .note { padding: 10px 14px; color: var(--dead); background: #2a1e1e;
+    border-bottom: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header id="tabs"></header>
+<div id="note" class="note" hidden></div>
+<main id="frames"></main>
+<script>
+// Written by the server: one entry per environment it actually brought up.
+const ENVS = {{ENVS}};
+const VERSION = "{{VERSION}}";
+
+const tabs = document.getElementById("tabs");
+const frames = document.getElementById("frames");
+const note = document.getElementById("note");
+let active = -1;
+
+function render() {
+  if (!ENVS.length) {
+    frames.innerHTML = '<div class="empty"><p>No environments are configured.</p>' +
+      '<p>Run <code>claude-monitor-fleet discover --add</code> to look through your own SSH ' +
+      'config for machines running a monitor, then <code>claude-monitor-fleet up</code>.</p></div>';
+    return;
+  }
+  ENVS.forEach((env, i) => {
+    const tab = document.createElement("button");
+    tab.className = "tab";
+    tab.setAttribute("role", "tab");
+    tab.id = "tab-" + i;
+    tab.innerHTML = '<span class="dot" id="dot-' + i + '"></span>';
+    const name = document.createElement("span");
+    name.textContent = env.name;
+    tab.appendChild(name);
+    const via = document.createElement("span");
+    via.className = "via";
+    via.textContent = env.via;
+    tab.appendChild(via);
+    if (i < 9) {
+      const key = document.createElement("span");
+      key.className = "key";
+      key.textContent = i + 1;
+      tab.appendChild(key);
+    }
+    tab.title = env.detail;
+    tab.onclick = () => show(i);
+    tabs.appendChild(tab);
+  });
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  tabs.appendChild(spacer);
+  const brand = document.createElement("span");
+  brand.className = "brand";
+  brand.textContent = "fleet " + VERSION;
+  tabs.appendChild(brand);
+  show(0);
+}
+
+// Frames are created on first view, not up front: N monitors polling at once is N times the work
+// on N machines, and the point of a tab strip is that you are looking at one of them.
+function show(i) {
+  if (i < 0 || i >= ENVS.length) return;
+  active = i;
+  ENVS.forEach((env, j) => {
+    const tab = document.getElementById("tab-" + j);
+    if (tab) tab.setAttribute("aria-selected", String(j === i));
+    let frame = document.getElementById("frame-" + j);
+    if (j === i && !frame) {
+      frame = document.createElement("iframe");
+      frame.id = "frame-" + j;
+      frame.src = env.url;
+      frame.title = env.name;
+      frames.appendChild(frame);
+    }
+    if (frame) frame.hidden = j !== i;
+  });
+  location.hash = encodeURIComponent(ENVS[i].name);
+}
+
+function reload() {
+  const frame = document.getElementById("frame-" + active);
+  if (frame) frame.src = frame.src;
+}
+
+async function health() {
+  try {
+    const state = await (await fetch("api/fleet", { cache: "no-store" })).json();
+    const down = [];
+    state.envs.forEach((s, i) => {
+      const dot = document.getElementById("dot-" + i);
+      if (dot) {
+        dot.classList.toggle("up", !!s.up);
+        dot.classList.toggle("down", !s.up);
+        dot.title = s.up ? "serving (HTTP " + s.code + ")" : (s.why || "not answering");
+      }
+      if (!s.up) down.push(s.name + ": " + (s.why || "not answering"));
+    });
+    note.hidden = down.length === 0;
+    note.textContent = down.join("  ·  ");
+  } catch (e) {
+    // The fleet process itself is gone — say so instead of showing stale green dots.
+    document.querySelectorAll(".dot").forEach(d => { d.classList.remove("up"); d.classList.add("down"); });
+    note.hidden = false;
+    note.textContent = "the fleet process is not answering — it may have exited";
+  }
+}
+
+document.addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key >= "1" && e.key <= "9") show(parseInt(e.key, 10) - 1);
+  else if (e.key === "[") show(active - 1);
+  else if (e.key === "]") show(active + 1);
+  else if (e.key === "r") reload();
+});
+
+render();
+// Restore the tab named in the URL, so a bookmark points at a machine and not just at the fleet.
+const want = decodeURIComponent(location.hash.slice(1));
+if (want) {
+  const i = ENVS.findIndex(e => e.name === want);
+  if (i >= 0) show(i);
+}
+health();
+setInterval(health, 5000);
+</script>
+</body>
+</html>
