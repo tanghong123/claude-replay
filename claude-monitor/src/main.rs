@@ -7,6 +7,7 @@
 //! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
 //! that entry's meta stream lock-free.
 
+mod cost;
 mod index;
 
 use anyhow::{Context, Result};

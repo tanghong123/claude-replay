@@ -267,13 +267,12 @@
       var pp=[];
       var span=fmtSpan(r.startTs,r.activityTs);
       if(span)pp.push(span);
-      if(r.visited){
-        if(r.subs)pp.push(r.subs+" sub");
-        if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
-      }
+      if(r.visited&&r.subs)pp.push(r.subs+" sub");
+      // §14: cost comes from the ledger, not the visit — an unopened session is priced too.
+      if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
       return pp.length?pp.join(" · "):"tbd";
     }
-    if(!r.visited)return "tbd";
+    if(!r.visited)return r.cost!=null?"$"+r.cost.toFixed(2):"tbd";
     var parts=[r.turns+" turns",r.tools+" tools"];
     if(r.subs)parts.push(r.subs+" sub");
     if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
