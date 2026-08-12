@@ -220,6 +220,64 @@ Codex integration is validated against CLI 0.145.0: authentication uses
 interactive takeover uses `codex resume`, and fresh-run identity is read from the
 JSON `thread.started.thread_id` event (with rollout-marker discovery as a fallback).
 
+## `claude-monitor-fleet` — several machines' monitors on one page
+
+The workspace also builds **`claude-monitor`**: one loopback page showing every agent
+session on *this* machine. It is single-machine on purpose and stays that way —
+**`claude-monitor-fleet`** is a separate binary that opens one SSH tunnel per machine
+and serves a switcher whose tabs are those monitors' own pages, unmodified, in iframes.
+
+```bash
+cargo install --path claude-monitor-fleet   # → ~/.cargo/bin/claude-monitor-fleet
+claude-monitor-fleet discover --add         # find the monitors you have, and keep them
+claude-monitor-fleet up                     # tunnels + the page, opened in your browser
+```
+
+That is the whole first run. `discover` without `--add` probes and writes nothing, and
+`up --discover` uses what it finds once without saving — either is a way to look before
+anything lands in the config.
+
+```bash
+claude-monitor-fleet up [--port N] [--no-open] [--discover]
+claude-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
+claude-monitor-fleet status     # probe the configured environments; open nothing
+claude-monitor-fleet list       # what is in the config
+claude-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
+claude-monitor-fleet remove NAME
+```
+
+**Nothing about your machines is assumed.** The config — `$CLAUDE_MONITOR_FLEET_CONFIG`,
+else `$XDG_CONFIG_HOME/claude-monitor/fleet.json`, else
+`~/.config/claude-monitor/fleet.json` — is a JSON file you can edit, and it **ships
+empty**: every host in it is one you or discovery put there. Each monitor's port is
+**read from that monitor's own lock** (`<cache root>/LOCK`), so one on a non-default
+`--port`, or a second one under its own `$CLAUDE_MONITOR_CACHE`, is found as it is; local
+tunnel ports are allocated by the kernel, so nothing collides with what you already run.
+`add NAME` with no `--ssh` means this machine; `--cache-root` says *which* monitor on a
+machine that runs two, and `--port` pins one whose lock can't be read.
+
+**Discovery** probes this machine and every literal `Host` in *your* SSH config, in
+parallel, with `ssh BatchMode` — a host that would ask for a passphrase is skipped rather
+than left hanging (load the key into an agent, or `add` that host, where prompts work).
+Two `Host` aliases for one machine collapse into one environment, and a host with no
+monitor is reported as exactly that instead of being filled in.
+
+**`up`** brings environments up one at a time, since a host-key or passphrase prompt needs
+the terminal to itself, and one that doesn't answer is **skipped with the reason** rather
+than costing you the others. It prints the URL on stdout — `--no-open` leaves the browser
+alone, `--port N` pins the page's own port instead of letting the kernel choose — and holds
+the tunnels for as long as it runs, taking them down when it stops, on `Ctrl-C` or `kill`
+alike. On the page, `1`–`9` pick a tab, `[` / `]` cycle, `r` reloads the visible one, the
+URL fragment names the current machine so a bookmark points at it, and the dot beside each
+name is health this process polls (the tabs are cross-origin, so the browser can't ask them
+anything — this process can).
+
+One prompt is enough if you'd rather ask an agent: install the Skill with
+`./integrations/install-skill.sh monitor-fleet`, then `/monitor-fleet` in Claude Code or
+`$monitor-fleet` in Codex — see [`integrations/`](integrations/). Why this is a companion
+binary instead of a flag on the monitor is in
+[`design/monitor-fleet.md`](design/monitor-fleet.md).
+
 ## Develop
 
 It is **fully testable headless (no TTY)** — see [`CLAUDE.md`](CLAUDE.md).

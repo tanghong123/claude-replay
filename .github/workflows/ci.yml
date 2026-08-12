@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Shared jdi-handoff installer
         run: sh tests/install_jdi_handoff.sh
+      - name: Shared monitor-fleet installer
+        run: sh tests/install_monitor_fleet.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -1,0 +1,13 @@
+[package]
+name = "claude-monitor-fleet"
+description = "Several machines' claude-monitor pages behind one loopback page, over SSH tunnels the user already has"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+claude-replay-html = { path = "../claude-replay-html" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
