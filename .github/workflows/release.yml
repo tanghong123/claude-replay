@@ -82,6 +82,17 @@ jobs:
           checksum: sha256
           dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      # claude-monitor-fleet (#17): several machines' monitors behind one loopback
+      # page, its own crate and binary, released beside the monitor it aggregates.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: claude-monitor-fleet
+          manifest-path: claude-monitor-fleet/Cargo.toml
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          checksum: sha256
+          dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   homebrew:
     name: Bump Homebrew formula
@@ -119,6 +130,10 @@ jobs:
           mon_mac_x86=$(sha claude-monitor x86_64-apple-darwin)
           mon_lin_arm=$(sha claude-monitor aarch64-unknown-linux-musl)
           mon_lin_x86=$(sha claude-monitor x86_64-unknown-linux-musl)
+          flt_mac_arm=$(sha claude-monitor-fleet aarch64-apple-darwin)
+          flt_mac_x86=$(sha claude-monitor-fleet x86_64-apple-darwin)
+          flt_lin_arm=$(sha claude-monitor-fleet aarch64-unknown-linux-musl)
+          flt_lin_x86=$(sha claude-monitor-fleet x86_64-unknown-linux-musl)
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/tanghong123/homebrew-tap.git" tap
           cat > tap/Formula/claude-replay.rb <<EOF
@@ -242,13 +257,53 @@ jobs:
           end
           EOF
 
+          cat > tap/Formula/claude-monitor-fleet.rb <<EOF
+          class ClaudeMonitorFleet < Formula
+            desc "Several machines' claude-monitor pages behind one loopback page"
+            homepage "https://github.com/tanghong123/claude-replay"
+            version "${ver}"
+            license "MIT"
+            head "https://github.com/tanghong123/claude-replay.git", branch: "main"
+
+            on_macos do
+              on_arm do
+                url "${base}/claude-monitor-fleet-aarch64-apple-darwin.tar.gz"
+                sha256 "${flt_mac_arm}"
+              end
+              on_intel do
+                url "${base}/claude-monitor-fleet-x86_64-apple-darwin.tar.gz"
+                sha256 "${flt_mac_x86}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/claude-monitor-fleet-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${flt_lin_arm}"
+              end
+              on_intel do
+                url "${base}/claude-monitor-fleet-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${flt_lin_x86}"
+              end
+            end
+
+            def install
+              bin.install "claude-monitor-fleet"
+            end
+
+            test do
+              assert_match "claude-monitor-fleet #{version}", shell_output("#{bin}/claude-monitor-fleet --version")
+            end
+          end
+          EOF
+
           cd tap
           git config user.name "Hong Tang"
           git config user.email "hong.tang@gmail.com"
           if [ -z "$(git status --porcelain -- Formula/claude-replay.rb Formula/agent-jdi.rb)" ]; then
             echo "formulas already at ${ver}; nothing to do"
           else
-            git add Formula/claude-replay.rb Formula/agent-jdi.rb Formula/claude-monitor.rb
-            git commit -m "claude-replay + agent-jdi + claude-monitor ${ver}"
+            git add Formula/claude-replay.rb Formula/agent-jdi.rb Formula/claude-monitor.rb Formula/claude-monitor-fleet.rb
+            git commit -m "claude-replay + agent-jdi + claude-monitor + claude-monitor-fleet ${ver}"
             git push
           fi
