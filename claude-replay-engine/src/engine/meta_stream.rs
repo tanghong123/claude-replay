@@ -54,7 +54,12 @@ pub const COMPACT_AFTER: usize = 256;
 /// fork-baseline double count) leaves the wrong history in every cached stream. Resuming such
 /// a stream keeps serving the inflated totals forever — one audited session showed 7.47B
 /// cache-read tokens off a 437M transcript. A bump refolds cold, with the fixed accumulator.
-pub const FOLD_VERSION: u16 = 6;
+///
+/// v7: the Qoder adapter (#20) — `usage.credits` now folds into `extra["credits_micro"]`
+/// (metrics) and `redacted_thinking` blocks decode to a placeholder instead of vanishing
+/// (block output). A stream folded at v6 would splice a credits-less/placeholder-less
+/// prefix onto a tail that has both.
+pub const FOLD_VERSION: u16 = 7;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
