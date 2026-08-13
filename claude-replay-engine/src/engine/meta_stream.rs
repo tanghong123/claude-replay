@@ -59,7 +59,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// (metrics) and `redacted_thinking` blocks decode to a placeholder instead of vanishing
 /// (block output). A stream folded at v6 would splice a credits-less/placeholder-less
 /// prefix onto a tail that has both.
-pub const FOLD_VERSION: u16 = 7;
+///
+/// v8: the repeat-collapsing accumulator (v1.70.0, ported from agent-metrics) — one API
+/// call charged once, not once per content-item line. Streams folded at ≤v7 persist the
+/// ~2× inflated deltas; without a refold they serve those totals forever, which is the
+/// v6 story verbatim. (The `MetricsCursor` path handles its own legacy-state compat;
+/// this bump is for the durable meta streams, which have refold-once instead.)
+pub const FOLD_VERSION: u16 = 8;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

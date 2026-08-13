@@ -188,9 +188,9 @@ impl MetricsAcc {
             Some(t) => t.clone(),
             None => state.clone(),
         };
-        let Ok((tokens, extra, span)) = serde_json::from_value::<
-            claude_replay_engine::seam::MetricsTotals,
-        >(totals) else {
+        let Ok((tokens, extra, span)) =
+            serde_json::from_value::<claude_replay_engine::seam::MetricsTotals>(totals)
+        else {
             return;
         };
         self.reseed(tokens, extra, span);
