@@ -20,6 +20,25 @@ pub(crate) struct MetricsAcc {
     model: String,
     span: TimeSpan,
     extra: std::collections::BTreeMap<String, u64>,
+    /// The API call the last `usage` belonged to — `message.id`, plus the top-level
+    /// `requestId` when present. Claude Code writes ONE assistant message as SEVERAL
+    /// lines (one per content item: thinking, text, tool_use) and replicates the SAME
+    /// `usage` object on every one of them, so summing per line charges a single call
+    /// two or three times over. Measured on a real corpus: 43,519 of 87,211
+    /// usage-bearing lines (50%) are such repeats, inflating tokens ~2x and cost ~2.07x.
+    ///
+    /// The repeats are always CONSECUTIVE usage lines — verified across 26,522 groups
+    /// with zero interleaved exceptions — so one key is enough state to collapse them,
+    /// which keeps the resumable cursor small.
+    last_usage_key: Option<String>,
+    /// The model `last_usage_key` was credited under. Both must match before a line is
+    /// treated as a repeat: after a restore the single-model-per-message invariant can't
+    /// be re-verified, and subtracting against another model's figures would under-credit.
+    last_usage_model: Option<String>,
+    /// What has already been credited for `last_usage_key`, so a repeat adds only the
+    /// growth. Identical repeats add nothing; a streamed/retried group that grows
+    /// (`output` 6,6,6,6,6,478) credits 478 in total, never the 508 a sum would give.
+    credited: TokenCounts,
 }
 
 impl MetricsAcc {
@@ -56,15 +75,61 @@ impl MetricsAcc {
             .unwrap_or(&self.model)
             .to_string();
         if let Some(u) = v.pointer("/message/usage") {
-            let e = self.per_model.entry(m).or_default();
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
             // separate so it doesn't drown out genuinely-new input).
-            e.input += field(u, "input_tokens");
-            e.cache_creation += field(u, "cache_creation_input_tokens");
-            e.cache_read += field(u, "cache_read_input_tokens");
-            e.output += field(u, "output_tokens");
+            let seen = TokenCounts {
+                input: field(u, "input_tokens"),
+                cache_creation: field(u, "cache_creation_input_tokens"),
+                cache_read: field(u, "cache_read_input_tokens"),
+                output: field(u, "output_tokens"),
+            };
+            // One API call may arrive as several lines carrying the same `usage`; credit
+            // only what grew since this call was last seen (see `last_usage_key`). A line
+            // that names no call at all falls back to the old add-everything behaviour, so
+            // this is never worse than before it — measured at 0 of 88,027 lines locally,
+            // since `message.id` is always present.
+            let key = v.pointer("/message/id").and_then(|x| x.as_str()).map(|id| {
+                match v.get("requestId").and_then(|x| x.as_str()) {
+                    Some(r) => format!("{id}\u{0}{r}"),
+                    None => id.to_string(),
+                }
+            });
+            let repeat = key.is_some()
+                && self.last_usage_key == key
+                && self.last_usage_model.as_deref() == Some(m.as_str());
+            let credit = if repeat {
+                // Per-field growth. `saturating_sub` because a repeat is never expected to
+                // report LESS, and if one ever does, crediting zero beats underflowing.
+                TokenCounts {
+                    input: seen.input.saturating_sub(self.credited.input),
+                    cache_creation: seen
+                        .cache_creation
+                        .saturating_sub(self.credited.cache_creation),
+                    cache_read: seen.cache_read.saturating_sub(self.credited.cache_read),
+                    output: seen.output.saturating_sub(self.credited.output),
+                }
+            } else {
+                seen
+            };
+            // Per-field max, so a repeat that grew in one field and shrank in another
+            // can never be re-credited for the shrunk one later in the same group.
+            self.credited = if repeat {
+                TokenCounts {
+                    input: self.credited.input.max(seen.input),
+                    cache_creation: self.credited.cache_creation.max(seen.cache_creation),
+                    cache_read: self.credited.cache_read.max(seen.cache_read),
+                    output: self.credited.output.max(seen.output),
+                }
+            } else {
+                seen
+            };
+            if !repeat {
+                self.last_usage_key = key;
+                self.last_usage_model = Some(m.clone());
+            }
+            *self.per_model.entry(m).or_default() += credit;
             // Qoder bills in `credits` with zeroed token counts and an opaque model alias,
             // so credits are the only honest cost figure. Folded as micro-credits into the
             // reserved `credits_micro` extra key the shared footer reads. Real Claude usage
@@ -96,6 +161,51 @@ impl MetricsAcc {
             self.extra.clone(),
             self.span.endpoints().map(|(a, b)| (a as f64, b as f64)),
         )
+    }
+
+    /// The resumable snapshot. Overrides the seam default (which stores bare
+    /// [`totals`](Self::totals)) because the repeat-collapsing guard must cross a resume
+    /// boundary: park a cursor between lines 2 and 3 of one message's group and a guard
+    /// that reset to `None` would treat line 3 as a fresh call and credit it again —
+    /// turning the 2x over-count into a smaller, harder-to-spot one.
+    pub(crate) fn state(&self) -> Value {
+        serde_json::json!({
+            "totals": self.totals(),
+            "last_usage_key": self.last_usage_key,
+            "last_usage_model": self.last_usage_model,
+            "credited": self.credited,
+        })
+    }
+
+    /// Restore [`state`](Self::state). Unrecognized input is ignored — a cursor is a cache,
+    /// and an unreadable one is a cold start, never an error.
+    pub(crate) fn restore(&mut self, state: &Value) {
+        // Cursors parked by <= v1.69.0 hold a bare `MetricsTotals`, not this object. They
+        // must still reseed: silently restoring NOTHING would leave a resumed fold counting
+        // only the tail of its transcript, which is a worse (and invisible) error than the
+        // over-count this guard exists to fix.
+        let totals = match state.get("totals") {
+            Some(t) => t.clone(),
+            None => state.clone(),
+        };
+        let Ok((tokens, extra, span)) = serde_json::from_value::<
+            claude_replay_engine::seam::MetricsTotals,
+        >(totals) else {
+            return;
+        };
+        self.reseed(tokens, extra, span);
+        self.last_usage_key = state
+            .get("last_usage_key")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        self.last_usage_model = state
+            .get("last_usage_model")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        self.credited = state
+            .get("credited")
+            .and_then(|x| serde_json::from_value::<TokenCounts>(x.clone()).ok())
+            .unwrap_or_default();
     }
 
     /// Re-seed a resumed accumulator (#96 §7).
@@ -141,6 +251,94 @@ impl MetricsAcc {
 mod tests {
     use super::*;
     use claude_replay_engine::seam::estimate_cost;
+
+    /// A line of ONE assistant message: Claude Code writes each content item (thinking,
+    /// text, tool_use) as its own transcript line and replicates the same `usage` on all
+    /// of them. Synthetic — never built from a real transcript.
+    fn msg_line(id: &str, req: &str, out: u64, cache_read: u64) -> Value {
+        serde_json::from_str(&format!(
+            r#"{{"type":"assistant","requestId":"{req}","message":{{"role":"assistant",
+               "id":"{id}","model":"claude-opus-4-8","usage":{{"input_tokens":2,
+               "output_tokens":{out},"cache_creation_input_tokens":945,
+               "cache_read_input_tokens":{cache_read}}}}},
+               "timestamp":"2026-08-05T10:00:00Z"}}"#
+        ))
+        .unwrap()
+    }
+
+    /// One API call written as three lines must be charged ONCE. Summing per line
+    /// inflated a real corpus ~2x (43,519 of 87,211 usage lines were such repeats).
+    #[test]
+    fn one_api_call_split_across_lines_is_counted_once() {
+        let mut acc = MetricsAcc::default();
+        for _ in 0..3 {
+            acc.push(&msg_line("msg_01A", "req_01A", 1400, 45461));
+        }
+        let m = acc.finish();
+        assert_eq!(m.output_tokens, 1400, "3 lines, one call: not 4200");
+        assert_eq!(m.cache_read_tokens, 45461, "not 136383");
+        assert_eq!(m.input_tokens, 2, "not 6");
+        assert_eq!(m.cache_creation_tokens, 945, "not 2835");
+    }
+
+    /// The other observed shape: a group whose usage GROWS line to line (streamed or
+    /// retried). The final figure is the truth, so per-field growth is credited and the
+    /// total lands on the last value — never the sum of the increments.
+    #[test]
+    fn a_growing_usage_group_credits_the_final_figure() {
+        let mut acc = MetricsAcc::default();
+        for out in [6, 6, 6, 6, 6, 478] {
+            acc.push(&msg_line("msg_01B", "req_01B", out, 9509));
+        }
+        assert_eq!(acc.finish().output_tokens, 478, "not 508, not 2868");
+    }
+
+    /// Two DIFFERENT calls must both count — the guard must not collapse distinct work.
+    #[test]
+    fn distinct_calls_still_accumulate() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&msg_line("msg_01C", "req_01C", 100, 10));
+        acc.push(&msg_line("msg_01C", "req_01C", 100, 10)); // repeat of the first
+        acc.push(&msg_line("msg_01D", "req_01D", 250, 20));
+        let m = acc.finish();
+        assert_eq!(m.output_tokens, 350, "two calls: 100 + 250");
+        assert_eq!(m.cache_read_tokens, 30);
+    }
+
+    /// The reason `state`/`restore` are overridden: a cursor parked INSIDE a group must
+    /// not let the resumed fold re-credit the rest of that group.
+    #[test]
+    fn a_group_split_across_a_resume_boundary_is_not_recredited() {
+        let mut before = MetricsAcc::default();
+        before.push(&msg_line("msg_01E", "req_01E", 1400, 45461));
+        before.push(&msg_line("msg_01E", "req_01E", 1400, 45461));
+        let parked = before.state();
+
+        let mut after = MetricsAcc::default();
+        after.restore(&parked);
+        after.push(&msg_line("msg_01E", "req_01E", 1400, 45461)); // line 3 of the group
+        let m = after.finish();
+        assert_eq!(m.output_tokens, 1400, "resumed fold must not re-credit");
+        assert_eq!(m.cache_read_tokens, 45461);
+    }
+
+    /// A cursor parked by an older build holds a bare `MetricsTotals`. Restoring it must
+    /// still reseed: dropping it would leave a resumed fold counting only the tail, which
+    /// is a worse and much less visible error than the over-count this guard fixes.
+    #[test]
+    fn a_legacy_bare_totals_cursor_still_reseeds() {
+        let mut before = MetricsAcc::default();
+        before.push(&msg_line("msg_01F", "req_01F", 900, 100));
+        let legacy = serde_json::to_value(before.totals()).unwrap();
+
+        let mut after = MetricsAcc::default();
+        after.restore(&legacy);
+        assert_eq!(
+            after.finish().output_tokens,
+            900,
+            "legacy cursor must not silently restore nothing"
+        );
+    }
 
     /// #104: a session that SWITCHES models must price each model's tokens at its own rate.
     /// Before this, `finish` applied the LAST model's rate to every token in the session —

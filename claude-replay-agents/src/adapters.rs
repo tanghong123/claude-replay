@@ -37,6 +37,14 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn totals(&self) -> claude_replay_engine::seam::MetricsTotals {
         agents::claude::metrics::MetricsAcc::totals(self)
     }
+    /// Overridden (not the totals-only default) so the repeat-collapsing guard survives a
+    /// mid-file resume — see `MetricsAcc::state`.
+    fn state(&self) -> Value {
+        agents::claude::metrics::MetricsAcc::state(self)
+    }
+    fn restore(&mut self, state: &Value) {
+        agents::claude::metrics::MetricsAcc::restore(self, state)
+    }
     fn reseed(
         &mut self,
         tokens: std::collections::BTreeMap<String, claude_replay_engine::seam::TokenCounts>,
