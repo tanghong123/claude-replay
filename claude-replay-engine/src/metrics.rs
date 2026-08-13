@@ -220,11 +220,14 @@ fn price(model: &str) -> Option<(f64, f64)> {
         if m.contains("sol") {
             return Some((5.0, 30.0));
         }
+        // Terra/luna are the STANDARD rates effective 2026-07-30 — #19 initially carried
+        // exactly half for both, which is the Batch-API discount; Codex traffic is
+        // interactive and bills at standard rates.
         if m.contains("terra") {
-            return Some((1.0, 6.0));
+            return Some((2.0, 12.0));
         }
         if m.contains("luna") {
-            return Some((0.10, 0.60));
+            return Some((0.20, 1.20));
         }
     }
     if m.contains("codex") || m.contains("gpt-5") || m.contains("gpt5") {
@@ -485,8 +488,8 @@ mod price_tests {
             ("claude-haiku-4-5-20251001", (1.0, 5.0)),
             ("claude-haiku-3-5", (0.80, 4.0)),
             ("gpt-5.6-sol", (5.0, 30.0)),
-            ("gpt-5.6-terra", (1.0, 6.0)),
-            ("gpt-5.6-luna", (0.10, 0.60)),
+            ("gpt-5.6-terra", (2.0, 12.0)),
+            ("gpt-5.6-luna", (0.20, 1.20)),
             ("gpt-5.6", (1.25, 10.0)),
             ("gpt-5.1-codex", (1.25, 10.0)),
         ] {
