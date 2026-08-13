@@ -270,6 +270,9 @@ impl TranscriptAdapter for QoderAdapter {
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         agents::qoder::discover::subagent_file(root, child_id)
     }
+    fn load_tasks(&self, path: &Path) -> Option<claude_replay_engine::engine::tasks::TaskList> {
+        agents::qoder::discover::load_tasks(path)
+    }
     fn session_card(
         &self,
         path: &Path,

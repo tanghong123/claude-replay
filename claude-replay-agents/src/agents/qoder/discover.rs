@@ -86,6 +86,19 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
     crate::agents::claude::discover::session_card(path, memo)
 }
 
+/// The live on-disk task list for a Qoder session — the same `<root>/<sessionId>/<n>.json`
+/// layout as Claude's `~/.claude/tasks`, under `~/.qoder/tasks` (`QODER_TASKS_ROOT`
+/// overrides for tests).
+pub(crate) fn load_tasks(path: &Path) -> Option<claude_replay_engine::seam::TaskList> {
+    let root = std::env::var_os("QODER_TASKS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            Path::new(&home).join(".qoder").join("tasks")
+        });
+    crate::agents::claude::discover::load_tasks_in(&root, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +323,35 @@ mod tests {
             format!("{:?}", sa.blocks).contains("drifted child"),
             "the child attaches from the drifted slug"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The live task list reads from `~/.qoder/tasks/<sessionId>/<n>.json` — Claude's
+    /// sidecar layout on the Qoder root, so the TUI/HTML task panel works unchanged.
+    #[test]
+    fn load_tasks_reads_the_qoder_tasks_store() {
+        let root = std::env::temp_dir().join(format!("qd-tasks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sess9")).unwrap();
+        std::fs::write(
+            root.join("sess9").join("1.json"),
+            r#"{"id":"1","subject":"Implementing Slice 4","status":"in_progress"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sess9").join("2.json"),
+            r#"{"id":"2","subject":"done thing","status":"completed"}"#,
+        )
+        .unwrap();
+        let transcript = root.join("sess9.jsonl");
+
+        std::env::set_var("QODER_TASKS_ROOT", &root);
+        let tasks = load_tasks(&transcript);
+        std::env::remove_var("QODER_TASKS_ROOT");
+
+        let tasks = tasks.expect("task list loads");
+        assert_eq!(tasks.items.len(), 2);
+        assert_eq!(tasks.items[0].subject, "Implementing Slice 4");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
