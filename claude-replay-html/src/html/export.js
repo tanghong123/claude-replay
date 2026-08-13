@@ -910,6 +910,8 @@
       // Without it the token totals look inexplicable beside a short-looking replay.
       if (u.compacted) row("compacted", u.compacted);
       if (u.cost) row("est. cost", u.cost, "total");
+      // Credits-billed agents (Qoder): zero tokens, no USD — credits are the cost figure.
+      if (u.credits) row("credits", u.credits, "total");
     }
 
     renderTasks(m.tasks);
