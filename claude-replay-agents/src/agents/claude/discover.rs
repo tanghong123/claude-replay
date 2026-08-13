@@ -383,8 +383,17 @@ fn read_from(path: &Path, from: u64, to: u64) -> Option<String> {
 }
 
 pub(crate) fn load_tasks(path: &Path) -> Option<claude_replay_engine::seam::TaskList> {
+    load_tasks_in(&tasks_root(), path)
+}
+
+/// [`load_tasks`] over an arbitrary tasks-store root — shared with the Qoder store, whose
+/// layout (`<root>/<sessionId>/<n>.json`) is identical to Claude's `~/.claude/tasks`.
+pub(crate) fn load_tasks_in(
+    root: &Path,
+    path: &Path,
+) -> Option<claude_replay_engine::seam::TaskList> {
     let id = path.file_stem()?.to_str()?;
-    let dir = tasks_root().join(id);
+    let dir = root.join(id);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
         .ok()?
         .flatten()

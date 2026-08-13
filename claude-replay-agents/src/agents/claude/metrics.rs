@@ -65,6 +65,19 @@ impl MetricsAcc {
             e.cache_creation += field(u, "cache_creation_input_tokens");
             e.cache_read += field(u, "cache_read_input_tokens");
             e.output += field(u, "output_tokens");
+            // Qoder bills in `credits` with zeroed token counts and an opaque model alias,
+            // so credits are the only honest cost figure. Folded as micro-credits into the
+            // reserved `credits_micro` extra key the shared footer reads. Real Claude usage
+            // has no such field, so Claude/QoderWork folds stay byte-identical.
+            // `billable:false` lines are skipped — the published rule is that failed calls
+            // deduct nothing — and `credits` (the actual deduction) is read over
+            // `original_credits` (the pre-adjustment figure).
+            let billable = u.get("billable").and_then(|x| x.as_bool()).unwrap_or(true);
+            if let Some(c) = u.get("credits").and_then(|x| x.as_f64()) {
+                if billable && c > 0.0 {
+                    self.bump("credits_micro", (c * 1e6).round() as u64);
+                }
+            }
         }
         if let Some(m) = v.pointer("/message/model").and_then(|x| x.as_str()) {
             self.model = m.to_string();
@@ -271,6 +284,35 @@ mod tests {
         assert_eq!(m.compactions(), (0, 0));
         assert_eq!(m.compaction_label(), None);
         assert!(!m.footer().contains("compacted"), "footer: {}", m.footer());
+    }
+
+    /// Qoder's per-line `usage.credits` sums into the reserved `credits_micro` key and
+    /// surfaces in the footer; a line without the field changes nothing.
+    #[test]
+    fn credits_sum_into_the_extra_bag() {
+        let jsonl = r#"
+{"type":"assistant","timestamp":"2026-08-13T10:00:00.000Z","message":{"model":"cmodel","usage":{"input_tokens":0,"output_tokens":0,"credits":12.164261516,"billable":true}}}
+{"type":"assistant","timestamp":"2026-08-13T10:01:00.000Z","message":{"model":"cmodel","usage":{"input_tokens":0,"output_tokens":0,"credits":0.5}}}
+{"type":"assistant","timestamp":"2026-08-13T10:02:00.000Z","message":{"model":"cmodel","usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"assistant","timestamp":"2026-08-13T10:03:00.000Z","message":{"model":"cmodel","usage":{"input_tokens":0,"output_tokens":0,"credits":99.0,"billable":false}}}
+"#;
+        let m = parse_reader(jsonl);
+        // 12.164262 + 0.5; the billable:false line deducts nothing (failed calls are free).
+        assert_eq!(m.extra.get("credits_micro"), Some(&12_664_262));
+        assert!((m.credits().unwrap() - 12.664262).abs() < 1e-9);
+        assert!(
+            m.footer().contains("~12.66 credits"),
+            "footer: {}",
+            m.footer()
+        );
+        assert_eq!(m.cost_usd, None, "the cmodel alias is honestly unpriced");
+        // A Claude session (no credits field) keeps an empty bag — the delegation
+        // equivalence QoderWork's suite pins stays byte-identical.
+        let claude = parse_reader(
+            r#"{"type":"assistant","timestamp":"2026-08-13T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":5}}}"#,
+        );
+        assert!(claude.extra.is_empty());
+        assert!(!claude.footer().contains("credits"));
     }
 
     #[test]

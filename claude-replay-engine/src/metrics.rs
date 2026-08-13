@@ -335,6 +335,9 @@ impl Metrics {
         if let Some(c) = self.cost_usd {
             segs.push((self.cost_label(c), 7));
         }
+        if let Some(label) = self.credits_label() {
+            segs.push((label, 7));
+        }
         segs
     }
 
@@ -358,6 +361,22 @@ impl Metrics {
     pub fn compactions(&self) -> (u64, u64) {
         let get = |k: &str| self.extra.get(k).copied().unwrap_or(0);
         (get("compactions"), get("compact_dropped"))
+    }
+
+    /// Credits this session consumed, from the reserved `credits_micro` extra key
+    /// (micro-credits, so the u64 bag can carry a fractional figure exactly enough).
+    /// `None` for an agent that bills in tokens/USD instead — the footer then keeps
+    /// its existing shape. Qoder's accumulator is the first writer: its usage carries
+    /// `credits` while its token counts are zero, so credits ARE the cost figure.
+    pub fn credits(&self) -> Option<f64> {
+        self.extra.get("credits_micro").map(|&c| c as f64 / 1e6)
+    }
+
+    /// The footer's credits segment (`~12.16 credits`), or `None` when the agent
+    /// reports none. `~` because per-line rounding to micro-credits makes it an
+    /// estimate, exactly like the USD figure it stands in for.
+    pub fn credits_label(&self) -> Option<String> {
+        self.credits().map(|c| format!("~{c:.2} credits"))
     }
 
     /// The footer's compaction segment (`3× compacted, 1.3M dropped`), or `None` when the
@@ -393,6 +412,10 @@ impl Metrics {
             .cost_usd
             .map(|c| format!(" · {}", self.cost_label(c)))
             .unwrap_or_default();
+        let credits = self
+            .credits_label()
+            .map(|label| format!(" · {label}"))
+            .unwrap_or_default();
         // Show the cache tier only when there is one — cache-less transcripts keep
         // the plain "in / out" shape.
         let cached = self.cache_creation_tokens + self.cache_read_tokens;
@@ -412,7 +435,7 @@ impl Metrics {
             .map(|label| format!(" · {label}"))
             .unwrap_or_default();
         format!(
-            "{model}{} in · {cached}{} out · {}{cost}{compacted}{diagnostics}",
+            "{model}{} in · {cached}{} out · {}{cost}{credits}{compacted}{diagnostics}",
             human_tokens(self.input_tokens),
             human_tokens(self.output_tokens),
             human_dur(self.duration_secs),
@@ -478,6 +501,36 @@ mod diagnostic_tests {
         metrics.extra.insert("unsupported_items".into(), 3);
         assert_eq!(metrics.diagnostics_label().as_deref(), Some("⚠ 5 skipped"));
         assert!(metrics.footer().contains("⚠ 5 skipped"));
+    }
+}
+
+#[cfg(test)]
+mod credits_tests {
+    use super::*;
+
+    /// The reserved `credits_micro` key surfaces as a footer segment; agents that never
+    /// write it keep their footer byte-identical.
+    #[test]
+    fn credits_come_from_the_extra_bag() {
+        let mut m = Metrics::default();
+        assert_eq!(m.credits(), None);
+        assert!(!m.footer().contains("credits"), "footer: {}", m.footer());
+        assert!(m
+            .footer_segments()
+            .iter()
+            .all(|(s, _)| !s.contains("credits")));
+
+        m.extra.insert("credits_micro".into(), 12_164_261);
+        assert_eq!(m.credits_label().as_deref(), Some("~12.16 credits"));
+        assert!(
+            m.footer().ends_with("~12.16 credits"),
+            "footer: {}",
+            m.footer()
+        );
+        assert!(m
+            .footer_segments()
+            .iter()
+            .any(|(s, p)| s == "~12.16 credits" && *p == 7));
     }
 }
 

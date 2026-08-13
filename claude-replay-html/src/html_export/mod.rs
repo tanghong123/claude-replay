@@ -1355,6 +1355,12 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     if let Some(label) = m.compaction_label() {
         u["compacted"] = json!(label);
     }
+    // Credits-billed agents (Qoder) report zero tokens and no USD cost — credits are the
+    // only real cost figure, so the panel gets them. Key omitted when absent, same as
+    // `compacted`, so token-billed sessions' wire records are unchanged.
+    if let Some(c) = m.credits() {
+        u["credits"] = json!(format!("~{c:.2}"));
+    }
     if with_duration {
         u["duration_secs"] = json!(m.duration_secs);
     }
@@ -1574,6 +1580,16 @@ mod tests {
     fn user_prompt_newlines_are_hard_breaks() {
         assert!(md_html_user("line one\nline two").contains("<br>"));
         assert!(!md_html("line one\nline two").contains("<br>"));
+    }
+
+    /// Credits-billed sessions (Qoder): the usage sub-object carries a `credits` key; a
+    /// token-billed session's wire record is unchanged (key absent, like `compacted`).
+    #[test]
+    fn usage_json_carries_credits_only_when_reported() {
+        let mut m = crate::metrics::Metrics::default();
+        assert!(usage_json(&m, false).get("credits").is_none());
+        m.extra.insert("credits_micro".into(), 12_664_262);
+        assert_eq!(usage_json(&m, false)["credits"], json!("~12.66"));
     }
 
     #[test]
