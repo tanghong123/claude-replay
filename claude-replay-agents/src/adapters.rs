@@ -12,10 +12,11 @@ use claude_replay_engine::Agent;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// Every built-in adapter, in the stable order detection iterates. Qoder sits ahead of
-/// QoderWork because both stores share the `runtime-config` head shape: each owns only its
-/// own variant (the key probe below), but the order keeps detection deterministic even if
-/// a future head matched both.
+/// Every built-in adapter, in the stable order detection iterates. Qoder and QoderWork
+/// write IN-BAND IDENTICAL transcripts (both open with the same keyed `runtime-config`
+/// head — verified against real stores, #20), so no sniff can tell them apart: Qoder is
+/// attributed by store provenance (`store_contains`, consulted before any sniff), and the
+/// shared head stays QoderWork's sniff signature for out-of-store files.
 pub static REGISTRY: &[&'static dyn TranscriptAdapter] = &[
     &ClaudeAdapter,
     &CodexAdapter,
@@ -202,19 +203,11 @@ impl TranscriptAdapter for CodexAdapter {
     }
 }
 
-/// Whether a `runtime-config` head is Qoder CLI's variant: it carries the
-/// `reasoningEffort`/`contextWindow` keys (present even when null), which QoderWork's
-/// head never writes. Key PRESENCE is the probe — the values are usually null.
-fn is_qoder_runtime_config(head: &Value) -> bool {
-    head.get("reasoningEffort").is_some() || head.get("contextWindow").is_some()
-}
-
 /// Qoder CLI adapter — a Claude-Code-format terminal agent with its own store
-/// (`~/.qoder/projects`) and a `runtime-config` head carrying `reasoningEffort`/
-/// `contextWindow`. Everything format-level DELEGATES to the Claude implementations
-/// (tokenizer, shaping, metrics — whose shared usage fold also reads Qoder's
-/// `usage.credits` — enrichment, attachments, the `subagents/agent-<id>.jsonl`
-/// sub-agent layout); only detection and the store root differ.
+/// (`~/.qoder/projects`). Everything format-level DELEGATES to the Claude
+/// implementations (tokenizer, shaping, metrics — whose shared usage fold also reads
+/// Qoder's `usage.credits` — enrichment, attachments, the `subagents/agent-<id>.jsonl`
+/// sub-agent layout); only the store roots differ.
 pub struct QoderAdapter;
 impl TranscriptAdapter for QoderAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
@@ -224,14 +217,14 @@ impl TranscriptAdapter for QoderAdapter {
     fn agent(&self) -> Agent {
         Agent::QODER
     }
-    fn sniff(&self, head: &Value) -> SniffClaim {
-        if head.get("type").and_then(Value::as_str) == Some("runtime-config")
-            && is_qoder_runtime_config(head)
-        {
-            SniffClaim::Owns // the keyed runtime-config head is Qoder CLI's signature
-        } else {
-            SniffClaim::No
-        }
+    /// Never a claim: Qoder's transcripts are IN-BAND IDENTICAL to QoderWork's — real
+    /// QoderWork stores write the same keyed `runtime-config` head (`reasoningEffort`/
+    /// `contextWindow` present-and-null), so no head shape is distinctively Qoder's.
+    /// A `~/.qoder/projects` session is attributed by store PROVENANCE instead
+    /// (`store_contains`, which detection consults before any sniff); an out-of-store
+    /// file with the shared head honestly labels as QoderWork.
+    fn sniff(&self, _head: &Value) -> SniffClaim {
+        SniffClaim::No
     }
     fn store_contains(&self, path: &Path) -> bool {
         path.starts_with(agents::qoder::discover::projects_dir())
@@ -307,13 +300,12 @@ impl TranscriptAdapter for QoderWorkAdapter {
         false
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
-        // QoderWork's signature MINUS Qoder's: both stores open with a `runtime-config`
-        // head, but only Qoder CLI's carries the `reasoningEffort`/`contextWindow` keys —
-        // so each variant is owned by exactly one adapter, order-independently.
-        if head.get("type").and_then(Value::as_str) == Some("runtime-config")
-            && !is_qoder_runtime_config(head)
-        {
-            SniffClaim::Owns // the key-less runtime-config head is QoderWork's signature
+        // The `runtime-config` head is the qwork-family signature. Qoder CLI writes the
+        // SAME head (both keyed with `reasoningEffort`/`contextWindow` — verified against
+        // real stores, #20), so ownership of the shared shape stays here and Qoder is
+        // told apart by store provenance, which detection consults before any sniff.
+        if head.get("type").and_then(Value::as_str) == Some("runtime-config") {
+            SniffClaim::Owns
         } else {
             SniffClaim::No
         }
@@ -367,35 +359,28 @@ mod sniff_tests {
         REGISTRY.iter().map(|a| (a.agent(), a.sniff(&v))).collect()
     }
 
-    /// The three-way disambiguation on the shared `runtime-config` head shape: Qoder CLI's
-    /// variant (keys present, even when null) is owned by Qoder ALONE, QoderWork's key-less
-    /// variant by QoderWork ALONE — order-independent, so registry reshuffles can't flip a
-    /// store's identity.
+    /// EVERY `runtime-config` head — keyed or key-less — is owned by QoderWork ALONE at the
+    /// sniff level. The keyed variant is NOT Qoder's signature: a real, current QoderWork
+    /// store writes `reasoningEffort`/`contextWindow` too (the first head here is verbatim
+    /// from one, id redacted — 72/72 heads on that store were keyed), so key presence
+    /// cannot discriminate and Qoder is attributed by store provenance instead
+    /// (`detect_agent_claimed` consults `store_contains` before sniffing).
     #[test]
-    fn runtime_config_heads_are_owned_by_exactly_one_adapter() {
-        let qoder = r#"{"type":"runtime-config","sessionId":"s","model":"cmodel","reasoningEffort":null,"contextWindow":null,"timestamp":1786606218598}"#;
-        let owners: Vec<Agent> = claims(qoder)
-            .into_iter()
-            .filter(|(_, c)| matches!(c, SniffClaim::Owns))
-            .map(|(a, _)| a)
-            .collect();
-        assert_eq!(
-            owners,
-            vec![Agent::QODER],
-            "the keyed head is Qoder's alone"
-        );
-
-        let qoderwork = r#"{"type":"runtime-config","sessionId":"s","model":"qwork-ultimate","timestamp":1785068132048}"#;
-        let owners: Vec<Agent> = claims(qoderwork)
-            .into_iter()
-            .filter(|(_, c)| matches!(c, SniffClaim::Owns))
-            .map(|(a, _)| a)
-            .collect();
-        assert_eq!(
-            owners,
-            vec![Agent::QODERWORK],
-            "the key-less head stays QoderWork's alone"
-        );
+    fn every_runtime_config_head_is_qoderworks_at_the_sniff_level() {
+        let real_qoderwork = r#"{"type":"runtime-config","sessionId":"REDACTED","model":"","reasoningEffort":null,"contextWindow":null,"timestamp":1784282861519}"#;
+        let keyless = r#"{"type":"runtime-config","sessionId":"s","model":"qwork-ultimate","timestamp":1785068132048}"#;
+        for head in [real_qoderwork, keyless] {
+            let owners: Vec<Agent> = claims(head)
+                .into_iter()
+                .filter(|(_, c)| matches!(c, SniffClaim::Owns))
+                .map(|(a, _)| a)
+                .collect();
+            assert_eq!(
+                owners,
+                vec![Agent::QODERWORK],
+                "the shared head must never flip a QoderWork session's identity: {head}"
+            );
+        }
     }
 
     /// A plain Claude conversation line stays a CAN-PARSE claim for Claude and NOTHING for

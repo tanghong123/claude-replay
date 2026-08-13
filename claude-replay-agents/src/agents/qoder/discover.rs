@@ -354,4 +354,40 @@ mod tests {
         assert_eq!(tasks.items[0].subject, "Implementing Slice 4");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// PROVENANCE-FIRST detection (#20 follow-up): a session inside `~/.qoder/projects` is
+    /// Qoder's even though its `runtime-config` head is in-band IDENTICAL to a real
+    /// QoderWork head — the store decides, before any sniff. The same bytes outside any
+    /// store honestly label as QoderWork: the shared head is the qwork-family signature,
+    /// and nothing in-band is distinctively Qoder's.
+    #[test]
+    fn detection_attributes_the_qoder_store_by_provenance() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qd-prov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let slug = root.join("-Users-dev-proj");
+        std::fs::create_dir_all(&slug).unwrap();
+        let inside = slug.join("abc123.jsonl");
+        write_fixture(&inside);
+
+        std::env::set_var("QODER_PROJECTS_DIR", &root);
+        let claimed = claude_replay_core::discover::detect_agent_claimed(&inside);
+        std::env::remove_var("QODER_PROJECTS_DIR");
+        assert_eq!(
+            claimed,
+            (Agent::QODER, true),
+            "the store attributes the session, marker-free"
+        );
+
+        let outside =
+            std::env::temp_dir().join(format!("qd-prov-out-{}.jsonl", std::process::id()));
+        write_fixture(&outside);
+        assert_eq!(
+            claude_replay_core::discover::detect_agent_claimed(&outside),
+            (Agent::QODERWORK, true),
+            "out-of-store, the shared runtime-config head sniffs as QoderWork"
+        );
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

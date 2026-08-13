@@ -31,26 +31,43 @@ pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
     out
 }
 
-/// Auto-detect which agent wrote a transcript by sniffing its first lines — asking
-/// each registered adapter's `sniff` claim (#59). An `Owns`
-/// claim (a distinctive head: Codex's `session_meta`, QoderWork's `runtime-config`)
-/// wins immediately; a mere `CanParse` (Claude's adapter can parse any Claude-format
-/// lines, including derived agents') is remembered and only wins if NO adapter owns
-/// any of the sniffed lines — so a new Claude-format agent is labeled by its owner
-/// marker, never mislabeled by the first can-parse adapter, and Claude's sniff needs
-/// no per-agent carve-outs. Defaults to Claude.
+/// Auto-detect which agent wrote a transcript: **provenance first, sniff second**.
+///
+/// A file inside an agent's own store IS that agent's — the same principle
+/// [`detection_owned`] states ("a normal `~/.claude/projects` session is Claude's
+/// without any marker") — and provenance is consulted before any content is read.
+/// This is not just a shortcut: two Claude-format-derived agents can write
+/// **in-band identical** transcripts (Qoder CLI and QoderWork both open with the
+/// same keyed `runtime-config` head — #20), so for them the store is the *only*
+/// honest discriminator.
+///
+/// Only out-of-store files fall through to content sniffing (#59): each adapter's
+/// `sniff` is asked over the first lines; an `Owns` claim (a distinctive head:
+/// Codex's `session_meta`, the `runtime-config` head) wins immediately; a mere
+/// `CanParse` (Claude's adapter can parse any Claude-format lines, including
+/// derived agents') is remembered and only wins if NO adapter owns any of the
+/// sniffed lines — so a new Claude-format agent is labeled by its owner marker,
+/// never mislabeled by the first can-parse adapter. Defaults to Claude.
 pub fn detect_agent(path: &Path) -> Agent {
     detect_agent_claimed(path).0
 }
 
-/// [`detect_agent`] plus whether the label is OWNERSHIP-PROVEN (#66): `true` when a
-/// distinctive marker decided it, `false` for a merely-compatible (can-parse)
-/// fallback — an unknown Claude-format-derived agent's transcript parses fine but
-/// is honestly "compatible", not known to be Claude's. Presenters may badge the
-/// unowned case; parse dispatch uses the agent either way.
+/// [`detect_agent`] plus whether the label is OWNERSHIP-PROVEN (#66): `true` when
+/// store provenance or a distinctive marker decided it, `false` for a
+/// merely-compatible (can-parse) fallback — an unknown Claude-format-derived
+/// agent's transcript parses fine but is honestly "compatible", not known to be
+/// Claude's. Presenters may badge the unowned case; parse dispatch uses the agent
+/// either way.
 pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
     use crate::adapter::SniffClaim;
     use std::io::BufRead;
+    // Provenance beats content: inside an agent's own store, identity needs no marker —
+    // and for store twins whose markers collide (Qoder/QoderWork), markers cannot decide.
+    for a in crate::adapter::adapters() {
+        if a.store_contains(path) {
+            return (a.agent(), true);
+        }
+    }
     let Ok(file) = std::fs::File::open(path) else {
         return (Agent::CLAUDE, false);
     };

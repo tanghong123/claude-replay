@@ -329,6 +329,35 @@ mod tests {
     /// different test on each run. Hold this for the whole env-scoped window.
     static STORE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// PROVENANCE-FIRST detection (#20 follow-up): a session under `~/.qoderwork/projects`
+    /// keeps its QoderWork identity even with the KEYED `runtime-config` head — real
+    /// QoderWork stores write `reasoningEffort`/`contextWindow` too (72/72 heads on the
+    /// store that surfaced #20's misdetection), so only the store can tell it apart from
+    /// Qoder CLI. This is the head shape #20 originally claimed for Qoder alone.
+    #[test]
+    fn detection_attributes_the_qoderwork_store_by_provenance() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-prov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let slug = root.join("-Users-dev-proj");
+        std::fs::create_dir_all(&slug).unwrap();
+        let p = slug.join("qw1.jsonl");
+        std::fs::write(
+            &p,
+            concat!(
+                r#"{"type":"runtime-config","sessionId":"qw1","model":"","reasoningEffort":null,"contextWindow":null,"timestamp":1784282861519}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        std::env::set_var("QODERWORK_PROJECTS_DIR", &root);
+        let claimed = claude_replay_core::discover::detect_agent_claimed(&p);
+        std::env::remove_var("QODERWORK_PROJECTS_DIR");
+        assert_eq!(claimed, (Agent::QODERWORK, true));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The delegation guarantee: parsing a QoderWork transcript AS QoderWork is byte-identical
     /// to parsing it as Claude (same blocks, times, metrics) — the adapter adds detection and a
     /// store, never a format fork. Fixture mirrors the real shape: runtime-config head,
