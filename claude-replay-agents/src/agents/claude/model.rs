@@ -507,6 +507,15 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
     }
 }
 
+/// [`enrich_tree`] against an explicit `subagents/` dir — for a derived store (Qoder) whose
+/// companion dir can sit under a DIFFERENT project slug than the transcript (a mid-session
+/// `cwd` change files it under the new cwd's slug), so "beside the transcript" is not the
+/// only place to look. Composable: children a pass can't resolve are left untouched, so
+/// several candidate dirs may be tried in turn.
+pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {
+    enrich_subagents(blocks, sadir);
+}
+
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
 /// the adapter's `parse_path_timed` builds on. `enrich_tree` (the adapter's `enrich`, backing
 /// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
@@ -720,6 +729,15 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 ts: ev_ts,
                             });
                         }
+                    }
+                    // Encrypted reasoning (Qoder's `QE:`-prefixed `data`, Anthropic's
+                    // redacted blocks): the ciphertext is never shown, but the block still
+                    // marks reasoning time, so it joins the ✻ work-span as a placeholder.
+                    Some("redacted_thinking") => {
+                        msgs.push(Message::Thinking {
+                            text: "[redacted thinking]".to_string(),
+                            ts: ev_ts,
+                        });
                     }
                     Some("tool_use") => {
                         let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");

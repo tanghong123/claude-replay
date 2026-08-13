@@ -1374,6 +1374,7 @@ mod tests {
         std::env::set_var("CLAUDE_PROJECTS_DIR", &store);
         // Point the OTHER stores away from the real machine, so the fixture is the world.
         std::env::set_var("QODERWORK_PROJECTS_DIR", base.join("qw"));
+        std::env::set_var("QODER_PROJECTS_DIR", base.join("qoder"));
         std::env::set_var("CODEX_HOME", base.join("codex"));
 
         let sid = "11111111-2222-3333-4444-555555555555";

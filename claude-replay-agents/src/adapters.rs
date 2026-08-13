@@ -12,9 +12,16 @@ use claude_replay_engine::Agent;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// Every built-in adapter, in the stable order detection iterates.
-pub static REGISTRY: &[&'static dyn TranscriptAdapter] =
-    &[&ClaudeAdapter, &CodexAdapter, &QoderWorkAdapter];
+/// Every built-in adapter, in the stable order detection iterates. Qoder sits ahead of
+/// QoderWork because both stores share the `runtime-config` head shape: each owns only its
+/// own variant (the key probe below), but the order keeps detection deterministic even if
+/// a future head matched both.
+pub static REGISTRY: &[&'static dyn TranscriptAdapter] = &[
+    &ClaudeAdapter,
+    &CodexAdapter,
+    &QoderAdapter,
+    &QoderWorkAdapter,
+];
 
 impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
@@ -195,6 +202,83 @@ impl TranscriptAdapter for CodexAdapter {
     }
 }
 
+/// Whether a `runtime-config` head is Qoder CLI's variant: it carries the
+/// `reasoningEffort`/`contextWindow` keys (present even when null), which QoderWork's
+/// head never writes. Key PRESENCE is the probe — the values are usually null.
+fn is_qoder_runtime_config(head: &Value) -> bool {
+    head.get("reasoningEffort").is_some() || head.get("contextWindow").is_some()
+}
+
+/// Qoder CLI adapter — a Claude-Code-format terminal agent with its own store
+/// (`~/.qoder/projects`) and a `runtime-config` head carrying `reasoningEffort`/
+/// `contextWindow`. Everything format-level DELEGATES to the Claude implementations
+/// (tokenizer, shaping, metrics — whose shared usage fold also reads Qoder's
+/// `usage.credits` — enrichment, attachments, the `subagents/agent-<id>.jsonl`
+/// sub-agent layout); only detection and the store root differ.
+pub struct QoderAdapter;
+impl TranscriptAdapter for QoderAdapter {
+    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+        crate::agents::qoder::discover::store_transcripts()
+    }
+
+    fn agent(&self) -> Agent {
+        Agent::QODER
+    }
+    fn sniff(&self, head: &Value) -> SniffClaim {
+        if head.get("type").and_then(Value::as_str) == Some("runtime-config")
+            && is_qoder_runtime_config(head)
+        {
+            SniffClaim::Owns // the keyed runtime-config head is Qoder CLI's signature
+        } else {
+            SniffClaim::No
+        }
+    }
+    fn store_contains(&self, path: &Path) -> bool {
+        path.starts_with(agents::qoder::discover::projects_dir())
+    }
+    /// Claude's enrichment over EVERY candidate `subagents/` dir: a mid-session `cwd`
+    /// change files the companion dir under the new cwd's slug, away from the transcript
+    /// (see `qoder::discover::subagents_dirs`). Passes compose — a child one dir can't
+    /// resolve is left for the next.
+    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+        for dir in agents::qoder::discover::subagents_dirs(path) {
+            agents::claude::model::enrich_tree_in(&dir, blocks);
+        }
+    }
+    fn shaping(&self) -> &'static Shaping {
+        &agents::claude::model::CLAUDE_SHAPING
+    }
+    fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
+        agents::claude::model::decode_line(line, cwd, out)
+    }
+    fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
+        Box::new(agents::claude::metrics::MetricsAcc::default())
+    }
+    fn load_attachment(
+        &self,
+        line: &str,
+        index: usize,
+    ) -> Option<claude_replay_engine::model::LoadedAttachment> {
+        agents::claude::model::nth_loaded_attachment(line, index)
+    }
+    fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
+        agents::qoder::discover::candidates_scoped(cwd)
+    }
+    fn resolve_id(&self, id: &str) -> Option<PathBuf> {
+        agents::qoder::discover::transcript_by_id(id)
+    }
+    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+        agents::qoder::discover::subagent_file(root, child_id)
+    }
+    fn session_card(
+        &self,
+        path: &Path,
+        memo: Option<&claude_replay_engine::seam::CardMemo>,
+    ) -> claude_replay_engine::seam::CardOutcome {
+        agents::qoder::discover::session_card(path, memo)
+    }
+}
+
 /// QoderWork adapter — a Claude-Code-format client with its own store and a `runtime-config`
 /// head line. Everything format-level DELEGATES to the Claude implementations (tokenizer,
 /// shaping, metrics, enrichment, attachments, sub-agent layout — the transcripts are
@@ -220,8 +304,13 @@ impl TranscriptAdapter for QoderWorkAdapter {
         false
     }
     fn sniff(&self, head: &Value) -> SniffClaim {
-        if head.get("type").and_then(Value::as_str) == Some("runtime-config") {
-            SniffClaim::Owns // the runtime-config head is QoderWork's signature
+        // QoderWork's signature MINUS Qoder's: both stores open with a `runtime-config`
+        // head, but only Qoder CLI's carries the `reasoningEffort`/`contextWindow` keys —
+        // so each variant is owned by exactly one adapter, order-independently.
+        if head.get("type").and_then(Value::as_str) == Some("runtime-config")
+            && !is_qoder_runtime_config(head)
+        {
+            SniffClaim::Owns // the key-less runtime-config head is QoderWork's signature
         } else {
             SniffClaim::No
         }
@@ -263,5 +352,59 @@ impl TranscriptAdapter for QoderWorkAdapter {
         memo: Option<&claude_replay_engine::seam::CardMemo>,
     ) -> claude_replay_engine::seam::CardOutcome {
         agents::qoderwork::discover::session_card(path, memo)
+    }
+}
+
+#[cfg(test)]
+mod sniff_tests {
+    use super::*;
+
+    fn claims(head: &str) -> Vec<(Agent, SniffClaim)> {
+        let v: Value = serde_json::from_str(head).unwrap();
+        REGISTRY.iter().map(|a| (a.agent(), a.sniff(&v))).collect()
+    }
+
+    /// The three-way disambiguation on the shared `runtime-config` head shape: Qoder CLI's
+    /// variant (keys present, even when null) is owned by Qoder ALONE, QoderWork's key-less
+    /// variant by QoderWork ALONE — order-independent, so registry reshuffles can't flip a
+    /// store's identity.
+    #[test]
+    fn runtime_config_heads_are_owned_by_exactly_one_adapter() {
+        let qoder = r#"{"type":"runtime-config","sessionId":"s","model":"cmodel","reasoningEffort":null,"contextWindow":null,"timestamp":1786606218598}"#;
+        let owners: Vec<Agent> = claims(qoder)
+            .into_iter()
+            .filter(|(_, c)| matches!(c, SniffClaim::Owns))
+            .map(|(a, _)| a)
+            .collect();
+        assert_eq!(
+            owners,
+            vec![Agent::QODER],
+            "the keyed head is Qoder's alone"
+        );
+
+        let qoderwork = r#"{"type":"runtime-config","sessionId":"s","model":"qwork-ultimate","timestamp":1785068132048}"#;
+        let owners: Vec<Agent> = claims(qoderwork)
+            .into_iter()
+            .filter(|(_, c)| matches!(c, SniffClaim::Owns))
+            .map(|(a, _)| a)
+            .collect();
+        assert_eq!(
+            owners,
+            vec![Agent::QODERWORK],
+            "the key-less head stays QoderWork's alone"
+        );
+    }
+
+    /// A plain Claude conversation line stays a CAN-PARSE claim for Claude and NOTHING for
+    /// the derived agents — untouched by the Qoder addition.
+    #[test]
+    fn claude_lines_are_untouched_by_the_qoder_adapter() {
+        let line = r#"{"type":"user","sessionId":"s","message":{"role":"user","content":"hi"}}"#;
+        for (agent, claim) in claims(line) {
+            match agent {
+                Agent::CLAUDE => assert!(matches!(claim, SniffClaim::CanParse)),
+                _ => assert!(matches!(claim, SniffClaim::No), "{agent:?} must not claim"),
+            }
+        }
     }
 }

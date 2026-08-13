@@ -21,6 +21,11 @@ impl Agent {
     /// QoderWork — a Claude-Code-format client with its own store (`~/.qoderwork/projects/`)
     /// and a `runtime-config` head line. Parsing delegates to the Claude implementations.
     pub const QODERWORK: Agent = Agent("qoderwork");
+    /// Qoder CLI (qodercli) — a Claude-Code-format terminal agent with its own store
+    /// (`~/.qoder/projects/`). Its `runtime-config` head carries `reasoningEffort`/
+    /// `contextWindow`, which is what tells it apart from QoderWork's. Parsing delegates
+    /// to the Claude implementations.
+    pub const QODER: Agent = Agent("qoder");
 
     /// Mint an agent id a third-party adapter registers under. The id doubles as the
     /// display label, so keep it short and lowercase (`"gemini"`).
@@ -41,6 +46,8 @@ impl Agent {
             "claude" => Some(Self::CLAUDE),
             "codex" => Some(Self::CODEX),
             "qoderwork" => Some(Self::QODERWORK),
+            // `qodercli` is the binary's name; both resolve to the one store.
+            "qoder" | "qodercli" => Some(Self::QODER),
             _ => None,
         }
     }

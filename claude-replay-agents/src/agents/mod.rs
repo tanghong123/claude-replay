@@ -22,6 +22,9 @@ pub mod codex {
 pub mod qoderwork {
     pub mod discover;
 }
+pub mod qoder {
+    pub mod discover;
+}
 
 #[cfg(test)]
 mod tests {
