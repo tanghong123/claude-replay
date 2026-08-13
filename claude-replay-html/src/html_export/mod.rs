@@ -1017,7 +1017,7 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous" autocomplete="off">
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · u: prefix searches your turns only" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
@@ -2494,6 +2494,26 @@ mod tests {
         assert!(
             !CSS.contains(".fold[data-open=\"1\"] > .fold-h .tool-target"),
             "expanded target is inline now, not a CSS descendant rule"
+        );
+    }
+
+    /// The search box supports a `u:`/`user:` prefix scoping the search to the reader's
+    /// own turns (same syntax as the TUI's `/` search). The contract with the JS: the
+    /// prefix parser + the `searchInScope` gate exist, the scope rides `isTurnKind` (the
+    /// sidebar's user|command predicate), and the shell's tooltip teaches the syntax.
+    #[test]
+    fn search_supports_a_user_turn_scope_prefix() {
+        assert!(
+            JS.contains("/^u(ser)?:/i") && JS.contains("searchUserOnly"),
+            "the u:/user: prefix parser sets the scope flag"
+        );
+        assert!(
+            JS.contains("function searchInScope") && JS.contains("isTurnKind(records[i])"),
+            "scope gating goes through the sidebar's turn predicate"
+        );
+        assert!(
+            build_shell("t", "root", false, false).contains("u: prefix"),
+            "the search box tooltip mentions the scope syntax"
         );
     }
 

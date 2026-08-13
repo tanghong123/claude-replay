@@ -1441,15 +1441,20 @@ impl View {
     /// FOLDED blocks are found (the old display-text index was fold-blind). Extraction is
     /// string-only (no render, no wrap, no styling); position mapping stays lazy (the jump
     /// target's block start comes from the prefix sums; visible highlighting happens during
-    /// the normal draw of the hot window).
+    /// the normal draw of the hot window). A `u:`/`user:` query prefix (same syntax as the
+    /// HTML viewer's search box) scopes the scan to the reader's own turns.
     fn recompute_matches(&mut self) {
         self.matches.clear();
         self.occurrences = 0;
-        if self.query.is_empty() {
+        let (user_only, needle) = scoped_query(&self.query);
+        let q = needle.to_lowercase();
+        if q.is_empty() {
             return;
         }
-        let q = self.query.to_lowercase();
         for (i, b) in self.blocks.iter().enumerate() {
+            if user_only && !is_user_turn(b) {
+                continue;
+            }
             let n = block_occurrences(b, &q);
             if n > 0 {
                 self.matches.push(i);
@@ -1902,15 +1907,24 @@ impl View {
         // Since #84 `matches` holds BLOCK indices (discovery scans block text, not display
         // text), so the row highlight can't come from an index lookup: a row lights up when
         // its own text contains the needle, brighter when its block is the current hit.
-        let needle = (!self.query.is_empty()).then(|| self.query.to_lowercase());
+        // A `u:`-scoped search additionally requires the row's block to be a user turn —
+        // the needle appearing in an out-of-scope block must not light up a row `n`/`N`
+        // will never visit.
+        let (user_only, raw_needle) = scoped_query(&self.query);
+        let needle = (!raw_needle.is_empty()).then(|| raw_needle.to_lowercase());
         let mut view: Vec<Line> = Vec::new();
         for ai in self.scroll..end {
             let Some(line) = self.line_at(ai) else { break };
             // Detect the diff-inset need from the original line, before search
             // highlighting overwrites the bg (else the matched row shifts left).
             let inset = is_diff_line(&line);
+            let in_scope = !user_only
+                || self
+                    .tag_of(ai)
+                    .and_then(|b| self.blocks.get(b))
+                    .is_some_and(|b| is_user_turn(b));
             let styled = match &needle {
-                Some(q) if row_text(&line).to_lowercase().contains(q.as_str()) => {
+                Some(q) if in_scope && row_text(&line).to_lowercase().contains(q.as_str()) => {
                     highlight_bg(&line, self.tag_of(ai) == cur)
                 }
                 _ => line,
@@ -2167,6 +2181,7 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("[ / ]", "focus previous / next foldable"),
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
+        ("/u:text", "search your own turns only (u: or user: prefix)"),
         ("t", "task/todo panel (session task queue)"),
         (
             "mouse",
@@ -2321,6 +2336,28 @@ fn pretty_home(p: &Path) -> String {
 /// (a thinking span's absorbed tools, a spawn's inline child) recurse so folded and
 /// nested content is searchable. The contract is raw-content search (like vim searching
 /// the source, not the wrapped display).
+/// Split a raw search query into `(user_only, needle)`: a `u:`/`user:` prefix
+/// (case-insensitive — the same syntax the HTML viewer's search box accepts) scopes the
+/// search to the reader's own turns. No prefix leaves the query untouched.
+fn scoped_query(raw: &str) -> (bool, &str) {
+    for p in ["user:", "u:"] {
+        if let Some(head) = raw.get(..p.len()) {
+            if head.eq_ignore_ascii_case(p) {
+                return (true, &raw[p.len()..]);
+            }
+        }
+    }
+    (false, raw)
+}
+
+/// The `u:` search scope: the reader's own turns — the same `UserText | Command`
+/// predicate the sidebar's turn list uses (a slash command is something the reader
+/// typed, so it counts; sub-agent prompts are assistant-authored, so their nested
+/// user-role turns do not — they live inside `SubAgent` blocks, which this skips).
+fn is_user_turn(b: &Block) -> bool {
+    matches!(b, Block::UserText(_) | Block::Command { .. })
+}
+
 fn block_occurrences(b: &Block, needle: &str) -> usize {
     fn count(hay: &str, needle: &str) -> usize {
         if needle.is_empty() {
@@ -4481,6 +4518,77 @@ mod tests {
             plain != Some(ratatui::style::Color::Yellow)
                 && plain != Some(ratatui::style::Color::Rgb(70, 70, 0)),
             "non-hit rows keep their bg, got {plain:?}"
+        );
+    }
+
+    /// A `u:`/`user:` query prefix scopes the search to the reader's own turns:
+    /// `UserText` and `Command` (the sidebar's turn predicate) match, assistant text
+    /// does not. The prefix is case-insensitive, and both spellings are the same scope.
+    #[test]
+    fn a_user_prefix_scopes_the_search_to_user_turns() {
+        let mut bs = blocks(10);
+        bs[2] = Block::UserText("UNIQUEMATCH from me".into());
+        bs[4] = Block::AssistantText("UNIQUEMATCH from the assistant".into());
+        bs[6] = Block::Command {
+            name: "/go".into(),
+            args: "UNIQUEMATCH now".into(),
+            output: vec![],
+        };
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 60, 12);
+
+        let count_for = |v: &mut View, q: &str| {
+            v.search_start();
+            for c in q.chars() {
+                v.search_input(c);
+            }
+            let n = v.match_count();
+            v.search_cancel();
+            n
+        };
+        assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 3, "unscoped: every block");
+        assert_eq!(
+            count_for(&mut v, "u:UNIQUEMATCH"),
+            2,
+            "u: scope: the user turn and the slash command, not the assistant"
+        );
+        assert_eq!(count_for(&mut v, "user:UNIQUEMATCH"), 2, "user: alias");
+        assert_eq!(count_for(&mut v, "U:UNIQUEMATCH"), 2, "case-insensitive");
+    }
+
+    /// The scoped search's DRAW matches its match list: an out-of-scope row containing
+    /// the needle is not painted — a lit row `n`/`N` never visits would read as a
+    /// broken walk.
+    #[test]
+    fn a_scoped_search_highlight_skips_out_of_scope_rows() {
+        let mut bs = blocks(10);
+        bs[2] = Block::UserText("UNIQUEMATCH mine".into());
+        bs[4] = Block::AssistantText("UNIQUEMATCH theirs".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 60, 12);
+        v.scroll_by(-9999); // top: both needle rows on screen
+        v.search_start();
+        for c in "u:UNIQUEMATCH".chars() {
+            v.search_input(c);
+        }
+        let buf = draw(&mut v, 60, 12);
+        let bg_of = |needle_row: &str| {
+            let y = (0..11)
+                .find(|&y| row(&buf, y).contains(needle_row))
+                .unwrap_or_else(|| panic!("{needle_row} not on screen"));
+            let x = row(&buf, y).find('U').unwrap() as u16;
+            buf[(x, y)].style().bg
+        };
+        assert_eq!(
+            bg_of("UNIQUEMATCH mine"),
+            Some(ratatui::style::Color::Yellow),
+            "the in-scope hit is highlighted (and is the current hit)"
+        );
+        let theirs = bg_of("UNIQUEMATCH theirs");
+        assert!(
+            theirs != Some(ratatui::style::Color::Yellow)
+                && theirs != Some(ratatui::style::Color::Rgb(70, 70, 0)),
+            "the out-of-scope needle row is NOT painted, got {theirs:?}"
         );
     }
 }

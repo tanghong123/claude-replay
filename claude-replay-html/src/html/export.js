@@ -199,6 +199,7 @@
   var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
   var topPad = null, botPad = null;
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
+  var searchUserOnly = false; // `u:`/`user:` prefix — scope the search to the reader's turns
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -260,7 +261,7 @@
     buildStripsIn(e);
     applyWrapIn(e);
     reapplySmallMore(e);
-    if (searchNeedle) {
+    if (searchNeedle && searchInScope(+e.dataset.idx)) {
       markHits(e, searchNeedle, searchNeedle.length);
       // The current hit survives rematerialization (#66) — same id-keyed idea as
       // the filter's `.filter-cur`.
@@ -2444,6 +2445,7 @@
   var totalHits = 0;
   function clearHl() {
     searchNeedle = "";
+    searchUserOnly = false;
     var touched = [];
     all("#stream mark.hl").forEach(function (m) {
       var p = m.parentNode;
@@ -2510,6 +2512,12 @@
       tn.parentNode.replaceChild(frag, tn);
     });
   }
+  // A `u:`/`user:` query prefix (case-insensitive, same syntax as the TUI's `/` search)
+  // scopes the search to the reader's own turns — `isTurnKind`, the sidebar's predicate,
+  // so typed slash commands count and sub-agent activity does not.
+  function searchInScope(i) {
+    return !searchUserOnly || (records[i] && isTurnKind(records[i]));
+  }
   function search(v) {
     var qc = $("qcount");
     showQNav(false);
@@ -2520,15 +2528,22 @@
     hitRecs = [];
     totalHits = 0;
     var needle = v.trim();
+    var scoped = /^u(ser)?:/i.exec(needle);
+    if (scoped) needle = needle.slice(scoped[0].length);
     if (needle.length < 2) { qc.textContent = ""; return; }
+    searchUserOnly = !!scoped;
     var lc = needle.toLowerCase();
     searchNeedle = lc;
     for (var i = 0; i < records.length; i++) {
+      if (!searchInScope(i)) continue;
       var n = countOcc(textOfRec(i), lc);
       if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
     }
-    matEls().forEach(function (e) { markHits(e, lc, lc.length); });
-    qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s");
+    matEls().forEach(function (e) {
+      if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length);
+    });
+    qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s")
+      + (searchUserOnly ? " in your turns" : "");
     showQNav(totalHits > 0);
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
