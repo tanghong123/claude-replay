@@ -686,6 +686,56 @@ the `Entries<P>` seam, before/after code at every call site, the #109 witness fa
 number, not a `SharedSession`), what #169 adds, what deliberately does not move behind the
 provider, and a four-step migration. Proposed; nothing built.
 
+### #193 — study: a common eliding line reader, so no consumer buffers a whole raw line
+
+**Queued 2026-08-13; study only — produce a design doc, build nothing until it's reviewed.**
+
+Inspired by agent-metrics' adopted proposal
+(`~/code/agent-metrics/docs/proposals/bounded-line-reads.md`), which fixes this locally in its
+own `timeline.rs` and explicitly notes the approach "ports cleanly" to the engine. Its findings,
+measured over ~400 real Claude-format transcripts: largest single line **8.08 MB**, 83 lines
+over 1 MB, and **~95% of the bulk is base64 attachment bodies** (`toolUseResult.file.base64`
+and its `tool_result` twin) — none of it metric-bearing. Its mechanism: a JSON-aware streaming
+filter that copies bytes through but replaces any string value over `ELIDE_STRING_BYTES`
+(64 KB) with a `"<elided:N>"` placeholder — output is still valid JSON with the same shape, so
+every downstream `&str`/`Value` consumer works unmodified; a fast path leaves lines under
+256 KB on the existing read untouched; offsets always advance by the **raw** byte count;
+cap-and-drop is rejected outright (it throws away real `usage` blocks).
+
+The study: can ONE such reader live in the engine, shared by every line consumer, instead of
+each downstream repo growing its own scanner that drifts?
+
+- **Inventory the read sites** (each buffers whole raw lines today): `engine/reader.rs`
+  `LineReader` (the shared tail/resume poll — the natural home), `metrics_fold.rs::next_event`'s
+  own `read_line` loop, the whole-file parse driver, the head sniff in `discover.rs` /
+  `adapter.rs`, the `session_card` tail scanner, and the `builder`/`session`/`tier_b` paths.
+- **What's genuinely different from agent-metrics**: the engine's `decode_line` output IS
+  surfaced — blocks carry text and tool output — so the generic >64 KB rule is *not*
+  content-neutral here. But the dominant bulk is exactly what the block model already defers:
+  `AttachmentContent::Deferred { at, index }` holds a line offset and an ordinal, never bytes
+  (`the_open_window_never_grows_to_o_of_session`), and `load_attachment` re-reads the RAW line
+  from disk. Today the engine buffers an 8 MB line in order to build a locator that
+  deliberately holds none of it — that is the prize.
+- **Per-consumer appetite**: metrics folds (the engine's `MetricsFold`, the monitor's cost
+  ledger, agent-metrics through the seam) can take the aggressive generic rule — provably
+  metric-neutral, every metric-bearing field is a small scalar. Block building needs the
+  conservative rule: elide only what becomes `Deferred`, or decide explicitly that a giant
+  tool-output string may render as `<elided:N>` (content change ⇒ FOLD_VERSION bump + byte-gate
+  re-baseline; the attachment `index` ordinals survive either way, because a placeholder keeps
+  the JSON shape and the loadable-attachment count).
+- **Invariants to carry over unchanged**: offsets and the `Resume` window CRC are over raw file
+  bytes (`window_at` hashes the file, so elision never feeds it); torn tails stay unconsumed;
+  escape-state fixture torture (escaped quotes, unicode, nested arrays, a 10 MB base64 field)
+  pinning elided ≡ un-elided for both metrics AND blocks; scanner uncertainty falls back to
+  verbatim copy under a hard ceiling.
+- **Seam question**: expose the eliding reader through `engine/seam.rs` so third-party
+  consumers share the one audited scanner — the alternative is agent-metrics' local copy and
+  ours drifting apart, which is the situation this study exists to avoid.
+
+Deliverable: `design/bounded-line-reads.md` answering placement, the per-consumer elision
+rules, and the migration order across the read sites, with the equivalence oracle named per
+step.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
