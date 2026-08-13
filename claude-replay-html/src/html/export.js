@@ -2676,7 +2676,27 @@
       if (b) b.classList.toggle("on", !!on);
     });
   }
-  q.addEventListener("input", function () { search(q.value); });
+  // The "user only" toggle is the visible face of the `u:` prefix, and the BOX is the
+  // single source of truth: clicking the toggle edits the prefix in the box, typing the
+  // prefix by hand lights the toggle — neither can drift from the other.
+  var qscope = $("qscope");
+  var SCOPE_RE = /^\s*u(ser)?:/i; // same prefix search() honors (it trims first)
+  function syncQScope() {
+    if (qscope) qscope.classList.toggle("on", SCOPE_RE.test(q.value));
+  }
+  if (qscope) {
+    // mousedown is swallowed so the input keeps focus, like the hit steppers.
+    qscope.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    qscope.addEventListener("click", function () {
+      q.value = SCOPE_RE.test(q.value)
+        ? q.value.replace(SCOPE_RE, "")
+        : "u:" + q.value;
+      search(q.value);
+      syncQScope();
+      q.focus();
+    });
+  }
+  q.addEventListener("input", function () { search(q.value); syncQScope(); });
   q.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && totalHits) {
       stepHit(e.shiftKey ? -1 : 1);

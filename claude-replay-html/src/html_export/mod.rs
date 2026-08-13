@@ -1021,6 +1021,7 @@ fn build_page(
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
+      <span id="qscope" class="qscope" title="Search your own turns only — adds/removes the u: prefix">user only</span>
     </div>
     <div class="toolfilter" id="tasknav" style="display:none">
       <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
@@ -2531,6 +2532,28 @@ mod tests {
             build_shell("t", "root", false, false).contains("u: prefix"),
             "the search box tooltip mentions the scope syntax"
         );
+    }
+
+    /// The scope's visible face: a "user only" toggle in the search box that adds/removes
+    /// the `u:` prefix, lighting up whenever the prefix is present — clicked in or typed.
+    /// The contract with the JS: one shared prefix regex, a sync hook on input, and a
+    /// styled active state.
+    #[test]
+    fn search_scope_toggle_mirrors_the_prefix() {
+        let shell = build_shell("t", "root", false, false);
+        assert!(
+            shell.contains("id=\"qscope\"") && shell.contains("user only"),
+            "the toggle is in the search box"
+        );
+        assert!(
+            JS.contains("SCOPE_RE") && JS.contains("syncQScope"),
+            "toggle clicks and typed prefixes share one regex and one sync"
+        );
+        assert!(
+            JS.contains("search(q.value); syncQScope();"),
+            "typing re-derives the toggle state from the box"
+        );
+        assert!(CSS.contains(".qscope.on"), "the active state is styled");
     }
 
     /// A queued in-flight prompt streams as kind "queue" — an always-open marker
