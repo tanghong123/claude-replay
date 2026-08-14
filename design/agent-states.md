@@ -199,6 +199,25 @@ agent the monitor understands (claude, codex, qoder, qoderwork) is covered by th
 stream, not just the one with hooks. `/api/fleet`-style aggregation across machines
 stays out of scope here; monitor-fleet can proxy `current.json` later if wanted.
 
+## 7.5 Where the code lives
+
+The monitor owns the loop and the files; the general crates expose exactly four things,
+split by the #21/#22/#23 rule — agent vocabulary behind the adapter seam, agent-free
+machinery in the engine, OS probing never below the monitor:
+
+| Piece | Crate | Shape |
+|---|---|---|
+| `AgentState`/`StateReason`/`StateSignals` + `derive_state()` (the §4 table, pure) + hysteresis constants | engine | new `state` module — unit-testable with no OS, no store; reusable by other consumers (e.g. agent-metrics over historical transcripts) |
+| `StateEvent` (the §5 schema, serde) | engine | beside the vocabulary, so every consumer deserializes against the type the monitor serializes |
+| `inflight_tools_in_tail(path) -> Vec<InflightTool{id, name}>` | core `liveness` | upgrade of the bool (which stays as a wrapper); the name rides the same field-level scan. The monitor joins names against the EXISTING `tool_is_interactive` (#21) |
+| `tail_pulse(adapter, path) -> TailPulse` + defaulted `TranscriptAdapter::turn_ended(raw_line) -> Option<bool>` | engine (+ two one-field overrides in agents) | the generic pulse runs the adapter's own `line_preprocessor`/`decode_line` over a bounded tail — last-record kind, final text, queued prompts, `is_error` (#23) all fall out; only END-OF-TURN is agent vocabulary (Claude `stop_reason`, Codex `task_complete`), hence the hook. `None` default keeps third-party adapters compiling and degrades rule 6 to the growth/inflight signals |
+
+Monitor-only, deliberately: growth clocks (already per-row), process attribution (#99's
+`ps eww`/fd machinery in `index.rs` — machine-level, not transcript-level), the rule-5
+children probe (pure `ps`), hysteresis STAGING (state held across ticks is scan-loop
+state), and all writing (append, rotation, `current.json` atomicity). Net new code in
+the `agents` crate: the two `turn_ended` overrides — the seam audit stays happy.
+
 ## 8. What this deliberately is not
 
 - **Not a supervisor** (§7 of the monitor doc): it never starts, stops, or nudges a
