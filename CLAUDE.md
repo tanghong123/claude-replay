@@ -36,12 +36,15 @@ After each completed CODE task (docs/design-only changes need no release): bump
 `[workspace.package] version` in the root Cargo.toml, `cargo build` to refresh
 Cargo.lock, commit, annotated signed tag (`git tag -a vX.Y.Z -m "..."`), push
 `origin main` then the tag — the tag push triggers the Release workflow, which
-publishes binaries and bumps the Homebrew tap. **Then mirror**: `git push alibaba
-main --tags` (the internal remote at code.alibaba-inc.com:project-h/claude-replay;
-its server-side push rule accepts the repo's gmail history, and the pre-push
-hook scans only commits origin does not already have, so mirror pushes are
-instant). Verify the commit really landed before tagging — a failed commit with
-the tag commands still running once shipped a tag pointing at the wrong commit.
+publishes binaries and bumps the Homebrew tap. Verify the commit really landed
+before tagging — a failed commit with the tag commands still running once
+shipped a tag pointing at the wrong commit.
+
+`origin` (GitHub) is the only remote: it is where the code is developed, where
+releases are cut, and where issues are filed. The internal mirror was removed —
+it had `issues_enabled: false`, so it could hold code but never the discussion
+about it, and a mirror that cannot take an issue is just a second place to
+forget to push.
 
 ## Merging external PRs
 CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
