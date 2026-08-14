@@ -199,7 +199,7 @@
   var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
   var topPad = null, botPad = null;
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
-  var searchScope = null; // `u+a+t:` prefix parse — {u,a,t} booleans, null = unscoped
+  var searchScope = null; // `uato:` prefix parse — {u,a,t,o} booleans, null = unscoped
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -2515,18 +2515,26 @@
       tn.parentNode.replaceChild(frag, tn);
     });
   }
-  // The `u+a+t:` scope grammar (same syntax as the TUI's `/` search, case-insensitive):
-  // any combination of u (your turns: user+command), a (agent replies), t (thinking,
-  // both think and act) joined by `+`, then `:` — ORDER-FREE, so `t+a:` ≡ `a+t:`.
-  // `user:` stays an alias for `u:`. Returns {set:{u,a,t}, len} or null when the text
-  // has no prefix (a colon in ordinary text — `http://` — is not a prefix).
+  // The `uato:` scope grammar (same syntax as the TUI's `/` search, case-insensitive):
+  // a run of DISTINCT letters — u (your turns: user+command), a (agent replies),
+  // t (thinking, both think and act), o (tool calls & output) — then `:`, ORDER-FREE,
+  // so `aut:` ≡ `uat:` (the v1.73 `+` spelling still parses). A LEADING colon escapes:
+  // `:aut:x` searches the literal `aut:x`. Returns {set:{u,a,t,o}, len}; {set:null}
+  // for the escape; null when the text has no prefix (repeats, foreign letters —
+  // including the dropped `user:` alias — and colons in ordinary text like `http://`).
   function parseScope(needle) {
-    var m = /^([uat](?:\+[uat]){0,2}|user):/i.exec(needle);
+    if (needle.charAt(0) === ":") return { set: null, len: 1 };
+    var m = /^([uato+]{1,7}):/i.exec(needle);
     if (!m) return null;
-    var set = { u: false, a: false, t: false };
-    m[1].toLowerCase().split("+").forEach(function (p) {
-      set[p === "user" ? "u" : p] = true;
-    });
+    var set = { u: false, a: false, t: false, o: false };
+    var run = m[1].toLowerCase();
+    for (var i = 0; i < run.length; i++) {
+      var p = run.charAt(i);
+      if (p === "+") continue; // the v1.73 separator, still accepted
+      if (set[p]) return null; // a repeated letter is a word, not a scope
+      set[p] = true;
+    }
+    if (!set.u && !set.a && !set.t && !set.o) return null;
     return { set: set, len: m[0].length };
   }
   function searchInScope(i) {
@@ -2535,10 +2543,11 @@
     if (!r) return false;
     return (searchScope.u && (r.kind === "user" || r.kind === "command"))
       || (searchScope.a && r.kind === "assistant")
-      || (searchScope.t && (r.kind === "think" || r.kind === "act"));
+      || (searchScope.t && (r.kind === "think" || r.kind === "act"))
+      || (searchScope.o && /^(bash|edit|write|read|skill|tool)$/.test(r.kind));
   }
   function scopeLetters(set) {
-    return ["u", "a", "t"].filter(function (k) { return set && set[k]; });
+    return ["u", "a", "t", "o"].filter(function (k) { return set && set[k]; });
   }
   function search(v) {
     var qc = $("qcount");
@@ -2553,7 +2562,7 @@
     var scoped = parseScope(needle);
     if (scoped) needle = needle.slice(scoped.len);
     if (needle.length < 2) { qc.textContent = ""; return; }
-    searchScope = scoped ? scoped.set : null;
+    searchScope = scoped && scoped.set ? scoped.set : null;
     var lc = needle.toLowerCase();
     searchNeedle = lc;
     for (var i = 0; i < records.length; i++) {
@@ -2565,7 +2574,7 @@
       if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length);
     });
     qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s")
-      + (searchScope ? " in " + scopeLetters(searchScope).join("+") : "");
+      + (searchScope ? " in " + scopeLetters(searchScope).join("") : "");
     showQNav(totalHits > 0);
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
@@ -2632,6 +2641,13 @@
   var curHit = null; // {rec, mark} — re-applied on rematerialization (postMat)
   function stepHit(dir) {
     if (!hitRecs.length) return;
+    // Every step is user-initiated navigation, whatever triggered it — ⏎ in the box
+    // (whose keydown the intent listener deliberately ignores: TYPING is not scroll
+    // intent), the ▲▼ steppers, anything later. Mark the intent like goToId does, so
+    // the follow classifier reads the jump's scroll as the user moving. Without this,
+    // a step from a PINNED live view is displacement, healed by an instant snap back
+    // to the tail — a search that "finds 14 hits you can never see".
+    lastUserInput = performance.now();
     // Continuing the SEQUENCE only makes sense while the reader is still at the current
     // hit. If they moved — scrolled away, clicked a turn, jumped through the sidebar — the
     // stored position is where the search was, not where they are, and "next" means next
@@ -2713,6 +2729,12 @@
     } else if (el) {
       goTo(el, true); // mark-less hit record: land on it, never skip it
     }
+    // Settle the pin SYNCHRONOUSLY, position deciding — the async classifiers race:
+    // the jump's own materialization resizes the body, and the ResizeObserver heal
+    // consults only `following`, not intent. If it wins the race against the scroll
+    // event, a still-pinned page snaps back to the tail over the landing. By deciding
+    // here, the observers find the pin already correct and heal nothing.
+    setFollowing(atBottom());
     spy();
   }
   // #102: visible prev/next steppers — Shift+Enter always went backward, but
@@ -2730,10 +2752,10 @@
       if (b) b.classList.toggle("on", !!on);
     });
   }
-  // The scope dropdown is the visible face of the `u+a+t:` prefix, and the BOX is the
+  // The scope dropdown is the visible face of the `uato:` prefix, and the BOX is the
   // single source of truth: checking a box rewrites the prefix in the input, typing a
   // prefix by hand checks the boxes — neither can drift from the other. The rebuilt
-  // prefix is canonical (`u+a+t` order); a hand-typed permutation is honored as typed.
+  // prefix is canonical (`uato` order); a hand-typed permutation is honored as typed.
   var qscope = $("qscope");
   function scopeMenu(open) {
     var m = $("qscopemenu");
@@ -2741,26 +2763,26 @@
   }
   function syncQScope() {
     var parsed = parseScope(q.value.trim());
-    var set = parsed ? parsed.set : { u: false, a: false, t: false };
-    ["u", "a", "t"].forEach(function (k) {
+    var set = (parsed && parsed.set) || { u: false, a: false, t: false, o: false };
+    ["u", "a", "t", "o"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.checked = !!set[k];
     });
     if (qscope) {
       var letters = scopeLetters(set);
       qscope.classList.toggle("on", letters.length > 0);
-      qscope.textContent = (letters.length ? letters.join("+") : "scope") + " ▾";
+      qscope.textContent = (letters.length ? letters.join("") : "scope") + " ▾";
     }
   }
   function applyScopeFromMenu() {
-    var letters = ["u", "a", "t"].filter(function (k) {
+    var letters = ["u", "a", "t", "o"].filter(function (k) {
       var cb = $("qs-" + k);
       return cb && cb.checked;
     });
     var trimmed = q.value.replace(/^\s+/, "");
     var parsed = parseScope(trimmed);
     var rest = parsed ? trimmed.slice(parsed.len) : trimmed;
-    q.value = (letters.length ? letters.join("+") + ":" : "") + rest;
+    q.value = (letters.length ? letters.join("") + ":" : "") + rest;
     search(q.value);
     syncQScope();
   }
@@ -2768,7 +2790,7 @@
     qscope.addEventListener("click", function () {
       scopeMenu(!$("qscopemenu").classList.contains("on"));
     });
-    ["u", "a", "t"].forEach(function (k) {
+    ["u", "a", "t", "o"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });
