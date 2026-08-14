@@ -359,6 +359,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         tool_use_id: call_id.to_string(),
                         text: output,
                         tur: Value::Null,
+                        // No structural failure signal exists in observed rollouts (#23):
+                        // no is_error/success/exit_code anywhere in a year of stores, and
+                        // prose like "Script failed" is content, not a signal. Honest
+                        // unknown, for every codex result shape below too.
+                        is_error: None,
                     });
                 }
                 Some("tool_search_call") => {
@@ -375,6 +380,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     tool_use_id: specialized_call_id(payload),
                     text: display_value(payload.get("tools").unwrap_or(&Value::Null)),
                     tur: Value::Null,
+                    is_error: None,
                 }),
                 Some("web_search_call") => {
                     let action = payload.get("action").cloned().unwrap_or(Value::Null);
@@ -411,6 +417,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 tool_use_id: id,
                                 text: result.to_string(),
                                 tur: Value::Null,
+                                is_error: None,
                             });
                         }
                     }
@@ -437,6 +444,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             tool_use_id: call_id.to_string(),
                             text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
                             tur: Value::Null,
+                            is_error: None,
                         });
                     }
                     Some("interrupted") if !thread_id.is_empty() => {
@@ -1036,6 +1044,25 @@ fn apply_output(block: &mut Block, output: String) {
 mod tests {
     use super::*;
     use claude_replay_engine::seam::Block;
+
+    /// #23: codex rollouts carry no structural failure signal (no is_error/success/
+    /// exit_code in observed stores), so every result decodes with `is_error: None` —
+    /// honest unknown, never a fake "succeeded".
+    #[test]
+    fn tool_results_report_no_error_signal() {
+        let line = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"Script failed\nboom"}]}}"#;
+        let mut cwd = String::new();
+        let mut msgs = Vec::new();
+        decode_line(line, &mut cwd, &mut msgs);
+        let got = msgs
+            .iter()
+            .find_map(|m| match m {
+                Message::ToolResult { is_error, .. } => Some(*is_error),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no ToolResult in {msgs:?}"));
+        assert_eq!(got, None, "prose is content, not a signal");
+    }
 
     #[test]
     fn agent_path_key_is_safe_and_reversible() {

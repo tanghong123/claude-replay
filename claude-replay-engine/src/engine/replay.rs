@@ -229,10 +229,15 @@ impl<'a> Replayer<'a> {
                         self.tool_slot.insert(id.clone(), logical);
                     }
                 }
+                // `is_error` rides the seam for metrics consumers (#23); the block fold
+                // does not surface it yet (a failure badge would be a block-output
+                // change: FOLD_VERSION + gate re-baseline territory, deliberately not
+                // smuggled into an additive seam release).
                 Message::ToolResult {
                     tool_use_id,
                     text,
                     tur,
+                    is_error: _,
                 } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
                         join_result(&mut self.out[rel], text, tur);

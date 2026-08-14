@@ -818,6 +818,10 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 tool_use_id: tid.to_string(),
                                 text: txt,
                                 tur: tur.clone(),
+                                // Claude Code writes the key explicitly both ways
+                                // (observed ~8.7k false / 256 true across one project's
+                                // transcripts), so absence really is "no signal".
+                                is_error: blk.get("is_error").and_then(Value::as_bool),
                             });
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
                                 for item in items {
@@ -1762,6 +1766,35 @@ mod tests {
 
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {
         blocks.iter().map(fold_key).collect()
+    }
+
+    /// #23: the decoder carries the content item's `is_error` through as a TRI-STATE —
+    /// explicit true, explicit false, and absent-means-no-signal all stay distinct, so a
+    /// failure-rate consumer can exclude the undecidable instead of counting it as success.
+    #[test]
+    fn tool_result_error_state_is_a_tri_state() {
+        let mk = |flag: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":"boom"{flag}}}]}}}}"#
+            )
+        };
+        for (flag, want) in [
+            (r#","is_error":true"#, Some(true)),
+            (r#","is_error":false"#, Some(false)),
+            ("", None),
+        ] {
+            let mut cwd = String::new();
+            let mut msgs = Vec::new();
+            decode_line(&mk(flag), &mut cwd, &mut msgs);
+            let got = msgs
+                .iter()
+                .find_map(|m| match m {
+                    Message::ToolResult { is_error, .. } => Some(*is_error),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no ToolResult in {msgs:?}"));
+            assert_eq!(got, want, "flag {flag:?}");
+        }
     }
 
     /// Injected system content — a skill/command instruction body (`isMeta`) or a
