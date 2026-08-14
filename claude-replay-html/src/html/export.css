@@ -142,9 +142,11 @@ input::placeholder { color: var(--faint); }
 }
 .qnav.on { display: inline; }
 .qnav:hover { color: var(--fg); }
-/* The user-turns scope toggle — the clickable face of the `u:` prefix: clicking edits
-   the prefix in the box, typing the prefix lights the toggle. Always visible (unlike
-   the hit steppers) so the scope is discoverable before any search is typed. */
+/* The scope dropdown — the clickable face of the `u+a+t:` prefix: checking a box edits
+   the prefix in the input, typing a prefix checks the boxes. Always visible (unlike the
+   hit steppers) so the scope is discoverable before any search is typed; the trigger
+   reads back the active letters (`u+t ▾`). */
+.qscopewrap { flex: none; position: relative; display: inline-flex; }
 .qscope {
   flex: none; cursor: pointer; user-select: none; white-space: nowrap;
   font: 10.5px var(--mono); color: var(--faint);
@@ -152,6 +154,19 @@ input::placeholder { color: var(--faint); }
 }
 .qscope:hover { color: var(--fg); }
 .qscope.on { color: var(--link); border-color: var(--link); }
+#qscopemenu {
+  display: none; position: absolute; top: 26px; right: 0; min-width: 170px; z-index: 70;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); padding: 6px; flex-direction: column; gap: 1px;
+}
+#qscopemenu.on { display: flex; }
+.qs-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 6px;
+  font: 12px var(--sans); color: var(--fg); cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.qs-item:hover { background: var(--panel); }
+.qs-item input { margin: 0; accent-color: var(--link); }
 .tbtn {
   font: 12.5px var(--sans); padding: 5px 10px; border: 1px solid var(--border);
   border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;

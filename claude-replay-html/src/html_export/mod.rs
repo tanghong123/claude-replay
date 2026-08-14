@@ -1017,11 +1017,19 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · u: prefix searches your turns only" autocomplete="off">
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · u+a+t: prefix scopes to user/agent/thinking, any combo, any order" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
-      <span id="qscope" class="qscope" title="Search your own turns only — adds/removes the u: prefix">user only</span>
+      <span class="qscopewrap">
+        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the u+a+t: prefix">scope ▾</span>
+        <div id="qscopemenu">
+          <div class="menu-head">Search only…</div>
+          <label class="qs-item"><input type="checkbox" id="qs-u"> user messages</label>
+          <label class="qs-item"><input type="checkbox" id="qs-a"> agent responses</label>
+          <label class="qs-item"><input type="checkbox" id="qs-t"> thinking</label>
+        </div>
+      </span>
     </div>
     <div class="toolfilter" id="tasknav" style="display:none">
       <button id="btn-tasks" class="tbtn"><span class="tf-label">Tasks ▾</span></button>
@@ -2514,46 +2522,66 @@ mod tests {
         );
     }
 
-    /// The search box supports a `u:`/`user:` prefix scoping the search to the reader's
-    /// own turns (same syntax as the TUI's `/` search). The contract with the JS: the
-    /// prefix parser + the `searchInScope` gate exist, the scope rides `isTurnKind` (the
-    /// sidebar's user|command predicate), and the shell's tooltip teaches the syntax.
+    /// The search box supports the `u+a+t:` scope prefix (same syntax as the TUI's `/`
+    /// search): any combination of u (user+command), a (assistant), t (think+act), any
+    /// order, `user:` still an alias. The contract with the JS: the order-free grammar,
+    /// the kind-based gate, and a tooltip that teaches the syntax.
     #[test]
-    fn search_supports_a_user_turn_scope_prefix() {
+    fn search_supports_the_uat_scope_prefix() {
         assert!(
-            JS.contains("/^u(ser)?:/i") && JS.contains("searchUserOnly"),
-            "the u:/user: prefix parser sets the scope flag"
+            JS.contains(r"/^([uat](?:\+[uat]){0,2}|user):/i") && JS.contains("function parseScope"),
+            "the order-free u+a+t grammar is the one parser"
         );
         assert!(
-            JS.contains("function searchInScope") && JS.contains("isTurnKind(records[i])"),
-            "scope gating goes through the sidebar's turn predicate"
+            JS.contains("function searchInScope")
+                && JS.contains(r#"r.kind === "user" || r.kind === "command""#)
+                && JS.contains(r#"r.kind === "assistant""#)
+                && JS.contains(r#"r.kind === "think" || r.kind === "act""#),
+            "scope gating maps u/a/t onto the record kinds"
         );
         assert!(
-            build_shell("t", "root", false, false).contains("u: prefix"),
+            build_shell("t", "root", false, false).contains("u+a+t: prefix"),
             "the search box tooltip mentions the scope syntax"
         );
     }
 
-    /// The scope's visible face: a "user only" toggle in the search box that adds/removes
-    /// the `u:` prefix, lighting up whenever the prefix is present — clicked in or typed.
-    /// The contract with the JS: one shared prefix regex, a sync hook on input, and a
-    /// styled active state.
+    /// The scope's visible face: a dropdown of three checkboxes (user messages / agent
+    /// responses / thinking) that rewrites the `u+a+t:` prefix in the box, and lights up
+    /// reading back the active letters when a prefix is typed by hand. The box stays the
+    /// single source of truth — one parser feeds both faces.
     #[test]
-    fn search_scope_toggle_mirrors_the_prefix() {
+    fn search_scope_dropdown_mirrors_the_prefix() {
         let shell = build_shell("t", "root", false, false);
+        for id in [
+            "id=\"qscope\"",
+            "id=\"qscopemenu\"",
+            "id=\"qs-u\"",
+            "id=\"qs-a\"",
+            "id=\"qs-t\"",
+        ] {
+            assert!(
+                shell.contains(id),
+                "the dropdown is in the search box: {id}"
+            );
+        }
         assert!(
-            shell.contains("id=\"qscope\"") && shell.contains("user only"),
-            "the toggle is in the search box"
+            shell.contains("user messages")
+                && shell.contains("agent responses")
+                && shell.contains("thinking"),
+            "the three choices are named"
         );
         assert!(
-            JS.contains("SCOPE_RE") && JS.contains("syncQScope"),
-            "toggle clicks and typed prefixes share one regex and one sync"
+            JS.contains("applyScopeFromMenu") && JS.contains("syncQScope"),
+            "checkbox changes rewrite the prefix; typing re-checks the boxes"
         );
         assert!(
             JS.contains("search(q.value); syncQScope();"),
-            "typing re-derives the toggle state from the box"
+            "typing re-derives the dropdown state from the box"
         );
-        assert!(CSS.contains(".qscope.on"), "the active state is styled");
+        assert!(
+            CSS.contains(".qscope.on") && CSS.contains("#qscopemenu.on"),
+            "the active trigger and the open menu are styled"
+        );
     }
 
     /// A queued in-flight prompt streams as kind "queue" — an always-open marker

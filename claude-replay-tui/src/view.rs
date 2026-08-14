@@ -1441,18 +1441,19 @@ impl View {
     /// FOLDED blocks are found (the old display-text index was fold-blind). Extraction is
     /// string-only (no render, no wrap, no styling); position mapping stays lazy (the jump
     /// target's block start comes from the prefix sums; visible highlighting happens during
-    /// the normal draw of the hot window). A `u:`/`user:` query prefix (same syntax as the
-    /// HTML viewer's search box) scopes the scan to the reader's own turns.
+    /// the normal draw of the hot window). A `u+a+t:` query prefix (any combination, any
+    /// order — same syntax as the HTML viewer's search box) scopes the scan to the
+    /// reader's turns / agent replies / thinking blocks.
     fn recompute_matches(&mut self) {
         self.matches.clear();
         self.occurrences = 0;
-        let (user_only, needle) = scoped_query(&self.query);
+        let (scope, needle) = scoped_query(&self.query);
         let q = needle.to_lowercase();
         if q.is_empty() {
             return;
         }
         for (i, b) in self.blocks.iter().enumerate() {
-            if user_only && !is_user_turn(b) {
+            if !scope.admits(b) {
                 continue;
             }
             let n = block_occurrences(b, &q);
@@ -1907,10 +1908,10 @@ impl View {
         // Since #84 `matches` holds BLOCK indices (discovery scans block text, not display
         // text), so the row highlight can't come from an index lookup: a row lights up when
         // its own text contains the needle, brighter when its block is the current hit.
-        // A `u:`-scoped search additionally requires the row's block to be a user turn —
-        // the needle appearing in an out-of-scope block must not light up a row `n`/`N`
+        // A scoped search additionally requires the row's block to be in scope — the
+        // needle appearing in an out-of-scope block must not light up a row `n`/`N`
         // will never visit.
-        let (user_only, raw_needle) = scoped_query(&self.query);
+        let (scope, raw_needle) = scoped_query(&self.query);
         let needle = (!raw_needle.is_empty()).then(|| raw_needle.to_lowercase());
         let mut view: Vec<Line> = Vec::new();
         for ai in self.scroll..end {
@@ -1918,11 +1919,11 @@ impl View {
             // Detect the diff-inset need from the original line, before search
             // highlighting overwrites the bg (else the matched row shifts left).
             let inset = is_diff_line(&line);
-            let in_scope = !user_only
+            let in_scope = !scope.is_scoped()
                 || self
                     .tag_of(ai)
                     .and_then(|b| self.blocks.get(b))
-                    .is_some_and(|b| is_user_turn(b));
+                    .is_some_and(|b| scope.admits(b));
             let styled = match &needle {
                 Some(q) if in_scope && row_text(&line).to_lowercase().contains(q.as_str()) => {
                     highlight_bg(&line, self.tag_of(ai) == cur)
@@ -2181,7 +2182,10 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("[ / ]", "focus previous / next foldable"),
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
-        ("/u:text", "search your own turns only (u: or user: prefix)"),
+        (
+            "/u+a+t:x",
+            "scope search: u=you a=agent t=thinking (any combo/order)",
+        ),
         ("t", "task/todo panel (session task queue)"),
         (
             "mouse",
@@ -2336,26 +2340,80 @@ fn pretty_home(p: &Path) -> String {
 /// (a thinking span's absorbed tools, a spawn's inline child) recurse so folded and
 /// nested content is searchable. The contract is raw-content search (like vim searching
 /// the source, not the wrapped display).
-/// Split a raw search query into `(user_only, needle)`: a `u:`/`user:` prefix
-/// (case-insensitive — the same syntax the HTML viewer's search box accepts) scopes the
-/// search to the reader's own turns. No prefix leaves the query untouched.
-fn scoped_query(raw: &str) -> (bool, &str) {
-    for p in ["user:", "u:"] {
-        if let Some(head) = raw.get(..p.len()) {
-            if head.eq_ignore_ascii_case(p) {
-                return (true, &raw[p.len()..]);
-            }
-        }
-    }
-    (false, raw)
+/// Which message classes a scoped search covers — the parse of a `u+a+t:` query prefix.
+/// Empty (no prefix) means everything, tool activity included.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct SearchScope {
+    /// `u` — the reader's own turns: the same `UserText | Command` predicate the
+    /// sidebar's turn list uses (a slash command is something the reader typed;
+    /// sub-agent prompts are assistant-authored and live inside `SubAgent` blocks,
+    /// which every scope skips).
+    user: bool,
+    /// `a` — the agent's replies: `AssistantText` prose.
+    assistant: bool,
+    /// `t` — thinking blocks, as displayed: a `Thinking` block that absorbed tool
+    /// calls matches on its whole content, exactly like unscoped block search.
+    thinking: bool,
 }
 
-/// The `u:` search scope: the reader's own turns — the same `UserText | Command`
-/// predicate the sidebar's turn list uses (a slash command is something the reader
-/// typed, so it counts; sub-agent prompts are assistant-authored, so their nested
-/// user-role turns do not — they live inside `SubAgent` blocks, which this skips).
-fn is_user_turn(b: &Block) -> bool {
-    matches!(b, Block::UserText(_) | Block::Command { .. })
+impl SearchScope {
+    fn is_scoped(self) -> bool {
+        self.user || self.assistant || self.thinking
+    }
+    /// Whether a block belongs to this scope. Unscoped admits everything; scoped,
+    /// tool/result/agent/attachment blocks belong to NO class and never match.
+    fn admits(self, b: &Block) -> bool {
+        if !self.is_scoped() {
+            return true;
+        }
+        match b {
+            Block::UserText(_) | Block::Command { .. } => self.user,
+            Block::AssistantText(_) => self.assistant,
+            Block::Thinking { .. } => self.thinking,
+            _ => false,
+        }
+    }
+}
+
+/// Split a raw search query into `(scope, needle)`. The prefix grammar (shared with the
+/// HTML viewer's search box, case-insensitive): any combination of `u` (your turns),
+/// `a` (agent replies), `t` (thinking) joined by `+`, then `:` — **order-free**, so
+/// `u+a+t:` ≡ `a+t+u:` and `t+a:` ≡ `a+t:`. `user:` stays an alias for `u:`. Anything
+/// else — including a colon later in ordinary text (`http://`, `12:30`) — is not a
+/// prefix and leaves the query untouched.
+fn scoped_query(raw: &str) -> (SearchScope, &str) {
+    if let Some(head) = raw.get(..5) {
+        if head.eq_ignore_ascii_case("user:") {
+            return (
+                SearchScope {
+                    user: true,
+                    ..Default::default()
+                },
+                &raw[5..],
+            );
+        }
+    }
+    // The longest valid prefix is "u+a+t" — a colon further out is ordinary text.
+    if let Some(colon) = raw.find(':').filter(|&c| c <= 5) {
+        let mut scope = SearchScope::default();
+        let valid = !raw[..colon].is_empty()
+            && raw[..colon].split('+').all(|part| {
+                if part.eq_ignore_ascii_case("u") {
+                    scope.user = true;
+                } else if part.eq_ignore_ascii_case("a") {
+                    scope.assistant = true;
+                } else if part.eq_ignore_ascii_case("t") {
+                    scope.thinking = true;
+                } else {
+                    return false;
+                }
+                true
+            });
+        if valid {
+            return (scope, &raw[colon + 1..]);
+        }
+    }
+    (SearchScope::default(), raw)
 }
 
 fn block_occurrences(b: &Block, needle: &str) -> usize {
@@ -4521,12 +4579,14 @@ mod tests {
         );
     }
 
-    /// A `u:`/`user:` query prefix scopes the search to the reader's own turns:
-    /// `UserText` and `Command` (the sidebar's turn predicate) match, assistant text
-    /// does not. The prefix is case-insensitive, and both spellings are the same scope.
+    /// The `u+a+t:` scope grammar: any combination of u (user turns: `UserText` and
+    /// `Command`), a (agent replies: `AssistantText`), t (thinking blocks) — in ANY
+    /// order, case-insensitive, with `user:` still an alias for `u:`. Tool blocks
+    /// belong to no class: a scoped search never matches them, only an unscoped one.
+    /// A colon in ordinary search text (`http://`) is not a prefix.
     #[test]
-    fn a_user_prefix_scopes_the_search_to_user_turns() {
-        let mut bs = blocks(10);
+    fn the_scope_prefix_composes_and_ignores_order() {
+        let mut bs = blocks(12);
         bs[2] = Block::UserText("UNIQUEMATCH from me".into());
         bs[4] = Block::AssistantText("UNIQUEMATCH from the assistant".into());
         bs[6] = Block::Command {
@@ -4534,8 +4594,21 @@ mod tests {
             args: "UNIQUEMATCH now".into(),
             output: vec![],
         };
+        bs[8] = Block::Thinking {
+            text: "UNIQUEMATCH while thinking".into(),
+            duration_secs: None,
+            tools: vec![],
+        };
+        bs[10] = Block::ToolUse {
+            name: "Bash".into(),
+            target: "UNIQUEMATCH in a tool".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
-        draw(&mut v, 60, 12);
+        draw(&mut v, 60, 14);
 
         let count_for = |v: &mut View, q: &str| {
             v.search_start();
@@ -4546,14 +4619,25 @@ mod tests {
             v.search_cancel();
             n
         };
-        assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 3, "unscoped: every block");
-        assert_eq!(
-            count_for(&mut v, "u:UNIQUEMATCH"),
-            2,
-            "u: scope: the user turn and the slash command, not the assistant"
-        );
+        assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 5, "unscoped: every block");
+        assert_eq!(count_for(&mut v, "u:UNIQUEMATCH"), 2, "u: turns + commands");
         assert_eq!(count_for(&mut v, "user:UNIQUEMATCH"), 2, "user: alias");
-        assert_eq!(count_for(&mut v, "U:UNIQUEMATCH"), 2, "case-insensitive");
+        assert_eq!(count_for(&mut v, "a:UNIQUEMATCH"), 1, "a: agent prose");
+        assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 1, "t: thinking");
+        assert_eq!(count_for(&mut v, "u+a:UNIQUEMATCH"), 3, "u+a composes");
+        assert_eq!(count_for(&mut v, "t+a:UNIQUEMATCH"), 2, "t+a: order-free");
+        for p in ["u+a+t", "a+t+u", "t+u+a", "A+T+U"] {
+            assert_eq!(
+                count_for(&mut v, &format!("{p}:UNIQUEMATCH")),
+                4,
+                "{p}: all three classes, still not the tool block"
+            );
+        }
+        assert_eq!(
+            count_for(&mut v, "x+u:UNIQUEMATCH"),
+            0,
+            "an invalid letter is no prefix — the colon-bearing text matches nothing"
+        );
     }
 
     /// The scoped search's DRAW matches its match list: an out-of-scope row containing

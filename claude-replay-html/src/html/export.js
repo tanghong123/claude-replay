@@ -199,7 +199,7 @@
   var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
   var topPad = null, botPad = null;
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
-  var searchUserOnly = false; // `u:`/`user:` prefix — scope the search to the reader's turns
+  var searchScope = null; // `u+a+t:` prefix parse — {u,a,t} booleans, null = unscoped
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -2315,6 +2315,7 @@
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);
+    if (!e.target.closest(".qscopewrap")) scopeMenu(false);
 
     // #139: an inline image opens full size.
     var aimg = e.target.closest(".aimg");
@@ -2447,7 +2448,7 @@
   var totalHits = 0;
   function clearHl() {
     searchNeedle = "";
-    searchUserOnly = false;
+    searchScope = null;
     var touched = [];
     all("#stream mark.hl").forEach(function (m) {
       var p = m.parentNode;
@@ -2514,11 +2515,30 @@
       tn.parentNode.replaceChild(frag, tn);
     });
   }
-  // A `u:`/`user:` query prefix (case-insensitive, same syntax as the TUI's `/` search)
-  // scopes the search to the reader's own turns — `isTurnKind`, the sidebar's predicate,
-  // so typed slash commands count and sub-agent activity does not.
+  // The `u+a+t:` scope grammar (same syntax as the TUI's `/` search, case-insensitive):
+  // any combination of u (your turns: user+command), a (agent replies), t (thinking,
+  // both think and act) joined by `+`, then `:` — ORDER-FREE, so `t+a:` ≡ `a+t:`.
+  // `user:` stays an alias for `u:`. Returns {set:{u,a,t}, len} or null when the text
+  // has no prefix (a colon in ordinary text — `http://` — is not a prefix).
+  function parseScope(needle) {
+    var m = /^([uat](?:\+[uat]){0,2}|user):/i.exec(needle);
+    if (!m) return null;
+    var set = { u: false, a: false, t: false };
+    m[1].toLowerCase().split("+").forEach(function (p) {
+      set[p === "user" ? "u" : p] = true;
+    });
+    return { set: set, len: m[0].length };
+  }
   function searchInScope(i) {
-    return !searchUserOnly || (records[i] && isTurnKind(records[i]));
+    if (!searchScope) return true;
+    var r = records[i];
+    if (!r) return false;
+    return (searchScope.u && (r.kind === "user" || r.kind === "command"))
+      || (searchScope.a && r.kind === "assistant")
+      || (searchScope.t && (r.kind === "think" || r.kind === "act"));
+  }
+  function scopeLetters(set) {
+    return ["u", "a", "t"].filter(function (k) { return set && set[k]; });
   }
   function search(v) {
     var qc = $("qcount");
@@ -2530,10 +2550,10 @@
     hitRecs = [];
     totalHits = 0;
     var needle = v.trim();
-    var scoped = /^u(ser)?:/i.exec(needle);
-    if (scoped) needle = needle.slice(scoped[0].length);
+    var scoped = parseScope(needle);
+    if (scoped) needle = needle.slice(scoped.len);
     if (needle.length < 2) { qc.textContent = ""; return; }
-    searchUserOnly = !!scoped;
+    searchScope = scoped ? scoped.set : null;
     var lc = needle.toLowerCase();
     searchNeedle = lc;
     for (var i = 0; i < records.length; i++) {
@@ -2545,7 +2565,7 @@
       if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length);
     });
     qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s")
-      + (searchUserOnly ? " in your turns" : "");
+      + (searchScope ? " in " + scopeLetters(searchScope).join("+") : "");
     showQNav(totalHits > 0);
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
@@ -2676,24 +2696,47 @@
       if (b) b.classList.toggle("on", !!on);
     });
   }
-  // The "user only" toggle is the visible face of the `u:` prefix, and the BOX is the
-  // single source of truth: clicking the toggle edits the prefix in the box, typing the
-  // prefix by hand lights the toggle — neither can drift from the other.
+  // The scope dropdown is the visible face of the `u+a+t:` prefix, and the BOX is the
+  // single source of truth: checking a box rewrites the prefix in the input, typing a
+  // prefix by hand checks the boxes — neither can drift from the other. The rebuilt
+  // prefix is canonical (`u+a+t` order); a hand-typed permutation is honored as typed.
   var qscope = $("qscope");
-  var SCOPE_RE = /^\s*u(ser)?:/i; // same prefix search() honors (it trims first)
+  function scopeMenu(open) {
+    var m = $("qscopemenu");
+    if (m) m.classList.toggle("on", !!open);
+  }
   function syncQScope() {
-    if (qscope) qscope.classList.toggle("on", SCOPE_RE.test(q.value));
+    var parsed = parseScope(q.value.trim());
+    var set = parsed ? parsed.set : { u: false, a: false, t: false };
+    ["u", "a", "t"].forEach(function (k) {
+      var cb = $("qs-" + k);
+      if (cb) cb.checked = !!set[k];
+    });
+    if (qscope) {
+      var letters = scopeLetters(set);
+      qscope.classList.toggle("on", letters.length > 0);
+      qscope.textContent = (letters.length ? letters.join("+") : "scope") + " ▾";
+    }
+  }
+  function applyScopeFromMenu() {
+    var letters = ["u", "a", "t"].filter(function (k) {
+      var cb = $("qs-" + k);
+      return cb && cb.checked;
+    });
+    var trimmed = q.value.replace(/^\s+/, "");
+    var parsed = parseScope(trimmed);
+    var rest = parsed ? trimmed.slice(parsed.len) : trimmed;
+    q.value = (letters.length ? letters.join("+") + ":" : "") + rest;
+    search(q.value);
+    syncQScope();
   }
   if (qscope) {
-    // mousedown is swallowed so the input keeps focus, like the hit steppers.
-    qscope.addEventListener("mousedown", function (e) { e.preventDefault(); });
     qscope.addEventListener("click", function () {
-      q.value = SCOPE_RE.test(q.value)
-        ? q.value.replace(SCOPE_RE, "")
-        : "u:" + q.value;
-      search(q.value);
-      syncQScope();
-      q.focus();
+      scopeMenu(!$("qscopemenu").classList.contains("on"));
+    });
+    ["u", "a", "t"].forEach(function (k) {
+      var cb = $("qs-" + k);
+      if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });
   }
   q.addEventListener("input", function () { search(q.value); syncQScope(); });
@@ -2712,6 +2755,7 @@
     if (e.key === "Escape") {
       toolMenu(false);
       agentMenu(false);
+      scopeMenu(false);
       taskPanel(false);
       if (filter) { setFilter(null); return; }
       if (document.activeElement) document.activeElement.blur();
