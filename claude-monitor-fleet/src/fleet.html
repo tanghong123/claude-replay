@@ -61,6 +61,9 @@ const tabs = document.getElementById("tabs");
 const frames = document.getElementById("frames");
 const note = document.getElementById("note");
 let active = -1;
+// The last health seen per environment, so a tab that comes back can reload itself instead of
+// sitting on the browser's connection-error page until someone presses `r`.
+const wasUp = [];
 
 function render() {
   if (!ENVS.length) {
@@ -138,6 +141,19 @@ async function health() {
         dot.classList.toggle("up", !!s.up);
         dot.classList.toggle("down", !s.up);
         dot.title = s.up ? "serving (HTTP " + s.code + ")" : (s.why || "not answering");
+      }
+      // The server re-opens a forward that drops, and a re-opened forward can land on a different
+      // local port, so the URL is taken from health rather than trusted from render time. A tab
+      // whose machine just came back is reloaded too: without it the iframe keeps showing the
+      // browser's error page from while the tunnel was down.
+      const env = ENVS[i];
+      if (env) {
+        const moved = s.url && s.url !== env.url;
+        if (moved) env.url = s.url;
+        const recovered = wasUp[i] === false && !!s.up;
+        wasUp[i] = !!s.up;
+        const frame = document.getElementById("frame-" + i);
+        if (frame && (moved || recovered)) frame.src = env.url;
       }
       if (!s.up) down.push(s.name + ": " + (s.why || "not answering"));
     });

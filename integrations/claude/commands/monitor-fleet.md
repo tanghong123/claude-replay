@@ -31,4 +31,5 @@ destination to include.
 
 `up` holds the tunnels open in the foreground and they close when it exits, so
 run it where it will outlive this turn and tell the user the
-`http://127.0.0.1:<port>/` URL it prints.
+`http://127.0.0.1:<port>/` URL it prints. A tunnel that drops later is re-opened
+by that same process, with backoff — a red dot is not a reason to restart it.

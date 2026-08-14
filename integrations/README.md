@@ -157,4 +157,8 @@ than left hanging; load the key into an agent, or add that host with
 machine are collapsed into one environment.
 
 `up` holds the tunnels for as long as it runs and takes them down when it stops,
-including on `Ctrl-C` or `kill` — the port is yours again either way.
+including on `Ctrl-C` or `kill` — the port is yours again either way. A tunnel
+that drops while it runs is re-opened, per environment and with backoff, on the
+same local port when that port is still free, so a network blip costs one tab a
+few seconds. A monitor that is down is still only reported: the fleet starts
+nothing on anyone's machine.
