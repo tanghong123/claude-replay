@@ -2584,25 +2584,26 @@ mod tests {
         );
     }
 
-    /// Search stepping is RECORD-first: the record-text occurrence counts (the same
-    /// source of truth the total comes from) drive the ▲▼/⏎ walk, and DOM marks are
-    /// presentation — clamped when the DOM renders fewer than the count, and a mark-less
-    /// hit lands on the record element, never skipped. The old mark-driven walk skipped
-    /// unmarkable hits and rebuilt the window once per skip — a scoped search whose hits
-    /// concentrate in such records froze the page for the length of the scan.
+    /// Search stepping is RECORD-first and EVERY press MOVES: the hit-record list (from
+    /// the record-text counts) drives the ▲▼/⏎ walk; per record the walk visits each
+    /// rendered mark once — or the record itself, once, when the DOM could mark nothing —
+    /// then crosses to the next hit record. No record is skipped (the old walk cycled
+    /// among the few markable blocks and rebuilt the window once per skip, freezing the
+    /// page) and no press stalls in place (an occurrence the DOM cannot address is not a
+    /// separate stop).
     #[test]
-    fn search_stepping_is_record_first() {
+    fn search_stepping_is_record_first_and_every_press_moves() {
         assert!(
-            JS.contains("var navPos = -1, navOcc = -1;"),
-            "the walk state is (record, occurrence), not a DOM mark index"
+            JS.contains("EVERY press MOVES"),
+            "the stall-free contract is stated where the walk lives"
         );
         assert!(
             JS.contains("never skip"),
-            "a mark-less hit lands on the record"
+            "a mark-less hit record gets a landing"
         );
         assert!(
-            !JS.contains("navMark") && !JS.contains("while (tries++"),
-            "the old mark-driven skip loop is gone — no rebuild storms"
+            JS.contains("at most one") && !JS.contains("while (tries++"),
+            "boundary crosses are bounded — the unbounded skip scan is gone"
         );
     }
 

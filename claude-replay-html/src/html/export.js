@@ -2545,7 +2545,7 @@
     showQNav(false);
     clearHl();
     navPos = -1;
-    navOcc = -1;
+    navMark = -1;
     curHit = null;
     hitRecs = [];
     totalHits = 0;
@@ -2616,13 +2616,19 @@
   // record whose occurrences the DOM could not mark (a needle spanning styled text
   // nodes — highlight spans, inline markup — is counted in the record text but never
   // matches inside a single node). Skipping was wrong twice over: those hits were
-  // unreachable, and every skip forced a full window rebuild via matRecord — a
-  // scoped search whose hits concentrate in such records turned one click into
-  // hundreds of rebuilds and froze the page. Now a step ALWAYS advances exactly one
-  // counted occurrence: it lands on the record's matching mark when the DOM has one
-  // (clamped when it has fewer), and on the record element itself — fold chain
-  // opened, flashed — when it has none.
-  var navPos = -1, navOcc = -1;
+  // unreachable — with mark-poor content the walk visibly cycled among the few
+  // markable blocks — and every skip forced a full window rebuild via matRecord,
+  // freezing the page for the length of the scan.
+  //
+  // The rule now: EVERY press MOVES. Per hit record the walk visits each rendered
+  // mark once — or the record itself, once, when the DOM could mark nothing — and
+  // then crosses to the NEXT hit record. Occurrences beyond what the DOM can mark
+  // are not separate stops (they would land on the same pixel repeatedly, a stall
+  // that reads as "the button does nothing"); the flat counter says where in the
+  // TOTAL the landing sits, so crossing a mark-poor record advances it by that
+  // record's whole count. Cost per press is bounded: at most two window
+  // materializations (the boundary cross), never a scan.
+  var navPos = -1, navMark = -1; // hit-record position + mark index (Infinity = enter at the END)
   var curHit = null; // {rec, mark} — re-applied on rematerialization (postMat)
   function stepHit(dir) {
     if (!hitRecs.length) return;
@@ -2647,7 +2653,7 @@
       }
       if (off) {
         navPos = -1;
-        navOcc = -1;
+        navMark = -1;
       }
     }
     if (navPos < 0) {
@@ -2663,35 +2669,49 @@
       }
       if (dir > 0) {
         navPos = k >= 0 ? k : 0;
-        navOcc = 0;
+        navMark = 0;
       } else {
         navPos = k > 0 ? k - 1 : hitRecs.length - 1;
-        navOcc = hitRecs[navPos].count - 1;
+        navMark = Infinity; // the record's LAST visit, known after materialization
       }
     } else {
-      navOcc += dir;
-      if (navOcc >= hitRecs[navPos].count || navOcc < 0) {
-        navPos = (navPos + dir + hitRecs.length) % hitRecs.length; // wraps
-        navOcc = dir > 0 ? 0 : hitRecs[navPos].count - 1;
+      navMark += dir;
+      if (navMark < 0) {
+        navPos = (navPos - 1 + hitRecs.length) % hitRecs.length; // wraps
+        navMark = Infinity;
       }
     }
-    var hr = hitRecs[navPos];
-    var el = matRecord(hr.rec);
+    // Resolve the landing. A record's visit count needs its DOM (marks are counted
+    // after materialization), so a forward boundary-cross resolves here — at most one
+    // extra iteration, because every hit record yields at least one landing.
+    var hr, el, marks, visits;
+    for (;;) {
+      hr = hitRecs[navPos];
+      el = matRecord(hr.rec);
+      marks = el ? el.querySelectorAll("mark.hl") : [];
+      // Visits: each rendered mark once (capped at the counted occurrences when the
+      // DOM over-renders — a fold's collapsed and expanded faces can both match), or
+      // ONE landing on the record when nothing could be marked.
+      visits = marks.length ? Math.min(marks.length, Math.max(hr.count, 1)) : 1;
+      if (navMark === Infinity) navMark = visits - 1; // entered stepping backward
+      if (navMark < visits) break;
+      navPos = (navPos + 1) % hitRecs.length; // forward cross — wraps
+      navMark = 0;
+    }
     all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
-    var marks = el ? el.querySelectorAll("mark.hl") : [];
-    // Fewer rendered marks than counted occurrences ⇒ clamp to the nearest mark; the
-    // step still advances the COUNT, so no occurrence is unreachable and the flat
-    // position tracks the total exactly.
-    var mi = marks.length ? Math.min(navOcc, marks.length - 1) : -1;
-    var m = mi >= 0 ? marks[mi] : null;
-    curHit = m ? { rec: hr.rec, mark: mi } : null;
-    $("qcount").textContent = (hr.start + navOcc + 1) + "/" + totalHits;
+    var m = marks.length ? marks[navMark] : null;
+    curHit = m ? { rec: hr.rec, mark: navMark } : null;
+    // The flat position of THIS landing within the total: mark-poor records advance
+    // it by their whole count on the boundary cross — honest about occurrences the
+    // DOM cannot address individually.
+    $("qcount").textContent =
+      (hr.start + Math.min(navMark, hr.count - 1) + 1) + "/" + totalHits;
     if (m) {
       m.classList.add("cur");
       revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
       goTo(m, true);
     } else if (el) {
-      goTo(el, true); // mark-less hit: land on the record itself, never skip it
+      goTo(el, true); // mark-less hit record: land on it, never skip it
     }
     spy();
   }
