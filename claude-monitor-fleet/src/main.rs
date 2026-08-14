@@ -25,6 +25,7 @@ use claude_replay_html::{spawn_listener, HttpResponse};
 use config::Env;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tunnel::Tunnel;
 
 /// The switcher page — this crate's own markup, `{{VERSION}}` and `{{ENVS}}` substituted.
@@ -87,9 +88,30 @@ struct Live {
     via: String,
     detail: String,
     /// The loopback port on THIS machine — a tunnel's local end, or the local monitor's own port.
+    /// Not fixed for the process's life: a re-opened forward can land on a different one, and
+    /// `/api/fleet` publishes it so the page follows.
     port: u16,
     /// `None` for this machine: there is nothing to forward.
-    tunnel: Option<Tunnel>,
+    forward: Option<Forward>,
+}
+
+/// A forward this process holds, together with what it takes to put it back.
+///
+/// The two live in one field on purpose. A tunnel whose re-open recipe could go missing is a tunnel
+/// that can drop and stay dropped while the page cheerfully reports it as being repaired.
+struct Forward {
+    tunnel: Tunnel,
+    spec: Reopen,
+}
+
+/// Where a forward goes: the same destination, the same ssh options, the same remote port it was
+/// opened with. Everything needed to re-establish it and nothing else, so re-opening cannot quietly
+/// take a different route than the first connect did.
+#[derive(Clone)]
+struct Reopen {
+    host: String,
+    ssh_options: Vec<String>,
+    remote_port: u16,
 }
 
 impl Live {
@@ -199,10 +221,19 @@ fn up(args: &[String]) -> Result<()> {
     };
     let bound = spawn_listener(port, handler).with_context(|| format!("bind 127.0.0.1:{port}"))?;
     let url = format!("http://127.0.0.1:{bound}/");
-    eprintln!("fleet serving {url} (loopback only — Ctrl-C to stop, tunnels close with it)");
+    eprintln!(
+        "fleet serving {url} (loopback only — Ctrl-C to stop, tunnels close with it; \
+         a tunnel that drops is re-opened)"
+    );
     println!("{url}");
     if open_browser {
         open_url(&url);
+    }
+    // Holding the tunnels is not a one-off: networks change and laptops sleep, so one thread watches
+    // the forwards this process owns and puts back the ones that drop, per environment.
+    {
+        let live = live.clone();
+        std::thread::spawn(move || supervise(&live));
     }
     loop {
         std::thread::park();
@@ -229,17 +260,24 @@ fn bring_up(env: &Env) -> Result<Live> {
                 via: "this machine".into(),
                 detail,
                 port: remote_port,
-                tunnel: None,
+                forward: None,
             })
         }
         Some(host) => {
-            let t = Tunnel::open(host, &env.ssh_options, remote_port, 3)?;
+            let tunnel = Tunnel::open(host, &env.ssh_options, remote_port, 3)?;
             Ok(Live {
                 name: env.name.clone(),
                 via: format!("ssh {host}"),
                 detail,
-                port: t.local_port(),
-                tunnel: Some(t),
+                port: tunnel.local_port(),
+                forward: Some(Forward {
+                    tunnel,
+                    spec: Reopen {
+                        host: host.clone(),
+                        ssh_options: env.ssh_options.clone(),
+                        remote_port,
+                    },
+                }),
             })
         }
     }
@@ -293,21 +331,24 @@ fn health_json(live: &Mutex<Vec<Live>>) -> String {
     let mut envs = Vec::new();
     if let Ok(mut guard) = live.lock() {
         for l in guard.iter_mut() {
-            let tunnel_up = match &mut l.tunnel {
-                Some(t) => t.is_up(),
+            let forward_up = match &mut l.forward {
+                Some(f) => f.tunnel.is_up(),
                 None => true,
             };
-            let code = if tunnel_up {
+            let code = if forward_up {
                 tunnel::status_code(l.port)
             } else {
                 None
             };
             envs.push(serde_json::json!({
                 "name": l.name,
+                // Published every poll, not only at render time: a re-opened forward can land on
+                // a different local port, and this is how the page's tab follows its machine.
+                "url": l.url(),
                 "up": code.is_some(),
                 "code": code,
-                "why": if !tunnel_up {
-                    "the ssh tunnel exited"
+                "why": if !forward_up {
+                    "the ssh tunnel dropped — re-opening it"
                 } else if code.is_none() {
                     "the monitor is not answering"
                 } else { "" },
@@ -315,6 +356,105 @@ fn health_json(live: &Mutex<Vec<Live>>) -> String {
         }
     }
     serde_json::json!({ "envs": envs }).to_string()
+}
+
+/// How often the supervisor looks at the forwards this process holds. Cheap by design: a `try_wait`
+/// per child and no I/O, so it can be often enough that a blip costs seconds.
+const WATCH_TICK: Duration = Duration::from_secs(2);
+
+/// How long to wait before trying a host again after a failed re-open, doubling to [`BACKOFF_MAX`].
+/// The first attempt is immediate — the common case is an ssh that died while the network is fine.
+const BACKOFF_MIN: Duration = Duration::from_secs(2);
+
+/// The ceiling on that backoff. A host that is off the network for an hour is asked once a minute,
+/// not once a tick, and a host whose key needs a passphrase nobody is there to type does not spin.
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// The next wait after a failed re-open: twice the last one, up to the ceiling.
+fn backoff_after(previous: Duration) -> Duration {
+    (previous * 2).min(BACKOFF_MAX)
+}
+
+/// Keep the forwards this process opened for as long as it runs — the half of R6 that is not about
+/// cleanup.
+///
+/// The fleet is not a supervisor of other people's processes (`design/monitor-fleet.md` §7): a
+/// monitor that is down stays down and is reported down. A forward is not someone else's process.
+/// This process spawned it, the machine it runs on sleeps and changes networks, and without this
+/// the first blip costs a tab for the rest of the process's life while the page truthfully reports
+/// a tunnel nobody is going to fix. So a dropped forward is re-opened, and a stopped monitor is
+/// still only reported.
+///
+/// Per environment, and re-opening happens OUTSIDE the lock: `ssh` can take twenty seconds to
+/// decide, and `/api/fleet` must keep answering meanwhile — a health strip that freezes while one
+/// tunnel is repaired looks exactly like a fleet that died.
+fn supervise(live: &Mutex<Vec<Live>>) {
+    // Retry state is the supervisor's, not the environment's: nothing else needs it, and keeping it
+    // here means a `Live` cannot carry a stale schedule around.
+    let mut wait: Vec<Duration> = Vec::new();
+    let mut not_before: Vec<Option<Instant>> = Vec::new();
+    loop {
+        std::thread::sleep(WATCH_TICK);
+        let now = Instant::now();
+        let mut dropped: Vec<(usize, String, Reopen, u16)> = Vec::new();
+        {
+            let Ok(mut guard) = live.lock() else {
+                // Something panicked holding the lock; this thread can no longer trust that the
+                // tunnels it would repair are the ones in the vec. Say so instead of looping.
+                eprintln!(
+                    "fleet: the environment list is poisoned — forwards are no longer watched"
+                );
+                return;
+            };
+            wait.resize(guard.len(), BACKOFF_MIN);
+            not_before.resize(guard.len(), None);
+            for (i, l) in guard.iter_mut().enumerate() {
+                if not_before[i].is_some_and(|t| now < t) {
+                    continue;
+                }
+                // An exited `ssh` is the only thing that counts as dropped. A forward that is up
+                // while nothing answers HTTP through it is a stopped monitor — reported, never
+                // repaired, since re-opening would tear down a working tunnel over someone else's
+                // process.
+                if let Some(f) = &mut l.forward {
+                    if !f.tunnel.is_up() {
+                        dropped.push((i, l.name.clone(), f.spec.clone(), l.port));
+                    }
+                }
+            }
+        }
+        for (i, name, spec, had_port) in dropped {
+            match Tunnel::reopen(&spec.host, &spec.ssh_options, spec.remote_port, had_port) {
+                Ok(tunnel) => {
+                    let port = tunnel.local_port();
+                    if let Ok(mut guard) = live.lock() {
+                        if let Some(l) = guard.get_mut(i) {
+                            l.port = port;
+                            l.forward = Some(Forward { tunnel, spec });
+                        }
+                    }
+                    wait[i] = BACKOFF_MIN;
+                    not_before[i] = None;
+                    if port == had_port {
+                        eprintln!("  {name:<20} forward re-opened → 127.0.0.1:{port}");
+                    } else {
+                        eprintln!(
+                            "  {name:<20} forward re-opened → 127.0.0.1:{port} \
+                             (port {had_port} was taken; the page follows)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  {name:<20} re-open failed: {e:#} — trying again in {}s",
+                        wait[i].as_secs()
+                    );
+                    not_before[i] = Some(Instant::now() + wait[i]);
+                    wait[i] = backoff_after(wait[i]);
+                }
+            }
+        }
+    }
 }
 
 /// Best effort, never fatal — the URL is on stdout either way.
@@ -653,7 +793,8 @@ mod tests {
     }
 
     /// Health is reported per environment, and a local entry with nothing behind it reads as down
-    /// rather than as "no tunnel, therefore fine".
+    /// rather than as "no tunnel, therefore fine". The payload also carries the environment's
+    /// current URL, which is what lets a tab follow a forward re-opened on another port.
     #[test]
     fn health_reports_a_dead_target_as_down() {
         let dead = tunnel::free_port().unwrap();
@@ -662,12 +803,40 @@ mod tests {
             via: "this machine".into(),
             detail: String::new(),
             port: dead,
-            tunnel: None,
+            forward: None,
         }]);
         let json: serde_json::Value = serde_json::from_str(&health_json(&live)).unwrap();
         let env = &json["envs"][0];
         assert_eq!(env["name"], "gone");
         assert_eq!(env["up"], false);
         assert_eq!(env["why"], "the monitor is not answering");
+        assert_eq!(env["url"], format!("http://127.0.0.1:{dead}/"));
+    }
+
+    /// A machine that is simply gone must not be hammered once a tick, and one that comes back must
+    /// not wait a minute for the tick that notices. So the wait grows and stops growing.
+    #[test]
+    fn a_failing_host_is_asked_less_and_less_but_never_never() {
+        assert!(BACKOFF_MIN < BACKOFF_MAX, "there is room to back off");
+        assert!(
+            WATCH_TICK <= BACKOFF_MIN,
+            "the watch itself must not be the slowest part of noticing"
+        );
+        let mut wait = BACKOFF_MIN;
+        for _ in 0..12 {
+            let next = backoff_after(wait);
+            assert!(next > wait || next == BACKOFF_MAX, "it grows until it caps");
+            assert!(next <= BACKOFF_MAX, "and never past the ceiling");
+            wait = next;
+        }
+        assert_eq!(
+            wait, BACKOFF_MAX,
+            "a host that stays gone settles at the cap"
+        );
+        assert_eq!(
+            backoff_after(BACKOFF_MAX),
+            BACKOFF_MAX,
+            "the cap is a fixed point, not a step that overflows"
+        );
     }
 }

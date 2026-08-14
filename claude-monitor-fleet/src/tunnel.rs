@@ -19,6 +19,12 @@
 //! stdin, whose write end this process holds: however this process dies, the kernel closes that
 //! end, the far side reads EOF and exits, and ssh follows it. See [`Tunnel::open`].
 //!
+//! **A forward that drops is re-openable on the same local port.** Owning the tunnel for the
+//! process's lifetime means putting it back after a laptop lid or a changed network, not only
+//! reporting it gone; and because the switcher's URLs are rendered once, the repair aims at the
+//! port that page already names. That is [`Tunnel::reopen`] — the deciding, retrying and backing
+//! off is the caller's, this module only re-establishes one forward.
+//!
 //! The remote side is `127.0.0.1` because a monitor binds loopback only, by design. The tunnel is
 //! what makes it reachable, which is exactly the mechanism `design/claude-monitor.md` names for
 //! remote access: "an SSH tunnel, not a flag".
@@ -50,6 +56,26 @@ pub struct Tunnel {
     local_port: u16,
 }
 
+/// Why one attempt failed, and with it whether another local port could help.
+///
+/// The distinction is the whole reason [`Tunnel::open`] retries at all, and the reason it does not
+/// retry forever: one of these is a race, the other is an answer.
+enum Failed {
+    /// ssh itself gave up — a forward it could not bind, auth, an unreachable host. When the cause
+    /// is the local port being taken in the race below, another port fixes it.
+    SshExited(anyhow::Error),
+    /// The forward is up and nothing behind it answers HTTP. The port is not the problem.
+    NotServing(anyhow::Error),
+}
+
+impl Failed {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::SshExited(e) | Self::NotServing(e) => e,
+        }
+    }
+}
+
 impl Tunnel {
     /// Open a forward to `remote_port` on `host` and return once it serves HTTP.
     ///
@@ -65,56 +91,107 @@ impl Tunnel {
     ) -> Result<Self> {
         let mut last = None;
         for _ in 0..attempts.max(1) {
-            let local_port = free_port()?;
-            let mut child = Command::new("ssh")
-                .arg("-T")
-                .args(["-o", "ExitOnForwardFailure=yes"])
-                .args(["-o", "ServerAliveInterval=15"])
-                .args(["-o", "ServerAliveCountMax=3"])
-                .args(["-o", "ConnectTimeout=10"])
-                .args(ssh_options)
-                .arg("-L")
-                .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"))
-                .arg(host)
-                // Not `-N`: this command is what makes the far end hang up when our stdin pipe
-                // closes, which is what stops a signalled exit from leaking the forward.
-                .arg(KEEPALIVE)
-                // stdin is a pipe we keep, NOT the terminal — that is the orphan guard, and it
-                // costs the user nothing: OpenSSH asks for passphrases and host-key confirmations
-                // on `/dev/tty`, not on stdin, and stderr stays attached so those prompts and any
-                // auth failure are still the user's to read and answer.
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .with_context(|| format!("spawn ssh for {host}"))?;
-            let stdin = child.stdin.take().context("ssh stdin")?;
-
-            let mut tunnel = Self {
-                child,
-                _stdin: stdin,
-                local_port,
-            };
-            if tunnel.wait_until_serving(Duration::from_secs(20)) {
-                return Ok(tunnel);
-            }
-            // Distinguish "ssh gave up" (bad forward, auth, unreachable) from "the far side is not
-            // a monitor" — the second is not worth retrying a different local port for.
-            let exited = tunnel.child.try_wait().ok().flatten().is_some();
-            drop(tunnel);
-            last = Some(if exited {
-                anyhow::anyhow!("ssh exited before the forward to {host}:{remote_port} came up")
-            } else {
-                anyhow::anyhow!(
-                    "the forward to {host}:{remote_port} is up but nothing answered HTTP there \
-                     — is that monitor still running?"
-                )
-            });
-            if !exited {
-                break;
+            match Self::attempt(host, ssh_options, remote_port, free_port()?) {
+                Ok(tunnel) => return Ok(tunnel),
+                Err(failed) => {
+                    let another_port_might_work = matches!(failed, Failed::SshExited(_));
+                    last = Some(failed.into_error());
+                    if !another_port_might_work {
+                        break;
+                    }
+                }
             }
         }
         Err(last.unwrap_or_else(|| anyhow::anyhow!("no attempt was made")))
+    }
+
+    /// Put a dropped forward back, on the local port the page already knows if that port is still
+    /// free.
+    ///
+    /// Keeping the number matters more than it looks: the switcher's `ENVS` — every iframe `src`,
+    /// every bookmark — is written once, when the page is rendered, so a re-open that lands on the
+    /// same port is invisible to the browser. It cannot be promised, though. The dead ssh released
+    /// the port and anything on the machine may have taken it since, so the port actually bound is
+    /// [`Self::local_port`] and the caller republishes it.
+    ///
+    /// One attempt, deliberately: the retry loop belongs to the caller, which is the only place
+    /// that knows this host has been unreachable for ten minutes and should be asked less often.
+    pub fn reopen(
+        host: &str,
+        ssh_options: &[String],
+        remote_port: u16,
+        want_local: u16,
+    ) -> Result<Self> {
+        let local_port = port_preferring(want_local)?;
+        Self::attempt(host, ssh_options, remote_port, local_port).map_err(Failed::into_error)
+    }
+
+    /// One `ssh -L` on a port already chosen, returned once the forward answers HTTP.
+    ///
+    /// Every forward this crate opens — first connect and re-open alike — is spawned here, so the
+    /// orphan guard (`KEEPALIVE` plus the stdin pipe this process holds) cannot be present on one
+    /// path and missing on the other.
+    fn attempt(
+        host: &str,
+        ssh_options: &[String],
+        remote_port: u16,
+        local_port: u16,
+    ) -> std::result::Result<Self, Failed> {
+        let spawned = Command::new("ssh")
+            .arg("-T")
+            .args(["-o", "ExitOnForwardFailure=yes"])
+            .args(["-o", "ServerAliveInterval=15"])
+            .args(["-o", "ServerAliveCountMax=3"])
+            .args(["-o", "ConnectTimeout=10"])
+            .args(ssh_options)
+            .arg("-L")
+            .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"))
+            .arg(host)
+            // Not `-N`: this command is what makes the far end hang up when our stdin pipe
+            // closes, which is what stops a signalled exit from leaking the forward.
+            .arg(KEEPALIVE)
+            // stdin is a pipe we keep, NOT the terminal — that is the orphan guard, and it
+            // costs the user nothing: OpenSSH asks for passphrases and host-key confirmations
+            // on `/dev/tty`, not on stdin, and stderr stays attached so those prompts and any
+            // auth failure are still the user's to read and answer.
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("spawn ssh for {host}"));
+        let mut child = match spawned {
+            Ok(child) => child,
+            // No ssh on this machine, or no fork available: not something a port changes.
+            Err(e) => return Err(Failed::NotServing(e)),
+        };
+        let Some(stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Failed::NotServing(anyhow::anyhow!("ssh stdin")));
+        };
+
+        let mut tunnel = Self {
+            child,
+            _stdin: stdin,
+            local_port,
+        };
+        if tunnel.wait_until_serving(Duration::from_secs(20)) {
+            return Ok(tunnel);
+        }
+        // Distinguish "ssh gave up" (bad forward, auth, unreachable) from "the far side is not
+        // a monitor" — the second is not worth retrying a different local port for.
+        let exited = tunnel.child.try_wait().ok().flatten().is_some();
+        drop(tunnel);
+        Err(if exited {
+            Failed::SshExited(anyhow::anyhow!(
+                "ssh exited before the forward to {host}:{remote_port} came up"
+            ))
+        } else {
+            Failed::NotServing(anyhow::anyhow!(
+                "the forward to {host}:{remote_port} is up but nothing answered HTTP there \
+                 — is that monitor still running?"
+            ))
+        })
     }
 
     /// The loopback port on THIS machine that now reaches that monitor.
@@ -156,6 +233,20 @@ pub fn free_port() -> Result<u16> {
     let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).context("find a free port")?;
     let port = l.local_addr()?.port();
     Ok(port)
+}
+
+/// `want` if it is still free, else a free port chosen by the kernel.
+///
+/// Binding is the only test that means anything — a port is free if the kernel will hand it over —
+/// and the same race as [`Tunnel::open`] applies afterwards, which `ExitOnForwardFailure` turns
+/// into a loud ssh exit rather than a half-open forward. Preferring `want` is what keeps a re-opened
+/// forward on the number the page has already rendered; falling back is what keeps a re-open
+/// possible at all once something else has taken it.
+pub fn port_preferring(want: u16) -> Result<u16> {
+    if want != 0 && std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, want)).is_ok() {
+        return Ok(want);
+    }
+    free_port()
 }
 
 /// Whether something on this loopback port answers an HTTP request with a status line.
@@ -231,6 +322,27 @@ mod tests {
         assert!(p > 0);
         // Nothing is holding it, so it can be bound — which is the property `ssh -L` needs.
         std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, p)).expect("the port is free");
+    }
+
+    /// What makes a re-open invisible to the browser: the page's URL for a machine is rendered once,
+    /// so a forward that comes back on the same number costs the user nothing. A number someone else
+    /// has taken must be given up instead of handed to an ssh that would exit on the bind.
+    #[test]
+    fn a_reopen_keeps_the_port_the_page_knows_unless_it_is_gone() {
+        // Losing the number to something else on the machine between choosing and binding is the
+        // very race the fallback exists for — and a parallel test in this binary is one such
+        // racer — so a lost round is retried instead of being read as a broken promise.
+        let kept = (0..10).any(|_| {
+            let free = free_port().expect("a free port");
+            port_preferring(free).expect("a port either way") == free
+        });
+        assert!(kept, "a port that is free is the port that is kept");
+
+        let held = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let taken = held.local_addr().unwrap().port();
+        let instead = port_preferring(taken).unwrap();
+        assert_ne!(instead, taken, "a port in use is not offered again");
+        assert!(instead > 0, "and what is offered instead is a real port");
     }
 
     /// The distinction the whole health column rests on: a socket that accepts and says nothing

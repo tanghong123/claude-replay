@@ -267,10 +267,14 @@ the terminal to itself, and one that doesn't answer is **skipped with the reason
 than costing you the others. It prints the URL on stdout — `--no-open` leaves the browser
 alone, `--port N` pins the page's own port instead of letting the kernel choose — and holds
 the tunnels for as long as it runs, taking them down when it stops, on `Ctrl-C` or `kill`
-alike. On the page, `1`–`9` pick a tab, `[` / `]` cycle, `r` reloads the visible one, the
-URL fragment names the current machine so a bookmark points at it, and the dot beside each
-name is health this process polls (the tabs are cross-origin, so the browser can't ask them
-anything — this process can).
+alike. **A tunnel that drops is re-opened**: a laptop lid, a changed network or a timed-out
+connection costs that one tab a few seconds instead of costing it the rest of the run — with
+backoff for a host that stays away, and on the same local port whenever it is still free, so
+the tab follows its machine by itself. A *monitor* that is down is still only reported; the
+fleet starts nothing on your machines. On the page, `1`–`9` pick a tab, `[` / `]` cycle, `r`
+reloads the visible one, the URL fragment names the current machine so a bookmark points at
+it, and the dot beside each name is health this process polls (the tabs are cross-origin, so
+the browser can't ask them anything — this process can).
 
 One prompt is enough if you'd rather ask an agent: install the Skill with
 `./integrations/install-skill.sh monitor-fleet`, then `/monitor-fleet` in Claude Code or

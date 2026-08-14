@@ -77,8 +77,12 @@ Report what the tool reported. Do not fill gaps by guessing.
   published port, and told apart by cache root. That is expected, not a bug.
 - An alias missing from the results: two `Host` entries for the same machine are
   collapsed to one environment — discovery says so on stderr when it happens.
-- A tunnel that dies later: the page's health dots go red and name the reason.
-  `claude-monitor-fleet status` re-probes from the command line.
+- A tunnel that dies later: the page's health dots go red and name the reason,
+  and the running `up` re-opens that tunnel itself, with backoff. Report the
+  reason and let it — restarting the fleet costs the tabs that were fine. A
+  *monitor* that is down is a different thing: the fleet starts nothing, so that
+  one stays down until someone starts it. `claude-monitor-fleet status` re-probes
+  from the command line.
 
 ## Getting the binary
 

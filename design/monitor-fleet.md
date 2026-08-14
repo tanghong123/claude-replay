@@ -145,6 +145,57 @@ Piping stdin costs the user nothing: OpenSSH asks for passphrases and host-key c
 left zero forwards behind, while forwards from the pre-fix `-N` build were still running and had to
 be killed by hand.
 
+### 5.1 Owning a tunnel means putting it back, not only taking it down
+
+R6 was read at first as being only about cleanup, and the same sentence has another half. A forward
+the fleet opened is the fleet's for the whole run — and the machine it runs on sleeps, changes
+networks and times connections out. The first implementation opened each forward once and parked:
+`/api/fleet` then reported `the ssh tunnel exited` accurately and forever, and the only cure was to
+kill the process, which also cost the tabs that were fine. Observed exactly that way — `Read from
+remote host …: Operation timed out`, one line per environment, after the laptop had spent a while off
+the network.
+
+This is not the supervision §7 refuses. A *monitor* is someone else's process on someone else's
+machine, and starting it is a cluster manager's job. A forward is this process's own child, promised
+in the README for as long as the process runs. The rule is one line: **re-open what we opened, report
+what we found.**
+
+"Dropped" means one thing precisely: the `ssh` child has exited. That is what the watcher tests, and
+`ServerAliveInterval=15` with `ServerAliveCountMax=3` — already there for the first connect — is what
+turns a network that died silently into a child that exits within a minute rather than a forward that
+hangs forever. A monitor that answers no HTTP is deliberately *not* treated as a dropped tunnel, even
+though the health column already knows about it: the forward is alive, the thing behind it is not, and
+re-opening would tear down a working tunnel to a machine whose monitor someone stopped on purpose.
+That asymmetry *is* §7's boundary, expressed in the one place it could be blurred by accident.
+
+Three details are load-bearing.
+
+**The re-open aims at the same local port.** The page's `ENVS` — every iframe `src`, every bookmark —
+is substituted into `fleet.html` once, when it is rendered, so a repair that took a fresh kernel port
+each time would leave the tab pointing at a dead number. `port_preferring(want)` keeps the port while
+it is still bindable, which makes the usual reconnect invisible to the browser. It cannot be
+promised — the dead `ssh` released the port and anything on the machine may have taken it since — so
+`/api/fleet` publishes each environment's *current* URL on every poll and the page adopts it when it
+changes. That same signal gives a recovered tab its reload: the iframe is holding the browser's error
+page from while the tunnel was down, and health is the thing that knows the moment it stopped being
+true.
+
+**Re-opening happens outside the lock.** `ssh` can take twenty seconds to decide. Holding the
+environment list across that would freeze `/api/fleet`, and a health strip that stops answering looks
+exactly like a fleet that died — so the watcher takes the list, notes which forwards are down, drops
+the lock, and re-acquires it only to store the tunnel it got back.
+
+**Backoff, per environment, kept by the watcher.** The first attempt is immediate, because the common
+case is an `ssh` that died while the network is fine; after that the wait doubles to a ceiling, so a
+host that is genuinely away is asked once a minute instead of once a tick, and a key whose passphrase
+nobody is there to type does not spin. The schedule lives in the watcher rather than in each
+environment: nothing else needs it, and a `Live` that carried one could hand a stale appointment to a
+tunnel that has since been replaced.
+
+The orphan guard survives all of this because there is exactly one place that spawns an `ssh`
+(`Tunnel::attempt`). First connect and re-open both go through it, so `KEEPALIVE` and the held stdin
+pipe cannot be present on one path and forgotten on the other.
+
 ## 6. One prompt: the `monitor-fleet` integration
 
 R4 is met the way this repo already does it (`integrations/`, the `jdi-handoff` precedent): one
