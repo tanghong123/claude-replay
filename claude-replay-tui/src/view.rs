@@ -2183,8 +2183,8 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
         (
-            "/uato:x",
-            "scope: u=you a=agent t=think o=tools · leading : escapes",
+            "/uatobre:x",
+            "scope: you/agent/think/tools/bash/reads/edits · : escapes",
         ),
         ("t", "task/todo panel (session task queue)"),
         (
@@ -2354,48 +2354,89 @@ struct SearchScope {
     /// `t` — thinking blocks, as displayed: a `Thinking` block that absorbed tool
     /// calls matches on its whole content, exactly like unscoped block search.
     thinking: bool,
-    /// `o` — tool calls and their output: `ToolUse` (name/target/diffs/output) and
-    /// standalone `ToolResult` blocks.
+    /// `o` — ALL tool calls and their output: every `ToolUse` kind plus standalone
+    /// `ToolResult` blocks. The umbrella over `b`/`r`/`e`.
     tools: bool,
+    /// `b` — bash calls and their output alone: "did any command print this?"
+    bash: bool,
+    /// `r` — read-class tools (Read/Grep/Glob/LS): "what did the agent SEE?"
+    reads: bool,
+    /// `e` — edit/write tools: file contents the agent CHANGED (diffs, new files).
+    /// (An agent writing long text through bash lands under `b` — the block's kind
+    /// is what it is, not what it was used for.)
+    edits: bool,
 }
 
 impl SearchScope {
     fn is_scoped(self) -> bool {
-        self.user || self.assistant || self.thinking || self.tools
+        self.user
+            || self.assistant
+            || self.thinking
+            || self.tools
+            || self.bash
+            || self.reads
+            || self.edits
     }
-    /// Whether a block belongs to this scope. Unscoped admits everything; scoped,
-    /// agent/attachment/queue/compaction blocks belong to NO class and never match.
+    /// The tool-class half of the scope, by kind — shared between standalone tool
+    /// blocks and the tools a thinking span absorbed.
+    fn admits_tool_kind(self, k: crate::model::BlockKind) -> bool {
+        use crate::model::BlockKind as K;
+        match k {
+            K::Bash => self.tools || self.bash,
+            K::Edit | K::Write => self.tools || self.edits,
+            K::Read => self.tools || self.reads,
+            K::Skill | K::Tool | K::ToolResult => self.tools,
+            _ => false,
+        }
+    }
+    /// Whether a block belongs to this scope, by its [`block_kind`](crate::model::block_kind) — the ONE
+    /// name→kind table, so `b`/`r`/`e` can never drift from the HTML page's kinds.
+    /// Unscoped admits everything; scoped, agent/attachment/queue/compaction blocks
+    /// belong to NO class and never match. A thinking span that ABSORBED tool calls
+    /// (kind `Act`) is reachable through the tool scopes too: on thinking-heavy
+    /// sessions most bash/read/edit activity lives inside those spans, and a `b:`
+    /// that could not see it would be a scope over almost nothing.
     fn admits(self, b: &Block) -> bool {
         if !self.is_scoped() {
             return true;
         }
-        match b {
-            Block::UserText(_) | Block::Command { .. } => self.user,
-            Block::AssistantText(_) => self.assistant,
-            Block::Thinking { .. } => self.thinking,
-            Block::ToolUse { .. } | Block::ToolResult(_) => self.tools,
-            _ => false,
+        use crate::model::BlockKind as K;
+        match crate::model::block_kind(b) {
+            K::User | K::Command => self.user,
+            K::Assistant => self.assistant,
+            K::Think => self.thinking,
+            K::Act => {
+                self.thinking
+                    || matches!(b, Block::Thinking { tools, .. }
+                        if tools.iter().any(|t| self.admits_tool_kind(crate::model::block_kind(t))))
+            }
+            k @ (K::Bash | K::Edit | K::Write | K::Read | K::Skill | K::Tool | K::ToolResult) => {
+                self.admits_tool_kind(k)
+            }
+            K::Queue | K::Attachment | K::Agent | K::Compaction => false,
         }
     }
 }
 
 /// Split a raw search query into `(scope, needle)`. The prefix grammar (shared with the
-/// HTML viewer's search box, case-insensitive): a run of DISTINCT letters from
-/// `u` (your turns) / `a` (agent replies) / `t` (thinking) / `o` (tool calls & output),
-/// then `:` — **order-free**, so `aut:` ≡ `uat:` and `tu:` ≡ `ut:`. (`u+a+t:`, the
-/// v1.73 spelling, still parses.) A LEADING colon escapes: `:aut:x` searches the
-/// literal text `aut:x` — the way out whenever the needle itself starts with a
-/// scope-shaped run (`:auto:` for the literal word `auto:`, which is otherwise a
-/// valid a+u+t+o scope). A repeated letter (`tt:`), any other letter (`user:` —
-/// the dropped v1.67 alias — now reads as literal text), or a colon further out in
-/// ordinary text (`http://`, `12:30`) is not a prefix.
+/// HTML viewer's search box, case-insensitive): a run of DISTINCT letters — `u` (your
+/// turns) / `a` (agent replies) / `t` (thinking) / `o` (all tools) / `b` (bash) /
+/// `r` (reads) / `e` (edits+writes) — then `:`, **order-free**, so `aut:` ≡ `uat:` and
+/// `br:` ≡ `rb:`. (`u+a+t:`, the v1.73 spelling, still parses.) A LEADING colon
+/// escapes: `:aut:x` searches the literal text `aut:x` — needed whenever the needle
+/// itself starts with a scope-shaped run followed by MORE text (`:rate:limit` for the
+/// literal `rate:limit`). A PURE run with nothing after it searches itself — `auto:`
+/// alone finds the literal `auto:`, no escape needed, because the scope reading would
+/// search for nothing. A repeated letter (`tt:`), any other letter (`user:` — the
+/// dropped v1.67 alias — reads as literal text), or a colon further out in ordinary
+/// text (`http://`, `12:30`) is not a prefix.
 fn scoped_query(raw: &str) -> (SearchScope, &str) {
     // The escape hatch: one leading `:` and the rest is the literal needle.
     if let Some(rest) = raw.strip_prefix(':') {
         return (SearchScope::default(), rest);
     }
-    // The longest valid prefix is the v1.73 spelling "u+a+t+o" — 7 chars.
-    if let Some(colon) = raw.find(':').filter(|&c| (1..=7).contains(&c)) {
+    // The longest valid prefix is the v1.73 spelling fully separated: "u+a+t+o+b+r+e".
+    if let Some(colon) = raw.find(':').filter(|&c| (1..=13).contains(&c)) {
         let mut scope = SearchScope::default();
         let mut valid = true;
         for ch in raw[..colon].chars() {
@@ -2404,6 +2445,9 @@ fn scoped_query(raw: &str) -> (SearchScope, &str) {
                 'a' => &mut scope.assistant,
                 't' => &mut scope.thinking,
                 'o' => &mut scope.tools,
+                'b' => &mut scope.bash,
+                'r' => &mut scope.reads,
+                'e' => &mut scope.edits,
                 '+' => continue, // the v1.73 separator, still accepted
                 _ => {
                     valid = false;
@@ -2416,7 +2460,7 @@ fn scoped_query(raw: &str) -> (SearchScope, &str) {
             }
             *slot = true;
         }
-        if valid && scope.is_scoped() {
+        if valid && scope.is_scoped() && colon + 1 < raw.len() {
             return (scope, &raw[colon + 1..]);
         }
     }
@@ -4614,6 +4658,36 @@ mod tests {
             patch: None,
             read_lines: None,
         };
+        bs[11] = Block::ToolUse {
+            name: "Read".into(),
+            target: "src/lib.rs".into(),
+            diffs: vec![],
+            output: Some("the file says UNIQUEMATCH".into()),
+            patch: None,
+            read_lines: None,
+        };
+        // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
+        // absorbed tool, so `t:` reaches it as thinking and `b:`/`o:` reach it as bash.
+        bs[7] = Block::Thinking {
+            text: "pondering quietly".into(),
+            duration_secs: None,
+            tools: vec![Block::ToolUse {
+                name: "Bash".into(),
+                target: "echo UNIQUEMATCH".into(),
+                diffs: vec![],
+                output: None,
+                patch: None,
+                read_lines: None,
+            }],
+        };
+        bs[5] = Block::ToolUse {
+            name: "Edit".into(),
+            target: "src/main.rs".into(),
+            diffs: vec![("old".into(), "new UNIQUEMATCH line".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+        };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
         draw(&mut v, 60, 14);
 
@@ -4626,23 +4700,45 @@ mod tests {
             v.search_cancel();
             n
         };
-        assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 5, "unscoped: every block");
+        assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 8, "unscoped: every block");
         assert_eq!(count_for(&mut v, "u:UNIQUEMATCH"), 2, "u: turns + commands");
         assert_eq!(count_for(&mut v, "a:UNIQUEMATCH"), 1, "a: agent prose");
-        assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 1, "t: thinking");
-        assert_eq!(count_for(&mut v, "o:UNIQUEMATCH"), 1, "o: the tool block");
+        assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 2, "t: think + act");
+        assert_eq!(
+            count_for(&mut v, "b:UNIQUEMATCH"),
+            2,
+            "b: standalone bash + the act span that absorbed one"
+        );
+        assert_eq!(
+            count_for(&mut v, "r:UNIQUEMATCH"),
+            1,
+            "r: read output alone"
+        );
+        assert_eq!(count_for(&mut v, "e:UNIQUEMATCH"), 1, "e: the edit's diff");
+        assert_eq!(
+            count_for(&mut v, "o:UNIQUEMATCH"),
+            4,
+            "o: the umbrella — bash + read + edit + the absorbing act span"
+        );
+        assert_eq!(
+            count_for(&mut v, "ob:UNIQUEMATCH"),
+            4,
+            "ob: b is inside o — the union adds nothing"
+        );
         assert_eq!(count_for(&mut v, "ua:UNIQUEMATCH"), 3, "ua: composes");
-        assert_eq!(count_for(&mut v, "ta:UNIQUEMATCH"), 2, "ta: order-free");
+        assert_eq!(count_for(&mut v, "ta:UNIQUEMATCH"), 3, "ta: order-free");
+        assert_eq!(count_for(&mut v, "br:UNIQUEMATCH"), 3, "br: ≡ rb:");
+        assert_eq!(count_for(&mut v, "rb:UNIQUEMATCH"), 3, "rb: ≡ br:");
         for p in ["uat", "aut", "tua", "AUT"] {
             assert_eq!(
                 count_for(&mut v, &format!("{p}:UNIQUEMATCH")),
-                4,
-                "{p}: three classes, not the tool block"
+                5,
+                "{p}: three classes, no standalone tool blocks"
             );
         }
         assert_eq!(
             count_for(&mut v, "uato:UNIQUEMATCH"),
-            5,
+            8,
             "uato: every class — same as unscoped here, by construction"
         );
         assert_eq!(
@@ -4700,6 +4796,12 @@ mod tests {
             count_for(&mut v, ":UNIQUEMATCH"),
             2,
             "the escape is otherwise inert — same hits as the bare needle"
+        );
+        assert_eq!(
+            count_for(&mut v, "aut:"),
+            1,
+            "a PURE scope run searches itself — the scope reading has nothing to \
+             search, so no escape is needed for the bare literal"
         );
     }
 

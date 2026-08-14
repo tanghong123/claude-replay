@@ -2515,18 +2515,19 @@
       tn.parentNode.replaceChild(frag, tn);
     });
   }
-  // The `uato:` scope grammar (same syntax as the TUI's `/` search, case-insensitive):
-  // a run of DISTINCT letters — u (your turns: user+command), a (agent replies),
-  // t (thinking, both think and act), o (tool calls & output) — then `:`, ORDER-FREE,
-  // so `aut:` ≡ `uat:` (the v1.73 `+` spelling still parses). A LEADING colon escapes:
-  // `:aut:x` searches the literal `aut:x`. Returns {set:{u,a,t,o}, len}; {set:null}
+  // The `uatobre:` scope grammar (same syntax as the TUI's `/` search,
+  // case-insensitive): a run of DISTINCT letters — u (your turns: user+command),
+  // a (agent replies), t (thinking, both think and act), o (ALL tools), b (bash),
+  // r (reads), e (edits+writes) — then `:`, ORDER-FREE, so `aut:` ≡ `uat:` and
+  // `br:` ≡ `rb:` (the v1.73 `+` spelling still parses). A LEADING colon escapes:
+  // `:rate:limit` searches the literal `rate:limit`. Returns {set, len}; {set:null}
   // for the escape; null when the text has no prefix (repeats, foreign letters —
   // including the dropped `user:` alias — and colons in ordinary text like `http://`).
   function parseScope(needle) {
     if (needle.charAt(0) === ":") return { set: null, len: 1 };
-    var m = /^([uato+]{1,7}):/i.exec(needle);
+    var m = /^([uatobre+]{1,13}):/i.exec(needle);
     if (!m) return null;
-    var set = { u: false, a: false, t: false, o: false };
+    var set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false };
     var run = m[1].toLowerCase();
     for (var i = 0; i < run.length; i++) {
       var p = run.charAt(i);
@@ -2534,20 +2535,41 @@
       if (set[p]) return null; // a repeated letter is a word, not a scope
       set[p] = true;
     }
-    if (!set.u && !set.a && !set.t && !set.o) return null;
+    if (!scopeLetters(set).length) return null;
     return { set: set, len: m[0].length };
+  }
+  function toolKindInScope(k) {
+    return (searchScope.o && /^(bash|edit|write|read|skill|tool)$/.test(k))
+      || (searchScope.b && k === "bash")
+      || (searchScope.r && k === "read")
+      || (searchScope.e && (k === "edit" || k === "write"));
   }
   function searchInScope(i) {
     if (!searchScope) return true;
     var r = records[i];
     if (!r) return false;
-    return (searchScope.u && (r.kind === "user" || r.kind === "command"))
+    if ((searchScope.u && (r.kind === "user" || r.kind === "command"))
       || (searchScope.a && r.kind === "assistant")
       || (searchScope.t && (r.kind === "think" || r.kind === "act"))
-      || (searchScope.o && /^(bash|edit|write|read|skill|tool)$/.test(r.kind));
+      || toolKindInScope(r.kind)) return true;
+    // A thinking span ABSORBS its tool calls (kind "act"): the tool scopes reach the
+    // absorbed items too — on thinking-heavy sessions most bash/read/edit activity
+    // lives inside those spans, and a `b:` that could not see it would scope over
+    // almost nothing.
+    if (r.kind === "act") {
+      var parts = r.body || [];
+      for (var pi = 0; pi < parts.length; pi++) {
+        if (parts[pi].p !== "blocks") continue;
+        var items = parts[pi].items || [];
+        for (var ii = 0; ii < items.length; ii++) {
+          if (toolKindInScope(items[ii].kind)) return true;
+        }
+      }
+    }
+    return false;
   }
   function scopeLetters(set) {
-    return ["u", "a", "t", "o"].filter(function (k) { return set && set[k]; });
+    return ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) { return set && set[k]; });
   }
   function search(v) {
     var qc = $("qcount");
@@ -2560,7 +2582,15 @@
     totalHits = 0;
     var needle = v.trim();
     var scoped = parseScope(needle);
-    if (scoped) needle = needle.slice(scoped.len);
+    if (scoped) {
+      var rest = needle.slice(scoped.len);
+      // A PURE scope run ("auto:") has nothing after it to search — it searches
+      // ITSELF, literally, no escape needed. (The parser still reports the scope, so
+      // the dropdown's armed-but-empty state keeps its pill and checkboxes; only the
+      // search falls back to the literal.)
+      if (scoped.set && !rest.length) scoped = null;
+      else needle = rest;
+    }
     if (needle.length < 2) { qc.textContent = ""; return; }
     searchScope = scoped && scoped.set ? scoped.set : null;
     var lc = needle.toLowerCase();
@@ -2763,8 +2793,9 @@
   }
   function syncQScope() {
     var parsed = parseScope(q.value.trim());
-    var set = (parsed && parsed.set) || { u: false, a: false, t: false, o: false };
-    ["u", "a", "t", "o"].forEach(function (k) {
+    var set = (parsed && parsed.set)
+      || { u: false, a: false, t: false, o: false, b: false, r: false, e: false };
+    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.checked = !!set[k];
     });
@@ -2775,7 +2806,7 @@
     }
   }
   function applyScopeFromMenu() {
-    var letters = ["u", "a", "t", "o"].filter(function (k) {
+    var letters = ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) {
       var cb = $("qs-" + k);
       return cb && cb.checked;
     });
@@ -2790,7 +2821,7 @@
     qscope.addEventListener("click", function () {
       scopeMenu(!$("qscopemenu").classList.contains("on"));
     });
-    ["u", "a", "t", "o"].forEach(function (k) {
+    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });
