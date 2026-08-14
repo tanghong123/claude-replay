@@ -1017,17 +1017,18 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · u+a+t: prefix scopes to user/agent/thinking, any combo, any order" autocomplete="off">
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · uato: prefix scopes to user/agent/thinking/tools in any order (e.g. aut:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
       <span class="qscopewrap">
-        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the u+a+t: prefix">scope ▾</span>
+        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the uato: prefix">scope ▾</span>
         <div id="qscopemenu">
           <div class="menu-head">Search only…</div>
           <label class="qs-item"><input type="checkbox" id="qs-u"> user messages</label>
           <label class="qs-item"><input type="checkbox" id="qs-a"> agent responses</label>
           <label class="qs-item"><input type="checkbox" id="qs-t"> thinking</label>
+          <label class="qs-item"><input type="checkbox" id="qs-o"> tool calls / output</label>
         </div>
       </span>
     </div>
@@ -2522,33 +2523,39 @@ mod tests {
         );
     }
 
-    /// The search box supports the `u+a+t:` scope prefix (same syntax as the TUI's `/`
-    /// search): any combination of u (user+command), a (assistant), t (think+act), any
-    /// order, `user:` still an alias. The contract with the JS: the order-free grammar,
-    /// the kind-based gate, and a tooltip that teaches the syntax.
+    /// The search box supports the `uato:` scope prefix (same syntax as the TUI's `/`
+    /// search): a run of distinct letters — u (user+command), a (assistant),
+    /// t (think+act), o (tool kinds) — in any order, with a leading `:` escaping a
+    /// scope-shaped literal. The contract with the JS: the one parser, the kind-based
+    /// gate, and a tooltip that teaches the syntax.
     #[test]
-    fn search_supports_the_uat_scope_prefix() {
+    fn search_supports_the_uato_scope_prefix() {
         assert!(
-            JS.contains(r"/^([uat](?:\+[uat]){0,2}|user):/i") && JS.contains("function parseScope"),
-            "the order-free u+a+t grammar is the one parser"
+            JS.contains(r"/^([uato+]{1,7}):/i") && JS.contains("function parseScope"),
+            "the order-free letter-run grammar is the one parser"
+        );
+        assert!(
+            JS.contains(r#"if (needle.charAt(0) === ":") return { set: null, len: 1 };"#),
+            "a leading colon escapes a scope-shaped literal"
         );
         assert!(
             JS.contains("function searchInScope")
                 && JS.contains(r#"r.kind === "user" || r.kind === "command""#)
                 && JS.contains(r#"r.kind === "assistant""#)
-                && JS.contains(r#"r.kind === "think" || r.kind === "act""#),
-            "scope gating maps u/a/t onto the record kinds"
+                && JS.contains(r#"r.kind === "think" || r.kind === "act""#)
+                && JS.contains(r"^(bash|edit|write|read|skill|tool)$"),
+            "scope gating maps u/a/t/o onto the record kinds"
         );
         assert!(
-            build_shell("t", "root", false, false).contains("u+a+t: prefix"),
+            build_shell("t", "root", false, false).contains("uato: prefix"),
             "the search box tooltip mentions the scope syntax"
         );
     }
 
-    /// The scope's visible face: a dropdown of three checkboxes (user messages / agent
-    /// responses / thinking) that rewrites the `u+a+t:` prefix in the box, and lights up
-    /// reading back the active letters when a prefix is typed by hand. The box stays the
-    /// single source of truth — one parser feeds both faces.
+    /// The scope's visible face: a dropdown of four checkboxes (user messages / agent
+    /// responses / thinking / tool output) that rewrites the `uato:` prefix in the box,
+    /// and lights up reading back the active letters when a prefix is typed by hand.
+    /// The box stays the single source of truth — one parser feeds both faces.
     #[test]
     fn search_scope_dropdown_mirrors_the_prefix() {
         let shell = build_shell("t", "root", false, false);
@@ -2558,6 +2565,7 @@ mod tests {
             "id=\"qs-u\"",
             "id=\"qs-a\"",
             "id=\"qs-t\"",
+            "id=\"qs-o\"",
         ] {
             assert!(
                 shell.contains(id),
@@ -2567,8 +2575,9 @@ mod tests {
         assert!(
             shell.contains("user messages")
                 && shell.contains("agent responses")
-                && shell.contains("thinking"),
-            "the three choices are named"
+                && shell.contains("thinking")
+                && shell.contains("tool calls / output"),
+            "the four choices are named"
         );
         assert!(
             JS.contains("applyScopeFromMenu") && JS.contains("syncQScope"),

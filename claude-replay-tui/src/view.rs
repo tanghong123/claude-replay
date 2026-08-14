@@ -2183,8 +2183,8 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
         (
-            "/u+a+t:x",
-            "scope search: u=you a=agent t=thinking (any combo/order)",
+            "/uato:x",
+            "scope: u=you a=agent t=think o=tools · leading : escapes",
         ),
         ("t", "task/todo panel (session task queue)"),
         (
@@ -2340,8 +2340,8 @@ fn pretty_home(p: &Path) -> String {
 /// (a thinking span's absorbed tools, a spawn's inline child) recurse so folded and
 /// nested content is searchable. The contract is raw-content search (like vim searching
 /// the source, not the wrapped display).
-/// Which message classes a scoped search covers — the parse of a `u+a+t:` query prefix.
-/// Empty (no prefix) means everything, tool activity included.
+/// Which message classes a scoped search covers — the parse of a `uato:`-style query
+/// prefix. Empty (no prefix) means everything.
 #[derive(Clone, Copy, Default, PartialEq)]
 struct SearchScope {
     /// `u` — the reader's own turns: the same `UserText | Command` predicate the
@@ -2354,14 +2354,17 @@ struct SearchScope {
     /// `t` — thinking blocks, as displayed: a `Thinking` block that absorbed tool
     /// calls matches on its whole content, exactly like unscoped block search.
     thinking: bool,
+    /// `o` — tool calls and their output: `ToolUse` (name/target/diffs/output) and
+    /// standalone `ToolResult` blocks.
+    tools: bool,
 }
 
 impl SearchScope {
     fn is_scoped(self) -> bool {
-        self.user || self.assistant || self.thinking
+        self.user || self.assistant || self.thinking || self.tools
     }
     /// Whether a block belongs to this scope. Unscoped admits everything; scoped,
-    /// tool/result/agent/attachment blocks belong to NO class and never match.
+    /// agent/attachment/queue/compaction blocks belong to NO class and never match.
     fn admits(self, b: &Block) -> bool {
         if !self.is_scoped() {
             return true;
@@ -2370,46 +2373,50 @@ impl SearchScope {
             Block::UserText(_) | Block::Command { .. } => self.user,
             Block::AssistantText(_) => self.assistant,
             Block::Thinking { .. } => self.thinking,
+            Block::ToolUse { .. } | Block::ToolResult(_) => self.tools,
             _ => false,
         }
     }
 }
 
 /// Split a raw search query into `(scope, needle)`. The prefix grammar (shared with the
-/// HTML viewer's search box, case-insensitive): any combination of `u` (your turns),
-/// `a` (agent replies), `t` (thinking) joined by `+`, then `:` — **order-free**, so
-/// `u+a+t:` ≡ `a+t+u:` and `t+a:` ≡ `a+t:`. `user:` stays an alias for `u:`. Anything
-/// else — including a colon later in ordinary text (`http://`, `12:30`) — is not a
-/// prefix and leaves the query untouched.
+/// HTML viewer's search box, case-insensitive): a run of DISTINCT letters from
+/// `u` (your turns) / `a` (agent replies) / `t` (thinking) / `o` (tool calls & output),
+/// then `:` — **order-free**, so `aut:` ≡ `uat:` and `tu:` ≡ `ut:`. (`u+a+t:`, the
+/// v1.73 spelling, still parses.) A LEADING colon escapes: `:aut:x` searches the
+/// literal text `aut:x` — the way out whenever the needle itself starts with a
+/// scope-shaped run (`:auto:` for the literal word `auto:`, which is otherwise a
+/// valid a+u+t+o scope). A repeated letter (`tt:`), any other letter (`user:` —
+/// the dropped v1.67 alias — now reads as literal text), or a colon further out in
+/// ordinary text (`http://`, `12:30`) is not a prefix.
 fn scoped_query(raw: &str) -> (SearchScope, &str) {
-    if let Some(head) = raw.get(..5) {
-        if head.eq_ignore_ascii_case("user:") {
-            return (
-                SearchScope {
-                    user: true,
-                    ..Default::default()
-                },
-                &raw[5..],
-            );
-        }
+    // The escape hatch: one leading `:` and the rest is the literal needle.
+    if let Some(rest) = raw.strip_prefix(':') {
+        return (SearchScope::default(), rest);
     }
-    // The longest valid prefix is "u+a+t" — a colon further out is ordinary text.
-    if let Some(colon) = raw.find(':').filter(|&c| c <= 5) {
+    // The longest valid prefix is the v1.73 spelling "u+a+t+o" — 7 chars.
+    if let Some(colon) = raw.find(':').filter(|&c| (1..=7).contains(&c)) {
         let mut scope = SearchScope::default();
-        let valid = !raw[..colon].is_empty()
-            && raw[..colon].split('+').all(|part| {
-                if part.eq_ignore_ascii_case("u") {
-                    scope.user = true;
-                } else if part.eq_ignore_ascii_case("a") {
-                    scope.assistant = true;
-                } else if part.eq_ignore_ascii_case("t") {
-                    scope.thinking = true;
-                } else {
-                    return false;
+        let mut valid = true;
+        for ch in raw[..colon].chars() {
+            let slot = match ch.to_ascii_lowercase() {
+                'u' => &mut scope.user,
+                'a' => &mut scope.assistant,
+                't' => &mut scope.thinking,
+                'o' => &mut scope.tools,
+                '+' => continue, // the v1.73 separator, still accepted
+                _ => {
+                    valid = false;
+                    break;
                 }
-                true
-            });
-        if valid {
+            };
+            if *slot {
+                valid = false; // a repeated letter is a word, not a scope
+                break;
+            }
+            *slot = true;
+        }
+        if valid && scope.is_scoped() {
             return (scope, &raw[colon + 1..]);
         }
     }
@@ -4579,11 +4586,11 @@ mod tests {
         );
     }
 
-    /// The `u+a+t:` scope grammar: any combination of u (user turns: `UserText` and
-    /// `Command`), a (agent replies: `AssistantText`), t (thinking blocks) — in ANY
-    /// order, case-insensitive, with `user:` still an alias for `u:`. Tool blocks
-    /// belong to no class: a scoped search never matches them, only an unscoped one.
-    /// A colon in ordinary search text (`http://`) is not a prefix.
+    /// The `uato:` scope grammar: a run of distinct letters — u (user turns:
+    /// `UserText` and `Command`), a (agent replies), t (thinking), o (tool calls &
+    /// output) — in ANY order, case-insensitive; the v1.73 `+` spelling still parses.
+    /// Repeats, foreign letters (including the dropped `user:` alias), and colons in
+    /// ordinary text are not prefixes.
     #[test]
     fn the_scope_prefix_composes_and_ignores_order() {
         let mut bs = blocks(12);
@@ -4621,22 +4628,78 @@ mod tests {
         };
         assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 5, "unscoped: every block");
         assert_eq!(count_for(&mut v, "u:UNIQUEMATCH"), 2, "u: turns + commands");
-        assert_eq!(count_for(&mut v, "user:UNIQUEMATCH"), 2, "user: alias");
         assert_eq!(count_for(&mut v, "a:UNIQUEMATCH"), 1, "a: agent prose");
         assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 1, "t: thinking");
-        assert_eq!(count_for(&mut v, "u+a:UNIQUEMATCH"), 3, "u+a composes");
-        assert_eq!(count_for(&mut v, "t+a:UNIQUEMATCH"), 2, "t+a: order-free");
-        for p in ["u+a+t", "a+t+u", "t+u+a", "A+T+U"] {
+        assert_eq!(count_for(&mut v, "o:UNIQUEMATCH"), 1, "o: the tool block");
+        assert_eq!(count_for(&mut v, "ua:UNIQUEMATCH"), 3, "ua: composes");
+        assert_eq!(count_for(&mut v, "ta:UNIQUEMATCH"), 2, "ta: order-free");
+        for p in ["uat", "aut", "tua", "AUT"] {
             assert_eq!(
                 count_for(&mut v, &format!("{p}:UNIQUEMATCH")),
                 4,
-                "{p}: all three classes, still not the tool block"
+                "{p}: three classes, not the tool block"
             );
         }
         assert_eq!(
-            count_for(&mut v, "x+u:UNIQUEMATCH"),
+            count_for(&mut v, "uato:UNIQUEMATCH"),
+            5,
+            "uato: every class — same as unscoped here, by construction"
+        );
+        assert_eq!(
+            count_for(&mut v, "u+a:UNIQUEMATCH"),
+            3,
+            "the v1.73 + spelling still parses"
+        );
+        assert_eq!(
+            count_for(&mut v, "user:UNIQUEMATCH"),
+            0,
+            "the dropped user: alias is literal text now (s/e/r are not scope letters)"
+        );
+        assert_eq!(
+            count_for(&mut v, "tt:UNIQUEMATCH"),
+            0,
+            "a repeated letter is a word, not a scope — literal, no match"
+        );
+        assert_eq!(
+            count_for(&mut v, "xu:UNIQUEMATCH"),
             0,
             "an invalid letter is no prefix — the colon-bearing text matches nothing"
+        );
+    }
+
+    /// The `:` escape: a leading colon makes the rest LITERAL, so a needle that itself
+    /// starts with a scope-shaped run (`aut:…`) stays searchable. Without the escape the
+    /// run is a scope; with it, the colon-bearing text is the needle.
+    #[test]
+    fn a_leading_colon_escapes_a_scope_shaped_needle() {
+        let mut bs = blocks(6);
+        bs[1] = Block::UserText("plain UNIQUEMATCH".into());
+        bs[3] = Block::UserText("the literal aut:UNIQUEMATCH text".into());
+        let mut v = View::new(bs, "t", false, FoldPolicy::none());
+        draw(&mut v, 60, 10);
+        let count_for = |v: &mut View, q: &str| {
+            v.search_start();
+            for c in q.chars() {
+                v.search_input(c);
+            }
+            let n = v.match_count();
+            v.search_cancel();
+            n
+        };
+        assert_eq!(
+            count_for(&mut v, "aut:UNIQUEMATCH"),
+            2,
+            "unescaped: aut is a scope, the needle is UNIQUEMATCH — both user blocks"
+        );
+        assert_eq!(
+            count_for(&mut v, ":aut:UNIQUEMATCH"),
+            1,
+            "escaped: the literal aut:UNIQUEMATCH, found only where it appears"
+        );
+        assert_eq!(
+            count_for(&mut v, ":UNIQUEMATCH"),
+            2,
+            "the escape is otherwise inert — same hits as the bare needle"
         );
     }
 
