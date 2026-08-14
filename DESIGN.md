@@ -736,6 +736,17 @@ Deliverable: `design/bounded-line-reads.md` answering placement, the per-consume
 rules, and the migration order across the read sites, with the equivalence oracle named per
 step.
 
+### #194 — agent states: busy / wait / idle, observed, dumped locally
+
+Proposal: **[`design/agent-states.md`](design/agent-states.md)** — claude-monitor derives
+each session's state per scan tick from four observed signals (growth, in-flight tools,
+process + children, tail semantics) instead of asserted hook state, fixing the toolbox
+notifier's three failures (idle vs waiting-on-tools, stuck busy, prose-question waits);
+transitions append to `~/.cache/claude-monitor/state/events.jsonl` + a `current.json`
+snapshot for any consumer. Studied against `~/personal/claude-toolbox/notifications/`;
+builds on #99's liveness probe, #21's `tool_is_interactive`, #23's `is_error`. Proposed;
+nothing built.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
