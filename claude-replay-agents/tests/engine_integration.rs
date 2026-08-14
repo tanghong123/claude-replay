@@ -965,6 +965,40 @@ fn a_rewritten_prefix_demotes_the_cursor_to_a_cold_fold() {
     );
 }
 
+/// #22: a cursor folded under a different `FOLD_VERSION` is rejected as
+/// `StaleFoldVersion` — a verdict about the CURSOR, never about the file (the bytes are
+/// intact; reporting it as `SourceRewritten` once inflated a downstream per-transcript
+/// epoch counter on transcripts nothing had happened to). A legacy cursor written before
+/// the field existed reads as version 0 and lands in the same variant.
+#[test]
+fn a_stale_fold_version_cursor_is_named_not_blamed_on_the_file() {
+    use claude_replay_engine::metrics_fold::{CursorReject, FoldStart, MetricsCursor, MetricsFold};
+    let full = CODEX_CHILD_LINES.join("\n") + "\n";
+    let p = tmp1(&full);
+    let cursor = {
+        let mut f = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        drain(&mut f);
+        f.cursor().unwrap()
+    };
+    // The file is UNTOUCHED. Doctor only the version, as an older binary's cursor
+    // would carry it.
+    let mut v = serde_json::to_value(&cursor).unwrap();
+    v["fold"] = serde_json::json!(1);
+    let old: MetricsCursor = serde_json::from_value(v.clone()).unwrap();
+    let f = MetricsFold::open(&CodexAdapter, &p, Some(&old)).unwrap();
+    assert_eq!(f.start(), FoldStart::Cold(CursorReject::StaleFoldVersion));
+
+    // A legacy cursor with NO fold field at all — the pre-#22 wire shape.
+    v.as_object_mut().unwrap().remove("fold");
+    let legacy: MetricsCursor = serde_json::from_value(v).unwrap();
+    let f = MetricsFold::open(&CodexAdapter, &p, Some(&legacy)).unwrap();
+    assert_eq!(f.start(), FoldStart::Cold(CursorReject::StaleFoldVersion));
+
+    // And the genuine article still resumes — the stamp round-trips.
+    let f = MetricsFold::open(&CodexAdapter, &p, Some(&cursor)).unwrap();
+    assert_eq!(f.start(), FoldStart::Resumed);
+}
+
 /// A torn final line — a write in progress — is left UNCONSUMED: the cursor holds at the last
 /// complete line, and once the line is finished the next run folds it. The periodic collector's
 /// steady state against a live transcript.

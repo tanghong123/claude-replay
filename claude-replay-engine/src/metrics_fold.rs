@@ -17,7 +17,7 @@
 //! records — so a consumer gets per-event deltas without copying `parse_reader`'s rules.
 
 use crate::adapter::{LinePreprocessor, MetricsAccumulator, PreprocessedLine, TranscriptAdapter};
-use crate::engine::meta_stream::window_at;
+use crate::engine::meta_stream::{window_at, FOLD_VERSION};
 use crate::metrics::{Metrics, TokenCounts};
 use crate::model::EpochSeconds;
 use serde_json::Value;
@@ -36,6 +36,12 @@ pub struct MetricsCursor {
     /// CRC32 of the window below `offset` (see [`window_at`]) — the proof that the skipped
     /// prefix is the prefix this cursor's state was folded from.
     pub window: u32,
+    /// The [`FOLD_VERSION`] the parked state was folded under (#22) — the version guard
+    /// lives HERE, beside the CRC guard, so no consumer re-implements it. `serde(default)`
+    /// makes a legacy cursor (written before the field existed) read as version 0, which
+    /// rejects as [`CursorReject::StaleFoldVersion`] — the correct verdict for it.
+    #[serde(default)]
+    fold: u16,
     acc: Value,
     pre: Value,
 }
@@ -51,11 +57,20 @@ pub enum FoldStart {
 }
 
 /// Why a cursor was not honored. Never an error: a cursor is a cache, and an unusable one
-/// means a cold fold, not a failure.
+/// means a cold fold, not a failure. The variants are DISTINCT FACTS a consumer may key
+/// durable decisions on — in particular, only [`SourceRewritten`](Self::SourceRewritten)
+/// says anything about the file (#22: a consumer inferring "rewritten" from "did not
+/// resume" advanced a per-transcript epoch counter on transcripts nothing had happened
+/// to, values that could not be re-derived after the fact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorReject {
     /// No cursor was offered.
     NoCursor,
+    /// The cursor's state was folded under a different [`FOLD_VERSION`]: the bytes are
+    /// intact, but the rules that produced the parked totals are not the current ones.
+    /// A cold fold, but NOT a statement about the file. (A cursor from a NEWER version —
+    /// a downgraded binary — lands here too: its state is equally not this fold's.)
+    StaleFoldVersion,
     /// The bytes below the cursor's offset are not the bytes it was folded from — the
     /// transcript was truncated or rewritten. (A shorter file is also this: the offset
     /// lying past EOF is the plainest form of "that prefix is gone".)
@@ -105,6 +120,12 @@ impl MetricsFold {
 
         let (offset, start) = match cursor {
             None => (0, FoldStart::Cold(CursorReject::NoCursor)),
+            // Version before CRC: it is free (no IO), and the verdicts are different
+            // facts — a stale-version cursor says nothing about the file, so it must
+            // never be reported as a rewrite (#22).
+            Some(c) if c.fold != FOLD_VERSION => {
+                (0, FoldStart::Cold(CursorReject::StaleFoldVersion))
+            }
             Some(c) if c.offset <= len && window_at(path, c.offset)? == c.window => {
                 pre.restore(&c.pre);
                 acc.restore(&c.acc);
@@ -196,6 +217,7 @@ impl MetricsFold {
         Ok(MetricsCursor {
             offset: self.offset,
             window: window_at(&self.path, self.offset)?,
+            fold: FOLD_VERSION,
             acc: self.acc.state(),
             pre: self.pre.state(),
         })
