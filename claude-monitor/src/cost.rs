@@ -34,9 +34,20 @@ use std::time::SystemTime;
 /// appends are a few KiB and never feel the cap.
 pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The persisted entry's format version — bumped when the JSON shape changes. A mismatch
-/// is a cold re-fold, never an error (a ledger entry is a cache).
-const LEDGER_VERSION: u32 = 1;
+/// The ledger's own JSON-shape version — bumped when the entry's fields change.
+const LEDGER_SHAPE: u32 = 1;
+
+/// The persisted entry's full version: the shape crossed with the engine's
+/// `FOLD_VERSION`, so a FOLD-BEHAVIOR bump invalidates priced state exactly like it
+/// invalidates durable meta streams. The v8 lesson: v1.70.0 halved the Claude fold, and
+/// a shape-only version resumed every entry's inflated totals forever — the cursor
+/// CARRIES them, `restore` accepts them by design (legacy-cursor compat), and the
+/// size/mtime fast path never re-folds an idle transcript, so nothing ever corrected.
+/// A mismatch is a cold re-fold, never an error (a ledger entry is a cache).
+fn ledger_version() -> u64 {
+    (u64::from(LEDGER_SHAPE) << 16)
+        | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION)
+}
 
 /// One transcript's priced state: what the fold said last time, and where it stopped.
 #[derive(Clone)]
@@ -135,7 +146,7 @@ fn epoch(t: Option<SystemTime>) -> Option<u64> {
 
 fn load_entry(path: &Path) -> Option<Entry> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    if v.get("v").and_then(Value::as_u64) != Some(u64::from(LEDGER_VERSION)) {
+    if v.get("v").and_then(Value::as_u64) != Some(ledger_version()) {
         return None;
     }
     Some(Entry {
@@ -156,7 +167,7 @@ fn save_entry(path: &Path, e: &Entry) {
         let _ = std::fs::create_dir_all(parent);
     }
     let v = serde_json::json!({
-        "v": LEDGER_VERSION,
+        "v": ledger_version(),
         "len": e.len,
         "mtime": e.mtime,
         "cost": e.cost,
@@ -299,6 +310,55 @@ mod tests {
             priced,
             "deferred fold serves the cached value"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A persisted entry from a DIFFERENT fold version is a cold re-fold, not a resume:
+    /// its cursor carries totals folded under the old rules (the v8 lesson — v1.70.0
+    /// halved the Claude fold, and shape-only versioning would have served the inflated
+    /// prices forever, because the quiet-file fast path never re-folds). The doctored
+    /// entry also advertises a stale `len`, so this pins that even the stat fast path
+    /// cannot rescue a version-mismatched entry.
+    #[test]
+    fn a_stale_fold_version_entry_refolds_cold() {
+        let d = scratch("foldver");
+        let t = d.join("rollout-2026-08-12T01-00-00-foldver-test.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+        // An entry as an OLDER binary would have written it: right shape, wrong fold
+        // version, wildly wrong cached cost, and file facts matching the transcript so
+        // the fast path would serve it if the version check let it through.
+        let meta = std::fs::metadata(&t).unwrap();
+        let costs = d.join("cache").join("costs");
+        std::fs::create_dir_all(&costs).unwrap();
+        std::fs::write(
+            costs.join("rollout-2026-08-12T01-00-00-foldver-test.json"),
+            serde_json::json!({
+                "v": (u64::from(LEDGER_SHAPE) << 16) | 1u64, // fold version 1: stale
+                "len": meta.len(),
+                "mtime": epoch(meta.modified().ok()),
+                "cost": 9999.0,
+                "partial": false,
+                "cursor": Value::Null,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        let mut budget = COST_BUDGET_BYTES;
+        let (c, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
+        assert!(
+            (c - 1.25).abs() < 1e-9,
+            "the stale entry was discarded and the file re-folded: {c}"
+        );
+        assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
