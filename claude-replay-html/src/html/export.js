@@ -2545,7 +2545,7 @@
     showQNav(false);
     clearHl();
     navPos = -1;
-    navMark = -1;
+    navOcc = -1;
     curHit = null;
     hitRecs = [];
     totalHits = 0;
@@ -2610,32 +2610,44 @@
       }
     }
   }
-  // #66: navigation steps through each hit block's ACTUAL DOM marks (exact within a
-  // block), advancing to the next/previous hit record when a block's marks are
-  // exhausted — the record-text totals stay approximate counts, but the stepping
-  // can no longer land on the wrong occurrence inside a block. State: the position
-  // in `hitRecs` + the mark index within that block's DOM.
-  var navPos = -1, navMark = -1;
+  // Record-FIRST stepping: `hitRecs` — the record-TEXT counts, the same source of
+  // truth the total comes from — is the authoritative walk, and the DOM's marks are
+  // presentation. The old walk (#66) stepped the rendered marks and skipped any hit
+  // record whose occurrences the DOM could not mark (a needle spanning styled text
+  // nodes — highlight spans, inline markup — is counted in the record text but never
+  // matches inside a single node). Skipping was wrong twice over: those hits were
+  // unreachable, and every skip forced a full window rebuild via matRecord — a
+  // scoped search whose hits concentrate in such records turned one click into
+  // hundreds of rebuilds and froze the page. Now a step ALWAYS advances exactly one
+  // counted occurrence: it lands on the record's matching mark when the DOM has one
+  // (clamped when it has fewer), and on the record element itself — fold chain
+  // opened, flashed — when it has none.
+  var navPos = -1, navOcc = -1;
   var curHit = null; // {rec, mark} — re-applied on rematerialization (postMat)
   function stepHit(dir) {
     if (!hitRecs.length) return;
     // Continuing the SEQUENCE only makes sense while the reader is still at the current
     // hit. If they moved — scrolled away, clicked a turn, jumped through the sidebar — the
     // stored position is where the search was, not where they are, and "next" means next
-    // FROM HERE. So: current mark off-screen (or unmaterialized, which is the same fact
+    // FROM HERE. So: current anchor off-screen (or unmaterialized, which is the same fact
     // seen by the virtualizer) ⇒ drop the sequence and re-enter through the viewport
-    // anchor below. On-screen keeps the sequence, so stepping match-to-match inside one
-    // screen never re-anchors out from under the reader.
+    // anchor below. The anchor is the cur mark when one rendered, else the hit record's
+    // own element (a mark-less landing is still a position the reader is AT).
     if (navPos >= 0) {
-      var cur = document.querySelector("#stream mark.hl.cur");
+      var anchor = document.querySelector("#stream mark.hl.cur");
+      if (!anchor && hitRecs[navPos]) {
+        anchor = document.querySelector(
+          '#stream [data-idx="' + hitRecs[navPos].rec + '"]'
+        );
+      }
       var off = true;
-      if (cur) {
-        var cr = cur.getBoundingClientRect();
+      if (anchor) {
+        var cr = anchor.getBoundingClientRect();
         off = cr.bottom < 0 || cr.top > window.innerHeight;
       }
       if (off) {
         navPos = -1;
-        navMark = -1;
+        navOcc = -1;
       }
     }
     if (navPos < 0) {
@@ -2651,35 +2663,37 @@
       }
       if (dir > 0) {
         navPos = k >= 0 ? k : 0;
-        navMark = -1;
+        navOcc = 0;
       } else {
         navPos = k > 0 ? k - 1 : hitRecs.length - 1;
-        navMark = Infinity;
+        navOcc = hitRecs[navPos].count - 1;
+      }
+    } else {
+      navOcc += dir;
+      if (navOcc >= hitRecs[navPos].count || navOcc < 0) {
+        navPos = (navPos + dir + hitRecs.length) % hitRecs.length; // wraps
+        navOcc = dir > 0 ? 0 : hitRecs[navPos].count - 1;
       }
     }
-    var tries = 0;
-    while (tries++ <= hitRecs.length) {
-      var hr = hitRecs[navPos];
-      var el = matRecord(hr.rec);
-      var marks = el ? el.querySelectorAll("mark.hl") : [];
-      if (navMark === Infinity) navMark = marks.length; // entered stepping backward
-      var next = navMark + dir;
-      if (next >= 0 && next < marks.length) {
-        navMark = next;
-        curHit = { rec: hr.rec, mark: next };
-        all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
-        var m = marks[next];
-        m.classList.add("cur");
-        var flat = hr.start + Math.min(next, hr.count - 1) + 1;
-        $("qcount").textContent = flat + "/" + totalHits;
-        revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
-        goTo(m, true);
-        spy();
-        return;
-      }
-      navPos = (navPos + dir + hitRecs.length) % hitRecs.length; // wraps
-      navMark = dir > 0 ? -1 : Infinity;
+    var hr = hitRecs[navPos];
+    var el = matRecord(hr.rec);
+    all("#stream mark.hl.cur").forEach(function (m) { m.classList.remove("cur"); });
+    var marks = el ? el.querySelectorAll("mark.hl") : [];
+    // Fewer rendered marks than counted occurrences ⇒ clamp to the nearest mark; the
+    // step still advances the COUNT, so no occurrence is unreachable and the flat
+    // position tracks the total exactly.
+    var mi = marks.length ? Math.min(navOcc, marks.length - 1) : -1;
+    var m = mi >= 0 ? marks[mi] : null;
+    curHit = m ? { rec: hr.rec, mark: mi } : null;
+    $("qcount").textContent = (hr.start + navOcc + 1) + "/" + totalHits;
+    if (m) {
+      m.classList.add("cur");
+      revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
+      goTo(m, true);
+    } else if (el) {
+      goTo(el, true); // mark-less hit: land on the record itself, never skip it
     }
+    spy();
   }
   // #102: visible prev/next steppers — Shift+Enter always went backward, but
   // nothing said so; the arrows make both directions discoverable and mousable.

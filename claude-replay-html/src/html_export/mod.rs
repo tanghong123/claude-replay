@@ -2584,6 +2584,28 @@ mod tests {
         );
     }
 
+    /// Search stepping is RECORD-first: the record-text occurrence counts (the same
+    /// source of truth the total comes from) drive the ▲▼/⏎ walk, and DOM marks are
+    /// presentation — clamped when the DOM renders fewer than the count, and a mark-less
+    /// hit lands on the record element, never skipped. The old mark-driven walk skipped
+    /// unmarkable hits and rebuilt the window once per skip — a scoped search whose hits
+    /// concentrate in such records froze the page for the length of the scan.
+    #[test]
+    fn search_stepping_is_record_first() {
+        assert!(
+            JS.contains("var navPos = -1, navOcc = -1;"),
+            "the walk state is (record, occurrence), not a DOM mark index"
+        );
+        assert!(
+            JS.contains("never skip"),
+            "a mark-less hit lands on the record"
+        );
+        assert!(
+            !JS.contains("navMark") && !JS.contains("while (tries++"),
+            "the old mark-driven skip loop is gone — no rebuild storms"
+        );
+    }
+
     /// A queued in-flight prompt streams as kind "queue" — an always-open marker
     /// (not a fold, no turn id), carrying the prompt text as its body.
     #[test]
