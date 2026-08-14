@@ -191,6 +191,7 @@
   var records = [];      // block records, stream order — the source of truth
   var recHeights = [];   // effective px height per record (EST_H until measured)
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
+  var recClass = [];     // lazy scope letters per record (u/a/t/o/b/r/e; null = unbuilt)
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
   var idIndex = {};      // block id (incl. nested items) -> top-level record index
   var loIdx = 0, hiIdx = 0; // materialized window [loIdx, hiIdx)
@@ -1183,6 +1184,7 @@
     records.length = from;
     recHeights.length = from;
     recText.length = from;
+    recClass.length = from;
     recHit.length = from;
     // Ids of dropped records (incl. nested) leave the index; a full rebuild is
     // cheap and only runs on tail rewrites.
@@ -2538,33 +2540,40 @@
     if (!scopeLetters(set).length) return null;
     return { set: set, len: m[0].length };
   }
-  function toolKindInScope(k) {
-    return (searchScope.o && /^(bash|edit|write|read|skill|tool)$/.test(k))
-      || (searchScope.b && k === "bash")
-      || (searchScope.r && k === "read")
-      || (searchScope.e && (k === "edit" || k === "write"));
+  // The scope letters a record belongs to — u/a/t plus the tool letters, where a
+  // thinking span that ABSORBED tool calls (kind "act") carries the absorbed items'
+  // letters too: on thinking-heavy sessions most bash/read/edit activity lives inside
+  // those spans, and a `b:` that could not see it would scope over almost nothing.
+  // Cached per record (kinds never change; the tail rewrite truncates the cache).
+  function toolLetters(k, cls) {
+    if (!/^(bash|edit|write|read|skill|tool)$/.test(k)) return;
+    if (cls.indexOf("o") < 0) cls.push("o");
+    if (k === "bash" && cls.indexOf("b") < 0) cls.push("b");
+    if (k === "read" && cls.indexOf("r") < 0) cls.push("r");
+    if ((k === "edit" || k === "write") && cls.indexOf("e") < 0) cls.push("e");
+  }
+  function recClasses(i) {
+    if (recClass[i]) return recClass[i];
+    var r = records[i] || {};
+    var cls = [];
+    if (r.kind === "user" || r.kind === "command") cls.push("u");
+    else if (r.kind === "assistant") cls.push("a");
+    else if (r.kind === "think") cls.push("t");
+    else if (r.kind === "act") {
+      cls.push("t");
+      (r.body || []).forEach(function (part) {
+        if (part.p !== "blocks") return;
+        (part.items || []).forEach(function (it) { toolLetters(it.kind, cls); });
+      });
+    } else toolLetters(r.kind, cls);
+    recClass[i] = cls;
+    return cls;
   }
   function searchInScope(i) {
     if (!searchScope) return true;
-    var r = records[i];
-    if (!r) return false;
-    if ((searchScope.u && (r.kind === "user" || r.kind === "command"))
-      || (searchScope.a && r.kind === "assistant")
-      || (searchScope.t && (r.kind === "think" || r.kind === "act"))
-      || toolKindInScope(r.kind)) return true;
-    // A thinking span ABSORBS its tool calls (kind "act"): the tool scopes reach the
-    // absorbed items too — on thinking-heavy sessions most bash/read/edit activity
-    // lives inside those spans, and a `b:` that could not see it would scope over
-    // almost nothing.
-    if (r.kind === "act") {
-      var parts = r.body || [];
-      for (var pi = 0; pi < parts.length; pi++) {
-        if (parts[pi].p !== "blocks") continue;
-        var items = parts[pi].items || [];
-        for (var ii = 0; ii < items.length; ii++) {
-          if (toolKindInScope(items[ii].kind)) return true;
-        }
-      }
+    var cls = recClasses(i);
+    for (var ci = 0; ci < cls.length; ci++) {
+      if (searchScope[cls[ci]]) return true;
     }
     return false;
   }
@@ -2586,20 +2595,31 @@
       var rest = needle.slice(scoped.len);
       // A PURE scope run ("auto:") has nothing after it to search — it searches
       // ITSELF, literally, no escape needed. (The parser still reports the scope, so
-      // the dropdown's armed-but-empty state keeps its pill and checkboxes; only the
+      // the dropdown's armed-but-empty state keeps its icon and checkboxes; only the
       // search falls back to the literal.)
       if (scoped.set && !rest.length) scoped = null;
       else needle = rest;
     }
-    if (needle.length < 2) { qc.textContent = ""; return; }
+    if (needle.length < 2) {
+      qc.textContent = "";
+      classCounts = null;
+      updateScopeCounts();
+      return;
+    }
     searchScope = scoped && scoped.set ? scoped.set : null;
     var lc = needle.toLowerCase();
     searchNeedle = lc;
+    classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
     for (var i = 0; i < records.length; i++) {
-      if (!searchInScope(i)) continue;
       var n = countOcc(textOfRec(i), lc);
-      if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
+      if (!n) continue;
+      // Every class the record belongs to gets its occurrences — the dropdown shows
+      // what each scope WOULD find for this query, whatever is selected right now.
+      var cls = recClasses(i);
+      for (var ci = 0; ci < cls.length; ci++) classCounts[cls[ci]] += n;
+      if (searchInScope(i)) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
     }
+    updateScopeCounts();
     matEls().forEach(function (e) {
       if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length);
     });
@@ -2787,6 +2807,15 @@
   // prefix by hand checks the boxes — neither can drift from the other. The rebuilt
   // prefix is canonical (`uato` order); a hand-typed permutation is honored as typed.
   var qscope = $("qscope");
+  // The per-class hit counts of the CURRENT query, shown beside each dropdown choice
+  // (null = no query). Computed in search()'s one pass over the records.
+  var classCounts = null;
+  function updateScopeCounts() {
+    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+      var el = $("qsn-" + k);
+      if (el) el.textContent = classCounts ? String(classCounts[k]) : "";
+    });
+  }
   function scopeMenu(open) {
     var m = $("qscopemenu");
     if (m) m.classList.toggle("on", !!open);
@@ -2799,11 +2828,9 @@
       var cb = $("qs-" + k);
       if (cb) cb.checked = !!set[k];
     });
-    if (qscope) {
-      var letters = scopeLetters(set);
-      qscope.classList.toggle("on", letters.length > 0);
-      qscope.textContent = (letters.length ? letters.join("") : "scope") + " ▾";
-    }
+    // The trigger is a plain funnel icon: gray = no scope (everything searched),
+    // colored = some scope active. The letters live in the box, not the icon.
+    if (qscope) qscope.classList.toggle("on", scopeLetters(set).length > 0);
   }
   function applyScopeFromMenu() {
     var letters = ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) {

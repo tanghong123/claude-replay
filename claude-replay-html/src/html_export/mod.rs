@@ -1022,16 +1022,16 @@ fn build_page(
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
       <span class="qscopewrap">
-        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the uatobre: prefix">scope ▾</span>
+        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the uatobre: prefix (gray = everything)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2.5h13L9.75 8.4v4.6l-3.5 1.5V8.4L1.5 2.5z"/></svg></span>
         <div id="qscopemenu">
           <div class="menu-head">Search only…</div>
-          <label class="qs-item"><input type="checkbox" id="qs-u"> user messages (u)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-a"> agent responses (a)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-t"> thinking (t)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-o"> all tools (o)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-b"> bash output (b)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-r"> read content (r)</label>
-          <label class="qs-item"><input type="checkbox" id="qs-e"> file edits/writes (e)</label>
+          <label class="qs-item"><input type="checkbox" id="qs-u"> user messages (u)<span class="qs-n" id="qsn-u"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-a"> agent responses (a)<span class="qs-n" id="qsn-a"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-t"> thinking (t)<span class="qs-n" id="qsn-t"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-o"> all tools (o)<span class="qs-n" id="qsn-o"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-b"> bash output (b)<span class="qs-n" id="qsn-b"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-r"> read content (r)<span class="qs-n" id="qsn-r"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-e"> file edits/writes (e)<span class="qs-n" id="qsn-e"></span></label>
         </div>
       </span>
     </div>
@@ -2547,18 +2547,15 @@ mod tests {
             "a pure scope run searches itself — the scope reading has nothing to search"
         );
         assert!(
-            JS.contains("function searchInScope")
+            JS.contains("function recClasses")
                 && JS.contains(r#"r.kind === "user" || r.kind === "command""#)
                 && JS.contains(r#"r.kind === "assistant""#)
-                && JS.contains(r#"r.kind === "think" || r.kind === "act""#)
                 && JS.contains(r"^(bash|edit|write|read|skill|tool)$")
-                && JS.contains(r#"searchScope.b && k === "bash""#)
-                && JS.contains(r#"searchScope.r && k === "read""#)
                 && JS.contains(r#"k === "edit" || k === "write""#),
-            "scope gating maps u/a/t/o/b/r/e onto the record kinds"
+            "scope gating maps u/a/t/o/b/r/e onto the record kinds via one class table"
         );
         assert!(
-            JS.contains("toolKindInScope(items[ii].kind)"),
+            JS.contains("toolLetters(it.kind, cls)"),
             "the tool scopes reach the tools a thinking span absorbed (kind act)"
         );
         assert!(
@@ -2603,6 +2600,19 @@ mod tests {
         assert!(
             JS.contains("applyScopeFromMenu") && JS.contains("syncQScope"),
             "checkbox changes rewrite the prefix; typing re-checks the boxes"
+        );
+        assert!(
+            JS.contains("classCounts") && JS.contains("function updateScopeCounts"),
+            "every choice shows the current query's per-class hit count"
+        );
+        for id in [
+            "qsn-u", "qsn-a", "qsn-t", "qsn-o", "qsn-b", "qsn-r", "qsn-e",
+        ] {
+            assert!(shell.contains(id), "the count slot exists: {id}");
+        }
+        assert!(
+            shell.contains("<svg") && !shell.contains("scope \u{25be}"),
+            "the trigger is a funnel icon, not a letter readback"
         );
         assert!(
             JS.contains("search(q.value); syncQScope();"),

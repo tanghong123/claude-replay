@@ -142,18 +142,17 @@ input::placeholder { color: var(--faint); }
 }
 .qnav.on { display: inline; }
 .qnav:hover { color: var(--fg); }
-/* The scope dropdown — the clickable face of the `uato:` prefix: checking a box edits
-   the prefix in the input, typing a prefix checks the boxes. Always visible (unlike the
-   hit steppers) so the scope is discoverable before any search is typed; the trigger
-   reads back the active letters (`ut ▾`). */
+/* The scope dropdown — the clickable face of the `uatobre:` prefix: checking a box
+   edits the prefix in the input, typing a prefix checks the boxes. The trigger is a
+   plain funnel icon: gray means no scope (everything is searched), colored means some
+   scope is active. Each menu row shows the CURRENT query's hit count for that class. */
 .qscopewrap { flex: none; position: relative; display: inline-flex; }
 .qscope {
-  flex: none; cursor: pointer; user-select: none; white-space: nowrap;
-  font: 10.5px var(--mono); color: var(--faint);
-  border: 1px solid var(--border); border-radius: 9px; padding: 2px 7px;
+  flex: none; cursor: pointer; user-select: none; display: inline-flex;
+  align-items: center; color: var(--faint); padding: 2px 4px;
 }
 .qscope:hover { color: var(--fg); }
-.qscope.on { color: var(--link); border-color: var(--link); }
+.qscope.on { color: var(--link); }
 #qscopemenu {
   display: none; position: absolute; top: 26px; right: 0; min-width: 170px; z-index: 70;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -167,6 +166,11 @@ input::placeholder { color: var(--faint); }
 }
 .qs-item:hover { background: var(--panel); }
 .qs-item input { margin: 0; accent-color: var(--link); }
+/* The current query's hit count for that class — blank when no query is typed. */
+.qs-item .qs-n {
+  margin-left: auto; padding-left: 14px;
+  font: 10.5px var(--mono); color: var(--faint);
+}
 .tbtn {
   font: 12.5px var(--sans); padding: 5px 10px; border: 1px solid var(--border);
   border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
