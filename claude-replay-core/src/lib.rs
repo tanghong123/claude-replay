@@ -23,7 +23,7 @@ pub use adapter::{
     MetricsCursor, MetricsEvent, MetricsFold, PreprocessedLine, SniffClaim, TranscriptAdapter,
 };
 pub use claude_replay_agents::{claude_discover, codex_discover, qoderwork_discover};
-pub use claude_replay_engine::{diff, engine, fold, follow, metrics, model, seam, summary};
+pub use claude_replay_engine::{diff, engine, fold, follow, metrics, model, seam, state, summary};
 pub use session_entry::{
     parse_session, parse_session_as, parse_session_enriched, parse_session_enriched_as,
 };

@@ -965,6 +965,79 @@ fn a_rewritten_prefix_demotes_the_cursor_to_a_cold_fold() {
     );
 }
 
+/// #194: `tail_pulse` over a Claude-shaped tail through the adapter's own decoder —
+/// the last conversational word (with the adapter's turn vocabulary), the final text,
+/// the error flag, and a queued prompt.
+#[test]
+fn tail_pulse_reads_the_claude_tail() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let mid = tmp1(concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"working"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &mid);
+    assert_eq!(p.last, TailLast::AssistantMid, "no end_turn yet");
+
+    let ended = tmp1(concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"boom","is_error":true}]},"timestamp":"2026-08-14T10:00:02Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"That failed — want me to retry?"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &ended);
+    assert_eq!(p.last, TailLast::AssistantEnded);
+    assert!(p.last_tool_error, "the failed result is visible (#23)");
+    assert!(p.final_text.as_deref().unwrap_or("").contains("retry"));
+    let a: &dyn claude_replay_engine::adapter::TranscriptAdapter = &ClaudeAdapter;
+    assert!(
+        a.ends_with_question(p.final_text.as_deref().unwrap()),
+        "the generic question default fires on the closing offer"
+    );
+
+    let queued = tmp1(concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"still going"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"and then do X","timestamp":"2026-08-14T10:00:06Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &queued);
+    assert!(p.queued_prompt, "the enqueued prompt is visible");
+}
+
+/// #194: the Codex turn vocabulary — `task_complete` ends the turn, a `response_item`
+/// is inside one by definition.
+#[test]
+fn tail_pulse_reads_the_codex_turn_lifecycle() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let ended = tmp1(concat!(
+        r#"{"type":"event_msg","payload":{"type":"task_started","started_at":1.0},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done here"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"event_msg","payload":{"type":"task_complete"},"timestamp":"2026-08-14T10:00:06Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&CodexAdapter, &ended);
+    assert_eq!(
+        p.last,
+        TailLast::AssistantEnded,
+        "task_complete ends the turn"
+    );
+
+    let mid = tmp1(concat!(
+        r#"{"type":"event_msg","payload":{"type":"task_started","started_at":1.0},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"thinking"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&CodexAdapter, &mid);
+    assert_eq!(p.last, TailLast::AssistantMid, "no completion event yet");
+}
+
 /// #22: a cursor folded under a different `FOLD_VERSION` is rejected as
 /// `StaleFoldVersion` — a verdict about the CURSOR, never about the file (the bytes are
 /// intact; reporting it as `SourceRewritten` once inflated a downstream per-transcript

@@ -22,6 +22,7 @@ pub mod follow;
 pub mod metrics;
 pub mod metrics_fold;
 pub mod model;
+pub mod state;
 pub mod summary;
 
 pub use agent::Agent;

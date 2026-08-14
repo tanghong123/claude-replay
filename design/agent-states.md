@@ -1,8 +1,10 @@
 # #194 — Agent states: busy / wait / idle, observed, dumped locally
 
-> **Proposal — nothing built.** Studies `~/personal/claude-toolbox/notifications/` (the
-> prior hook-based system) and specifies how claude-monitor detects each session's state
-> and publishes state CHANGES to a locally consumable stream. Companion reading:
+> **BUILT** (v1.77.0): engine `state` module (`derive_state`/`tail_pulse`/`StateEvent`),
+> the liveness names upgrade, the `turn_ended`/`ends_with_question` adapter hooks, and
+> the monitor's state pass writing `state/events.jsonl` + `state/current.json`.
+> Originally a proposal studying `~/personal/claude-toolbox/notifications/` (the prior
+> hook-based system); the study and rationale below are kept as written. Companion reading:
 > `design/session-liveness-probe.md` (#99 — the verified process/attachment mechanisms
 > this builds on) and `design/claude-monitor.md` (the scan cycle and R-rules it must
 > respect).
@@ -168,14 +170,18 @@ probe doc still applies to anyone acting on it.
 - **`wait · permission`** (rule 5): a pending non-interactive tool + no child process +
   quiet. Claude Code's permission dialog writes NOTHING to the transcript, so this is
   inference, not observation. The payload carries `"confidence": "inferred"`; consumers
-  can render it softer. Two hardenings later, if needed: sample the process's CPU time
-  delta (a blocked-on-dialog process burns none), and let adapters declare tools that
-  NEVER prompt (`Read` etc.) to shrink the false-positive set.
+  can render it softer. **Resolved (owner):** no CPU-delta hardening for now — an
+  in-process MCP tool (never a child) may misread as `wait · permission` while it runs;
+  the confidence flag is the mitigation, simplicity wins. Adapters declaring
+  never-prompting tools stays available as a later refinement.
 - **`idle · question`** (rule 6): interrogative-final-text detection — ends with `?`, or
   a last-paragraph match on offer/confirm shapes ("let me know", "shall I", "want me
   to", "which of"). Cheap, language-dependent (CJK question marks included), and
   honest: it only refines idle's CONTEXT, never flips busy/wait, so a miss costs a
-  softer notification, not a wrong state.
+  softer notification, not a wrong state. **Resolved (owner):** this IS an adapter
+  hook from day one, in the #21 mold — a defaulted
+  `TranscriptAdapter::ends_with_question(final_text)` whose default is the generic
+  heuristic above; agents with distinctive turn-closing formats override.
 
 ## 7. The dump: files other tools consume
 
@@ -229,11 +235,10 @@ the `agents` crate: the two `turn_ended` overrides — the seam audit stays happ
 
 ## 9. Open questions
 
-1. Does `wait · permission`'s child-process probe hold for sandboxed tools (a
-   `sandbox-exec` wrapper is still a child — believed yes) and for MCP tools that run
-   in-process (no child ever — these would need the CPU-delta hardening or stay busy)?
-2. Should `idle · question` be an adapter hook eventually (`turn_ends_with_question`),
-   the way #21 moved interactive-tool knowledge behind the seam?
+1. ~~In-process MCP tools and the CPU-delta hardening~~ — **resolved: skip it** (§6);
+   the confidence flag carries the ambiguity.
+2. ~~Should `idle · question` be an adapter hook~~ — **resolved: yes** (§6), shipped as
+   a defaulted `ends_with_question` with the generic heuristic as the default body.
 3. Event retention: is one 4 MiB generation enough, or should events also fold into a
    daily file for history? (The consumer that wants history can also just keep its own.)
 4. Codex parity: rules 2 and 5 need Codex's interactive-tool vocabulary (none declared

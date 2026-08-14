@@ -120,6 +120,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn tool_is_interactive(&self, name: &str) -> bool {
         agents::claude::model::tool_is_interactive(name)
     }
+    fn turn_ended(&self, raw_line: &str) -> Option<bool> {
+        agents::claude::model::turn_ended(raw_line)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())
     }
@@ -177,6 +180,9 @@ impl TranscriptAdapter for CodexAdapter {
         } else {
             SniffClaim::No
         }
+    }
+    fn turn_ended(&self, raw_line: &str) -> Option<bool> {
+        agents::codex::model::turn_ended(raw_line)
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         agents::codex::model::enrich_tree(path, blocks)
@@ -259,6 +265,10 @@ impl TranscriptAdapter for QoderAdapter {
     fn tool_is_interactive(&self, name: &str) -> bool {
         agents::claude::model::tool_is_interactive(name)
     }
+    // …and Claude's turn-lifecycle vocabulary (#194), for the same reason.
+    fn turn_ended(&self, raw_line: &str) -> Option<bool> {
+        agents::claude::model::turn_ended(raw_line)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())
     }
@@ -340,6 +350,10 @@ impl TranscriptAdapter for QoderWorkAdapter {
     // Claude Code's tool vocabulary, so Claude's interactive set (#21).
     fn tool_is_interactive(&self, name: &str) -> bool {
         agents::claude::model::tool_is_interactive(name)
+    }
+    // …and Claude's turn-lifecycle vocabulary (#194), for the same reason.
+    fn turn_ended(&self, raw_line: &str) -> Option<bool> {
+        agents::claude::model::turn_ended(raw_line)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())

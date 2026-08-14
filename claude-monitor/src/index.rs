@@ -78,6 +78,8 @@ struct State {
     /// of one project's total — so the scan prices every sub-agent transcript and chases
     /// `parent_thread_id` up to the main session that spawned it.
     sub_costs: HashMap<String, f64>,
+    /// The agent-state pass (#194): hysteresis staging + the events/current dump.
+    state_tracker: crate::state::StateTracker,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -240,9 +242,10 @@ impl Index {
         if changed {
             save_ignored(&ignore_path(&self.cache_root), &st.ignored);
             // Re-derive the snapshot from the unchanged rows under the new hide set (no
-            // rescan needed — hiding is a view filter, not a discovery change).
+            // rescan needed — hiding is a view filter, not a discovery change). The
+            // state pass does not re-run: hiding changes the view, not any state.
             if st.scanned_at.is_some() {
-                let snap = self.assemble(&st);
+                let snap = self.assemble(&st, &mut Vec::new());
                 st.snapshot = snap;
             }
         }
@@ -428,7 +431,11 @@ impl Index {
 
         self.prove_by_growth(st);
 
-        st.snapshot = self.assemble(st);
+        let mut facts = Vec::new();
+        st.snapshot = self.assemble(st, &mut facts);
+        // The agent-state pass (#194): derive busy/wait/idle from what this tick just
+        // observed and dump transitions + the snapshot under `<cache_root>/state/`.
+        st.state_tracker.tick(&self.cache_root, &facts);
     }
 
     /// Bank the pairing that GROWTH proves (#146).
@@ -488,7 +495,7 @@ impl Index {
 
     /// Rows → grouped JSON. Grouping is per agent KIND (§4.2): workspace-anchored agents by
     /// project, desktop agents under the agent itself.
-    fn assemble(&self, st: &State) -> String {
+    fn assemble(&self, st: &State, facts: &mut Vec<crate::state::RowFacts>) -> String {
         #[derive(Default)]
         struct Group {
             kind: &'static str,
@@ -621,6 +628,26 @@ impl Index {
                     .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
                     .unwrap_or(0)
+            });
+            // The agent-state pass consumes exactly what this loop already resolved
+            // (#194) — growth, the process link, the activity clock — plus identity.
+            let now_secs = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            facts.push(crate::state::RowFacts {
+                sid: sid.clone(),
+                agent: row.agent,
+                path: row.path.clone(),
+                cwd: row.cwd.clone(),
+                title: row.title.clone(),
+                growing,
+                quiet_secs: now_secs.saturating_sub(mtime_secs),
+                pid: link.as_ref().map(|l| l.pid),
+                term: link
+                    .as_ref()
+                    .and_then(|l| l.terminal.target().map(str::to_string)),
+                tree_mtime: row.tree_mtime,
             });
             // #113: a row is hidden if its OWN key is on the list, or its whole group is.
             let row_key = format!("s:{sid}");

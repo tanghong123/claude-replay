@@ -210,6 +210,24 @@ pub trait TranscriptAdapter: Sync {
     fn tool_is_interactive(&self, _name: &str) -> bool {
         false
     }
+    /// Whether this raw transcript line says the assistant's TURN is over (#194) —
+    /// `Some(true)` for an end-of-turn marker (Claude's `stop_reason: end_turn`, Codex's
+    /// `task_complete`), `Some(false)` for a line that proves the turn is still open (a
+    /// user/tool-result record feeding back, a mid-stream assistant chunk), `None` when
+    /// the line says nothing either way. [`tail_pulse`](crate::state::tail_pulse) walks
+    /// the tail backwards and takes the first opinion. Default `None`: an adapter
+    /// without the vocabulary degrades the idle/busy split to the growth and in-flight
+    /// signals, never to a wrong answer.
+    fn turn_ended(&self, _raw_line: &str) -> Option<bool> {
+        None
+    }
+    /// Whether a turn-ending assistant text reads as a QUESTION to the user (#194,
+    /// owner-resolved: an adapter hook from day one, in the #21 mold). Only refines
+    /// idle's context — never flips busy/wait. The default is the engine's generic
+    /// heuristic; agents with distinctive turn-closing formats override.
+    fn ends_with_question(&self, final_text: &str) -> bool {
+        crate::state::generic_ends_with_question(final_text)
+    }
     /// A fresh metrics accumulator for this agent.
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator>;
 

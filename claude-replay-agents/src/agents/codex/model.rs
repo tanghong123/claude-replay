@@ -139,6 +139,22 @@ impl LinePreprocessor for CodexLinePreprocessor {
     }
 }
 
+/// Whether this raw rollout line says the TURN is over (#194), Codex-format: the turn
+/// lifecycle is explicit — `event_msg`/`task_complete` ends it, `task_started` opens
+/// it, and any `response_item` is by definition inside a turn. Anchored on the payload
+/// envelope like the liveness scan, so quoted transcripts in tool output can't fake it.
+pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
+    const EVENT: &str = "\"payload\":{\"type\":\"";
+    let rest = &raw_line[raw_line.find(EVENT)? + EVENT.len()..];
+    let kind = &rest[..rest.find('"')?];
+    match kind {
+        "task_complete" => Some(true),
+        "task_started" => Some(false),
+        _ if raw_line.contains("\"type\":\"response_item\"") => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn encode_agent_path(path: &str) -> String {
     let encoded = path
         .as_bytes()

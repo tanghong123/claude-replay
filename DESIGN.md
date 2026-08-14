@@ -744,8 +744,8 @@ process + children, tail semantics) instead of asserted hook state, fixing the t
 notifier's three failures (idle vs waiting-on-tools, stuck busy, prose-question waits);
 transitions append to `~/.cache/claude-monitor/state/events.jsonl` + a `current.json`
 snapshot for any consumer. Studied against `~/personal/claude-toolbox/notifications/`;
-builds on #99's liveness probe, #21's `tool_is_interactive`, #23's `is_error`. Proposed;
-nothing built.
+builds on #99's liveness probe, #21's `tool_is_interactive`, #23's `is_error`. ✅ BUILT
+(v1.77.0): consumers tail `~/.cache/claude-monitor/state/events.jsonl`.
 
 ### Cleanup tasks
 

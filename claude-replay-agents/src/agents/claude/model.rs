@@ -519,6 +519,24 @@ pub(crate) fn tool_is_interactive(name: &str) -> bool {
     matches!(name, "AskUserQuestion" | "ExitPlanMode")
 }
 
+/// Whether this raw line says the assistant's TURN is over (#194), Claude-format:
+/// an assistant record's `stop_reason` of `end_turn`/`stop_sequence` ends it; any other
+/// assistant record is mid-stream; a user record (a prompt or a tool result feeding
+/// back) proves the conversation moved past whatever ended before. Field-level on
+/// purpose — this runs per tail line on the monitor's scan path, like the liveness scan.
+pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
+    if raw_line.contains("\"type\":\"assistant\"") {
+        return Some(
+            raw_line.contains("\"stop_reason\":\"end_turn\"")
+                || raw_line.contains("\"stop_reason\":\"stop_sequence\""),
+        );
+    }
+    if raw_line.contains("\"type\":\"user\"") {
+        return Some(false);
+    }
+    None
+}
+
 pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {
     enrich_subagents(blocks, sadir);
 }

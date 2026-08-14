@@ -9,6 +9,7 @@
 
 mod cost;
 mod index;
+mod state;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;

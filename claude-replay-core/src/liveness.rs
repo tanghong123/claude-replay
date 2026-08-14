@@ -91,14 +91,31 @@ const CODEX_TOOL_PATTERNS: &[CodexToolPattern] = &[
 /// them from anywhere in it). Covers sub-agent work too: while a child runs, the parent's
 /// spawning `tool_use` is itself unresolved in the ROOT tail.
 pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
+    !inflight_tools_in_tail(transcript).is_empty()
+}
+
+/// One unresolved call from the in-flight scan (#194): its pairing id and the tool's
+/// name as the raw record carried it (best-effort — a name the scan cannot see is an
+/// empty string, never a reason to drop the pending fact).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InflightTool {
+    pub id: String,
+    pub name: String,
+}
+
+/// [`inflight_tool_in_tail`], upgraded to say WHICH calls are unresolved — the S2
+/// carrier of design/agent-states.md: the consumer joins `name` against the adapter's
+/// `tool_is_interactive` (#21) to tell a modal wait from a running tool. Same window,
+/// same lossy-decode rationale, same pairing rules as the boolean form.
+pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(transcript) else {
-        return false;
+        return Vec::new();
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(INFLIGHT_TAIL_BYTES);
     if f.seek(SeekFrom::Start(start)).is_err() {
-        return false;
+        return Vec::new();
     }
     // LOSSY on purpose. The window starts at a fixed byte offset, so it lands inside a
     // multi-byte character whenever the transcript is not pure ASCII — measured at 7 of 558
@@ -108,11 +125,18 @@ pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     // char in one field, not the whole check.
     let mut raw = Vec::new();
     if f.read_to_end(&mut raw).is_err() {
-        return false;
+        return Vec::new();
     }
     let buf = String::from_utf8_lossy(&raw);
-    let mut uses: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Insertion-ordered id → name (#194): the order calls were made is the order the
+    // consumer wants to report them; a re-seen id keeps its first name.
+    let mut uses: Vec<(String, String)> = Vec::new();
     let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
+    fn note_use(uses: &mut Vec<(String, String)>, id: String, name: &str) {
+        if !uses.iter().any(|(u, _)| *u == id) {
+            uses.push((id, name.to_string()));
+        }
+    }
     // Field-level extraction: `key":"value"` occurrences on each line. Claude marks calls
     // as `"type":"tool_use"` with `"id":"toolu_…"` and results via `"tool_use_id"`; Codex
     // marks calls with `"type":"<call_type>"` and closes them with matching result records,
@@ -150,11 +174,12 @@ pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     }
     for line in buf.lines() {
         if line.contains("\"type\":\"tool_use\"") {
-            uses.extend(
-                field_values(line, "id")
-                    .filter(|v| v.starts_with("toolu"))
-                    .map(str::to_string),
-            );
+            // The tool's name rides the same record as its id; take the line's first
+            // `name` field as the best-effort label for every use on the line.
+            let name = field_values(line, "name").next().unwrap_or("").to_string();
+            for id in field_values(line, "id").filter(|v| v.starts_with("toolu")) {
+                note_use(&mut uses, id.to_string(), &name);
+            }
         }
         if line.contains("\"tool_use_id\"") {
             results.extend(field_values(line, "tool_use_id").map(str::to_string));
@@ -164,13 +189,21 @@ pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
         };
         for pat in CODEX_TOOL_PATTERNS {
             if kind == pat.call {
-                uses.extend(call_identity(line, pat.id_keys));
+                if let Some(id) = call_identity(line, pat.id_keys) {
+                    // Codex names function calls; the specialized shapes fall back to
+                    // their call type, which is the honest label they have.
+                    let name = field_values(line, "name").next().unwrap_or(pat.call);
+                    note_use(&mut uses, id, name);
+                }
             } else if kind == pat.result {
                 results.extend(call_identity(line, pat.id_keys));
             }
         }
     }
-    uses.iter().any(|u| !results.contains(u))
+    uses.retain(|(id, _)| !results.contains(id));
+    uses.into_iter()
+        .map(|(id, name)| InflightTool { id, name })
+        .collect()
 }
 
 #[cfg(test)]
@@ -183,6 +216,31 @@ mod tests {
 
     fn write_tail(path: &std::path::Path, lines: &str) {
         std::fs::write(path, lines).unwrap();
+    }
+
+    /// #194: the upgraded scan names what is pending — the S2 carrier the state
+    /// derivation joins against `tool_is_interactive`.
+    #[test]
+    fn inflight_tools_carry_names_in_call_order() {
+        let p = fixture("names");
+        write_tail(
+            &p,
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_a","name":"Bash","input":{}}]}}"#,
+                "
+",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_b","name":"AskUserQuestion","input":{}}]}}"#,
+                "
+",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a","content":"ok"}]}}"#,
+                "
+",
+            ),
+        );
+        let pending = inflight_tools_in_tail(&p);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "toolu_b");
+        assert_eq!(pending[0].name, "AskUserQuestion");
     }
 
     #[test]
