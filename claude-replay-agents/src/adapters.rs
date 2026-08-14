@@ -117,6 +117,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
     }
+    fn tool_is_interactive(&self, name: &str) -> bool {
+        agents::claude::model::tool_is_interactive(name)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())
     }
@@ -252,6 +255,10 @@ impl TranscriptAdapter for QoderAdapter {
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
     }
+    // Claude Code's tool vocabulary, so Claude's interactive set (#21).
+    fn tool_is_interactive(&self, name: &str) -> bool {
+        agents::claude::model::tool_is_interactive(name)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())
     }
@@ -330,6 +337,10 @@ impl TranscriptAdapter for QoderWorkAdapter {
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
     }
+    // Claude Code's tool vocabulary, so Claude's interactive set (#21).
+    fn tool_is_interactive(&self, name: &str) -> bool {
+        agents::claude::model::tool_is_interactive(name)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         Box::new(agents::claude::metrics::MetricsAcc::default())
     }
@@ -388,6 +399,28 @@ mod sniff_tests {
                 vec![Agent::QODERWORK],
                 "the shared head must never flip a QoderWork session's identity: {head}"
             );
+        }
+    }
+
+    /// #21: every Claude-Code-format adapter answers `true` for the human-blocking tools
+    /// (one shared vocabulary, one shared list), Codex stays on the default until its
+    /// equivalents are identified, and ordinary work tools are `false` everywhere — the
+    /// consumer's hardcoded name list moves behind the seam.
+    #[test]
+    fn interactive_tools_are_declared_by_the_adapter() {
+        for a in REGISTRY {
+            let expect_claude_family = a.agent() != Agent::CODEX;
+            for tool in ["AskUserQuestion", "ExitPlanMode"] {
+                assert_eq!(
+                    a.tool_is_interactive(tool),
+                    expect_claude_family,
+                    "{:?} / {tool}",
+                    a.agent()
+                );
+            }
+            for tool in ["Bash", "Edit", "Read", "Agent", ""] {
+                assert!(!a.tool_is_interactive(tool), "{:?} / {tool:?}", a.agent());
+            }
         }
     }
 

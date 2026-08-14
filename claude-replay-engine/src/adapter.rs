@@ -200,6 +200,16 @@ pub trait TranscriptAdapter: Sync {
     fn line_preprocessor(&self) -> Box<dyn LinePreprocessor> {
         Box::new(PassThrough)
     }
+    /// Whether a tool of this `name` blocks on a **human** answer rather than on the agent
+    /// doing work (#21) — Claude Code's `AskUserQuestion`/`ExitPlanMode` class. The
+    /// distinction belongs to the adapter because the tool vocabulary does: a consumer
+    /// computing "how long was the agent actually working" treats a gap ended by such a
+    /// tool's result as user latency, not agent work, and hardcoding the names downstream
+    /// makes an agent-agnostic consumer quietly agent-specific. Default `false`; adapters
+    /// opt in as they gain equivalents.
+    fn tool_is_interactive(&self, _name: &str) -> bool {
+        false
+    }
     /// A fresh metrics accumulator for this agent.
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator>;
 

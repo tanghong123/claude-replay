@@ -512,6 +512,13 @@ pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
 /// `cwd` change files it under the new cwd's slug), so "beside the transcript" is not the
 /// only place to look. Composable: children a pass can't resolve are left untouched, so
 /// several candidate dirs may be tried in turn.
+/// Tools whose "execution" is a human thinking (#21): a gap they bound is user latency,
+/// not agent work. Shared by every Claude-Code-format adapter (Claude, Qoder, QoderWork —
+/// one tool vocabulary), so the list lives once, next to the decoder that interprets it.
+pub(crate) fn tool_is_interactive(name: &str) -> bool {
+    matches!(name, "AskUserQuestion" | "ExitPlanMode")
+}
+
 pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {
     enrich_subagents(blocks, sadir);
 }
