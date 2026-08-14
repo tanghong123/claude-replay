@@ -738,6 +738,19 @@ the code is told to trust. The bump (v6) forces a cold refold under the fixed ac
 the byte-identical gate catches block-output changes, but a metrics change is invisible to
 it — the reviewer has to remember this rule, which is why it is written here.
 
+**And the bump must reach every store of persisted fold state (v1.70.2).** The rule above
+replayed itself within a release cycle: v1.70.0's repeat-collapsing accumulator (a ~2×
+correction) bumped `FOLD_VERSION` to 8, and the rail *still* served the old prices —
+because the ledger's entries carried only their own JSON-shape version. The entry's cursor
+CARRIES the running totals folded under the old rules, `restore` accepts legacy state by
+design (the lesser evil for cursors, which have no refold-once mechanism of their own),
+and §14's quiet-file fast path never re-folds an unchanged transcript — three mechanisms
+that together preserve a stale number indefinitely. Since v1.70.2 the persisted entry
+version is `(shape << 16) | FOLD_VERSION`, so a fold-behavior bump invalidates priced
+state automatically; a reviewer no longer has to remember that the ledger exists. The
+residual rule for anything NEW that persists fold state: tie its cache-validity to
+`FOLD_VERSION` at birth, or it will re-learn this section.
+
 ## Rejected
 
 | shape | why |
