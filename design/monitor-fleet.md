@@ -196,6 +196,14 @@ The orphan guard survives all of this because there is exactly one place that sp
 (`Tunnel::attempt`). First connect and re-open both go through it, so `KEEPALIVE` and the held stdin
 pipe cannot be present on one path and forgotten on the other.
 
+A limit, accepted knowingly: recovery is **serialized**. One watcher thread re-opens dropped
+forwards in turn, and one attempt can spend up to twenty seconds deciding — so when a lid-close
+drops every forward at once, the last of N environments can wait ~N×20 s, and a drop that happens
+during an in-flight attempt is not even noticed until it resolves. Bounded, and fine for the
+handfuls of machines this tool is for; if fleets grow, the fix is a shorter serving budget on
+re-opens (the common reconnect answers in a couple of seconds) or a thread per environment — not a
+supervisor framework.
+
 ## 6. One prompt: the `monitor-fleet` integration
 
 R4 is met the way this repo already does it (`integrations/`, the `jdi-handoff` precedent): one
