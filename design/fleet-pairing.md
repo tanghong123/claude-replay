@@ -218,12 +218,12 @@ so two users cannot both bind 2727. Each picks a port (or the tool picks a free 
 prints it) — orthogonal to auth, but the same shared-Mac reality. The per-user cache root
 is already separate (`~/.cache/claude-monitor` is per-home), so nothing else collides.
 
-**Decided: B, and shipped (v1.79.0).** `claude-monitor pair` mints a 32-byte
+**Decided: B, and shipped (v1.79.0).** `claude-monitor --pair` (a FLAG, matching this CLI's `--port`/`--agents` shape — pairing modifies the run, it is not a separate command; `pair` stays a friendly alias) mints a 32-byte
 `/dev/urandom` token (0600, mode set at open — no write-then-chmod race), and a paired
 monitor requires it wherever the peer is unverifiable (macOS), while Linux keeps the
 transparent same-user leg. The token rides `?token=`/`Authorization: Bearer`/`cmauth`
 cookie, constant-time compared. **One deviation from the sketch above, and it is
-strictly better here:** the bootstrap is a URL token + a one-time **302 → `/` with
+strictly better here:** the bootstrap is a **query** token (`?token=`, NOT a `#fragment` — a fragment never reaches the server, so the 302 bootstrap would never fire; that mismatch was the v1.79.0 bug, fixed in v1.79.1) + a one-time **302 → `/` with
 `Set-Cookie`** (`SameSite=Strict; HttpOnly; Max-Age=400d`), not a `#fragment` + page JS.
 A URL fragment lands in browser history exactly as a query does, so the fragment's only
 real wins — not sent over the wire, not in server logs — matter for a third-party RELAY

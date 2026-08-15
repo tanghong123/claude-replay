@@ -111,6 +111,17 @@ fn port_answers(port: Option<u16>) -> bool {
     .is_ok()
 }
 
+/// The URL to hand the owner when paired: the token as a **query**, never a `#fragment`.
+/// A fragment is not sent to the server, so the server-side 302→`Set-Cookie` bootstrap
+/// would never see it and the first load would 401 — the exact bug the query form fixes.
+/// The 302 to bare `/` is what then strips the token from the address bar and history.
+fn tokened_url(base: &str, token: Option<&str>) -> String {
+    match token {
+        Some(t) => format!("{base}?token={t}"),
+        None => base.to_string(),
+    }
+}
+
 /// The pairing token's file — the monitor's OWN root (R5), mode 0600. Its EXISTENCE is
 /// what flips the gate from D3b (same-user loopback) to §4.2 (token required where the
 /// peer is unverifiable, i.e. macOS): `pair` creates it, a normal run reads it.
@@ -182,9 +193,11 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            // `pair` (§4.2): mint the 0600 token if absent, then run enforcing it — the
-            // shared-Mac gate. A subcommand, but accepted anywhere for arg-order tolerance.
-            "pair" | "--pair" => do_pair = true,
+            // `--pair` (§4.2): mint the 0600 token if absent, then run enforcing it — the
+            // shared-Mac gate. A FLAG, to match this CLI's `--port`/`--agents`/`--no-open`
+            // shape: pairing modifies the run (it keeps serving), it is not a separate
+            // command that acts and exits. `pair` is accepted as a friendly alias.
+            "--pair" | "pair" => do_pair = true,
             "--port" => {
                 port = args
                     .next()
@@ -207,10 +220,11 @@ fn main() -> Result<()> {
             "--help" | "-h" => {
                 println!(
                     "claude-monitor — every agent session on this machine, over loopback HTTP\n\n\
-                     USAGE: claude-monitor [pair] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
+                     USAGE: claude-monitor [--pair] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
                      Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
-                     `pair`: require a token (a 0600 secret) — run it on a SHARED machine so\n\
-                     only you can reach your monitor; it prints a URL to open once.\n\
+                     --pair: require a token (a 0600 secret) — run it once on a SHARED machine\n\
+                     so only you can reach your monitor; it prints a URL to open. Thereafter a\n\
+                     plain `claude-monitor` keeps requiring the token.\n\
                      Cache root: $CLAUDE_MONITOR_CACHE, else ~/.cache/claude-monitor —\n\
                      never the viewer's (R5).\n\n\
                      Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
@@ -231,12 +245,7 @@ fn main() -> Result<()> {
         ensure_token(&root)?;
     }
     let token = read_token(&root);
-    // The tokened URL when paired — the owner's browser pairs itself on every open (the
-    // 302 drops the token from the address bar), and the printed/opened URL carries it.
-    let with_token = |base: &str| match &token {
-        Some(t) => format!("{base}#token={t}"),
-        None => base.to_string(),
-    };
+    let with_token = |base: &str| tokened_url(base, token.as_deref());
     // Before anything is opened: one monitor per root (#160) — and if another one has it, that
     // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
     // URL carries the token too: the second invocation is the same user, who can read the file.
@@ -361,6 +370,43 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use claude_replay_present::cache::lock;
+
+    /// #196 §4.2 regression: the paired URL MUST carry the token as a `?query`, not a
+    /// `#fragment`. A fragment is never sent to the server, so the printed URL would
+    /// 401 on open — the bug that shipped in v1.79.0 and this pins shut. Unpaired, the
+    /// URL is bare.
+    #[test]
+    fn the_paired_url_uses_a_query_token_not_a_fragment() {
+        let u = tokened_url("http://127.0.0.1:2727/", Some("abc"));
+        assert!(u.contains("?token=abc"), "query token: {u}");
+        assert!(!u.contains('#'), "never a fragment: {u}");
+        assert_eq!(
+            tokened_url("http://127.0.0.1:2727/", None),
+            "http://127.0.0.1:2727/"
+        );
+    }
+
+    /// The 0600 token file round-trips, and a second `ensure_token` returns the SAME
+    /// token (idempotent — pairing twice does not rotate).
+    #[test]
+    fn ensure_token_persists_0600_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("cm-tok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let a = ensure_token(&root).unwrap();
+        assert_eq!(a.len(), 64, "32 bytes as hex");
+        assert_eq!(read_token(&root).as_deref(), Some(a.as_str()));
+        assert_eq!(ensure_token(&root).unwrap(), a, "idempotent");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(token_path(&root))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "owner-only");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// #166: being second is not an error — it means what you asked for is already running.
     ///
