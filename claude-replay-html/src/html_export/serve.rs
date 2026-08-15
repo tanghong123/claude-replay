@@ -952,6 +952,136 @@ impl HttpResponse {
             body: msg.as_bytes().to_vec(),
         }
     }
+    pub fn unauthorized(msg: &'static str) -> Self {
+        Self {
+            code: "401 Unauthorized",
+            content_type: "text/plain",
+            body: msg.as_bytes().to_vec(),
+        }
+    }
+}
+
+/// The listener's access rule (#196 D3b). Loopback is a MACHINE boundary, not a USER one:
+/// on a shared dev server every local user can reach `127.0.0.1:<port>`, so an unguarded
+/// loopback monitor is readable — and, once #195 lands writes, drivable — by anyone with
+/// a login. The gate closes that where it can be VERIFIED.
+///
+/// **Same-user, not same-machine.** A loopback peer is admitted only when its socket owner
+/// is our own uid. On Linux — the shared-server platform — the peer uid is read from
+/// `/proc/net/tcp`. Where no kernel mechanism exposes a TCP peer's uid (macOS: no
+/// `SO_PEERCRED` for TCP, and the `pcblist` sysctl is fragile FFI not worth a security
+/// check's correctness), loopback is treated as same-machine and admitted — a single-user
+/// assumption that holds for a personal Mac and is hardened for multi-user macOS by the
+/// P1a token gate (see `design/fleet-pairing.md`). The ssh-tunnel path is unaffected on
+/// both: `ssh -L`'s remote end is connected by the authenticated user's own sshd child, so
+/// its uid IS the monitor owner's.
+#[derive(Clone, Copy)]
+pub struct AuthGate {
+    /// Our effective uid; a loopback peer must match it to be admitted (Linux). `None`
+    /// when it could not be determined — then Linux fails closed (deny) and non-Linux
+    /// keeps its same-machine admission.
+    euid: Option<u32>,
+}
+
+impl AuthGate {
+    /// The same-user gate for a loopback server: read our euid once at bind time.
+    pub fn same_user() -> Self {
+        Self {
+            euid: current_euid(),
+        }
+    }
+
+    /// Whether a connection is admitted. `peer` is the client end, `local` our listener
+    /// end (both from the accepted stream).
+    fn admits(self, peer: std::net::SocketAddr, local: std::net::SocketAddr) -> bool {
+        // Non-loopback never bypasses (D3b binds loopback only; a token gate arrives with
+        // `--listen` in P1a). Belt-and-suspenders against a future non-loopback bind.
+        if !peer.ip().is_loopback() {
+            return false;
+        }
+        match (peer, local) {
+            (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
+                match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
+                    // Verified: admit iff it is us.
+                    Some(uid) => self.euid == Some(uid),
+                    // Unverifiable (no /proc, or non-Linux): same-machine admission,
+                    // per the struct doc. A personal single-user machine.
+                    None => true,
+                }
+            }
+            // v6 loopback (::1) only reachable under a future `--listen`; admit for now
+            // (still loopback), P1a adds the tcp6 read + token.
+            _ => true,
+        }
+    }
+}
+
+/// Our effective uid, dependency-free. Linux: the effective field of `/proc/self/status`'s
+/// `Uid:` line (`real eff saved fs`). Elsewhere unused (the gate admits loopback there).
+fn current_euid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|l| {
+        let rest = l.strip_prefix("Uid:")?;
+        rest.split_whitespace().nth(1)?.parse().ok()
+    })
+}
+
+/// The uid owning the loopback TCP socket whose local end is `peer` and remote end is
+/// `local` (i.e. the CLIENT socket of a connection into our listener), from
+/// `/proc/net/tcp`. `None` when the file is absent (non-Linux) or the row is not found.
+fn peer_uid_v4(
+    peer_ip: std::net::Ipv4Addr,
+    peer_port: u16,
+    local_ip: std::net::Ipv4Addr,
+    local_port: u16,
+) -> Option<u32> {
+    let contents = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    find_peer_uid(&contents, peer_ip, peer_port, local_ip, local_port)
+}
+
+/// Pure `/proc/net/tcp` matcher — the client socket's row has `local_address` == the
+/// connection's peer end and `rem_address` == our listener end; its `uid` column is the
+/// connecting user. Split out so the byte-order parsing is unit-testable on synthetic
+/// text (the address hex is the in-memory u32, little-endian per octet; the port is
+/// big-endian hex).
+fn find_peer_uid(
+    contents: &str,
+    peer_ip: std::net::Ipv4Addr,
+    peer_port: u16,
+    local_ip: std::net::Ipv4Addr,
+    local_port: u16,
+) -> Option<u32> {
+    for line in contents.lines().skip(1) {
+        let mut f = line.split_whitespace();
+        let (Some(local_hex), Some(rem_hex)) = (f.nth(1), f.next()) else {
+            continue;
+        };
+        // Fields after rem_address: st, tx:rx, tr:tm, retrnsmt, uid → uid is 4 past it.
+        let uid = f.nth(4).and_then(|u| u.parse::<u32>().ok());
+        if parse_proc_addr(local_hex) == Some((peer_ip, peer_port))
+            && parse_proc_addr(rem_hex) == Some((local_ip, local_port))
+        {
+            return uid;
+        }
+    }
+    None
+}
+
+/// `RRRRRRRR:PPPP` from `/proc/net/tcp` → (v4 addr, port). The address is a u32 whose
+/// bytes are the octets in memory order (little-endian on the platforms Linux runs
+/// here), so octet `i` is hex pair `3 - i`; the port is plain big-endian hex.
+fn parse_proc_addr(field: &str) -> Option<(std::net::Ipv4Addr, u16)> {
+    let (addr_hex, port_hex) = field.split_once(':')?;
+    if addr_hex.len() != 8 {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    for i in 0..4 {
+        let pair = &addr_hex[(3 - i) * 2..(3 - i) * 2 + 2];
+        octets[i] = u8::from_str_radix(pair, 16).ok()?;
+    }
+    let port = u16::from_str_radix(port_hex, 16).ok()?;
+    Some((std::net::Ipv4Addr::from(octets), port))
 }
 
 /// A minimal read-only loopback HTTP listener whose ROUTING is the caller's (#98 §6.6:
@@ -964,6 +1094,12 @@ impl HttpResponse {
 pub type RouteHandler = std::sync::Arc<dyn Fn(&str, &str) -> HttpResponse + Send + Sync>;
 
 pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
+    spawn_listener_gated(port, handler, AuthGate::same_user())
+}
+
+/// [`spawn_listener`] with an explicit access gate (#196 D3b). `spawn_listener` is this
+/// with the same-user gate — the safe default every server wants on a shared machine.
+pub fn spawn_listener_gated(port: u16, handler: RouteHandler, gate: AuthGate) -> Result<u16> {
     use std::net::TcpListener;
     let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
@@ -971,7 +1107,7 @@ pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
         for stream in listener.incoming().flatten() {
             let handler = handler.clone();
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &*handler);
+                let _ = serve_connection(stream, &*handler, gate);
             });
         }
     });
@@ -1011,8 +1147,28 @@ pub(super) fn percent_decode(s: &str) -> String {
 fn serve_connection(
     mut stream: std::net::TcpStream,
     handler: &(dyn Fn(&str, &str) -> HttpResponse + Send + Sync),
+    gate: AuthGate,
 ) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
+    // #196 D3b: admit same-user loopback only. Checked BEFORE the request is even read,
+    // so a cross-user peer learns nothing about the routes. A 401 is still a well-formed
+    // HTTP reply, so the fleet's `status_code` health probe reads a gated remote monitor
+    // as "serving" rather than down (and its own tunnel passes the gate anyway).
+    if let (Ok(peer), Ok(local)) = (stream.peer_addr(), stream.local_addr()) {
+        if !gate.admits(peer, local) {
+            let r = HttpResponse::unauthorized("this monitor admits its own user only");
+            let head = format!(
+                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+                 Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+                r.code,
+                r.content_type,
+                r.body.len()
+            );
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     // `GET /name?query HTTP/1.1`
@@ -1154,6 +1310,68 @@ pub fn service_routes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
+
+    /// #196 D3b: the `/proc/net/tcp` matcher finds the connecting user by the client
+    /// socket's row (its `local_address` is the connection's peer end, `rem_address` our
+    /// listener end), and decodes the little-endian address hex + big-endian port hex
+    /// correctly. A row that does not match returns nothing.
+    #[test]
+    fn proc_net_tcp_matcher_reads_the_peer_uid() {
+        // 127.0.0.1 = octets [127,0,0,1] → memory-order hex 0100007F; ports big-endian.
+        // Peer (client) 127.0.0.1:54321 (0xD431), listener 127.0.0.1:2727 (0x0AA7), uid 501.
+        let contents = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:D431 0100007F:0AA7 01 00000000:00000000 00:00000000 00000000   501        0 0\n\
+   1: 0100007F:1234 0100007F:5678 01 00000000:00000000 00:00000000 00000000  1000        0 0\n";
+        let lo = Ipv4Addr::LOCALHOST;
+        assert_eq!(
+            find_peer_uid(contents, lo, 54321, lo, 2727),
+            Some(501),
+            "the client row's uid, matched on peer=local / listener=rem"
+        );
+        // The reversed tuple (listener as peer) must NOT match — direction matters.
+        assert_eq!(find_peer_uid(contents, lo, 2727, lo, 54321), None);
+        // A tuple absent from the table is unknown, not a wrong uid.
+        assert_eq!(find_peer_uid(contents, lo, 9999, lo, 2727), None);
+    }
+
+    /// The address/port hex decode in isolation — the endianness that bites.
+    #[test]
+    fn proc_addr_decodes_endianness() {
+        assert_eq!(
+            parse_proc_addr("0100007F:0AA7"),
+            Some((Ipv4Addr::LOCALHOST, 2727))
+        );
+        assert_eq!(
+            parse_proc_addr("0101A8C0:1F90"), // 192.168.1.1:8080
+            Some((Ipv4Addr::new(192, 168, 1, 1), 8080))
+        );
+        assert_eq!(parse_proc_addr("short:1"), None);
+    }
+
+    /// The gate admits our OWN loopback connection (this test process is the peer and the
+    /// listener) and answers a bound gated listener with 200 — the same-user path,
+    /// end to end, on whatever platform CI runs. (The cross-user DENY path cannot be
+    /// exercised without a second uid; it is covered by the matcher tests above.)
+    #[test]
+    fn a_gated_listener_admits_its_own_user() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|_n: &str, _q: &str| {
+            HttpResponse::ok("text/plain", b"ok".to_vec())
+        });
+        let port = spawn_listener_gated(0, handler, AuthGate::same_user()).unwrap();
+        let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        s.write_all(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "same-user connection is admitted:\n{resp}"
+        );
+        assert!(resp.trim_end().ends_with("ok"));
+    }
 
     /// `pull_reply_json` splices the provisional records inline (no re-parse) and carries the
     /// committed zone as a `{offset, len}` pointer into the on-disk record log (`null` when

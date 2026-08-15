@@ -1,6 +1,9 @@
 # #196 — Pairing & auth for claude-monitor and the fleet
 
-> **Proposal for review — nothing built.** How `claude-monitor` and `claude-monitor-fleet`
+> **Partly built.** D3b (§4, same-user loopback gate) shipped in v1.78.0 — the
+> smallest security-relevant slice, worth landing ahead of the rest. The proxy (D2),
+> token/pairing (D3a), `--listen` and the relay remain PROPOSED. How `claude-monitor` and
+> `claude-monitor-fleet`
 > become reachable from a phone with paseo-grade friction (one QR, no accounts, nothing
 > exposed until asked) while corp assets never make a single new outbound connection.
 > ONE auth layer serves both binaries — they already share the same HTTP server
@@ -105,15 +108,23 @@ today that is a readable monitor, and under #195 it would be "another user sends
 to my session". The identity boundary on a multi-user box is the UID, so the gate
 verifies the loopback peer's UID:
 
-- **Linux** (the shared-server case): `/proc/net/tcp{,6}` carries the socket owner's
-  UID per 4-tuple — match the peer's entry, compare to our own UID. One file read.
-- **macOS**: `netstat -anv` exposes the owning `process:pid` per socket → UID via one
-  `ps` lookup. (Or the `pcblist_n` sysctl for the no-subprocess form.)
-- **Fail closed**: a peer whose UID cannot be determined is NOT same-user — it needs the
-  token. The owner never notices: the binary prints its page URL WITH the `#pair=`
-  fragment read from the 0600 token file on startup, so even the fail-closed path is
-  one click for the same user (the file's mode is what proves same-user there) — and
-  other users cannot read that file.
+- **Linux** (the shared-server case — BUILT, v1.78.0): `/proc/net/tcp` carries the
+  socket owner's UID per 4-tuple. The gate matches the CLIENT socket's row (its
+  `local_address` is the connection's peer end, `rem_address` our listener end) and
+  compares that uid to our own euid (`/proc/self/status`). One file read, no subprocess,
+  no dependency. `--listen` (P1a) must add the `tcp6` read.
+- **macOS / any platform without a TCP peer-cred mechanism** (BUILT): loopback is
+  treated as SAME-MACHINE and admitted. macOS exposes no `SO_PEERCRED` for TCP, and the
+  `pcblist_n` sysctl is fragile struct-layout FFI not worth a security check's
+  correctness (and `netstat`/`lsof` per request — the server is `Connection: close` —
+  is too slow). This is a single-user-machine assumption: correct for a personal Mac,
+  and hardened for a multi-user Mac by the P1a token gate below. NOT a claim of
+  fail-closed on macOS — stated plainly so the posture is honest per platform.
+- **The token fallback is P1a, not D3b.** The earlier draft folded a token into D3b so
+  the unverifiable case could fail closed everywhere; the shipped D3b is smaller — Linux
+  enforces (the real threat), macOS assumes same-machine — and the token lands with
+  `--listen`/pairing, where the phone needs it regardless. This keeps D3b a ~200-line
+  security fix with no page-JS or cookie machinery.
 - **The ssh-tunnel path still costs zero ceremony**: the remote end of `ssh -L` is
   connected by the AUTHENTICATED user's own sshd session process, so the peer UID is the
   tunnel owner's. Your tunnels pass the same-user check; another user's tunnel to your
