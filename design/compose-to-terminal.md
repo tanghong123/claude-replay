@@ -1,8 +1,13 @@
 # Design #133 — a compose box that sends input to a session's terminal
 
-**Status: DESIGN ONLY. No code exists, and none should be written until the owner signs off
-on §6.** No compose box, no `send-keys` path, not even a disabled button — a control that
-only needs enabling is the same decision made quietly.
+**Status: AUTHORIZED (2026-08-15). Owner sign-off given on the §6 sentence — *the monitor
+may send input into a live agent session* — with the direction: build BOTH transports
+(idle-resume and live tmux), tmux prioritized as the highest value.** Two owner
+constraints now stand: (1) tmux injection is offered ONLY for a PROVEN session→pane link
+(§3.1), never a cwd guess; (2) an idle session's resume affordance is SUPPRESSED when the
+same project has an ACTIVE session — resuming an old idle continuation while live work is
+in flight would fork a divergent branch. Building proceeds once the §7 sub-decisions below
+are settled; #196's auth is the §3.2 CSRF fix this waited on.
 
 The request: click the terminal icon on a rail row, type a message, and have it arrive in the
 tmux session that row's agent is running in.
@@ -162,3 +167,32 @@ Ordered:
 **Owner sign-off required before step 5**, and specifically on this sentence: *the monitor may
 send input into a live agent session.* That is the decision; everything else is engineering.
 Until it is given, this document is the whole deliverable.
+
+
+## 7. Sub-decisions still open (post-authorization)
+
+The dangerous decision (§6) is made. These shape HOW, and each is recorded here as it is
+answered:
+
+1. **Feature gating (§4.4).** Compile-time `--features inject` off by default (a stock
+   Homebrew binary has NO injection code — strongest "refuse by default", but the owner
+   must build/ship an inject-enabled binary to use it) vs runtime-gated in the released
+   binary (present but inert until auth + a proven link + consent). *Owner decision.*
+2. **Consent model (§3.4).** Per-SEND confirmation (the compose action names the exact
+   `pane/sid/pid` and is itself the consent — no persistent store) vs a per-session
+   expiring GRANT (grant once, send freely until pid-change/timeout — needs a consent
+   store + revocation UI). *Owner decision; recommend per-send for v1.*
+3. **Visibility mechanism (§3.3).** `tmux display-message` on the target's status line
+   (announces the injection without touching stdin — must be VERIFIED from a foreign
+   process first) alone, vs additionally prefixing the injected prompt itself (visible to
+   the agent, but pollutes its input). *Recommend status-line-only; owner confirm.*
+4. **Build order.** tmux-first (highest value, but needs the most scaffolding: wire
+   hardening + visibility + consent) vs idle-first (quicker, fewer prerequisites) then
+   tmux. *Owner decision.*
+
+Applied by default unless overridden: the wire hardening (§3.2 — POST + Origin/Host
+allowlist on top of #196's auth) is a non-negotiable prerequisite; "active session in the
+project" (constraint 2) means any session in the same cwd with a LIVE attributed process
+(#194 non-idle); both `claude` (`--resume`) and `codex` (`exec resume`) are in scope for
+the idle path; the resume-forks-a-new-sid assumption (#195) is verified as the first build
+step, not assumed.
