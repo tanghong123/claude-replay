@@ -760,7 +760,9 @@ transports, picked by what #194/#99 already know about the row:
   a fork the rail already groups, zero new display machinery. Gate on "no live process"
   via #99 attribution so two writers cannot collide.
 - **Live session in a controllable terminal** (tmux pane / screen name — the monitor
-  already resolves pane + socket) → `tmux send-keys` / `paste-buffer -p`. Paseo's
+  already resolves pane + socket) → `tmux send-keys` / `paste-buffer -p`. On SHARED
+  machines both transports additionally require #196's same-UID/auth gate (D3b) —
+  loopback alone must never authorize a write. Paseo's
   correctness lesson applies: use BRACKETED PASTE for multi-line prompts so the first
   newline does not submit early (their input-mode tracker exists precisely because
   injected input must respect the app's declared modes). Strictly behind the

@@ -83,12 +83,12 @@ listener:
 
 ```rust
 pub struct AuthGate {
-    /// The bearer credential (256-bit, random). None = loopback-only server, no gate —
-    /// exactly today, for every caller that does not opt in.
+    /// The bearer credential (256-bit, random). None = loopback-only server, no gate
+    /// beyond the same-user rule below — for every caller that does not opt in.
     token: Option<Secret>,
-    /// Loopback requests bypass the gate, always: the local UX never changes, and the
-    /// ssh-tunnel path (whose remote end IS loopback) keeps working with zero ceremony.
-    allow_loopback_unauthed: bool, // true for both binaries
+    /// The loopback rule: SAME-USER, not same-machine (D3b). Loopback requests bypass
+    /// the token only when the peer's UID is provably this process's UID.
+    loopback: LoopbackRule, // SameUser
 }
 ```
 
@@ -97,6 +97,35 @@ cookie fallback for iframe/proxy/static requests that cannot carry a header. A m
 plain 401 with no body worth reading. Built once, tested once, inherited by every
 server — including #195's future write routes, which will REQUIRE a stricter posture on
 top of it, not a parallel mechanism.
+
+**Decision D3b — loopback bypass means SAME USER, never same machine.** Review caught
+the hole in the earlier draft ("loopback always bypasses"): loopback is a MACHINE
+boundary, and on a shared dev server every local user can reach `127.0.0.1:<port>` —
+today that is a readable monitor, and under #195 it would be "another user sends prompts
+to my session". The identity boundary on a multi-user box is the UID, so the gate
+verifies the loopback peer's UID:
+
+- **Linux** (the shared-server case): `/proc/net/tcp{,6}` carries the socket owner's
+  UID per 4-tuple — match the peer's entry, compare to our own UID. One file read.
+- **macOS**: `netstat -anv` exposes the owning `process:pid` per socket → UID via one
+  `ps` lookup. (Or the `pcblist_n` sysctl for the no-subprocess form.)
+- **Fail closed**: a peer whose UID cannot be determined is NOT same-user — it needs the
+  token. The owner never notices: the binary prints its page URL WITH the `#pair=`
+  fragment read from the 0600 token file on startup, so even the fail-closed path is
+  one click for the same user (the file's mode is what proves same-user there) — and
+  other users cannot read that file.
+- **The ssh-tunnel path still costs zero ceremony**: the remote end of `ssh -L` is
+  connected by the AUTHENTICATED user's own sshd session process, so the peer UID is the
+  tunnel owner's. Your tunnels pass the same-user check; another user's tunnel to your
+  monitor port is refused like any other cross-user loopback connect.
+- The stricter alternative, recorded for a later phase if wanted: serve on a UNIX
+  socket (0600) instead of loopback TCP — the kernel enforces same-user, and
+  `ssh -L <port>:<socket-path>` forwards to it directly. Not needed once peer-UID
+  verification exists; unix sockets can't serve a local browser without a helper.
+
+This hardening is worth shipping AHEAD of the rest of #196 as its own small change:
+today's `claude-monitor` (and any `--html` serve) on a shared machine is a
+loopback-readable surface for every local user, gate or no gate.
 
 **Decision D3a — pairing is identical in both binaries.** On first `pair`, the binary
 mints and persists the token (0600, at its OWN root: the monitor's beside `ignored.json`,
@@ -208,16 +237,19 @@ project and waits until phase 1 chafes.
 
 ## 9. Open questions for review
 
-1. **Cookie vs header for the proxied iframes:** the iframe requests can't carry a
+1. ~~Loopback bypass on shared machines~~ — **resolved by review (owner's catch): the
+   bypass is same-UID, never same-machine (D3b)**; peer-UID verification on both
+   platforms, fail closed, ssh tunnels unaffected.
+2. **Cookie vs header for the proxied iframes:** the iframe requests can't carry a
    custom header, so the token must ride a cookie for `/h/<idx>/*`. `SameSite=Strict` +
    the token cookie scoped to the fleet origin looks sufficient on a tailnet — is CSRF
    worth more than that for a read-only surface?
-2. **Multiple phones/devices:** one shared token (simplest, rotate-all-or-nothing) vs
+3. **Multiple phones/devices:** one shared token (simplest, rotate-all-or-nothing) vs
    per-device tokens (a tiny table, per-device revoke). Proposal: start shared; the
    identity file format leaves room for a list.
-3. **TLS on the tailnet bind:** WireGuard already encrypts; browser features that demand
+4. **TLS on the tailnet bind:** WireGuard already encrypts; browser features that demand
    a secure context (few, on this page) can use `tailscale cert`. Skip TLS in P1?
-4. **Does the monitor page need a base-path audit?** The claim "all fetches are
+5. **Does the monitor page need a base-path audit?** The claim "all fetches are
    relative" is from reading `export.js`/`rail.html`; P1a's first task is verifying it
    against a real proxied session (absolute `/session?id=…` links in the rail are the
    likely offender — they would need to become relative).
