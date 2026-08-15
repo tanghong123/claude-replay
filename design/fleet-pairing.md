@@ -240,16 +240,13 @@ project and waits until phase 1 chafes.
 1. ~~Loopback bypass on shared machines~~ — **resolved by review (owner's catch): the
    bypass is same-UID, never same-machine (D3b)**; peer-UID verification on both
    platforms, fail closed, ssh tunnels unaffected.
-2. **Cookie vs header for the proxied iframes:** the iframe requests can't carry a
-   custom header, so the token must ride a cookie for `/h/<idx>/*`. `SameSite=Strict` +
-   the token cookie scoped to the fleet origin looks sufficient on a tailnet — is CSRF
-   worth more than that for a read-only surface?
-3. **Multiple phones/devices:** one shared token (simplest, rotate-all-or-nothing) vs
-   per-device tokens (a tiny table, per-device revoke). Proposal: start shared; the
-   identity file format leaves room for a list.
-4. **TLS on the tailnet bind:** WireGuard already encrypts; browser features that demand
-   a secure context (few, on this page) can use `tailscale cert`. Skip TLS in P1?
-5. **Does the monitor page need a base-path audit?** The claim "all fetches are
-   relative" is from reading `export.js`/`rail.html`; P1a's first task is verifying it
-   against a real proxied session (absolute `/session?id=…` links in the rail are the
-   likely offender — they would need to become relative).
+2. ~~Cookie vs header~~ — **resolved (owner): `SameSite=Strict` cookie is the
+   mechanism and is sufficient CSRF posture for this read-only surface**; the
+   Authorization header stays as the CLI/scripting form.
+3. ~~Multiple devices~~ — **resolved (owner): start with one shared token**; the
+   identity file format leaves room for a per-device list later.
+4. ~~TLS on the tailnet bind~~ — **resolved (owner): skip in P1** — WireGuard already
+   encrypts; `tailscale cert` is the escape hatch if a secure context is ever needed.
+5. **Base-path audit** — resolved as P1b's first task: verify the monitor pages against
+   a real proxied session (absolute `/session?id=…` links in the rail are the likely
+   offender — they would need to become relative).
