@@ -166,7 +166,7 @@ available to a paired phone, which is fine: it touches the monitor's own root, n
 agent.) #195's send-prompt affordances must NOT ride this until they have their own
 consent design — the auth here is about who may LOOK.
 
-### 4.2 Multi-user macOS — the token becomes the portable gate (PROPOSED, awaiting decision)
+### 4.2 Multi-user macOS — the token becomes the portable gate (BUILT, v1.79.0)
 
 D3b's macOS behavior (admit loopback as same-machine) assumed a personal Mac. A SHARED
 Mac (a dev-team Mac mini) breaks that: every local user reaches `127.0.0.1:<port>`, and
@@ -218,9 +218,30 @@ so two users cannot both bind 2727. Each picks a port (or the tool picks a free 
 prints it) — orthogonal to auth, but the same shared-Mac reality. The per-user cache root
 is already separate (`~/.cache/claude-monitor` is per-home), so nothing else collides.
 
-**Decision needed:** ship B (token gate, ~P1a brought forward, transparent-on-Linux
-preserved), or A (native macOS FFI to keep macOS transparent too)? B is the
-recommendation; A only earns its risk if a tokenless macOS bookmark is a hard requirement.
+**Decided: B, and shipped (v1.79.0).** `claude-monitor pair` mints a 32-byte
+`/dev/urandom` token (0600, mode set at open — no write-then-chmod race), and a paired
+monitor requires it wherever the peer is unverifiable (macOS), while Linux keeps the
+transparent same-user leg. The token rides `?token=`/`Authorization: Bearer`/`cmauth`
+cookie, constant-time compared. **One deviation from the sketch above, and it is
+strictly better here:** the bootstrap is a URL token + a one-time **302 → `/` with
+`Set-Cookie`** (`SameSite=Strict; HttpOnly; Max-Age=400d`), not a `#fragment` + page JS.
+A URL fragment lands in browser history exactly as a query does, so the fragment's only
+real wins — not sent over the wire, not in server logs — matter for a third-party RELAY
+(P2), never for localhost owner→own-server. The 302 drops the token from the address bar
+after one hop, needs **zero page-JS changes** (the cookie is ambient on every same-origin
+request, so the rail/session/fleet pages are untouched — the byte gate stayed PASS), and
+is a fresh page-load redirect, not the cursor'd pull-loop redirect the cache design
+forbids. Verified live: `pair` → 401 for a tokenless peer, 200 with the token (query or
+cookie), 302+cookie on the tokened root; unpaired still v1.78.0; a paired monitor still
+reads "serving" to the fleet's probe.
+
+Note on the "read-only" framing: the monitor is read-only over agent DATA, but `/__reveal`
+opens Finder on the SERVER — one more reason the pre-pair warning (below) matters on a
+shared box.
+
+Startup makes the hole un-silent: an UNPAIRED monitor on a platform that cannot verify a
+TCP peer (macOS) prints a one-line warning naming `pair`; a PAIRED monitor prints the
+tokened URL (the owner's browser re-pairs itself every open) and says "token required".
 
 ### 4.1 The single-machine case: `claude-monitor` exposed directly
 

@@ -961,59 +961,152 @@ impl HttpResponse {
     }
 }
 
-/// The listener's access rule (#196 D3b). Loopback is a MACHINE boundary, not a USER one:
-/// on a shared dev server every local user can reach `127.0.0.1:<port>`, so an unguarded
-/// loopback monitor is readable — and, once #195 lands writes, drivable — by anyone with
-/// a login. The gate closes that where it can be VERIFIED.
+/// The listener's access rule (#196 D3b + §4.2). Loopback is a MACHINE boundary, not a
+/// USER one: on a shared dev server every local user can reach `127.0.0.1:<port>`, so an
+/// unguarded loopback monitor is readable — and, once #195 lands writes, drivable — by
+/// anyone with a login. (It is not even purely read-only from the OS's view: `/__reveal`
+/// opens Finder on the server.) The gate admits a connection two ways:
 ///
-/// **Same-user, not same-machine.** A loopback peer is admitted only when its socket owner
-/// is our own uid. On Linux — the shared-server platform — the peer uid is read from
-/// `/proc/net/tcp`. Where no kernel mechanism exposes a TCP peer's uid (macOS: no
-/// `SO_PEERCRED` for TCP, and the `pcblist` sysctl is fragile FFI not worth a security
-/// check's correctness), loopback is treated as same-machine and admitted — a single-user
-/// assumption that holds for a personal Mac and is hardened for multi-user macOS by the
-/// P1a token gate (see `design/fleet-pairing.md`). The ssh-tunnel path is unaffected on
-/// both: `ssh -L`'s remote end is connected by the authenticated user's own sshd child, so
-/// its uid IS the monitor owner's.
-#[derive(Clone, Copy)]
+/// 1. **Same-user loopback**, where the peer's uid is VERIFIABLE. On Linux — the
+///    shared-server platform — the peer uid is read from `/proc/net/tcp`; `ssh -L`'s
+///    remote end connects as the authenticated user's own sshd child, so a tunnel owner
+///    passes with zero ceremony. Where no kernel mechanism exposes a TCP peer's uid
+///    (macOS: no `SO_PEERCRED` for TCP, `pcblist` sysctl is fragile fail-open FFI) it
+///    cannot verify — see the token.
+/// 2. **A valid bearer token** (§4.2). A 256-bit secret in a 0600 file (`pair`), whose
+///    same-user guarantee is the FILE PERMISSIONS — identical on every OS. This is what
+///    makes a shared **Mac** safe: macOS cannot verify the peer, so a paired monitor
+///    REQUIRES the token there and a stranger's request is refused. Comparison is
+///    constant-time; the token rides `?token=`, `Authorization: Bearer`, or the
+///    `cmauth` cookie.
+///
+/// Unpaired (no token), the gate is D3b exactly: Linux enforces same-user, macOS admits
+/// same-machine (the single-user-Mac assumption). Pairing is what closes the multi-user
+/// case. See `design/fleet-pairing.md` §4.2.
+#[derive(Clone)]
 pub struct AuthGate {
-    /// Our effective uid; a loopback peer must match it to be admitted (Linux). `None`
-    /// when it could not be determined — then Linux fails closed (deny) and non-Linux
-    /// keeps its same-machine admission.
+    /// Our effective uid; a loopback peer with this uid is same-user (Linux). `None` when
+    /// it could not be read.
     euid: Option<u32>,
+    /// The bearer token when paired; `None` = unpaired (D3b behavior).
+    token: Option<std::sync::Arc<str>>,
+}
+
+/// The gate's ruling on one request.
+pub(crate) enum Access {
+    /// Admitted; no cookie to set (same-user, or the token already arrived as a cookie).
+    Ok,
+    /// Admitted via a `?token=`/header token — set the `cmauth` cookie so the browser's
+    /// subsequent same-origin requests carry it without the secret in the URL.
+    OkSetCookie,
+    /// Refused.
+    Denied,
 }
 
 impl AuthGate {
-    /// The same-user gate for a loopback server: read our euid once at bind time.
+    /// The same-user gate for a loopback server, unpaired (D3b): read our euid at bind.
     pub fn same_user() -> Self {
         Self {
             euid: current_euid(),
+            token: None,
         }
     }
 
-    /// Whether a connection is admitted. `peer` is the client end, `local` our listener
-    /// end (both from the accepted stream).
-    fn admits(self, peer: std::net::SocketAddr, local: std::net::SocketAddr) -> bool {
-        // Non-loopback never bypasses (D3b binds loopback only; a token gate arrives with
-        // `--listen` in P1a). Belt-and-suspenders against a future non-loopback bind.
-        if !peer.ip().is_loopback() {
-            return false;
-        }
-        match (peer, local) {
-            (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
-                match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
-                    // Verified: admit iff it is us.
-                    Some(uid) => self.euid == Some(uid),
-                    // Unverifiable (no /proc, or non-Linux): same-machine admission,
-                    // per the struct doc. A personal single-user machine.
-                    None => true,
-                }
-            }
-            // v6 loopback (::1) only reachable under a future `--listen`; admit for now
-            // (still loopback), P1a adds the tcp6 read + token.
-            _ => true,
+    /// The paired gate: same-user OR the given bearer token (§4.2).
+    pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
+        Self {
+            euid: current_euid(),
+            token: Some(token.into()),
         }
     }
+
+    /// Test constructor: a FOREIGN euid, so the same-user leg is deterministically false
+    /// on every platform (a real connection from the test process would otherwise pass
+    /// same-user on Linux and make a deny assertion platform-dependent).
+    #[cfg(test)]
+    fn for_test(token: Option<&str>) -> Self {
+        Self {
+            euid: Some(u32::MAX), // never a real uid → same-user never matches
+            token: token.map(std::sync::Arc::from),
+        }
+    }
+
+    /// Whether a token is configured (the binary uses this to decide the pre-pair
+    /// warning and whether to print a tokened URL).
+    pub fn is_paired(&self) -> bool {
+        self.token.is_some()
+    }
+
+    /// Rule on a request. `peer`/`local` are the accepted stream's ends; `presented` is the
+    /// token extracted from the request (query/header/cookie), and `from_cookie` says it
+    /// arrived as a cookie already (so no Set-Cookie is needed).
+    fn decide(
+        &self,
+        peer: std::net::SocketAddr,
+        local: std::net::SocketAddr,
+        presented: Option<&str>,
+        from_cookie: bool,
+    ) -> Access {
+        // A valid token admits regardless of peer identity (the phone/remote path, and
+        // the shared-Mac path). Constant-time compare: loopback is where timing leaks.
+        if let (Some(tok), Some(p)) = (self.token.as_deref(), presented) {
+            if ct_eq(tok.as_bytes(), p.as_bytes()) {
+                return if from_cookie {
+                    Access::Ok
+                } else {
+                    Access::OkSetCookie
+                };
+            }
+        }
+        // Else the same-user loopback leg (D3b). Non-loopback never bypasses.
+        if !peer.ip().is_loopback() {
+            return Access::Denied;
+        }
+        let same_user = match (peer, local) {
+            (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
+                match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
+                    Some(uid) => self.euid == Some(uid),
+                    // Unverifiable: same-machine ONLY when unpaired. A paired monitor on
+                    // macOS refuses an unverifiable peer that lacks the token — the whole
+                    // point of pairing a shared Mac.
+                    None => self.token.is_none(),
+                }
+            }
+            // v6 loopback: unverified; same-machine only when unpaired.
+            _ => self.token.is_none(),
+        };
+        if same_user {
+            Access::Ok
+        } else {
+            Access::Denied
+        }
+    }
+}
+
+/// Constant-time byte compare — no early exit, so a near-miss token cannot be timed out
+/// character by character over loopback.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// A fresh 256-bit token as lowercase hex, from `/dev/urandom` (never time/pid-derived).
+/// `None` if the OS RNG is unreadable — the caller then stays unpaired rather than mint a
+/// weak secret.
+pub fn mint_token() -> Option<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .ok()?
+        .read_exact(&mut buf)
+        .ok()?;
+    Some(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Our effective uid, dependency-free. Linux: the effective field of `/proc/self/status`'s
@@ -1103,11 +1196,13 @@ pub fn spawn_listener_gated(port: u16, handler: RouteHandler, gate: AuthGate) ->
     use std::net::TcpListener;
     let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
+    let gate = std::sync::Arc::new(gate);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let handler = handler.clone();
+            let gate = gate.clone();
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &*handler, gate);
+                let _ = serve_connection(stream, &*handler, &gate);
             });
         }
     });
@@ -1144,48 +1239,143 @@ pub(super) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The `cmauth` cookie's max age — the browser cap (400 days). A SESSION cookie would die
+/// with the browser and the owner's plain bookmark would 401 the next morning, which reads
+/// as "the monitor broke".
+const COOKIE_MAX_AGE_SECS: u64 = 400 * 24 * 3600;
+
 fn serve_connection(
     mut stream: std::net::TcpStream,
     handler: &(dyn Fn(&str, &str) -> HttpResponse + Send + Sync),
-    gate: AuthGate,
+    gate: &AuthGate,
 ) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
-    // #196 D3b: admit same-user loopback only. Checked BEFORE the request is even read,
-    // so a cross-user peer learns nothing about the routes. A 401 is still a well-formed
-    // HTTP reply, so the fleet's `status_code` health probe reads a gated remote monitor
-    // as "serving" rather than down (and its own tunnel passes the gate anyway).
-    if let (Ok(peer), Ok(local)) = (stream.peer_addr(), stream.local_addr()) {
-        if !gate.admits(peer, local) {
-            let r = HttpResponse::unauthorized("this monitor admits its own user only");
-            let head = format!(
-                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-                 Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-                r.code,
-                r.content_type,
-                r.body.len()
-            );
-            return stream
-                .write_all(head.as_bytes())
-                .and_then(|_| stream.write_all(&r.body));
-        }
-    }
+    // Read the request line + headers (bounded — a monitor request is tiny; an 8 KiB cap
+    // keeps a hostile peer from streaming forever).
+    let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+    reader.read_line(&mut line)?;
+    let mut headers = String::new();
+    loop {
+        let mut h = String::new();
+        let n = reader.read_line(&mut h)?;
+        if n == 0 || h == "\r\n" || h == "\n" || headers.len() > 8192 {
+            break;
+        }
+        headers.push_str(&h);
+    }
     // `GET /name?query HTTP/1.1`
     let target = line.split_whitespace().nth(1).unwrap_or("/");
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
-    let r = handler(name, query);
-    let head = format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-        r.code,
-        r.content_type,
-        r.body.len()
-    );
+
+    // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie).
+    let (presented, from_cookie) = extract_token(query, &headers);
+    let peer = stream.peer_addr().ok();
+    let local = stream.local_addr().ok();
+    let access = match (peer, local) {
+        (Some(p), Some(l)) => gate.decide(p, l, presented.as_deref(), from_cookie),
+        // No socket identity to check — deny unless a token was presented and matches.
+        _ => match presented.as_deref() {
+            Some(_)
+                if matches!(
+                    gate.decide(
+                        ([127, 0, 0, 1], 0).into(),
+                        ([127, 0, 0, 1], 0).into(),
+                        presented.as_deref(),
+                        from_cookie
+                    ),
+                    Access::OkSetCookie | Access::Ok,
+                ) =>
+            {
+                Access::OkSetCookie
+            }
+            _ => Access::Denied,
+        },
+    };
+
+    let (r, set_cookie, redirect_root) = match access {
+        Access::Denied => (
+            // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
+            // remote monitor as "serving" (and its own tunnel passes same-user anyway).
+            HttpResponse::unauthorized(
+                "not paired — run `claude-monitor pair` and open the printed URL",
+            ),
+            None,
+            false,
+        ),
+        Access::Ok => (handler(name, query), None, false),
+        Access::OkSetCookie => {
+            let tok = presented.clone().unwrap_or_default();
+            // A ROOT navigation that admitted via a URL token gets a one-time 302 to the
+            // bare path (+ cookie): the token never lingers in the address bar or history,
+            // and NO page JS changes. This is a page-load redirect, NOT the pull-loop
+            // redirect the design forbids — a fresh GET, not a cursor'd stream.
+            let root_nav = name.is_empty() || name == "index.html" || name == "index";
+            if root_nav && !from_cookie {
+                (HttpResponse::ok("text/plain", Vec::new()), Some(tok), true)
+            } else {
+                (handler(name, query), Some(tok), false)
+            }
+        }
+    };
+
+    let cookie = set_cookie
+        .map(|t| {
+            format!(
+                "Set-Cookie: cmauth={t}; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}; \
+                 HttpOnly; SameSite=Strict\r\n"
+            )
+        })
+        .unwrap_or_default();
+    let head = if redirect_root {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: /\r\n{cookie}\
+             Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        )
+    } else {
+        format!(
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}\
+             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+            r.code,
+            r.content_type,
+            r.body.len()
+        )
+    };
     stream
         .write_all(head.as_bytes())
         .and_then(|_| stream.write_all(&r.body))
+}
+
+/// Pull the bearer token from a request: `?token=` (query), `Authorization: Bearer`, or the
+/// `cmauth` cookie — in that precedence. Returns `(token, came_from_cookie)`.
+fn extract_token(query: &str, headers: &str) -> (Option<String>, bool) {
+    if let Some(t) = query_get(query, "token") {
+        return (Some(percent_decode(t)), false);
+    }
+    for raw in headers.lines() {
+        if let Some(v) = raw
+            .strip_prefix("Authorization:")
+            .or_else(|| raw.strip_prefix("authorization:"))
+        {
+            if let Some(bearer) = v.trim().strip_prefix("Bearer ") {
+                return (Some(bearer.trim().to_string()), false);
+            }
+        }
+        if let Some(v) = raw
+            .strip_prefix("Cookie:")
+            .or_else(|| raw.strip_prefix("cookie:"))
+        {
+            for kv in v.split(';') {
+                if let Some((k, val)) = kv.split_once('=') {
+                    if k.trim() == "cmauth" {
+                        return (Some(val.trim().to_string()), true);
+                    }
+                }
+            }
+        }
+    }
+    (None, false)
 }
 
 /// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/session`, `/pull`,
@@ -1348,6 +1538,57 @@ mod tests {
             Some((Ipv4Addr::new(192, 168, 1, 1), 8080))
         );
         assert_eq!(parse_proc_addr("short:1"), None);
+    }
+
+    /// §4.2: with a FOREIGN euid (so the same-user leg is off), the token decides.
+    /// No token presented → denied; the right token → admitted (and Set-Cookie when it
+    /// came by URL/header, plain OK when it was already a cookie); a wrong token → denied.
+    /// Cross-user is exactly a foreign-euid peer, so this IS the shared-Mac deny path.
+    #[test]
+    fn the_token_gate_admits_only_the_right_token() {
+        let lo = std::net::SocketAddr::from(([127, 0, 0, 1], 5000));
+        let srv = std::net::SocketAddr::from(([127, 0, 0, 1], 2727));
+        let gate = AuthGate::for_test(Some("secret-abc"));
+        assert!(matches!(gate.decide(lo, srv, None, false), Access::Denied));
+        assert!(matches!(
+            gate.decide(lo, srv, Some("nope"), false),
+            Access::Denied
+        ));
+        assert!(matches!(
+            gate.decide(lo, srv, Some("secret-abc"), false),
+            Access::OkSetCookie
+        ));
+        assert!(matches!(
+            gate.decide(lo, srv, Some("secret-abc"), true),
+            Access::Ok
+        ));
+        // A near-miss (same length, one byte off) is refused — the constant-time compare.
+        assert!(matches!(
+            gate.decide(lo, srv, Some("secret-abd"), false),
+            Access::Denied
+        ));
+        // Unpaired with a foreign euid on unverifiable-loopback would admit (same-machine);
+        // but a foreign euid on VERIFIABLE loopback (our matcher returns a uid) denies.
+        // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
+        let unpaired = AuthGate::for_test(None);
+        assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// `extract_token` reads all three carriers with the right precedence and parses a
+    /// `Cookie:` header without matching a look-alike key (`xcmauth`).
+    #[test]
+    fn extract_token_reads_query_header_and_cookie() {
+        assert_eq!(extract_token("token=q1", "").0.as_deref(), Some("q1"));
+        assert_eq!(
+            extract_token("", "Authorization: Bearer h1\r\n")
+                .0
+                .as_deref(),
+            Some("h1")
+        );
+        let (t, from_cookie) = extract_token("", "Cookie: foo=1; cmauth=c1; bar=2\r\n");
+        assert_eq!((t.as_deref(), from_cookie), (Some("c1"), true));
+        // A cookie whose name merely ends in cmauth must not match.
+        assert_eq!(extract_token("", "Cookie: xcmauth=nope\r\n").0, None);
     }
 
     /// The gate admits our OWN loopback connection (this test process is the peer and the

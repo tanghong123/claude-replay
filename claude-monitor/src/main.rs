@@ -13,7 +13,7 @@ mod state;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;
-use claude_replay_html::{query_get, service_routes, spawn_listener, HttpResponse, ServiceConfig};
+use claude_replay_html::{query_get, service_routes, HttpResponse, ServiceConfig};
 use claude_replay_present::cache::Presentation;
 use std::sync::Arc;
 
@@ -111,6 +111,48 @@ fn port_answers(port: Option<u16>) -> bool {
     .is_ok()
 }
 
+/// The pairing token's file — the monitor's OWN root (R5), mode 0600. Its EXISTENCE is
+/// what flips the gate from D3b (same-user loopback) to §4.2 (token required where the
+/// peer is unverifiable, i.e. macOS): `pair` creates it, a normal run reads it.
+fn token_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("auth-token")
+}
+
+/// Read the persisted token, if the monitor has been paired.
+fn read_token(root: &std::path::Path) -> Option<String> {
+    let t = std::fs::read_to_string(token_path(root)).ok()?;
+    let t = t.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// Mint-and-persist a token at 0600 if absent; return the token either way. Created with
+/// the mode set AT OPEN (never write-then-chmod — a world-readable window is exactly the
+/// hole this closes).
+fn ensure_token(root: &std::path::Path) -> Result<String> {
+    if let Some(t) = read_token(root) {
+        return Ok(t);
+    }
+    let tok = claude_replay_html::mint_token().context("read /dev/urandom to mint a token")?;
+    std::fs::create_dir_all(root).ok();
+    let path = token_path(root);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("write token {}", path.display()))?;
+        f.write_all(tok.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&path, &tok)?;
+    Ok(tok)
+}
+
 /// Reclaim the scratch locations this crate used before #162, once.
 ///
 /// `$TMPDIR/claude-monitor` (pre-#161) and `<root>/scratch/<pid>` (pre-#162). Nothing reads
@@ -136,9 +178,13 @@ fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
     let mut only: Vec<Agent> = Vec::new();
     let mut open_browser = true;
+    let mut do_pair = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            // `pair` (§4.2): mint the 0600 token if absent, then run enforcing it — the
+            // shared-Mac gate. A subcommand, but accepted anywhere for arg-order tolerance.
+            "pair" | "--pair" => do_pair = true,
             "--port" => {
                 port = args
                     .next()
@@ -161,8 +207,10 @@ fn main() -> Result<()> {
             "--help" | "-h" => {
                 println!(
                     "claude-monitor — every agent session on this machine, over loopback HTTP\n\n\
-                     USAGE: claude-monitor [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
+                     USAGE: claude-monitor [pair] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
                      Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
+                     `pair`: require a token (a 0600 secret) — run it on a SHARED machine so\n\
+                     only you can reach your monitor; it prints a URL to open once.\n\
                      Cache root: $CLAUDE_MONITOR_CACHE, else ~/.cache/claude-monitor —\n\
                      never the viewer's (R5).\n\n\
                      Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
@@ -177,9 +225,23 @@ fn main() -> Result<()> {
     }
 
     let root = index::default_root()?;
+    // `pair` mints the token before anything else, so both a fresh start and a hand-off to
+    // an already-running monitor below can print the tokened URL.
+    if do_pair {
+        ensure_token(&root)?;
+    }
+    let token = read_token(&root);
+    // The tokened URL when paired — the owner's browser pairs itself on every open (the
+    // 302 drops the token from the address bar), and the printed/opened URL carries it.
+    let with_token = |base: &str| match &token {
+        Some(t) => format!("{base}#token={t}"),
+        None => base.to_string(),
+    };
     // Before anything is opened: one monitor per root (#160) — and if another one has it, that
-    // is where the user wants to go (#166), so open it and stop rather than fail.
+    // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
+    // URL carries the token too: the second invocation is the same user, who can read the file.
     if let Claimed::Served(url) = claim_root(&root)? {
+        let url = with_token(&url);
         eprintln!("claude-monitor is already running — opening {url}");
         if open_browser {
             open_url(&url);
@@ -258,15 +320,34 @@ fn main() -> Result<()> {
         })
     };
 
-    let bound = spawn_listener(port, handler)
+    // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
+    let gate = match &token {
+        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str()),
+        None => claude_replay_html::AuthGate::same_user(),
+    };
+    let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;
     service.set_port(bound);
     // Now the root lock can say where we serve, so the next invocation's refusal names a URL
     // instead of just a pid (#160). Only reachable once bound — the same reason the html
     // server publishes its per-session notes late.
     let _ = claude_replay_present::cache::lock::publish(&root, serde_json::json!({"port": bound}));
-    let url = format!("http://127.0.0.1:{bound}/");
-    eprintln!("claude-monitor serving {url} (loopback only — Ctrl-C to stop)");
+    let base = format!("http://127.0.0.1:{bound}/");
+    let url = with_token(&base);
+    if token.is_some() {
+        eprintln!("claude-monitor serving {url} (paired — token required · Ctrl-C to stop)");
+    } else {
+        eprintln!("claude-monitor serving {url} (loopback only — Ctrl-C to stop)");
+        // The silent-hole warning (§4.2): unpaired + a platform that cannot verify a TCP
+        // peer's uid = every local user can reach this monitor (and `/__reveal` pops Finder
+        // on the server). Harmless on a personal Mac; a hole on a shared one.
+        if cfg!(not(target_os = "linux")) {
+            eprintln!(
+                "  note: loopback peers can't be verified on this platform — if this machine \
+                 is SHARED, run `claude-monitor pair` to require a token."
+            );
+        }
+    }
     println!("{url}");
     if open_browser {
         open_url(&url);
