@@ -747,6 +747,52 @@ snapshot for any consumer. Studied against `~/personal/claude-toolbox/notificati
 builds on #99's liveness probe, #21's `tool_is_interactive`, #23's `is_error`. ✅ BUILT
 (v1.77.0): consumers tail `~/.cache/claude-monitor/state/events.jsonl`.
 
+### #195 — send prompts from the monitor (resume-headless + tmux reply)
+
+Borrowed from the paseo study (2026-08-15): paseo never injects into terminals — it
+arranges never to need to. The monitor can offer "send a prompt to this session" with two
+transports, picked by what #194/#99 already know about the row:
+
+- **Idle session, no live attributed process** → spawn `claude --resume <sid> -p "<msg>"`
+  (headless continue; `jdi` already supervises exactly this shape). FIRST STEP of the
+  build: verify a headless `--resume` mints a NEW session id — #142's fork-family
+  machinery existing for Claude suggests it does, in which case the continuation lands as
+  a fork the rail already groups, zero new display machinery. Gate on "no live process"
+  via #99 attribution so two writers cannot collide.
+- **Live session in a controllable terminal** (tmux pane / screen name — the monitor
+  already resolves pane + socket) → `tmux send-keys` / `paste-buffer -p`. Paseo's
+  correctness lesson applies: use BRACKETED PASTE for multi-line prompts so the first
+  newline does not submit early (their input-mode tracker exists precisely because
+  injected input must respect the app's declared modes). Strictly behind the
+  session-liveness-probe §4 safety boundary: per-target consent, never default-on.
+
+The #194 state stream is the natural trigger surface (a `wait`/`idle·ended-question`
+event carries the sid, pid and term the reply needs).
+
+### #196 — fleet pairing & phone access (the paseo connectivity principles, adapted)
+
+From the same study, the low-friction recipe worth adopting: keypair-as-identity (no
+accounts), ONE artifact (QR / link) carrying identity + key + route, offer in the URL
+FRAGMENT (never hits a server), outbound-only daemon connections, hosted-with-self-host
+escape, disabled until enabled. Applied to this repo's topology:
+
+- **Two tiers, so corp assets never touch a relay.** The corp dev servers keep their ONLY
+  path as today's ssh tunnels (fleet as-is — already authorized, no new outbound
+  connections from corp machines). The relay/tailnet hop exists only between the PHONE
+  and the PRIMARY (personal) Mac that runs the fleet: phone → relay-or-tailnet →
+  fleet page → existing ssh tunnels → corp monitors. Session content crosses the corp
+  boundary only over ssh, exactly as it already does.
+- **Relay hosting, when wanted:** a personal VPS or a Cloudflare Worker — paseo's own
+  relay ships a `cloudflare-adapter`, evidence the pattern runs serverless — or skip the
+  relay entirely with Tailscale on PERSONAL devices only (phone + Macs; corp servers stay
+  off the tailnet, where installing overlay networks is typically forbidden anyway).
+- **Prerequisites the fleet lacks today:** it binds loopback with no auth. Phone access
+  needs a bind to the tailnet interface + a pairing token/keypair (the QR carries it) —
+  the E2E channel is NaCl box (Curve25519 + XSalsa20-Poly1305) in paseo, ~200 lines with
+  a vetted library if the relay path is ever built.
+- License note: paseo is AGPL-3.0 — designs above are borrowed as IDEAS; no code crosses
+  into this MIT repo.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now
