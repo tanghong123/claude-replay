@@ -166,6 +166,62 @@ available to a paired phone, which is fine: it touches the monitor's own root, n
 agent.) #195's send-prompt affordances must NOT ride this until they have their own
 consent design — the auth here is about who may LOOK.
 
+### 4.2 Multi-user macOS — the token becomes the portable gate (PROPOSED, awaiting decision)
+
+D3b's macOS behavior (admit loopback as same-machine) assumed a personal Mac. A SHARED
+Mac (a dev-team Mac mini) breaks that: every local user reaches `127.0.0.1:<port>`, and
+macOS enforces nothing. macOS exposes no `SO_PEERCRED` for TCP, and the two ways to learn
+a TCP peer's uid are both bad for a per-REQUEST security check (the server is
+`Connection: close`, so the check runs on every poll):
+
+- `lsof`/`netstat` subprocess — measured **~416 ms** per lookup here. A monitor polling
+  every 2 s from several tabs would spend most of its time shelling out. Rejected.
+- `net.inet.tcp.pcblist_n` sysctl (the no-subprocess native path) — carries the owning
+  uid, but as versioned struct-layout FFI (~150 lines) where a layout bug FAILS OPEN.
+  A fragile foothold for a security check, against this repo's grain (we hand-rolled
+  RFC3339 rather than take a struct-heavy dependency).
+
+Three ways to make a shared Mac safe:
+
+| Option | Mechanism | macOS UX | Cost / risk |
+|---|---|---|---|
+| **A — native peer-UID** | `pcblist_n` sysctl FFI, matched by 4-tuple | transparent (no token) | ~150 lines version-fragile FFI; a layout bug fails OPEN; must track macOS releases |
+| **B — token, portable** (recommended) | a 256-bit secret in a **0600** file; the OS's FILE PERMISSIONS are the same-user enforcement — identical on every platform; the token bridges to the browser | one tokenized URL to bookmark; a plain `127.0.0.1` bookmark's data fetches 401 | ~80 lines (mint/persist + cookie + fragment bootstrap) — but this is P1a's token anyway |
+| **C — unix domain socket** | 0600 socket, kernel-enforced peer creds | — | a browser can't `fetch()` a unix socket; needs a per-user TCP↔socket bridge. Reject for the browser surface |
+
+**Recommendation: B, and it SUBSUMES the platform-specific peer-UID paths.** The token's
+same-user guarantee comes from `chmod 0600` on the token file — a mechanism macOS and
+Linux enforce identically and correctly, with zero fragile code. It is ALSO exactly what
+P1a needs for the phone. So the multi-user-Mac requirement is not a new burden; it is the
+reason to pull P1a's token forward. The layered gate (already sketched in §4's `AuthGate`)
+becomes:
+
+```
+admit  ⟺  request carries the valid token
+       ∨  peer is verifiably same-user on loopback   (Linux /proc — a transparent convenience)
+```
+
+- On a shared Mac: no cheap peer-UID → the token is REQUIRED → a stranger's `curl` 401s.
+  This flips D3b's macOS "admit same-machine" to fail-closed, which is the correct posture
+  once a token exists to make fail-closed usable.
+- On Linux: the v1.78.0 transparent same-user path STAYS — a plain `127.0.0.1` bookmark
+  keeps working with no token; the token is the additional way in (remote, phone).
+- **Bootstrap (the only real UX cost):** the binary reads the 0600 token at startup and
+  prints `http://127.0.0.1:<port>/#token=<t>`. The fragment never reaches the server (nor
+  any log); the page JS reads `location.hash`, stores the token, strips it, and attaches
+  it (header for fetches, `SameSite=Strict` cookie for iframe/subresource requests). The
+  owner bookmarks that URL once; another user who loads plain `127.0.0.1:<port>` gets the
+  inert shell HTML but every data route 401s. `pair --rotate` reprints.
+
+**Related friction to name, not solve here:** on a shared Mac the PORT is machine-global,
+so two users cannot both bind 2727. Each picks a port (or the tool picks a free one and
+prints it) — orthogonal to auth, but the same shared-Mac reality. The per-user cache root
+is already separate (`~/.cache/claude-monitor` is per-home), so nothing else collides.
+
+**Decision needed:** ship B (token gate, ~P1a brought forward, transparent-on-Linux
+preserved), or A (native macOS FFI to keep macOS transparent too)? B is the
+recommendation; A only earns its risk if a tokenless macOS bookmark is a hard requirement.
+
 ### 4.1 The single-machine case: `claude-monitor` exposed directly
 
 The fleet is the aggregation story; a personal Mac that just wants ITS monitor on the
