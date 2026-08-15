@@ -798,6 +798,33 @@ escape, disabled until enabled. Applied to this repo's topology:
 - License note: paseo is AGPL-3.0 — designs above are borrowed as IDEAS; no code crosses
   into this MIT repo.
 
+### #197 — the hide list (and the pairing token) move out of the cache — ✅ BUILT (v1.80.0)
+
+`ignored.json` is user INTENT that cannot be recomputed, but it lived in `~/.cache/
+claude-monitor/` — a directory XDG defines as deletable at any time. An `rm -rf` of the
+383 MB `html/` beside it silently un-hid every project (`load_ignored` ended in
+`.unwrap_or_default()`), and the loss escaped the monitor: `agent-metrics`' hidden-import
+copies these keys, so a wiped cache + re-import silently starts collecting excluded
+projects again.
+
+Built: the hide list now lives at `$XDG_STATE_HOME/claude-monitor/ignored.json` (else
+`~/.local/state/…`, overridable by `$CLAUDE_MONITOR_STATE`, mirroring `$CLAUDE_MONITOR_CACHE`
+and reusing agent-jdi's `state_home()` shape). Migration, no re-hiding: read state; if
+absent, adopt the old cache file; write state on the next save; LEAVE the cache copy for a
+release or two so a downgrade is safe. `load_ignored` now distinguishes ABSENT (normal, an
+empty set, silent) from UNREADABLE/MALFORMED (reported, never silently "nothing hidden").
+The **pairing token** (`auth-token`) moved too, same migration — a credential in a
+disposable dir would break pairing on a cache wipe (owner re-pairs); the OWNER-decision
+was to move it with the hide list rather than defer. `LOCK`, `scratch/`, `html/`, `costs/`
+stay — they are genuinely cache.
+
+**Release note for the downstream reader (agent-metrics):** `ignored.json`'s FORMAT is
+unchanged (a flat JSON array of `p:<cwd>`/`s:<sid>`/`a:<agent>`), but its LOCATION moved to
+`$XDG_STATE_HOME/claude-monitor/` (else `~/.local/state/claude-monitor/`). agent-metrics'
+`hidden.rs::read_monitor()` needs the same lookup order — `$CLAUDE_MONITOR_STATE` →
+`$XDG_STATE_HOME/claude-monitor` → `~/.local/state/claude-monitor`, then the old cache path
+as a fallback — handled on that side.
+
 ### Cleanup tasks
 
 - [x] **Sync the backlog checkboxes with reality.** ✅ done — the shipped items above now

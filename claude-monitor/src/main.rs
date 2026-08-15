@@ -122,30 +122,58 @@ fn tokened_url(base: &str, token: Option<&str>) -> String {
     }
 }
 
-/// The pairing token's file — the monitor's OWN root (R5), mode 0600. Its EXISTENCE is
-/// what flips the gate from D3b (same-user loopback) to §4.2 (token required where the
-/// peer is unverifiable, i.e. macOS): `pair` creates it, a normal run reads it.
-fn token_path(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("auth-token")
+/// The pairing token's file — the monitor's STATE dir, mode 0600 (#197). It moved OUT of the
+/// cache with the hide list, and for the same reason plus a sharper one: the token is a
+/// CREDENTIAL that cannot be recomputed, so an `rm -rf ~/.cache` would silently un-pair the
+/// monitor — the owner's bookmark and cookie would then 401 and they'd have to re-pair. Its
+/// EXISTENCE is what flips the gate from D3b (same-user loopback) to §4.2 (token required
+/// where the peer is unverifiable, i.e. macOS): `--pair` creates it, a normal run reads it.
+fn token_path() -> std::path::PathBuf {
+    index::state_dir().join("auth-token")
 }
 
-/// Read the persisted token, if the monitor has been paired.
-fn read_token(root: &std::path::Path) -> Option<String> {
-    let t = std::fs::read_to_string(token_path(root)).ok()?;
-    let t = t.trim();
-    (!t.is_empty()).then(|| t.to_string())
+/// The pre-#197 location, read only for the migration (a monitor paired under v1.79.x).
+fn legacy_token_path(cache_root: &std::path::Path) -> std::path::PathBuf {
+    cache_root.join("auth-token")
 }
 
-/// Mint-and-persist a token at 0600 if absent; return the token either way. Created with
-/// the mode set AT OPEN (never write-then-chmod — a world-readable window is exactly the
-/// hole this closes).
-fn ensure_token(root: &std::path::Path) -> Result<String> {
-    if let Some(t) = read_token(root) {
-        return Ok(t);
+/// Read the persisted token, if the monitor has been paired — preferring the state path and
+/// falling back to the old cache path (#197 migration), so a monitor paired before the move
+/// stays paired with no re-pairing.
+fn read_token(cache_root: &std::path::Path) -> Option<String> {
+    let read = |p: std::path::PathBuf| {
+        std::fs::read_to_string(p)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    read(token_path()).or_else(|| read(legacy_token_path(cache_root)))
+}
+
+/// Mint-and-persist a token at 0600 if absent (honoring a migrated one); return it either
+/// way. Written to the STATE path, with the mode set AT OPEN (never write-then-chmod — a
+/// world-readable window is exactly the hole this closes).
+fn ensure_token(cache_root: &std::path::Path) -> Result<String> {
+    if let Some(t) = read_token(cache_root) {
+        // A token migrated from the cache is re-written to the state path here (`--pair`),
+        // so the state copy becomes authoritative; the cache copy is left for downgrades.
+        let tok = t.clone();
+        let path = token_path();
+        if !path.exists() {
+            let _ = write_token_0600(&path, &tok);
+        }
+        return Ok(tok);
     }
     let tok = claude_replay_html::mint_token().context("read /dev/urandom to mint a token")?;
-    std::fs::create_dir_all(root).ok();
-    let path = token_path(root);
+    write_token_0600(&token_path(), &tok)?;
+    Ok(tok)
+}
+
+/// Write `tok` to `path` with mode 0600 set at open.
+fn write_token_0600(path: &std::path::Path, tok: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -155,13 +183,13 @@ fn ensure_token(root: &std::path::Path) -> Result<String> {
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)
+            .open(path)
             .with_context(|| format!("write token {}", path.display()))?;
         f.write_all(tok.as_bytes())?;
     }
     #[cfg(not(unix))]
-    std::fs::write(&path, &tok)?;
-    Ok(tok)
+    std::fs::write(path, tok)?;
+    Ok(())
 }
 
 /// Reclaim the scratch locations this crate used before #162, once.
@@ -353,7 +381,7 @@ fn main() -> Result<()> {
         if cfg!(not(target_os = "linux")) {
             eprintln!(
                 "  note: loopback peers can't be verified on this platform — if this machine \
-                 is SHARED, run `claude-monitor pair` to require a token."
+                 is SHARED, run `claude-monitor --pair` to require a token."
             );
         }
     }
@@ -386,26 +414,83 @@ mod tests {
         );
     }
 
-    /// The 0600 token file round-trips, and a second `ensure_token` returns the SAME
-    /// token (idempotent — pairing twice does not rotate).
+    /// `state_dir()` reads process-global env; serialize the token tests that set it.
+    static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The token lives in the STATE dir at 0600, round-trips, and a second `ensure_token`
+    /// is idempotent (#197 — pairing twice does not rotate).
     #[test]
-    fn ensure_token_persists_0600_and_is_idempotent() {
-        let root = std::env::temp_dir().join(format!("cm-tok-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let a = ensure_token(&root).unwrap();
+    fn ensure_token_persists_0600_in_state_and_is_idempotent() {
+        let _g = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let state = std::env::temp_dir().join(format!("cm-tok-state-{}", std::process::id()));
+        let cache = std::env::temp_dir().join(format!("cm-tok-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&cache);
+        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+
+        let a = ensure_token(&cache).unwrap();
         assert_eq!(a.len(), 64, "32 bytes as hex");
-        assert_eq!(read_token(&root).as_deref(), Some(a.as_str()));
-        assert_eq!(ensure_token(&root).unwrap(), a, "idempotent");
+        assert!(
+            token_path().starts_with(&state),
+            "token lives in STATE, not cache"
+        );
+        assert!(
+            !cache.join("auth-token").exists(),
+            "nothing written to cache"
+        );
+        assert_eq!(read_token(&cache).as_deref(), Some(a.as_str()));
+        assert_eq!(ensure_token(&cache).unwrap(), a, "idempotent");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(token_path(&root))
+            let mode = std::fs::metadata(token_path())
                 .unwrap()
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "owner-only");
         }
-        let _ = std::fs::remove_dir_all(&root);
+        std::env::remove_var("CLAUDE_MONITOR_STATE");
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// #197 token migration: a monitor paired under v1.79.x (token in the CACHE) stays paired
+    /// after the move — `read_token` finds the cache copy, and `ensure_token` promotes it to
+    /// the state path without rotating, leaving the cache copy for a downgrade.
+    #[test]
+    fn a_cache_token_migrates_to_state_without_re_pairing() {
+        let _g = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let state = std::env::temp_dir().join(format!("cm-mig-state-{}", std::process::id()));
+        let cache = std::env::temp_dir().join(format!("cm-mig-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("auth-token"), "legacy-token-xyz").unwrap();
+        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+
+        assert_eq!(
+            read_token(&cache).as_deref(),
+            Some("legacy-token-xyz"),
+            "found in cache"
+        );
+        assert_eq!(
+            ensure_token(&cache).unwrap(),
+            "legacy-token-xyz",
+            "not rotated"
+        );
+        assert_eq!(
+            std::fs::read_to_string(token_path()).unwrap().trim(),
+            "legacy-token-xyz",
+            "promoted to the state path"
+        );
+        assert!(
+            cache.join("auth-token").exists(),
+            "cache copy left for a downgrade"
+        );
+
+        std::env::remove_var("CLAUDE_MONITOR_STATE");
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     /// #166: being second is not an error — it means what you asked for is already running.

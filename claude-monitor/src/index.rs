@@ -64,10 +64,10 @@ struct State {
     procs_at: Option<Instant>,
     /// The user's hide list (#113): keys are `s:<sid>` (one session), `p:<cwd>` (a whole
     /// project group), or `a:<label>` (a whole desktop-agent group) — the SAME strings the
-    /// group map is keyed by, so a group's key IS its hide key. Loaded once from
-    /// `<cache_root>/ignored.json` and rewritten on every toggle. This is monitor UI state at
-    /// the monitor's OWN root (the same place visited entries are written) — it never touches
-    /// an agent's data or a terminal, so it stays inside the read-only contract (R8).
+    /// group map is keyed by, so a group's key IS its hide key. Loaded once from the monitor's
+    /// STATE dir (`<state_dir>/ignored.json`, #197 — user intent that cannot be recomputed
+    /// belongs in XDG state, not the deletable cache) and rewritten on every toggle. It never
+    /// touches an agent's data or a terminal, so it stays inside the read-only contract (R8).
     ignored: BTreeSet<String>,
     /// The cost ledger (§14) — every session's equivalent-API cost, folded incrementally
     /// through `MetricsCursor`s persisted at the monitor's own root. Lazily built on the
@@ -217,7 +217,7 @@ impl Terminal {
 
 impl Index {
     pub fn new(cache_root: PathBuf, only: Vec<Agent>) -> Self {
-        let ignored = load_ignored(&ignore_path(&cache_root));
+        let ignored = load_ignored(&ignore_path(), &legacy_ignore_path(&cache_root));
         Self {
             cache_root,
             only,
@@ -240,7 +240,7 @@ impl Index {
             st.ignored.remove(key)
         };
         if changed {
-            save_ignored(&ignore_path(&self.cache_root), &st.ignored);
+            save_ignored(&ignore_path(), &st.ignored);
             // Re-derive the snapshot from the unchanged rows under the new hide set (no
             // rescan needed — hiding is a view filter, not a discovery change). The
             // state pass does not re-run: hiding changes the view, not any state.
@@ -853,24 +853,82 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Where the hide list lives (#113): a plain JSON array at the monitor's OWN root, beside the
-/// `html/` durable entries — never the viewer's root, never an agent's data (R5/R8).
-fn ignore_path(cache_root: &Path) -> PathBuf {
+/// The monitor's STATE directory — where the hide list belongs (#197): it is user INTENT
+/// that cannot be recomputed, and `~/.cache` is XDG-deletable at any time. `$XDG_STATE_HOME`
+/// (else `~/.local/state`), overridable by `$CLAUDE_MONITOR_STATE` (mirroring
+/// `$CLAUDE_MONITOR_CACHE`, for tests and for `agent-metrics`' matching lookup).
+pub fn state_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_STATE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return p;
+    }
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
+        .unwrap_or_else(|| PathBuf::from(".").join(".local").join("state"));
+    base.join("claude-monitor")
+}
+
+/// The hide list's home (#197): `<state_dir>/ignored.json` — STATE, not cache. A plain JSON
+/// array (`p:<cwd>` / `s:<sid>` / `a:<agent>`), the format `agent-metrics` also reads.
+fn ignore_path() -> PathBuf {
+    state_dir().join("ignored.json")
+}
+
+/// The pre-#197 location, kept only for the migration read (and a downgrade's safety net).
+fn legacy_ignore_path(cache_root: &Path) -> PathBuf {
     cache_root.join("ignored.json")
 }
 
-/// Load the hide list; a missing or unparsable file is simply an empty set (never fatal —
-/// the monitor must start regardless of a corrupt preference file).
-fn load_ignored(path: &Path) -> BTreeSet<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-        .map(|v| v.into_iter().collect())
-        .unwrap_or_default()
+/// Read one hide-list file: `Ok(None)` = ABSENT (normal first run — silent), `Ok(Some)` =
+/// parsed, `Err` = present but UNREADABLE or MALFORMED (a real problem, never "nothing is
+/// hidden"). Splitting the two is the #197 fix: the old code collapsed them into an empty
+/// set, so a corrupt or unreadable list silently un-hid everything.
+fn read_ignored(path: &Path) -> std::io::Result<Option<BTreeSet<String>>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    serde_json::from_str::<Vec<String>>(&raw)
+        .map(|v| Some(v.into_iter().collect()))
+        .map_err(std::io::Error::other)
+}
+
+/// Load the hide list with the #197 migration: prefer the state file, fall back to the old
+/// `<cache_root>/ignored.json` when the state file is ABSENT (so existing users keep their
+/// hidden projects with no re-hiding), and REPORT a malformed/unreadable file rather than
+/// silently reading it as an empty set.
+fn load_ignored(state: &Path, legacy: &Path) -> BTreeSet<String> {
+    match read_ignored(state) {
+        Ok(Some(set)) => return set,
+        Ok(None) => {} // absent → try the legacy cache location (migration)
+        Err(e) => eprintln!(
+            "warning: the hide list at {} is unreadable ({e}) — NOT treating it as \
+             \"nothing hidden\"; falling back to the previous location if present",
+            state.display()
+        ),
+    }
+    match read_ignored(legacy) {
+        Ok(Some(set)) => set, // migrated: used now, rewritten to the state path on next save
+        Ok(None) => BTreeSet::new(), // genuine first run
+        Err(e) => {
+            eprintln!(
+                "warning: the hide list at {} is unreadable ({e}) — starting with an EMPTY \
+                 hide set; hidden projects will reappear until this is fixed",
+                legacy.display()
+            );
+            BTreeSet::new()
+        }
+    }
 }
 
 /// Persist the hide list (best-effort: a write failure leaves the in-memory set authoritative
-/// for this run rather than crashing the server).
+/// for this run rather than crashing the server). Writes the STATE path; the old cache copy
+/// is LEFT in place (#197) so a downgrade does not lose the list — a later release removes it.
 fn save_ignored(path: &Path, set: &BTreeSet<String>) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1360,6 +1418,74 @@ pub fn default_root() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #197 migration (the case the owner asked for): a hide list that exists ONLY at the
+    /// old cache location is picked up, then written to the new STATE path on the next save,
+    /// and the set survives — an existing user re-hides nothing. The old copy is left in
+    /// place so a downgrade is safe.
+    #[test]
+    fn the_hide_list_migrates_from_cache_to_state() {
+        let d = std::env::temp_dir().join(format!("cm-hide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let state = d.join("state").join("ignored.json");
+        let legacy = d.join("cache").join("ignored.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        // A user who hid two projects under the old (cache) location:
+        std::fs::write(&legacy, r#"["p:/a","s:sid-1"]"#).unwrap();
+
+        // State absent → the cache set is adopted (migration read).
+        let set = load_ignored(&state, &legacy);
+        assert_eq!(
+            set,
+            ["p:/a".to_string(), "s:sid-1".to_string()]
+                .into_iter()
+                .collect(),
+            "the cache-only list is picked up"
+        );
+        // Next save writes the STATE path; the set survives a reload from there alone.
+        save_ignored(&state, &set);
+        assert!(state.exists(), "written to the new location");
+        let missing = d.join("no-such"); // legacy now irrelevant
+        assert_eq!(
+            load_ignored(&state, &missing),
+            set,
+            "survives from state alone"
+        );
+        assert!(legacy.exists(), "the cache copy is left for a downgrade");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #197: a MALFORMED or unreadable hide list is reported and never silently read as
+    /// "nothing hidden" — the difference `read_ignored` draws between absent (Ok(None)) and
+    /// broken (Err). An absent file is the normal first run.
+    #[test]
+    fn a_broken_hide_list_is_an_error_not_an_empty_set() {
+        let d = std::env::temp_dir().join(format!("cm-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let absent = d.join("absent.json");
+        let broken = d.join("broken.json");
+        std::fs::write(&broken, "{ this is not a json array").unwrap();
+
+        assert!(
+            matches!(read_ignored(&absent), Ok(None)),
+            "absent is not an error"
+        );
+        assert!(
+            read_ignored(&broken).is_err(),
+            "malformed is an error, not empty"
+        );
+        // And load's fallback: a broken STATE file with a good LEGACY file uses the legacy
+        // set (reported, not silently emptied).
+        let good_legacy = d.join("good.json");
+        std::fs::write(&good_legacy, r#"["p:/keep"]"#).unwrap();
+        assert_eq!(
+            load_ignored(&broken, &good_legacy),
+            ["p:/keep".to_string()].into_iter().collect(),
+            "a broken state file does not erase a readable legacy list"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// Format a `SystemTime` as the ISO-8601 UTC shape transcripts carry
     /// (`2026-08-08T10:00:00Z`) — the inverse of `time::epoch_secs` (civil_from_days).
