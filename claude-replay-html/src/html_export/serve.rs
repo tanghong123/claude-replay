@@ -911,8 +911,8 @@ fn spawn_http_server(
 ) -> Result<u16> {
     spawn_listener(
         0,
-        std::sync::Arc::new(move |name: &str, query: &str| {
-            service_routes(live.as_deref(), &root, name, query)
+        std::sync::Arc::new(move |req: &Request| {
+            service_routes(live.as_deref(), &root, req.name, req.query)
         }),
     )
 }
@@ -959,6 +959,83 @@ impl HttpResponse {
             body: msg.as_bytes().to_vec(),
         }
     }
+    pub fn forbidden(msg: &'static str) -> Self {
+        Self {
+            code: "403 Forbidden",
+            content_type: "text/plain",
+            body: msg.as_bytes().to_vec(),
+        }
+    }
+    pub fn method_not_allowed(msg: &'static str) -> Self {
+        Self {
+            code: "405 Method Not Allowed",
+            content_type: "text/plain",
+            body: msg.as_bytes().to_vec(),
+        }
+    }
+}
+
+/// A parsed request handed to a route handler. Reads consume `name`/`query` exactly as
+/// before; a WRITE route (#133) additionally gates on POST + [`authenticated`](Self::authenticated)
+/// + [`origin_ok`](Self::origin_ok) via [`deny_write`](Self::deny_write).
+pub struct Request<'a> {
+    pub method: &'a str,
+    pub name: &'a str,
+    pub query: &'a str,
+    pub body: &'a [u8],
+    /// A valid TOKEN was presented — not merely a same-user loopback peer. This is the
+    /// "authenticated" bar a write must clear (#133/#196): it is FALSE on an unpaired
+    /// monitor, so a stock binary cannot inject until `claude-monitor --pair` — pairing is
+    /// the master switch for the write capability.
+    pub authenticated: bool,
+    /// The `Host`/`Origin` headers are the monitor's own loopback origin (or absent) —
+    /// §3.2 defense-in-depth over #196's auth. A cross-site request carries a foreign
+    /// `Origin`; a DNS-rebound one carries a foreign `Host`; both are refused here even if
+    /// they somehow held a token.
+    pub origin_ok: bool,
+}
+
+impl Request<'_> {
+    /// Gate a write route (#133 §3.2): `None` to proceed, else the exact 4xx to return. A
+    /// write requires `POST`, a same-origin request, and an authenticated (token-bearing)
+    /// client — in that order, so the reply names the first thing that is wrong.
+    pub fn deny_write(&self) -> Option<HttpResponse> {
+        if self.method != "POST" {
+            return Some(HttpResponse::method_not_allowed("POST required"));
+        }
+        if !self.origin_ok {
+            return Some(HttpResponse::forbidden("cross-origin request refused"));
+        }
+        if !self.authenticated {
+            return Some(HttpResponse::unauthorized(
+                "this action requires pairing — run `claude-monitor --pair`",
+            ));
+        }
+        None
+    }
+}
+
+/// A header's value by case-insensitive name (`headers` is the raw block, one per line).
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+/// Whether the request's `Host`/`Origin` are the monitor's own loopback origin at `port`
+/// (or absent) — §3.2. A foreign `Host` is DNS rebinding; a foreign `Origin` is a
+/// cross-site fetch; either is refused.
+fn origin_ok(headers: &str, port: u16) -> bool {
+    let ours = |raw: &str| {
+        let v = raw
+            .trim()
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        v == format!("127.0.0.1:{port}") || v == format!("localhost:{port}")
+    };
+    header_value(headers, "host").is_none_or(ours)
+        && header_value(headers, "origin").is_none_or(ours)
 }
 
 /// The listener's access rule (#196 D3b + §4.2). Loopback is a MACHINE boundary, not a
@@ -1035,6 +1112,14 @@ impl AuthGate {
     /// warning and whether to print a tokened URL).
     pub fn is_paired(&self) -> bool {
         self.token.is_some()
+    }
+
+    /// Whether `presented` is the configured token — the "authenticated" test a WRITE
+    /// needs (#133), STRICTER than [`decide`](Self::decide): same-user loopback admits a
+    /// READ but never a write. Always false on an unpaired monitor (no token).
+    fn token_ok(&self, presented: Option<&str>) -> bool {
+        matches!((self.token.as_deref(), presented),
+            (Some(t), Some(p)) if ct_eq(t.as_bytes(), p.as_bytes()))
     }
 
     /// Rule on a request. `peer`/`local` are the accepted stream's ends; `presented` is the
@@ -1184,7 +1269,7 @@ fn parse_proc_addr(field: &str) -> Option<(std::net::Ipv4Addr, u16)> {
 /// every host, so a header fix lands everywhere at once.
 /// A route handler: `(path, query) -> reply`. Shared by the listener and any host chaining
 /// its own routes in front of [`service_routes`].
-pub type RouteHandler = std::sync::Arc<dyn Fn(&str, &str) -> HttpResponse + Send + Sync>;
+pub type RouteHandler = std::sync::Arc<dyn Fn(&Request) -> HttpResponse + Send + Sync>;
 
 pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
     spawn_listener_gated(port, handler, AuthGate::same_user())
@@ -1244,12 +1329,15 @@ pub(super) fn percent_decode(s: &str) -> String {
 /// as "the monitor broke".
 const COOKIE_MAX_AGE_SECS: u64 = 400 * 24 * 3600;
 
+/// The largest POST body the server will read (#133): a prompt, not a payload.
+const MAX_BODY_BYTES: usize = 64 * 1024;
+
 fn serve_connection(
     mut stream: std::net::TcpStream,
-    handler: &(dyn Fn(&str, &str) -> HttpResponse + Send + Sync),
+    handler: &(dyn Fn(&Request) -> HttpResponse + Send + Sync),
     gate: &AuthGate,
 ) -> std::io::Result<()> {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     // Read the request line + headers (bounded — a monitor request is tiny; an 8 KiB cap
     // keeps a hostile peer from streaming forever).
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -1264,10 +1352,21 @@ fn serve_connection(
         }
         headers.push_str(&h);
     }
-    // `GET /name?query HTTP/1.1`
+    // `METHOD /name?query HTTP/1.1`
+    let method = line.split_whitespace().next().unwrap_or("GET").to_string();
     let target = line.split_whitespace().nth(1).unwrap_or("/");
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
+
+    // The POST body, bounded — a write route (#133) reads its prompt/target from here.
+    let body_len = header_value(&headers, "content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(MAX_BODY_BYTES);
+    let mut body = vec![0u8; body_len];
+    if body_len > 0 {
+        reader.read_exact(&mut body)?;
+    }
 
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie).
     let (presented, from_cookie) = extract_token(query, &headers);
@@ -1294,17 +1393,29 @@ fn serve_connection(
         },
     };
 
+    // The write-route verdicts (#133): a valid TOKEN was presented (not merely same-user),
+    // and the Host/Origin are ours. `deny_write` on the Request enforces both + POST.
+    let local_port = local.map(|l| l.port()).unwrap_or(0);
+    let req = Request {
+        method: &method,
+        name,
+        query,
+        body: &body,
+        authenticated: gate.token_ok(presented.as_deref()),
+        origin_ok: origin_ok(&headers, local_port),
+    };
+
     let (r, set_cookie, redirect_root) = match access {
         Access::Denied => (
             // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
             // remote monitor as "serving" (and its own tunnel passes same-user anyway).
             HttpResponse::unauthorized(
-                "not paired — run `claude-monitor pair` and open the printed URL",
+                "not paired — run `claude-monitor --pair` and open the printed URL",
             ),
             None,
             false,
         ),
-        Access::Ok => (handler(name, query), None, false),
+        Access::Ok => (handler(&req), None, false),
         Access::OkSetCookie => {
             let tok = presented.clone().unwrap_or_default();
             // A ROOT navigation that admitted via a URL token gets a one-time 302 to the
@@ -1315,7 +1426,7 @@ fn serve_connection(
             if root_nav && !from_cookie {
                 (HttpResponse::ok("text/plain", Vec::new()), Some(tok), true)
             } else {
-                (handler(name, query), Some(tok), false)
+                (handler(&req), Some(tok), false)
             }
         }
     };
@@ -1574,6 +1685,67 @@ mod tests {
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
     }
 
+    /// #133 wire hardening: `deny_write` gates a write on POST + same-origin + a real
+    /// token, in that order (the reply names the first failing condition). A read request
+    /// (GET, no token) is refused for a write even from the same user — writing requires
+    /// authentication, not just loopback.
+    #[test]
+    fn deny_write_requires_post_same_origin_and_a_token() {
+        let mk = |method, authenticated, origin_ok| Request {
+            method,
+            name: "api/compose",
+            query: "",
+            body: b"",
+            authenticated,
+            origin_ok,
+        };
+        // Wrong method → 405, before anything else is even checked.
+        assert_eq!(
+            mk("GET", true, true).deny_write().unwrap().code,
+            "405 Method Not Allowed"
+        );
+        // Foreign origin → 403.
+        assert_eq!(
+            mk("POST", true, false).deny_write().unwrap().code,
+            "403 Forbidden"
+        );
+        // Same-origin POST but not authenticated (same-user read, no token) → 401.
+        assert_eq!(
+            mk("POST", false, true).deny_write().unwrap().code,
+            "401 Unauthorized"
+        );
+        // All three satisfied → proceed.
+        assert!(mk("POST", true, true).deny_write().is_none());
+    }
+
+    /// The Origin/Host allowlist (§3.2): our own loopback origin (or absent) passes; a
+    /// foreign Host (DNS rebinding) or Origin (cross-site fetch) is refused.
+    #[test]
+    fn origin_allowlist_admits_ours_refuses_foreign() {
+        assert!(origin_ok("Host: 127.0.0.1:2727\r\n", 2727), "our host");
+        assert!(
+            origin_ok("Host: localhost:2727\r\n", 2727),
+            "localhost alias"
+        );
+        assert!(
+            origin_ok(
+                "Host: 127.0.0.1:2727\r\nOrigin: http://127.0.0.1:2727\r\n",
+                2727
+            ),
+            "our host + our origin (a same-origin POST)"
+        );
+        assert!(origin_ok("", 2727), "absent headers rely on the token");
+        // DNS rebinding: the page is evil.com (rebound to 127.0.0.1), Host says evil.com.
+        assert!(!origin_ok("Host: evil.com:2727\r\n", 2727), "foreign host");
+        // Cross-site fetch: Host is ours, but the initiating page's Origin is evil.com.
+        assert!(
+            !origin_ok("Host: 127.0.0.1:2727\r\nOrigin: http://evil.com\r\n", 2727),
+            "foreign origin"
+        );
+        // Right host, wrong port — a different local service, not us.
+        assert!(!origin_ok("Host: 127.0.0.1:9999\r\n", 2727), "wrong port");
+    }
+
     /// `extract_token` reads all three carriers with the right precedence and parses a
     /// `Cookie:` header without matching a look-alike key (`xcmauth`).
     #[test]
@@ -1598,9 +1770,8 @@ mod tests {
     #[test]
     fn a_gated_listener_admits_its_own_user() {
         use std::io::{Read, Write};
-        let handler: RouteHandler = std::sync::Arc::new(|_n: &str, _q: &str| {
-            HttpResponse::ok("text/plain", b"ok".to_vec())
-        });
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
         let port = spawn_listener_gated(0, handler, AuthGate::same_user()).unwrap();
         let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
         s.write_all(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")

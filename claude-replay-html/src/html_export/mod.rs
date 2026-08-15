@@ -36,7 +36,7 @@ mod serve;
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::{
     existing_server, handoff_url, mint_token, query_get, serve, service_routes, spawn_listener,
-    spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer, RouteHandler,
+    spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer, Request, RouteHandler,
     ServiceConfig, SessionService, StaleEpoch,
 };
 

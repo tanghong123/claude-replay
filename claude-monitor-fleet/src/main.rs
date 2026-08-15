@@ -209,8 +209,8 @@ fn up(args: &[String]) -> Result<()> {
     let live = Arc::new(Mutex::new(live));
     let handler = {
         let live = live.clone();
-        Arc::new(move |name: &str, _query: &str| -> HttpResponse {
-            match name {
+        Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
+            match req.name {
                 "" | "index.html" => HttpResponse::html(page.clone()),
                 // Health is probed HERE, not in the page: the tabs are cross-origin, so the
                 // browser cannot ask them anything, and this process can.

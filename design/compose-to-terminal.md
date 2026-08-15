@@ -190,8 +190,15 @@ answered:
    hardening + visibility + consent) vs idle-first (quicker, fewer prerequisites) then
    tmux. *Owner decision.*
 
-Applied by default unless overridden: the wire hardening (§3.2 — POST + Origin/Host
-allowlist on top of #196's auth) is a non-negotiable prerequisite; "active session in the
+**Step 1 (wire hardening) BUILT, v1.81.0.** The shared HTTP server now parses the METHOD
+and reads a bounded POST body, and a route consults a `Request` carrying two write
+verdicts: `authenticated` (a valid TOKEN was presented — same-user loopback admits a read
+but NEVER a write, so a stock binary cannot inject until `--pair`) and `origin_ok` (the
+`Host`/`Origin` are the monitor's own loopback origin — a foreign Host is DNS rebinding, a
+foreign Origin a cross-site fetch, both refused). `Request::deny_write()` gates a write on
+POST + same-origin + authenticated. No write route exists yet — this is the safe surface
+one can be added to (steps 2–4). Applied by default unless overridden: the wire hardening
+(§3.2, now built) is a non-negotiable prerequisite; "active session in the
 project" (constraint 2) means any session in the same cwd with a LIVE attributed process
 (#194 non-idle); both `claude` (`--resume`) and `codex` (`exec resume`) are in scope for
 the idle path; the resume-forks-a-new-sid assumption (#195) is verified as the first build

@@ -316,7 +316,8 @@ fn main() -> Result<()> {
         let idx = idx.clone();
         let rail = rail.clone();
         let scratch = scratch.clone();
-        Arc::new(move |name: &str, query: &str| -> HttpResponse {
+        Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
+            let (name, query) = (req.name, req.query);
             match name {
                 "" | "index.html" => HttpResponse::html(rail.clone()),
                 "api/sessions" => {
