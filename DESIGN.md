@@ -769,8 +769,11 @@ transports, picked by what #194/#99 already know about the row:
 The #194 state stream is the natural trigger surface (a `wait`/`idle·ended-question`
 event carries the sid, pid and term the reply needs).
 
-### #196 — fleet pairing & phone access (the paseo connectivity principles, adapted)
+### #196 — pairing & auth for claude-monitor and the fleet
 
+Proposal: **[`design/fleet-pairing.md`](design/fleet-pairing.md)** — one AuthGate in the
+shared `spawn_listener` for both binaries, the pair-QR ritual, the fleet's `/h/<idx>/`
+proxy, the two-tier topology (corp assets stay ssh-only), and the deferred relay shape.
 From the same study, the low-friction recipe worth adopting: keypair-as-identity (no
 accounts), ONE artifact (QR / link) carrying identity + key + route, offer in the URL
 FRAGMENT (never hits a server), outbound-only daemon connections, hosted-with-self-host
