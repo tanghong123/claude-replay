@@ -53,6 +53,16 @@ pub struct SendTarget {
     pub cwd: Option<String>,
 }
 
+/// A resolved, allowed TMUX send target (#133 tmux slice): the pane to inject into, plus
+/// the pid the consent is keyed by (a pane outlives its process, so consent must not carry
+/// over to whatever occupies it next).
+pub struct TmuxTarget {
+    pub sid: String,
+    pub pid: u32,
+    pub sock: Option<String>,
+    pub pane: String,
+}
+
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
 /// refusal reasons). Never an injection: the route turns these into a 4xx.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +76,34 @@ pub enum SendRefusal {
     ProjectHasActiveSession,
     /// The agent's headless resume shape is not verified here (only claude, codex).
     UnsupportedAgent,
+    /// (tmux path) the session has no live attributed process to inject into.
+    SessionNotLive,
+    /// (tmux path) the link is a cwd HEURISTIC, not proven (§3.1) — injecting could hit a
+    /// different agent's pane.
+    UnprovenLink,
+    /// (tmux path) the live agent is not in a tmux pane (screen/plain tty — no injection).
+    NotInTmux,
+    /// (tmux path) no consent has been granted for this pane/pid, or it expired (§3.4).
+    NoConsent,
+}
+
+/// The tmux-injection decision (#133 tmux slice), PURE over one scan's link data — split out
+/// so the §3.1 refusal ladder is unit-tested without a live process or a tmux server. The
+/// order is the security order: unsupported agent, then not-live, then UNPROVEN (a cwd guess
+/// must never be injected), then not-in-tmux. Returns the `(pid, sock, pane)` to inject into.
+fn tmux_target_from(
+    agent: Agent,
+    link: &SendLink,
+) -> Result<(u32, Option<String>, String), SendRefusal> {
+    if agent != Agent::CLAUDE && agent != Agent::CODEX {
+        return Err(SendRefusal::UnsupportedAgent);
+    }
+    let pid = link.pid.ok_or(SendRefusal::SessionNotLive)?;
+    if !link.confirmed {
+        return Err(SendRefusal::UnprovenLink);
+    }
+    let (sock, pane) = link.tmux.clone().ok_or(SendRefusal::NotInTmux)?;
+    Ok((pid, sock, pane))
 }
 
 /// The liveness half of a send decision (#133), pure over one scan's data: the target must
@@ -75,15 +113,15 @@ pub enum SendRefusal {
 fn send_liveness_ok(
     sid: &str,
     cwd: Option<&str>,
-    live: &HashMap<String, Option<u32>>,
+    links: &HashMap<String, SendLink>,
     cwd_of: impl Fn(&str) -> Option<String>,
 ) -> Result<(), SendRefusal> {
-    if live.get(sid).copied().flatten().is_some() {
+    if links.get(sid).and_then(|l| l.pid).is_some() {
         return Err(SendRefusal::SessionIsLive);
     }
     if let Some(cwd) = cwd {
-        for (other, pid) in live {
-            if other != sid && pid.is_some() && cwd_of(other).as_deref() == Some(cwd) {
+        for (other, l) in links {
+            if other != sid && l.pid.is_some() && cwd_of(other).as_deref() == Some(cwd) {
                 return Err(SendRefusal::ProjectHasActiveSession);
             }
         }
@@ -100,6 +138,10 @@ impl SendRefusal {
                 "another session in this project is active — resume would fork live work"
             }
             Self::UnsupportedAgent => "sending is supported only for claude and codex sessions",
+            Self::SessionNotLive => "the session is not live — use send, which resumes it",
+            Self::UnprovenLink => "which pane this session drives is not proven — cannot inject",
+            Self::NotInTmux => "the live agent is not in tmux — cannot inject",
+            Self::NoConsent => "grant consent to send into this session's terminal first",
         }
     }
 }
@@ -138,10 +180,21 @@ struct State {
     sub_costs: HashMap<String, f64>,
     /// The agent-state pass (#194): hysteresis staging + the events/current dump.
     state_tracker: crate::state::StateTracker,
-    /// Per-session attributed live process from the last scan (#133): `sid → Some(pid)` when
-    /// a live agent drives it, `None` when finished. The send-prompt route reads this to
-    /// enforce "resume only a session with NO live process, in a project with no active one".
-    live_pids: HashMap<String, Option<u32>>,
+    /// Per-session attributed link from the last scan (#133): the live pid (if any), the
+    /// tmux control address, and whether the link is proven. The send-prompt route reads
+    /// this for both transports — idle-resume (no live pid) and tmux (a proven live link).
+    send_links: HashMap<String, SendLink>,
+}
+
+/// One session's attributed link, banked from the scan for the send routes (#133).
+#[derive(Clone, Default)]
+struct SendLink {
+    /// The live agent pid, or `None` when the session is finished.
+    pid: Option<u32>,
+    /// `(socket basename, pane)` when the live agent is in tmux.
+    tmux: Option<(Option<String>, String)>,
+    /// Whether the process↔session link is proven (§3.1) — required to inject.
+    confirmed: bool,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -275,6 +328,14 @@ impl Terminal {
             _ => None,
         }
     }
+    /// The tmux control address `(socket basename, pane)` — the only host the send-prompt
+    /// tmux path (#133) drives (screen/tty are out of scope for injection).
+    fn tmux_target(&self) -> Option<(Option<String>, String)> {
+        match self {
+            Terminal::Tmux { pane, sock } => Some((sock.clone(), pane.clone())),
+            _ => None,
+        }
+    }
 }
 
 impl Index {
@@ -334,13 +395,34 @@ impl Index {
             return Err(SendRefusal::UnsupportedAgent);
         }
         // The target must be finished and its project quiet (pure check, unit-tested).
-        send_liveness_ok(sid, cwd.as_deref(), &st.live_pids, |o| {
+        send_liveness_ok(sid, cwd.as_deref(), &st.send_links, |o| {
             st.rows.get(o).and_then(|r| r.cwd.clone())
         })?;
         Ok(SendTarget {
             sid: sid.to_string(),
             agent,
             cwd,
+        })
+    }
+
+    /// Resolve a TMUX send target (#133 tmux slice): the session must be LIVE with a PROVEN
+    /// link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
+    /// different agent) that is in tmux. Returns the pane/socket/pid to inject into and to
+    /// key consent by. A fresh scan is forced.
+    pub fn resolve_tmux_send(&self, sid: &str) -> Result<TmuxTarget, SendRefusal> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.scan(&mut st, &|_| {});
+        st.scanned_at = Some(Instant::now());
+
+        let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
+        let agent = row.agent;
+        let link = st.send_links.get(sid).cloned().unwrap_or_default();
+        let (pid, sock, pane) = tmux_target_from(agent, &link)?;
+        Ok(TmuxTarget {
+            sid: sid.to_string(),
+            pid,
+            sock,
+            pane,
         })
     }
 
@@ -525,9 +607,21 @@ impl Index {
 
         let mut facts = Vec::new();
         st.snapshot = self.assemble(st, &mut facts);
-        // Bank the per-session liveness the assemble pass resolved (#133) for the
-        // send-prompt route: the attributed live pid, or `None` when finished.
-        st.live_pids = facts.iter().map(|f| (f.sid.clone(), f.pid)).collect();
+        // Bank the per-session link the assemble pass resolved (#133) for the send
+        // routes: pid (finished when None), tmux address, and proven-ness.
+        st.send_links = facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        pid: f.pid,
+                        tmux: f.tmux.clone(),
+                        confirmed: f.confirmed,
+                    },
+                )
+            })
+            .collect();
         // The agent-state pass (#194): derive busy/wait/idle from what this tick just
         // observed and dump transitions + the snapshot under `<cache_root>/state/`.
         st.state_tracker.tick(&self.cache_root, &facts);
@@ -608,6 +702,16 @@ impl Index {
             has_term: bool,
         }
         let now = SystemTime::now();
+        // #133 tmux slice: the live grants, loaded ONCE for this snapshot. A row is marked
+        // `consented` by matching its own `(sock, pane, sid, pid)` against these — the same
+        // quadruple the send re-checks — so the badge never claims consent a send would then
+        // refuse (e.g. after a restart mints a new pid).
+        let grants = crate::consent::ConsentStore::open().active_grants();
+        let consented = |sock: Option<&str>, pane: &str, sid: &str, pid: u32| -> bool {
+            grants.iter().any(|g| {
+                g.sock.as_deref() == sock && g.pane == pane && g.sid == sid && g.pid == pid
+            })
+        };
         // #142: every session's FAMILY root — follow `fork_from` until a session that is not
         // itself a fork. A fork's transcript is 82–99% a replay of its origin's, so the rail
         // shows one row per family rather than a dozen near-identical ones.
@@ -742,6 +846,8 @@ impl Index {
                 term: link
                     .as_ref()
                     .and_then(|l| l.terminal.target().map(str::to_string)),
+                tmux: link.as_ref().and_then(|l| l.terminal.tmux_target()),
+                confirmed: link.as_ref().map(|l| l.confirmed).unwrap_or(false),
                 tree_mtime: row.tree_mtime,
             });
             // #113: a row is hidden if its OWN key is on the list, or its whole group is.
@@ -787,9 +893,19 @@ impl Index {
                 }
                 if let Some(t) = l.terminal.target() {
                     // The controllable target (#112): a tmux pane or screen session name.
-                    // NAMED, never used — the monitor is read-only (R8); §4 of the probe
-                    // gates any future injection on per-target consent.
                     j["target"] = json!(t);
+                }
+                // #133 tmux slice: this row can be INJECTED into iff the link is PROVEN
+                // (§3.1 — never a cwd guess), it is in tmux, and the agent has a driven shape
+                // (claude/codex). The rail offers the terminal-send affordance only on these
+                // rows; `consented` says whether a standing grant already covers this exact
+                // pane/pid (send now) or one is needed first.
+                let driven = matches!(row.agent, Agent::CLAUDE | Agent::CODEX);
+                if let (true, Some((sock, pane))) =
+                    (l.confirmed && driven, l.terminal.tmux_target())
+                {
+                    j["injectable"] = json!(true);
+                    j["consented"] = json!(consented(sock.as_deref(), &pane, sid, l.pid));
                 }
             }
             if let Some((_, c)) = &row.counters {
@@ -1524,22 +1640,26 @@ mod tests {
             "elsewhere" => Some("/other".to_string()),
             _ => None,
         };
-        let mut live: HashMap<String, Option<u32>> = HashMap::new();
-        live.insert("idle-a".into(), None);
-        live.insert("idle-c".into(), None);
-        live.insert("elsewhere".into(), Some(999)); // live, but a DIFFERENT project
+        let link = |pid: Option<u32>| SendLink {
+            pid,
+            ..Default::default()
+        };
+        let mut live: HashMap<String, SendLink> = HashMap::new();
+        live.insert("idle-a".into(), link(None));
+        live.insert("idle-c".into(), link(None));
+        live.insert("elsewhere".into(), link(Some(999))); // live, but a DIFFERENT project
 
         // A finished session in a quiet project: OK.
         assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of).is_ok());
         // The target itself is live → refuse (tmux path).
-        live.insert("idle-a".into(), Some(123));
+        live.insert("idle-a".into(), link(Some(123)));
         assert_eq!(
             send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of),
             Err(SendRefusal::SessionIsLive)
         );
         // Target finished, but a SIBLING in the same project is live → refuse.
-        live.insert("idle-a".into(), None);
-        live.insert("live-b".into(), Some(456));
+        live.insert("idle-a".into(), link(None));
+        live.insert("live-b".into(), link(Some(456)));
         assert_eq!(
             send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of),
             Err(SendRefusal::ProjectHasActiveSession)
@@ -1547,6 +1667,44 @@ mod tests {
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
         assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of).is_ok());
+    }
+
+    /// #133 tmux slice — the §3.1 refusal ladder (pure): only a live, PROVEN, in-tmux,
+    /// claude/codex link resolves to an injectable target. Each failure is its OWN reason,
+    /// and an UNPROVEN link (the cwd guess) is refused BEFORE its pane is ever revealed.
+    #[test]
+    fn tmux_injection_requires_a_live_proven_tmux_link() {
+        let tmux = |confirmed: bool, in_tmux: bool| SendLink {
+            pid: Some(777),
+            tmux: in_tmux.then(|| (Some("knack".into()), "%3".into())),
+            confirmed,
+        };
+
+        // The happy path: live + proven + in tmux + a driven agent.
+        assert_eq!(
+            tmux_target_from(Agent::CLAUDE, &tmux(true, true)),
+            Ok((777, Some("knack".into()), "%3".into()))
+        );
+        // An agent with no verified drive shape is refused first.
+        assert_eq!(
+            tmux_target_from(Agent::QODERWORK, &tmux(true, true)),
+            Err(SendRefusal::UnsupportedAgent)
+        );
+        // Not live (no pid) → resume territory, not injection.
+        assert_eq!(
+            tmux_target_from(Agent::CLAUDE, &SendLink::default()),
+            Err(SendRefusal::SessionNotLive)
+        );
+        // Live but the link is a cwd GUESS → refuse (never inject on a heuristic).
+        assert_eq!(
+            tmux_target_from(Agent::CODEX, &tmux(false, true)),
+            Err(SendRefusal::UnprovenLink)
+        );
+        // Live and proven, but not in tmux (a bare tty / screen) → nothing to inject into.
+        assert_eq!(
+            tmux_target_from(Agent::CLAUDE, &tmux(true, false)),
+            Err(SendRefusal::NotInTmux)
+        );
     }
 
     /// #133 resume shapes (verified against agent-jdi): claude resumes the SAME id with `-p`

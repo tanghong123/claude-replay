@@ -1,13 +1,13 @@
 # Design #133 — a compose box that sends input to a session's terminal
 
-**Status: AUTHORIZED (2026-08-15). Owner sign-off given on the §6 sentence — *the monitor
-may send input into a live agent session* — with the direction: build BOTH transports
-(idle-resume and live tmux), tmux prioritized as the highest value.** Two owner
-constraints now stand: (1) tmux injection is offered ONLY for a PROVEN session→pane link
-(§3.1), never a cwd guess; (2) an idle session's resume affordance is SUPPRESSED when the
-same project has an ACTIVE session — resuming an old idle continuation while live work is
-in flight would fork a divergent branch. Building proceeds once the §7 sub-decisions below
-are settled; #196's auth is the §3.2 CSRF fix this waited on.
+**Status: BUILT (2026-08-15), both transports shipped — see the §7 step log for the trail.**
+Owner sign-off was given on the §6 sentence — *the monitor may send input into a live agent
+session* — with the direction: build BOTH transports (idle-resume and live tmux), tmux
+prioritized as the highest value. Two owner constraints held throughout: (1) tmux injection is
+offered ONLY for a PROVEN session→pane link (§3.1), never a cwd guess; (2) an idle session's
+resume affordance is SUPPRESSED when the same project has an ACTIVE session — resuming an old
+idle continuation while live work is in flight would fork a divergent branch. #196's auth is
+the §3.2 CSRF fix this waited on; the whole feature is runtime-gated behind pairing (§7.1).
 
 The request: click the terminal icon on a rail row, type a message, and have it arrive in the
 tmux session that row's agent is running in.
@@ -215,6 +215,21 @@ is an autonomous agent turn, not a chat — OWNER decision: (a) use skip-permiss
 rows (paired only — the `{{PAIRED}}` flag) opens a fixed compose bar (separate from the
 polled list, so a re-render never clobbers the input); ⌘/Ctrl+Enter POSTs the prompt to
 `/api/send` with the ambient cookie, shows the refusal reason inline, and re-polls on
-success so the row goes active. The idle transport is now end-to-end usable. Remaining:
-step 4, the tmux slice (consent store + grant/revoke, proven-link-only, bracketed-paste,
-display-message).
+success so the row goes active. The idle transport is now end-to-end usable. **Step 4 (the
+tmux slice — the highest-value transport) BUILT, v1.84.0.** A LIVE, PROVEN
+(`confirmed`, §3.1 — never a cwd guess), in-tmux claude/codex row is marked `injectable` and
+gets the same `✎` compose button; sending POSTs `/api/send`, which the backend dispatches by
+liveness — a finished session resumes (3a), a live one injects. Injection requires standing
+CONSENT (§3.4, the owner's model-2b expiring GRANT): consent is keyed by the
+`(socket, pane, sid, pid)` quadruple — the pid load-bearing, so a restart (new pid) drops the
+grant and the owner re-grants — with an 8 h wall-clock backstop, stored 0600 at the state root
+(`consent.json`, beside `auth-token`/`ignored.json`) and revocable from the rail. An
+unconsented pane returns `code:"no-consent"`, which makes the Send button read "Grant & send"
+(one click: `POST /api/consent` then `/api/send`); a consented pane shows a "revoke" link. The
+injection itself (verified from a foreign process against a foreign pane) is `load-buffer -`
+(prompt on STDIN, never an argv), `paste-buffer -d -p` (BRACKETED — a multi-line prompt is one
+pasted block, not N Enter-submitted lines), a single `send-keys Enter` to submit, and
+`display-message` on the pane's STATUS LINE (§3.3 — announces the send WITHOUT entering stdin,
+so injection is never silent). The whole feature is runtime-gated behind pairing (§7.1 owner
+decision 1b): a stock unpaired binary has the code but no token, so every write route 401s.
+The §3.1–§3.4 blockers are now all cleared and both transports are usable; #133 is complete.

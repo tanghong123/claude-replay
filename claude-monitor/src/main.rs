@@ -7,6 +7,7 @@
 //! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
 //! that entry's meta stream lock-free.
 
+mod consent;
 mod cost;
 mod index;
 mod state;
@@ -172,25 +173,8 @@ fn ensure_token(cache_root: &std::path::Path) -> Result<String> {
 
 /// Write `tok` to `path` with mode 0600 set at open.
 fn write_token_0600(path: &std::path::Path, tok: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("write token {}", path.display()))?;
-        f.write_all(tok.as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(path, tok)?;
-    Ok(())
+    consent::write_0600(path, tok.as_bytes())
+        .with_context(|| format!("write token {}", path.display()))
 }
 
 /// The headless-resume command for a send-prompt (#133 idle slice), by agent. Verified
@@ -239,6 +223,118 @@ fn spawn_resume(target: &index::SendTarget, prompt: &str) -> Result<()> {
     }
     cmd.spawn().context("spawn the resume")?;
     Ok(())
+}
+
+/// Run a tmux subcommand for a target's socket, output discarded, and fail on a non-zero
+/// exit — the caller must know an injection step did not land.
+fn tmux_cmd(sock: Option<&str>, args: &[&str], what: &str) -> Result<()> {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(sock) = sock {
+        cmd.arg("-L").arg(sock);
+    }
+    let status = cmd
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("tmux {what}"))?;
+    if !status.success() {
+        anyhow::bail!("tmux {what} failed (exit {:?})", status.code());
+    }
+    Ok(())
+}
+
+/// Inject a prompt into a live agent's tmux pane (#133 tmux slice, verified from a foreign
+/// process against a foreign pane). Four steps, each chosen to keep the prompt OUT of a
+/// command line and to submit exactly once:
+///  1. `load-buffer -` reads the prompt on STDIN into a named buffer — the text is never an
+///     argv, so there is no shell/quoting surface to get wrong or exploit.
+///  2. `paste-buffer -p` pastes it BRACKETED (`-d` deletes the buffer after): a multi-line
+///     prompt arrives as one pasted block the agent's input treats as text, not as N lines
+///     each Enter-submitted.
+///  3. a single `send-keys Enter` submits (bracketed paste never submits on its own).
+///  4. `display-message` announces the send on the pane's STATUS LINE (§3.3 — verified NOT
+///     to enter stdin), so the injection is visible in the target, never silent.
+fn tmux_send(target: &index::TmuxTarget, prompt: &str) -> Result<()> {
+    let sock = target.sock.as_deref();
+    let pane = target.pane.as_str();
+    const BUF: &str = "claude-monitor-send";
+
+    // 1) prompt → a named tmux buffer, via stdin (never argv).
+    {
+        use std::io::Write;
+        let mut cmd = std::process::Command::new("tmux");
+        if let Some(sock) = sock {
+            cmd.arg("-L").arg(sock);
+        }
+        let mut child = cmd
+            .args(["load-buffer", "-b", BUF, "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("tmux load-buffer")?;
+        child
+            .stdin
+            .take()
+            .context("tmux load-buffer stdin")?
+            .write_all(prompt.as_bytes())?;
+        let status = child.wait().context("tmux load-buffer wait")?;
+        if !status.success() {
+            anyhow::bail!("tmux load-buffer failed (exit {:?})", status.code());
+        }
+    }
+    // 2) paste it bracketed into the pane, deleting the buffer after.
+    tmux_cmd(
+        sock,
+        &["paste-buffer", "-d", "-p", "-b", BUF, "-t", pane],
+        "paste-buffer",
+    )?;
+    // 3) submit with a single Enter.
+    tmux_cmd(sock, &["send-keys", "-t", pane, "Enter"], "send-keys Enter")?;
+    // 4) announce on the status line — visibility without touching stdin (§3.3).
+    let _ = tmux_cmd(
+        sock,
+        &[
+            "display-message",
+            "-t",
+            pane,
+            "claude-monitor: a prompt was sent from the rail",
+        ],
+        "display-message",
+    );
+    Ok(())
+}
+
+/// The live-session send (#133 tmux slice): resolve the target as a PROVEN live tmux link,
+/// require standing consent for its exact pane/pid, then inject. Returns the `/api/send` JSON
+/// body. Consent is checked against the pid THIS scan just observed, so a restarted process (a
+/// new pid) has no matching grant → `no-consent`, and the owner re-grants — the pid-change
+/// invalidation of §3.4. The distinct `"code":"no-consent"` lets the rail offer a grant button
+/// instead of showing a dead-end refusal.
+fn send_tmux(idx: &index::Index, sid: &str, prompt: &str) -> serde_json::Value {
+    let target = match idx.resolve_tmux_send(sid) {
+        Ok(t) => t,
+        Err(reason) => return json!({"ok": false, "error": reason.as_str()}),
+    };
+    let store = consent::ConsentStore::open();
+    if !store.is_granted(
+        target.sock.as_deref(),
+        &target.pane,
+        &target.sid,
+        target.pid,
+    ) {
+        return json!({
+            "ok": false,
+            "error": index::SendRefusal::NoConsent.as_str(),
+            "code": "no-consent",
+        });
+    }
+    match tmux_send(&target, prompt) {
+        Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
+        Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+    }
 }
 
 /// Reclaim the scratch locations this crate used before #162, once.
@@ -407,8 +503,43 @@ fn main() -> Result<()> {
                         (None, _) => json!({"ok": false, "error": "no target session"}),
                         (_, true) => json!({"ok": false, "error": "empty prompt"}),
                         (Some(sid), false) => match idx.resolve_send(&sid) {
+                            // Finished session → resume-spawn (the idle transport, 3a).
                             Ok(target) => match spawn_resume(&target, &prompt) {
-                                Ok(()) => json!({"ok": true, "sid": sid}),
+                                Ok(()) => json!({"ok": true, "sid": sid, "via": "resume"}),
+                                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+                            },
+                            // Live session → the tmux transport (4), but ONLY for a proven
+                            // pane link AND standing consent. A live session with no proven
+                            // link, not in tmux, or not consented is refused with its reason.
+                            Err(index::SendRefusal::SessionIsLive) => {
+                                send_tmux(&idx, &sid, &prompt)
+                            }
+                            Err(reason) => json!({"ok": false, "error": reason.as_str()}),
+                        },
+                    };
+                    HttpResponse::json(resp.to_string())
+                }
+                // #133 tmux slice: grant/revoke consent to inject into a live session's pane.
+                // A WRITE (deny_write-gated). `?op=revoke` clears a session's grants (always
+                // allowed — removes stale consent); otherwise a grant requires the session to
+                // resolve as a PROVEN live tmux link (`resolve_tmux_send`), so consent can only
+                // be granted for a target that could actually be injected.
+                "api/consent" => {
+                    if let Some(deny) = req.deny_write() {
+                        return deny;
+                    }
+                    let sid = query_get(query, "target").map(index::percent_decode);
+                    let revoke = query_get(query, "op") == Some("revoke");
+                    let store = consent::ConsentStore::open();
+                    let resp = match sid {
+                        None => json!({"ok": false, "error": "no target session"}),
+                        Some(sid) if revoke => {
+                            store.revoke(&sid);
+                            json!({"ok": true, "sid": sid, "granted": false})
+                        }
+                        Some(sid) => match idx.resolve_tmux_send(&sid) {
+                            Ok(t) => match store.grant(t.sock.as_deref(), &t.pane, &t.sid, t.pid) {
+                                Ok(_) => json!({"ok": true, "sid": sid, "granted": true}),
                                 Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
                             },
                             Err(reason) => json!({"ok": false, "error": reason.as_str()}),

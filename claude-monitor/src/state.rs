@@ -45,6 +45,11 @@ pub(crate) struct RowFacts {
     pub pid: Option<u32>,
     /// The controllable terminal target (tmux pane / screen name), when one exists.
     pub term: Option<String>,
+    /// The tmux control address `(socket basename, pane)` when the link is in tmux (#133).
+    pub tmux: Option<(Option<String>, String)>,
+    /// Whether the process↔session link is PROVEN (#133 §3.1): sid-in-argv, fd held, or
+    /// growth-proved — NEVER a cwd heuristic. Only a proven link may be injected into.
+    pub confirmed: bool,
     /// The tree mtime — the cache key for the content-derived facts.
     pub tree_mtime: Option<SystemTime>,
 }
@@ -388,6 +393,8 @@ mod tests {
             quiet_secs: quiet,
             pid,
             term: None,
+            tmux: None,
+            confirmed: false,
             tree_mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
         }
     }

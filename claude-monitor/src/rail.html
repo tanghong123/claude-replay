@@ -127,10 +127,16 @@
   .row.hidden{opacity:.5}
   .group.ghidden>.ghead{opacity:.55}
   .row.hidden .rowx,.group.ghidden>.ghead .ghx{opacity:.7}
-  /* #133 3b compose: a send affordance on finished rows, and the compose bar. */
+  /* #133 compose: a send affordance on finished rows (resume) AND live tmux rows (inject). */
   .rowsend{flex:none;font:12px/1 var(--sans);color:var(--faint);border:none;background:transparent;cursor:pointer;padding:1px 5px;border-radius:5px;opacity:0}
   .row:hover .rowsend{opacity:.6}
   .rowsend:hover{opacity:1;background:var(--hover);color:var(--accent)}
+  /* Injection into a LIVE pane reads distinct from a resume; `armed` = consent already granted. */
+  .rowsend.inject{color:var(--link)}
+  .rowsend.inject:hover{color:var(--accent)}
+  .rowsend.armed{opacity:.55;color:var(--tool)}
+  #composerevoke{font:11px var(--sans);color:var(--link);cursor:pointer;text-decoration:underline;flex:none}
+  #composerevoke:hover{color:var(--accent)}
   #composebar{position:fixed;left:12px;bottom:12px;width:min(420px,calc(100vw - 24px));z-index:60;
     background:var(--bg);border:1px solid var(--accent);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.22);padding:10px}
   #composehead{display:flex;align-items:center;gap:8px;font:12px var(--sans);color:var(--muted);margin-bottom:6px}
@@ -192,7 +198,7 @@
 <!-- #133 3b: send a prompt to a FINISHED session (resume it). A separate bar, not part of
      the polled list, so a re-render never clobbers what you are typing. -->
 <div id="composebar" hidden>
-  <div id="composehead"><span id="composeto"></span><button id="composex" title="Cancel (Esc)">×</button></div>
+  <div id="composehead"><span id="composeto"></span><span id="composerevoke" hidden>revoke consent</span><button id="composex" title="Cancel (Esc)">×</button></div>
   <textarea id="composetext" rows="3" placeholder="Send a prompt — the session resumes and runs it (permissions skipped)"></textarea>
   <div id="composefoot"><span id="composemsg"></span><button id="composesend">Send prompt</button></div>
 </div>
@@ -213,8 +219,13 @@
   // #133 3b: whether this monitor is paired — the write route (/api/send) only works with a
   // token, so the compose affordance appears only when paired (server substitutes the flag).
   var PAIRED={{PAIRED}};
-  // Which agents have a verified headless-resume shape (server refuses the rest anyway).
-  function canSend(r){return PAIRED&&r.state==="finished"&&(r.agent==="claude"||r.agent==="codex");}
+  // #133 two transports, both need a paired monitor (the write route requires a token):
+  //  • resume — a FINISHED claude/codex session; /api/send resumes it.
+  //  • inject — a LIVE, PROVEN tmux pane running claude/codex; the backend marks it
+  //    `injectable`. /api/send injects into it, but only with standing consent.
+  function canResume(r){return PAIRED&&r.state==="finished"&&(r.agent==="claude"||r.agent==="codex");}
+  function canInject(r){return PAIRED&&!!r.injectable;}
+  function canCompose(r){return canResume(r)||canInject(r);}
 
   try{state.dark=localStorage.getItem(THEME_KEY)==="dark";}catch(e){}
   applyTheme(state.dark,false);
@@ -439,7 +450,7 @@
       +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
       +(r.target?'<span class="term'+(state.copied&&state.copied.id===r.id?" copied":"")+'" data-attach="'+esc(attachCmd(r)||"")+'" title="'+esc(termTip(r))+'">'
     +(state.copied&&state.copied.id===r.id?(state.copied.ok?"copied":"⌘C it"):"&gt;_ "+esc(r.term))+'</span>':"")
-      +(canSend(r)?'<button class="rowsend" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" title="Send a prompt — resumes this finished session">✎</button>':"")
+      +(canCompose(r)?'<button class="rowsend'+(canInject(r)?" inject"+(r.consented?" armed":""):"")+'" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" data-mode="'+(canInject(r)?"tmux":"resume")+'"'+(canInject(r)&&r.consented?' data-consented="1"':"")+' title="'+(canInject(r)?"Send a prompt into this live tmux pane"+(r.consented?" (consent granted)":" (asks consent first)"):"Send a prompt — resumes this finished session")+'">✎</button>':"")
       +forks+rowx
       +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r,g))+'</span>'
       +'<span class="age">'+esc(fam?famActivity(fam,r):r.activity)+'</span></div></div>';
@@ -564,7 +575,7 @@
     var hx=e.target.closest("[data-hide],[data-show]");
     if(hx){e.stopPropagation();var hk=hx.dataset.hide||hx.dataset.show;ignore(hk,!!hx.dataset.hide);return;}
     var cs=e.target.closest("[data-compose]");
-    if(cs){e.stopPropagation();openCompose(cs.dataset.compose,cs.dataset.name);return;}
+    if(cs){e.stopPropagation();openCompose(cs.dataset.compose,cs.dataset.name,cs.dataset.mode||"resume",cs.dataset.consented==="1");return;}
     var at=e.target.closest("[data-attach]");
     if(at&&at.dataset.attach){
       e.stopPropagation();
@@ -590,36 +601,84 @@
     var row=e.target.closest(".row");
     if(row)select(row.dataset.id);
   });
-  // ── #133 3b: compose (send a prompt to a finished session) ──────────────
+  // ── #133 compose: send a prompt to a session ────────────────────────────
+  // Two transports (the backend picks by liveness; the UI sets expectations):
+  //  • resume — a FINISHED session; /api/send resumes it (permissions skipped).
+  //  • tmux   — a LIVE pane; /api/send injects into it, but ONLY with standing CONSENT.
+  //    An unconsented pane makes the Send button read "Grant & send" — one click grants
+  //    (/api/consent) then sends. A consented pane shows a "revoke" link (§3.4: consent is
+  //    per-target, expiring, and revocable from the rail). Same-origin POSTs carry the
+  //    cmauth cookie + Origin automatically, so deny_write passes on a paired monitor.
   (function(){
     var bar=document.getElementById("composebar");
     var to=document.getElementById("composeto");
     var text=document.getElementById("composetext");
     var msg=document.getElementById("composemsg");
     var sendBtn=document.getElementById("composesend");
-    var target=null;
-    window.openCompose=function(id,name){
-      target=id;
-      to.textContent="Send to: "+(name||id);
-      msg.textContent="";msg.className="";
+    var revoke=document.getElementById("composerevoke");
+    var target=null,mode="resume",consented=false;
+    window.openCompose=function(id,name,m,isConsented){
+      target=id;mode=(m==="tmux"?"tmux":"resume");consented=!!isConsented;
+      to.textContent=(mode==="tmux"?"Inject into: ":"Send to: ")+(name||id);
+      text.placeholder=mode==="tmux"
+        ?"Type a prompt — it is pasted into the live tmux pane and submitted"
+        :"Send a prompt — the session resumes and runs it (permissions skipped)";
+      msg.className="";
+      msg.textContent=(mode==="tmux"&&!consented)
+        ?"“Grant & send” authorises injection into this pane until its process restarts."
+        :"";
+      updateButton();updateRevoke();
       bar.hidden=false;text.value="";text.focus();
     };
+    function updateButton(){
+      sendBtn.textContent=(mode==="tmux")?(consented?"Send to pane":"Grant & send"):"Send prompt";
+    }
+    function updateRevoke(){revoke.hidden=!(mode==="tmux"&&consented);}
     function close(){bar.hidden=true;target=null;}
+    function asJson(r){return r.json().catch(function(){return {ok:false,error:"HTTP "+r.status};});}
+    function postSend(prompt){
+      return fetch("/api/send?target="+encodeURIComponent(target),{method:"POST",body:prompt,cache:"no-store"}).then(asJson);
+    }
+    function postGrant(){
+      return fetch("/api/consent?target="+encodeURIComponent(target),{method:"POST",cache:"no-store"}).then(asJson);
+    }
     function send(){
       var prompt=text.value.trim();
       if(!prompt||!target)return;
-      sendBtn.disabled=true;msg.className="";msg.textContent="sending…";
-      // Same-origin POST: the cmauth cookie and Origin ride automatically, so deny_write
-      // (POST + same-origin + token) passes on a paired monitor.
-      fetch("/api/send?target="+encodeURIComponent(target),{method:"POST",body:prompt,cache:"no-store"})
-        .then(function(r){return r.json().catch(function(){return {ok:false,error:"HTTP "+r.status};});})
-        .then(function(d){
+      sendBtn.disabled=true;msg.className="";msg.textContent=(mode==="tmux"&&!consented)?"granting…":"sending…";
+      // tmux + unconsented → grant first, then send (one click). Otherwise just send.
+      var chain=(mode==="tmux"&&!consented)
+        ? postGrant().then(function(g){
+            if(!g||!g.ok){throw new Error((g&&g.error)||"could not grant consent");}
+            consented=true;updateButton();updateRevoke();msg.textContent="sending…";
+            return postSend(prompt);
+          })
+        : postSend(prompt);
+      chain.then(function(d){
           sendBtn.disabled=false;
-          if(d&&d.ok){msg.className="ok";msg.textContent="sent — the session is resuming";setTimeout(close,900);poll();}
-          else{msg.className="err";msg.textContent=(d&&d.error)||"could not send";}
+          if(d&&d.ok){
+            msg.className="ok";
+            msg.textContent=(mode==="tmux")?"sent into the pane":"sent — the session is resuming";
+            setTimeout(close,900);poll();
+          }else if(d&&d.code==="no-consent"){
+            // Consent lapsed (the pid changed) between opening and sending — re-offer the grant.
+            consented=false;updateButton();updateRevoke();
+            msg.className="err";msg.textContent="this pane needs consent — press “Grant & send”";
+          }else{
+            msg.className="err";msg.textContent=(d&&d.error)||"could not send";
+          }
         })
-        .catch(function(){sendBtn.disabled=false;msg.className="err";msg.textContent="could not reach the monitor";});
+        .catch(function(e){sendBtn.disabled=false;msg.className="err";msg.textContent=(e&&e.message)||"could not reach the monitor";});
     }
+    revoke.addEventListener("click",function(){
+      if(!target)return;
+      fetch("/api/consent?op=revoke&target="+encodeURIComponent(target),{method:"POST",cache:"no-store"}).then(asJson)
+        .then(function(d){
+          consented=false;updateButton();updateRevoke();
+          msg.className="";msg.textContent=(d&&d.ok)?"consent revoked":"could not revoke";
+          poll();
+        });
+    });
     sendBtn.addEventListener("click",send);
     document.getElementById("composex").addEventListener("click",close);
     text.addEventListener("keydown",function(e){
