@@ -138,7 +138,7 @@ fn reclaim_legacy_temp() {
 /// `payload` — deduces a correct stem, not the `"session"` fallback a Claude-only scan gave).
 pub fn deduce_stem(path: &Path, width: Option<usize>) -> String {
     use std::hash::{Hash, Hasher};
-    let cwd = discover::session_cwd(path)
+    let cwd = discover::first_cwd(path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let basename = Path::new(&cwd)

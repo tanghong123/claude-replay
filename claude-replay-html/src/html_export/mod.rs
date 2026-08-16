@@ -1200,7 +1200,7 @@ pub fn display_title(agent: Agent, path: &Path) -> String {
             .card()
             .and_then(|c| c.title)
             .or_else(|| {
-                discover::session_cwd(path).and_then(|cwd| repo_name(&cwd.display().to_string()))
+                discover::first_cwd(path).and_then(|cwd| repo_name(&cwd.display().to_string()))
             })
             .unwrap_or(stem)
     } else {

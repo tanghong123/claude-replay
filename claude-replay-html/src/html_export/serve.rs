@@ -235,7 +235,7 @@ impl SessionService {
             }
         }
         let agent = discover::detect_agent(path);
-        let cwd = discover::session_cwd(path)
+        let cwd = discover::first_cwd(path)
             .map(|c| c.display().to_string())
             .unwrap_or_default();
         {
@@ -315,7 +315,7 @@ impl SessionService {
             .find(|r| r.id == id)
             .map(|r| r.cwd.clone())
             .unwrap_or_else(|| {
-                discover::session_cwd(src.path())
+                discover::first_cwd(src.path())
                     .map(|p| p.display().to_string())
                     .unwrap_or_default()
             });

@@ -3158,7 +3158,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_target_relativizes_paths_under_session_cwd() {
+    fn tool_target_relativizes_paths_under_the_cwd() {
         // Relative to the transcript's cwd (the repo root), not peek's runtime cwd.
         let base = "/Users/dev/project";
         let input = serde_json::json!({ "file_path": "/Users/dev/project/src/picker.rs" });

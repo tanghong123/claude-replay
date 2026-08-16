@@ -308,7 +308,7 @@ impl FollowParser<InMemoryStore> {
             return Ok(None);
         }
         let mut s = self.builder.snapshot();
-        s.cwd = crate::discover::session_cwd(&self.path);
+        s.cwd = crate::discover::first_cwd(&self.path);
         crate::engine::session::populate_sub_agent_transcripts(
             self.adapter,
             &self.path,

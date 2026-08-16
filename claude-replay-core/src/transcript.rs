@@ -80,9 +80,9 @@ impl Transcript {
         let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
         let mut s = b.into_session();
-        s.cwd = crate::discover::session_cwd(&self.path); // the builder leaves cwd None; fill it
-                                                          // The builder can't resolve child transcript paths (it has no file path); now that we
-                                                          // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.
+        s.cwd = crate::discover::first_cwd(&self.path); // the builder leaves cwd None; fill it
+                                                        // The builder can't resolve child transcript paths (it has no file path); now that we
+                                                        // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.
         populate_sub_agent_transcripts(
             crate::adapter::adapter(self.agent),
             &self.path,

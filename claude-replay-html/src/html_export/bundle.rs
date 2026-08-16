@@ -146,7 +146,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
         None => std::path::PathBuf::from(crate::sys::deduce_stem(path, None)),
     };
     std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-    let cwd = discover::session_cwd(path)
+    let cwd = discover::first_cwd(path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let title = display_title(agent, path);

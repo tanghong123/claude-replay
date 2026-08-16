@@ -1,6 +1,7 @@
 //! The **discovery vocabulary** — the agent-free half of locating sessions (#87 step 3):
 //! the shared [`Candidate`] type, the cwd-ancestor scoping helpers, and the format-neutral
-//! transcript-head readers `session_cwd`/`session_id`. The REGISTRY half — `detect_agent`,
+//! transcript-head readers `first_cwd`/`latest_cwd`/`session_id` (and the disk-grounded
+//! `project_path`). The REGISTRY half — `detect_agent`,
 //! `resolve_any`, `candidates_all`, the per-adapter dispatch — lives in the facade crate
 //! (`claude-replay-core`), which wires the agents in; adapters build on THIS half through
 //! the seam.
@@ -195,36 +196,114 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// The working directory a session ran in, read from the transcript head — the
-/// top-level `cwd` (Claude) or `payload.cwd` of `session_meta` (Codex). Used to
-/// resolve a header's relativized path back to an absolute one (for reveal-in-
-/// file-manager). `None` when no cwd is recorded. Agent-neutral: it accepts both shapes.
-pub fn session_cwd(path: &Path) -> Option<PathBuf> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    for line in std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .take(50)
-    {
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if let Some(cwd) = v.get("cwd").and_then(Value::as_str) {
+/// The cwd recorded in one transcript record, in either shape: Claude's top-level `cwd` or
+/// Codex's `payload.cwd` on a `session_meta`. The shared extractor behind [`first_cwd`] /
+/// [`latest_cwd`].
+fn cwd_in_record(v: &Value) -> Option<PathBuf> {
+    if let Some(cwd) = v.get("cwd").and_then(Value::as_str) {
+        return Some(PathBuf::from(cwd));
+    }
+    if v.get("type").and_then(Value::as_str) == Some("session_meta") {
+        if let Some(cwd) = v.pointer("/payload/cwd").and_then(Value::as_str) {
             return Some(PathBuf::from(cwd));
-        }
-        if v.get("type").and_then(Value::as_str) == Some("session_meta") {
-            if let Some(cwd) = v.pointer("/payload/cwd").and_then(Value::as_str) {
-                return Some(PathBuf::from(cwd));
-            }
         }
     }
     None
 }
 
+/// The **first** working directory recorded in the transcript — the session's launch/anchor
+/// directory, **not** necessarily its current one: a session that `cd`s away keeps reporting
+/// this. Pure over the first 50 lines (cheap). `None` when none is recorded. Named for what it
+/// is; see [`latest_cwd`] for the most-recent one and [`project_path`] for the disk-grounded
+/// repository the session belongs to. (This is the old `session_cwd`, renamed — "cwd" means
+/// *current*, which this value is not.)
+pub fn first_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .take(50)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .find_map(|v| cwd_in_record(&v))
+}
+
+/// The **last** working directory recorded in the transcript — the session's most-recent cwd.
+/// Pure, but scans the WHOLE transcript (the last cwd can be anywhere), unlike [`first_cwd`]'s
+/// head-only read. Accepts both Claude and Codex shapes. `None` when none is recorded.
+pub fn latest_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter_map(|v| cwd_in_record(&v))
+        .last()
+}
+
+/// The directory a session's transcript belongs to — DISK-GROUNDED, unlike the pure
+/// [`first_cwd`]/[`latest_cwd`] facts. Normally the recorded cwd, but a project that was moved
+/// or renamed leaves that cwd DEAD in the immutable transcript; then follow the transcript to
+/// where it now LIVES: the store directory it sits in (Claude files a session under its cwd,
+/// every `/` turned to `-`), decoded and kept only if it exists. Falls back to the (dead)
+/// recorded cwd when neither resolves.
+///
+/// Consumers are the ones that need a REAL location on disk: grouping (the monitor,
+/// agent-metrics) and the viewer's **reveal-in-file-manager action** (a clicked path must open
+/// where the file actually is, even after a move). What must NOT use it is the viewer's
+/// *rendered* output — the relativized paths in the dump/HTML stream — which stays a pure
+/// function of transcript content (`first_cwd`/`latest_cwd`) so it is deterministic and
+/// byte-identical across machines. Reveal is an action, not rendered bytes, so it's on this side
+/// of that line. Keeping the filesystem dependency HERE, out of `first_cwd`/`latest_cwd`, is what
+/// holds that boundary.
+pub fn project_path(path: &Path) -> Option<PathBuf> {
+    let recorded = first_cwd(path);
+    if recorded.as_deref().is_some_and(Path::is_dir) {
+        return recorded;
+    }
+    if let Some(decoded) = decode_store_dir(path).filter(|d| d.is_dir()) {
+        return Some(decoded);
+    }
+    recorded
+}
+
+/// Decode a Claude project store-dir name back to its absolute cwd. The encoding replaces every
+/// `/` with `-`, which is LOSSY — a literal `-` in a directory name is indistinguishable from a
+/// separator (`agent-metrics`, or this repo's own `claude-replay`, would mis-split under a naive
+/// `-`→`/`). So decode by WALKING the real filesystem: at each level take the LONGEST run of
+/// `-`-joined tokens that names an existing directory. `None` if any level fails to resolve.
+/// Guarded on the leading `-` so a non-Claude store layout is never mistaken for a slug.
+fn decode_store_dir(path: &Path) -> Option<PathBuf> {
+    let slug = path.parent()?.file_name()?.to_str()?;
+    if !slug.starts_with('-') {
+        return None;
+    }
+    let tokens: Vec<&str> = slug[1..].split('-').collect();
+    let mut cur = PathBuf::from("/");
+    let mut i = 0;
+    while i < tokens.len() {
+        let mut best: Option<usize> = None;
+        let mut comp = String::new();
+        for (k, tok) in tokens[i..].iter().enumerate() {
+            if k > 0 {
+                comp.push('-');
+            }
+            comp.push_str(tok);
+            if cur.join(&comp).is_dir() {
+                best = Some(i + k);
+            }
+        }
+        let j = best?;
+        cur.push(tokens[i..=j].join("-"));
+        i = j + 1;
+    }
+    Some(cur)
+}
+
 /// The session id recorded in the transcript head — Claude's top-level `sessionId` or
 /// Codex's `payload.id` of `session_meta`. `None` when absent (a caller then falls back to
-/// the file stem). Agent-neutral, mirroring [`session_cwd`].
+/// the file stem). Agent-neutral, mirroring [`first_cwd`].
 pub fn session_id(path: &Path) -> Option<String> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
@@ -246,4 +325,72 @@ pub fn session_id(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    fn write(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// `first_cwd` returns the EARLIEST recorded cwd, `latest_cwd` the LAST — the whole reason
+    /// they're two functions with honest names.
+    #[test]
+    fn first_and_latest_cwd_differ_when_a_session_moves() {
+        let dir = std::env::temp_dir().join(format!("cr-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = dir.join("s.jsonl");
+        write(
+            &t,
+            concat!(
+                r#"{"type":"user","cwd":"/a/start","sessionId":"s"}"#,
+                "\n",
+                r#"{"type":"user","cwd":"/a/middle","sessionId":"s"}"#,
+                "\n",
+                r#"{"type":"assistant","cwd":"/a/end","sessionId":"s"}"#,
+                "\n",
+            ),
+        );
+        assert_eq!(first_cwd(&t), Some(PathBuf::from("/a/start")));
+        assert_eq!(latest_cwd(&t), Some(PathBuf::from("/a/end")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `project_path` is the DISK-GROUNDED one: a session whose recorded cwd was moved/deleted
+    /// follows its store dir to where it now lives (the decode walks the filesystem, so a dash
+    /// IN a directory name — the temp path here runs through `claude-replay` — is rejoined, not
+    /// split). A recorded cwd that still exists wins outright.
+    #[test]
+    fn project_path_follows_the_store_dir_when_the_recorded_cwd_is_dead() {
+        let pid = std::process::id();
+        let live = std::env::temp_dir().join(format!("crmoved{pid}"));
+        std::fs::create_dir_all(&live).unwrap();
+        // The Claude store-dir slug for `live` (absolute path, every '/' → '-').
+        let slug = live.display().to_string().replace('/', "-");
+        let store = std::env::temp_dir()
+            .join(format!("crstore{pid}"))
+            .join(&slug);
+        std::fs::create_dir_all(&store).unwrap();
+
+        let dead = store.join("dead.jsonl");
+        write(
+            &dead,
+            "{\"type\":\"user\",\"cwd\":\"/no/such/place-zzz\"}\n",
+        );
+        assert_eq!(project_path(&dead), Some(live.clone()));
+
+        let alive = store.join("alive.jsonl");
+        write(
+            &alive,
+            &format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}\n", live.display()),
+        );
+        assert_eq!(project_path(&alive), Some(live.clone()));
+
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+    }
 }

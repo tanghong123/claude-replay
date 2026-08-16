@@ -2,7 +2,7 @@
 //! (mirrors `codex_discover`). Locates Claude Code's per-project transcripts under
 //! `~/.claude/projects/<slug>/<id>.jsonl`, scoped to the cwd or its nearest ancestor with
 //! sessions. The agent-neutral pieces — the [`Candidate`] type, `ancestors_below`,
-//! `detect_agent`, `session_cwd`, and the cross-agent `resolve_any`/`candidates_all`
+//! `detect_agent`, `first_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in the facade crate's `discover`.
 
 use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard};

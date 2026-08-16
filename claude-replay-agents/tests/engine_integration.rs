@@ -492,7 +492,7 @@ fn parse_session_matches_the_existing_entry_points() {
     );
     assert_eq!(
         s.cwd,
-        claude_replay_engine::discover::session_cwd(&path),
+        claude_replay_engine::discover::first_cwd(&path),
         "cwd matches"
     );
     assert_eq!(s.cwd.as_deref(), Some(std::path::Path::new("/repo")));

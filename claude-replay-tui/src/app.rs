@@ -717,7 +717,7 @@ fn build_frame(
             // and after a resume the delta covers only what was folded above the resume point.
             let mut blocks = session.committed_arcs();
             blocks.extend(d.provisional);
-            (blocks, discover::session_cwd(path), d.metrics, d.tasks)
+            (blocks, discover::first_cwd(path), d.metrics, d.tasks)
         }
         // An idle first poll no longer means "empty or unreadable transcript". A RETAINED session
         // (#109) is already folded to EOF, so its first tick after a re-admit has nothing to
@@ -738,7 +738,7 @@ fn build_frame(
                 )
             } else {
                 blocks.extend(d.provisional.into_iter().map(std::sync::Arc::new));
-                (blocks, discover::session_cwd(path), d.metrics, d.tasks)
+                (blocks, discover::first_cwd(path), d.metrics, d.tasks)
             }
         }
     };
