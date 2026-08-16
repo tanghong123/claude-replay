@@ -46,6 +46,64 @@ const SCAN_FLOOR: Duration = Duration::from_secs(2);
 /// because stale mtimes are frozen. An item moves only by crossing this line.
 const ACTIVE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
+/// A resolved, allowed send-prompt target (#133 idle slice): everything the spawn needs.
+pub struct SendTarget {
+    pub sid: String,
+    pub agent: Agent,
+    pub cwd: Option<String>,
+}
+
+/// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
+/// refusal reasons). Never an injection: the route turns these into a 4xx.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendRefusal {
+    /// No session with that id in any store.
+    NoSuchSession,
+    /// The session has a LIVE attributed process — the tmux path, not a resume-spawn.
+    SessionIsLive,
+    /// Another session in the same project (cwd) is active — resuming would fork off
+    /// history that live work is still writing (the owner's constraint).
+    ProjectHasActiveSession,
+    /// The agent's headless resume shape is not verified here (only claude, codex).
+    UnsupportedAgent,
+}
+
+/// The liveness half of a send decision (#133), pure over one scan's data: the target must
+/// have NO live pid, and no OTHER session sharing its cwd may have one. `cwd_of` maps a sid
+/// to its cwd. Split out so the owner's suppress-when-active rule is unit-tested without a
+/// live process.
+fn send_liveness_ok(
+    sid: &str,
+    cwd: Option<&str>,
+    live: &HashMap<String, Option<u32>>,
+    cwd_of: impl Fn(&str) -> Option<String>,
+) -> Result<(), SendRefusal> {
+    if live.get(sid).copied().flatten().is_some() {
+        return Err(SendRefusal::SessionIsLive);
+    }
+    if let Some(cwd) = cwd {
+        for (other, pid) in live {
+            if other != sid && pid.is_some() && cwd_of(other).as_deref() == Some(cwd) {
+                return Err(SendRefusal::ProjectHasActiveSession);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl SendRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSuchSession => "no such session",
+            Self::SessionIsLive => "the session is live — attach to its terminal instead",
+            Self::ProjectHasActiveSession => {
+                "another session in this project is active — resume would fork live work"
+            }
+            Self::UnsupportedAgent => "sending is supported only for claude and codex sessions",
+        }
+    }
+}
+
 pub struct Index {
     /// The monitor's OWN durable root (R5) — counters are read from `html/<sid>/meta.jsonl`
     /// under it; an entry existing at all is what "visited" means.
@@ -80,6 +138,10 @@ struct State {
     sub_costs: HashMap<String, f64>,
     /// The agent-state pass (#194): hysteresis staging + the events/current dump.
     state_tracker: crate::state::StateTracker,
+    /// Per-session attributed live process from the last scan (#133): `sid → Some(pid)` when
+    /// a live agent drives it, `None` when finished. The send-prompt route reads this to
+    /// enforce "resume only a session with NO live process, in a project with no active one".
+    live_pids: HashMap<String, Option<u32>>,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -250,6 +312,36 @@ impl Index {
             }
         }
         json!({ "ok": true, "ignored": st.ignored.len() }).to_string()
+    }
+
+    /// Resolve a send-prompt target (#133 idle slice): the session must EXIST, have NO live
+    /// attributed process, and its PROJECT (cwd) must have no active session — so a resume
+    /// never forks off shared history that a live session is still writing, and never
+    /// collides with a live writer. A fresh scan is forced (never act on stale liveness).
+    pub fn resolve_send(&self, sid: &str) -> Result<SendTarget, SendRefusal> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Liveness must be current — a session that went live one second ago must not be
+        // resumed. Always rescan for a send (it is rare and consequential).
+        self.scan(&mut st, &|_| {});
+        st.scanned_at = Some(Instant::now());
+
+        let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
+        let agent = row.agent;
+        let cwd = row.cwd.clone();
+        // Only claude and codex have a verified headless resume shape (agent-jdi); others
+        // are refused rather than driven with an unverified CLI.
+        if agent != Agent::CLAUDE && agent != Agent::CODEX {
+            return Err(SendRefusal::UnsupportedAgent);
+        }
+        // The target must be finished and its project quiet (pure check, unit-tested).
+        send_liveness_ok(sid, cwd.as_deref(), &st.live_pids, |o| {
+            st.rows.get(o).and_then(|r| r.cwd.clone())
+        })?;
+        Ok(SendTarget {
+            sid: sid.to_string(),
+            agent,
+            cwd,
+        })
     }
 
     /// The `/api/sessions` body: a cached snapshot, re-scanned on a ~2 s floor (§8) so any
@@ -433,6 +525,9 @@ impl Index {
 
         let mut facts = Vec::new();
         st.snapshot = self.assemble(st, &mut facts);
+        // Bank the per-session liveness the assemble pass resolved (#133) for the
+        // send-prompt route: the attributed live pid, or `None` when finished.
+        st.live_pids = facts.iter().map(|f| (f.sid.clone(), f.pid)).collect();
         // The agent-state pass (#194): derive busy/wait/idle from what this tick just
         // observed and dump transitions + the snapshot under `<cache_root>/state/`.
         st.state_tracker.tick(&self.cache_root, &facts);
@@ -1418,6 +1513,64 @@ pub fn default_root() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #133 send liveness (the owner's constraints, pure): a finished session in a quiet
+    /// project is sendable; a session with its OWN live process is refused (use tmux); a
+    /// session whose PROJECT has any other live session is refused (would fork live work).
+    #[test]
+    fn send_is_refused_for_a_live_session_or_an_active_project() {
+        let cwd_of = |s: &str| match s {
+            "idle-a" | "live-b" | "idle-c" => Some("/proj".to_string()),
+            "elsewhere" => Some("/other".to_string()),
+            _ => None,
+        };
+        let mut live: HashMap<String, Option<u32>> = HashMap::new();
+        live.insert("idle-a".into(), None);
+        live.insert("idle-c".into(), None);
+        live.insert("elsewhere".into(), Some(999)); // live, but a DIFFERENT project
+
+        // A finished session in a quiet project: OK.
+        assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of).is_ok());
+        // The target itself is live → refuse (tmux path).
+        live.insert("idle-a".into(), Some(123));
+        assert_eq!(
+            send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of),
+            Err(SendRefusal::SessionIsLive)
+        );
+        // Target finished, but a SIBLING in the same project is live → refuse.
+        live.insert("idle-a".into(), None);
+        live.insert("live-b".into(), Some(456));
+        assert_eq!(
+            send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of),
+            Err(SendRefusal::ProjectHasActiveSession)
+        );
+        // A live session in ANOTHER project does not block this one.
+        live.remove("live-b");
+        assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of).is_ok());
+    }
+
+    /// #133 resume shapes (verified against agent-jdi): claude resumes the SAME id with `-p`
+    /// and skip-permissions; codex resumes by id; other agents have no shape.
+    #[test]
+    fn resume_command_shapes_match_the_agents() {
+        let claude = SendTarget {
+            sid: "sid-x".into(),
+            agent: Agent::CLAUDE,
+            cwd: None,
+        };
+        let (prog, args) = crate::resume_command(&claude, "do the thing").unwrap();
+        assert_eq!(prog, "claude");
+        assert!(args.windows(2).any(|w| w == ["--resume", "sid-x"]));
+        assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert_eq!(args.last().unwrap(), "do the thing");
+        let codex = SendTarget {
+            agent: Agent::CODEX,
+            ..claude
+        };
+        let (prog, args) = crate::resume_command(&codex, "go").unwrap();
+        assert_eq!(prog, "codex");
+        assert!(args.iter().any(|a| a == "resume") && args.contains(&"sid-x".to_string()));
+    }
 
     /// #197 migration (the case the owner asked for): a hide list that exists ONLY at the
     /// old cache location is picked up, then written to the new STATE path on the next save,

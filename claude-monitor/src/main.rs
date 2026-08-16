@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use claude_replay_core::Agent;
 use claude_replay_html::{query_get, service_routes, HttpResponse, ServiceConfig};
 use claude_replay_present::cache::Presentation;
+use serde_json::json;
 use std::sync::Arc;
 
 /// The stable default port (§11): the monitor is a bookmarkable place.
@@ -192,6 +193,54 @@ fn write_token_0600(path: &std::path::Path, tok: &str) -> Result<()> {
     Ok(())
 }
 
+/// The headless-resume command for a send-prompt (#133 idle slice), by agent. Verified
+/// shapes from agent-jdi: Claude resumes the SAME session id (append, not fork) with
+/// `-p`; Codex resumes by id. `--dangerously-skip-permissions` is deliberate (owner
+/// decision): a headless `-p` turn with no TTY would otherwise STALL on the first
+/// permission prompt — so an idle-send is an autonomous agent turn, not a chat.
+fn resume_command(target: &index::SendTarget, prompt: &str) -> Option<(String, Vec<String>)> {
+    match target.agent.label() {
+        "claude" => Some((
+            "claude".into(),
+            vec![
+                "--resume".into(),
+                target.sid.clone(),
+                "--dangerously-skip-permissions".into(),
+                "-p".into(),
+                prompt.to_string(),
+            ],
+        )),
+        "codex" => Some((
+            "codex".into(),
+            vec![
+                "exec".into(),
+                "resume".into(),
+                target.sid.clone(),
+                "--dangerously-bypass-approvals-and-sandbox".into(),
+                prompt.to_string(),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+/// Spawn a resume DETACHED, in the session's cwd, output discarded — the monitor does not
+/// supervise it; the turn's progress shows up as the row going active (its transcript grows).
+fn spawn_resume(target: &index::SendTarget, prompt: &str) -> Result<()> {
+    let (program, args) = resume_command(target, prompt)
+        .ok_or_else(|| anyhow::anyhow!("no resume shape for {}", target.agent.label()))?;
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(cwd) = &target.cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.spawn().context("spawn the resume")?;
+    Ok(())
+}
+
 /// Reclaim the scratch locations this crate used before #162, once.
 ///
 /// `$TMPDIR/claude-monitor` (pre-#161) and `<root>/scratch/<pid>` (pre-#162). Nothing reads
@@ -338,6 +387,30 @@ fn main() -> Result<()> {
                         _ => r#"{"ok":false}"#.to_string(),
                     };
                     HttpResponse::json(resp)
+                }
+                // #133 idle slice: send a prompt to a FINISHED session by resuming it.
+                // A WRITE — gated by `deny_write` (POST + same-origin + a token, so a stock
+                // unpaired binary cannot reach it) — then by the idle/project-inactive rules
+                // in `resolve_send`. The resume is an autonomous agent turn (skip-permissions,
+                // owner-authorized). Body is the raw prompt; `?target=<sid>` is the session.
+                "api/send" => {
+                    if let Some(deny) = req.deny_write() {
+                        return deny;
+                    }
+                    let sid = query_get(query, "target").map(index::percent_decode);
+                    let prompt = String::from_utf8_lossy(req.body).trim().to_string();
+                    let resp = match (sid, prompt.is_empty()) {
+                        (None, _) => json!({"ok": false, "error": "no target session"}),
+                        (_, true) => json!({"ok": false, "error": "empty prompt"}),
+                        (Some(sid), false) => match idx.resolve_send(&sid) {
+                            Ok(target) => match spawn_resume(&target, &prompt) {
+                                Ok(()) => json!({"ok": true, "sid": sid}),
+                                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+                            },
+                            Err(reason) => json!({"ok": false, "error": reason.as_str()}),
+                        },
+                    };
+                    HttpResponse::json(resp.to_string())
                 }
                 // The monitor ONLY ever serves the view EMBEDDED. The view navigates
                 // sub-agents with a relative `?session=<child>` href that drops the
