@@ -211,4 +211,10 @@ idle row simply goes ACTIVE (no #142 fork grouping), but the append MUTATES the 
 transcript in place (a later human `--resume` sees the injected turn) — sharpening both the
 suppress-when-active rule and a new decision: a headless `-p` resume needs a permission
 posture (`--dangerously-skip-permissions`, or it stalls on the first prompt), so idle-send
-is an autonomous agent turn, not a chat — OWNER decision: (a) use skip-permissions (chosen). **Step 3a (idle-send backend) BUILT, v1.82.0:** `POST /api/send?target=<sid>` (body = prompt), gated by `deny_write` (POST + same-origin + a token — unpaired binaries can't reach it) then by `resolve_send` (target finished, project quiet, claude/codex only), spawning `claude --resume <sid> --dangerously-skip-permissions -p` (or `codex exec resume`) detached in the session's cwd; the row goes active as it grows. Curl-only for now — the rail compose UI is step 3b.
+is an autonomous agent turn, not a chat — OWNER decision: (a) use skip-permissions (chosen). **Step 3a (idle-send backend) BUILT, v1.82.0:** `POST /api/send?target=<sid>` (body = prompt), gated by `deny_write` (POST + same-origin + a token — unpaired binaries can't reach it) then by `resolve_send` (target finished, project quiet, claude/codex only), spawning `claude --resume <sid> --dangerously-skip-permissions -p` (or `codex exec resume`) detached in the session's cwd; the row goes active as it grows. **Step 3b (idle-send UI) BUILT, v1.83.0:** a `✎` compose button on FINISHED claude/codex
+rows (paired only — the `{{PAIRED}}` flag) opens a fixed compose bar (separate from the
+polled list, so a re-render never clobbers the input); ⌘/Ctrl+Enter POSTs the prompt to
+`/api/send` with the ambient cookie, shows the refusal reason inline, and re-polls on
+success so the row goes active. The idle transport is now end-to-end usable. Remaining:
+step 4, the tmux slice (consent store + grant/revoke, proven-link-only, bracketed-paste,
+display-message).

@@ -359,7 +359,11 @@ fn main() -> Result<()> {
     })?);
     let idx = Arc::new(index::Index::new(root.clone(), only));
 
-    let rail = RAIL_TEMPLATE.replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
+    let rail = RAIL_TEMPLATE
+        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        // #133 3b: the compose affordance only exists when paired — an unpaired monitor
+        // has no write capability (the route 401s), so the UI must not offer it.
+        .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
     let handler = {
         let service = service.clone();
         let idx = idx.clone();
