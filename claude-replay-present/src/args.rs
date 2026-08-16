@@ -112,6 +112,14 @@ pub struct Args {
     /// the session live**. Honors --fold/--unfold/--full.
     #[cfg_attr(feature = "cli", arg(long, conflicts_with_all = ["dump", "dump_html"]))]
     pub html: bool,
+
+    /// Print the transcript's directory facts as one JSON object and exit — no viewer.
+    /// A shell-out entry to the `discover` path vocabulary for tools that can't link the
+    /// crate (e.g. a Python collector): `{path, session_id, first_cwd, latest_cwd,
+    /// project_path, repo_root}`, each `null` when unresolved. Honors the target /
+    /// `--latest` / `--agent` selection exactly like the viewer.
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub paths: bool,
 }
 
 impl Args {

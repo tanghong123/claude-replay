@@ -4073,6 +4073,7 @@ mod tests {
             dump_all_html: None,
             html: false,
             width: None,
+            paths: false,
         }
     }
 
