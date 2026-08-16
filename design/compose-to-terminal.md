@@ -201,5 +201,14 @@ one can be added to (steps 2–4). Applied by default unless overridden: the wir
 (§3.2, now built) is a non-negotiable prerequisite; "active session in the
 project" (constraint 2) means any session in the same cwd with a LIVE attributed process
 (#194 non-idle); both `claude` (`--resume`) and `codex` (`exec resume`) are in scope for
-the idle path; the resume-forks-a-new-sid assumption (#195) is verified as the first build
-step, not assumed.
+the idle path; the resume-forks-a-new-sid assumption (#195) is RESOLVED by reading agent-jdi (no agent
+spawn): `claude --resume <sid> -p` **APPENDS** to `<sid>.jsonl` (same id). Proof — jdi's
+`pins_session_id()==true`, its `fresh_vs_resume_invocation` test drives `--session-id sid`
+then `--resume sid` with the SAME id, `transcript_path→transcript_by_id(sid)` reads that
+one transcript on every turn, and `capture_session_id` is Codex-only; jdi's whole Claude
+supervision would break on turn 2 if resume minted a new id. Consequence for step 3: the
+idle row simply goes ACTIVE (no #142 fork grouping), but the append MUTATES the finished
+transcript in place (a later human `--resume` sees the injected turn) — sharpening both the
+suppress-when-active rule and a new decision: a headless `-p` resume needs a permission
+posture (`--dangerously-skip-permissions`, or it stalls on the first prompt), so idle-send
+is an autonomous agent turn, not a chat — OWNER decision pending.
