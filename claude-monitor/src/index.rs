@@ -106,10 +106,25 @@ fn tmux_target_from(
     Ok((pid, sock, pane))
 }
 
-/// The liveness half of a send decision (#133), pure over one scan's data: the target must
-/// have NO live pid, and no OTHER session sharing its cwd may have one. `cwd_of` maps a sid
-/// to its cwd. Split out so the owner's suppress-when-active rule is unit-tested without a
-/// live process.
+/// Does ANOTHER session in the same project (cwd) have a live process? PURE over one scan's
+/// data — the owner's constraint 2: with a live sibling we cannot tell which session drives
+/// the project, so neither a resume (would fork the live work) nor an injection (could hit the
+/// wrong pane) is safe. Both send paths gate on this; `cwd_of` maps a sid to its cwd.
+fn project_has_other_live(
+    sid: &str,
+    cwd: Option<&str>,
+    links: &HashMap<String, SendLink>,
+    cwd_of: impl Fn(&str) -> Option<String>,
+) -> bool {
+    let Some(cwd) = cwd else { return false };
+    links
+        .iter()
+        .any(|(other, l)| other != sid && l.pid.is_some() && cwd_of(other).as_deref() == Some(cwd))
+}
+
+/// The liveness half of an IDLE send decision (#133 resume path), pure over one scan's data:
+/// the target must have NO live pid, and no OTHER session sharing its cwd may have one. Split
+/// out so the owner's suppress-when-active rule is unit-tested without a live process.
 fn send_liveness_ok(
     sid: &str,
     cwd: Option<&str>,
@@ -119,12 +134,8 @@ fn send_liveness_ok(
     if links.get(sid).and_then(|l| l.pid).is_some() {
         return Err(SendRefusal::SessionIsLive);
     }
-    if let Some(cwd) = cwd {
-        for (other, l) in links {
-            if other != sid && l.pid.is_some() && cwd_of(other).as_deref() == Some(cwd) {
-                return Err(SendRefusal::ProjectHasActiveSession);
-            }
-        }
+    if project_has_other_live(sid, cwd, links, cwd_of) {
+        return Err(SendRefusal::ProjectHasActiveSession);
     }
     Ok(())
 }
@@ -407,17 +418,27 @@ impl Index {
 
     /// Resolve a TMUX send target (#133 tmux slice): the session must be LIVE with a PROVEN
     /// link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
-    /// different agent) that is in tmux. Returns the pane/socket/pid to inject into and to
-    /// key consent by. A fresh scan is forced.
+    /// different agent) that is in tmux, AND it must be the ONLY live session in its project
+    /// (constraint 2, mirrored from the resume path): with a live sibling we cannot tell which
+    /// session drives the project, so we refuse rather than pick. A fresh scan is forced.
     pub fn resolve_tmux_send(&self, sid: &str) -> Result<TmuxTarget, SendRefusal> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
 
-        let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
-        let agent = row.agent;
+        let (agent, cwd) = {
+            let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
+            (row.agent, row.cwd.clone())
+        };
         let link = st.send_links.get(sid).cloned().unwrap_or_default();
         let (pid, sock, pane) = tmux_target_from(agent, &link)?;
+        // The project must have no OTHER live session — else injecting here while another
+        // session drives the same cwd forks divergent work (constraint 2).
+        if project_has_other_live(sid, cwd.as_deref(), &st.send_links, |o| {
+            st.rows.get(o).and_then(|r| r.cwd.clone())
+        }) {
+            return Err(SendRefusal::ProjectHasActiveSession);
+        }
         Ok(TmuxTarget {
             sid: sid.to_string(),
             pid,
@@ -712,6 +733,22 @@ impl Index {
                 g.sock.as_deref() == sock && g.pane == pane && g.sid == sid && g.pid == pid
             })
         };
+        // #133 constraint 2 (UI hint): a row whose project has ANOTHER live session offers no
+        // send affordance — the resume path would refuse it (ProjectHasActiveSession) and the
+        // inject path is now suppressed the same way. Precompute the live sids per cwd (from the
+        // prior scan's links — a ~2 s-stale hint; the route re-checks liveness on a fresh scan).
+        let mut live_sids_by_cwd: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (osid, l) in &st.send_links {
+            if l.pid.is_some() {
+                if let Some(c) = st.rows.get(osid).and_then(|r| r.cwd.as_deref()) {
+                    live_sids_by_cwd.entry(c).or_default().push(osid.as_str());
+                }
+            }
+        }
+        let proj_has_other_live = |sid: &str, cwd: Option<&str>| -> bool {
+            cwd.and_then(|c| live_sids_by_cwd.get(c))
+                .is_some_and(|v| v.iter().any(|s| *s != sid))
+        };
         // #142: every session's FAMILY root — follow `fork_from` until a session that is not
         // itself a fork. A fork's transcript is 82–99% a replay of its origin's, so the rail
         // shows one row per family rather than a dozen near-identical ones.
@@ -882,6 +919,13 @@ impl Index {
             if root != *sid {
                 j["isFork"] = json!(true);
             }
+            // #133 constraint 2: another live session in this project → no send affordance on
+            // this row (the resume path refuses it, the inject path is suppressed). The rail
+            // hides `✎` when `projActive`, so the button and the route's rule agree.
+            let proj_active = proj_has_other_live(sid, row.cwd.as_deref());
+            if proj_active {
+                j["projActive"] = json!(true);
+            }
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
                 j["term"] = json!(l.terminal.kind());
@@ -896,14 +940,16 @@ impl Index {
                     j["target"] = json!(t);
                 }
                 // #133 tmux slice: this row can be INJECTED into iff the link is PROVEN
-                // (§3.1 — never a cwd guess), it is in tmux, and the agent has a driven shape
-                // (claude/codex). The rail offers the terminal-send affordance only on these
-                // rows; `consented` says whether a standing grant already covers this exact
-                // pane/pid (send now) or one is needed first.
+                // (§3.1 — never a cwd guess), it is in tmux, the agent has a driven shape
+                // (claude/codex), AND its project has no other live session (constraint 2). The
+                // rail offers the terminal-send affordance only on these rows; `consented` says
+                // whether a standing grant already covers this exact pane/pid (send now) or one
+                // is needed first.
                 let driven = matches!(row.agent, Agent::CLAUDE | Agent::CODEX);
-                if let (true, Some((sock, pane))) =
-                    (l.confirmed && driven, l.terminal.tmux_target())
-                {
+                if let (true, Some((sock, pane))) = (
+                    l.confirmed && driven && !proj_active,
+                    l.terminal.tmux_target(),
+                ) {
                     j["injectable"] = json!(true);
                     j["consented"] = json!(consented(sock.as_deref(), &pane, sid, l.pid));
                 }
@@ -1705,6 +1751,39 @@ mod tests {
             tmux_target_from(Agent::CLAUDE, &tmux(true, false)),
             Err(SendRefusal::NotInTmux)
         );
+    }
+
+    /// #133 constraint 2 (pure) — the sibling rule BOTH send paths share: a project is "busy"
+    /// for the target when a DIFFERENT session in the same cwd is live. Used to refuse a
+    /// resume (would fork live work) and to suppress an injection (can't tell which drives it).
+    #[test]
+    fn a_live_sibling_in_the_same_project_is_detected() {
+        let cwd_of = |s: &str| match s {
+            "a" | "b" => Some("/proj".to_string()),
+            "far" => Some("/other".to_string()),
+            _ => None,
+        };
+        let link = |pid: Option<u32>| SendLink {
+            pid,
+            ..Default::default()
+        };
+        let mut links: HashMap<String, SendLink> = HashMap::new();
+        links.insert("a".into(), link(Some(1))); // the target, live (an inject candidate)
+        links.insert("b".into(), link(None)); // a quiet sibling
+
+        // Only the target is live in /proj → no other-live sibling.
+        assert!(!project_has_other_live("a", Some("/proj"), &links, cwd_of));
+        // A second live session appears in the same project → other-live is true for BOTH,
+        // so neither is injectable (ambiguous which drives the project — refuse, don't guess).
+        links.insert("b".into(), link(Some(2)));
+        assert!(project_has_other_live("a", Some("/proj"), &links, cwd_of));
+        assert!(project_has_other_live("b", Some("/proj"), &links, cwd_of));
+        // A live session in a DIFFERENT project does not count.
+        links.insert("far".into(), link(Some(3)));
+        links.insert("b".into(), link(None));
+        assert!(!project_has_other_live("a", Some("/proj"), &links, cwd_of));
+        // A target with no cwd can have no project siblings.
+        assert!(!project_has_other_live("a", None, &links, cwd_of));
     }
 
     /// #133 resume shapes (verified against agent-jdi): claude resumes the SAME id with `-p`

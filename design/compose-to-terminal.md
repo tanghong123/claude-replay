@@ -233,3 +233,20 @@ pasted block, not N Enter-submitted lines), a single `send-keys Enter` to submit
 so injection is never silent). The whole feature is runtime-gated behind pairing (§7.1 owner
 decision 1b): a stock unpaired binary has the code but no token, so every write route 401s.
 The §3.1–§3.4 blockers are now all cleared and both transports are usable; #133 is complete.
+
+**Post-ship refinements, v1.85.0** (owner review of the live feature):
+- **Constraint 2 now covers BOTH paths.** Injection was suppressed only for the resume path;
+  it now also refuses `ProjectHasActiveSession` when the target's project has ANOTHER live
+  session — with two live sessions in one cwd we can't tell which drives the project, so we
+  refuse rather than pick (consistent with §3.1's never-guess). The shared, pure
+  `project_has_other_live` gates both `resolve_send` and `resolve_tmux_send`, and the rail now
+  emits `projActive` per row so the `✎` affordance is HIDDEN where the route would refuse it
+  (the resume path previously showed `✎` on active-project siblings and only refused on send).
+- **The grant step stays, reframed as risk-awareness.** The owner initially read "Grant &
+  send" as confusing two-step wording; on reflection its PURPOSE is to make the risk explicit
+  — injected text is input to a live agent, run with its tools and permissions (some sessions
+  skip permission prompts). So it stays, and the first-time message now says exactly that
+  ("Runs in the LIVE agent with its permissions…") rather than only describing the grant's
+  lifetime.
+- **Enter sends.** Plain Enter submits the prompt (chat convention); Shift+Enter (or
+  ⌘/Ctrl+Enter) inserts a newline for a multi-line prompt.

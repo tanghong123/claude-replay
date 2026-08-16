@@ -223,7 +223,10 @@
   //  • resume — a FINISHED claude/codex session; /api/send resumes it.
   //  • inject — a LIVE, PROVEN tmux pane running claude/codex; the backend marks it
   //    `injectable`. /api/send injects into it, but only with standing consent.
-  function canResume(r){return PAIRED&&r.state==="finished"&&(r.agent==="claude"||r.agent==="codex");}
+  // Constraint 2 (#133): a session whose PROJECT has another live session offers no send —
+  // resuming/injecting while another session drives the same cwd would fork divergent work.
+  // The server already withholds `injectable` in that case; `projActive` gates the resume path.
+  function canResume(r){return PAIRED&&r.state==="finished"&&!r.projActive&&(r.agent==="claude"||r.agent==="codex");}
   function canInject(r){return PAIRED&&!!r.injectable;}
   function canCompose(r){return canResume(r)||canInject(r);}
 
@@ -624,8 +627,10 @@
         ?"Type a prompt — it is pasted into the live tmux pane and submitted"
         :"Send a prompt — the session resumes and runs it (permissions skipped)";
       msg.className="";
+      // The grant step exists to make the RISK explicit: injected text is input to a live
+      // agent, run with its tools and permissions (some sessions skip permission prompts).
       msg.textContent=(mode==="tmux"&&!consented)
-        ?"“Grant & send” authorises injection into this pane until its process restarts."
+        ?"Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts."
         :"";
       updateButton();updateRevoke();
       bar.hidden=false;text.value="";text.focus();
@@ -683,8 +688,9 @@
     document.getElementById("composex").addEventListener("click",close);
     text.addEventListener("keydown",function(e){
       if(e.key==="Escape"){close();}
-      // ⌘/Ctrl+Enter sends; plain Enter makes a newline (a prompt is often multi-line).
-      if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){e.preventDefault();send();}
+      // Enter sends (chat convention); Shift+Enter — or ⌘/Ctrl+Enter — inserts a newline for
+      // a multi-line prompt.
+      if(e.key==="Enter"&&!e.shiftKey&&!e.metaKey&&!e.ctrlKey){e.preventDefault();send();}
       e.stopPropagation();
     });
   })();
