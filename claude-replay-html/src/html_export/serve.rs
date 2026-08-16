@@ -19,7 +19,7 @@ use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// How long an agent keeps being tailed after its last request before it goes idle and is
@@ -321,6 +321,43 @@ impl SessionService {
             });
         self.cache.aux_with(id, |a| a.cwd = Some(cwd.clone()));
         cwd
+    }
+
+    /// Re-root a reveal path whose recorded root has moved. The baked reveal path
+    /// (`resolve_abs(first_cwd, target)` at emit time, or an attachment's recorded absolute
+    /// path) is anchored at a session's `first_cwd`. When that repo was moved, `first_cwd` is
+    /// dead and the file lives under `project_path` instead — swap the prefix and return the
+    /// live path IF it exists. `None` when no hosted root explains the path (so the caller
+    /// answers "no such path" rather than revealing something bogus).
+    ///
+    /// A per-click cost only, paid on the miss branch of `/__reveal`: filter roots by a cheap
+    /// prefix test first, then compute the disk-grounded `project_path` for matches alone. A
+    /// child's baked paths sit under its parent root's `first_cwd`, so the flat `roots` list
+    /// covers sub-agents without any per-child bookkeeping.
+    fn remap_reveal(&self, dead: &Path) -> Option<PathBuf> {
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        for r in roots.iter() {
+            // Skip an unknown cwd: an empty `old_root` is a prefix of every path, which would
+            // re-root unrelated absolutes.
+            if r.cwd.is_empty() {
+                continue;
+            }
+            let old = Path::new(&r.cwd);
+            if dead.strip_prefix(old).is_err() {
+                continue;
+            }
+            // The prefix matches: resolve where this session's repo lives NOW. Only a genuine
+            // move (project_path != the dead first_cwd) is worth trying.
+            if let Some(proj) = discover::project_path(&r.path) {
+                if proj != old {
+                    let candidate = crate::sys::relocate(dead, old, &proj);
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Resolve `id` to its source + title. Tier-(c) lookup first (the cache registry, populated
@@ -1574,6 +1611,14 @@ pub fn service_routes(
             if path.exists() {
                 crate::sys::reveal_in_file_manager(path);
                 return HttpResponse::ok("text/plain", b"revealed".to_vec());
+            }
+            // The baked path is anchored at the session's recorded `first_cwd`; if that repo
+            // moved, re-root it to where the repo lives now and reveal that.
+            if let Some(live) = live {
+                if let Some(relocated) = live.remap_reveal(path) {
+                    crate::sys::reveal_in_file_manager(&relocated);
+                    return HttpResponse::ok("text/plain", b"revealed".to_vec());
+                }
             }
         }
         return HttpResponse::not_found("no such path");
@@ -2854,5 +2899,57 @@ mod tests {
         let r = service_routes(Some(&live), &dir, "session", &format!("session={id}"));
         assert_eq!(r.code, "200 OK", "session= is an alias for id=");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// After a repo move the reveal path baked under the dead `first_cwd` no longer
+    /// exists; `remap_reveal` re-roots it to the session's live `project_path` (found by
+    /// decoding the store dir) and returns it only when the file is actually there. Tested
+    /// directly — the `/__reveal` route only wraps this with the process-spawning
+    /// `reveal_in_file_manager`, which a unit test must not fire.
+    #[test]
+    fn remap_reveal_follows_a_moved_repo_to_its_live_location() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("cr-remap-{pid}"));
+        let _ = std::fs::remove_dir_all(&base);
+        // Where the repo lives NOW, with a real file to reveal.
+        let live_repo = base.join("live-repo");
+        std::fs::create_dir_all(live_repo.join("src")).unwrap();
+        std::fs::write(live_repo.join("src/a.rs"), "fn main() {}").unwrap();
+        // The Claude store dir is named by the live path's slug ('/' → '-'), but the
+        // transcript still records the OLD, now-dead cwd.
+        let slug = live_repo.display().to_string().replace('/', "-");
+        let store = base.join("store").join(&slug);
+        std::fs::create_dir_all(&store).unwrap();
+        let sess = store.join("s.jsonl");
+        std::fs::write(
+            &sess,
+            "{\"type\":\"user\",\"cwd\":\"/no/such/dead-repo\"}\n",
+        )
+        .unwrap();
+
+        let live = SessionService::new(ServiceConfig {
+            cache_root: None,
+            presentation: Presentation::Html,
+            fold: FoldPolicy::default(),
+            scratch: base.join("scratch"),
+        })
+        .unwrap();
+        live.register_root(&sess);
+
+        // A path baked under the dead `first_cwd` re-roots to the live repo.
+        assert_eq!(
+            live.remap_reveal(Path::new("/no/such/dead-repo/src/a.rs")),
+            Some(live_repo.join("src/a.rs")),
+        );
+        // No hosted root explains this path → None (the route answers "no such path").
+        assert_eq!(live.remap_reveal(Path::new("/somewhere/else/x")), None);
+        // Under the dead root, but no such file at the live location → None (never reveal
+        // a path that isn't there).
+        assert_eq!(
+            live.remap_reveal(Path::new("/no/such/dead-repo/src/missing.rs")),
+            None,
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

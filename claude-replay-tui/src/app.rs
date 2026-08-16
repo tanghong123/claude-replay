@@ -749,6 +749,9 @@ fn build_frame(
     }
     view.set_can_go_back(can_go_back);
     view.set_cwd(cwd);
+    // Disk-grounded live repo location for the reveal action: if this session's repo
+    // was moved, a click on a now-dead recorded path re-roots to where the repo lives now.
+    view.set_reveal_root(discover::project_path(path));
     // The task panel's initial state (#15): the transcript's op-log merged with the
     // live task files (disk wins per id; the op-log backfills pruned files).
     view.set_tasks(crate::engine::tasks::merged(
@@ -860,6 +863,9 @@ fn build_child_frame(
     view.set_can_go_back(false);
     view.set_descended(true); // footer offers `↑ esc back`
     view.set_cwd(parent_view.cwd_ref().cloned());
+    // Inherit the parent's live repo location for reveals: a child runs in the parent's
+    // repo, and its own flat transcript dir wouldn't decode to that repo.
+    view.set_reveal_root(parent_view.reveal_root_ref().cloned());
     // A descended child's attachment locators point into the child's own transcript file.
     view.set_source(child_transcript);
     // The child's footer shows ITS OWN token metrics (model/in/out/cached from the child

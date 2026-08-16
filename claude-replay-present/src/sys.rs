@@ -38,6 +38,23 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
 }
 
+/// Re-root an absolute `path` from under `old_root` to `new_root`, component-aware.
+/// A path not under `old_root` is returned unchanged — so an out-of-repo target
+/// (`/etc/hosts`) survives a re-root untouched, and `/old/repofoo` is never matched
+/// by `/old/repo`.
+///
+/// Pure: no disk access. It is the reveal ACTION's companion to
+/// [`project_path`](discover::project_path) — when a repo moved, a tool/attachment path was
+/// recorded under the now-dead `old_root` (its [`first_cwd`](discover::first_cwd)); this
+/// swaps that prefix for the live project path so the file opens at its real location.
+/// The caller decides whether the result exists — this only rewrites the string.
+pub fn relocate(path: &Path, old_root: &Path, new_root: &Path) -> PathBuf {
+    match path.strip_prefix(old_root) {
+        Ok(rest) => new_root.join(rest),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// The root a `--no-cache` run hands to [`SessionCache::durable`](crate::SessionCache::durable)
 /// as its own private cache: `<cache home>/throwaway/<pid>/`.
 ///
@@ -167,6 +184,29 @@ pub fn deduce_stem(path: &Path, width: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocate_swaps_a_dead_root_prefix_but_leaves_outsiders_alone() {
+        let old = Path::new("/old/repo");
+        let new = Path::new("/new/repo");
+        // A file recorded under the dead root re-roots to the live one.
+        assert_eq!(
+            relocate(Path::new("/old/repo/src/a.rs"), old, new),
+            PathBuf::from("/new/repo/src/a.rs")
+        );
+        // The root itself re-roots to the new root.
+        assert_eq!(relocate(old, old, new), PathBuf::from("/new/repo"));
+        // Out-of-repo target: not under old_root → unchanged (a move doesn't touch it).
+        assert_eq!(
+            relocate(Path::new("/etc/hosts"), old, new),
+            PathBuf::from("/etc/hosts")
+        );
+        // Component-aware: `/old/repofoo` is NOT under `/old/repo`.
+        assert_eq!(
+            relocate(Path::new("/old/repofoo/x"), old, new),
+            PathBuf::from("/old/repofoo/x")
+        );
+    }
 
     /// `$CLAUDE_REPLAY_CACHE` is process-global and cargo runs these on parallel threads: hold
     /// this for the whole env-scoped window, or a test points the home somewhere and another

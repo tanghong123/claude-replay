@@ -412,6 +412,11 @@ pub struct View {
     sel_anchor: Option<(usize, usize)>, // (wrapped line, display col) where drag began
     sel_cursor: Option<(usize, usize)>, // current drag end; None until the mouse moves
     cwd: Option<PathBuf>, // session working dir — reverses a header's relativized path
+    // Where this session's repo lives NOW (`discover::project_path`) — differs from `cwd`
+    // only after a repo move, when `cwd` (the recorded `first_cwd`) is dead. Used ONLY by the
+    // reveal ACTION to re-root a path to its live location; never by rendering, so the
+    // draw stays a pure function of `cwd`.
+    reveal_root: Option<PathBuf>,
     flash: Option<String>, // transient status (e.g. "Saved to …"); cleared on next input
     // The transcript these blocks were parsed from — the source for loading a `Deferred`
     // attachment's bytes on demand (this view holds only locators, never the content).
@@ -478,6 +483,7 @@ impl View {
             sel_anchor: None,
             sel_cursor: None,
             cwd: None,
+            reveal_root: None,
             flash: None,
             source: None,
         }
@@ -608,6 +614,17 @@ impl View {
     /// path click still resolves against the real working dir.
     pub fn cwd_ref(&self) -> Option<&PathBuf> {
         self.cwd.as_ref()
+    }
+    /// Record where this session's repo lives NOW (`discover::project_path`), so the reveal
+    /// action can re-root a path whose recorded `cwd` was moved. Disk-grounded, so the
+    /// app layer computes it (rendering never does); a descended child inherits its parent's,
+    /// since the child's own flat transcript dir doesn't decode to the repo.
+    pub fn set_reveal_root(&mut self, root: Option<PathBuf>) {
+        self.reveal_root = root;
+    }
+    /// This view's live repo location — a descended child inherits its parent's.
+    pub fn reveal_root_ref(&self) -> Option<&PathBuf> {
+        self.reveal_root.as_ref()
     }
     /// Record the transcript these blocks came from — the source for loading a `Deferred`
     /// attachment's bytes on demand when the reader downloads one.
@@ -1232,7 +1249,10 @@ impl View {
                     });
                     None
                 } else {
-                    a.path.map(|p| Action::Reveal(PathBuf::from(p)))
+                    // The recorded attachment path is absolute; if its repo moved, re-root it
+                    // to the live location so the reveal opens the real file.
+                    a.path
+                        .map(|p| Action::Reveal(self.best_reveal(PathBuf::from(p))))
                 }
             }
             _ => {
@@ -1308,7 +1328,7 @@ impl View {
         if col < start || col >= end {
             return None;
         }
-        let abs = self.resolve_target_path(target);
+        let abs = self.best_reveal(self.resolve_target_path(target));
         abs.exists().then_some(abs)
     }
 
@@ -1328,6 +1348,26 @@ impl View {
             Some(cwd) => cwd.join(target),
             None => p,
         }
+    }
+
+    /// Pick the best real location to reveal for a path resolved against the render `cwd`:
+    /// the path itself if it exists; else — when the repo was moved, so `cwd` (the
+    /// recorded `first_cwd`) is dead — its re-rooting under the live `reveal_root`, if THAT
+    /// exists; else the original untouched (a genuine miss stays a miss). The `exists` probes
+    /// are why this is the reveal ACTION's job, not rendering's — the draw never calls it.
+    fn best_reveal(&self, primary: PathBuf) -> PathBuf {
+        if primary.exists() {
+            return primary;
+        }
+        if let (Some(cwd), Some(root)) = (self.cwd.as_ref(), self.reveal_root.as_ref()) {
+            if root != cwd {
+                let relocated = crate::sys::relocate(&primary, cwd, root);
+                if relocated.exists() {
+                    return relocated;
+                }
+            }
+        }
+        primary
     }
 
     // --- expandable-element focus ([ / ] / hover / Enter) ---
@@ -3096,6 +3136,50 @@ mod tests {
         );
 
         std::fs::remove_file(&file).ok();
+    }
+
+    /// After a repo move the recorded `cwd` (`first_cwd`) is dead, so a header path
+    /// resolves to a non-existent location. With `reveal_root` pointing at where the repo
+    /// lives NOW, the click re-roots to the live file instead of failing; without one, a
+    /// dead path has nowhere to go and simply folds.
+    #[test]
+    fn clicking_header_path_follows_a_moved_repo() {
+        let pid = std::process::id();
+        let live = std::env::temp_dir().join(format!("cr-moved-view-{pid}"));
+        let _ = std::fs::remove_dir_all(&live);
+        std::fs::create_dir_all(live.join("src")).unwrap();
+        std::fs::write(live.join("src/a.rs"), "fn main() {}").unwrap();
+        let dead = PathBuf::from(format!("/no/such/old-repo-{pid}"));
+
+        let blocks = vec![Block::ToolUse {
+            name: "Read".into(),
+            target: "src/a.rs".into(), // relativized against the (now dead) cwd
+            diffs: vec![],
+            output: Some("x".into()),
+            patch: None,
+            read_lines: None,
+        }];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::none());
+        v.set_cwd(Some(dead));
+        v.set_reveal_root(Some(live.clone()));
+        let _ = draw(&mut v, 200, 40);
+
+        // `⏺ Read(` = 7 cols, so col 8 lands inside `src/a.rs`.
+        let row = v.block_start(0).unwrap() as u16;
+        assert_eq!(
+            v.click_at(row, 8),
+            Some(Action::Reveal(live.join("src/a.rs"))),
+            "a moved repo's header path reveals the live file, not the dead recorded path"
+        );
+
+        // With no live root, the dead path has nowhere to resolve → no reveal (folds).
+        v.set_reveal_root(None);
+        assert!(
+            v.click_at(row, 8).is_none(),
+            "no reveal_root ⇒ a dead recorded path does not reveal"
+        );
+
+        let _ = std::fs::remove_dir_all(&live);
     }
 
     /// Backlog invariant: a shell command and its output are ONE foldable block.
