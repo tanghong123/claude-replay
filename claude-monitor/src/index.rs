@@ -140,6 +140,60 @@ fn send_liveness_ok(
     Ok(())
 }
 
+/// A session's project directory. Normally the cwd recorded in the transcript head
+/// (`session_cwd`) — but a project that was moved or renamed leaves that cwd DEAD in the
+/// immutable transcript, and the session then groups under a directory that no longer exists
+/// (and stays stuck to a hide rule keyed on the old path). So when the recorded directory is
+/// gone, follow the transcript to where it now LIVES: the store directory it sits in (Claude
+/// files a session under its cwd with every `/` turned to `-`), decoded and kept only if THAT
+/// exists. A session hand-moved into `~/.claude/projects/-Users-me-code-whid` then groups under
+/// `/Users/me/code/whid`, not the deleted directory it was launched from.
+fn project_cwd(path: &Path) -> Option<String> {
+    let recorded = discover::session_cwd(path);
+    if recorded.as_deref().is_some_and(Path::is_dir) {
+        return recorded.map(|p| p.display().to_string());
+    }
+    if let Some(decoded) = decode_store_dir(path).filter(|d| d.is_dir()) {
+        return Some(decoded.display().to_string());
+    }
+    recorded.map(|p| p.display().to_string())
+}
+
+/// Decode a Claude project store-dir name back to its absolute cwd. The encoding replaces every
+/// `/` with `-`, which is LOSSY — a literal `-` in a directory name is now indistinguishable
+/// from a separator (`agent-metrics`, or this repo's own `claude-replay`, would both mis-split
+/// under a naive `-`→`/`). So decode by WALKING the real filesystem: at each level take the
+/// LONGEST run of `-`-joined tokens that names an existing directory. Returns `None` if any
+/// level fails to resolve (so a truly gone path yields nothing and the dead recorded cwd stands).
+/// Guarded on the leading `-` so a non-Claude store layout is never mistaken for a slug.
+fn decode_store_dir(path: &Path) -> Option<PathBuf> {
+    let slug = path.parent()?.file_name()?.to_str()?;
+    if !slug.starts_with('-') {
+        return None;
+    }
+    let tokens: Vec<&str> = slug[1..].split('-').collect();
+    let mut cur = PathBuf::from("/");
+    let mut i = 0;
+    while i < tokens.len() {
+        // The longest prefix tokens[i..=j] that, joined by '-', names an existing directory.
+        let mut best: Option<usize> = None;
+        let mut comp = String::new();
+        for (k, tok) in tokens[i..].iter().enumerate() {
+            if k > 0 {
+                comp.push('-');
+            }
+            comp.push_str(tok);
+            if cur.join(&comp).is_dir() {
+                best = Some(i + k);
+            }
+        }
+        let j = best?;
+        cur.push(tokens[i..=j].join("-"));
+        i = j + 1;
+    }
+    Some(cur)
+}
+
 impl SendRefusal {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -486,7 +540,7 @@ impl Index {
                 let row = st.rows.entry(sid).or_insert_with(|| Row {
                     path: path.clone(),
                     agent: a.agent(),
-                    cwd: discover::session_cwd(&path).map(|p| p.display().to_string()),
+                    cwd: project_cwd(&path),
                     title: String::new(),
                     tree_mtime: None,
                     last_event: None,
@@ -551,7 +605,7 @@ impl Index {
                         .to_string();
                     row.title_mtime = t_mtime;
                     if row.cwd.is_none() {
-                        row.cwd = discover::session_cwd(&path).map(|p| p.display().to_string());
+                        row.cwd = project_cwd(&path);
                     }
                 }
                 // Counters from the VISITED entry's meta stream (§2: fold-free read, keyed
@@ -1713,6 +1767,48 @@ mod tests {
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
         assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of).is_ok());
+    }
+
+    /// A session whose recorded cwd was moved/deleted follows its STORE DIR to where it now
+    /// lives — so a hand-moved transcript groups under the live directory, not the dead one.
+    /// The decode walks the filesystem, so a directory name containing a dash (the temp path
+    /// here runs through `claude-replay`) is rejoined correctly rather than split at the dash.
+    #[test]
+    fn a_moved_session_follows_its_store_dir_when_the_cwd_is_dead() {
+        let pid = std::process::id();
+        // A real, existing directory standing in for the live project.
+        let live = std::env::temp_dir().join(format!("crmoved{pid}"));
+        std::fs::create_dir_all(&live).unwrap();
+        // Its Claude store-dir slug (absolute path, every '/' → '-'), a real dir with a transcript.
+        let slug = live.display().to_string().replace('/', "-");
+        let store = std::env::temp_dir()
+            .join(format!("crstore{pid}"))
+            .join(&slug);
+        std::fs::create_dir_all(&store).unwrap();
+
+        // Recorded cwd no longer exists → follow the store dir back to `live`.
+        let dead = store.join("dead.jsonl");
+        std::fs::write(
+            &dead,
+            "{\"type\":\"user\",\"cwd\":\"/no/such/place-zzz\",\"sessionId\":\"x\"}\n",
+        )
+        .unwrap();
+        assert_eq!(project_cwd(&dead), Some(live.display().to_string()));
+
+        // A recorded cwd that EXISTS wins outright — no store-dir override.
+        let alive = store.join("alive.jsonl");
+        std::fs::write(
+            &alive,
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{}\",\"sessionId\":\"y\"}}\n",
+                live.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(project_cwd(&alive), Some(live.display().to_string()));
+
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
     }
 
     /// #133 tmux slice — the §3.1 refusal ladder (pure): only a live, PROVEN, in-tmux,
