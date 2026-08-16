@@ -223,6 +223,140 @@ pub(crate) fn write_0600(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Optional injection passcode (#133 grant gate) ───────────────────────────────────────────
+//
+// The auth token gates every WRITE, but on a paired monitor it rides in the browser cookie —
+// so at an UNLOCKED, unattended machine with the rail tab open, the "something you have" is
+// already present and a walk-up could arm a pane. An optional passcode adds a "something you
+// know" at the one consequential moment: GRANTING consent. It is opt-in (no passcode set → no
+// gate) and set only from the terminal (`--set-passcode`), so an open browser cannot RESET it.
+//
+// Honest scope: a speed bump against an OPPORTUNISTIC walk-up, not proof against a same-user
+// shell — anyone who can read this file (0600, same user) can also read the token, brute a
+// short code offline, or drive tmux directly. The salt+iteration add mild cost and good form;
+// they are not the security story. Standing consent already granted is unaffected (revoke or
+// let it expire before stepping away).
+
+/// SHA-256 iterations for the passcode hash — mild offline cost; a few ms to verify.
+const PASS_ITERS: u32 = 100_000;
+
+/// `<state_dir>/passcode` — the salted hash of the injection passcode (never the passcode).
+pub fn passcode_path() -> PathBuf {
+    crate::index::state_dir().join("passcode")
+}
+
+fn random_bytes(n: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut b = vec![0u8; n];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut b);
+    }
+    b
+}
+
+/// Constant-time byte compare — the passcode verify must not leak via timing.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Iterated salted SHA-256: `h0 = SHA(salt‖plain)`, then `h = SHA(salt‖h)` `iters-1` times.
+fn derive(salt: &[u8], iters: u32, plain: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut cur = {
+        let mut h = Sha256::new();
+        h.update(salt);
+        h.update(plain.as_bytes());
+        h.finalize().to_vec()
+    };
+    for _ in 1..iters.max(1) {
+        let mut h = Sha256::new();
+        h.update(salt);
+        h.update(&cur);
+        cur = h.finalize().to_vec();
+    }
+    cur
+}
+
+/// The passcode file, JSON `{salt:[…], hash:[…], iters:n}` (byte arrays, no hex helper needed)
+/// at `passcode_path()`, `0600`. Reads fresh each call — cheap, and picks up a `--set-passcode`
+/// run without a server restart.
+pub struct Passcode {
+    path: PathBuf,
+}
+
+impl Passcode {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// A passcode store at the default `passcode_path()`.
+    pub fn open() -> Self {
+        Self::new(passcode_path())
+    }
+
+    /// `(salt, hash, iters)` if a passcode is set and the file parses, else `None`.
+    fn load(&self) -> Option<(Vec<u8>, Vec<u8>, u32)> {
+        let raw = std::fs::read(&self.path).ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        let bytes = |k: &str| -> Option<Vec<u8>> {
+            v.get(k)?
+                .as_array()?
+                .iter()
+                .map(|n| u8::try_from(n.as_u64()?).ok())
+                .collect()
+        };
+        let salt = bytes("salt")?;
+        let hash = bytes("hash")?;
+        let iters = u32::try_from(v.get("iters")?.as_u64()?).ok()?;
+        (!salt.is_empty() && !hash.is_empty()).then_some((salt, hash, iters))
+    }
+
+    /// Is a passcode currently set?
+    pub fn is_set(&self) -> bool {
+        self.load().is_some()
+    }
+
+    /// Set (or, with an empty string, CLEAR) the passcode. Stores only a salted hash, `0600`.
+    pub fn set(&self, plain: &str) -> std::io::Result<()> {
+        if plain.is_empty() {
+            return self.clear();
+        }
+        let salt = random_bytes(16);
+        let hash = derive(&salt, PASS_ITERS, plain);
+        let body = json!({
+            "salt": salt,
+            "hash": hash,
+            "iters": PASS_ITERS,
+        });
+        write_0600(&self.path, body.to_string().as_bytes())
+    }
+
+    /// Remove the passcode file (the gate goes back off). Absent → a no-op.
+    pub fn clear(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Does `plain` match the set passcode? `false` when none is set (fail closed — callers
+    /// gate on `is_set()` first, so a bare `verify` never silently admits).
+    pub fn verify(&self, plain: &str) -> bool {
+        match self.load() {
+            Some((salt, hash, iters)) => ct_eq(&derive(&salt, iters, plain), &hash),
+            None => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +435,44 @@ mod tests {
         store.revoke("sid-b");
         assert!(!store.is_granted(None, "%0", "sid-b", 2));
         assert!(store.active_grants().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The passcode gate: unset → not required; set → only the right passcode verifies; the
+    /// file stores a HASH, never the passcode; clear turns the gate back off.
+    #[test]
+    fn passcode_sets_verifies_and_clears() {
+        let dir = std::env::temp_dir().join(format!("cr-pass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pc = Passcode::new(dir.join("passcode"));
+
+        assert!(!pc.is_set(), "no passcode by default");
+        assert!(!pc.verify("anything"), "verify fails closed when unset");
+
+        pc.set("swordfish").unwrap();
+        assert!(pc.is_set());
+        assert!(pc.verify("swordfish"));
+        assert!(!pc.verify("Swordfish")); // case-sensitive
+        assert!(!pc.verify("wrong"));
+
+        // The stored file must NOT contain the plaintext.
+        let raw = std::fs::read_to_string(dir.join("passcode")).unwrap();
+        assert!(!raw.contains("swordfish"), "passcode stored in the clear");
+
+        // A re-set uses a fresh salt → a different stored hash for the same passcode.
+        let before = raw.clone();
+        pc.set("swordfish").unwrap();
+        assert_ne!(
+            before,
+            std::fs::read_to_string(dir.join("passcode")).unwrap()
+        );
+        assert!(pc.verify("swordfish"));
+
+        pc.set("").unwrap(); // empty clears
+        assert!(!pc.is_set());
+        assert!(!pc.verify("swordfish"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

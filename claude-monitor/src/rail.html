@@ -145,6 +145,8 @@
   #composetext{width:100%;box-sizing:border-box;resize:vertical;font:13px var(--sans);padding:7px 9px;
     border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--fg);outline:none}
   #composetext:focus{border-color:var(--accent)}
+  #composepass{width:100%;box-sizing:border-box;margin-top:6px;font:13px var(--sans);padding:6px 9px;
+    border:1px solid var(--accent);border-radius:7px;background:var(--panel);color:var(--fg);outline:none}
   #composefoot{display:flex;align-items:center;gap:8px;margin-top:7px}
   #composemsg{flex:1;min-width:0;font:11px var(--sans);color:var(--faint)}
   #composemsg.err{color:#c0533f}
@@ -200,6 +202,7 @@
 <div id="composebar" hidden>
   <div id="composehead"><span id="composeto"></span><span id="composerevoke" hidden>revoke consent</span><button id="composex" title="Cancel (Esc)">×</button></div>
   <textarea id="composetext" rows="3" placeholder="Send a prompt — the session resumes and runs it (permissions skipped)"></textarea>
+  <input id="composepass" type="password" autocomplete="off" placeholder="passcode" hidden>
   <div id="composefoot"><span id="composemsg"></span><button id="composesend">Send prompt</button></div>
 </div>
 <div id="drag" title="Drag to resize the session list"></div>
@@ -616,6 +619,7 @@
     var bar=document.getElementById("composebar");
     var to=document.getElementById("composeto");
     var text=document.getElementById("composetext");
+    var pass=document.getElementById("composepass");
     var msg=document.getElementById("composemsg");
     var sendBtn=document.getElementById("composesend");
     var revoke=document.getElementById("composerevoke");
@@ -632,48 +636,59 @@
       msg.textContent=(mode==="tmux"&&!consented)
         ?"Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts."
         :"";
-      updateButton();updateRevoke();
+      hidePass();updateButton();updateRevoke();
       bar.hidden=false;text.value="";text.focus();
     };
     function updateButton(){
       sendBtn.textContent=(mode==="tmux")?(consented?"Send to pane":"Grant & send"):"Send prompt";
     }
     function updateRevoke(){revoke.hidden=!(mode==="tmux"&&consented);}
-    function close(){bar.hidden=true;target=null;}
+    function revealPass(){pass.hidden=false;pass.focus();}
+    function hidePass(){pass.hidden=true;pass.value="";}
+    function close(){bar.hidden=true;target=null;hidePass();}
     function asJson(r){return r.json().catch(function(){return {ok:false,error:"HTTP "+r.status};});}
     function postSend(prompt){
       return fetch("/api/send?target="+encodeURIComponent(target),{method:"POST",body:prompt,cache:"no-store"}).then(asJson);
     }
-    function postGrant(){
-      return fetch("/api/consent?target="+encodeURIComponent(target),{method:"POST",cache:"no-store"}).then(asJson);
+    // The grant carries the passcode (if any) in the BODY — never the query string, which can
+    // be logged. Empty body when no passcode is set, or before the field is revealed.
+    function postGrant(passcode){
+      return fetch("/api/consent?target="+encodeURIComponent(target),{method:"POST",body:passcode||"",cache:"no-store"}).then(asJson);
     }
     function send(){
       var prompt=text.value.trim();
       if(!prompt||!target)return;
-      sendBtn.disabled=true;msg.className="";msg.textContent=(mode==="tmux"&&!consented)?"granting…":"sending…";
-      // tmux + unconsented → grant first, then send (one click). Otherwise just send.
-      var chain=(mode==="tmux"&&!consented)
-        ? postGrant().then(function(g){
-            if(!g||!g.ok){throw new Error((g&&g.error)||"could not grant consent");}
-            consented=true;updateButton();updateRevoke();msg.textContent="sending…";
-            return postSend(prompt);
-          })
-        : postSend(prompt);
-      chain.then(function(d){
-          sendBtn.disabled=false;
-          if(d&&d.ok){
-            msg.className="ok";
-            msg.textContent=(mode==="tmux")?"sent into the pane":"sent — the session is resuming";
-            setTimeout(close,900);poll();
-          }else if(d&&d.code==="no-consent"){
-            // Consent lapsed (the pid changed) between opening and sending — re-offer the grant.
-            consented=false;updateButton();updateRevoke();
-            msg.className="err";msg.textContent="this pane needs consent — press “Grant & send”";
-          }else{
-            msg.className="err";msg.textContent=(d&&d.error)||"could not send";
-          }
-        })
-        .catch(function(e){sendBtn.disabled=false;msg.className="err";msg.textContent=(e&&e.message)||"could not reach the monitor";});
+      // Resume, or an already-consented pane → just send.
+      if(mode!=="tmux"||consented){doSend(prompt);return;}
+      // Unconsented tmux → grant first (with the passcode if the field is showing), then send.
+      sendBtn.disabled=true;msg.className="";msg.textContent=pass.hidden?"granting…":"authorising…";
+      postGrant(pass.value.trim()).then(function(g){
+        sendBtn.disabled=false;
+        // A passcode is set but none was supplied → reveal the field and wait for the user.
+        if(g&&g.code==="passcode-required"){revealPass();msg.className="";msg.textContent="Enter your passcode to authorise this pane.";return;}
+        if(g&&g.code==="bad-passcode"){revealPass();msg.className="err";msg.textContent="Incorrect passcode.";pass.select();return;}
+        if(g&&g.code==="locked"){msg.className="err";msg.textContent=g.error||"too many attempts — wait a moment.";return;}
+        if(!g||!g.ok){msg.className="err";msg.textContent=(g&&g.error)||"could not grant consent";return;}
+        consented=true;hidePass();updateButton();updateRevoke();
+        doSend(prompt);
+      }).catch(function(){sendBtn.disabled=false;msg.className="err";msg.textContent="could not reach the monitor";});
+    }
+    function doSend(prompt){
+      sendBtn.disabled=true;msg.className="";msg.textContent="sending…";
+      postSend(prompt).then(function(d){
+        sendBtn.disabled=false;
+        if(d&&d.ok){
+          msg.className="ok";
+          msg.textContent=(mode==="tmux")?"sent into the pane":"sent — the session is resuming";
+          setTimeout(close,900);poll();
+        }else if(d&&d.code==="no-consent"){
+          // Consent lapsed (the pid changed) between opening and sending — re-offer the grant.
+          consented=false;updateButton();updateRevoke();
+          msg.className="err";msg.textContent="this pane needs consent — press “Grant & send”";
+        }else{
+          msg.className="err";msg.textContent=(d&&d.error)||"could not send";
+        }
+      }).catch(function(){sendBtn.disabled=false;msg.className="err";msg.textContent="could not reach the monitor";});
     }
     revoke.addEventListener("click",function(){
       if(!target)return;
@@ -686,13 +701,15 @@
     });
     sendBtn.addEventListener("click",send);
     document.getElementById("composex").addEventListener("click",close);
-    text.addEventListener("keydown",function(e){
-      if(e.key==="Escape"){close();}
-      // Enter sends (chat convention); Shift+Enter — or ⌘/Ctrl+Enter — inserts a newline for
-      // a multi-line prompt.
+    // Enter sends (chat convention); Shift+Enter — or ⌘/Ctrl+Enter — inserts a newline in the
+    // prompt. Enter in the passcode field submits too. Esc closes.
+    function onKey(e){
+      if(e.key==="Escape"){close();return;}
       if(e.key==="Enter"&&!e.shiftKey&&!e.metaKey&&!e.ctrlKey){e.preventDefault();send();}
       e.stopPropagation();
-    });
+    }
+    text.addEventListener("keydown",onKey);
+    pass.addEventListener("keydown",onKey);
   })();
 
   document.getElementById("collapseall").addEventListener("click",function(){

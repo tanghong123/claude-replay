@@ -177,6 +177,136 @@ fn write_token_0600(path: &std::path::Path, tok: &str) -> Result<()> {
         .with_context(|| format!("write token {}", path.display()))
 }
 
+/// Read a line from the terminal WITHOUT echoing it — for the passcode. `stty -echo` on the
+/// inherited controlling tty (dep-free, unix); if there is no tty (piped) it falls back to a
+/// visible read, which is fine for a non-interactive set.
+fn prompt_noecho(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let echo_off = std::process::Command::new("stty")
+        .arg("-echo")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    if echo_off {
+        let _ = std::process::Command::new("stty").arg("echo").status();
+        eprintln!();
+    }
+    read.context("read passcode")?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// `--set-passcode`: set or clear the injection-grant passcode, then exit. Prompts twice to
+/// catch a typo; an empty entry CLEARS the passcode (the gate goes off). Stores only a salted
+/// hash (0600) — never the passcode.
+fn set_passcode_interactive() -> Result<()> {
+    let p1 = prompt_noecho("New injection passcode (empty to clear): ")?;
+    if p1.is_empty() {
+        consent::Passcode::open()
+            .clear()
+            .context("clear passcode")?;
+        eprintln!("injection passcode cleared — granting no longer asks for one.");
+        return Ok(());
+    }
+    let p2 = prompt_noecho("Confirm passcode: ")?;
+    if p1 != p2 {
+        anyhow::bail!("passcodes did not match — nothing changed");
+    }
+    consent::Passcode::open()
+        .set(&p1)
+        .context("store passcode")?;
+    eprintln!(
+        "injection passcode set (hashed at {}). Granting a pane now requires it.",
+        consent::passcode_path().display()
+    );
+    Ok(())
+}
+
+/// A few wrong passcodes then a short lockout — blunts online guessing of a short code through
+/// the browser. Single-user, so one global counter suffices.
+#[derive(Default)]
+struct Attempts {
+    fails: u32,
+    until: Option<std::time::Instant>,
+}
+
+/// How a passcode attempt resolved (pure). `Ok` lets the grant proceed; the rest short-circuit
+/// the route with a distinct code the UI reacts to.
+#[derive(Debug, PartialEq, Eq)]
+enum PassVerdict {
+    Ok,
+    /// Too many wrong tries — locked for this many more seconds.
+    Locked(u64),
+    /// A passcode is set but none was supplied → the UI reveals the field.
+    Required,
+    Bad,
+}
+
+/// The lockout + verify decision, PURE over the attempt counter and an injected `now` (so the
+/// lockout is unit-tested without sleeping). `verify` is the passcode check. Five wrong tries
+/// arm a 30 s lockout; a correct one resets the counter.
+fn passcode_verdict(
+    body: &[u8],
+    at: &mut Attempts,
+    verify: impl Fn(&str) -> bool,
+    now: std::time::Instant,
+) -> PassVerdict {
+    let submitted = String::from_utf8_lossy(body);
+    let submitted = submitted.trim();
+    if let Some(until) = at.until {
+        if now < until {
+            return PassVerdict::Locked((until - now).as_secs() + 1);
+        }
+        at.until = None;
+    }
+    if submitted.is_empty() {
+        return PassVerdict::Required;
+    }
+    if !verify(submitted) {
+        at.fails += 1;
+        if at.fails >= 5 {
+            at.until = Some(now + std::time::Duration::from_secs(30));
+            at.fails = 0;
+        }
+        return PassVerdict::Bad;
+    }
+    at.fails = 0;
+    PassVerdict::Ok
+}
+
+/// Verify the passcode carried in a grant's request body, applying the lockout. Returns
+/// `Some(refusal)` to short-circuit the route, or `None` when the passcode is correct and the
+/// grant may proceed. Only called when a passcode is set.
+fn passcode_check(
+    req: &claude_replay_html::Request,
+    attempts: &std::sync::Mutex<Attempts>,
+    pass: &consent::Passcode,
+) -> Option<HttpResponse> {
+    let mut at = attempts.lock().unwrap_or_else(|e| e.into_inner());
+    let verdict = passcode_verdict(
+        req.body,
+        &mut at,
+        |p| pass.verify(p),
+        std::time::Instant::now(),
+    );
+    let body = match verdict {
+        PassVerdict::Ok => return None,
+        PassVerdict::Locked(secs) => {
+            json!({"ok": false, "code": "locked", "error": format!("too many attempts — wait {secs}s")})
+        }
+        PassVerdict::Required => {
+            json!({"ok": false, "code": "passcode-required", "error": "enter your passcode to authorise injection into this pane"})
+        }
+        PassVerdict::Bad => {
+            json!({"ok": false, "code": "bad-passcode", "error": "incorrect passcode"})
+        }
+    };
+    Some(HttpResponse::json(body.to_string()))
+}
+
 /// The headless-resume command for a send-prompt (#133 idle slice), by agent. Verified
 /// shapes from agent-jdi: Claude resumes the SAME session id (append, not fork) with
 /// `-p`; Codex resumes by id. `--dangerously-skip-permissions` is deliberate (owner
@@ -371,6 +501,10 @@ fn main() -> Result<()> {
             // shape: pairing modifies the run (it keeps serving), it is not a separate
             // command that acts and exits. `pair` is accepted as a friendly alias.
             "--pair" | "pair" => do_pair = true,
+            // Set (or clear) the injection passcode and EXIT — the grant gate for #133. A
+            // terminal-only action ON PURPOSE: setting it needs shell access, so an open
+            // browser cannot reset the gate it is meant to defend against.
+            "--set-passcode" | "set-passcode" => return set_passcode_interactive(),
             "--port" => {
                 port = args
                     .next()
@@ -393,11 +527,13 @@ fn main() -> Result<()> {
             "--help" | "-h" => {
                 println!(
                     "claude-monitor — every agent session on this machine, over loopback HTTP\n\n\
-                     USAGE: claude-monitor [--pair] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
+                     USAGE: claude-monitor [--pair] [--set-passcode] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
                      Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
                      --pair: require a token (a 0600 secret) — run it once on a SHARED machine\n\
                      so only you can reach your monitor; it prints a URL to open. Thereafter a\n\
                      plain `claude-monitor` keeps requiring the token.\n\
+                     --set-passcode: set (or clear) a passcode required to GRANT injection into\n\
+                     a live session (#133) — a speed bump for an unlocked, unattended machine.\n\
                      Cache root: $CLAUDE_MONITOR_CACHE, else ~/.cache/claude-monitor —\n\
                      never the viewer's (R5).\n\n\
                      Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
@@ -460,6 +596,8 @@ fn main() -> Result<()> {
         // #133 3b: the compose affordance only exists when paired — an unpaired monitor
         // has no write capability (the route 401s), so the UI must not offer it.
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
+    // The passcode lockout counter, owned by the handler (single-user → one global counter).
+    let attempts = std::sync::Mutex::new(Attempts::default());
     let handler = {
         let service = service.clone();
         let idx = idx.clone();
@@ -528,22 +666,46 @@ fn main() -> Result<()> {
                     if let Some(deny) = req.deny_write() {
                         return deny;
                     }
-                    let sid = query_get(query, "target").map(index::percent_decode);
-                    let revoke = query_get(query, "op") == Some("revoke");
                     let store = consent::ConsentStore::open();
-                    let resp = match sid {
-                        None => json!({"ok": false, "error": "no target session"}),
-                        Some(sid) if revoke => {
-                            store.revoke(&sid);
-                            json!({"ok": true, "sid": sid, "granted": false})
+                    let Some(sid) = query_get(query, "target").map(index::percent_decode) else {
+                        return HttpResponse::json(
+                            json!({"ok": false, "error": "no target session"}).to_string(),
+                        );
+                    };
+                    // Revoke needs no passcode — removing access is always safe.
+                    if query_get(query, "op") == Some("revoke") {
+                        store.revoke(&sid);
+                        return HttpResponse::json(
+                            json!({"ok": true, "sid": sid, "granted": false}).to_string(),
+                        );
+                    }
+                    // Only a resolvable (proven, live, in-tmux, project-quiet) target can be
+                    // granted — resolve BEFORE asking for a passcode, so an ungrantable target
+                    // never prompts.
+                    let target = match idx.resolve_tmux_send(&sid) {
+                        Ok(t) => t,
+                        Err(reason) => {
+                            return HttpResponse::json(
+                                json!({"ok": false, "error": reason.as_str()}).to_string(),
+                            )
                         }
-                        Some(sid) => match idx.resolve_tmux_send(&sid) {
-                            Ok(t) => match store.grant(t.sock.as_deref(), &t.pane, &t.sid, t.pid) {
-                                Ok(_) => json!({"ok": true, "sid": sid, "granted": true}),
-                                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
-                            },
-                            Err(reason) => json!({"ok": false, "error": reason.as_str()}),
-                        },
+                    };
+                    // The passcode gate (#133): when set, arming a pane requires it — the
+                    // "something you know" on top of the cookie's "something you have".
+                    let pass = consent::Passcode::open();
+                    if pass.is_set() {
+                        if let Some(refusal) = passcode_check(req, &attempts, &pass) {
+                            return refusal;
+                        }
+                    }
+                    let resp = match store.grant(
+                        target.sock.as_deref(),
+                        &target.pane,
+                        &target.sid,
+                        target.pid,
+                    ) {
+                        Ok(_) => json!({"ok": true, "sid": sid, "granted": true}),
+                        Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
                     };
                     HttpResponse::json(resp.to_string())
                 }
@@ -607,6 +769,57 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use claude_replay_present::cache::lock;
+
+    /// #133 passcode gate (pure): empty body asks for the passcode; a wrong one is `Bad` and,
+    /// on the FIFTH miss, arms a 30 s lockout that reports `Locked` until it lapses; a correct
+    /// passcode is `Ok` and clears the counter.
+    #[test]
+    fn passcode_lockout_after_five_misses_then_clears_on_success() {
+        let t0 = std::time::Instant::now();
+        let mut at = Attempts::default();
+        let right = |p: &str| p == "swordfish";
+
+        // No passcode supplied → the UI is told to reveal the field.
+        assert_eq!(
+            passcode_verdict(b"  ", &mut at, right, t0),
+            PassVerdict::Required
+        );
+        // Four wrong tries are each just Bad — no lockout yet.
+        for _ in 0..4 {
+            assert_eq!(
+                passcode_verdict(b"nope", &mut at, right, t0),
+                PassVerdict::Bad
+            );
+        }
+        assert_eq!(at.fails, 4);
+        // The fifth wrong try arms the lockout (and resets the visible counter).
+        assert_eq!(
+            passcode_verdict(b"nope", &mut at, right, t0),
+            PassVerdict::Bad
+        );
+        // Now even the RIGHT passcode is refused while locked.
+        match passcode_verdict(
+            b"swordfish",
+            &mut at,
+            right,
+            t0 + std::time::Duration::from_secs(5),
+        ) {
+            PassVerdict::Locked(secs) => assert!(secs > 0 && secs <= 30, "secs={secs}"),
+            v => panic!("expected Locked, got {v:?}"),
+        }
+        // After the lockout lapses, the correct passcode succeeds and clears state.
+        assert_eq!(
+            passcode_verdict(
+                b"swordfish",
+                &mut at,
+                right,
+                t0 + std::time::Duration::from_secs(31)
+            ),
+            PassVerdict::Ok
+        );
+        assert_eq!(at.fails, 0);
+        assert!(at.until.is_none());
+    }
 
     /// #196 §4.2 regression: the paired URL MUST carry the token as a `?query`, not a
     /// `#fragment`. A fragment is never sent to the server, so the printed URL would

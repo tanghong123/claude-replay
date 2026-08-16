@@ -12,6 +12,9 @@ claude-replay-present = { path = "../claude-replay-present" }
 claude-replay-html = { path = "../claude-replay-html" }
 anyhow = "1"
 serde_json = "1"
+# Salted hash for the optional injection passcode (#133 grant gate). Small, audited; a
+# security feature earns a crypto primitive rather than a hand-rolled hash.
+sha2 = "0.10"
 
 [features]
 # Surface QoderWork session titles from its SQLite store (#119, reader from #106) so the rail

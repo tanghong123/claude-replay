@@ -250,3 +250,25 @@ The §3.1–§3.4 blockers are now all cleared and both transports are usable; #
   lifetime.
 - **Enter sends.** Plain Enter submits the prompt (chat convention); Shift+Enter (or
   ⌘/Ctrl+Enter) inserts a newline for a multi-line prompt.
+
+**Optional grant passcode, v1.86.0** (owner proposal). The auth token gates every write, but
+on a paired monitor it rides in the browser COOKIE — so at an unlocked, unattended machine
+with the rail tab open, the "something you have" is already present and a walk-up could arm a
+pane. An OPT-IN passcode adds a "something you know" at the one consequential moment: GRANTING
+consent.
+- **Set from the terminal only:** `claude-monitor --set-passcode` (no-echo prompt via `stty`,
+  confirmed twice; empty clears). Stored as a salted, iterated SHA-256 hash (`sha2`) `0600` at
+  `state_dir/passcode` — never the passcode. CLI-only ON PURPOSE: setting it needs shell
+  access, so someone with just the open browser cannot RESET the gate it defends.
+- **Gates the grant, not the send:** `POST /api/consent` resolves the target first (an
+  ungrantable one never prompts), then — when a passcode is set — requires it in the request
+  BODY (never the query string). Wrong/absent → `bad-passcode`/`passcode-required` (the UI
+  reveals a passcode field and, on `passcode-required`, waits); five misses arm a 30 s
+  `locked` window (blunts browser brute-forcing a short code). Once granted, sends within the
+  window/pid are unaffected.
+- **Honest scope, stated in the code and `--help`:** a speed bump against an OPPORTUNISTIC
+  walk-up, not proof against a same-user shell (which can read the token, brute a short code
+  offline, or drive tmux directly). It does not cover a pane you already granted before
+  stepping away — revoke it, or let the grant expire. Pure `passcode_verdict` (lockout, time
+  injected) and `Passcode` (set/verify/clear, no-plaintext) are unit-tested; the `--set-passcode`
+  CLI is smoke-tested.
