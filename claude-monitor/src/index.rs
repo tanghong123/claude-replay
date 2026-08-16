@@ -212,7 +212,15 @@ struct SendLink {
 struct Row {
     path: PathBuf,
     agent: Agent,
+    /// The session's EXACT working directory (`discover::project_path`) — subdir-precise,
+    /// because every process-matching path keys off it: `newest_by_cwd`/`siblings` (the #145/#146
+    /// heuristic doubt count), `live_sids_by_cwd` (injection gating), and `proved_pid` all compare
+    /// it against a live process's `lsof` cwd, which is the real cwd, never the repo root.
     cwd: Option<String>,
+    /// The git repo this session belongs to (`discover::repo_root`) — `cwd` normalized up to its
+    /// `.git`. GROUPING keys off this so subdir sessions (whid's `.whid/run-…`) collapse into one
+    /// project row; `cwd` stays the real dir for the process matching above.
+    repo: Option<String>,
     title: String,
     /// Tree mtime at the last scan — the cheap CHANGE TRIGGER, and deliberately nothing
     /// more: an attached-but-idle agent client re-touches its transcript without appending
@@ -487,6 +495,7 @@ impl Index {
                     path: path.clone(),
                     agent: a.agent(),
                     cwd: discover::project_path(&path).map(|p| p.display().to_string()),
+                    repo: discover::repo_root(&path).map(|p| p.display().to_string()),
                     title: String::new(),
                     tree_mtime: None,
                     last_event: None,
@@ -552,6 +561,9 @@ impl Index {
                     row.title_mtime = t_mtime;
                     if row.cwd.is_none() {
                         row.cwd = discover::project_path(&path).map(|p| p.display().to_string());
+                    }
+                    if row.repo.is_none() {
+                        row.repo = discover::repo_root(&path).map(|p| p.display().to_string());
                     }
                 }
                 // Counters from the VISITED entry's meta stream (§2: fold-free read, keyed
@@ -788,11 +800,19 @@ impl Index {
         for (sid, row) in &st.rows {
             let anchored = adapter(row.agent).workspace_anchored();
             let (key, kind, label, secondary) = if anchored {
-                let cwd = row.cwd.clone().unwrap_or_else(|| "(unknown)".into());
-                let leaf = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
-                // Leaf as the label, FULL cwd as the secondary line (§4.2) — the leaf-merge
+                // Group by the git repo (`repo`), not the exact cwd, so a session that ran in a
+                // subdir joins its repo's row instead of splitting off its own. Fall back to the
+                // real cwd when the session is under no repo. The group key IS the `p:` hide key,
+                // so hiding a project now hides the whole repo (subdirs included).
+                let proj = row
+                    .repo
+                    .clone()
+                    .or_else(|| row.cwd.clone())
+                    .unwrap_or_else(|| "(unknown)".into());
+                let leaf = proj.rsplit('/').next().unwrap_or(&proj).to_string();
+                // Leaf as the label, FULL path as the secondary line (§4.2) — the leaf-merge
                 // hedge: two checkouts sharing a leaf stay distinguishable one line below.
-                (format!("p:{cwd}"), "project", leaf, tilde(&cwd))
+                (format!("p:{proj}"), "project", leaf, tilde(&proj))
             } else {
                 (
                     format!("a:{}", row.agent.label()),
@@ -2405,6 +2425,9 @@ mod tests {
             path: PathBuf::from("/tmp/x.jsonl"),
             agent: Agent::CLAUDE,
             cwd: Some(cwd.to_string()),
+            // This helper exercises cwd-based process matching, not repo grouping; the group
+            // path falls back to `cwd` when `repo` is None, so the rows still group by `cwd`.
+            repo: None,
             title: "t".into(),
             tree_mtime: None,
             last_event: None,
@@ -2418,6 +2441,45 @@ mod tests {
             title_mtime: None,
             cost: None,
         }
+    }
+
+    /// Sessions in different SUBDIRS of one repo collapse into a single project group
+    /// (keyed by `repo`), while a session under no repo stands alone (fallback to `cwd`). The
+    /// grouping keys off `repo`; `cwd` is untouched, so the process matching that keys off it
+    /// (siblings/proved_pid) is unaffected.
+    #[test]
+    fn subdir_sessions_group_under_their_repo() {
+        let idx = Index::new(std::env::temp_dir().join("cm-group"), Vec::new());
+        let mut st = State::default();
+        let mut a = growth_row("/repo/crate-a", false);
+        a.repo = Some("/repo".into());
+        let mut b = growth_row("/repo/crate-b", false);
+        b.repo = Some("/repo".into());
+        let solo = growth_row("/loose", false); // repo: None ⇒ falls back to cwd
+        st.rows.insert("a".into(), a);
+        st.rows.insert("b".into(), b);
+        st.rows.insert("solo".into(), solo);
+
+        let json = idx.assemble(&st, &mut Vec::new());
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let groups = v["groups"].as_array().unwrap();
+
+        let repo = groups
+            .iter()
+            .find(|g| g["ignoreKey"] == "p:/repo")
+            .expect("the two subdir sessions share one repo group");
+        assert_eq!(repo["total"].as_u64(), Some(2));
+        let ids: Vec<&str> = repo["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"a") && ids.contains(&"b"));
+        // A subdir never forms its own group…
+        assert!(groups.iter().all(|g| g["ignoreKey"] != "p:/repo/crate-a"));
+        // …and a repo-less session still stands alone under its own cwd.
+        assert!(groups.iter().any(|g| g["ignoreKey"] == "p:/loose"));
     }
 
     #[test]

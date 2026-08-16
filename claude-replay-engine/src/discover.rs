@@ -268,6 +268,43 @@ pub fn project_path(path: &Path) -> Option<PathBuf> {
     recorded
 }
 
+/// The git repository ROOT the session belongs to — disk-grounded, for GROUPING (the monitor,
+/// agent-metrics) that wants one entry per repo rather than one per working *sub*directory.
+/// Starts from [`project_path`] (the session's live cwd location) and walks up to the nearest
+/// ancestor holding a `.git` — a directory for a normal clone, a FILE for a worktree/submodule,
+/// both counted. Falls back to `project_path` when the session sits under no repo. `None` only
+/// when `project_path` is.
+///
+/// The split from [`project_path`] is deliberate and load-bearing: `project_path` is the
+/// session's EXACT cwd on disk — what the reveal action opens, and what a live process's cwd is
+/// matched against (subdir-precise) — while `repo_root` normalizes a subdir `cd` (whid's
+/// `.whid/run-…`) up to the one repo. A consumer that keys off a running process's cwd must use
+/// `project_path`; a consumer that groups by project uses this. A plain `.git` stat-walk (no
+/// `git` shell-out), so a monitor scan over many sessions stays cheap — no cache needed.
+pub fn repo_root(path: &Path) -> Option<PathBuf> {
+    let start = project_path(path)?;
+    // `project_path`'s last resort is the DEAD recorded cwd (the unsolved plain-`mv` case: the
+    // recorded cwd is gone AND the store dir doesn't decode). Never walk a dead path's ancestors
+    // — they can be live and unrelated (a moved repo whose old parent now sits under a `~/.git`
+    // dotfiles repo would wrongly collapse into it). Return it as-is; both live branches of
+    // `project_path` already proved `is_dir`, so this only guards that dead fallback.
+    if !start.is_dir() {
+        return Some(start);
+    }
+    let mut cur: &Path = &start;
+    loop {
+        if cur.join(".git").exists() {
+            return Some(cur.to_path_buf());
+        }
+        match cur.parent() {
+            Some(parent) => cur = parent,
+            None => break,
+        }
+    }
+    // No `.git` anywhere above: the session is outside a repo — group it under its own dir.
+    Some(start)
+}
+
 /// Decode a Claude project store-dir name back to its absolute cwd. The encoding replaces every
 /// `/` with `-`, which is LOSSY — a literal `-` in a directory name is indistinguishable from a
 /// separator (`agent-metrics`, or this repo's own `claude-replay`, would mis-split under a naive
@@ -392,5 +429,50 @@ mod cwd_tests {
 
         let _ = std::fs::remove_dir_all(&live);
         let _ = std::fs::remove_dir_all(store.parent().unwrap());
+    }
+
+    /// `repo_root` walks up from the session's cwd to the nearest `.git` (grouping), while
+    /// `project_path` stays at the exact cwd (reveal / process matching) — the two are distinct
+    /// on purpose. A `.git` FILE (worktree/submodule) counts the same as a directory.
+    #[test]
+    fn repo_root_climbs_to_the_git_marker_while_project_path_stays_put() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("crreporoot{pid}"));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // A normal clone with a subdir; the session's recorded cwd IS the subdir.
+        let repo = base.join("myrepo");
+        let sub = repo.join("crate").join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let t = base.join("s.jsonl");
+        write(
+            &t,
+            &format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}\n", sub.display()),
+        );
+        // project_path is the exact subdir; repo_root normalizes up to the repo.
+        assert_eq!(project_path(&t), Some(sub.clone()));
+        assert_eq!(repo_root(&t), Some(repo.clone()));
+
+        // A `.git` FILE (a worktree/submodule checkout) is a repo root too.
+        let wt = base.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        write(&wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n");
+        let t2 = base.join("s2.jsonl");
+        write(
+            &t2,
+            &format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}\n", wt.display()),
+        );
+        assert_eq!(repo_root(&t2), Some(wt.clone()));
+
+        // A DEAD recorded cwd (the unsolved plain-`mv` case) is returned as-is — never walked
+        // into a live ancestor. Deterministic regardless of any `.git` above the temp dir,
+        // because the guard returns before the walk. The parent isn't a store slug, so
+        // `project_path` can only hand back the dead cwd.
+        let t3 = base.join("s3.jsonl");
+        write(&t3, "{\"type\":\"user\",\"cwd\":\"/no/such/moved-repo\"}\n");
+        assert_eq!(repo_root(&t3), Some(PathBuf::from("/no/such/moved-repo")));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
