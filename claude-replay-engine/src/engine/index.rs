@@ -174,6 +174,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 

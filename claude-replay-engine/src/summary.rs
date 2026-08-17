@@ -253,6 +253,7 @@ mod tests {
             output: output.map(String::from),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 

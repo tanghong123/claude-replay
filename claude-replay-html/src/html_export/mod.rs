@@ -327,9 +327,9 @@ fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
 }
 
 /// Resolve a tool target to an absolute path the way the TUI's
-/// `resolve_target_path` does (`~/` → `$HOME`, relative → joined onto the session
-/// `cwd`), for the header's `file://` "open" link. `None` when it can't be made
-/// absolute (no cwd and a relative target). Existence is **not** required — the
+/// `resolve_target_path` does (`~/` → `$HOME`, relative → joined onto `cwd` — the block's
+/// own recorded cwd, #173), for the header's `file://` "open" link. `None` when it can't be
+/// made absolute (no cwd and a relative target). Existence is **not** required — the
 /// export may be opened later or on another machine, and a stale `file://` link
 /// simply fails; the browser can't reveal-in-Finder regardless.
 fn resolve_abs(cwd: &str, target: &str) -> Option<String> {
@@ -635,6 +635,7 @@ impl Emitter<'_> {
                 diffs,
                 output,
                 read_lines,
+                cwd,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -654,7 +655,11 @@ impl Emitter<'_> {
                 // shared, and its absolute paths don't resolve on another machine,
                 // so its headers stay plain text.
                 if self.reveal && matches!(kind, "read" | "write" | "edit") && !target.is_empty() {
-                    if let Some(abs) = resolve_abs(self.cwd, target) {
+                    // #173: resolve against the block's OWN recorded cwd (running-current), not
+                    // the session `first_cwd` — a mid-session `cd` moved it. Fall back to the
+                    // session cwd when the block carries none.
+                    let base = if cwd.is_empty() { self.cwd } else { cwd };
+                    if let Some(abs) = resolve_abs(base, target) {
                         head.insert("path".into(), json!(abs));
                     }
                 }
@@ -1618,6 +1623,7 @@ mod tests {
                 output: Some("a\nb".into()),
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -1708,6 +1714,7 @@ mod tests {
             output: Some("out".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -1806,6 +1813,7 @@ mod tests {
             output: Some(out.into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 
@@ -2363,6 +2371,7 @@ mod tests {
             output: Some("out".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 
@@ -2449,6 +2458,7 @@ mod tests {
                 ],
             }]),
             read_lines: None,
+            cwd: String::new(),
         }
     }
 
@@ -2764,6 +2774,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -2876,6 +2887,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -2984,6 +2996,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             bash("ls -la", "out"),
         ];
@@ -3003,6 +3016,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.

@@ -65,7 +65,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// ~2× inflated deltas; without a refold they serve those totals forever, which is the
 /// v6 story verbatim. (The `MetricsCursor` path handles its own legacy-state compat;
 /// this bump is for the durable meta streams, which have refold-once instead.)
-pub const FOLD_VERSION: u16 = 8;
+///
+/// v9: running-current path relativization (#173) — a tool's `cwd` now tracks forward across
+/// `cd`s instead of freezing at the first-recorded value, so a `ToolUse` block's `target`
+/// (and the cwd it carries for reveal) can change mid-session. The cwd delta at
+/// [`SessionAccumulator`](crate::engine::SessionAccumulator)'s emit point, dormant while cwd
+/// was first-wins, now fires on a `cd`; a stream folded at ≤v8 would splice first-cwd-relative
+/// targets onto a running-current tail.
+pub const FOLD_VERSION: u16 = 9;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

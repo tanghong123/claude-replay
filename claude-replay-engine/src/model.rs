@@ -95,6 +95,14 @@ pub enum Block {
         patch: Option<Vec<Hunk>>,
         /// Read line count (from `toolUseResult.file.numLines`), if present.
         read_lines: Option<usize>,
+        /// The **recorded cwd this tool ran under** (#173) — the running-current value the
+        /// adapter threaded up to this line, the same base `target` was relativized against.
+        /// Purely the reveal ACTION's anchor: a relative `target` joins onto it to reconstruct
+        /// the absolute path, so the reveal survives a mid-session `cd` that the session-level
+        /// `first_cwd` would misplace. Never rendered — the drawn bytes are `target` alone —
+        /// so it stays out of the byte-identical output; empty when the transcript recorded no
+        /// cwd (then `target` is already absolute and needs no base).
+        cwd: String,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -622,6 +630,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let blocks = vec![
             Block::Thinking {
@@ -676,6 +685,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -708,6 +718,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let bare = Block::Thinking {
             text: "x".into(),

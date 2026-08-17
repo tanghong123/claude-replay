@@ -1318,7 +1318,10 @@ impl View {
         if idx != 0 && self.tag_of(idx - 1) == Some(b) {
             return None;
         }
-        let Block::ToolUse { name, target, .. } = &**self.blocks.get(b)? else {
+        let Block::ToolUse {
+            name, target, cwd, ..
+        } = &**self.blocks.get(b)?
+        else {
             return None;
         };
         if target.is_empty() {
@@ -1328,13 +1331,22 @@ impl View {
         if col < start || col >= end {
             return None;
         }
-        let abs = self.best_reveal(self.resolve_target_path(target));
+        // #173: a relative `target` joins onto the block's OWN recorded cwd (running-current) —
+        // a mid-session `cd` moved it away from the session's `first_cwd`. Fall back to the
+        // session cwd when the block carries none (its `target` is then already absolute).
+        let base = if cwd.is_empty() {
+            self.cwd.clone()
+        } else {
+            Some(PathBuf::from(cwd))
+        };
+        let abs = self.best_reveal(self.resolve_target_path(target, base.as_deref()));
         abs.exists().then_some(abs)
     }
 
     /// Reverse a header's relativized `target` (`~/…` → `$HOME/…`, a bare relative
-    /// path → under the session cwd, an absolute path unchanged) to a real path.
-    fn resolve_target_path(&self, target: &str) -> PathBuf {
+    /// path → under `base` (the block's recorded cwd), an absolute path unchanged) to a
+    /// real path.
+    fn resolve_target_path(&self, target: &str, base: Option<&Path>) -> PathBuf {
         if let Some(rest) = target.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
                 return PathBuf::from(home).join(rest);
@@ -1344,17 +1356,20 @@ impl View {
         if p.is_absolute() {
             return p;
         }
-        match &self.cwd {
+        match base {
             Some(cwd) => cwd.join(target),
             None => p,
         }
     }
 
-    /// Pick the best real location to reveal for a path resolved against the render `cwd`:
-    /// the path itself if it exists; else — when the repo was moved, so `cwd` (the
-    /// recorded `first_cwd`) is dead — its re-rooting under the live `reveal_root`, if THAT
-    /// exists; else the original untouched (a genuine miss stays a miss). The `exists` probes
-    /// are why this is the reveal ACTION's job, not rendering's — the draw never calls it.
+    /// Pick the best real location to reveal for an already-resolved absolute path: the path
+    /// itself if it exists; else — when the repo was moved, so `self.cwd` (the session's
+    /// recorded `first_cwd`, the move's OLD root) is dead — its re-rooting under the live
+    /// `reveal_root`, if THAT exists; else the original untouched (a genuine miss stays a
+    /// miss). The relocate anchor is the session `first_cwd` (whose live twin `reveal_root`
+    /// is), NOT the per-block cwd used to resolve the path — a block under a subdir still sits
+    /// beneath `first_cwd`, so the one prefix swap re-roots it. The `exists` probes are why
+    /// this is the reveal ACTION's job, not rendering's — the draw never calls it.
     fn best_reveal(&self, primary: PathBuf) -> PathBuf {
         if primary.exists() {
             return primary;
@@ -2590,6 +2605,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 
@@ -2805,6 +2821,7 @@ mod tests {
             output: Some("out".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let a = vec![
             Block::UserText("go".into()),
@@ -2911,6 +2928,7 @@ mod tests {
                 output: Some("a\nb\nc".into()),
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::AssistantText("done with a fairly long line that wraps at ten".into()),
         ];
@@ -2961,6 +2979,7 @@ mod tests {
                 output: Some("the ZEBRA lives here".into()),
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::AssistantText("done".into()),
             Block::ToolUse {
@@ -2970,6 +2989,7 @@ mod tests {
                 output: Some("another ZEBRA sighting".into()),
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -3097,6 +3117,7 @@ mod tests {
             output: Some("x".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         // A Bash header whose "target" is a command, not a path.
         let bash = Block::ToolUse {
@@ -3106,6 +3127,7 @@ mod tests {
             diffs: vec![],
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         // (block, a column that lands inside its `(path)` span). Header layout is
         // `⏺ <DisplayName>(` — Write=7, Update=8, Read=6 cols before the path.
@@ -3158,6 +3180,7 @@ mod tests {
             output: Some("x".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
         v.set_cwd(Some(dead));
@@ -3182,6 +3205,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&live);
     }
 
+    /// #173: after a mid-session `cd` a tool's target is relative to the block's OWN cwd (a
+    /// subdir), not the session `first_cwd`. The click resolves against that per-block cwd —
+    /// and, when the repo has since moved, still relocates from `first_cwd` (the move's OLD
+    /// root, whose live twin `reveal_root` is), so the one prefix swap re-roots the subdir.
+    #[test]
+    fn clicking_header_path_resolves_a_subdir_cwd_after_cd() {
+        let pid = std::process::id();
+        let live = std::env::temp_dir().join(format!("cr-subdir-view-{pid}"));
+        let _ = std::fs::remove_dir_all(&live);
+        std::fs::create_dir_all(live.join("sub")).unwrap();
+        std::fs::write(live.join("sub/b.rs"), "fn main() {}").unwrap();
+
+        // A tool that ran under the subdir the session cd'd into: its target is relative to
+        // THAT subdir, and the block carries the subdir as its cwd.
+        let sub_block = |cwd: String| {
+            vec![Block::ToolUse {
+                name: "Read".into(),
+                target: "b.rs".into(),
+                diffs: vec![],
+                output: Some("x".into()),
+                patch: None,
+                read_lines: None,
+                cwd,
+            }]
+        };
+
+        // Case 1 — repo in place: resolving `b.rs` against the SESSION cwd (the repo root)
+        // would look for `<root>/b.rs` and miss; only the per-block subdir cwd finds it.
+        let mut v = View::new(
+            sub_block(live.join("sub").to_string_lossy().into_owned()),
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        v.set_cwd(Some(live.clone())); // first_cwd = the repo root
+        v.set_reveal_root(Some(live.clone()));
+        let _ = draw(&mut v, 200, 40);
+        let row = v.block_start(0).unwrap() as u16;
+        assert_eq!(
+            v.click_at(row, 8),
+            Some(Action::Reveal(live.join("sub/b.rs"))),
+            "a post-cd target resolves against the block's own subdir cwd, not first_cwd"
+        );
+
+        // Case 2 — repo moved: the block cwd is the DEAD old subdir and `first_cwd` is the
+        // dead old root; the resolve uses the subdir, the relocate swaps first_cwd → live.
+        let dead_root = PathBuf::from(format!("/no/such/old-repo-{pid}"));
+        let dead_sub = dead_root.join("sub");
+        let mut v = View::new(
+            sub_block(dead_sub.to_string_lossy().into_owned()),
+            "t",
+            false,
+            FoldPolicy::none(),
+        );
+        v.set_cwd(Some(dead_root)); // first_cwd = the move's OLD root
+        v.set_reveal_root(Some(live.clone())); // its live twin
+        let _ = draw(&mut v, 200, 40);
+        let row = v.block_start(0).unwrap() as u16;
+        assert_eq!(
+            v.click_at(row, 8),
+            Some(Action::Reveal(live.join("sub/b.rs"))),
+            "a moved repo's post-cd subdir path re-roots through first_cwd to the live file"
+        );
+
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
     /// Backlog invariant: a shell command and its output are ONE foldable block.
     /// The `⏺ Bash` header and its `⎿` output share a source block (distinct from
     /// the neighbouring block), and a single `t` toggle folds/expands both —
@@ -3195,6 +3285,7 @@ mod tests {
             diffs: vec![],
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         // A trailing assistant block gives a distinct neighbour tag to compare with.
         let mut v = View::new(
@@ -3259,6 +3350,7 @@ mod tests {
                 lines: vec!["+let a = 2;".into()],
             }]),
             read_lines: None,
+            cwd: String::new(),
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3430,6 +3522,7 @@ mod tests {
             output: Some("file-alpha\nfile-beta".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let mut v = View::new(vec![bash], "t", false, FoldPolicy::none());
         let buf = draw(&mut v, w, 12);
@@ -3489,6 +3582,7 @@ mod tests {
                 lines: vec![" let x = 0;".into(), "+let a = 2;".into()],
             }]),
             read_lines: None,
+            cwd: String::new(),
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3608,6 +3702,7 @@ mod tests {
             output: Some("out".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let blocks = vec![Block::UserText("root".into()), sa, bash];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -4087,6 +4182,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::ToolResult("a\nb\nc".into()),
             Block::ToolUse {
@@ -4096,6 +4192,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::ToolUse {
                 name: "Write".into(),
@@ -4104,6 +4201,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
         ]
     }
@@ -4157,6 +4255,7 @@ mod tests {
             output: Some("a\nb".into()),
             patch: None,
             read_lines: Some(3),
+            cwd: String::new(),
         };
         // 0: assistant (not foldable), 1: Bash, 2: Read — both fold by default.
         let blocks = vec![Block::AssistantText("hi".into()), mk("Bash"), mk("Read")];
@@ -4206,6 +4305,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let result = Block::ToolResult("some output line".into());
         let blocks = vec![Block::AssistantText("hi".into()), edit, result];
@@ -4451,6 +4551,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             });
         }
         let n = blocks.len();
@@ -4742,6 +4843,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         bs[11] = Block::ToolUse {
             name: "Read".into(),
@@ -4750,6 +4852,7 @@ mod tests {
             output: Some("the file says UNIQUEMATCH".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
         // absorbed tool, so `t:` reaches it as thinking and `b:`/`o:` reach it as bash.
@@ -4763,6 +4866,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             }],
         };
         bs[5] = Block::ToolUse {
@@ -4772,6 +4876,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
         draw(&mut v, 60, 14);

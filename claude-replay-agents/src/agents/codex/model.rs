@@ -234,6 +234,7 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         output: None,
         patch: None,
         read_lines: None,
+        cwd: cwd.to_string(),
     }
 }
 
@@ -280,12 +281,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
     }
     match value.get("type").and_then(Value::as_str) {
         Some("session_meta") => {
-            if cwd.is_empty() {
-                *cwd = value
-                    .pointer("/payload/cwd")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+            // Running-current (#173): a later `session_meta` (a spawned thread) moves the
+            // anchor forward; an absent/empty payload cwd keeps the previous value.
+            if let Some(c) = value.pointer("/payload/cwd").and_then(Value::as_str) {
+                if !c.is_empty() {
+                    *cwd = c.to_string();
+                }
             }
         }
         Some("response_item") => {
@@ -732,12 +733,11 @@ fn parse_lines<S: AsRef<str>>(
         }
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
-                if cwd.is_empty() {
-                    cwd = value
-                        .pointer("/payload/cwd")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
+                // Running-current (#173) — see `decode_line`; the golden reference mirrors it.
+                if let Some(c) = value.pointer("/payload/cwd").and_then(Value::as_str) {
+                    if !c.is_empty() {
+                        cwd = c.to_string();
+                    }
                 }
             }
             Some("response_item") => {
@@ -790,6 +790,7 @@ fn parse_lines<S: AsRef<str>>(
                             output: None,
                             patch: None,
                             read_lines: None,
+                            cwd: cwd.clone(),
                         });
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
@@ -1044,6 +1045,8 @@ fn apply_output(block: &mut Block, output: String) {
                     output: Some(output),
                     patch: None,
                     read_lines: None,
+                    // A description, not a path — never revealed, so no cwd anchor.
+                    cwd: String::new(),
                 };
             }
         }

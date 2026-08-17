@@ -690,8 +690,9 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
 /// **Layer 1 (Claude) — tokenize.** Map each JSONL line to zero or more canonical
 /// [`Message`]s: pure line-shape classification, **no** back-patch, grouping, joins,
 /// queue lifecycle, or turn stamping (those are the fold's job — see [`replay`]). The
-/// session cwd is captured here (first non-empty `cwd` wins) purely to shape tool
-/// targets, exactly as `parse_main` does. Streaming: one `Value` resident at a time.
+/// cwd is threaded here (running-current — each line's non-empty `cwd` moves it forward,
+/// #173) purely to shape tool targets, exactly as `parse_main` does. Streaming: one
+/// `Value` resident at a time.
 ///
 /// This is the L1 half of `parse_main`; `replay(tokenize(x))` is asserted bit-identical
 /// to `parse_main(x)` (see the tests). `parse_main` stays live and unchanged.
@@ -706,10 +707,11 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 }
 
 /// **Layer 1 — Claude decode, per line** (the streaming unit). Decode ONE raw transcript
-/// line into 0+ canonical messages appended to `msgs`. `cwd` is threaded across lines (set
-/// once from the first line that carries it) so tool targets relativize. `tokenize` is this
-/// over every line; the streaming driver (M9) calls it one line at a time so no whole-file
-/// `Vec<Message>` is ever built.
+/// line into 0+ canonical messages appended to `msgs`. `cwd` is threaded across lines
+/// (running-current — each line's non-empty `cwd` moves it forward, #173) so tool targets
+/// relativize against the cwd in effect at that line, and each `ToolUse` carries it for the
+/// reveal action. `tokenize` is this over every line; the streaming driver (M9) calls it one
+/// line at a time so no whole-file `Vec<Message>` is ever built.
 pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
     let line = line.trim();
     if line.is_empty() {
@@ -718,8 +720,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
-    if cwd.is_empty() {
-        if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+    // Running-current (#173): each line that records a non-empty cwd moves the anchor
+    // forward (a mid-session `cd`); a line without one keeps the previous value. Never
+    // clear on absence — most lines carry no cwd.
+    if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+        if !c.is_empty() {
             *cwd = c.to_string();
         }
     }
@@ -963,6 +968,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             output: None,
             patch: None,
             read_lines: None,
+            cwd: cwd.to_string(),
         }
     }
 }
@@ -1044,8 +1050,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if cwd.is_empty() {
-            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+        // Running-current (#173) — see `decode_line`; the golden reference mirrors it.
+        if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+            if !c.is_empty() {
                 cwd = c.to_string();
             }
         }
@@ -1136,6 +1143,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     output: None,
                                     patch: None,
                                     read_lines: None,
+                                    cwd: cwd.clone(),
                                 });
                             }
                             let idx = out.len() - 1;
@@ -3167,6 +3175,50 @@ mod tests {
         // A path outside the session cwd is left absolute.
         let outside = serde_json::json!({ "file_path": "/etc/hosts" });
         assert_eq!(tool_target(&outside, base), "/etc/hosts");
+    }
+
+    #[test]
+    fn running_current_cwd_relativizes_and_is_carried_per_block() {
+        // A mid-session `cd` into a subdir (#173): the first tool ran under the repo root,
+        // the second under the subdir. Each target relativizes against the cwd in effect at
+        // ITS line (running-current, not the frozen first cwd), and each block carries that
+        // cwd so the reveal action can rebuild the absolute path after the `cd`.
+        let jsonl = concat!(
+            r#"{"type":"assistant","cwd":"/repo","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/a.rs"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","cwd":"/repo/sub","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/sub/b.rs"}}]}}"#,
+        );
+        // Consecutive activity tools coalesce into a ✻ work-span (#57), so the ToolUse blocks
+        // nest under `Thinking.tools` — collect from both levels, in order.
+        fn collect(blocks: &[Block], out: &mut Vec<(String, String)>) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse { target, cwd, .. } => out.push((target.clone(), cwd.clone())),
+                    Block::Thinking { tools, .. } => collect(tools, out),
+                    _ => {}
+                }
+            }
+        }
+        let facts = |blocks: Vec<Block>| -> Vec<(String, String)> {
+            let mut out = Vec::new();
+            collect(&blocks, &mut out);
+            out
+        };
+        let want = vec![
+            ("a.rs".to_string(), "/repo".to_string()),
+            ("b.rs".to_string(), "/repo/sub".to_string()),
+        ];
+        assert_eq!(
+            facts(parse(jsonl)),
+            want,
+            "each tool relativizes against — and carries — the cwd in effect at its line"
+        );
+        // The frozen golden reference must fold multi-cwd identically to the streaming engine.
+        assert_eq!(
+            facts(parse_main(jsonl.lines(), &mut Vec::new())),
+            want,
+            "parse_main golden matches the streaming engine on a mid-session cd"
+        );
     }
 
     #[test]

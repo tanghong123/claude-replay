@@ -1206,6 +1206,7 @@ mod tests {
             output: Some("ok".into()),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1295,6 +1296,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1339,6 +1341,7 @@ mod tests {
                 lines: vec!["-a".into(), "+b".into(), " c".into()],
             }]),
             read_lines: None,
+            cwd: String::new(),
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1372,6 +1375,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1459,6 +1463,7 @@ mod tests {
             output: None,
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1506,6 +1511,7 @@ mod tests {
                 ],
             }]),
             read_lines: None,
+            cwd: String::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1552,6 +1558,7 @@ mod tests {
             output: output.map(String::from),
             patch: None,
             read_lines: None,
+            cwd: String::new(),
         }
     }
 
@@ -1577,6 +1584,7 @@ mod tests {
             output: Some("...".into()),
             patch: None,
             read_lines: Some(42),
+            cwd: String::new(),
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -1884,6 +1892,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -1892,6 +1901,7 @@ mod tests {
                 output: None,
                 patch: None,
                 read_lines: None,
+                cwd: String::new(),
             },
         ];
         let turn = Block::Thinking {
@@ -1929,6 +1939,7 @@ mod tests {
                 lines: vec!["+# Title".into()],
             }]),
             read_lines: None,
+            cwd: String::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

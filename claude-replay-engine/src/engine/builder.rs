@@ -32,7 +32,10 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     agent: Agent,
     adapter: &'static dyn TranscriptAdapter,
     replayer: Replayer<'static>,
-    /// The FOLD cwd — threaded across lines by `decode_line` for path relativization.
+    /// The FOLD cwd — threaded across lines by `decode_line` for path relativization. Running-
+    /// current (#173): a line's non-empty `cwd` moves it forward, so its final value is the
+    /// LATEST recorded cwd (the resume anchor), and each `cd` emits a cwd delta at the emit
+    /// point below. Session identity uses `first_cwd` instead (filled by the facade), not this.
     cwd: String,
     /// Agent-specific physical→logical line boundary state. Usually pass-through; Codex uses
     /// it to exclude a child rollout's cloned parent bootstrap from content and metrics.
