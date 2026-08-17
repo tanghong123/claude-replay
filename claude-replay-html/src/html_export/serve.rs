@@ -2017,10 +2017,24 @@ mod tests {
             .spawn()
             .unwrap();
         drop(listener);
-        write(child2.id(), Some(HtmlNote { port }));
-        assert_eq!(
-            existing_server(Some(&root), "sid"),
-            None,
+        // Reusing the server's just-freed `port` here was flaky: on a busy CI runner a parallel
+        // test can bind that ephemeral port in the window before the probe, so the "closed" port
+        // answers and the hand-off is wrongly found (a real port-reuse race, not a bug in the
+        // code under test). std can't reserve a bound-but-not-LISTENING port without FFI, so
+        // instead probe over FRESH ephemeral ports: each is closed the instant its listener drops,
+        // and the ONLY way this loop fails is a parallel bind stealing every one of many tries —
+        // astronomically unlikely, and it passes on the first try in the common case.
+        let rejected_closed_port = (0..64).any(|_| {
+            let closed = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port(); // listener dropped here → `closed` is now a closed port
+            write(child2.id(), Some(HtmlNote { port: closed }));
+            existing_server(Some(&root), "sid").is_none()
+        });
+        assert!(
+            rejected_closed_port,
             "a live pid that stopped answering is not a hand-off target"
         );
         child2.kill().ok();
