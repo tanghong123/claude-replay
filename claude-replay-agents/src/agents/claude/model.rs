@@ -841,10 +841,20 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 tool_use_id: tid.to_string(),
                                 text: txt,
                                 tur: tur.clone(),
-                                // Claude Code writes the key explicitly both ways
-                                // (observed ~8.7k false / 256 true across one project's
-                                // transcripts), so absence really is "no signal".
-                                is_error: blk.get("is_error").and_then(Value::as_bool),
+                                // #26: Claude Code writes `is_error` on FAILURE, and for every
+                                // tool except Bash it OMITS the key on success (measured: Edit/
+                                // Read/Write/mcp all show 0 explicit false, thousands absent). So
+                                // absence is success in this format — decode it as `Some(false)`,
+                                // never `None`. `None` stays reserved for formats that genuinely
+                                // say nothing either way (Codex), so a failure-rate consumer can
+                                // still exclude the undecidable instead of misreading it as
+                                // success — which is exactly what the old tri-state `None` here
+                                // caused downstream (agent-metrics saw Edit at 22.7%, true 1.3%).
+                                is_error: Some(
+                                    blk.get("is_error")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false),
+                                ),
                             });
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
                                 for item in items {
@@ -1794,11 +1804,13 @@ mod tests {
         blocks.iter().map(fold_key).collect()
     }
 
-    /// #23: the decoder carries the content item's `is_error` through as a TRI-STATE —
-    /// explicit true, explicit false, and absent-means-no-signal all stay distinct, so a
-    /// failure-rate consumer can exclude the undecidable instead of counting it as success.
+    /// #23/#26: the decoder carries the content item's `is_error`. For CLAUDE it is never
+    /// `None` — the format writes the key on failure and omits it on success (for every tool
+    /// but Bash), so an absent key decodes as `Some(false)`, an explicit success. `None` is
+    /// reserved for formats that genuinely give no signal (Codex), so a failure-rate consumer
+    /// can exclude the undecidable rather than misread absence as success.
     #[test]
-    fn tool_result_error_state_is_a_tri_state() {
+    fn claude_tool_result_error_absent_means_success() {
         let mk = |flag: &str| {
             format!(
                 r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":"boom"{flag}}}]}}}}"#
@@ -1807,7 +1819,7 @@ mod tests {
         for (flag, want) in [
             (r#","is_error":true"#, Some(true)),
             (r#","is_error":false"#, Some(false)),
-            ("", None),
+            ("", Some(false)), // #26: absent key = success in the Claude format, not `None`
         ] {
             let mut cwd = String::new();
             let mut msgs = Vec::new();

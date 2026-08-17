@@ -66,11 +66,13 @@ pub enum Message {
         tool_use_id: String,
         text: String,
         tur: Value,
-        /// Whether this result reports a FAILURE, when the agent's format says (#23):
-        /// Claude's `is_error` content key, written explicitly both ways. `None` when the
-        /// format gives no signal either way (Codex rollouts carry none) — "unknown" stays
-        /// distinct from "succeeded", so a consumer computing a failure RATE can exclude
-        /// the undecidable instead of silently counting it as success.
+        /// Whether this result reports a FAILURE, when the agent's format says (#23/#26):
+        /// Claude's `is_error` content key — written on failure and OMITTED on success (for
+        /// every tool but Bash), so for Claude an absent key decodes as `Some(false)` and
+        /// `is_error` is never `None`. `None` is reserved for formats that give no signal
+        /// either way (Codex rollouts carry none) — "unknown" stays distinct from "succeeded",
+        /// so a consumer computing a failure RATE can exclude the undecidable instead of
+        /// silently counting it as success.
         is_error: Option<bool>,
     },
     /// A genuine human turn — already cleaned by L1 (caveats stripped, classified as neither
