@@ -402,7 +402,10 @@ impl<'a> Replayer<'a> {
                         agent_id,
                         agent_type,
                         description: description.clone(),
-                        status: status.unwrap_or(AgentStatus::Completed),
+                        // #26 class: a completion whose `<status>` word we don't recognize is
+                        // NOT a success — read it as the honest terminal `Unknown`, never a
+                        // false `Completed`.
+                        status: status.unwrap_or(AgentStatus::Unknown),
                         result: result.clone(),
                     });
                 }

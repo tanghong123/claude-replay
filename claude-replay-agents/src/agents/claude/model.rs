@@ -1292,9 +1292,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 // position (the spawn stays "launched" up where it was
                                 // created). Type is copied from the matching spawn in a
                                 // post-enrich pass (`stamp_agent_done_types`).
+                                // #26 class: an unrecognized `<status>` word reads as the honest
+                                // terminal `Unknown`, never a false `Completed` (mirrors the
+                                // production fold in `replay.rs`).
                                 let status = tag_inner(c, "status")
                                     .and_then(status_from_str)
-                                    .unwrap_or(AgentStatus::Completed);
+                                    .unwrap_or(AgentStatus::Unknown);
                                 let description = tag_inner(c, "summary")
                                     .map(summary_description)
                                     .unwrap_or_default();
@@ -2528,6 +2531,37 @@ mod tests {
         // (asserted in `view`'s `default_fold_policy_collapses_agent_blocks`).
         assert_eq!(fold_key(&blocks[0]), "agent");
         assert_eq!(fold_key(&blocks[1]), "agent");
+    }
+
+    /// A completion `<status>` word we don't recognize must NOT read as `Completed` (the #26
+    /// class: an unknown signal coerced to the most positive outcome). It becomes the honest
+    /// terminal `Unknown` — done (so it does not stay "running"), but rendered "finished", never
+    /// a false "completed".
+    #[test]
+    fn unknown_completion_status_is_unknown_not_completed() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"code-reviewer","description":"Review","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aX","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"async_launched"}]}}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>aX</task-id>\n<tool-use-id>toolu_A</tool-use-id>\n<status>cancelled</status>\n<summary>Agent \"Review\" ended</summary>\n<result>n/a</result>\n</task-notification>"}
+"##;
+        let blocks = parse(jsonl);
+        let Block::AgentDone { status, .. } = &blocks[1] else {
+            panic!("second block is not AgentDone: {blocks:?}")
+        };
+        assert_eq!(
+            *status,
+            AgentStatus::Unknown,
+            "an unrecognized status word is Unknown, not a false Completed"
+        );
+        assert!(status.is_terminal(), "a completion event is terminal");
+        assert_eq!(
+            status.done_verb(),
+            "finished",
+            "honest neutral verb, not 'completed'"
+        );
+        // The index derives the same honest terminal status from the finish event.
+        let map = claude_replay_engine::seam::build_sub_agents(&blocks);
+        assert_eq!(map["aX"].status, AgentStatus::Unknown);
     }
 
     /// `enrich_tree` (via `parse_session_enriched`) loads each `SubAgent`'s child transcript

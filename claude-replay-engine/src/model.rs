@@ -328,14 +328,20 @@ pub enum AgentStatus {
     Failed,
     Killed,
     Stopped,
+    /// A completion event fired, but its status word is not one we recognize (#26 class):
+    /// the agent has terminated, yet the outcome is genuinely unknown. Kept distinct so an
+    /// unrecognized word is never coerced to the false-positive `Completed` — the same
+    /// mistake #26 fixed for `is_error`.
+    Unknown,
 }
 
 impl AgentStatus {
     /// A terminal state — no more activity expected (drives "running" animation off).
+    /// [`Unknown`](Self::Unknown) is terminal: a completion event fired, so the agent is done.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed | Self::Killed | Self::Stopped
+            Self::Completed | Self::Failed | Self::Killed | Self::Stopped | Self::Unknown
         )
     }
     /// Past-tense verb for the completion event line (`Agent "…" completed`).
@@ -345,6 +351,9 @@ impl AgentStatus {
             Self::Failed => "failed",
             Self::Killed => "killed",
             Self::Stopped => "stopped",
+            // A completion with an unrecognized status word: honest neutral verb, never the
+            // false "completed" (#26 class). Same word as the non-terminal fallback below.
+            Self::Unknown => "finished",
             // Non-terminal states never reach a completion event; treat as "finished".
             Self::Running | Self::AsyncLaunched => "finished",
         }
