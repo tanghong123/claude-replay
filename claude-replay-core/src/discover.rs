@@ -273,6 +273,117 @@ fn resolve_lone(cands: &mut Vec<Candidate>, cwd: &Path) -> Result<PathBuf> {
     }
 }
 
+/// The literal group path a session gets when it recorded NEITHER a repo nor a cwd — the
+/// sentinel that lands in a `p:(unknown)` key. It is part of the persisted key format
+/// (`ignored.json`), so it is named here rather than spelled inline at each site: a consumer
+/// hiding such a session stores exactly `p:(unknown)`. Not a filesystem location.
+pub const UNKNOWN_GROUP: &str = "(unknown)";
+
+/// Whether a session groups under a WORKSPACE (a `p:<path>` key) or under its AGENT (an
+/// `a:<label>` key) — mirrors
+/// [`workspace_anchored`](crate::adapter::TranscriptAdapter::workspace_anchored).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKeyKind {
+    /// A workspace-anchored session, keyed by its repo / working directory.
+    Project,
+    /// A desktop-collaboration agent whose cwd is noise, keyed by the agent itself.
+    Agent,
+}
+
+/// A session's GROUP identity — the ONE rule the monitor's rail and any other consumer
+/// (agent-metrics) share, so the persisted `p:`/`a:` hide-list key is computed in exactly one
+/// place (#27).
+///
+/// [`key`](Self::key) is not private to the monitor: it is written to `ignored.json`, so a
+/// second tool that reproduced the rule by hand had to match all four folded decisions — anchor
+/// vs agent, repo-wins-over-cwd, leaf-as-label, and the `p:`/`a:` string shape — byte-for-byte,
+/// with no compiler help if it got one wrong. It drifted (agent-metrics keyed on the cwd alone,
+/// so a session in a SUBDIR split off a group that appears nowhere in the monitor). Compute it
+/// here instead. Hiding a project therefore hides the whole repo, subdirs included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionKey {
+    /// `p:<path>` or `a:<agent label>` — the STABLE identity, and exactly the string a hide
+    /// list stores. The one value [`hidden_by`](Self::hidden_by) tests.
+    pub key: String,
+    /// Which of the two keying rules produced [`key`](Self::key).
+    pub kind: SessionKeyKind,
+    /// What to display: the grouped path's leaf, or the agent's label.
+    pub label: String,
+    /// The grouped path — the repo root (else the cwd) for a [`Project`](SessionKeyKind::Project)
+    /// key, `None` for an [`Agent`](SessionKeyKind::Agent) key. For a project session that
+    /// recorded neither, this is `Some(`[`UNKNOWN_GROUP`]`)` — the literal `(unknown)` sentinel
+    /// that key carries, NOT a real location.
+    pub path: Option<PathBuf>,
+}
+
+impl SessionKey {
+    /// Is this session's GROUP covered by a hide list — an exact match of [`key`](Self::key)
+    /// against `keys`? The canonical replacement for the hand-rolled "test `p:<cwd>` OR
+    /// `p:<repo_root>` and hope one is the one the monitor wrote" probing (#27): with one
+    /// canonical key there is exactly one string to test.
+    ///
+    /// This is the GROUP axis only. A per-session hide entry (the monitor's `s:<id>`) is a
+    /// separate axis a consumer that keeps one checks alongside this.
+    pub fn hidden_by(&self, keys: &std::collections::BTreeSet<String>) -> bool {
+        keys.contains(&self.key)
+    }
+}
+
+/// The GROUP key ([`SessionKey`]) for the session at `transcript` — resolve its repo root and
+/// cwd, then apply [`session_key_from`]. The entry point for a consumer that holds a transcript
+/// path (the monitor's scan).
+///
+/// Resolves through [`repo_root`] and [`project_path`] specifically — matching the monitor's
+/// scan (index.rs:497-498), NOT the pure [`first_cwd`]: a moved/renamed repo's DEAD recorded cwd
+/// would key differently from where it now lives, silently diverging from the monitor. The
+/// disk-grounded pair IS the rule; keep it.
+pub fn session_key(agent: Agent, transcript: &Path) -> SessionKey {
+    session_key_from(
+        agent,
+        repo_root(transcript).as_deref(),
+        project_path(transcript).as_deref(),
+    )
+}
+
+/// The GROUP key ([`SessionKey`]) from ALREADY-RESOLVED paths — the pure form for a consumer
+/// (agent-metrics) that persists a session's cwd and repo root and must not re-read a transcript
+/// per row to draw a table. [`session_key`] is this over paths it resolves itself, so there is
+/// still one rule.
+///
+/// The rule, all four decisions #27 extracts: an agent whose sessions are
+/// [`workspace_anchored`](crate::adapter::TranscriptAdapter::workspace_anchored) keys by PROJECT
+/// — the repo root when there is one, else the cwd, else [`UNKNOWN_GROUP`]; the key is `p:<that
+/// path>` and the label its leaf. So a session that ran in a SUBDIR (a worktree, `repo/web`)
+/// joins its repo's row instead of splitting off its own. A non-anchored agent (QoderWork, whose
+/// cwd is noise) keys by AGENT: `a:<label>`, no path.
+pub fn session_key_from(agent: Agent, repo_root: Option<&Path>, cwd: Option<&Path>) -> SessionKey {
+    if crate::adapter::adapter(agent).workspace_anchored() {
+        // repo wins over cwd (normalizes a subdir `cd` up to the one repo); the sentinel only
+        // when the session recorded neither.
+        let proj = repo_root
+            .or(cwd)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(UNKNOWN_GROUP));
+        let proj_str = proj.display().to_string();
+        // Leaf as the label; the `p:` prefix + FULL path is the persisted hide key.
+        let leaf = proj_str.rsplit('/').next().unwrap_or(&proj_str).to_string();
+        SessionKey {
+            key: format!("p:{proj_str}"),
+            kind: SessionKeyKind::Project,
+            label: leaf,
+            path: Some(proj),
+        }
+    } else {
+        let label = agent.label().to_string();
+        SessionKey {
+            key: format!("a:{label}"),
+            kind: SessionKeyKind::Agent,
+            label,
+            path: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +474,102 @@ mod tests {
         std::fs::remove_file(&codex).ok();
         std::fs::remove_file(&claude).ok();
         std::fs::remove_file(&qoderwork).ok();
+    }
+
+    /// #27, the interchange format itself: an anchored agent keys by PROJECT, repo wins over
+    /// cwd, and a SUBDIR session collapses to the SAME `p:<repo>` string as a root-cwd one —
+    /// the drift that split agent-metrics off its own phantom group. The `assert_eq!`s pin the
+    /// exact persisted bytes, so any future change to the key shape fails loudly here.
+    #[test]
+    fn session_key_from_pins_the_project_hide_key() {
+        let repo = Path::new("/Users/me/proj");
+        let subdir = Path::new("/Users/me/proj/web");
+
+        // A session that ran in a subdir: repo wins, so the key is the repo, not the subdir.
+        let k = session_key_from(Agent::CLAUDE, Some(repo), Some(subdir));
+        assert_eq!(k.key, "p:/Users/me/proj");
+        assert_eq!(k.kind, SessionKeyKind::Project);
+        assert_eq!(k.label, "proj");
+        assert_eq!(k.path.as_deref(), Some(repo));
+
+        // A root-cwd session in the same repo → byte-identical key: they share ONE group.
+        let root = session_key_from(Agent::CLAUDE, Some(repo), Some(repo));
+        assert_eq!(root.key, k.key);
+
+        // No repo (session under no `.git`): fall back to the cwd, key on it.
+        let cwd_only = session_key_from(Agent::CLAUDE, None, Some(subdir));
+        assert_eq!(cwd_only.key, "p:/Users/me/proj/web");
+        assert_eq!(cwd_only.label, "web");
+    }
+
+    /// A non-anchored agent (QoderWork — its cwd is noise) keys by AGENT regardless of any
+    /// path, and a session that recorded neither repo nor cwd lands on the named sentinel.
+    #[test]
+    fn session_key_from_agent_and_unknown_sentinel() {
+        // Agent-keyed: the repo/cwd handed in are ignored, the key is `a:<label>`, no path.
+        let a = session_key_from(Agent::QODERWORK, Some(Path::new("/whatever")), None);
+        assert_eq!(a.key, "a:qoderwork");
+        assert_eq!(a.kind, SessionKeyKind::Agent);
+        assert_eq!(a.label, "qoderwork");
+        assert_eq!(a.path, None);
+
+        // Anchored but nothing recorded → the `(unknown)` sentinel, carried in both key and path.
+        let u = session_key_from(Agent::CLAUDE, None, None);
+        assert_eq!(u.key, format!("p:{UNKNOWN_GROUP}"));
+        assert_eq!(u.key, "p:(unknown)");
+        assert_eq!(u.path.as_deref(), Some(Path::new(UNKNOWN_GROUP)));
+    }
+
+    /// `hidden_by` collapses the old "test `p:<cwd>` OR `p:<repo_root>`" probing into ONE exact
+    /// match: a hide list holding just the canonical repo key covers the subdir session, while
+    /// the subdir's own path — the string agent-metrics used to store — does not.
+    #[test]
+    fn hidden_by_matches_the_one_canonical_key() {
+        let k = session_key_from(
+            Agent::CLAUDE,
+            Some(Path::new("/Users/me/proj")),
+            Some(Path::new("/Users/me/proj/web")),
+        );
+        let hide_repo: std::collections::BTreeSet<String> =
+            ["p:/Users/me/proj".to_string()].into_iter().collect();
+        assert!(
+            k.hidden_by(&hide_repo),
+            "canonical repo key covers the subdir session"
+        );
+
+        let hide_subdir: std::collections::BTreeSet<String> =
+            ["p:/Users/me/proj/web".to_string()].into_iter().collect();
+        assert!(
+            !k.hidden_by(&hide_subdir),
+            "the subdir path is NOT the group key — this is the drift #27 kills"
+        );
+    }
+
+    /// The transcript form resolves through `repo_root`/`project_path` (disk-grounded), NOT the
+    /// pure `first_cwd` — so a session whose cwd is a subdir keys on the repo the `.git` walk
+    /// finds, matching the monitor's scan.
+    #[test]
+    fn session_key_resolves_repo_from_a_transcript() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("crsk{pid}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("myrepo");
+        let sub = repo.join("crate").join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let t = base.join("s.jsonl");
+        std::fs::write(
+            &t,
+            format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}\n", sub.display()),
+        )
+        .unwrap();
+
+        let k = session_key(Agent::CLAUDE, &t);
+        assert_eq!(k.key, format!("p:{}", repo.display()));
+        assert_eq!(k.path.as_deref(), Some(repo.as_path()));
+        assert_eq!(k.label, "myrepo");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

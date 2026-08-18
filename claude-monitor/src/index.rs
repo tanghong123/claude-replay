@@ -12,7 +12,7 @@
 use anyhow::Result;
 use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
 use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
-use claude_replay_core::{adapter, adapters, discover, metrics, Agent};
+use claude_replay_core::{adapters, discover, metrics, Agent};
 use claude_replay_present::cache::{admit, MetaReader, Presentation};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -798,28 +798,36 @@ impl Index {
         }
         let mut groups: HashMap<String, Group> = HashMap::new();
         for (sid, row) in &st.rows {
-            let anchored = adapter(row.agent).workspace_anchored();
-            let (key, kind, label, secondary) = if anchored {
-                // Group by the git repo (`repo`), not the exact cwd, so a session that ran in a
-                // subdir joins its repo's row instead of splitting off its own. Fall back to the
-                // real cwd when the session is under no repo. The group key IS the `p:` hide key,
-                // so hiding a project now hides the whole repo (subdirs included).
-                let proj = row
-                    .repo
-                    .clone()
-                    .or_else(|| row.cwd.clone())
-                    .unwrap_or_else(|| "(unknown)".into());
-                let leaf = proj.rsplit('/').next().unwrap_or(&proj).to_string();
-                // Leaf as the label, FULL path as the secondary line (§4.2) — the leaf-merge
-                // hedge: two checkouts sharing a leaf stay distinguishable one line below.
-                (format!("p:{proj}"), "project", leaf, tilde(&proj))
-            } else {
-                (
-                    format!("a:{}", row.agent.label()),
-                    "agent",
-                    row.agent.label().to_string(),
-                    "desktop agent · no workspace".into(),
-                )
+            // The group key IS the persisted `p:`/`a:` hide key (#27, #113): compute it in ONE
+            // place — see `discover::session_key_from` for the full rule (repo wins over cwd, so
+            // hiding a project hides the whole repo, subdirs included). The `_from` form, not the
+            // transcript one, because the scan already resolved `repo`/`cwd` onto the row, so this
+            // hot rebuild loop stays I/O-free.
+            let discover::SessionKey {
+                key,
+                kind: key_kind,
+                label,
+                path: group_path,
+            } = discover::session_key_from(
+                row.agent,
+                row.repo.as_deref().map(Path::new),
+                row.cwd.as_deref().map(Path::new),
+            );
+            let (kind, secondary) = match key_kind {
+                // Leaf as the label (in `label`), FULL path as the secondary line (§4.2) — the
+                // leaf-merge hedge: two checkouts sharing a leaf stay distinguishable one line
+                // below. `path` is always `Some` for a project key.
+                discover::SessionKeyKind::Project => (
+                    "project",
+                    tilde(
+                        &group_path
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    ),
+                ),
+                discover::SessionKeyKind::Agent => {
+                    ("agent", "desktop agent · no workspace".to_string())
+                }
             };
 
             let growing = row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER)
