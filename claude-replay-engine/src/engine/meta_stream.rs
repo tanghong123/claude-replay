@@ -80,7 +80,14 @@ pub const COMPACT_AFTER: usize = 256;
 ///
 /// v12: structured assistant commentary/final phases and persisted Codex runtime snapshots
 /// (context/settings/rate limits).
-pub const FOLD_VERSION: u16 = 12;
+///
+/// v13: Codex compaction count/dropped-token metrics and `total_tokens`-based current-context
+/// occupancy. Older streams have already advanced past their compaction records, so restoring
+/// them could never recover either statistic from the suffix.
+///
+/// v14: Codex compaction blocks carry the before/after context sizes recovered from their
+/// adjacent usage snapshots. A v13 stream has already persisted those dividers with zeroes.
+pub const FOLD_VERSION: u16 = 14;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

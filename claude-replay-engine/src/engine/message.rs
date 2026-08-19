@@ -149,6 +149,11 @@ pub enum Message {
         pre_tokens: u64,
         post_tokens: u64,
     },
+    /// A late before/after context-usage pair for the compaction boundary immediately before
+    /// it. Some agents persist the boundary first and the compacted context size in a following
+    /// usage snapshot, so Layer 1 cannot populate both fields in `CompactBoundary`. The fold
+    /// back-patches that divider when this arrives; without a preceding divider it is ignored.
+    CompactUsage { pre_tokens: u64, post_tokens: u64 },
     /// The **continuation summary** written back after a compaction — the prose half.
     /// The fold fills it into the `Compaction` block it directly follows; with no such
     /// block it degrades to a `SystemNote`-style result block, which is what this content

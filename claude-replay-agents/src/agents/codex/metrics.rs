@@ -25,6 +25,16 @@ pub(crate) struct CodexMetricsAcc {
     /// of the total set aside as the baseline; measured over one machine's lumen rollouts,
     /// banking that first total from zero over-counted 18 forked files by ~$476.
     seen_usage: bool,
+    /// The latest context occupancy Codex reported for one model interaction. Unlike
+    /// `total_token_usage` (the session-wide billing counter), `last_token_usage.total_tokens`
+    /// resets to the compacted continuation size immediately after a compaction, so it is the
+    /// value the native TUI uses for its context gauge and the pre/post seam below.
+    last_context_tokens: Option<u64>,
+    /// A `compacted` record is followed a few records later by a zero-work `token_count` whose
+    /// `last_token_usage.total_tokens` is the continuation's new size. Hold the pre-compaction
+    /// occupancy until that record arrives so the shared usage panel can report both the count
+    /// and the genuinely dropped tokens, just as it does for Claude sessions.
+    pending_compaction_pre_tokens: Option<u64>,
     model: String,
     /// The FIRST model the session named — not necessarily [`model`](Self::model), the one in
     /// force at the end. Usage reported before any name was seen is attributed to this one,
@@ -53,6 +63,10 @@ impl CodexMetricsAcc {
             .and_then(parse_ts)
         {
             self.span.observe(timestamp);
+        }
+        if value.get("type").and_then(Value::as_str) == Some("compacted") {
+            self.bump("compactions", 1);
+            self.pending_compaction_pre_tokens = self.last_context_tokens;
         }
         if value.get("type").and_then(Value::as_str) == Some("turn_context") {
             if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
@@ -137,10 +151,23 @@ impl CodexMetricsAcc {
                 .pointer("/payload/info/model_context_window")
                 .and_then(Value::as_u64)
                 .or(self.runtime.context_window_tokens);
-            self.runtime.context_used_tokens = value
-                .pointer("/payload/info/last_token_usage/input_tokens")
+            let context_tokens = value
+                .pointer("/payload/info/last_token_usage/total_tokens")
                 .and_then(Value::as_u64)
-                .or(self.runtime.context_used_tokens);
+                // Older rollouts did not carry `total_tokens`; their input figure remains the
+                // best available context gauge and preserves the pre-v1.96 behavior.
+                .or_else(|| {
+                    value
+                        .pointer("/payload/info/last_token_usage/input_tokens")
+                        .and_then(Value::as_u64)
+                });
+            if let Some(context_tokens) = context_tokens {
+                self.runtime.context_used_tokens = Some(context_tokens);
+                if let Some(pre_tokens) = self.pending_compaction_pre_tokens.take() {
+                    self.bump("compact_dropped", pre_tokens.saturating_sub(context_tokens));
+                }
+                self.last_context_tokens = Some(context_tokens);
+            }
             if let Some(limits) = value.pointer("/payload/rate_limits") {
                 self.runtime.rate_limits = Some(RateLimits {
                     primary: rate_limit_window(limits.get("primary")),
@@ -218,6 +245,8 @@ impl CodexMetricsAcc {
             "totals": self.totals(),
             "last_total": self.last_total,
             "seen_usage": self.seen_usage,
+            "last_context_tokens": self.last_context_tokens,
+            "pending_compaction_pre_tokens": self.pending_compaction_pre_tokens,
             "model": self.model,
             "first_model": self.first_model,
             "runtime": self.runtime,
@@ -247,6 +276,10 @@ impl CodexMetricsAcc {
             .get("seen_usage")
             .and_then(Value::as_bool)
             .unwrap_or_else(|| self.last_total != TokenCounts::default());
+        self.last_context_tokens = state.get("last_context_tokens").and_then(Value::as_u64);
+        self.pending_compaction_pre_tokens = state
+            .get("pending_compaction_pre_tokens")
+            .and_then(Value::as_u64);
         if let Some(m) = state.get("model").and_then(Value::as_str) {
             self.model = m.to_string();
         }
@@ -388,6 +421,58 @@ mod tests {
             .footer_segments()
             .iter()
             .any(|(text, _)| text == "75% context left"));
+    }
+
+    /// Codex's compaction boundary itself carries no token fields. The immediately preceding
+    /// usage snapshot is the full context and the immediately following zero-work snapshot is
+    /// the compacted continuation. Pair those two readings across the boundary — including a
+    /// durable-cursor round trip — so the shared Claude-shaped usage statistic stays exact.
+    #[test]
+    fn compactions_count_and_sum_dropped_context_tokens() {
+        fn usage(cumulative_input: u64, context_tokens: u64) -> Value {
+            serde_json::json!({"type":"event_msg","payload":{
+                "type":"token_count",
+                "info":{
+                    "model_context_window":258400,
+                    "last_token_usage":{
+                        "input_tokens":context_tokens,
+                        "total_tokens":context_tokens
+                    },
+                    "total_token_usage":{
+                        "input_tokens":cumulative_input,
+                        "cached_input_tokens":0,
+                        "output_tokens":0
+                    }
+                }
+            }})
+        }
+
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&usage(240_000, 240_000));
+        acc.push(&serde_json::json!({"type":"compacted","payload":{"window_number":1}}));
+        acc.push(&usage(240_000, 18_000));
+        acc.push(&usage(452_000, 230_000));
+        acc.push(&serde_json::json!({"type":"compacted","payload":{"window_number":2}}));
+
+        // A live fold can checkpoint after the boundary but before Codex writes the post-
+        // compaction usage record. Both the count and pending pre-token reading must survive.
+        let state = acc.state();
+        let mut resumed = CodexMetricsAcc::default();
+        resumed.restore(&state);
+        resumed.push(&usage(452_000, 17_000));
+        let metrics = resumed.finish();
+
+        assert_eq!(metrics.compactions(), (2, 435_000));
+        assert_eq!(
+            metrics.compaction_label().as_deref(),
+            Some("2× compacted, 435.0k dropped")
+        );
+        assert_eq!(metrics.runtime.context_used_tokens, Some(17_000));
+        assert_eq!(metrics.context_left_percent(), Some(94));
+        assert!(metrics
+            .footer_segments()
+            .iter()
+            .any(|(text, _)| text == "2× compacted, 435.0k dropped"));
     }
 
     /// A `token_count` event carrying Codex's CUMULATIVE usage — the totals so far, not a

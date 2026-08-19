@@ -281,6 +281,28 @@ impl<'a> Replayer<'a> {
                         summary: String::new(),
                     });
                 }
+                Message::CompactUsage {
+                    pre_tokens,
+                    post_tokens,
+                } => {
+                    // Codex writes the post-compaction occupancy in the next usage snapshot,
+                    // after non-rendering world/turn context records. In block order this is
+                    // still adjacent to its boundary, so update exactly that last divider and
+                    // never risk attaching the figures to an unrelated older compaction.
+                    let last_logical = (self.base + self.out.len()).checked_sub(1);
+                    if let Some(Block::Compaction {
+                        pre_tokens: before,
+                        post_tokens: after,
+                        ..
+                    }) = self.out.last_mut()
+                    {
+                        *before = *pre_tokens;
+                        *after = *post_tokens;
+                        if let Some(logical) = last_logical {
+                            note_patch(&mut patch_floor, logical, emitted_frontier);
+                        }
+                    }
+                }
                 Message::CompactSummary { text } => {
                     // The prose half joins the boundary it directly follows — a back-reference
                     // reaching exactly ONE block, so it can neither pin the frontier nor find

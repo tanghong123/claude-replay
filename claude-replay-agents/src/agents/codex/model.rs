@@ -5,7 +5,9 @@ use claude_replay_engine::seam::{
     ToolExecution, ToolStatus, UsdCost,
 };
 #[cfg(test)]
-use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
+use claude_replay_engine::seam::{
+    replay, stamp_user_turns, BlockIndex, EpochSeconds, SessionAccumulator,
+};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -41,6 +43,15 @@ pub(crate) struct CodexLinePreprocessor {
     /// Latest accepted session cwd, used to relativize paths in `FileChange` events.
     #[serde(default)]
     cwd: String,
+    /// Latest per-interaction context occupancy. Codex writes the compaction boundary before
+    /// its post-compaction usage snapshot, so the adapter retains the preceding snapshot here
+    /// to populate the canonical divider's `before → after` fields.
+    #[serde(default)]
+    last_context_tokens: Option<u64>,
+    /// The pre-compaction occupancy waiting for the next `token_count`. This rides the durable
+    /// cursor because a live/cache split can land in the few records between the two halves.
+    #[serde(default)]
+    pending_compaction_pre_tokens: Option<u64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -115,6 +126,47 @@ impl LinePreprocessor for CodexLinePreprocessor {
                 }
                 return PreprocessedLine::Ignore;
             }
+        }
+
+        if value.get("type").and_then(Value::as_str) == Some("event_msg")
+            && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
+        {
+            if let Some(post_tokens) = codex_context_tokens(&value) {
+                self.last_context_tokens = Some(post_tokens);
+                if let Some(pre_tokens) = self.pending_compaction_pre_tokens.take() {
+                    return PreprocessedLine::Messages(vec![Message::CompactUsage {
+                        pre_tokens,
+                        post_tokens,
+                    }]);
+                }
+            }
+        }
+
+        if value.get("type").and_then(Value::as_str) == Some("compacted") {
+            let pre_tokens = self.last_context_tokens.unwrap_or(0);
+            self.pending_compaction_pre_tokens = self.last_context_tokens;
+            let ts = value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(epoch_secs);
+            let mut messages = vec![
+                Message::LineStart(ts),
+                Message::CompactBoundary {
+                    trigger: CompactTrigger::Auto,
+                    pre_tokens,
+                    post_tokens: 0,
+                },
+            ];
+            if let Some(text) = value
+                .pointer("/payload/message")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                messages.push(Message::CompactSummary {
+                    text: text.to_string(),
+                });
+            }
+            return PreprocessedLine::Messages(messages);
         }
 
         // The modern Codex tool transport is two-layered:
@@ -234,6 +286,17 @@ impl LinePreprocessor for CodexLinePreprocessor {
 
         PreprocessedLine::Include
     }
+}
+
+fn codex_context_tokens(value: &Value) -> Option<u64> {
+    value
+        .pointer("/payload/info/last_token_usage/total_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .pointer("/payload/info/last_token_usage/input_tokens")
+                .and_then(Value::as_u64)
+        })
 }
 
 fn update_preprocessor_session(value: &Value, cwd: &mut String, semantic_exec: &mut bool) {
@@ -2412,6 +2475,80 @@ mod tests {
             .to_string(),
         );
         assert!(matches!(modern.process(&wrapper), PreprocessedLine::Ignore));
+    }
+
+    #[test]
+    fn compaction_usage_snapshot_backpatches_the_dividers_context_sizes() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-19T06:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":244385,"output_tokens":200,"total_tokens":244585},"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":900000,"output_tokens":10000}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:01Z","type":"compacted","payload":{"message":"synthetic continuation","window_number":6}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:01Z","type":"world_state","payload":{"full":true,"state":{}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":0,"output_tokens":0,"total_tokens":17186},"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":900000,"output_tokens":10000}}}}"#,
+            "\n",
+        );
+        let path = std::env::temp_dir().join(format!(
+            "codex-compaction-usage-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, jsonl).unwrap();
+        let (blocks, _, _) = parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Compaction {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: 244_585,
+                post_tokens: 17_186,
+                summary,
+            }] if summary == "synthetic continuation"
+        ));
+
+        let mut live = SessionAccumulator::new(&crate::adapters::CodexAdapter);
+        let mut offset = 0;
+        for (index, line) in jsonl.lines().enumerate() {
+            let patched = live.advance_at(offset, line);
+            if index == 4 {
+                assert_eq!(patched, Some(0), "the late usage must patch block zero");
+            }
+            offset += line.len() as u64 + 1;
+        }
+        assert!(matches!(
+            live.snapshot().blocks().as_slice(),
+            [Block::Compaction {
+                pre_tokens: 244_585,
+                post_tokens: 17_186,
+                ..
+            }]
+        ));
+
+        // A durable split can land after the boundary and before the following usage record.
+        let mut before = CodexLinePreprocessor::default();
+        assert!(matches!(
+            before.process(jsonl.lines().next().unwrap()),
+            PreprocessedLine::Include
+        ));
+        assert!(matches!(
+            before.process(jsonl.lines().nth(1).unwrap()),
+            PreprocessedLine::Messages(_)
+        ));
+        let state = before.state();
+        let mut resumed = CodexLinePreprocessor::default();
+        resumed.restore(&state);
+        let update = resumed.process(jsonl.lines().nth(4).unwrap());
+        assert!(matches!(
+            update,
+            PreprocessedLine::Messages(messages)
+                if matches!(messages.as_slice(), [Message::CompactUsage {
+                    pre_tokens: 244_585,
+                    post_tokens: 17_186,
+                }])
+        ));
     }
 
     #[test]

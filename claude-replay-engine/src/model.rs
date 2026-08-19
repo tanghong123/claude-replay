@@ -194,11 +194,12 @@ pub enum Block {
     /// the summary prose. Not a turn: it gets no `user_times`/sidebar-turn entry (see the
     /// `UserText | Command` predicates), only an epoch tick in the turn list.
     ///
-    /// Built from **two** adjacent transcript events paired by the fold — the metadata
-    /// record and the summary message that follows it (`Message::CompactBoundary` then
-    /// `Message::CompactSummary`). All 65 compactions across this machine's transcripts
-    /// are that pair, but the fold tolerates either alone: a lone boundary renders with an
-    /// empty `summary`, a lone summary stays an ordinary system note.
+    /// Built from the boundary plus any facts its agent persists separately: Claude pairs a
+    /// metadata record with the summary message that follows it (`Message::CompactBoundary`
+    /// then `Message::CompactSummary`), while Codex follows the boundary with a usage snapshot
+    /// (`Message::CompactUsage`) that fills the before/after sizes. The fold tolerates missing
+    /// halves: a lone boundary renders with the facts it has, and a lone summary stays an
+    /// ordinary system note.
     Compaction {
         /// Whether the agent compacted on its own (the context filled) or the human asked.
         trigger: CompactTrigger,
