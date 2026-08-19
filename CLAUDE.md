@@ -61,6 +61,11 @@ the tmux e2e is opt-in), and `scripts/gate/gate.sh` printing `BYTE-IDENTICAL: PA
 (fixture data lives in `$SC_GATE_DIR`, default `~/.cache/claude-replay-gate`; intentional output
 changes are verified line-by-line then re-baselined — see `scripts/gate/README.md`).
 
+For adapter event-mapping changes, also follow
+`docs/adapter-rendering-validation.md`: render a minimal Claude-shaped reference and the target
+agent transcript through the same binary/options, compare their semantics under default and
+`--full`, and keep all agent-specific normalization inside the adapter.
+
 ## Layout
 A Cargo **workspace** with eight crates, layered for multi-level reuse (#71, #87):
 engine → agents → core (facade) → present → {tui, html} → the root binary crate, plus

@@ -41,6 +41,11 @@ Underneath, the streaming parse is additionally pinned to frozen `parse_main`/`p
 oracles (`#[cfg(test)]` equivalence gates in `claude-replay-agents`'
 `agents/{claude,codex}/model.rs` families).
 
+For changes to an agent's event mapping, use the
+[synthetic-transcript adapter validation playbook](adapter-rendering-validation.md): describe an
+equivalent action in a small Claude-shaped reference, render reference and target through the same
+binary/options, and normalize only in the target adapter.
+
 ## 2. Testing a TUI with no terminal
 
 The viewer is **fully testable headless** — never skip or stub a feature "because it needs a
@@ -562,6 +567,8 @@ agent up with no further changes.
 - An equivalence gate in `agents/gemini/model.rs` (frozen fixture → expected block list), mirroring
   `replay_tokenize_matches_*`.
 - A `FollowParser` round-trip: incremental output == full re-parse at each append.
+- A same-renderer semantic comparison against a minimal Claude-shaped reference; see
+  [Validating agent adapters with synthetic transcripts](adapter-rendering-validation.md).
 - The full gate (§1), including `scripts/gate/gate.sh`.
 
 ## 8. Repo conventions

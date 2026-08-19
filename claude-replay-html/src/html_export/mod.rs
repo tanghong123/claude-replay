@@ -2537,6 +2537,18 @@ mod tests {
         );
     }
 
+    /// The fixed top bar abbreviates a bare session UUID to its first group. Codex puts the
+    /// same UUID at the end of `rollout-<datetime>-<uuid>`, so that trailing group must win
+    /// over blindly taking the stem's first eight characters (`rollout-`).
+    #[test]
+    fn topbar_snips_codex_rollout_to_uuid_prefix() {
+        assert!(
+            JS.contains(r"(?:^|-)([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+                && JS.contains("return uuid ? uuid[1]"),
+            "the session id shortener extracts a trailing UUID's first group"
+        );
+    }
+
     /// The search box supports the `uatobre:` scope prefix (same syntax as the TUI's
     /// `/` search): a run of distinct letters — u (user+command), a (assistant),
     /// t (think+act), o (all tool kinds), b (bash), r (reads), e (edits+writes) — in

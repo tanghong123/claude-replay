@@ -72,7 +72,7 @@ pub const COMPACT_AFTER: usize = 256;
 /// [`SessionAccumulator`](crate::engine::SessionAccumulator)'s emit point, dormant while cwd
 /// was first-wins, now fires on a `cd`; a stream folded at ≤v8 would splice first-cwd-relative
 /// targets onto a running-current tail.
-pub const FOLD_VERSION: u16 = 9;
+pub const FOLD_VERSION: u16 = 10;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

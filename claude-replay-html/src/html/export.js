@@ -773,8 +773,13 @@
   });
 
   // A session id is a uuid; its first group identifies it among a machine's sessions
-  // without eating the bar. The full value stays in the title and on the clipboard.
-  function snipId(s) { return s.length > 12 ? s.slice(0, 8) : s; }
+  // without eating the bar. Codex wraps that uuid in `rollout-<datetime>-<uuid>`, so
+  // find a trailing uuid before shortening instead of rendering every Codex id as
+  // the identical `rollout-`. The full value stays in the title and on the clipboard.
+  function snipId(s) {
+    var uuid = s.match(/(?:^|-)([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    return uuid ? uuid[1] : (s.length > 12 ? s.slice(0, 8) : s);
+  }
 
   // #139: show an image at full size over the page. Built on demand and torn down on
   // close, so a session with hundreds of screenshots carries no standing DOM for them.

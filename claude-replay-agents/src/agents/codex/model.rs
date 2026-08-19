@@ -1,7 +1,7 @@
 use claude_replay_engine::seam::{
     epoch_secs, parse_path_timed_for, relativize, AgentStatus, Attachment, AttachmentContent,
-    AttachmentKind, Block, LinePreprocessor, LoadedAttachment, Message, Metrics, PreprocessedLine,
-    Shaping, SubAgent, TaskOp, Todo, UsdCost,
+    AttachmentKind, Block, CompactTrigger, LinePreprocessor, LoadedAttachment, Message, Metrics,
+    PreprocessedLine, Shaping, SubAgent, TaskOp, Todo, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
@@ -17,6 +17,20 @@ const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CodexLinePreprocessor {
     child: Option<ChildRollout>,
+    /// Codex 0.147+ records the model-facing `functions.exec` wrapper as a
+    /// `custom_tool_call`, then records the operation the TUI actually shows as an
+    /// `event_msg/item_completed` (`CommandExecution`, `FileChange`, …). The session's
+    /// CLI version selects that schema; older wrappers have no semantic mirror and must
+    /// remain visible.
+    #[serde(default)]
+    semantic_exec: bool,
+    /// Wrapper call ids whose result is transport noise. This must ride the cursor:
+    /// a durable resume can land between the call and its output.
+    #[serde(default)]
+    transport_calls: HashSet<String>,
+    /// Latest accepted session cwd, used to relativize paths in `FileChange` events.
+    #[serde(default)]
+    cwd: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -63,6 +77,7 @@ impl LinePreprocessor for CodexLinePreprocessor {
                         skipping_parent_snapshot: false,
                     });
                 }
+                update_preprocessor_session(&value, &mut self.cwd, &mut self.semantic_exec);
                 return PreprocessedLine::Include;
             }
             // A second session_meta in a child rollout starts a physical copy of the parent's
@@ -71,6 +86,7 @@ impl LinePreprocessor for CodexLinePreprocessor {
                 child.skipping_parent_snapshot = true;
                 return PreprocessedLine::Ignore;
             }
+            update_preprocessor_session(&value, &mut self.cwd, &mut self.semantic_exec);
         }
 
         if let Some(child) = self.child.as_mut() {
@@ -88,6 +104,77 @@ impl LinePreprocessor for CodexLinePreprocessor {
                     return PreprocessedLine::Include;
                 }
                 return PreprocessedLine::Ignore;
+            }
+        }
+
+        // The modern Codex tool transport is two-layered:
+        //
+        //   response_item/custom_tool_call name=exec   (JavaScript orchestration)
+        //   event_msg/item_completed                  (the command/edit Codex renders)
+        //   response_item/custom_tool_call_output      (wrapper receipt)
+        //
+        // Normalize only here, in the Codex adapter. The engine and every presenter keep
+        // consuming their existing Claude-shaped `Bash`/`Edit` vocabulary.
+        if value.get("type").and_then(Value::as_str) == Some("response_item") {
+            let payload = &value["payload"];
+            let kind = payload.get("type").and_then(Value::as_str).unwrap_or("");
+            let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+
+            if matches!(kind, "function_call_output" | "custom_tool_call_output")
+                && self.transport_calls.remove(call_id)
+            {
+                return PreprocessedLine::Ignore;
+            }
+
+            if self.semantic_exec && is_wait_transport(payload) {
+                if !call_id.is_empty() {
+                    self.transport_calls.insert(call_id.to_string());
+                }
+                return PreprocessedLine::Ignore;
+            }
+
+            if let Some((raw_name, input)) = orchestrated_task_call(payload) {
+                if !call_id.is_empty() {
+                    self.transport_calls.insert(call_id.to_string());
+                }
+                let ts = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(epoch_secs);
+                let mut messages = vec![
+                    Message::LineStart(ts),
+                    Message::ToolUse {
+                        id: call_id.to_string(),
+                        name: raw_name.to_string(),
+                        input: input.clone(),
+                        cwd: self.cwd.clone(),
+                    },
+                ];
+                if let Some(op) = codex_task_op(raw_name, &input) {
+                    messages.push(Message::TaskOp(op));
+                }
+                if raw_name == "update_plan" {
+                    messages.push(Message::ToolResult {
+                        tool_use_id: call_id.to_string(),
+                        text: codex_plan_update_text(&input),
+                        tur: Value::Null,
+                        is_error: None,
+                    });
+                }
+                return PreprocessedLine::Messages(messages);
+            }
+
+            if self.semantic_exec && is_semantic_exec_transport(payload) {
+                if !call_id.is_empty() {
+                    self.transport_calls.insert(call_id.to_string());
+                }
+                return PreprocessedLine::Ignore;
+            }
+        }
+
+        if self.semantic_exec {
+            if let Some(messages) = semantic_exec_messages(&value, &self.cwd) {
+                return PreprocessedLine::Messages(messages);
             }
         }
 
@@ -139,6 +226,390 @@ impl LinePreprocessor for CodexLinePreprocessor {
     }
 }
 
+fn update_preprocessor_session(value: &Value, cwd: &mut String, semantic_exec: &mut bool) {
+    if let Some(next) = value
+        .pointer("/payload/cwd")
+        .and_then(Value::as_str)
+        .filter(|next| !next.is_empty())
+    {
+        *cwd = next.to_string();
+    }
+    if let Some(version) = value
+        .pointer("/payload/cli_version")
+        .and_then(Value::as_str)
+    {
+        *semantic_exec = codex_version_at_least(version, (0, 147, 0));
+    }
+}
+
+fn codex_version_at_least(version: &str, minimum: (u64, u64, u64)) -> bool {
+    let mut parts = version.split('.').map(|part| {
+        part.split_once('-')
+            .map_or(part, |(number, _)| number)
+            .parse::<u64>()
+            .unwrap_or(0)
+    });
+    let found = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    found >= minimum
+}
+
+/// The orchestration calls whose outer `exec` item carries no user-facing meaning. Their
+/// corresponding semantic `item_completed` record is mapped below. `write_stdin` is included:
+/// a long-running command may have many polls, but Codex shows one completed command, not one
+/// shell entry per poll.
+fn is_semantic_exec_transport(payload: &Value) -> bool {
+    if payload.get("type").and_then(Value::as_str) != Some("custom_tool_call")
+        || payload.get("name").and_then(Value::as_str) != Some("exec")
+    {
+        return false;
+    }
+    let code = payload.get("input").and_then(Value::as_str).unwrap_or("");
+    [
+        "tools.exec_command(",
+        "tools.write_stdin(",
+        "tools.apply_patch(",
+        "tools.web__run(",
+    ]
+    .iter()
+    .any(|needle| code.contains(needle))
+}
+
+/// `functions.wait` polls an already-yielded orchestration cell. It is transport lifecycle,
+/// not an agent action (the underlying command's `CommandExecution` event is the action).
+fn is_wait_transport(payload: &Value) -> bool {
+    payload.get("type").and_then(Value::as_str) == Some("function_call")
+        && payload.get("name").and_then(Value::as_str) == Some("wait")
+        && call_input(payload).get("cell_id").is_some()
+}
+
+/// Task/plan calls do not currently get a semantic `item_completed` mirror, so unwrap the
+/// small JavaScript object literal from the outer exec and feed the existing task vocabulary.
+fn orchestrated_task_call(payload: &Value) -> Option<(&'static str, Value)> {
+    if payload.get("type").and_then(Value::as_str) != Some("custom_tool_call")
+        || payload.get("name").and_then(Value::as_str) != Some("exec")
+    {
+        return None;
+    }
+    let code = payload.get("input").and_then(Value::as_str)?;
+    for name in ["update_plan", "create_goal", "update_goal"] {
+        if let Some(input) = js_tool_object(code, name) {
+            return Some((name, input));
+        }
+    }
+    None
+}
+
+/// Parse the JSON-like object passed to `tools.<name>(…)`. Codex-generated orchestration uses
+/// JSON strings/arrays/values but occasionally leaves identifier-shaped object keys unquoted;
+/// quote only those keys, outside strings, then let serde_json do the real parsing.
+fn js_tool_object(code: &str, name: &str) -> Option<Value> {
+    let marker = format!("tools.{name}(");
+    let rest = code.split_once(&marker)?.1;
+    let object = balanced_js_argument(rest)?;
+    serde_json::from_str(&quote_bare_js_keys(object)).ok()
+}
+
+fn balanced_js_argument(input: &str) -> Option<&str> {
+    let start = input.find('{')?;
+    let mut depth = 0usize;
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    for (offset, byte) in input.as_bytes()[start..].iter().copied().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == q {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => quote = Some(byte),
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return input.get(start..=start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn quote_bare_js_keys(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut i = 0usize;
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    let mut key_position = true;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(q) = quote {
+            out.push(byte as char);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                out.push(byte as char);
+                i += 1;
+            }
+            b'{' | b',' => {
+                key_position = true;
+                out.push(byte as char);
+                i += 1;
+            }
+            b':' => {
+                key_position = false;
+                out.push(':');
+                i += 1;
+            }
+            b if key_position && (b.is_ascii_alphabetic() || b == b'_') => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let mut after = i;
+                while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+                    after += 1;
+                }
+                if after < bytes.len() && bytes[after] == b':' {
+                    out.push('"');
+                    out.push_str(&input[start..i]);
+                    out.push('"');
+                } else {
+                    out.push_str(&input[start..i]);
+                }
+            }
+            _ => {
+                out.push(byte as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Map the TUI-facing Codex event vocabulary onto the canonical Claude-shaped tool
+/// vocabulary. This is deliberately adapter-local: presenters only ever see Bash/Edit blocks.
+fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Message>> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("item_completed")
+    {
+        return None;
+    }
+    let item = value.pointer("/payload/item")?;
+    let ts = value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(epoch_secs);
+    match item.get("type").and_then(Value::as_str)? {
+        "CommandExecution" => {
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            let command = command_execution_text(item)?;
+            let cwd = command_execution_cwd(item).unwrap_or_else(|| fallback_cwd.to_string());
+            let mut messages = vec![
+                Message::LineStart(ts),
+                Message::ToolUse {
+                    id: id.to_string(),
+                    name: "exec_command".to_string(),
+                    input: serde_json::json!({ "cmd": command }),
+                    cwd,
+                },
+            ];
+            let output = command_execution_output(item);
+            if !output.trim().is_empty() {
+                messages.push(Message::ToolResult {
+                    tool_use_id: id.to_string(),
+                    text: output,
+                    tur: Value::Null,
+                    is_error: Some(command_execution_failed(item)),
+                });
+            }
+            Some(messages)
+        }
+        "FileChange" => {
+            let changes = item.get("changes").and_then(Value::as_object)?;
+            if changes.is_empty() {
+                return None;
+            }
+            let event_id = item.get("id").and_then(Value::as_str).unwrap_or("edit");
+            let mut messages = vec![Message::LineStart(ts)];
+            for (index, (path, change)) in changes.iter().enumerate() {
+                let kind = change
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("update");
+                let header = match kind {
+                    "add" => "*** Add File: ",
+                    "delete" => "*** Delete File: ",
+                    _ => "*** Update File: ",
+                };
+                let diff = change
+                    .get("unified_diff")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let patch = format!("{header}{path}\n{diff}");
+                messages.push(Message::ToolUse {
+                    id: format!("{event_id}:{index}"),
+                    name: "apply_patch".to_string(),
+                    input: Value::String(patch),
+                    cwd: fallback_cwd.to_string(),
+                });
+            }
+            Some(messages)
+        }
+        "Extension" if item.get("kind").and_then(Value::as_str) == Some("web.search") => {
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("web");
+            let action = item.pointer("/action/type").and_then(Value::as_str);
+            let action_url = item.pointer("/action/url").and_then(Value::as_str);
+            let first_result_url = item
+                .get("results")
+                .and_then(Value::as_array)
+                .and_then(|results| results.first())
+                .and_then(|result| result.get("url"))
+                .and_then(Value::as_str);
+            let (name, input) = if action == Some("search") {
+                let query = item
+                    .pointer("/action/queries")
+                    .and_then(Value::as_array)
+                    .map(|queries| {
+                        queries
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .filter(|query| !query.is_empty())
+                    .or_else(|| {
+                        item.get("query")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                ("WebSearch", serde_json::json!({ "query": query }))
+            } else {
+                (
+                    "WebFetch",
+                    serde_json::json!({
+                        "description": action_url
+                            .or(first_result_url)
+                            .unwrap_or("open web result")
+                    }),
+                )
+            };
+            let mut messages = vec![
+                Message::LineStart(ts),
+                Message::ToolUse {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    input,
+                    cwd: fallback_cwd.to_string(),
+                },
+            ];
+            let output = extension_results_text(item);
+            if !output.is_empty() {
+                messages.push(Message::ToolResult {
+                    tool_use_id: id.to_string(),
+                    text: output,
+                    tur: Value::Null,
+                    is_error: None,
+                });
+            }
+            Some(messages)
+        }
+        _ => None,
+    }
+}
+
+fn extension_results_text(item: &Value) -> String {
+    let Some(results) = item.get("results").and_then(Value::as_array) else {
+        return String::new();
+    };
+    results
+        .iter()
+        .filter_map(|result| {
+            let title = result.get("title").and_then(Value::as_str).unwrap_or("");
+            let url = result.get("url").and_then(Value::as_str).unwrap_or("");
+            let snippet = result.get("snippet").and_then(Value::as_str).unwrap_or("");
+            let text = [title, url, snippet]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn command_execution_text(item: &Value) -> Option<String> {
+    match item.get("command")? {
+        Value::String(command) => Some(command.clone()),
+        Value::Array(parts) => {
+            let parts = parts.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+            if parts.len() >= 3 && matches!(parts.get(1), Some(&"-lc" | &"-c")) {
+                parts.last().map(|command| (*command).to_string())
+            } else {
+                Some(parts.join(" "))
+            }
+        }
+        _ => None,
+    }
+    .filter(|command| !command.trim().is_empty())
+}
+
+fn command_execution_cwd(item: &Value) -> Option<String> {
+    item.get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+        .map(|cwd| cwd.strip_prefix("file://").unwrap_or(cwd).to_string())
+}
+
+fn command_execution_output(item: &Value) -> String {
+    for key in ["formatted_output", "aggregated_output"] {
+        if let Some(output) = item.get(key).and_then(Value::as_str) {
+            return output.to_string();
+        }
+    }
+    let stdout = item.get("stdout").and_then(Value::as_str).unwrap_or("");
+    let stderr = item.get("stderr").and_then(Value::as_str).unwrap_or("");
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}{stderr}"),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+fn command_execution_failed(item: &Value) -> bool {
+    item.get("exit_code")
+        .and_then(Value::as_i64)
+        .is_some_and(|code| code != 0)
+        || item
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status != "completed")
+}
+
 /// Whether this raw rollout line says the TURN is over (#194), Codex-format: the turn
 /// lifecycle is explicit — `event_msg`/`task_complete` ends it, `task_started` opens
 /// it, and any `response_item` is by definition inside a turn. Anchored on the payload
@@ -148,7 +619,7 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
     let rest = &raw_line[raw_line.find(EVENT)? + EVENT.len()..];
     let kind = &rest[..rest.find('"')?];
     match kind {
-        "task_complete" => Some(true),
+        "task_complete" | "turn_aborted" => Some(true),
         "task_started" => Some(false),
         _ if raw_line.contains("\"type\":\"response_item\"") => Some(false),
         _ => None,
@@ -446,44 +917,88 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             let Some(payload) = value.get("payload") else {
                 return;
             };
-            if payload.get("type").and_then(Value::as_str) == Some("sub_agent_activity") {
-                let call_id = payload
-                    .get("event_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let thread_id = payload
-                    .get("agent_thread_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                match payload.get("kind").and_then(Value::as_str) {
-                    Some("started") if !call_id.is_empty() && !thread_id.is_empty() => {
-                        msgs.push(Message::ToolResult {
-                            tool_use_id: call_id.to_string(),
-                            text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
-                            tur: Value::Null,
-                            is_error: None,
+            match payload.get("type").and_then(Value::as_str) {
+                Some("turn_aborted") => msgs.push(Message::SystemNote {
+                    text: match payload.get("reason").and_then(Value::as_str) {
+                        Some("interrupted") | None => "Turn interrupted.".to_string(),
+                        Some(reason) => format!("Turn aborted: {reason}"),
+                    },
+                }),
+                Some("task_complete") => {
+                    if let Some(error) = payload.get("error").and_then(codex_error_text) {
+                        msgs.push(Message::SystemNote {
+                            text: format!("Turn failed: {error}"),
                         });
                     }
-                    Some("interrupted") if !thread_id.is_empty() => {
-                        msgs.push(Message::Completion {
-                            tool_use_id: call_id.to_string(),
-                            task_id: thread_id.to_string(),
-                            status: Some(AgentStatus::Stopped),
-                            description: payload
-                                .get("agent_path")
-                                .and_then(Value::as_str)
-                                .unwrap_or("agent")
-                                .to_string(),
-                            result: None,
-                        });
-                    }
-                    // `interacted` is activity, not a lifecycle transition. Keeping the spawn
-                    // running is the accurate representation for a reusable Codex agent.
-                    _ => {}
                 }
+                Some("sub_agent_activity") => {
+                    let call_id = payload
+                        .get("event_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let thread_id = payload
+                        .get("agent_thread_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    match payload.get("kind").and_then(Value::as_str) {
+                        Some("started") if !call_id.is_empty() && !thread_id.is_empty() => {
+                            msgs.push(Message::ToolResult {
+                                tool_use_id: call_id.to_string(),
+                                text: format!("{SUBAGENT_THREAD_RESULT_PREFIX}{thread_id}"),
+                                tur: Value::Null,
+                                is_error: None,
+                            });
+                        }
+                        Some("interrupted") if !thread_id.is_empty() => {
+                            msgs.push(Message::Completion {
+                                tool_use_id: call_id.to_string(),
+                                task_id: thread_id.to_string(),
+                                status: Some(AgentStatus::Stopped),
+                                description: payload
+                                    .get("agent_path")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("agent")
+                                    .to_string(),
+                                result: None,
+                            });
+                        }
+                        // `interacted` is activity, not a lifecycle transition. Keeping the spawn
+                        // running is the accurate representation for a reusable Codex agent.
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some("compacted") => {
+            msgs.push(Message::CompactBoundary {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: 0,
+                post_tokens: 0,
+            });
+            if let Some(text) = value
+                .pointer("/payload/message")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                msgs.push(Message::CompactSummary {
+                    text: text.to_string(),
+                });
             }
         }
         _ => {}
+    }
+}
+
+fn codex_error_text(error: &Value) -> Option<String> {
+    match error {
+        Value::String(text) => (!text.trim().is_empty()).then(|| text.to_string()),
+        Value::Object(_) => error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string),
+        _ => None,
     }
 }
 
@@ -550,6 +1065,43 @@ fn codex_task_op(raw_name: &str, input: &Value) -> Option<TaskOp> {
         }),
         _ => None,
     }
+}
+
+/// Codex's live plan cell contains more than the final task sidecar: it shows the optional
+/// explanation and every status transition at the point it happened. Keep that timeline body
+/// on the canonical TodoWrite block while `TaskOp::Snapshot` continues to drive session tasks.
+fn codex_plan_update_text(input: &Value) -> String {
+    let mut lines = vec!["Updated Plan".to_string()];
+    if let Some(explanation) = input
+        .get("explanation")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        lines.push(explanation.trim().to_string());
+    }
+    for item in input
+        .get("plan")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(step) = item
+            .get("step")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|step| !step.is_empty())
+        else {
+            continue;
+        };
+        let status = match item.get("status").and_then(Value::as_str) {
+            Some("completed") => "Completed",
+            Some("in_progress") => "InProgress",
+            Some("pending") | None => "Pending",
+            Some(other) => other,
+        };
+        lines.push(format!("{status}: {step}"));
+    }
+    lines.join("\n")
 }
 
 fn input_image_attachment(item: &Value) -> Option<Attachment> {
@@ -635,10 +1187,15 @@ pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAt
 }
 
 fn is_timeline_event(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some("session_meta" | "response_item")
-    )
+    match value.get("type").and_then(Value::as_str) {
+        Some("session_meta" | "response_item" | "compacted") => true,
+        Some("event_msg") => match value.pointer("/payload/type").and_then(Value::as_str) {
+            Some("turn_aborted") => true,
+            Some("task_complete") => value.pointer("/payload/error").is_some(),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 pub(crate) fn enrich_tree(path: &Path, blocks: &mut [Block]) {
@@ -872,6 +1429,9 @@ fn normalize_tool_name(name: &str) -> String {
         "read" | "read_file" | "view_image" => "Read".into(),
         "grep" | "search" | "search_query" => "Grep".into(),
         "glob" | "list_files" => "Glob".into(),
+        // Codex's whole-plan snapshot is the same semantic operation as Claude's
+        // TodoWrite. The task sidecar already shares that vocabulary via TaskOp.
+        "update_plan" => "TodoWrite".into(),
         _ => name.to_string(),
     }
 }
@@ -919,7 +1479,18 @@ fn input_target(input: &Value, cwd: &str) -> String {
             return relativize(value, cwd);
         }
     }
-    for key in ["cmd", "command", "query", "pattern", "description"] {
+    // Shell commands keep their physical lines. Every presenter already knows how to lay
+    // out canonical multi-line Bash targets; flattening here was why a Codex compound lost
+    // the same `│` command rows that Claude's Bash vocabulary preserves.
+    for key in ["cmd", "command"] {
+        if let Some(value) = input.get(key) {
+            return value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| display_value(value));
+        }
+    }
+    for key in ["query", "pattern", "description"] {
         if let Some(value) = input.get(key) {
             return display_value(value);
         }
@@ -1212,6 +1783,287 @@ mod tests {
                     && todos[1].text == "fix"
                     && todos[1].status == "in_progress"
         )));
+    }
+
+    /// Codex 0.147's `functions.exec` transport is not a shell command. Its paired
+    /// `item_completed` events are the semantic operations the real TUI renders; the adapter
+    /// maps those to the existing Bash/Edit/TodoWrite vocabulary and drops wrapper receipts.
+    #[test]
+    fn orchestrated_exec_uses_command_filechange_and_plan_semantics() {
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:00Z",
+                "type": "session_meta",
+                "payload": {"cwd": "/repo", "originator": "codex-tui", "cli_version": "0.147.0"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-command",
+                    "input": "const results = await Promise.all([tools.exec_command({\"cmd\":\"git diff --check\\ngit status --short\"})]); results.forEach(text);"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "id": "exec-1",
+                    "command": ["/bin/zsh", "-lc", "git diff --check\ngit status --short"],
+                    "cwd": "file:///repo", "status": "completed", "exit_code": 0,
+                    "formatted_output": " M README.md\n"
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:03Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-command", "output": [
+                    {"type": "input_text", "text": "Script completed\nOutput:\n"},
+                    {"type": "input_text", "text": "{\"output\":\" M README.md\\n\"}"}
+                ]}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:04Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-edit",
+                    "input": "const patch = \"*** Begin Patch\"; text(await tools.apply_patch(patch));"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:05Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "FileChange", "id": "exec-2", "status": "completed",
+                    "changes": {
+                        "/repo/README.md": {"type": "update", "unified_diff": "@@ -1 +1 @@\n-old readme\n+new readme\n"},
+                        "/repo/bin/rowt": {"type": "update", "unified_diff": "@@ -2 +2 @@\n-old rowt\n+new rowt\n"}
+                    }
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:06Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-edit", "output": "{}"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:07Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call", "name": "wait", "call_id": "outer-wait",
+                    "arguments": "{\"cell_id\":\"42\"}"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:08Z",
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "outer-wait", "output": "done"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:09Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-plan",
+                    "input": "const r = await tools.update_plan({explanation:\"done\",\"plan\":[{\"step\":\"inspect\",\"status\":\"completed\"}]}); text(r);"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:10Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-plan", "output": "{}"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:11Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-web",
+                    "input": "const r = await tools.web__run({search_query:[{q:\"rust releases\"}]}); text(r);"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:12Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "Extension", "kind": "web.search", "id": "exec-web",
+                    "action": {"type": "search", "queries": ["rust releases"]},
+                    "results": [{
+                        "type": "text_result", "title": "Rust releases",
+                        "url": "https://www.rust-lang.org/releases.html", "snippet": "Release notes"
+                    }]
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:13Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-web", "output": "Script completed"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:14Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-open",
+                    "input": "const r = await tools.web__run({open:[{ref_id:\"turn0search0\"}]}); text(r);"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:15Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "Extension", "kind": "web.search", "id": "exec-open",
+                    "action": {"type": "openPage", "url": "https://example.test/opened"},
+                    "results": [{"type": "text_result", "title": "Opened page", "snippet": "Body"}]
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T06:00:16Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-open", "output": "Script completed"}
+            }),
+        ];
+        let jsonl = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path =
+            std::env::temp_dir().join(format!("codex-semantic-exec-{}.jsonl", std::process::id()));
+        std::fs::write(&path, jsonl).unwrap();
+        let (blocks, _, _) = parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let bash = blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::ToolUse {
+                    name,
+                    target,
+                    output,
+                    ..
+                } if name == "Bash" => Some((target.as_str(), output.as_deref())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bash,
+            [(
+                "git diff --check\ngit status --short",
+                Some(" M README.md\n")
+            )],
+            "one semantic command, not the outer JavaScript or its receipt"
+        );
+
+        let mut edits = blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::ToolUse {
+                    name,
+                    target,
+                    diffs,
+                    ..
+                } if name == "Edit" => Some((target.clone(), diffs.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        edits.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(edits.len(), 2, "one canonical edit per changed file");
+        assert_eq!(edits[0].0, "README.md");
+        assert_eq!(edits[0].1, [("old readme".into(), "new readme".into())]);
+        assert_eq!(edits[1].0, "bin/rowt");
+        assert_eq!(edits[1].1, [("old rowt".into(), "new rowt".into())]);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, output: Some(output), .. }
+                if name == "TodoWrite"
+                    && output == "Updated Plan\ndone\nCompleted: inspect"
+        )));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, target, output: Some(output), .. }
+                if name == "WebSearch"
+                    && target == "rust releases"
+                    && output.contains("https://www.rust-lang.org/releases.html")
+        )));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolUse { name, target, output: Some(output), .. }
+                if name == "WebFetch"
+                    && target == "https://example.test/opened"
+                    && output.contains("Opened page")
+        )));
+        assert!(!blocks.iter().any(|block| match block {
+            Block::ToolUse { name, target, .. } => {
+                name == "wait" || name == "exec" || target.contains("tools.")
+            }
+            Block::ToolResult(text) => text.contains("Script completed"),
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn semantic_exec_is_versioned_because_old_wrappers_have_no_mirror() {
+        let wrapper = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call", "name": "exec", "call_id": "outer",
+                "input": "const r = await tools.exec_command({\"cmd\":\"pwd\"}); text(r);"
+            }
+        })
+        .to_string();
+
+        let mut old = CodexLinePreprocessor::default();
+        old.process(
+            &serde_json::json!({
+                "type": "session_meta",
+                "payload": {"cli_version": "0.144.6", "cwd": "/repo"}
+            })
+            .to_string(),
+        );
+        assert!(matches!(old.process(&wrapper), PreprocessedLine::Include));
+
+        let mut modern = CodexLinePreprocessor::default();
+        modern.process(
+            &serde_json::json!({
+                "type": "session_meta",
+                "payload": {"cli_version": "0.147.0", "cwd": "/repo"}
+            })
+            .to_string(),
+        );
+        assert!(matches!(modern.process(&wrapper), PreprocessedLine::Ignore));
+    }
+
+    #[test]
+    fn lifecycle_failures_and_compaction_stay_visible() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-19T06:00:00Z","type":"compacted","payload":{"message":"synthetic continuation"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:01Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T06:00:02Z","type":"event_msg","payload":{"type":"task_complete","error":{"message":"synthetic policy failure","codex_error_info":"policy"}}}"#,
+        );
+
+        let blocks = parse_codex(jsonl);
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::Compaction {
+                trigger: CompactTrigger::Auto,
+                pre_tokens: 0,
+                post_tokens: 0,
+                summary,
+            } if summary == "synthetic continuation"
+        )));
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolResult(text) if text == "Turn interrupted.")));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            Block::ToolResult(text) if text == "Turn failed: synthetic policy failure"
+        )));
+        assert_eq!(
+            turn_ended(
+                r#"{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"#
+            ),
+            Some(true)
+        );
     }
 
     #[test]
