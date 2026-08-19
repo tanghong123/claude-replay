@@ -57,7 +57,7 @@ fn describe(b: &Block) -> (&'static str, String) {
     let clip = |s: &str| s.chars().take(60).collect::<String>().replace('\n', " ");
     match b {
         Block::UserText(t) => ("user", clip(t)),
-        Block::AssistantText(t) => ("assistant", clip(t)),
+        Block::AssistantText(t) | Block::AssistantMessage { text: t, .. } => ("assistant", clip(t)),
         Block::Thinking { text, tools, .. } => (
             "thinking",
             format!("{} tools · {}", tools.len(), clip(text)),

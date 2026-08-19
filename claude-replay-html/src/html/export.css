@@ -361,6 +361,7 @@ a.crumb:hover { text-decoration: underline; }
 }
 .usage { display: flex; flex-direction: column; gap: 5px; }
 .usage .side-head { padding: 0 0 2px; }
+#runtime:empty { display: none; }
 /* #83 the session task panel — a FLOATING panel below the top bar, top-right.
    Sections: finished → running → pending (IDs ascending); the viewport auto-centers
    on the middle of the running section until the user scrolls, and ⌖ re-engages.
@@ -548,6 +549,11 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .blk, .ablock { overflow-wrap: break-word; }
 .adot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--fg); opacity: 0.7; margin-top: 9px; }
 .prose { flex: 1; min-width: 0; }
+/* Codex persists whether prose was an in-progress commentary update or the final answer.
+   Keep final/unphased prose at the established strength; quiet commentary without inventing
+   an agent-specific block renderer. */
+.ablock.phase-commentary { color: var(--muted); }
+.ablock.phase-commentary .adot { opacity: 0.35; }
 
 /* ── folds ───────────────────────────────────────────────────────────── */
 
@@ -616,6 +622,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 }
 .chip.add { font-weight: 600; border: none; background: var(--addbg); color: var(--addfg); padding: 1px 7px; }
 .chip.del { font-weight: 600; border: none; background: var(--delbg); color: var(--delfg); padding: 1px 7px; }
+.chip.fail { font-weight: 600; border: none; background: var(--delbg); color: var(--delfg); padding: 1px 7px; }
 
 .think-body { font-size: 13.5px; color: var(--muted); border-left: 2px solid var(--border); padding-left: 12px; }
 

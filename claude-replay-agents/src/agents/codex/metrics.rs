@@ -1,5 +1,6 @@
 use claude_replay_engine::seam::{
-    parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan, TokenCounts,
+    parse_ts, total_cost, Metrics, MetricsTotals, RateLimitWindow, RateLimits, RuntimeInfo,
+    TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -31,6 +32,7 @@ pub(crate) struct CodexMetricsAcc {
     first_model: String,
     span: TimeSpan,
     extra: std::collections::BTreeMap<String, u64>,
+    runtime: RuntimeInfo,
 }
 
 impl CodexMetricsAcc {
@@ -59,6 +61,52 @@ impl CodexMetricsAcc {
                 }
                 self.model = next.to_string();
             }
+            remember_string(
+                &mut self.runtime.reasoning_effort,
+                value.pointer("/payload/effort"),
+            );
+            remember_string(
+                &mut self.runtime.approval_policy,
+                value.pointer("/payload/approval_policy"),
+            );
+            remember_string(
+                &mut self.runtime.sandbox,
+                value.pointer("/payload/sandbox_policy/type"),
+            );
+            remember_string(
+                &mut self.runtime.permission_profile,
+                value.pointer("/payload/permission_profile/type"),
+            );
+            remember_string(
+                &mut self.runtime.collaboration_mode,
+                value.pointer("/payload/collaboration_mode/mode"),
+            );
+        }
+        if value.get("type").and_then(Value::as_str) == Some("event_msg")
+            && value.pointer("/payload/type").and_then(Value::as_str)
+                == Some("thread_settings_applied")
+        {
+            let settings = value.pointer("/payload/thread_settings");
+            remember_string(
+                &mut self.runtime.reasoning_effort,
+                settings.and_then(|v| v.get("reasoning_effort")),
+            );
+            remember_string(
+                &mut self.runtime.approval_policy,
+                settings.and_then(|v| v.get("approval_policy")),
+            );
+            remember_string(
+                &mut self.runtime.permission_profile,
+                settings.and_then(|v| v.pointer("/permission_profile/type")),
+            );
+            remember_string(
+                &mut self.runtime.collaboration_mode,
+                settings.and_then(|v| v.pointer("/collaboration_mode/mode")),
+            );
+            remember_string(
+                &mut self.runtime.service_tier,
+                settings.and_then(|v| v.get("service_tier")),
+            );
         }
         if value.get("type").and_then(Value::as_str) == Some("response_item") {
             let supported = matches!(
@@ -85,6 +133,28 @@ impl CodexMetricsAcc {
         if value.get("type").and_then(Value::as_str) == Some("event_msg")
             && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
         {
+            self.runtime.context_window_tokens = value
+                .pointer("/payload/info/model_context_window")
+                .and_then(Value::as_u64)
+                .or(self.runtime.context_window_tokens);
+            self.runtime.context_used_tokens = value
+                .pointer("/payload/info/last_token_usage/input_tokens")
+                .and_then(Value::as_u64)
+                .or(self.runtime.context_used_tokens);
+            if let Some(limits) = value.pointer("/payload/rate_limits") {
+                self.runtime.rate_limits = Some(RateLimits {
+                    primary: rate_limit_window(limits.get("primary")),
+                    secondary: rate_limit_window(limits.get("secondary")),
+                    plan_type: limits
+                        .get("plan_type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    reached: limits
+                        .get("rate_limit_reached_type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+            }
             let Some(total) = value.pointer("/payload/info/total_token_usage") else {
                 return;
             };
@@ -150,6 +220,7 @@ impl CodexMetricsAcc {
             "seen_usage": self.seen_usage,
             "model": self.model,
             "first_model": self.first_model,
+            "runtime": self.runtime,
         })
     }
 
@@ -181,6 +252,12 @@ impl CodexMetricsAcc {
         }
         if let Some(m) = state.get("first_model").and_then(Value::as_str) {
             self.first_model = m.to_string();
+        }
+        if let Some(runtime) = state
+            .get("runtime")
+            .and_then(|v| serde_json::from_value::<RuntimeInfo>(v.clone()).ok())
+        {
+            self.runtime = runtime;
         }
     }
 
@@ -239,13 +316,79 @@ impl CodexMetricsAcc {
         m.cost_usd = cost_usd;
         m.cost_partial = cost_partial;
         m.extra = self.extra;
+        m.runtime = self.runtime;
         m
     }
+}
+
+fn remember_string(slot: &mut Option<String>, value: Option<&Value>) {
+    if let Some(value) = value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        *slot = Some(value.to_string());
+    }
+}
+
+fn rate_limit_window(value: Option<&Value>) -> Option<RateLimitWindow> {
+    let value = value?;
+    Some(RateLimitWindow {
+        used_percent: value.get("used_percent").and_then(Value::as_f64)?,
+        window_minutes: value
+            .get("window_minutes")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        resets_at: value.get("resets_at").and_then(Value::as_i64),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_runtime_context_settings_and_limits_survive_the_adapter() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&serde_json::json!({"type":"turn_context","payload":{
+            "model":"gpt-5.6-sol","effort":"xhigh","approval_policy":"never",
+            "sandbox_policy":{"type":"danger-full-access"},
+            "permission_profile":{"type":"disabled"},
+            "collaboration_mode":{"mode":"default"}
+        }}));
+        acc.push(&serde_json::json!({"type":"event_msg","payload":{
+            "type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}
+        }}));
+        acc.push(&serde_json::json!({"type":"event_msg","payload":{
+            "type":"token_count",
+            "info":{
+                "model_context_window":200000,
+                "last_token_usage":{"input_tokens":50000},
+                "total_token_usage":{"input_tokens":50000,"cached_input_tokens":40000,"output_tokens":1000}
+            },
+            "rate_limits":{"plan_type":"plus","rate_limit_reached_type":null,
+                "primary":{"used_percent":12.5,"window_minutes":10080,"resets_at":1234},
+                "secondary":null}
+        }}));
+
+        let state = acc.state();
+        let mut resumed = CodexMetricsAcc::default();
+        resumed.restore(&state);
+        let metrics = resumed.finish();
+        assert_eq!(metrics.context_left_percent(), Some(75));
+        assert_eq!(metrics.runtime.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            metrics.runtime.sandbox.as_deref(),
+            Some("danger-full-access")
+        );
+        assert_eq!(metrics.runtime.service_tier.as_deref(), Some("priority"));
+        let limits = metrics.runtime.rate_limits.as_ref().unwrap();
+        assert_eq!(limits.plan_type.as_deref(), Some("plus"));
+        assert_eq!(limits.primary.as_ref().unwrap().used_percent, 12.5);
+        assert!(metrics
+            .footer_segments()
+            .iter()
+            .any(|(text, _)| text == "75% context left"));
+    }
 
     /// A `token_count` event carrying Codex's CUMULATIVE usage — the totals so far, not a
     /// per-turn delta. Tests push a SEQUENCE of these and assert on the banked increments.

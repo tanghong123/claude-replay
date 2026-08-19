@@ -36,6 +36,7 @@ was:
 | user-visible action | canonical vocabulary | normal full rendering |
 |---|---|---|
 | execute a command | `Bash` | command, cwd, output, exit status |
+| inspect files/search/list directories | activity span containing `Read` / `Grep` / `LS` | action targets plus the composite command/output detail |
 | change an existing file | `Edit` | `Update(path)` plus the diff |
 | replace the current plan | `TodoWrite` + task snapshot | plan panel/update |
 | search the web | `WebSearch` | query and search results |
@@ -129,6 +130,15 @@ open /tmp/target-adapter.html
 `--no-cache` is essential during iteration. If canonical folded output changes, bump
 `FOLD_VERSION` so already-cached sessions cannot splice old and new block shapes.
 
+For Codex `CommandExecution`, keep the real event envelope and replace all correlated fields with
+sentinels: the command string, every `parsed_cmd` entry, aggregate output, status, exit code, and
+`duration.secs`/`duration.nanos`. Default output should classify a command whose complete
+`parsed_cmd` list consists of `read`/`search`/`list_files` as a shared activity span; `--full`
+must retain every target plus the composite command/output. One unknown parsed action is the
+negative control: the whole command remains `Bash`, because partially classifying a compound
+command would hide work. Status, exit code, and duration are canonical `ToolExecution` metadata,
+not strings injected into the adapter's output.
+
 ### 5. Normalize only in the target adapter
 
 The shared engine and presenters should receive the vocabulary they already understand. For an
@@ -143,6 +153,34 @@ adapter this usually means:
 
 Do not teach the HTML or TUI that `CommandExecution` means `Bash`. If a second frontend would need
 the same condition, it belongs in the adapter.
+
+### When the shared vocabulary is genuinely missing a fact
+
+Sometimes normalization cannot be lossless because no canonical field exists. Extend the shared
+vocabulary when the fact is persisted, agent-neutral, and useful to more than one frontend:
+
+- Assistant progress/final distinctions become structured assistant phase data. Codex normalizes
+  `commentary` and `final_answer`; the TUI and HTML independently choose quieter progress styling.
+- Command outcome and elapsed time become `ToolExecution { status, exit_code, duration }` on a
+  tool block. Presenters format the same structure as terminal text or an HTML chip.
+- Context usage, limits, and execution settings are a latest session runtime snapshot, not fake
+  timeline blocks. The adapter folds `turn_context`, `thread_settings_applied`, and `token_count`
+  records; the TUI footer and HTML Runtime panel expose the shared snapshot.
+
+Do not invent historical blocks for status-bar state. Preserve the most recent persisted snapshot
+and label it as runtime/session metadata. Keep absence distinct from zero, success, or a default
+setting. Include the new private accumulator fields in its cursor state, and bump `FOLD_VERSION`
+when either canonical blocks or cached metrics output changes.
+
+The focused synthetic controls for these additions should cover:
+
+```text
+assistant commentary -> structured Commentary -> quiet • / phase-commentary
+assistant final_answer -> structured Final -> strong ⏺ / phase-final
+failed CommandExecution + exit 7 + 42ms -> one failure header chip/suffix
+50k input in a 200k context -> 75% context left
+7-day limit at 12.5% -> typed window with reset timestamp retained
+```
 
 ### 6. Turn the discovery into tests
 

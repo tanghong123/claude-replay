@@ -979,6 +979,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             patch: None,
             read_lines: None,
             cwd: cwd.to_string(),
+            execution: None,
         }
     }
 }
@@ -1154,6 +1155,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     patch: None,
                                     read_lines: None,
                                     cwd: cwd.clone(),
+                                    execution: None,
                                 });
                             }
                             let idx = out.len() - 1;

@@ -16,10 +16,10 @@
 use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
 use crate::highlight;
-use crate::model::{AttachmentContent, Block, LoadedAttachment};
+use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment};
 use crate::present::{
-    compaction_summary, display_name, edit_summary, spawn_chip, thinking_summary, write_content,
-    WRITE_PREVIEW,
+    compaction_summary, display_name, edit_summary, spawn_chip, thinking_summary,
+    tool_execution_failed, tool_execution_summary, write_content, WRITE_PREVIEW,
 };
 use crate::{discover, Agent, Transcript};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -270,6 +270,14 @@ fn chip_class(class: &str, text: impl Into<String>) -> Value {
     json!({ "c": class, "x": text.into() })
 }
 
+fn push_chip(head: &mut Map<String, Value>, value: Value) {
+    head.entry("chips".to_string())
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .expect("chips is always an array")
+        .push(value);
+}
+
 /// Split `text` into `{p:"pre"}` (bounded preview + hidden tail) body parts.
 fn pre_part(text: &str) -> Value {
     json!({ "p": "pre", "x": text, "cap": OUTPUT_PREVIEW })
@@ -509,6 +517,17 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(self.block_id()));
                 body.push(json!({ "p": "md", "h": md_html(text) }));
             }
+            Block::AssistantMessage { text, phase } => {
+                o.insert("id".into(), json!(self.block_id()));
+                o.insert(
+                    "phase".into(),
+                    json!(match phase {
+                        AssistantPhase::Commentary => "commentary",
+                        AssistantPhase::Final => "final",
+                    }),
+                );
+                body.push(json!({ "p": "md", "h": md_html(text) }));
+            }
             // A dim, always-open `⧗ queued: …` marker (kind "queue") — an in-flight
             // mid-turn prompt not yet picked up. Not a turn (no sidebar entry). The
             // `⧗ queued:` affordance + dim styling come from `.kind-queue` in the CSS.
@@ -636,6 +655,7 @@ impl Emitter<'_> {
                 output,
                 read_lines,
                 cwd,
+                execution,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -730,6 +750,19 @@ impl Emitter<'_> {
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
                             body.push(pre_part(out));
                         }
+                    }
+                }
+                if let Some(execution) = execution {
+                    let summary = tool_execution_summary(execution);
+                    if !summary.is_empty() {
+                        push_chip(
+                            &mut head,
+                            if tool_execution_failed(execution) {
+                                chip_class("fail", summary)
+                            } else {
+                                chip(summary)
+                            },
+                        );
                     }
                 }
             }
@@ -1059,6 +1092,7 @@ fn build_page(
     <div class="side-head">Turns</div>
     <div id="turnlist">{sidebar}</div>
     <div class="usage" id="usage"></div>
+    <div class="usage" id="runtime"></div>
     <div class="legend">
       <span class="key">j k</span><span class="what">move</span>
       <span class="key">space</span><span class="what">fold</span>
@@ -1380,6 +1414,24 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     if let Some(c) = m.credits() {
         u["credits"] = json!(format!("~{c:.2}"));
     }
+    if m.runtime != crate::metrics::RuntimeInfo::default() {
+        let limits = m.runtime.rate_limits.as_ref();
+        u["runtime"] = json!({
+            "context_left": m.context_left_percent(),
+            "context_used_tokens": m.runtime.context_used_tokens,
+            "context_window_tokens": m.runtime.context_window_tokens,
+            "effort": m.runtime.reasoning_effort.as_deref(),
+            "approvals": m.runtime.approval_policy.as_deref(),
+            "sandbox": m.runtime.sandbox.as_deref(),
+            "permission": m.runtime.permission_profile.as_deref(),
+            "mode": m.runtime.collaboration_mode.as_deref(),
+            "tier": m.runtime.service_tier.as_deref(),
+            "plan": limits.and_then(|l| l.plan_type.as_deref()),
+            "reached": limits.and_then(|l| l.reached.as_deref()),
+            "primary": limits.and_then(|l| l.primary.as_ref()),
+            "secondary": limits.and_then(|l| l.secondary.as_ref()),
+        });
+    }
     if with_duration {
         u["duration_secs"] = json!(m.duration_secs);
     }
@@ -1612,6 +1664,45 @@ mod tests {
     }
 
     #[test]
+    fn usage_json_carries_persisted_runtime_snapshot() {
+        use crate::metrics::{RateLimitWindow, RateLimits};
+        let mut m = crate::metrics::Metrics::default();
+        m.runtime.context_window_tokens = Some(200_000);
+        m.runtime.context_used_tokens = Some(50_000);
+        m.runtime.reasoning_effort = Some("xhigh".into());
+        m.runtime.sandbox = Some("danger-full-access".into());
+        m.runtime.rate_limits = Some(RateLimits {
+            primary: Some(RateLimitWindow {
+                used_percent: 12.5,
+                window_minutes: 10_080,
+                resets_at: Some(1234),
+            }),
+            ..RateLimits::default()
+        });
+        let runtime = &usage_json(&m, false)["runtime"];
+        assert_eq!(runtime["context_left"], json!(75));
+        assert_eq!(runtime["effort"], json!("xhigh"));
+        assert_eq!(runtime["primary"]["used_percent"], json!(12.5));
+    }
+
+    #[test]
+    fn assistant_phase_is_structural_html_data() {
+        let blocks = vec![
+            Block::AssistantMessage {
+                text: "working".into(),
+                phase: AssistantPhase::Commentary,
+            },
+            Block::AssistantMessage {
+                text: "done".into(),
+                phase: AssistantPhase::Final,
+            },
+        ];
+        let out = stream(&blocks, &FoldPolicy::none());
+        assert_eq!(out[0]["phase"], json!("commentary"));
+        assert_eq!(out[1]["phase"], json!("final"));
+    }
+
+    #[test]
     fn render_blocks_split_equals_whole() {
         let blocks = vec![
             Block::UserText("first question".into()),
@@ -1624,6 +1715,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -1715,6 +1807,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -1814,6 +1907,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }
     }
 
@@ -2372,6 +2466,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }
     }
 
@@ -2459,6 +2554,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }
     }
 
@@ -2487,6 +2583,28 @@ mod tests {
         // --full unfolds everything.
         let full = stream(&blocks, &FoldPolicy::none());
         assert_eq!(full[1]["open"], json!(1), "--full opens bash too");
+    }
+
+    #[test]
+    fn tool_execution_status_and_duration_are_structured_header_chips() {
+        use crate::model::{ToolDuration, ToolExecution, ToolStatus};
+        let mut block = bash("cargo test", "boom");
+        let Block::ToolUse { execution, .. } = &mut block else {
+            unreachable!()
+        };
+        *execution = Some(ToolExecution {
+            status: Some(ToolStatus::Failed),
+            exit_code: Some(7),
+            duration: Some(ToolDuration {
+                secs: 0,
+                nanos: 42_000_000,
+            }),
+        });
+        let out = stream(&[block], &FoldPolicy::default());
+        assert!(out[0]["head"]["chips"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"c": "fail", "x": "exit 7 · 42ms"})));
     }
 
     /// §8.8 per-kind keylines: the emitter tags each fold with `kind` (→ `data-kind`),
@@ -2787,6 +2905,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -2900,6 +3019,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -3009,6 +3129,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             bash("ls -la", "out"),
         ];
@@ -3029,6 +3150,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.

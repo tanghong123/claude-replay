@@ -472,6 +472,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let blocks = vec![
             Block::UserText("hi".into()), // turn 1

@@ -46,8 +46,8 @@ pub use crate::engine::time::epoch_secs;
 #[doc(hidden)]
 pub use crate::metrics::human_tokens;
 pub use crate::metrics::{
-    estimate_cost, parse_reader_with, parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan,
-    TokenCounts,
+    estimate_cost, parse_reader_with, parse_ts, total_cost, Metrics, MetricsTotals,
+    RateLimitWindow, RateLimits, RuntimeInfo, TimeSpan, TokenCounts,
 };
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;

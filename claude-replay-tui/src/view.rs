@@ -2531,6 +2531,7 @@ fn block_occurrences(b: &Block, needle: &str) -> usize {
     }
     match b {
         Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
+        Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
         Block::Thinking { text, tools, .. } => {
             count(text, needle)
@@ -2606,6 +2607,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }
     }
 
@@ -2822,6 +2824,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let a = vec![
             Block::UserText("go".into()),
@@ -2929,6 +2932,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::AssistantText("done with a fairly long line that wraps at ten".into()),
         ];
@@ -2980,6 +2984,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::AssistantText("done".into()),
             Block::ToolUse {
@@ -2990,6 +2995,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -3118,6 +3124,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         // A Bash header whose "target" is a command, not a path.
         let bash = Block::ToolUse {
@@ -3128,6 +3135,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         // (block, a column that lands inside its `(path)` span). Header layout is
         // `⏺ <DisplayName>(` — Write=7, Update=8, Read=6 cols before the path.
@@ -3181,6 +3189,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
         v.set_cwd(Some(dead));
@@ -3228,6 +3237,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd,
+                execution: None,
             }]
         };
 
@@ -3286,6 +3296,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         // A trailing assistant block gives a distinct neighbour tag to compare with.
         let mut v = View::new(
@@ -3351,6 +3362,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3523,6 +3535,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let mut v = View::new(vec![bash], "t", false, FoldPolicy::none());
         let buf = draw(&mut v, w, 12);
@@ -3583,6 +3596,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3703,6 +3717,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let blocks = vec![Block::UserText("root".into()), sa, bash];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -4183,6 +4198,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::ToolResult("a\nb\nc".into()),
             Block::ToolUse {
@@ -4193,6 +4209,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::ToolUse {
                 name: "Write".into(),
@@ -4202,6 +4219,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
         ]
     }
@@ -4256,6 +4274,7 @@ mod tests {
             patch: None,
             read_lines: Some(3),
             cwd: String::new(),
+            execution: None,
         };
         // 0: assistant (not foldable), 1: Bash, 2: Read — both fold by default.
         let blocks = vec![Block::AssistantText("hi".into()), mk("Bash"), mk("Read")];
@@ -4306,6 +4325,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let result = Block::ToolResult("some output line".into());
         let blocks = vec![Block::AssistantText("hi".into()), edit, result];
@@ -4552,6 +4572,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             });
         }
         let n = blocks.len();
@@ -4844,6 +4865,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         bs[11] = Block::ToolUse {
             name: "Read".into(),
@@ -4853,6 +4875,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
         // absorbed tool, so `t:` reaches it as thinking and `b:`/`o:` reach it as bash.
@@ -4867,6 +4890,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             }],
         };
         bs[5] = Block::ToolUse {
@@ -4877,6 +4901,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
         draw(&mut v, 60, 14);

@@ -2,7 +2,7 @@
 //! HTML exporter both need (spawn chips, activity/turn summaries, tool display names, edit
 //! summaries, …). Pure text over `crate::model::{Block, SubAgent}`; no ratatui/theme.
 
-use crate::model::{Block, CompactTrigger, SubAgent};
+use crate::model::{Block, CompactTrigger, SubAgent, ToolDuration, ToolExecution, ToolStatus};
 
 /// The compaction divider's one-line text — `context compacted · auto · 725k → 7.0k` (#108).
 /// Shared so the TUI rule, the HTML divider, and `--dump` say the same thing; each surface
@@ -87,6 +87,64 @@ pub fn display_name(name: &str) -> &str {
     }
 }
 
+/// Compact status/duration text shared by the terminal and HTML tool headers.
+pub fn tool_execution_summary(execution: &ToolExecution) -> String {
+    let mut parts = Vec::new();
+    if let Some(exit_code) = execution.exit_code {
+        parts.push(format!("exit {exit_code}"));
+    } else if let Some(status) = execution.status {
+        parts.push(
+            match status {
+                // A bare success badge on every Claude tool is noise; exit code or duration
+                // still renders when present. Failures remain meaningful without either.
+                ToolStatus::Completed => "",
+                ToolStatus::Failed => "failed",
+                ToolStatus::Declined => "declined",
+                ToolStatus::Cancelled => "cancelled",
+                ToolStatus::Unknown => "finished",
+            }
+            .to_string(),
+        );
+        parts.retain(|part| !part.is_empty());
+    }
+    if let Some(duration) = execution.duration {
+        parts.push(format_tool_duration(duration));
+    }
+    parts.join(" · ")
+}
+
+/// Whether the structural outcome should use failure presentation.
+pub fn tool_execution_failed(execution: &ToolExecution) -> bool {
+    execution.exit_code.is_some_and(|code| code != 0)
+        || matches!(
+            execution.status,
+            Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled)
+        )
+}
+
+fn format_tool_duration(duration: ToolDuration) -> String {
+    if duration.secs >= 60 {
+        return format!("{}m {}s", duration.secs / 60, duration.secs % 60);
+    }
+    if duration.secs > 0 {
+        let centis = duration.nanos / 10_000_000;
+        return if centis == 0 {
+            format!("{}s", duration.secs)
+        } else {
+            format!("{}.{centis:02}s", duration.secs)
+        };
+    }
+    let millis = duration.nanos / 1_000_000;
+    if millis > 0 {
+        return format!("{millis}ms");
+    }
+    let micros = duration.nanos / 1_000;
+    if micros > 0 {
+        return format!("{micros}µs");
+    }
+    format!("{}ns", duration.nanos)
+}
+
 // The span-summarization vocabulary lives in the CORE since #68 (see the #58 study:
 // `design/fold-coalesce-summarize-extensibility.md`) — re-exported here so both
 // frontends keep importing one place.
@@ -106,6 +164,20 @@ pub fn write_content(diffs: &[(String, String)]) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_summary_preserves_exit_status_and_subsecond_duration() {
+        let execution = ToolExecution {
+            status: Some(ToolStatus::Failed),
+            exit_code: Some(7),
+            duration: Some(ToolDuration {
+                secs: 1,
+                nanos: 230_000_000,
+            }),
+        };
+        assert_eq!(tool_execution_summary(&execution), "exit 7 · 1.23s");
+        assert!(tool_execution_failed(&execution));
+    }
 
     /// `tool_count` for a spawn is **node-scoped**: it tallies the child's own tools (here 2
     /// Reads, coalesced into an activity list), not the parent's Bash. Exercises the

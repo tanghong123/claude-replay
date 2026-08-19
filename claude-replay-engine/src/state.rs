@@ -384,6 +384,11 @@ pub fn tail_pulse(adapter: &dyn TranscriptAdapter, path: &Path) -> TailPulse {
                 saw_conversation = true;
                 pulse.final_text = Some(t.clone());
             }
+            Message::AssistantMessage { text, .. } => {
+                last_user = false;
+                saw_conversation = true;
+                pulse.final_text = Some(text.clone());
+            }
             Message::ToolResult { is_error, .. } => {
                 pulse.last_tool_error = *is_error == Some(true);
             }

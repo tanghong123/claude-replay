@@ -198,6 +198,12 @@ impl<'a> Replayer<'a> {
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
                 }
+                Message::AssistantMessage { text, phase } => {
+                    self.out.push(Block::AssistantMessage {
+                        text: text.clone(),
+                        phase: *phase,
+                    });
+                }
                 Message::Thinking { text, ts } => {
                     let duration_secs = match (ts, self.prev_ts) {
                         (Some(end), Some(start)) if *end >= start => Some((end - start) as u64),
@@ -229,10 +235,6 @@ impl<'a> Replayer<'a> {
                         self.tool_slot.insert(id.clone(), logical);
                     }
                 }
-                // `is_error` rides the seam for metrics consumers (#23); the block fold
-                // does not surface it yet (a failure badge would be a block-output
-                // change: FOLD_VERSION + gate re-baseline territory, deliberately not
-                // smuggled into an additive seam release).
                 Message::ToolResult {
                     tool_use_id,
                     text,

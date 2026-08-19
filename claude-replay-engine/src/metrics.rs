@@ -4,6 +4,39 @@
 use crate::model::UsdCost;
 use std::collections::BTreeMap;
 
+/// One persisted rate-limit window, normalized from an agent's usage snapshots.
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RateLimitWindow {
+    pub used_percent: f64,
+    pub window_minutes: u64,
+    pub resets_at: Option<i64>,
+}
+
+/// The latest persisted rate-limit state for a session.
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RateLimits {
+    pub primary: Option<RateLimitWindow>,
+    pub secondary: Option<RateLimitWindow>,
+    pub plan_type: Option<String>,
+    pub reached: Option<String>,
+}
+
+/// Latest persisted execution context/settings. This is session metadata, not a synthetic
+/// historical block: adapters fill only fields their transcripts actually record, and shared
+/// presenters can expose the snapshot in their status/header surfaces.
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeInfo {
+    pub context_window_tokens: Option<u64>,
+    pub context_used_tokens: Option<u64>,
+    pub reasoning_effort: Option<String>,
+    pub approval_policy: Option<String>,
+    pub sandbox: Option<String>,
+    pub permission_profile: Option<String>,
+    pub collaboration_mode: Option<String>,
+    pub service_tier: Option<String>,
+    pub rate_limits: Option<RateLimits>,
+}
+
 /// A session's token/cost tally.
 ///
 /// **Two-way compatible by design.** The parse side is liberal: each accumulator pulls only
@@ -60,6 +93,8 @@ pub struct Metrics {
     /// from the price table — the figure is then a LOWER BOUND, rendered `≥$x` not `~$x`.
     /// Phrased as the *exception* so `Default` (false = nothing omitted) is correct.
     pub cost_partial: bool,
+    /// Latest context, settings, and limits snapshot carried by the transcript.
+    pub runtime: RuntimeInfo,
 }
 
 /// One model's share of a session's tokens. The four typed counters of [`Metrics`], split out
@@ -322,6 +357,16 @@ fn short_model(model: &str) -> String {
     }
 }
 
+fn rate_limit_label(window: &RateLimitWindow) -> String {
+    let span = match window.window_minutes {
+        minutes if minutes % 10_080 == 0 => format!("{}w", minutes / 10_080),
+        minutes if minutes % 1_440 == 0 => format!("{}d", minutes / 1_440),
+        minutes if minutes % 60 == 0 => format!("{}h", minutes / 60),
+        minutes => format!("{minutes}m"),
+    };
+    format!("{span} {:.0}% used", window.used_percent)
+}
+
 impl Metrics {
     /// Compact one-line footer text.
     /// Footer metric parts as `(text, shed_priority)` — the viewer's fit-and-shed drops
@@ -337,12 +382,18 @@ impl Metrics {
         if let Some(seg) = self.compaction_label() {
             segs.push((seg, 1));
         }
+        if let Some(left) = self.context_left_percent() {
+            segs.push((format!("{left}% context left"), 2));
+        }
         let cached = self.cache_creation_tokens + self.cache_read_tokens;
         if cached > 0 {
             segs.push((format!("{} cached", human_tokens(cached)), 1));
         }
         if !self.model.is_empty() {
             segs.push((self.model_label(), 3));
+        }
+        if let Some(effort) = &self.runtime.reasoning_effort {
+            segs.push((format!("{effort} effort"), 3));
         }
         segs.push((format!("{} in", human_tokens(self.input_tokens)), 4));
         segs.push((format!("{} out", human_tokens(self.output_tokens)), 5));
@@ -355,7 +406,29 @@ impl Metrics {
         if let Some(label) = self.credits_label() {
             segs.push((label, 7));
         }
+        if let Some(primary) = self
+            .runtime
+            .rate_limits
+            .as_ref()
+            .and_then(|limits| limits.primary.as_ref())
+        {
+            segs.push((rate_limit_label(primary), 8));
+        }
         segs
+    }
+
+    /// Percentage of the recorded model context still available at the latest usage snapshot.
+    pub fn context_left_percent(&self) -> Option<u64> {
+        let window = self.runtime.context_window_tokens?;
+        let used = self.runtime.context_used_tokens?;
+        if window == 0 {
+            return None;
+        }
+        Some(
+            100_u64
+                .saturating_sub(used.saturating_mul(100) / window)
+                .min(100),
+        )
     }
 
     /// The model for a ONE-LINE footer. With several models in play a single name beside a

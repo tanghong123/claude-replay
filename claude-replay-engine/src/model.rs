@@ -9,6 +9,43 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// A tool call's persisted terminal state. Agent adapters normalize their native words onto this
+/// small vocabulary; an absent status remains distinct from an explicit unknown terminal word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolStatus {
+    Completed,
+    Failed,
+    Declined,
+    Cancelled,
+    Unknown,
+}
+
+/// Exact elapsed time recorded for a tool call. Keeping seconds + nanoseconds avoids throwing
+/// away sub-millisecond executions while remaining JSON/cache friendly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDuration {
+    pub secs: u64,
+    pub nanos: u32,
+}
+
+/// Structural execution facts associated with a canonical tool block. Presenters decide how to
+/// display them; adapters never bake status/duration prose into command output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExecution {
+    pub status: Option<ToolStatus>,
+    pub exit_code: Option<i32>,
+    pub duration: Option<ToolDuration>,
+}
+
+/// The role an assistant prose message played in its turn. Some agents persist this distinction
+/// (Codex calls them `commentary` and `final_answer`); agents without it keep using unphased
+/// [`Block::AssistantText`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssistantPhase {
+    Commentary,
+    Final,
+}
+
 // ── semantic aliases for otherwise-ambiguous primitives ────────────────────────────────────
 // Transparent type aliases (not distinct types): they make a field's *meaning* — and its unit
 // — readable at the API surface, without the `.0` ergonomics of a newtype. Use them wherever
@@ -67,6 +104,9 @@ pub enum Block {
     QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
+    /// Assistant prose whose transcript identifies its turn phase. This stays distinct from
+    /// `AssistantText` so older/other agent formats do not invent phase information.
+    AssistantMessage { text: String, phase: AssistantPhase },
     /// A ✻ **work-span** block, coalesced like Claude Code (#57 — the empirically
     /// derived rule in `design/cc-activity-coalescing.md`): ALL consecutive thinking
     /// bursts + activity tool calls between two visible outputs fold into ONE of
@@ -103,6 +143,10 @@ pub enum Block {
         /// so it stays out of the byte-identical output; empty when the transcript recorded no
         /// cwd (then `target` is already absolute and needs no base).
         cwd: String,
+        /// Persisted status/exit/duration facts, when the source records them. Omitted from old
+        /// cache records and from formats that carry no trustworthy execution metadata.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution: Option<ToolExecution>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -428,7 +472,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
     match b {
         Block::UserText(_) => User,
         Block::QueueEvent { .. } => Queue,
-        Block::AssistantText(_) => Assistant,
+        Block::AssistantText(_) | Block::AssistantMessage { .. } => Assistant,
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
                 Think
@@ -507,7 +551,7 @@ pub fn fold_key(b: &Block) -> &'static str {
 /// Whether a block can be collapsed/expanded (has foldable body content). The single
 /// source of truth for both presenters — the TUI (`render::foldable`) and the HTML export
 /// (`html_export::is_fold`) delegate here so they can never disagree. Prose turns
-/// (`UserText`/`AssistantText`), the `⧗ queued` marker, and attachments are not foldable;
+/// (`UserText`/assistant prose), the `⧗ queued` marker, and attachments are not foldable;
 /// tools, results, thinking, commands, compaction dividers, and sub-agent spawn/completion
 /// blocks are.
 pub fn foldable(b: &Block) -> bool {
@@ -640,6 +684,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let blocks = vec![
             Block::Thinking {
@@ -695,6 +740,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -728,6 +774,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let bare = Block::Thinking {
             text: "x".into(),

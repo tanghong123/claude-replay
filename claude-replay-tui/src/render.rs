@@ -3,10 +3,10 @@
 
 use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
-use crate::model::{Attachment, Block};
+use crate::model::{AssistantPhase, Attachment, Block};
 use crate::present::{
-    display_name, edit_summary, spawn_chip, thinking_summary, turn_summary, write_content,
-    WRITE_PREVIEW,
+    display_name, edit_summary, spawn_chip, thinking_summary, tool_execution_failed,
+    tool_execution_summary, turn_summary, write_content, WRITE_PREVIEW,
 };
 use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
@@ -417,6 +417,28 @@ fn attachment_line(a: &Attachment) -> Line<'static> {
 
 /// Render a single block's content lines (no trailing blank separator). `width`
 /// is the terminal width, used for width-aware table layout in assistant text.
+fn assistant_lines(text: &str, width: usize, phase: Option<AssistantPhase>) -> Vec<Line<'static>> {
+    let (marker, marker_style) = match phase {
+        // Codex's in-progress commentary is deliberately quieter than a terminal answer.
+        Some(AssistantPhase::Commentary) => ("•", theme::thinking()),
+        Some(AssistantPhase::Final) | None => ("⏺", theme::assistant_marker()),
+    };
+    let mut md = markdown::render(text, width);
+    if md.is_empty() {
+        md.push(Line::from(Span::styled(marker, marker_style)));
+    } else {
+        for (i, line) in md.iter_mut().enumerate() {
+            if i == 0 {
+                line.spans.insert(0, Span::raw(" "));
+                line.spans.insert(0, Span::styled(marker, marker_style));
+            } else if line.width() > 0 {
+                line.spans.insert(0, Span::raw("  "));
+            }
+        }
+    }
+    md
+}
+
 fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match b {
@@ -498,28 +520,9 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 out.push(Line::from(Span::styled(s, style)));
             }
         }
-        Block::AssistantText(t) => {
-            let mut md = markdown::render(t, width);
-            if md.is_empty() {
-                md.push(Line::from(Span::styled("⏺", theme::assistant_marker())));
-            } else {
-                // First line carries the ⏺ marker (flush left); every other
-                // non-blank body line is indented two spaces so the whole turn
-                // aligns under the marker. Blank lines stay empty so they still
-                // collapse as separators.
-                for (i, line) in md.iter_mut().enumerate() {
-                    if i == 0 {
-                        // Marker glyph is coloured; the following space is plain
-                        // (Claude Code resets before it).
-                        line.spans.insert(0, Span::raw(" "));
-                        line.spans
-                            .insert(0, Span::styled("⏺", theme::assistant_marker()));
-                    } else if line.width() > 0 {
-                        line.spans.insert(0, Span::raw("  "));
-                    }
-                }
-            }
-            out.extend(md);
+        Block::AssistantText(t) => out.extend(assistant_lines(t, width, None)),
+        Block::AssistantMessage { text, phase } => {
+            out.extend(assistant_lines(text, width, Some(*phase)))
         }
         Block::Thinking {
             text,
@@ -560,6 +563,7 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             diffs,
             patch,
             output,
+            execution,
             ..
         } => {
             let token = highlight::token_for_target(target);
@@ -570,7 +574,11 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             // a fresh-file write (empty patch) keeps the numbered-content preview.
             let overwrite = write_like && patch.as_deref().is_some_and(|h| !h.is_empty());
             if write_like && !overwrite {
-                out.push(tool_header(name, target, None));
+                out.push(with_execution(
+                    tool_header(name, target, None),
+                    execution.as_ref(),
+                    None,
+                ));
                 let content = write_content(diffs);
                 let n = content.lines().count();
                 out.push(Line::styled(
@@ -581,7 +589,11 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 // preview caps at WRITE_PREVIEW — see `render_collapsed`.
                 write_numbered(content, token, None, hl, &mut out);
             } else if overwrite || matches!(name.as_str(), "Edit" | "MultiEdit") {
-                out.push(tool_header(name, target, None));
+                out.push(with_execution(
+                    tool_header(name, target, None),
+                    execution.as_ref(),
+                    None,
+                ));
                 let (adds, dels) = if overwrite {
                     patch_counts(patch.as_deref().unwrap_or_default())
                 } else {
@@ -602,7 +614,15 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 // expanded shell/read background block (medium-dark gray, full
                 // row width via `fill_bg`).
                 let bg = theme::shell_expanded_bg();
-                out.extend(tool_header_lines(name, target, Some(bg)));
+                let mut headers = tool_header_lines(name, target, Some(bg));
+                if let Some(header) = headers.first_mut() {
+                    *header = with_execution(
+                        std::mem::replace(header, Line::raw("")),
+                        execution.as_ref(),
+                        Some(bg),
+                    );
+                }
+                out.extend(headers);
                 if let Some(o) = output {
                     push_capped_output(o, bg, theme::shell_fg(), &mut out);
                 }
@@ -706,6 +726,32 @@ fn tool_header(name: &str, target: &str, bg: Option<Color>) -> Line<'static> {
     ])
 }
 
+fn with_execution(
+    mut line: Line<'static>,
+    execution: Option<&crate::model::ToolExecution>,
+    bg: Option<Color>,
+) -> Line<'static> {
+    let Some(execution) = execution else {
+        return line;
+    };
+    let summary = tool_execution_summary(execution);
+    if summary.is_empty() {
+        return line;
+    }
+    let patch = |style: Style| match bg {
+        Some(bg) => style.bg(bg),
+        None => style,
+    };
+    line.spans.push(Span::styled("  ", patch(Style::default())));
+    let style = if tool_execution_failed(execution) {
+        theme::diff_del()
+    } else {
+        theme::dim()
+    };
+    line.spans.push(Span::styled(summary, patch(style)));
+    line
+}
+
 /// Like `tool_header`, but preserves a multi-line `target` (a multi-line shell
 /// command) across rows instead of flattening its newlines — matching Claude Code:
 /// `⏺ Bash(<line 1>` then each further line indented, the closing `)` on the last.
@@ -777,8 +823,14 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             let summary = thinking_summary(text, *duration_secs, tools);
             vec![Line::from(Span::styled(format!("  {summary}"), header))]
         }
-        Block::ToolUse { name, .. } if name == "Bash" => {
-            vec![Line::from(Span::styled("  Ran 1 shell command", header))]
+        Block::ToolUse {
+            name, execution, ..
+        } if name == "Bash" => {
+            vec![with_execution(
+                Line::from(Span::styled("  Ran 1 shell command", header)),
+                execution.as_ref(),
+                None,
+            )]
         }
         // A file write collapses to a Claude-Code-style preview — the header, the
         // `Wrote N lines` result, then the first `WRITE_PREVIEW` lines + `… +N lines`
@@ -788,6 +840,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             target,
             diffs,
             patch,
+            execution,
             ..
         } if (name == "Write" || name == "NotebookEdit")
             && patch.as_deref().is_none_or(|h| h.is_empty()) =>
@@ -796,7 +849,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             let n = content.lines().count();
             let token = highlight::token_for_target(target);
             let mut v = vec![
-                tool_header(name, target, None),
+                with_execution(tool_header(name, target, None), execution.as_ref(), None),
                 Line::styled(
                     format!("  ⎿ \u{a0}Wrote {n} lines to {target}"),
                     theme::result(),
@@ -809,15 +862,17 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             name,
             target,
             read_lines,
+            execution,
             ..
         } if name == "Read" => {
             let suffix = read_lines
                 .map(|n| format!(" ({n} lines)"))
                 .unwrap_or_default();
-            vec![Line::from(Span::styled(
-                format!("  Read {target}{suffix}"),
-                header,
-            ))]
+            vec![with_execution(
+                Line::from(Span::styled(format!("  Read {target}{suffix}"), header)),
+                execution.as_ref(),
+                None,
+            )]
         }
         Block::Command { name, args, output } => {
             // Header + first `⎿` stdout line (like CC); deeper output is folded.
@@ -879,15 +934,34 @@ fn render_header(b: &Block) -> Line<'static> {
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
         ]),
+        Block::AssistantMessage { text, phase } => {
+            let (marker, style) = match phase {
+                AssistantPhase::Commentary => ("•", theme::thinking()),
+                AssistantPhase::Final => ("⏺", theme::assistant_marker()),
+            };
+            Line::from(vec![
+                Span::styled(marker, style),
+                Span::raw(format!(" {}", text.lines().next().unwrap_or(""))),
+            ])
+        }
         Block::Thinking { text, .. } => Line::styled(
             format!("✻ {}", text.lines().next().unwrap_or("")),
             theme::thinking(),
         ),
-        Block::ToolUse { name, target, .. } => Line::from(vec![
-            Span::styled("⏺ ", theme::tool()),
-            Span::styled(display_name(name).to_string(), theme::tool()),
-            Span::raw(format!("({target})")),
-        ]),
+        Block::ToolUse {
+            name,
+            target,
+            execution,
+            ..
+        } => with_execution(
+            Line::from(vec![
+                Span::styled("⏺ ", theme::tool()),
+                Span::styled(display_name(name).to_string(), theme::tool()),
+                Span::raw(format!("({target})")),
+            ]),
+            execution.as_ref(),
+            None,
+        ),
         Block::ToolResult(t) => Line::styled(
             format!("  ⎿ {}", t.lines().next().unwrap_or("")),
             theme::result(),
@@ -920,7 +994,7 @@ fn body_len(b: &Block) -> usize {
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
-        Block::AssistantText(_) => 0, // not foldable; never collapsed
+        Block::AssistantText(_) | Block::AssistantMessage { .. } => 0, // never collapsed
         Block::ToolUse {
             name,
             diffs,
@@ -1207,6 +1281,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1297,6 +1372,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1342,6 +1418,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1376,6 +1453,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1464,6 +1542,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1512,6 +1591,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1559,6 +1639,7 @@ mod tests {
             patch: None,
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         }
     }
 
@@ -1585,12 +1666,37 @@ mod tests {
             patch: None,
             read_lines: Some(42),
             cwd: String::new(),
+            execution: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
             rt.contains("Read src/x.rs (42 lines)"),
             "read summary: {rt}"
         );
+    }
+
+    #[test]
+    fn command_execution_status_and_duration_render_in_both_fold_states() {
+        use crate::model::{ToolDuration, ToolExecution, ToolStatus};
+        let mut block = bash("cargo test", Some("boom"));
+        let Block::ToolUse { execution, .. } = &mut block else {
+            unreachable!()
+        };
+        *execution = Some(ToolExecution {
+            status: Some(ToolStatus::Failed),
+            exit_code: Some(7),
+            duration: Some(ToolDuration {
+                secs: 0,
+                nanos: 42_000_000,
+            }),
+        });
+
+        let collapsed = texts(&render_collapsed(&block)).join("\n");
+        assert!(collapsed.contains("Ran 1 shell command"));
+        assert!(collapsed.contains("exit 7 · 42ms"), "{collapsed}");
+        let expanded = texts(&render_one(&block, 100, Hl::Styled)).join("\n");
+        assert!(expanded.contains("Bash(cargo test)"));
+        assert!(expanded.contains("exit 7 · 42ms"), "{expanded}");
     }
 
     /// Expanded: a Bash block shows the command header + output capped at 15 lines
@@ -1754,6 +1860,25 @@ mod tests {
         assert!(t[2].starts_with("  "), "line 3 not indented: {:?}", t[2]);
     }
 
+    #[test]
+    fn assistant_phase_uses_quiet_commentary_and_strong_final_markers() {
+        let commentary = Block::AssistantMessage {
+            text: "working".into(),
+            phase: AssistantPhase::Commentary,
+        };
+        let final_answer = Block::AssistantMessage {
+            text: "done".into(),
+            phase: AssistantPhase::Final,
+        };
+        let commentary_text = texts(&render_one(&commentary, 80, Hl::Styled)).join("\n");
+        let final_text = texts(&render_one(&final_answer, 80, Hl::Styled)).join("\n");
+        assert!(
+            commentary_text.starts_with("• working"),
+            "{commentary_text}"
+        );
+        assert!(final_text.starts_with("⏺ done"), "{final_text}");
+    }
+
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.
     #[test]
     fn command_block_renders_caret_header_and_elbow_output() {
@@ -1893,6 +2018,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -1902,6 +2028,7 @@ mod tests {
                 patch: None,
                 read_lines: None,
                 cwd: String::new(),
+                execution: None,
             },
         ];
         let turn = Block::Thinking {
@@ -1940,6 +2067,7 @@ mod tests {
             }]),
             read_lines: None,
             cwd: String::new(),
+            execution: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

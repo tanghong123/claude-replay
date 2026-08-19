@@ -647,8 +647,10 @@
 
     // Assistant prose — always open, no fold chrome.
     if (b.kind === "assistant") {
-      var ab = el("div", "ablock blk");
+      var phase = b.phase ? " phase-" + b.phase : "";
+      var ab = el("div", "ablock blk" + phase);
       ab.id = b.id;
+      if (b.phase) ab.title = "assistant " + b.phase;
       ab.appendChild(el("span", "adot"));
       var prose = el("div", "prose");
       body.forEach(function (p) { renderPart(p, prose); });
@@ -919,6 +921,50 @@
       if (u.cost) row("est. cost", u.cost, "total");
       // Credits-billed agents (Qoder): zero tokens, no USD — credits are the cost figure.
       if (u.credits) row("credits", u.credits, "total");
+    }
+
+    // Latest persisted runtime snapshot. These facts come from transcript records (not the
+    // viewer's current process), so a historical export can retain the context/settings/limits
+    // that Codex showed while the session was running.
+    var rt = u.runtime || null;
+    var rbox = $("runtime");
+    rbox.textContent = "";
+    if (rt) {
+      rbox.appendChild(el("div", "side-head", "Runtime"));
+      var rrow = function (k, v) {
+        if (v == null || v === "") return;
+        var r = el("div", "urow");
+        r.appendChild(el("span", null, k));
+        r.appendChild(el("span", null, String(v)));
+        rbox.appendChild(r);
+      };
+      if (rt.context_left != null) {
+        rrow("context", rt.context_left + "% left");
+      } else if (rt.context_used_tokens && rt.context_window_tokens) {
+        rrow("context", rt.context_used_tokens + " / " + rt.context_window_tokens);
+      }
+      rrow("effort", rt.effort);
+      rrow("mode", rt.mode);
+      rrow("sandbox", rt.sandbox);
+      rrow("approvals", rt.approvals);
+      rrow("permission", rt.permission);
+      rrow("service tier", rt.tier);
+      rrow("plan", rt.plan);
+      var limitLabel = function (w) {
+        if (!w) return null;
+        var mins = w.window_minutes || 0;
+        var span = mins % 10080 === 0 ? (mins / 10080) + "w" :
+                   mins % 1440 === 0 ? (mins / 1440) + "d" :
+                   mins % 60 === 0 ? (mins / 60) + "h" : mins + "m";
+        var value = Math.round(w.used_percent) + "% used";
+        if (w.resets_at) value += " · resets " + new Date(w.resets_at * 1000).toLocaleString();
+        return [span + " limit", value];
+      };
+      [rt.primary, rt.secondary].forEach(function (w) {
+        var label = limitLabel(w);
+        if (label) rrow(label[0], label[1]);
+      });
+      if (rt.reached) rrow("limit reached", rt.reached);
     }
 
     renderTasks(m.tasks);

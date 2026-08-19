@@ -1,7 +1,8 @@
 use claude_replay_engine::seam::{
-    epoch_secs, parse_path_timed_for, relativize, AgentStatus, Attachment, AttachmentContent,
-    AttachmentKind, Block, CompactTrigger, LinePreprocessor, LoadedAttachment, Message, Metrics,
-    PreprocessedLine, Shaping, SubAgent, TaskOp, Todo, UsdCost,
+    epoch_secs, parse_path_timed_for, relativize, AgentStatus, AssistantPhase, Attachment,
+    AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor, LoadedAttachment,
+    Message, Metrics, PreprocessedLine, Shaping, SubAgent, TaskOp, Todo, ToolDuration,
+    ToolExecution, ToolStatus, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{replay, stamp_user_turns, BlockIndex, EpochSeconds};
@@ -13,6 +14,15 @@ use std::path::{Path, PathBuf};
 
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
 const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
+// Adapter-private L2 names. `semantic_exec_messages` uses them to carry Codex's structured
+// `parsed_cmd` actions through the ordinary ToolUse join; `codex_finish` consumes every one and
+// emits only the canonical Read/Grep/LS activity vocabulary, with the command detail attached to
+// the final action's output.
+// They must never reach a Session or a presenter.
+const EXPLORE_READ: &str = "__codex_explore_read";
+const EXPLORE_SEARCH: &str = "__codex_explore_search";
+const EXPLORE_LIST: &str = "__codex_explore_list";
+const EXPLORE_DETAIL: &str = "__codex_explore_detail";
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CodexLinePreprocessor {
@@ -409,7 +419,8 @@ fn quote_bare_js_keys(input: &str) -> String {
 }
 
 /// Map the TUI-facing Codex event vocabulary onto the canonical Claude-shaped tool
-/// vocabulary. This is deliberately adapter-local: presenters only ever see Bash/Edit blocks.
+/// vocabulary. This is deliberately adapter-local: presenters only ever see Bash/Edit blocks
+/// or canonical Read/Grep/LS activity spans.
 fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Message>> {
     if value.get("type").and_then(Value::as_str) != Some("event_msg")
         || value.pointer("/payload/type").and_then(Value::as_str) != Some("item_completed")
@@ -426,12 +437,16 @@ fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Messa
             let id = item.get("id").and_then(Value::as_str).unwrap_or("");
             let command = command_execution_text(item)?;
             let cwd = command_execution_cwd(item).unwrap_or_else(|| fallback_cwd.to_string());
+            if let Some(mut exploration) = command_exploration_messages(item, id, &command, &cwd) {
+                exploration.insert(0, Message::LineStart(ts));
+                return Some(exploration);
+            }
             let mut messages = vec![
                 Message::LineStart(ts),
                 Message::ToolUse {
                     id: id.to_string(),
                     name: "exec_command".to_string(),
-                    input: serde_json::json!({ "cmd": command }),
+                    input: command_execution_input(serde_json::json!({ "cmd": command }), item),
                     cwd,
                 },
             ];
@@ -538,6 +553,131 @@ fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Messa
         }
         _ => None,
     }
+}
+
+/// Codex already parsed the shell script into the exact actions its TUI calls “Explored”. An
+/// exploration is non-empty and contains only read/list/search actions; one unknown action makes
+/// the whole command an ordinary “Ran” command. Preserve that decision instead of trying to
+/// reverse-engineer it later from a lossy shell string.
+fn command_exploration_messages(
+    item: &Value,
+    id: &str,
+    command: &str,
+    cwd: &str,
+) -> Option<Vec<Message>> {
+    let parsed = item.get("parsed_cmd").and_then(Value::as_array)?;
+    if parsed.is_empty()
+        || parsed.iter().any(|action| {
+            !matches!(
+                action.get("type").and_then(Value::as_str),
+                Some("read" | "search" | "list_files")
+            )
+        })
+    {
+        return None;
+    }
+
+    let mut messages = Vec::with_capacity(parsed.len() + 2);
+    for (index, action) in parsed.iter().enumerate() {
+        let kind = action.get("type").and_then(Value::as_str)?;
+        let cmd = action.get("cmd").and_then(Value::as_str).unwrap_or("");
+        let path = action
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty());
+        let (name, input) = match kind {
+            "read" => (
+                EXPLORE_READ,
+                serde_json::json!({ "file_path": path.unwrap_or(cmd) }),
+            ),
+            "search" => {
+                let query = action
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .filter(|query| !query.is_empty());
+                let target = match (query, path) {
+                    (Some(query), Some(path)) => {
+                        format!("{query} in {}", relativize(path, cwd))
+                    }
+                    (Some(query), None) => query.to_string(),
+                    _ => cmd.to_string(),
+                };
+                (EXPLORE_SEARCH, serde_json::json!({ "query": target }))
+            }
+            "list_files" => match path {
+                Some(path) => (EXPLORE_LIST, serde_json::json!({ "path": path })),
+                None => (EXPLORE_LIST, serde_json::json!({ "description": cmd })),
+            },
+            _ => unreachable!("validated parsed_cmd kind"),
+        };
+        messages.push(Message::ToolUse {
+            id: format!("{id}:action:{index}"),
+            name: name.to_string(),
+            input,
+            cwd: cwd.to_string(),
+        });
+    }
+
+    // The parsed actions drive the collapsed semantic summary. The exact composite command and
+    // its aggregate output remain available when the span is expanded; `codex_finish` moves this
+    // private detail tool onto the final canonical action and therefore adds no fake Bash count.
+    let detail_id = format!("{id}:detail");
+    messages.push(Message::ToolUse {
+        id: detail_id.clone(),
+        name: EXPLORE_DETAIL.to_string(),
+        input: command_execution_input(serde_json::json!({ "cmd": command }), item),
+        cwd: cwd.to_string(),
+    });
+    let output = command_execution_output(item);
+    if !output.trim().is_empty() {
+        messages.push(Message::ToolResult {
+            tool_use_id: detail_id,
+            text: output,
+            tur: Value::Null,
+            is_error: Some(command_execution_failed(item)),
+        });
+    }
+    Some(messages)
+}
+
+fn command_execution_input(mut input: Value, item: &Value) -> Value {
+    if let Some(execution) = command_execution_metadata(item) {
+        input.as_object_mut().expect("tool input object").insert(
+            "__execution".to_string(),
+            serde_json::to_value(execution).expect("ToolExecution serializes"),
+        );
+    }
+    input
+}
+
+fn command_execution_metadata(item: &Value) -> Option<ToolExecution> {
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|status| match status {
+            "completed" => ToolStatus::Completed,
+            "failed" => ToolStatus::Failed,
+            "declined" => ToolStatus::Declined,
+            "cancelled" | "canceled" | "aborted" => ToolStatus::Cancelled,
+            _ => ToolStatus::Unknown,
+        });
+    let exit_code = item
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok());
+    let duration = item.get("duration").and_then(|duration| {
+        let secs = duration.get("secs").and_then(Value::as_u64)?;
+        let nanos = duration
+            .get("nanos")
+            .and_then(Value::as_u64)
+            .and_then(|nanos| u32::try_from(nanos).ok())?;
+        Some(ToolDuration { secs, nanos })
+    });
+    (status.is_some() || exit_code.is_some() || duration.is_some()).then_some(ToolExecution {
+        status,
+        exit_code,
+        duration,
+    })
 }
 
 fn extension_results_text(item: &Value) -> String {
@@ -669,7 +809,80 @@ fn codex_keep_orphan(text: &str) -> bool {
     !text.starts_with(SUBAGENT_THREAD_RESULT_PREFIX)
 }
 fn codex_finish(blocks: Vec<Block>) -> Vec<Block> {
-    blocks // identity — Codex does no turn grouping
+    fn flush(actions: &mut Vec<Block>, out: &mut Vec<Block>) {
+        if actions.is_empty() {
+            return;
+        }
+        out.push(Block::Thinking {
+            text: String::new(),
+            duration_secs: None,
+            tools: std::mem::take(actions),
+        });
+    }
+
+    fn canonical_activity(name: &str) -> Option<&'static str> {
+        match name {
+            EXPLORE_READ => Some("Read"),
+            EXPLORE_SEARCH => Some("Grep"),
+            EXPLORE_LIST => Some("LS"),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut actions = Vec::new();
+    for mut block in blocks {
+        let name = match &block {
+            Block::ToolUse { name, .. } => name.clone(),
+            _ => String::new(),
+        };
+        if let Some(canonical) = canonical_activity(&name) {
+            if let Block::ToolUse { name, .. } = &mut block {
+                *name = canonical.to_string();
+            }
+            actions.push(block);
+            continue;
+        }
+        if name == EXPLORE_DETAIL && !actions.is_empty() {
+            let Block::ToolUse {
+                target,
+                output,
+                execution,
+                ..
+            } = block
+            else {
+                unreachable!("detail name belongs to ToolUse")
+            };
+            let mut detail = format!("$ {target}");
+            if let Some(output) = output.filter(|output| !output.is_empty()) {
+                detail.push('\n');
+                detail.push_str(&output);
+            }
+            if let Some(Block::ToolUse {
+                output,
+                execution: action_execution,
+                ..
+            }) = actions.last_mut()
+            {
+                *output = Some(detail);
+                *action_execution = execution;
+            }
+            continue;
+        }
+
+        // A malformed/copy-trimmed stream could theoretically retain the detail without its
+        // preceding actions. Degrade to the ordinary Bash representation instead of leaking an
+        // adapter-private name into the canonical Session.
+        flush(&mut actions, &mut out);
+        if name == EXPLORE_DETAIL {
+            if let Block::ToolUse { name, .. } = &mut block {
+                *name = "Bash".to_string();
+            }
+        }
+        out.push(block);
+    }
+    flush(&mut actions, &mut out);
+    out
 }
 
 /// Codex's `build_tool`: collaboration spawns use the shared sub-agent block; every
@@ -698,6 +911,9 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         });
     }
     let (name, target, diffs) = call_details(raw_name, input, cwd);
+    let execution = input
+        .get("__execution")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
     Block::ToolUse {
         name,
         target,
@@ -706,10 +922,12 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         patch: None,
         read_lines: None,
         cwd: cwd.to_string(),
+        execution,
     }
 }
 
-/// Codex's L2 shaping: bare output back-patch, keep all orphans, no grouping.
+/// Codex's L2 shaping: bare output back-patch, keep all orphans, and turn only the adapter's
+/// structured `parsed_cmd` markers into canonical pure activity spans.
 pub(crate) const CODEX_SHAPING: Shaping = Shaping {
     build_tool: codex_build_tool,
     join_result: apply_output_shaping,
@@ -792,7 +1010,14 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                         .and_then(Value::as_str)
                                         .filter(|text| !text.trim().is_empty())
                                     {
-                                        msgs.push(Message::AssistantText(text.to_string()));
+                                        if let Some(phase) = assistant_phase(payload) {
+                                            msgs.push(Message::AssistantMessage {
+                                                text: text.to_string(),
+                                                phase,
+                                            });
+                                        } else {
+                                            msgs.push(Message::AssistantText(text.to_string()));
+                                        }
                                     }
                                 }
                                 Some("input_image") if role == "user" => {
@@ -1348,6 +1573,7 @@ fn parse_lines<S: AsRef<str>>(
                             patch: None,
                             read_lines: None,
                             cwd: cwd.clone(),
+                            execution: None,
                         });
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
@@ -1396,9 +1622,22 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     {
         if role == "user" {
             out.push(Block::UserText(text.to_string()));
+        } else if let Some(phase) = assistant_phase(payload) {
+            out.push(Block::AssistantMessage {
+                text: text.to_string(),
+                phase,
+            });
         } else {
             out.push(Block::AssistantText(text.to_string()));
         }
+    }
+}
+
+fn assistant_phase(payload: &Value) -> Option<AssistantPhase> {
+    match payload.get("phase").and_then(Value::as_str) {
+        Some("commentary") => Some(AssistantPhase::Commentary),
+        Some("final" | "final_answer") => Some(AssistantPhase::Final),
+        _ => None,
     }
 }
 
@@ -1618,6 +1857,7 @@ fn apply_output(block: &mut Block, output: String) {
                     read_lines: None,
                     // A description, not a path — never revealed, so no cwd anchor.
                     cwd: String::new(),
+                    execution: None,
                 };
             }
         }
@@ -1999,6 +2239,149 @@ mod tests {
         }));
     }
 
+    /// A real modern `CommandExecution` carries the semantic parse the Codex TUI uses for its
+    /// Explored → Read/List/Search rows. Preserve that authoritative parse as one canonical pure
+    /// activity span; keep the composite shell and aggregate output on the final action for the
+    /// expanded view. Consecutive exploration calls coalesce just like the native cell.
+    #[test]
+    fn semantic_exec_maps_parsed_commands_to_canonical_activity_span() {
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-19T07:00:00Z",
+                "type": "session_meta",
+                "payload": {"cwd": "/repo", "originator": "codex-tui", "cli_version": "0.147.0"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T07:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "id": "exec-explore-1",
+                    "command": ["/bin/zsh", "-lc", "sed -n '1,40p' src/lib.rs && rg needle src && rg --files"],
+                    "cwd": "file:///repo", "status": "completed", "exit_code": 0,
+                    "duration": {"secs": 1, "nanos": 230000000},
+                    "parsed_cmd": [
+                        {"type": "read", "cmd": "sed -n '1,40p' src/lib.rs", "name": "lib.rs", "path": "/repo/src/lib.rs"},
+                        {"type": "search", "cmd": "rg needle src", "query": "needle", "path": "src"},
+                        {"type": "list_files", "cmd": "rg --files", "path": "."}
+                    ],
+                    "formatted_output": "src/lib.rs\nsrc/main.rs\n"
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-19T07:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "id": "exec-explore-2",
+                    "command": ["/bin/zsh", "-lc", "cat README.md"],
+                    "cwd": "file:///repo", "status": "completed", "exit_code": 0,
+                    "parsed_cmd": [
+                        {"type": "read", "cmd": "cat README.md", "name": "README.md", "path": "/repo/README.md"}
+                    ],
+                    "formatted_output": "hello\n"
+                }}
+            }),
+        ];
+        let jsonl = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path =
+            std::env::temp_dir().join(format!("codex-parsed-command-{}.jsonl", std::process::id()));
+        std::fs::write(&path, jsonl).unwrap();
+        let (blocks, _, _) = parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let [Block::Thinking {
+            text,
+            duration_secs,
+            tools,
+        }] = blocks.as_slice()
+        else {
+            panic!("expected one coalesced pure activity span, got {blocks:#?}");
+        };
+        assert!(text.is_empty());
+        assert_eq!(*duration_secs, None);
+        assert_eq!(tools.len(), 4);
+        assert!(matches!(
+            &tools[0],
+            Block::ToolUse { name, target, output: None, .. }
+                if name == "Read" && target == "src/lib.rs"
+        ));
+        assert!(matches!(
+            &tools[1],
+            Block::ToolUse { name, target, output: None, .. }
+                if name == "Grep" && target == "needle in src"
+        ));
+        assert!(matches!(
+            &tools[2],
+            Block::ToolUse { name, target, output: Some(output), execution: Some(execution), .. }
+                if name == "LS"
+                    && target == "."
+                    && output == "$ sed -n '1,40p' src/lib.rs && rg needle src && rg --files\nsrc/lib.rs\nsrc/main.rs\n"
+                    && execution.status == Some(ToolStatus::Completed)
+                    && execution.exit_code == Some(0)
+                    && execution.duration == Some(ToolDuration { secs: 1, nanos: 230000000 })
+        ));
+        assert!(matches!(
+            &tools[3],
+            Block::ToolUse { name, target, output: Some(output), .. }
+                if name == "Read"
+                    && target == "README.md"
+                    && output == "$ cat README.md\nhello\n"
+        ));
+        assert!(!format!("{blocks:#?}").contains("__codex_explore"));
+    }
+
+    /// One unknown parsed action makes the native Codex cell a normal Ran command. Do not split
+    /// or partially relabel it: the exact command and output stay in one canonical Bash block.
+    #[test]
+    fn semantic_exec_with_unknown_parsed_action_stays_bash() {
+        let lines = [
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {"cwd": "/repo", "cli_version": "0.147.0"}
+            }),
+            serde_json::json!({
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "id": "exec-run",
+                    "command": ["/bin/zsh", "-lc", "cat README.md && cargo test"],
+                    "cwd": "file:///repo", "status": "failed", "exit_code": 7,
+                    "duration": {"secs": 0, "nanos": 42000000},
+                    "parsed_cmd": [
+                        {"type": "read", "cmd": "cat README.md", "name": "README.md", "path": "/repo/README.md"},
+                        {"type": "unknown", "cmd": "cargo test"}
+                    ],
+                    "formatted_output": "ok\n"
+                }}
+            }),
+        ];
+        let jsonl = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = std::env::temp_dir().join(format!(
+            "codex-unknown-command-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, jsonl).unwrap();
+        let (blocks, _, _) = parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::ToolUse { name, target, output: Some(output), execution: Some(execution), .. }]
+                if name == "Bash"
+                    && target == "cat README.md && cargo test"
+                    && output == "ok\n"
+                    && execution.status == Some(ToolStatus::Failed)
+                    && execution.exit_code == Some(7)
+                    && execution.duration == Some(ToolDuration { secs: 0, nanos: 42000000 })
+        ));
+    }
+
     #[test]
     fn semantic_exec_is_versioned_because_old_wrappers_have_no_mirror() {
         let wrapper = serde_json::json!({
@@ -2260,10 +2643,26 @@ not json
         assert_eq!(
             blocks
                 .iter()
-                .filter(|block| matches!(block, Block::AssistantText(text) if text == "Done"))
+                .filter(|block| matches!(block, Block::AssistantMessage { text, phase: AssistantPhase::Final } if text == "Done"))
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn assistant_message_phase_is_canonical_structure() {
+        let blocks = parse_codex(
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Working"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}}"#,
+        );
+        assert!(matches!(
+            &blocks[0],
+            Block::AssistantMessage { text, phase: AssistantPhase::Commentary } if text == "Working"
+        ));
+        assert!(matches!(
+            &blocks[1],
+            Block::AssistantMessage { text, phase: AssistantPhase::Final } if text == "Done"
+        ));
     }
 
     #[test]

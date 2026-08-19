@@ -20,7 +20,7 @@
 //! envelope (§5.2 Phase 6). `tokenize`/`replay` are pure and I/O-free (§3.6's sans-I/O core).
 
 use crate::engine::tasks::TaskOp;
-use crate::model::{AgentStatus, Attachment, EpochSeconds};
+use crate::model::{AgentStatus, AssistantPhase, Attachment, EpochSeconds};
 use serde_json::Value;
 
 /// Which queue-operation a `queue-operation` line performed.
@@ -42,6 +42,8 @@ pub enum Message {
     LineStart(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
+    /// Assistant prose with an explicitly persisted phase.
+    AssistantMessage { text: String, phase: AssistantPhase },
     /// Assistant thinking content item + this line's ts (the fold computes the duration
     /// as `ts − the previous line's ts` — CC's thinking clock, #57).
     Thinking {
