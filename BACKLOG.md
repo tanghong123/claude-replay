@@ -14,16 +14,16 @@
 ## Needs an owner decision
 
 - **#193 — the bounded eliding line reader** —
-  [design/bounded-line-reads.md](design/bounded-line-reads.md), **v2 (2026-08-20)**: the
-  boundedness-audit review is integrated and the doc rewritten as one piece (v1 + addenda in
-  git history; audit verdict GO, scope corrected — placement settled as `LineSource` + the
-  seed's streaming `read_line_elided`). Decisions on the owner, per its §11: **① α vs β**,
-  re-priced — α (adapter policy, viewer-lossless, no re-baseline) now needs a path-tracking
-  scanner and is the larger half of the change; β (seed as-is) takes a FOLD_VERSION bump +
-  one re-baseline + the 0.8 MB-text viewer regression; β-then-α is a valid order.
-  **② constants** (64 KB / 256 KB / K=64 / 64 MB) need a nod. **③ counter home** for the
-  elision gauges (b recommended: per-fold report, no bump). Build starts on sign-off, per
-  the doc's §10 migration order.
+  [design/bounded-line-reads.md](design/bounded-line-reads.md), **v2.1 (2026-08-20)**: the
+  boundedness-audit review is integrated, the doc rewritten as one piece, and the owner's
+  span amendment folded in — the placeholder is `<elided:{off},{len}>`, `Deferred` gains an
+  optional span hint, and `load_attachment` seeks instead of re-scanning (ordinal walk stays
+  as the base for sub-threshold values). Settled: placement (`LineSource` + streaming
+  `read_line_elided`), the span. Decisions still on the owner, per its §11: **① α vs β** —
+  α is the larger half (path-tracking scanner); β is softened by the span (elided text one
+  click away) and may now be enough. **② constants** (64 KB / 256 KB / K=64 / 64 MB) need a
+  nod. **③ counter home** — recommendation flipped to (a) `Metrics::extra`, free now that
+  the span hint bumps FOLD_VERSION anyway. Build starts on sign-off, per §10.
 - **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
   owner's **final design review** (requested 2026-08-20) of
   [design/session-cache-redesign.md](design/session-cache-redesign.md);
