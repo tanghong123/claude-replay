@@ -555,7 +555,21 @@ so `Deferred` gains an optional hint — `{ at, index, span: Option<Span> }`, wh
 carries the marker's absolute `(off, len)`, the kept prefix and postfix (≤ 64 B each — the
 value's own head and tail, both needed to reconstruct it; for Codex the prefix includes the
 `data:<mime>;base64,` header), and what the walk would otherwise re-derive from *sibling*
-fields (Claude's `media_type` lives beside the value, not inside it). Two load paths follow:
+fields (Claude's `media_type` lives beside the value, not inside it).
+
+The three fields have three provenances, which is why only the span is a *hint*:
+
+| field | computed by | how | who has it |
+| --- | --- | --- | --- |
+| `at` | the reader | raw-offset accounting — `LineSource::next()` hands `(at, line)` to the fold, and `advance_at` stamps it into every block from that line | **every** attachment |
+| `index` | decode | the extraction walk's document-order ordinal over the line's content-bearing nodes (first image → 0, second → 1) | **every** attachment |
+| `span` | the marker | parsed out of `<elided:{off},{len}>` text the scanner embedded | **only elided** values |
+
+`(at, index)` are the authority because they exist for every attachment (a sub-threshold value
+was never scanned and has no marker) and because they are producer-side facts the fold computed
+itself; the span is content read *out of the file* — untrusted until validated — so it
+accelerates the load it can serve and falls back to the `(at, index)` walk everywhere else.
+Two load paths follow:
 
 - **Span path (the fast one — every elided value has it).** `seek(off)`, read `len` bytes —
   exactly the dropped bytes, by the §4 substitution invariant — prepend the stored prefix and
