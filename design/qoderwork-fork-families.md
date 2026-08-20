@@ -83,12 +83,12 @@ several families plus unrelated singletons.
 ## Secondary finding, relevant to #119
 
 Every one of the 31 sidecars has a **non-empty title** (`安装MCP服务器`, `整理项目文档目录`, …).
-#119 currently gets QoderWork titles from `sub_chats.name` in the SQLite store, which costs the
-`qoderwork-titles` feature (bundled rusqlite) and is macOS-only via `db_path()`. The sidecar is
-a plain JSON file next to the transcript: no feature flag, no database, no platform assumption,
-and it is present for 100% of sessions here. Worth a follow-up task to prefer the sidecar and
-keep the DB as the fallback — that would make QoderWork titles work on every platform and in
-the default build.
+#119 originally got QoderWork titles from `sub_chats.name` in the SQLite store, behind a
+`qoderwork-titles` feature (bundled rusqlite), macOS-only via `db_path()`. #143 made the sidecar
+the first source — a plain JSON file next to the transcript, no database, no platform assumption.
+That held until QoderWork stopped writing the sidecar (~July 2026, new sessions carry only an
+encrypted `<sid>/state.json`), which made the DB the only source again; the feature gate was then
+removed in favor of `cfg(target_os = "macos")`, so every macOS build reads it.
 
 ## Conclusion
 

@@ -73,10 +73,9 @@ jobs:
         with:
           bin: claude-monitor
           manifest-path: claude-monitor/Cargo.toml
-          # #119: QoderWork's title DB is a macOS-only path, so enable the SQLite-backed
-          # `qoderwork-titles` reader only on the apple-darwin binaries. A Linux build would
-          # compile bundled SQLite to open a file that never exists there — pure cost, no gain.
-          features: ${{ contains(matrix.target, 'apple-darwin') && 'qoderwork-titles' || '' }}
+          # The QoderWork title reader (#119) is compiled in by `cfg(target_os = "macos")`
+          # now, not a feature flag — apple-darwin binaries get it, Linux never compiles
+          # bundled SQLite to open a file that cannot exist there.
           target: ${{ matrix.target }}
           archive: $bin-$target
           checksum: sha256

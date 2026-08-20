@@ -89,11 +89,11 @@ want to inspect a run. A count ("31 hidden") keeps the omission honest rather th
 
 **4. Deleted sessions need the database — and only the database.** The 10 UI-deleted rows have
 no file-level tell: transcript and sidecar both survive deletion. Excluding them means checking
-`sub_chats.session_id`, which costs the `qoderwork-titles` feature (bundled rusqlite, macOS
-only) that #143 deliberately stopped requiring. Reasonable shape: when that feature is compiled
-in, treat "transcript present, database row absent" as deleted and filter it; when it is not,
-show them. That keeps the default build dependency-free and makes the precise answer available
-to anyone who wants it — it is 10 rows out of 68, so it is a refinement, not the fix.
+`sub_chats.session_id` in the SQLite reader (compiled in on macOS via `cfg(target_os = "macos")`;
+it was a `qoderwork-titles` feature that #143 deliberately stopped requiring, until QoderWork
+dropped the sidecar and the gate was removed). Reasonable shape: on macOS, treat "transcript
+present, database row absent" as deleted and filter it; elsewhere, show them. It is 10 rows out
+of 68, so it is a refinement, not the fix.
 
 Steps 1 and 2 are independent and can ship separately; 1 is the large win and the simpler
 change. Together they take the group from 68 rows in one pile to ~37 spread across 27 groups;

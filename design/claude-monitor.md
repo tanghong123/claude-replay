@@ -165,14 +165,18 @@ column `name`, joined to a transcript by `sub_chats.session_id = <file stem>` (w
 `chats.name` fallback via the `…workspace-<chat_id>` slug). Measured on this machine: **30/30**
 `sub_chats` rows carry a non-empty, human-chosen name — Chinese task titles (`重构解析器模块`,
 `整理接口迁移记录`) and English skill names (`Read skill documentation`) — every one joining
-cleanly to a real transcript stem. The reader already ships behind the **`qoderwork-titles`**
-feature (#106): `QoderWorkAdapter::session_card` → `db_title`, reached the same way every other
-frontend gets a title (`display_title` → `Transcript::card`). The only gap #119 found was that
-nothing enabled the feature, so the monitor rail showed bare UUIDs. Resolution: the monitor turns
-`qoderwork-titles` **on**, but only on the macOS release targets — `db_path` is a macOS-only path
-(QoderWork is a macOS Electron app), so a Linux binary would compile bundled SQLite to reach a
-file that cannot exist. Caveat carried forward: the rail caches the title on the transcript's
-mtime, so a DB-only rename of an *idle* session does not refresh until the transcript next moves.
+cleanly to a real transcript stem. The reader ships in `QoderWorkAdapter::session_card` →
+`db_title`, reached the same way every other frontend gets a title (`display_title` →
+`Transcript::card`). The only gap #119 found was that nothing enabled the reader (it was behind a
+`qoderwork-titles` feature), so the monitor rail showed bare UUIDs; the first resolution enabled
+the feature on the macOS release targets only. That gate was later removed entirely in favor of
+`cfg(target_os = "macos")` after it bit again: QoderWork stopped writing the plaintext
+`<sid>-session.json` sidecar (~July 2026), leaving the DB as the ONLY title source, and a local
+`cargo build` — which never passed the feature — silently showed every new session as its cryptic
+workspace-dir leaf. Now every macOS build has the reader; a Linux binary still never compiles
+bundled SQLite to reach a file that cannot exist. Caveat carried forward: the rail caches the
+title on the transcript's mtime, so a DB-only rename of an *idle* session does not refresh until
+the transcript next moves.
 
 ### 4.1 The title is derived OUTSIDE the fold, on its own cadence
 

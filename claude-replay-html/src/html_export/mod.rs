@@ -3292,4 +3292,50 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /// The QoderWork title regression pin: a NEW-style store session — no `<sid>-session.json`
+    /// sidecar, because QoderWork stopped writing them (~July 2026) — must get its title from
+    /// the SQLite store in a DEFAULT build. This broke once when the DB reader sat behind an
+    /// off-by-default feature only the release passed: a plain `cargo build` showed every new
+    /// session as its cryptic workspace-dir leaf (`msr69v34k38fdyyj`). The reader is now
+    /// compiled in by `cfg(target_os = "macos")`, and this test is the tripwire — it fails
+    /// (with exactly that leaf as the wrong answer) if the DB half ever leaves the default
+    /// macOS build again.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn qoderwork_title_comes_from_the_db_in_a_default_build() {
+        let base = std::env::temp_dir().join(format!("cr-qwdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // The real store shape: a workspace-slug project dir, a UUID-named transcript, and
+        // NO sidecar beside it.
+        let projects = base.join("projects");
+        let proj = projects.join("-Users-x--qoderwork-workspace-mchat42");
+        std::fs::create_dir_all(&proj).unwrap();
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let transcript = proj.join(format!("{sid}.jsonl"));
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"user\",\"cwd\":\"/Users/x/.qoderwork/workspace/mchat42\",\"message\":{\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        let db = base.join("agents.db");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(&format!(
+                "create table sub_chats (id text, name text, chat_id text, session_id text, updated_at integer);
+                 insert into sub_chats values ('s1','重构解析器模块','mchat42','{sid}',100);",
+            ))
+            .unwrap();
+        std::env::set_var("QODERWORK_DB", &db);
+        std::env::set_var("QODERWORK_PROJECTS_DIR", &projects);
+        let title = display_title(Agent::QODERWORK, &transcript);
+        std::env::remove_var("QODERWORK_DB");
+        std::env::remove_var("QODERWORK_PROJECTS_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(
+            title, "重构解析器模块 · qoderwork",
+            "a sidecar-less store session must be titled from the SQLite store in the \
+             default build — 'mchat42' here means it fell back to the workspace leaf"
+        );
+    }
 }

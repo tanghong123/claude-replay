@@ -13,16 +13,17 @@ claude-replay-engine = { path = "../claude-replay-engine", version = "1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-# QoderWork keeps its session titles in SQLite, not in the transcript, so reading them needs a
-# database. Optional and OFF by default: it is the only C dependency in an otherwise pure-Rust
-# workspace, and no other agent needs it. `bundled` so enabling it never depends on the host's
-# libsqlite3 — a build that opts in should not also inherit a system requirement.
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
-[features]
-default = []
-# Read QoderWork session titles from its SQLite store (see `agents/qoderwork/discover.rs`).
-qoderwork-titles = ["dep:rusqlite"]
+# QoderWork keeps its session titles in SQLite, not in the transcript, so reading them needs a
+# database — and since ~July 2026 QoderWork stopped writing the plaintext `<sid>-session.json`
+# sidecar, so the database is the ONLY title source for new sessions. macOS-only (QoderWork is
+# an Electron app that ships there; `db_path()` is a macOS path), so a Linux build never
+# compiles the one C dependency in an otherwise pure-Rust workspace. This was an opt-in
+# `qoderwork-titles` feature, which meant a plain `cargo build` on macOS silently showed every
+# new QoderWork session as its cryptic workspace-dir leaf — a local build must not be quietly
+# worse than the release. `bundled` so the build never depends on the host's libsqlite3.
+[target.'cfg(target_os = "macos")'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 claude-replay-core = { path = "../claude-replay-core" }

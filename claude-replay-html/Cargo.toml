@@ -18,3 +18,8 @@ serde_json = "1"
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).
 claude-replay-present = { path = "../claude-replay-present", features = ["cli"] }
 clap = { version = "4", features = ["derive"] }
+
+# The QoderWork title tripwire builds its fixture SQLite store directly; macOS-only,
+# matching the reader it pins (see the agents crate's rusqlite note).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

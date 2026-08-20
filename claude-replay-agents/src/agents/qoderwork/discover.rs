@@ -121,9 +121,9 @@ pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
 /// Where QoderWork keeps its chat metadata. Overridable so a test — or a non-standard install —
 /// can point elsewhere; `None` when there is no database to read.
 ///
-/// macOS-only by default because QoderWork is an Electron app that ships there; a build on
-/// another platform simply finds nothing and every session falls back to its snippet.
-#[cfg(feature = "qoderwork-titles")]
+/// macOS-only because QoderWork is an Electron app that ships there; a build on another
+/// platform simply finds nothing and every session falls back to its snippet.
+#[cfg(target_os = "macos")]
 pub(crate) fn db_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("QODERWORK_DB").map(PathBuf::from) {
         return p.exists().then_some(p);
@@ -229,11 +229,10 @@ fn tail_last_prompt(memo: &CardMemo) -> Option<String> {
 /// The title QoderWork writes beside the transcript, as `<sid>-session.json` (#143), with its
 /// `updated_at` as the staleness stamp.
 ///
-/// Preferred over the database because it costs nothing this crate does not already have: a
-/// plain JSON read, no `qoderwork-titles` feature (so no bundled SQLite), and no macOS-only
-/// `db_path()` — measured, 31 of 31 sidecars on a real install carry a non-empty title, and
-/// the DB path can only ever be consulted on macOS. The DB stays as the fallback for a store
-/// that predates the sidecar.
+/// The sidecar is checked first because it costs nothing this crate does not already have (a
+/// plain JSON read, works on every platform) — but it is now the LEGACY source: QoderWork
+/// stopped writing it around July 2026 (a new session gets only an encrypted `<sid>/state.json`
+/// dir), so for every session since, the database is the only place the title exists at all.
 ///
 /// A forked session's own title is `"<root title> (Fork)"`, which is what it should read as;
 /// grouping forks into families is a separate concern (design/qoderwork-fork-families.md).
@@ -278,7 +277,7 @@ fn sidecar_title(path: &Path) -> Option<(String, i64)> {
 /// install). Falls back to the containing chat's name via the workspace slug, which covers
 /// sessions the newer table does not know about; that title belongs to the CHAT and so may be
 /// shared by several sessions, which is still better than a bare UUID.
-#[cfg(feature = "qoderwork-titles")]
+#[cfg(target_os = "macos")]
 fn db_title(path: &Path) -> Option<(String, i64)> {
     let db = db_path()?;
     // Read-only, so a running QoderWork is never disturbed and we can never write its store.
@@ -310,9 +309,9 @@ fn db_title(path: &Path) -> Option<(String, i64)> {
     .filter(|(n, _): &(String, i64)| !n.trim().is_empty())
 }
 
-/// Without the `qoderwork-titles` feature there is no database reader, so QoderWork sessions
-/// carry only what the transcript says — exactly as they did before this existed.
-#[cfg(not(feature = "qoderwork-titles"))]
+/// Off macOS there is no database to read (`db_path()` is a macOS path), so QoderWork sessions
+/// carry only what the transcript and any legacy sidecar say.
+#[cfg(not(target_os = "macos"))]
 fn db_title(_path: &Path) -> Option<(String, i64)> {
     None
 }
@@ -524,7 +523,7 @@ mod tests {
     /// not run concurrently with each other.
     static DB_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[cfg(feature = "qoderwork-titles")]
+    #[cfg(target_os = "macos")]
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
         let d = std::env::temp_dir().join(format!("cr-qw-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -549,14 +548,14 @@ mod tests {
         (src, db)
     }
 
-    #[cfg(feature = "qoderwork-titles")]
+    #[cfg(target_os = "macos")]
     fn card_of(src: &Path, memo: Option<&CardMemo>) -> CardOutcome {
         session_card(src, memo)
     }
 
     /// The exact join: `sub_chats.session_id` IS the transcript stem (verified against a real
     /// install, where it resolved every row). The transcript half still supplies `last_prompt`.
-    #[cfg(feature = "qoderwork-titles")]
+    #[cfg(target_os = "macos")]
     #[test]
     fn title_comes_from_sub_chats_and_last_prompt_from_the_transcript() {
         let _g = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -585,7 +584,7 @@ mod tests {
     /// **The property the whole memo design rests on**: a QoderWork title changes when the
     /// DATABASE changes, with the transcript untouched. A caller-side mtime rule would pin the
     /// old title forever; the adapter notices because it checks the row version too.
-    #[cfg(feature = "qoderwork-titles")]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_rename_is_seen_even_though_the_transcript_never_moved() {
         let _g = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -627,7 +626,7 @@ mod tests {
 
     /// The fallback: a session the newer table does not know about still gets its CHAT's name,
     /// via the workspace slug. Shared across that chat's sessions, and better than a bare UUID.
-    #[cfg(feature = "qoderwork-titles")]
+    #[cfg(target_os = "macos")]
     #[test]
     fn an_unknown_session_falls_back_to_its_chats_name() {
         let _g = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -647,7 +646,7 @@ mod tests {
         std::env::remove_var("QODERWORK_DB");
     }
 
-    /// No database — an install that has none, or a build without the feature — degrades to the
+    /// No database — an install that has none, or a non-macOS build — degrades to the
     /// transcript alone. Never an error.
     #[test]
     fn without_a_database_only_the_transcript_speaks() {

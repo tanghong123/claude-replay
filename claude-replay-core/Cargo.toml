@@ -8,11 +8,6 @@ repository = "https://github.com/tanghong123/claude-replay"
 keywords = ["claude", "codex", "transcript", "parser"]
 categories = ["parser-implementations"]
 
-[features]
-# Read QoderWork session titles from its SQLite chat store (#106). Off by default: it pulls in a
-# bundled SQLite, and every other agent names its sessions from the transcript alone.
-qoderwork-titles = ["claude-replay-agents/qoderwork-titles"]
-
 [dependencies]
 claude-replay-engine = { path = "../claude-replay-engine", version = "1" }
 claude-replay-agents = { path = "../claude-replay-agents", version = "1" }

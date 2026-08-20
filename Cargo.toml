@@ -38,7 +38,7 @@ default-members = [
 
 # One version for the whole workspace, bumped in ONE place per release (#71).
 [workspace.package]
-version = "1.96.2"
+version = "1.96.3"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tanghong123/claude-replay"
@@ -62,11 +62,6 @@ path = "src/bin/agent-jdi.rs"
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
-
-[features]
-# Surface the QoderWork title store (#106) end to end: `cargo build --features qoderwork-titles`.
-# Off by default — see the note on the core crate's feature of the same name.
-qoderwork-titles = ["claude-replay-core/qoderwork-titles"]
 
 [dependencies]
 claude-replay-core = { path = "claude-replay-core" }
