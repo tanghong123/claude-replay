@@ -741,12 +741,38 @@ reply_from(acc.stream_read(client_from));     <span class="c">// …or poll_view
       ladder, and each rung holds a <em>window</em>, not the session:</p>
     <div class="stack" role="img" aria-label="The memory ladder from transcript bytes to rendered output, each rung windowed.">
       <div class="rung"><span class="rn">transcript bytes</span><span class="rw">resident: none — the byte-offset tail reads deltas (agent's store, disk)</span></div>
-      <div class="rung"><span class="rn">canonical Message</span><span class="rw">resident: ~1 line's worth, transient (L1 decode, one line at a time)</span></div>
+      <div class="rung"><span class="rn">canonical Message</span><span class="rw">resident: ~1 line's worth, transient (L1 decode, one line at a time) — <b>the one unbounded rung</b>: the raw line is buffered whole (largest measured: 8.08&nbsp;MB)</span></div>
       <div class="rung"><span class="rn">Block · open turn</span><span class="rw">resident: O(turn) in the accumulator (L2 fold, Replayer)</span></div>
       <div class="rung hot"><span class="rn">Block · committed</span><span class="rw">resident: policy! InMemoryStore = RAM · TierBStore = 12-byte locators, content on disk · RecordStore = wire-record locators (#74) · ArcStore = Arc-shared content, ONE copy that the cache owns and every reader references (#84) · ArcLog = the same, plus a durable backing the next run resumes from (#96)</span></div>
       <div class="rung"><span class="rn">presentation form</span><span class="rw">TUI: heights + prefix (O(N) small ints) · HTML: JSON records (client), record log (server) — via fold policy, summaries, records/lines</span></div>
       <div class="rung"><span class="rn">rendered result</span><span class="rw">TUI: <code>hot</code> window ≈ 96 blocks near the viewport · HTML: DOM window ≈ viewport ± 1500px</span></div>
     </div>
+    <h3 id="raw-line">The rung that is not yet windowed: the raw line (designed, not built)</h3>
+    <p>The ladder is honest about where it stops. Every rung below <code>Message</code> holds a
+      window; the rung <em>above</em> it does not — each read path buffers one whole raw line,
+      hands it to <code>serde_json::from_str::&lt;Value&gt;</code> (a DOM several times the text
+      size) and to <code>decode_line</code>. Across ~400 real transcripts the largest single line
+      is <b>8.08&nbsp;MB</b>, and ~95% of that bulk is base64 attachment bodies — precisely the
+      content the block model already refuses to hold: an attachment is stored as
+      <code>AttachmentContent::Deferred { at, index }</code>, an offset and an ordinal, and
+      <code>load_attachment</code> re-reads the raw line from disk on demand.</p>
+    <div class="callout"><b>The prize.</b> Today the engine buffers 8&nbsp;MB in order to record a
+      locator that deliberately holds none of it.</div>
+    <p>The designed fix is an <b>eliding line reader</b>: a JSON-aware filter that copies bytes
+      through but replaces any string value over 64&nbsp;KB with a prefix-preserving placeholder,
+      so the line stays valid JSON of the same shape and every downstream consumer —
+      <code>Value</code>, <code>LinePreprocessor</code>, <code>decode_line</code>, the metrics
+      fold — works unmodified on a small line. Two constraints shape it, and both are
+      architectural rather than incidental: the scanner must stay <b>agent-free</b> (§3), so
+      <em>which</em> nodes may be elided arrives through the seam the way <code>Shaping</code>
+      does; and elision must run <b>strictly downstream of raw-offset accounting</b>, because
+      <code>Deferred.at</code>, the resume cursor and the durable cache's window CRC all index raw
+      bytes on disk.</p>
+    <p><b>Status: designed and under review, not built</b> — <code>design/bounded-line-reads.md</code>
+      (#193), where the per-consumer rules (aggressive for metrics folds, attachment-only for block
+      building) and the migration order with a per-step equivalence oracle are worked out. Until it
+      lands, this rung is the one place the &ldquo;every representation is windowed&rdquo; claim is
+      aspirational.</p>
     <p style="margin-top:22px">The windows at the top rung deserve emphasis, because both
       frontends independently converged on the same structure — an O(N) <em>index</em> of cheap
       integers plus an O(viewport) cache of expensive rendered output:</p>

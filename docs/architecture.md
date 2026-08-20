@@ -412,7 +412,8 @@ a *window*, not the session:
 
 ```
   transcript bytes (agent's store, disk)     resident: none — byte-offset tail reads deltas
-      │  L1 decode (one line at a time)
+      │  L1 decode (one line at a time)          ⚠ the one UNBOUNDED rung: a raw line is
+      │                                            buffered whole (largest measured: 8.08 MB)
   canonical Message                          resident: ~1 line's worth, transient
       │  L2 fold (Replayer)
   Block — open turn                          resident: O(turn) in the accumulator
@@ -428,6 +429,31 @@ a *window*, not the session:
   rendered result                            TUI: `hot` window ≈ 96 blocks near the viewport;
                                              HTML: DOM window ≈ viewport ± 1500px
 ```
+
+### The rung that is not yet windowed: the raw line (designed, not built)
+
+The ladder is honest about where it stops. Every rung below `Message` holds a window; the rung
+*above* it does not — each read path buffers one whole raw line, hands it to
+`serde_json::from_str::<Value>` (a DOM several times the text size) and to `decode_line`. Across
+~400 real transcripts the largest single line is **8.08 MB**, and ~95 % of that bulk is base64
+attachment bodies — which is precisely the content the block model already refuses to hold: an
+attachment is stored as `AttachmentContent::Deferred { at, index }`, an offset and an ordinal,
+and `load_attachment` re-reads the raw line from disk on demand. **Today the engine buffers 8 MB
+in order to record a locator that deliberately holds none of it.**
+
+The designed fix is an **eliding line reader**: a JSON-aware filter that copies bytes through but
+replaces any string value over 64 KB with a prefix-preserving placeholder, so the line stays valid
+JSON of the same shape and every downstream consumer — `Value`, `LinePreprocessor`, `decode_line`,
+the metrics fold — works unmodified on a small line. Two constraints shape it and both are
+architectural rather than incidental: the scanner must stay **agent-free** (§3), so *which* nodes
+may be elided arrives through the seam like `Shaping` does; and elision must run **strictly
+downstream of raw-offset accounting**, because `Deferred.at`, the resume cursor and the durable
+cache's window CRC all index raw bytes on disk.
+
+Status: designed and under review, not built — `design/bounded-line-reads.md` (#193), where the
+per-consumer rules (aggressive for metrics folds, attachment-only for block building) and the
+migration order with a per-step equivalence oracle are worked out. Until it lands, this rung is
+the one place the "every representation is windowed" claim is aspirational.
 
 The windows at the top rung deserve emphasis, because both frontends independently converged
 on the same structure — an O(N) *index* of cheap integers plus an O(viewport) cache of

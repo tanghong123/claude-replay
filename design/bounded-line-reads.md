@@ -360,3 +360,585 @@ Decisions this document puts to review:
 Gating for the eventual build is the usual: `cargo fmt`/`clippy`/`test`, the `--dump`/`--dump-html`
 byte gate on frozen Claude + Codex, and the `follow_matches_full_reparse` equivalence test — plus
 the per-step oracles above. All **design-only** until reviewed.
+
+---
+
+## 10. The parsing workflow, in code (review addendum, 2026-08-20)
+
+Requested during review: *what does the main parsing workflow actually look like with this
+change?* Two answers, because they are different sizes. §10.1 is the design exactly as §4–§6
+specify it — the minimal diff. §10.2–§10.4 is an **amendment the code inventory argues for**,
+put here for the same review rather than assumed.
+
+Everything below is illustration. **Nothing in `claude-replay-engine` is modified** — #193 is
+still study-only.
+
+### 10.1 The design as reviewed: three lines at one chokepoint
+
+§6 established `advance_at` as the single per-line unit for *all* durable block building — the
+batch parse (A1) and the live follower (C2) both funnel through it, with the offset already
+computed from raw bytes upstream. So the whole of the block path's change is at its top:
+
+```rust
+// engine/builder.rs — SessionAccumulator::advance_at, today's signature, unchanged.
+pub fn advance_at(&mut self, offset: ByteOffset, line: &str) -> Option<usize> {
+    // #193: shorten oversized attachment bodies before ANYTHING parses the line.
+    // `offset` was counted from raw bytes upstream (advance_reader / LineReader::poll)
+    // and is not touched here — that ordering is the §4 invariant.
+    let line = elide(line, self.adapter.elision());        // Cow<'_, str>
+
+    // ── unchanged from here down ──────────────────────────────────────────────
+    let pre = self.preprocessor.state();
+    let metrics_state = self.metrics.state();
+    let mut delta: Vec<Message> = match self.preprocessor.process(&line) {
+        PreprocessedLine::Include => {
+            let mut messages = Vec::new();
+            self.adapter.decode_line(&line, &mut self.cwd, &mut messages);
+            messages
+        }
+        PreprocessedLine::Ignore => return None,
+        PreprocessedLine::Messages(messages) => messages,
+    };
+    // … locator stamping, boundary capture, fold, drain, checkpoint — untouched …
+}
+```
+
+`elide` returns a `Cow`, which is what makes the fast path free:
+
+```rust
+// engine/reader.rs — agent-neutral machinery. `policy` is the §4.1 α seam hook.
+pub fn elide<'a>(line: &'a str, policy: Elision) -> Cow<'a, str> {
+    if line.len() < SCAN_THRESHOLD {          // ~99.9 % of lines — no scan, no copy
+        return Cow::Borrowed(line);
+    }
+    Cow::Owned(scan(line, policy))            // escape-state walk, prefix-preserving placeholder
+}
+```
+
+> **This does not bound the buffer — see §10.6.** `elide` takes a `&str`, which means the whole
+> raw line is already in memory when it runs. What it removes is everything *downstream* of the
+> buffer (the `Value` DOM, `decode_line`'s walk, any retention); the 8 MB `read_line` allocation
+> itself survives. That is faithful to §9's decision 4, which scopes the chunked read out — but
+> it does not deliver §1's headline, and the gap is bigger than §9 states.
+
+Two properties worth naming, because they are what makes the diff this small:
+
+- **The signature does not change.** `advance_at` still takes `&str` and still returns
+  `Option<usize>`, so C2 (`FollowParser` → `LineReader::poll` → `advance_at`) inherits elision
+  with **no change at the follower at all**.
+- **The elided value never escapes the line's own fold.** Blocks hold
+  `AttachmentContent::Deferred { at, index }` — an offset and an ordinal, no bytes — and
+  `load_attachment` re-reads the raw line from disk (§5.3). So the shortened string dies at the
+  end of `advance_at`.
+
+### 10.2 What the read-site inventory actually shows
+
+§6 lists the read sites. Reading them side by side turns up something the inventory records but
+does not draw out: **four hand-rolled `read_line` loops, and three different torn-tail rules.**
+
+```rust
+// A1  builder.rs::advance_reader      — offset tracking; a torn final line is FED to advance_at
+let n = reader.read_line(&mut buf)?;  if n == 0 { break }
+let start = offset;  offset += n as ByteOffset;
+let line = buf.strip_suffix('\n').map(|s| s.strip_suffix('\r').unwrap_or(s)).unwrap_or(&buf);
+self.advance_at(start, line);
+
+// A2  adapter.rs::parse_reader        — no offsets; a torn final line is EXCUSED
+let complete = line.ends_with('\n');   let body = line.trim_end();
+if body.is_empty() { continue }
+match serde_json::from_str::<Value>(body) {
+    Ok(v) => acc.push(&v),
+    Err(_) if complete => acc.malformed_line(),   // "a write IN PROGRESS is not schema drift"
+    Err(_) => {}
+}
+
+// C1  metrics_fold.rs::next_event     — offsets; a torn final line REWINDS the reader
+if !line.ends_with('\n') { self.reader.seek(SeekFrom::Start(at))?; return Ok(None) }
+self.offset += n as u64;  let body = line.trim_end();
+if body.is_empty() { continue }
+
+// A3  discover.rs::latest_cwd         — .lines(), no offsets, no torn-tail notion at all
+```
+
+Blank-skipping appears three times, offset arithmetic twice, and the torn-tail question is
+answered three different ways. Two of those are deliberate (C1 must not advance its durable
+cursor past an incomplete line; A2 must not flash a spurious diagnostic on a live file).
+
+> **A finding, reported not fixed.** A1 and A2 disagree. `parse_reader` documents why a torn
+> final line must not count as malformed — *"a write IN PROGRESS … not schema drift"* — while
+> `advance_reader` hands that same line to `advance_at`, whose `Err(_) if !line.trim().is_empty()`
+> arm counts it. Both run over the same live transcripts. This predates #193 and is out of its
+> scope; it is named here because §10.3 is the point where the two rules would have to be stated
+> in one place, and a silent unification would pick a winner without saying so.
+
+### 10.3 The amendment: one `LineSource`, and §4's invariant becomes structural
+
+§4 places elision "at each read site, not only inside `LineReader`, because the read paths do not
+all funnel through `LineReader` today." That is accurate. It also means **the same three lines get
+pasted into four loops** — and the one rule that must never be broken (§4: *elision runs strictly
+downstream of raw-offset accounting*) is left as a rule each of the four must remember.
+
+The alternative is to give the four whole-file loops one source. Note the scope: this does **not**
+subsume `LineReader`, which owns the tail/resume path and its own partial-line buffering. It
+unifies the four `BufRead` loops beside it.
+
+```rust
+// engine/reader.rs — beside LineReader, not replacing it.
+
+/// What to do with a final line that has no newline yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TornTail {
+    /// A live file may be mid-append: stop before the incomplete line and leave the
+    /// cursor on the last complete one. (`MetricsFold`'s durable cursor requires this.)
+    Stop,
+    /// The last line is all there is: yield it.
+    Yield,
+}
+
+/// One whole-file line source: raw-offset accounting, torn-tail policy, blank skipping and
+/// elision — each written once.
+pub struct LineSource<R> {
+    reader: R,
+    offset: ByteOffset,
+    tail: TornTail,
+    policy: Elision,
+    raw: String,
+    out: String,
+    pub elided: ElisionCounts,      // §9.3 (b): reported per fold, not persisted
+}
+
+impl<R: io::BufRead> LineSource<R> {
+    pub fn new(reader: R, at: ByteOffset, tail: TornTail, policy: Elision) -> Self { /* … */ }
+
+    /// The next non-blank line as `(start offset, body)`, or `None` at EOF — or at a torn
+    /// tail under `TornTail::Stop`. A lending iterator: the `&str` borrows until the next call.
+    pub fn next(&mut self) -> io::Result<Option<(ByteOffset, &str)>> {
+        let start = loop {
+            self.raw.clear();
+            let n = self.reader.read_line(&mut self.raw)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if !self.raw.ends_with('\n') && self.tail == TornTail::Stop {
+                return Ok(None);              // cursor stays on the last complete line
+            }
+            let start = self.offset;
+            self.offset += n as ByteOffset;   // RAW bytes. Before anything is shortened.
+            if !self.raw.trim_end().is_empty() {
+                break start;
+            }
+        };
+        // Disjoint field borrows: `body` reads `self.raw`, the scanner writes `self.out`.
+        let body = &self.raw[..self.raw.trim_end().len()];
+        let hit = scan_into(body, self.policy, &mut self.out, &mut self.elided);
+        Ok(Some((start, if hit { &self.out } else { body })))
+    }
+
+    /// The offset of the next unread line — the durable cursor.
+    pub fn offset(&self) -> ByteOffset {
+        self.offset
+    }
+}
+```
+
+**The invariant stops being a rule and becomes a shape.** `self.offset += n` runs on the raw
+`read_line` count, inside the source, before `scan_into` can see the line — and the offset is
+returned by value while the body is returned by reference. A caller cannot elide first and count
+second, because a caller never counts at all.
+
+### 10.4 The four sites, after
+
+```rust
+// A1 — builder.rs, the whole-file block fold.
+// NOTE: superseded by §11. `Elision::None` here defers the block path's policy to advance_at,
+// which is elision AFTER the read and therefore leaves A1 unbounded. Under the boundedness
+// invariant the policy must be applied inside the source for every site, block path included.
+pub fn advance_reader(&mut self, reader: &mut dyn io::BufRead) -> io::Result<()> {
+    let mut src = LineSource::new(reader, 0, TornTail::Yield, Elision::None);
+    while let Some((at, line)) = src.next()? {
+        self.advance_at(at, line);
+    }
+    Ok(())
+}
+
+// A2 — adapter.rs, the whole-file metrics fold. Aggressive: provably metric-neutral (§5.1).
+fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
+    let mut acc = self.metrics_acc();
+    let mut pre = self.line_preprocessor();
+    let mut src = LineSource::new(reader, 0, TornTail::Stop, Elision::Aggressive);
+    while let Ok(Some((_, line))) = src.next() {
+        if matches!(pre.process(line), PreprocessedLine::Ignore) {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) => acc.push(&v),
+            Err(_) => acc.malformed_line(),   // no `if complete` — Stop means we never see one
+        }
+    }
+    acc.finish()
+}
+
+// C1 — metrics_fold.rs. The fold holds the source instead of a bare reader + offset.
+pub fn next_event(&mut self) -> io::Result<Option<MetricsEvent>> {
+    let Some((_, line)) = self.src.next()? else {
+        self.src.rewind_to_cursor()?;         // R: BufRead + Seek; the one site that needs it
+        return Ok(None);
+    };
+    if matches!(self.pre.process(line), PreprocessedLine::Ignore) {
+        return self.next_event();
+    }
+    // … unchanged: totals before, push, totals after, diff into a MetricsEvent …
+}
+
+// A3 — discover.rs, cwd only.
+pub fn latest_cwd(path: &Path) -> Option<PathBuf> {
+    let f = io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut src = LineSource::new(f, 0, TornTail::Yield, Elision::Aggressive);
+    let mut last = None;
+    while let Ok(Some((_, line))) = src.next() {
+        if let Some(cwd) = serde_json::from_str::<Value>(line).ok().as_ref().and_then(cwd_in_record) {
+            last = Some(cwd);
+        }
+    }
+    last
+}
+```
+
+What this buys beyond eliding, and what it costs:
+
+- **`parse_reader` loses a branch.** `let complete = line.ends_with('\n')` and the
+  `Err(_) if complete` guard both disappear: under `TornTail::Stop` a torn line is never
+  yielded, so "malformed" is unconditional. The rule moves from a per-site guard to a named
+  argument, and §10.2's A1/A2 divergence becomes a visible choice — `TornTail::Yield` vs
+  `Stop` at one call site — instead of a discrepancy between two loops.
+- **`next_event` keeps its rewind** — honestly. `read_line` has already consumed the bytes by
+  the time the source knows the line was torn, so somebody must seek back. It moves into
+  `LineSource::rewind_to_cursor` under an `R: Seek` bound, which is one site rather than
+  everywhere, but it does not vanish.
+- **`Elision` becomes one argument at one call site per consumer**, which is §5's per-consumer
+  table expressed in the type system rather than in prose.
+- **It is the seam where a chunked read could later land** (§9 decision 4). The raw `read_line`
+  still slurps one whole line before elision; bounding *that* means replacing one loop body,
+  not four.
+- **Cost:** a new engine type on the critical path of every parse, and four call sites rewritten
+  in a repo whose gate is byte-identical output. The oracles in §8 cover it — the migration
+  order does not change — but this is strictly more diff than §10.1.
+
+### 10.5 What this adds to the review
+
+A third decision, alongside §9's α-vs-β and the counter home:
+
+**Placement:** §4's *per-read-site* elision (§10.1 — minimal diff, the rule stays a rule), or
+**one `LineSource`** (§10.3 — larger diff, the rule becomes unrepresentable-otherwise, four loops
+collapse to one, and the A1/A2 torn-tail divergence surfaces as a decision).
+
+They are not exclusive: §10.1 is a strict subset, so shipping it first and unifying later is a
+valid order. The argument for doing it in one pass is that migrating four loops twice is the
+expensive half, and step 0's fixtures are written either way.
+
+
+### 10.6 Correction: the prototype above still buffers the whole line
+
+Raised in review, and correct. §10.1 elides a `&str` that already exists, so the peak allocation
+is unchanged. Worth separating what it does and does not buy:
+
+| cost | `elide(&str)` (§10.1) | streaming read (§10.6) |
+| --- | --- | --- |
+| `serde_json::Value` DOM over 8 MB | **gone** | gone |
+| `decode_line` walking 8 MB | **gone** | gone |
+| the raw `String` the line was read into | **survives** | gone |
+| the reader's high-water capacity | **survives, for the rest of the parse** | gone |
+
+That fourth row is the one nobody counts. Every one of these loops reuses its buffer —
+`advance_reader`'s `buf`, `parse_reader`'s `line`, and (my own sketch's) `LineSource::raw` — via
+`String::clear`, which keeps capacity. So a single 8 MB line does not cost 8 MB once; it raises
+the loop's resident buffer to 8 MB **for every remaining line of the parse**. §10.3 as written
+institutionalizes that.
+
+**And the follower is worse than "one line".** §1 says the read paths "buffer each raw line in
+full". `LineReader::poll` does not:
+
+```rust
+f.seek(SeekFrom::Start(self.offset))?;
+let mut buf = Vec::new();
+f.read_to_end(&mut buf)?;          // everything from the cursor to EOF
+self.consume(&buf, &mut out);      // → out.lines: Vec<String>, one owned String per line
+```
+
+On the cold first poll of a followed session (`FollowParser::open` → `LineReader::open_at_start`)
+that is **the whole file materialized twice** — once as `Vec<u8>`, once as a `Vec<String>` of
+every line — before `advance_at` sees byte one. Elision at `advance_at` cannot touch either,
+because both already exist by the time it runs. (A *resumed* session escapes this: `open_at_offset`
+reads only the suffix above `replay_from`, which is durability paying for itself again. A cold
+session does not.)
+
+#### What a bounded read actually looks like: the seed's `read_line_elided`, adopted
+
+The scanner §3 specifies is **already a streaming state machine** — its own fast-path description
+says "fill a buffer to the threshold; the threshold crossed without a newline ⇒ run the scanner
+over the buffered prefix and stream on." §10.1's `elide(&str)` is the weaker form that throws that
+capability away.
+
+There is no primitive to invent here. The seed **implemented** its proposal —
+`agent-metrics/src/elide.rs` — and its contract is the one this design adopts, under its name:
+
+```rust
+// agent-metrics/src/elide.rs — real, tested code, not a sketch.
+pub fn read_line_elided<R: BufRead>(
+    reader: &mut R,
+    out: &mut Vec<u8>,               // receives the (possibly elided) line bytes
+) -> std::io::Result<LineOutcome>;
+
+pub enum LineOutcome {
+    Eof,
+    /// A final line with no newline: a write in progress. The caller must leave
+    /// its offset unadvanced so the next run re-reads the line whole.
+    Torn,
+    Complete { raw_len: u64, elided: u64, skipped: bool },
+}
+```
+
+Driven over `fill_buf`/`consume`, no whole line is ever resident, and the contract already
+answers three questions the engine's loops answer inconsistently (§10.2): `raw_len` is always the
+true byte count for offset accounting; `Torn` is a first-class outcome rather than a per-site
+`ends_with('\n')` convention; `skipped` is the `HARD_CEILING` overflow, counted rather than
+silent.
+
+The engine adopts it with **three deltas**, each already argued elsewhere in this document:
+
+1. **The prefix-preserving placeholder** (§3): the seed emits a bare `"<elided:N>"`; the engine
+   keeps the first K = 64 bytes so Codex's payload-shape recognizers survive (§5.3). A change
+   inside the scanner's emit path, not to the signature.
+2. **A policy parameter** (§4.1) — only if α is chosen: `read_line_elided(reader, out, policy)`.
+   Under β the seed's signature stands unchanged. This is the α cost line in §11.3.
+3. **A torn-tail mode** (§10.3): the seed's `Torn` semantics match `TornTail::Stop`; the engine
+   also needs `Yield` (A1 feeds a torn final line to the fold today). One flag, or the caller
+   simply uses the buffer on `Torn` — a policy choice above the primitive, not inside it.
+
+Three things fall out, and they are the reason this is not merely a nicer §10.1:
+
+- **The offset invariant gets *stronger*, not weaker.** §4 has to say "elide the line handed
+  onward, never the byte counting" because the two are separable. Here they are not: `raw_len`
+  counts bytes *as they are consumed*, so an elided byte is counted by the same pass that drops it.
+- **The peak becomes the elided size**, not the raw size, with the ceiling as the backstop for
+  the pathological line that is large without any one large string. `skipped` makes the ceiling
+  the actual bound rather than a curiosity.
+- **`BufReader`'s own buffer is the only fixed cost** — 8 KB, never grown by `fill_buf`.
+
+#### What this does to the §10.5 decision
+
+It changes its weight. §10.5 framed placement as minimal-diff versus tidiness; it is not.
+
+- A streaming read **cannot** be expressed as "elide at each read site" (§4), because there is no
+  site to put it — the elision has to happen *inside* the read, and there are four reads.
+- So §4's placement does not merely leave the buffer unbounded today; it leaves it unbounded
+  **permanently**, unless the chunked read is later written four times.
+- One `LineSource` is where `read_line_elided` lands **once**. That makes §10.3 the prerequisite
+  for §9's decision 4 rather than an independent tidy-up — and if decision 4 is genuinely wanted
+  later, deferring §10.3 now means migrating four loops twice.
+
+`LineReader` is the fifth read and the one this still does not reach: it is `File` + `read_to_end`
++ `Vec<String>`, not a `BufRead` loop, and bounding it means giving the tail/resume path a chunked
+read with its own pending-partial handling. That is a separate step, and it is the one that bounds
+the **follower's cold poll** — measurably the largest allocation in the whole inventory. It should
+be named in the migration order (§8) rather than left inside decision 4's one-line deferral.
+
+**Revised recommendation.** Ship §10.1 first if the goal is the DOM multiplier — it is real,
+cheap, and its oracles are written. But say plainly in §1 and §9 that it does **not** bound the
+buffer, adopt §10.3 as the placement so the bounded read has one home, and promote the chunked
+read (both `LineSource` and `LineReader`) from a deferred aside to a named step with its own
+oracle: peak RSS over a fixture containing one 8 MB line, asserted against the un-elided baseline.
+
+---
+
+## 11. Full audit: every transcript read, bounded or not (2026-08-20)
+
+Requested at review: vet the whole design against one invariant — **no read allocates without a
+cap.** Not a memory-savings target; a robustness property. An unbounded read is one whose
+allocation is a function of transcript content with no ceiling, which at deployment scale means a
+pathological or malformed transcript can take the process down.
+
+The audit criterion is therefore binary per site, and it is stricter than §6's. §6 asked "does
+this site need elision?". This asks **"can any input make this allocation grow without limit?"**
+Three things pass the first test and fail the second, which is why §6 missed them.
+
+### 11.1 The audit
+
+**Bounded today — no work needed.** A fixed byte window, taken before the read:
+
+| site | bound |
+| --- | --- |
+| `state.rs` `tail_pulse` | seeks to `len − PULSE_TAIL_BYTES` |
+| `core/liveness.rs` `inflight_tools_in_tail` | seeks to `len − INFLIGHT_TAIL_BYTES` |
+| `claude/discover.rs:381` `read_from` | `f.take(to − from).read_to_end` |
+
+**Bounded on one path, unbounded on the other.** One site, and §6 records only its good half:
+
+| site | cold | resumed |
+| --- | --- | --- |
+| `claude/discover.rs:294` `session_card` | `from = len − TAIL_BYTES` — **bounded** | `from = memo.at`, `to = len` — **O(everything appended since the last scan)**, and `read_from` pre-reserves it with `Vec::with_capacity(to − from)` |
+
+§6 calls this one "bounded `TAIL_BYTES`", which is true only of the cold read. The memoized path
+is the one the monitor takes on every rescan, and a session not visited for a long time — or one
+that appended a single huge line — is read whole. This row was verified against the code rather
+than inherited from §6, which §11.2 indicts.
+
+**Unbounded in one line's length.** `read_line` and `.lines()` both grow until a newline
+arrives; neither has a cap:
+
+| # | site | read | note |
+| --- | --- | --- | --- |
+| 1 | `engine/adapter.rs:170` `parse_reader` | `read_line` | A2 |
+| 2 | `engine/metrics_fold.rs:166` `next_event` | `read_line` | C1 |
+| 3 | `engine/builder.rs:502` `advance_reader` | `read_line` | A1 |
+| 4 | `engine/discover.rs:223` `first_cwd` | `.lines().take(50)` | runs on **every** `poll_shared` |
+| 5 | `engine/discover.rs:237` `latest_cwd` | `.lines()`, whole file | A3 |
+| 6 | `engine/discover.rs:347` `session_id` | `.lines().take(50)` | |
+| 7 | `claude/discover.rs:148` | `.lines().take(80)` | snippet sniff |
+| 8 | `codex/discover.rs:79,130,269,577` | `.lines().take(100\|300)` | |
+| 9 | `codex/discover.rs:384` | `read_line` | first line |
+| 10 | `core/discover.rs:75` `detect_agent` | `.lines().take(5)` | runs on every candidate |
+| 11 | `core/transcript.rs:140` `load_attachment` | `read_line` | D1 — §6 called this "O(one line)" |
+| 12 | `present/cache/stream.rs:30` `anchor_of` | `read_line` | first line, for the CRC identity check |
+
+> **`take(N)` bounds the line COUNT, not the line SIZE.** This is the trap, and it is why six of
+> these read as safe. On a transcript with no newline at all — a truncated write, a binary file
+> that reached the store, a single 200 MB line — `detect_agent`'s five-line sniff reads the entire
+> file, and **discovery runs it against every candidate on the machine.** The cheapest-looking
+> site in the inventory is the one that fails hardest on malformed input.
+
+**Unbounded in the whole FILE.** One site, and the design never named it:
+
+```rust
+// engine/reader.rs:127 — LineReader::poll
+f.seek(SeekFrom::Start(self.offset))?;
+let mut buf = Vec::new();
+f.read_to_end(&mut buf)?;          // cursor → EOF, no cap
+self.consume(&buf, &mut out);      // → out.lines: Vec<String>, one owned String per line
+```
+
+On the cold first poll of a followed session (`FollowParser::open` → `open_at_start`) this
+materializes the transcript **twice** — once as `Vec<u8>`, once as a `Vec<String>` — before
+`advance_at` sees byte one. Measured on this machine: transcripts of 214 MB, 157 MB, 150 MB, 128 MB
+and 102 MB, so a cold open of the largest is ≈430 MB of allocation before folding begins. A
+*resumed* session escapes it (`open_at_offset` reads only above `replay_from`); a cold one does
+not, and the transient provider is always cold.
+
+This one is not fixed by a bounded line read alone: even with every line capped, `Vec<String>`
+over a whole file is O(file). It needs a chunked read **and** a bounded batch per poll.
+
+**Scope, stated so omission is not mistaken for coverage.** The audit above covers *transcript*
+reads. Agents also write **sidecar** files into the same stores, and those are read whole:
+
+| site | read | verdict |
+| --- | --- | --- |
+| `qoderwork/discover.rs:259` `sidecar` | `read_to_string(<stem>-session.json)` | **unbounded** — agent-written, same trust domain as a transcript |
+| `claude/discover.rs:411` `load_tasks_in` | `read_to_string` per task file, in a loop | **unbounded**, same |
+| `claude-monitor/src/index.rs:1602` `last_event_ts` | seeks to `len − 32 KB` | bounded — verified |
+| `claude-monitor/src/cost.rs:148` `load_entry` | `read_to_string` of the ledger | unbounded, but the monitor's **own** file — a different trust domain |
+
+The two sidecar reads are outside #193's mechanism (they are single JSON documents, not JSONL, so
+there is no line to elide) but they are inside the *invariant* Hong stated. They want a size cap
+before the read, which is a two-line fix and a separate issue — named here rather than left silent.
+
+### 11.2 The verdict on the design as written
+
+**Mechanism: sound.** §3's prefix-preserving placeholder, §5.3's ordinal analysis, and §7's proof
+that the resume CRC cannot see an elided byte are all correct, and the Codex asymmetry work is a
+genuine improvement on the seed rather than a port of it.
+
+**Scope: not sound, against this invariant.** Three specific failures:
+
+1. **§4's placement cannot deliver boundedness at all** (§10.6). Eliding a `&str` that already
+   exists shortens what goes downstream; the allocation being audited has already happened.
+2. **§6's inventory is a relevance inventory, not a boundedness one.** It correctly excluded the
+   fixed-window scanners, and then missed that `take(N)` is count-bounded, missed
+   `LineReader::poll` entirely, missed `anchor_of`, and dismissed `load_attachment` as "O(one
+   line, one attachment)" when *one line* is precisely the unbounded quantity.
+3. **§9's decision 4 defers the chunked read**, which is not a refinement of the design — it *is*
+   the property.
+
+### 11.3 Why the cost is far lower than "rewrite every read path"
+
+The primitive already exists, implemented and tested, in the repo this design was ported from.
+`agent-metrics/src/elide.rs` (475 lines) — **the seed did not stop at proposing it**:
+
+```rust
+pub fn read_line_elided<R: BufRead>(reader: &mut R, out: &mut Vec<u8>)
+    -> std::io::Result<LineOutcome>
+```
+
+with `LineOutcome::{Eof, Torn, Complete { raw_len, elided, skipped }}` — `raw_len` always the true
+byte length for offset accounting, `Torn` meaning "leave the offset unadvanced", `skipped` meaning
+the line blew past `HARD_CEILING`. Its caller says so in a comment: *"Never `read_line`, which has
+no cap — see `elide`."* This is the streaming reader §10.6 sketched, already written.
+
+That reframes the work, and it is the whole reason #193 exists — *"can ONE eliding reader live in
+the engine, shared by every line consumer, instead of each downstream repo growing its own scanner
+that drifts?"* The answer is that the scanner is already written in the sibling; the engine's job
+is to adopt it, add the K = 64 prefix the Codex asymmetry needs (§3 — the engine's own
+contribution), and expose it at the seam so agent-metrics deletes its copy.
+
+| work | size | new logic? |
+| --- | --- | --- |
+| port `elide.rs` → `engine/reader.rs`, add the K-byte prefix | ~475 lines, existing + a small change | no |
+| **under β only** — the seed scanner is size-driven and ships as-is | — | no |
+| **under α** — make the scanner *path-aware* while streaming, and plumb the adapter policy into both `LineSource` and `LineReader` | the second genuinely new piece | **yes** — the seed is explicit that its rule is "a property of JSON, **not a list of known paths**" |
+| sites 1–10, 12: swap `read_line`/`.lines()` for the primitive | 1–3 lines each | no |
+| `LineReader::poll`: chunked read + bounded batch per poll | one function + its one caller | no |
+| `session_card`: cap the resumed read, or re-window when the gap is large | one function | no |
+| `load_attachment` (11): stream to the *n*th content-bearing string | the first genuinely new piece | yes — same state machine, **capture** sink instead of **drop** |
+
+Site 11 is worth stating plainly since it is the only new design: `load_attachment` is the one path
+that *wants* the bytes, so elision is the wrong operation. It needs the same scanner walking to the
+*n*th content-bearing node and streaming that value into the base64 decoder — one extra mode on a
+state machine that has to exist anyway, not a second scanner.
+
+### 11.4 What "bounded" will actually mean
+
+Stated precisely, so the guarantee is checkable rather than a feeling:
+
+- **No allocation is a function of file size.** Reads are chunked through `BufRead::fill_buf`;
+  `LineReader::poll` returns a bounded batch.
+- **Per-line allocation is bounded by the elision policy, backstopped by `HARD_CEILING`** (64 MB).
+  A line that exceeds it is consumed to its newline, `out` holds nothing, and it is **counted**.
+
+That second clause is the one that answers the deployment concern directly: a malformed transcript
+stops being an unbounded allocation and becomes a counted skip. It is not "always small" — a 2.7 MB
+line of many small strings stays 2.7 MB, because nothing in it is elidable — it is *never
+unlimited*, which is the property being bought.
+
+### 11.5 Recommendation
+
+**Go, with the scope corrected.** The go/no-go turns on whether the design is sound, and the
+mechanism is; what fails is a scope that cannot deliver the property. Concretely:
+
+- Adopt §10.3's `LineSource` as the placement — not for tidiness, but because a streaming read has
+  no expression under §4's per-site placement, so §4 forecloses the property permanently.
+- Promote the chunked read from §9's decision 4 into the migration order as step 0, since it *is*
+  the deliverable.
+- Add `LineReader::poll`, `anchor_of`, `detect_agent`/`first_cwd`/`session_id` and the adapter
+  sniffs to §6's inventory, with the `take(N)`-is-not-a-size-bound note.
+- Keep §5.3, §7 and §8 exactly as they are — that analysis is the part of this design worth having,
+  and none of it changes.
+
+**And one decision comes back to you, on new terms: α vs β.** §9 framed it as viewer-losslessness
+versus a byte-gate re-baseline, and recommended α. Boundedness changes the cost side, because the
+policy now has to live *inside* the read at every site rather than at `advance_at`:
+
+- **β** — size-driven, no path awareness. The seed's scanner is already exactly this and ships
+  as-is. Cost: one rendered-output change (a giant non-attachment *text* renders as
+  `iVBOR…<elided:N>`), so a FOLD_VERSION bump and one byte-gate re-baseline.
+- **α** — the adapter says which nodes may be elided. That needs a **path-tracking** streaming
+  scanner, which the seed deliberately is not, plus the policy plumbed through `LineSource` *and*
+  `LineReader`'s chunked read. Cost: real new logic on the one component whose stated hazard is
+  mis-tracking JSON escapes.
+
+α remains better for the viewer. It is no longer nearly free, and it is now the larger half of the
+whole change. Worth deciding explicitly rather than inheriting §9's recommendation, which was
+priced before boundedness was the goal. (β is also recoverable: the elided text is still shown
+with its first 64 bytes and its true length, and the raw line is on disk.)
+
+**The one thing not to buy:** eliding for its own sake at sites where nothing is ever large. Every
+site above is switched for boundedness; whether it *also* elides is the per-consumer question §5
+already answers, and the answer for the sniffs is "it does not matter, they read five lines."

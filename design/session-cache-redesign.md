@@ -35,11 +35,63 @@ document:
 1. **Residency** (in-memory): "give every caller the *same* live, folded copy of session X, keep
    it fresh as the transcript grows, and drop it when nobody needs it." One folded copy per
    session, shared — because two independent folds of one transcript waste CPU and can disagree.
+   *"Keep it fresh" is the subtle half*: nothing in the cache does it on a timer, and a resident
+   can trail both the durable entry and the transcript until a client drives it forward — §1.1.
 2. **Durability** (on-disk): "when the process restarts, don't re-fold from byte 0 — resume from
    where the last run left off." A durable *entry* on disk holds the folded output plus a small
    metadata stream that says how far the fold got; a *lock file* ensures only one process writes
    an entry at a time; a *note* inside the lock tells a second process where the first one is
    serving, so it can redirect instead of fighting.
+
+### 1.1 Three states, and the client that drives them into agreement
+
+Naming residency and durability as two *jobs* invites a reading where each is simply "the" state
+of a session. They are not. There are **three** states of the same session, and at any instant
+they may disagree — each lagging the one above it:
+
+```
+  transcript on disk       the agent appends to it, on its own schedule
+      ↑ lags
+  durable entry            folded as far as the last record the cache wrote
+      ↑ lags
+  resident (in memory)     folded as far as the last advance a client drove
+```
+
+**And the cache has no background sync thread.** `SharedSession::advance` says so in its own
+first line — it *borrows the caller's thread* to tail the source. Nothing in the cache wakes up
+on its own, nothing polls, nothing catches up in the background. The three states converge only
+when a client asks for something, which makes the per-request sequence in §5.5
+(`reap → touch → (admit if evicted) → advance → reply`) not an implementation detail but **the
+convergence itself**, in the only order that is cheap:
+
+1. **Resident ← durable, first.** `SharedSession::resume` rebuilds the accumulator from the
+   record stream and starts its reader at `resume.replay_from`, so the bytes below that offset
+   are never read again. The cost is proportional to what the previous run already folded, not
+   to the size of the file.
+2. **Then transcript → both, in one pass.** The `advance()` that follows reads only the appended
+   delta, and `record()` drains the fold's new meta records into the writer as it goes. One read
+   of the transcript moves the resident and the durable entry forward together.
+
+The order is the whole efficiency argument, and it is worth stating because the reverse is the
+intuitive one. Read the transcript first and reconcile with the durable entry afterwards, and
+the resident has to fold from byte 0 to discover what the durable entry already knew — precisely
+the minute-long cold fold that durability exists to avoid. Sync the cheap hop first, and the
+expensive hop is a delta rather than a file.
+
+Two consequences, stated because both are easy to mistake for bugs:
+
+- **A resident is only ever *behind* the durable entry at the moment it is created.** Once
+  `attach_writer` has armed it, the fold and the record stream advance in lockstep under one
+  lock. There is no mid-life drift to reconcile — which is why the resident's interface has a
+  `resume` and no `resync`.
+- **A released resident stops following on purpose.** `quiesce` flushes, detaches the writer and
+  freezes; `advance` then returns `Ok(false)`. The session stays resident and readable while
+  owning nothing on disk (#109), so it lags the transcript deliberately until a re-admission
+  re-arms it. "Stale" and "broken" look identical from outside and are not the same thing.
+
+This is also why §6's right-hand column can say the resident must never know "that its store is
+durable at all": it does not participate in the reconciliation — it *is* one of the things being
+reconciled, and the client's call order is what does the work.
 
 Terms used throughout:
 
