@@ -9,11 +9,18 @@
 > preserved as written in git history (`fd3765d` and before); §12 is the compressed trail of
 > what changed and why. The open decisions are in §11.
 >
-> **v2.1, 2026-08-20 (owner review).** The placeholder now carries the elided value's **span**
-> — `<elided:{off},{len}>`, offset from the line start — captured by the one scan that already
-> passes over every byte, so `load_attachment` seeks straight to the value instead of
-> re-scanning the line (§9.2). The ordinal walk remains the base mechanism for sub-threshold
-> values, which have no span. Ripples into §11's decisions ① and ③; trail in §12.5.
+> **v2.1, 2026-08-20 (owner review).** The placeholder gained the elided value's span; the
+> loader seeks instead of re-scanning. Refined in the same review wave by v2.2.
+>
+> **v2.2, 2026-08-20 (owner review, continued).** The marker is an **exact substitution
+> pointer** — `<elided:{off},{len}>`, `off` the *absolute* file offset of the dropped bytes —
+> with the invariant that splicing `file[off, off+len)` over the marker reconstructs the
+> original line **byte for byte**. Nothing is lost; elision is invertible by construction, and
+> the round trip is the scanner's own oracle (§10 step 0). Two principles joined it: **the
+> fold is sans-io**, so elision must commute with folding — the architectural statement of
+> α vs β (§6) — and **a marker is untrusted input**, so the span load validates before it
+> allocates (§9.2). α gained a cheaper form (α-lite, key-suffix policy, §6). The ordinal walk
+> remains the base mechanism for sub-threshold values, which carry no marker. Trail in §12.5.
 
 Inspired by, and generalizing, agent-metrics' adopted proposal
 `~/code/agent-metrics/docs/proposals/bounded-line-reads.md` — which did not stop at proposing:
@@ -44,7 +51,7 @@ One component touches bytes; everything else drives it:
 | `read_line_elided` | **the only byte-toucher** — a streaming state machine over `fill_buf`/`consume`: reads one line, shortens oversized string values in flight, never holds a whole raw line | adopted from `agent-metrics/src/elide.rs`, three deltas (§4) |
 | `LineSource` | the **batch driver** — wraps the primitive for the whole-file loops: raw-offset accounting, torn-tail policy, blank skipping, elision counters, each written once | new, small (§5) |
 | `LineReader` (exists) | the **tail batcher** — the follower's poll path; keeps its name and its resume contract, swaps its `read_to_end` for chunked reads through the same primitive, returns a bounded batch per poll | changed inside (§9.1) |
-| `load_attachment` | the one path that *wants* the bytes — an elided value's locator carries its **span** (recorded by the scan that elided it), so load seeks straight to the value; sub-threshold values use the same state machine with a **capture sink** to the *n*-th content-bearing value | span hint + new mode (§9.2) |
+| `load_attachment` | the one path that *wants* the bytes — an elided value's locator carries its **span** (recorded by the scan that elided it), so load validates the marker and seeks straight to the dropped bytes; sub-threshold values use the same state machine with a **capture sink** to the *n*-th content-bearing value | span hint + new mode (§9.2) |
 
 Policy enters once, through the seam (§6): the adapter says *what may be elided*; the machinery
 never knows an agent's field names.
@@ -59,12 +66,14 @@ while let Some((at, line)) = src.next()? {          // (raw byte offset, elided 
 // src.offset() is the durable cursor; src.elided has the gauges.
 ```
 
-Two guarantees the shape enforces, so no caller can hold them wrong:
+Three guarantees the shape enforces, so no caller can hold them wrong:
 
 - **Offsets are raw.** `at` and `offset()` count bytes as consumed from disk, inside the source,
   before anything is shortened — the caller never counts, so it cannot count elided text.
 - **The line handed out is already bounded.** Peak per-line allocation is the elided size,
   backstopped by a hard ceiling (§4); the raw 8 MB never exists in memory.
+- **Elision is invertible.** Splice `file[off, off + len)` over each marker and the original
+  line returns, byte for byte (§4) — nothing is lost, and the round trip is a property test.
 
 ---
 
@@ -162,15 +171,27 @@ The output stays syntactically valid JSON with the same shape, so every downstre
 — works unmodified and sees a small line.
 
 ```
-{"type":"user","toolUseResult":{"file":{"base64":"data:image/png;base64,iVBORw0KGgo…<elided:10432,8117324>"}}, …}
-                                        └── kept K=64-byte prefix ──┘         └ off ┘ └ len ┘
+{"type":"user","toolUseResult":{"file":{"base64":"data:image/png;base64,iVBORw0KGgo<elided:52981042,8117260>"}}, …}
+                                        └── kept K=64-byte prefix ─┘        └─ off ──┘ └ len ┘
 ```
 
-`off` is the raw byte offset of the value's first content byte from the **line start**, `len`
-its full raw (escaped) byte length — the value's span, measured by the scanner as it consumes,
-in the same pass that elides. `line offset (at) + off` is therefore an absolute file position:
-the one scan that already touches every byte captures where the bytes live, so nothing ever
-has to find them again (§9.2).
+**The marker is an exact substitution pointer.** `off` is the **absolute file offset** of the
+first dropped byte, `len` the count of dropped (raw, escaped) bytes — measured by the scanner
+as it consumes them, in the same pass that elides. The defining invariant:
+
+> Replacing the marker substring `<elided:{off},{len}>` with `file[off, off + len)` yields the
+> **original line, byte for byte**. Nothing is lost — elision is invertible by construction,
+> and any consumer holding only the elided text and the file handle can splice any value (or
+> the whole line) back with no JSON understanding at all.
+
+The kept prefix stays in place (the marker stands for exactly what was dropped, so the splice
+is character-exact — no decorative ellipsis), and the scanner never cuts the prefix
+mid-escape-sequence (it is a state machine and lands the cut on a boundary; moot for base64,
+which has no escapes, but load-bearing under β for general text). Absolute rather than
+line-relative because it makes the elided line self-describing against the file — resolving a
+marker needs no `at`-plus-offset arithmetic and no notion of which line it came from; the
+primitive learns the line's absolute start from its caller, which is exactly the cursor every
+caller already tracks.
 
 The contract answers, once, three questions the engine's four hand-rolled loops answer
 inconsistently today (§12.2): `raw_len` is always the true byte count for offset accounting;
@@ -193,15 +214,17 @@ is the ceiling overflow, counted rather than silent. And the properties fall out
 
 The engine adopts the seed with **three deltas**, each argued elsewhere in this document:
 
-1. **The prefix-preserving, span-carrying placeholder.** The seed emits a bare `"<elided:N>"`;
-   the engine keeps the first **K = 64 bytes** of the value, then `…<elided:{off},{len}>` —
-   the prefix forced by the Codex asymmetry (§7), the span by the owner-review principle that
-   *the scan that already passes over every byte records where the value lives* (§12.5), so the
-   loader seeks instead of re-scanning. Both are changes inside the scanner's emit path, not to
-   the signature. Disambiguation is by visible length: an elided value's visible text is
-   ~K + marker (~100 bytes), while any genuine value that merely *ends* with marker-shaped text
-   is, by construction, over the 64 KB threshold — decode treats a value as elided only when it
-   is smaller than the threshold AND ends with the marker, so a false match cannot occur.
+1. **The prefix-preserving, substitution-exact placeholder.** The seed emits a bare
+   `"<elided:N>"`; the engine keeps the first **K = 64 bytes** of the value, then
+   `<elided:{off},{len}>` — the prefix forced by the Codex asymmetry (§7), the marker made an
+   exact substitution pointer by the owner-review principle that *the scan already passing over
+   every byte records where they live, so nothing is lost and nothing rescans* (§12.5). The
+   emit change needs one signature addition: the primitive takes the line's absolute start
+   offset from its caller (the cursor every caller already tracks). Disambiguation is by
+   visible length: an elided value's visible text is ~K + marker (~100 bytes), while any
+   genuine value that merely *ends* with marker-shaped text is, by construction, over the
+   64 KB threshold — decode treats a value as elided only when it is smaller than the
+   threshold AND ends with the marker, so a false match cannot occur.
 2. **A policy parameter — only under α** (§6): `read_line_elided(reader, out, policy)`. Under β
    the seed's size-driven signature stands unchanged. This is α's cost line in §11.
 3. **A torn-tail mode above the primitive** (§5): the seed's `Torn` matches `TornTail::Stop`;
@@ -304,27 +327,55 @@ precisely as `LinePreprocessor`/`Shaping` do. Two designs follow from where the 
 **Review re-priced this choice** (§12.3): boundedness forces the policy *inside the streaming
 read* — there is no post-hoc `&str` to filter — so α is no longer nearly free.
 
+**The principle the choice answers to (owner review, §12.5): the fold is sans-io.** The
+replay/fold logic operates on the lines it is handed and can never reach the file to recover
+bytes it did not see. Elision must therefore **commute with folding** —
+
+> `fold(elide(line)) ≡ fold(line)` — exactly, up to the `Span` hint that only an elided fold
+> can carry (the same modulo the step-3 oracle states; the two must always agree).
+
+— and only the *policy* can uphold that, by eliding exactly what the fold treats as opaque:
+attachment bodies (already destined for `Deferred` locators — the bytes never entered blocks
+even from a raw line) and metric-irrelevant payloads (provably nothing metric-bearing exceeds
+the threshold, §3). A value the fold renders, compares, or derives from is not elidable without
+breaking the invariant, and a sans-io fold cannot repair the hole downstream. This is the α/β
+question stated architecturally: α upholds the invariant by construction; β abandons it for
+one class and admits it formally (the FOLD_VERSION bump).
+
 **Design α — adapter-supplied elision policy.** The adapter answers, per oversized string,
 "may this value be elided?" — true for attachment-body nodes (Claude:
 `toolUseResult.file.base64` and its `tool_result` twin / `source.data`; Codex: the
 `input_image` url, `image_generation_call.result`), false for everything else, so a giant
 assistant *text* stays intact. **Viewer-lossless and rendered-output-neutral ⇒ no byte-gate
-re-baseline.** Cost, at the new price: the scanner must become **path-tracking while
+re-baseline.** Cost, at the audit's price: the scanner must become **path-tracking while
 streaming** — the seed's rule is deliberately "a property of JSON, *not* a list of known paths"
 — plus the policy plumbed through `LineSource` *and* `LineReader`. Real new logic on the one
-component whose stated hazard is mis-tracking JSON string escapes. **α is the larger half of
-the whole change.**
+component whose stated hazard is mis-tracking JSON string escapes.
+
+**α-lite — the key-suffix form (recommended shape of α).** Full JSON-path tracking is more
+machinery than the policy needs: every target node is named by its last one or two object
+keys (`file.base64`, `source.data`, Codex's `url` / `result`), so the scanner tracks only a
+**bounded stack of enclosing object keys** — fixed depth, capped key length, array levels
+skipped — and the adapter supplies key-*suffix* patterns. Overflow fails **safe**: a
+deeper-than-cap or oversized key never matches, the value stays unelided, and boundedness
+degrades to the ceiling — which is the stated bound anyway. The residual risk — rendered
+content living under a key that happens to end in a listed suffix — is the same policy-list
+risk full-path α carries, not new risk; step 3's derivation grep audits the list either way.
+This collapses α's cost from "path machinery on the escape-tracking hazard" to a small fixed
+data structure beside it: **with α-lite, α is no longer the larger half of the change.**
 
 **Design β — the seed's generic rule, as-is.** Any string > 64 KB is elided, no seam hook, the
 seed's scanner ships unchanged. Attachment classification still works — the K-byte prefix
 carries the `data:` header and magic bytes (§7) — with zero agent knowledge. Cost: the one
 giant *non-attachment* string in the corpus (a 0.8 MB assistant text) renders as
-`iVBOR…<elided:1042,800000>` — a rendered-output change ⇒ **FOLD_VERSION bump + one byte-gate
-re-baseline** (routine), and a viewer regression on that class of line. **The v2.1 span
-softens this materially:** the placeholder now names exactly where the full value lives, so a
-frontend can offer "load full text" through the same span read the attachment loader uses
-(§9.2) — the elided text is one click away, not lost. What remains of the regression is the
-default rendering, no longer the reachability.
+`iVBOR<elided:52981042,800000>` — a rendered-output change ⇒ **FOLD_VERSION bump + one
+byte-gate re-baseline** (routine), and a viewer regression on that class of line. **The v2.1
+marker bounds the loss but does not restore the invariant:** by the substitution semantics, an
+IO-ful *frontend* can splice the full text back on demand (the same span read the attachment
+loader uses, §9.2) — nothing is unreachable — but the *folded blocks* still differ from an
+un-elided fold, which is exactly the `fold∘elide ≡ fold` invariant breaking. β's cost, stated
+precisely: recovery moves from the sans-io fold (where it is impossible) to the presentation
+layer (where it is a click).
 
 The α-favoring argument stands — the engine *renders* content; a 0.8 MB assistant text is real
 reading, unlike an inert base64 blob that is deferred and never shown — but v1's "recommend α"
@@ -346,6 +397,11 @@ at the new price** (§11.1), and β-first-then-α is a valid order (the seam hoo
   line.
 - **The head sniffs** (§8) are switched to the primitive **for boundedness, not for elision** —
   they read five lines; whether those are also elided does not matter.
+- **Identity-sensitive reads take `Elision::None`** — the rule, stated once: any read whose
+  output feeds an identity, CRC, or dedup comparison (`anchor_of`'s resume-identity CRC is the
+  instance) runs the primitive with elision off — verbatim copy, bounded by the ceiling alone.
+  Elided text must never feed identity: it would make cache identity a function of the elision
+  constants, silently churning every anchor on a constants change.
 
 ---
 
@@ -460,15 +516,31 @@ pub fn load_attachment(&self, at: ByteOffset, index: usize)
 The transcript on disk is never rewritten — elision is a read-time, in-memory transformation —
 so the raw file is the only durable artifact and the placeholder itself never survives to load
 time. What survives is the **locator**, and v2.1 widens it: when decode classifies an elided
-node as a content-bearing attachment, it parses `{off, len}` out of the placeholder and stores
-it, so `Deferred` gains an optional hint — `{ at, index, span: Option<Span> }`, where `Span`
-carries the value's raw span and what the walk would otherwise re-derive from *sibling* fields
-(Claude's `media_type` lives beside the value, not inside it). Two load paths follow:
+node as a content-bearing attachment, it parses `{off, len}` out of the marker and stores it,
+so `Deferred` gains an optional hint — `{ at, index, span: Option<Span> }`, where `Span`
+carries the marker's absolute `(off, len)`, the kept prefix (≤ 64 B — for Codex this includes
+the `data:<mime>;base64,` header), and what the walk would otherwise re-derive from *sibling*
+fields (Claude's `media_type` lives beside the value, not inside it). Two load paths follow:
 
-- **Span path (the fast one — every elided value has it).** `seek(at + off)`, read `len` bytes,
-  unescape (a no-op for base64 — its alphabet has no `"` or `\` — and a real pass for a general
-  string), decode. O(the value), no scan, no re-classification — the one scan that ever touched
-  the line already recorded where the bytes live.
+- **Span path (the fast one — every elided value has it).** `seek(off)`, read `len` bytes —
+  exactly the dropped bytes, by the §4 substitution invariant — prepend the stored prefix,
+  unescape (a no-op for base64 — its alphabet has no `"` or `\` — and a real per-part pass for
+  a general string, valid because the prefix cut never splits an escape, §4), decode. O(the
+  value), no scan, no re-classification — the one scan that ever touched the line already
+  recorded where the bytes live.
+
+  **A marker is untrusted input — validate before allocating.** A transcript can *contain*
+  marker-shaped text (an agent echoing one into a tool result passes the §4 visible-length
+  test), and a crafted `(off, len)` must not turn the bounded-reads design's own pointer into
+  an unbounded allocation or a read of the wrong bytes. In order: (i) `len ≤ ELIDE_CEILING` —
+  checkable sans-io at decode, so a forged giant never even becomes a hint; (ii) at load,
+  `off + len ≤ file_size`; (iii) the structural check: `file[off + len]` must be the value's
+  **closing quote** (`"`) — the dropped bytes run to the end of the value's raw content by the
+  scanner's own emit rule, so every genuine marker satisfies it and a forged span fails with
+  high probability. Any failure falls back to the walk path — never an error, and the walk
+  then finds whatever is really there. (A prefix-bytes compare is NOT the check: the stored
+  prefix is serde-unescaped, its raw span is unknowable from the string, and an in-file forger
+  controls the adjacent prefix anyway.)
 - **Walk path (the base mechanism).** The same scanner in **capture-sink** mode: stream the raw
   line to the *n*-th content-bearing string and feed that one value into the decoder, dropping
   everything else as it passes — one extra mode on a state machine that has to exist anyway.
@@ -490,12 +562,15 @@ function; no new machinery.
 
 ## 10. Migration order, each step gated on its oracle
 
-0. **Port the primitive + fixtures (+ the seam hook under α).** `elide.rs` → `engine/reader.rs`
-   with the K-byte prefix; `LineSource` beside it; under α, the path-tracking scanner and the
-   seam policy hook. **Oracle:** escape-state torture fixtures — escaped quotes, backslashes,
-   unicode, nested arrays, a 10 MB base64 field — asserting the elided line parses to a `Value`
-   shape-identical to the un-elided line (only oversized leaves differ), plus the seed's own
-   test suite carried over.
+0. **Port the primitive + fixtures (+ the policy hook under α).** `elide.rs` →
+   `engine/reader.rs` with the K-byte prefix and the substitution-exact marker; `LineSource`
+   beside it; under α, the bounded key-suffix tracker (α-lite) and the seam policy hook.
+   **Oracle:** escape-state torture fixtures — escaped quotes, backslashes, unicode, nested
+   arrays, a 10 MB base64 field, a prefix cut adjacent to an escape sequence — asserting
+   (a) the elided line parses to a `Value` shape-identical to the un-elided line, and (b) the
+   **substitution round trip**: `unelide(elide(line), file) == line`, byte for byte, over
+   every fixture — the §4 invariant as an executable property. Plus the seed's own test suite
+   carried over.
 1. **Metrics sites** (A2, C1) → `LineSource`, aggressive. **Oracle:** the existing metrics
    equivalence tests plus §6.1's elided ≡ un-elided metrics fixture over a real > 64 KB line.
 2. **`latest_cwd`** (A3) and the head sniffs (4, 6–10, 12) → the primitive. **Oracle:**
@@ -521,8 +596,13 @@ function; no new machinery.
 4. **`LineReader`'s chunked poll** (§9.1). **Oracle:** `follow_matches_full_reparse` stays
    green, and a peak-RSS assertion over a fixture containing one 8 MB line, against the
    un-elided baseline.
-5. **`session_card` cap + `load_attachment` capture sink** (§9.2–9.3). **Oracle:** card
-   equality on a re-windowed read; attachment bytes identical through the capture sink.
+5. **`session_card` cap + the `load_attachment` paths** (§9.2–9.3). **Oracle:** card equality
+   on a re-windowed read; attachment bytes identical through span path, capture-sink walk, and
+   un-elided parse; the three span validations each force the walk fallback (a forged
+   over-ceiling `len` at decode, an out-of-range `off + len` at load, a wrong closing byte).
+   No wire change: attachment resolution is server-side (`html_export`'s renderer resolves
+   `Deferred` from the Rust block model and calls `Transcript::load_attachment` itself), so
+   the hint travels only through the persisted block stream, never the browser.
 
 Then agent-metrics deletes its local `elide.rs` and calls the seam — the motivation the study
 exists to serve.
@@ -542,16 +622,23 @@ Two things are settled, not open:
   of re-scanning. This carries the FOLD_VERSION bump for the locator field — which re-weighs
   decisions ① and ③ below.
 
-1. **α vs β** (§6) — *the headline, re-priced twice.* α: adapter policy through the seam,
-   viewer-lossless, no re-baseline — but requires a path-tracking streaming scanner and is the
-   larger half of the change, with the new logic sitting on the escape-tracking hazard. β: the
-   seed's scanner as-is, one byte-gate re-baseline, and the 0.8 MB-assistant-text regression —
-   **now softened by the span**: the elided text is one click away through the same span read,
-   so β's cost is a default rendering, not lost content. β-first-then-α remains a valid order,
-   and the span shifts the balance toward β being *enough*. The owner picks the price.
+1. **α vs β** (§6) — *the headline, now a principle question.* The fold is sans-io, so the
+   invariant on offer is `fold(elide(line)) ≡ fold(line)` (modulo the hint) — and only α's
+   policy upholds it, by eliding exactly what the fold already treats as opaque. Its price
+   fell with **α-lite** (§6): a bounded key-suffix tracker beside the scanner rather than full
+   path machinery — no longer the larger half of the change. β abandons the invariant for
+   non-attachment strings (formally: the byte-gate re-baseline) with the loss *bounded* by the
+   substitution marker — the text is one click away at the IO-ful presentation layer, but the
+   folded blocks differ. β-first-then-α remains a valid build order; the owner leans α on the
+   principle ("policy may still be required — elided blocks should not affect the folding
+   logic"), α-lite the recommended form — pending the final call with constants.
 2. **Constants** — `ELIDE_STRING_BYTES = 64 KB`, `SCAN_THRESHOLD = 256 KB`, prefix `K = 64 B`,
    `ELIDE_CEILING = 64 MB`. All inherited from the seed except `K`, the engine's addition for
-   §7.
+   §7. Note what accepting them now means: **the constants — and, under α, the policy's
+   suffix list — are part of the persisted-format contract.** They decide which values carry
+   hints, so changing either changes persisted blocks: a FOLD_VERSION bump by this repo's own
+   doctrine. Identity-sensitive reads are kept off elision entirely (§6.1) precisely so
+   anchors never depend on them.
 3. **Counter home** — where `elided_lines` / `elided_bytes` / `skipped_lines` live. v1 framed
    this as "sets whether the design carries a FOLD_VERSION bump at all"; **the span hint (v2.1)
    bumps FOLD_VERSION regardless**, so (a)'s headline cost vanished. Silent loss is the failure
@@ -645,4 +732,24 @@ What the exchange established, kept because the next reviewer will re-ask it:
   doc already holds elision-only artifacts out of comparison (the §6.1 gauges); the hint rides
   the same clause. "The rescan is cheap and cold" — true, but it defended a recompute-forever
   choice where one integer pair captured at scan time ends the question; and the span turned
-  out to buy more than load speed (β's regression softened, §6; counter-home (a) freed, §11.3).
+  out to buy more than load speed (β's loss bounded, §6; counter-home (a) freed, §11.3).
+- **The owner then made the marker exact.** v2.1's first cut carried a line-relative value
+  span; the owner's refinement — absolute offset, marker stands for exactly the dropped bytes
+  — turned "a pointer" into "a substitution invariant": splice `file[off, off+len)` over the
+  marker and the original returns byte for byte. That upgraded the scanner's oracle from
+  shape-identity to round-trip equality (§10 step 0) and made the elided line self-describing
+  against the file, at the cost of one signature addition (the primitive learns the line's
+  absolute start from its caller's cursor).
+- **The sans-io principle named the α/β stakes.** The fold operates on the lines it is handed
+  and can never reach the file; elision must therefore commute with folding, and only the
+  policy can uphold that. β's click-recovery happens at the IO-ful presentation layer — it
+  bounds the loss but does not restore the invariant. This reframing came from the owner
+  ("elided blocks should not affect the folding logic") and is why ① leans α.
+- **The hardening pass (same review).** A marker is untrusted input — a transcript can contain
+  forged marker-shaped text — so the span load validates before allocating (ceiling at decode,
+  range at load, closing-quote structural check; fallback to the walk, §9.2). A prefix-bytes
+  compare was considered and rejected as the check: the stored prefix is serde-unescaped (its
+  raw span is unknowable) and an in-file forger controls the adjacent bytes anyway.
+  Identity-sensitive reads (`anchor_of`) run with elision off so anchors never depend on the
+  constants (§6.1). And α gained its cheap form: α-lite, a bounded key-suffix tracker with
+  fail-safe overflow, which removed "α is the larger half" from the decision's price (§6).

@@ -14,16 +14,17 @@
 ## Needs an owner decision
 
 - **#193 — the bounded eliding line reader** —
-  [design/bounded-line-reads.md](design/bounded-line-reads.md), **v2.1 (2026-08-20)**: the
-  boundedness-audit review is integrated, the doc rewritten as one piece, and the owner's
-  span amendment folded in — the placeholder is `<elided:{off},{len}>`, `Deferred` gains an
-  optional span hint, and `load_attachment` seeks instead of re-scanning (ordinal walk stays
-  as the base for sub-threshold values). Settled: placement (`LineSource` + streaming
-  `read_line_elided`), the span. Decisions still on the owner, per its §11: **① α vs β** —
-  α is the larger half (path-tracking scanner); β is softened by the span (elided text one
-  click away) and may now be enough. **② constants** (64 KB / 256 KB / K=64 / 64 MB) need a
-  nod. **③ counter home** — recommendation flipped to (a) `Metrics::extra`, free now that
-  the span hint bumps FOLD_VERSION anyway. Build starts on sign-off, per §10.
+  [design/bounded-line-reads.md](design/bounded-line-reads.md), **v2.2 (2026-08-20)**: the
+  review wave is fully integrated — the marker is an exact substitution pointer
+  (`<elided:{off},{len}>`, absolute; splice the file bytes back and the original line returns
+  byte-for-byte), the fold is named sans-io (elision must commute with folding — the
+  architectural α/β statement), the span load validates its untrusted marker before
+  allocating, identity reads run elision-off, and α gained a cheap form (α-lite, key-suffix
+  policy). Settled: placement, the substitution marker. On the owner, per its §11:
+  **① α vs β** — owner leans α on the sans-io principle, α-lite recommended, no longer the
+  larger half; **② constants** (64 KB / 256 KB / K=64 / 64 MB — now part of the
+  persisted-format contract) need a nod; **③ counter home** — (a) `Metrics::extra`,
+  free since the hint bumps FOLD_VERSION anyway. Build starts on sign-off, per §10.
 - **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
   owner's **final design review** (requested 2026-08-20) of
   [design/session-cache-redesign.md](design/session-cache-redesign.md);
