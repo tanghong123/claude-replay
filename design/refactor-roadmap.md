@@ -1,7 +1,9 @@
 # Refactor roadmap (viewer-side)
 
-> **Status:** active plan. Sequenced, reviewed, approved. Execution is autonomous through Batch 1.
-> Batch 2 follows Batch 1; the parked items need explicit go-ahead.
+> **Status:** EXECUTED (historical). The batches shipped through the old task queue (drained
+> 2026-08-01) and the parser-engine refactor ([parser-engine.md](parser-engine.md), M1–M16 —
+> the status of record). Kept for the governing principle and the wiring contract, which
+> still apply to new work. Live pending work is tracked in [/BACKLOG.md](../BACKLOG.md).
 
 ## Governing principle — incremental & resumable is first-class; one-shot is derived
 

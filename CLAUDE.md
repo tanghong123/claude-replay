@@ -3,6 +3,13 @@
 A Rust + ratatui terminal UI viewer. It is **fully testable headless (no TTY)** —
 never skip, stub, or defer a feature "because it needs a terminal."
 
+## Work tracking
+**`BACKLOG.md` is the state of record for pending work** — read it before picking up
+a task, and update it in the same commit that changes an item's state (started,
+decided, shipped, parked). Design docs argue, issues discuss, BACKLOG.md tracks;
+don't trust a `design/*.md` status header alone — the tracker exists because those
+drift.
+
 ## Test the TUI without a TTY
 - **Deterministic (preferred):** drive `view::View` under ratatui **`TestBackend`**
   — render to an in-memory buffer, call the view's methods, assert cells. See the

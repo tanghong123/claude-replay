@@ -1,7 +1,9 @@
 # Design: incremental consumption — `LineReader` + `SessionBuilder` + `SessionCache`
 
-> **Status:** proposed (not built). Two layers, designed together because the second builds
-> on the first. Tracked as tasks #18 (`LineReader`) and #19 (`SessionBuilder`).
+> **Status:** SUPERSEDED — both layers exist in the engine (`engine/reader.rs`'s `LineReader`,
+> `builder.rs`'s `SessionAccumulator`), delivered by the parser-engine refactor
+> ([parser-engine.md](parser-engine.md), M1–M16 built). Kept for the original motivation and
+> API exploration; the engine docs are the record of what actually shipped.
 
 ## Motivation
 

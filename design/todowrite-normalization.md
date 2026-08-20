@@ -1,5 +1,8 @@
 # Study #121 — should QoderWork's `TodoWrite` be normalized into the task model?
 
+> **SHIPPED** as #126: `TodoWrite` folds through `TaskOp::Snapshot` (see
+> `agents/claude/model.rs`), the replace-all op this study called for.
+
 **Verdict: yes, it is worth surfacing — but NOT through the existing op-log path.** `TodoWrite`
 is a *snapshot* tool; the task model (#15) is an *op-log*. They share the presentation
 vocabulary (`TaskList`/`TaskItem`) but not the fold. Normalizing means adding a new
