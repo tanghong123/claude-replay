@@ -569,8 +569,12 @@ function; no new machinery.
    arrays, a 10 MB base64 field, a prefix cut adjacent to an escape sequence — asserting
    (a) the elided line parses to a `Value` shape-identical to the un-elided line, and (b) the
    **substitution round trip**: `unelide(elide(line), file) == line`, byte for byte, over
-   every fixture — the §4 invariant as an executable property. Plus the seed's own test suite
-   carried over.
+   every fixture — the §4 invariant as an executable property. One fixture must be a
+   transcript whose ordinary *text* values contain literal marker-shaped strings
+   (`<elided:0,999999999>` in prose — the transcript of the #193 design session itself is
+   such a file), asserting zero hints are harvested from them and, under β, that every
+   marker *interpreter* (the click-to-restore path included) applies the §9.2 validations.
+   Plus the seed's own test suite carried over.
 1. **Metrics sites** (A2, C1) → `LineSource`, aggressive. **Oracle:** the existing metrics
    equivalence tests plus §6.1's elided ≡ un-elided metrics fixture over a real > 64 KB line.
 2. **`latest_cwd`** (A3) and the head sniffs (4, 6–10, 12) → the primitive. **Oracle:**
