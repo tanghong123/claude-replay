@@ -411,6 +411,8 @@ mod tests {
                     window: 0,
                     prev_ts: None,
                     pending_ts: None,
+                    pre: serde_json::Value::Null,
+                    metrics_state: serde_json::Value::Null,
                 }),
                 ..Default::default()
             })

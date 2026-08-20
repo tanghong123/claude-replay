@@ -1127,3 +1127,207 @@ fn a_codex_child_rollout_resumes_equal_to_cold() {
     c.release_all();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A modern Codex session learns from its first `session_meta` that JavaScript `exec` wrappers
+/// are transport and that the following `CommandExecution` is the user-visible action. A durable
+/// resume starts above that first line. Losing the adapter's opaque preprocessor state there made
+/// the monitor render `const r = await tools.exec_command(...)` as Bash and ignore the semantic
+/// Read/Grep/List classification, even though a cold standalone replay was correct.
+#[test]
+fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
+    fn push(s: &mut String, value: serde_json::Value) {
+        s.push_str(&value.to_string());
+        s.push('\n');
+    }
+    fn has_tool(blocks: &[Block], name: &str, target: &str) -> bool {
+        blocks.iter().any(|block| match block {
+            Block::ToolUse {
+                name: got_name,
+                target: got_target,
+                ..
+            } => got_name == name && got_target == target,
+            Block::Thinking { tools, .. } => has_tool(tools, name, target),
+            _ => false,
+        })
+    }
+    fn has_transport_wrapper(blocks: &[Block]) -> bool {
+        blocks.iter().any(|block| match block {
+            Block::ToolUse { target, .. } => target.contains("tools.exec_command"),
+            Block::Thinking { tools, .. } => has_transport_wrapper(tools),
+            _ => false,
+        })
+    }
+
+    let root = tmp("codex-semantic-resume");
+    let src = root.join("rollout-modern.jsonl");
+    let mut head = String::new();
+    push(
+        &mut head,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:00:00Z",
+            "type":"session_meta",
+            "payload":{"id":"modern","cwd":"/repo","cli_version":"0.147.0","source":"cli"}
+        }),
+    );
+    push(
+        &mut head,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:00:00Z",
+            "type":"turn_context",
+            "payload":{"model":"gpt-5.6-sol"}
+        }),
+    );
+    push(
+        &mut head,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:00:00Z",
+            "type":"event_msg",
+            "payload":{"type":"token_count","info":{
+                "model_context_window":258400,
+                "last_token_usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110},
+                "total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10}
+            }}
+        }),
+    );
+    for i in 0..5 {
+        push(
+            &mut head,
+            serde_json::json!({
+                "timestamp":format!("2026-08-19T07:00:{:02}Z", i * 2 + 1),
+                "type":"response_item",
+                "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("ask {i}")}]}
+            }),
+        );
+        push(
+            &mut head,
+            serde_json::json!({
+                "timestamp":format!("2026-08-19T07:00:{:02}Z", i * 2 + 2),
+                "type":"response_item",
+                "payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("answer {i}")}]}
+            }),
+        );
+    }
+    std::fs::write(&src, head).unwrap();
+
+    // Run 1 establishes a committed prefix and a resume point above session_meta.
+    {
+        let c = cache(&root);
+        c.register("modern", Transcript::open(Agent::CODEX, src.clone()));
+        assert!(matches!(
+            c.admit(
+                "modern",
+                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+                |_: &Holder<TuiNote>| false,
+            ),
+            Admission::Owned { .. }
+        ));
+        let _ = c
+            .poll_view("modern", ArcLog::memory)
+            .expect("registered")
+            .expect("readable");
+        c.release_all();
+    }
+
+    let mut tail = String::new();
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:00Z",
+            "type":"response_item",
+            "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect it"}]}
+        }),
+    );
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:01Z",
+            "type":"event_msg",
+            "payload":{"type":"token_count","info":{
+                "model_context_window":258400,
+                "last_token_usage":{"input_tokens":50,"output_tokens":5,"total_tokens":55},
+                "total_token_usage":{"input_tokens":150,"cached_input_tokens":120,"output_tokens":15}
+            }}
+        }),
+    );
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:01Z",
+            "type":"response_item",
+            "payload":{
+                "type":"custom_tool_call","name":"exec","call_id":"outer",
+                "input":"const r = await tools.exec_command({ cmd: \"sed -n '1,20p' src/lib.rs\", workdir: \"/repo\" }); text(r.output);"
+            }
+        }),
+    );
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:02Z",
+            "type":"response_item",
+            "payload":{"type":"custom_tool_call_output","call_id":"outer","output":"Script completed\nOutput:\nbody\n"}
+        }),
+    );
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:03Z",
+            "type":"event_msg",
+            "payload":{"type":"item_completed","item":{
+                "type":"CommandExecution","id":"exec-read",
+                "command":["/bin/zsh","-lc","sed -n '1,20p' src/lib.rs"],
+                "cwd":"file:///repo","status":"completed","exit_code":0,"stdout":"body\n",
+                "parsed_cmd":[{"type":"read","cmd":"sed -n '1,20p' src/lib.rs","path":"src/lib.rs"}]
+            }}
+        }),
+    );
+    push(
+        &mut tail,
+        serde_json::json!({
+            "timestamp":"2026-08-19T07:01:04Z",
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+        }),
+    );
+    append(&src, &tail);
+
+    let c = cache(&root);
+    c.register("modern", Transcript::open(Agent::CODEX, src.clone()));
+    let (session, origin) = match c.admit(
+        "modern",
+        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
+        |_: &Holder<TuiNote>| false,
+    ) {
+        Admission::Owned { session, origin } => (session, origin),
+        Admission::Denied(_) => panic!("a free entry must be Owned"),
+    };
+    assert!(matches!(origin, Origin::Resumed { .. }), "{origin:?}");
+    let d = c
+        .poll_view("modern", ArcLog::memory)
+        .expect("registered")
+        .expect("readable");
+    let resumed_metrics = d.metrics.clone();
+    let mut got: Vec<Block> = session
+        .committed_arcs()
+        .iter()
+        .map(|block| block.as_ref().clone())
+        .collect();
+    got.extend(d.provisional.iter().map(|block| block.as_ref().clone()));
+
+    let cold = parse_session_as(Agent::CODEX, &src).unwrap();
+    assert_eq!(
+        got,
+        cold.blocks(),
+        "resumed modern Codex must equal its cold fold"
+    );
+    assert_eq!(
+        resumed_metrics, cold.metrics,
+        "the HTML/live accumulator must price the same Codex usage as a cold metrics fold"
+    );
+    assert!(!resumed_metrics.per_model.contains_key(""));
+    assert!(resumed_metrics.cost_usd.is_some());
+    assert!(has_tool(&got, "Read", "src/lib.rs"));
+    assert!(!has_transport_wrapper(&got));
+    c.release_all();
+    let _ = std::fs::remove_dir_all(&root);
+}

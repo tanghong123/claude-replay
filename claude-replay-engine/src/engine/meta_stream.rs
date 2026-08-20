@@ -23,6 +23,7 @@ use crate::engine::tasks::{TaskFold, TaskOp};
 use crate::metrics::TokenCounts;
 use crate::model::{AgentId, AgentStatus, Block, ByteOffset, EpochSeconds};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 /// A model name — the key tokens are attributed to (#104).
@@ -87,7 +88,12 @@ pub const COMPACT_AFTER: usize = 256;
 ///
 /// v14: Codex compaction blocks carry the before/after context sizes recovered from their
 /// adjacent usage snapshots. A v13 stream has already persisted those dividers with zeroes.
-pub const FOLD_VERSION: u16 = 14;
+///
+/// v15: durable resume points persist the adapter's opaque line-preprocessor and metrics state.
+/// Without them, a resumed modern Codex fold forgets `semantic_exec` and renders JavaScript
+/// orchestration as Bash; its cumulative usage fold also loses the model/last-total baseline,
+/// producing a different cost in the HTML view than the monitor index.
+pub const FOLD_VERSION: u16 = 15;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -189,6 +195,15 @@ pub struct Resume {
     /// Stamps turns authored on the resume's first line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_ts: Option<EpochSeconds>,
+    /// Agent-private physical→logical line state at `replay_from`. The engine stores and returns
+    /// this opaque value without interpreting it; `Null` is the backward-compatible stateless
+    /// default for adapters that need nothing.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub pre: Value,
+    /// Agent-private metrics accumulator state at `replay_from`. This complements the shared
+    /// materialized totals: cumulative formats need private baselines/model attribution too.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metrics_state: Value,
 }
 
 /// Sub-agent lifecycle. **One ordered list**, because order is load-bearing: for
@@ -487,6 +502,8 @@ mod tests {
                 window: 0,
                 prev_ts: None,
                 pending_ts: None,
+                pre: Value::Null,
+                metrics_state: Value::Null,
             }),
             ..Default::default()
         }

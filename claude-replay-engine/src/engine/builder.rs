@@ -87,6 +87,14 @@ struct Boundary {
     extra: std::collections::BTreeMap<String, u64>,
     span: Option<(EpochSeconds, EpochSeconds)>,
     cwd: String,
+    /// Opaque adapter preprocessing state as of this line's start. A durable resume begins at
+    /// `offset`, so it must restore everything the adapter learned from bytes below that point
+    /// before classifying the first re-read line.
+    pre: Value,
+    /// Opaque agent metrics-accumulator state at the same boundary. Shared totals alone cannot
+    /// resume accumulators such as Codex's cumulative counter: it also needs the last raw total
+    /// and model in force to attribute only the appended delta.
+    metrics_state: Value,
 }
 
 /// The delta-sized read a live streaming consumer (the pull protocol) needs each poll — WITHOUT
@@ -197,6 +205,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         acc.task_fold = mm.tasks.clone();
         acc.metrics
             .reseed(mm.tokens.clone(), mm.extra.clone(), mm.span);
+        acc.metrics.restore(&resume.metrics_state);
         // `user_times` has length `committed_meta.turns` — its value at `replay_from`, since by
         // the §3 partition every uncommitted `UserText` lies at or above that offset and none
         // has been stamped.
@@ -206,6 +215,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             resume.prev_ts,
             resume.pending_ts,
         );
+        acc.preprocessor.restore(&resume.pre);
         // A resumed writer measures its counter deltas from where the last record left off,
         // not from zero — otherwise the next record would re-report the whole session.
         acc.emitted = Boundary {
@@ -217,6 +227,8 @@ impl<S: BlockStore> SessionAccumulator<S> {
             extra: mm.extra,
             span: mm.span,
             cwd: mm.cwd,
+            pre: resume.pre.clone(),
+            metrics_state: resume.metrics_state.clone(),
         };
         acc
     }
@@ -306,6 +318,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// drain below — makes it moot, since a grown committed prefix resets the provisional regardless;
     /// the caller reconciles.)
     pub fn advance_at(&mut self, offset: ByteOffset, line: &str) -> Option<usize> {
+        // `process` may mutate adapter-private state (for example Codex learns from session_meta
+        // that later JavaScript exec wrappers have semantic mirrors). A resume at this line must
+        // receive the state from BEFORE the line, not the state after classifying it.
+        let pre = self.preprocessor.state();
+        let metrics_state = self.metrics.state();
         let mut delta: Vec<Message> = match self.preprocessor.process(line) {
             PreprocessedLine::Include => {
                 let mut messages = Vec::new();
@@ -342,6 +359,8 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 extra,
                 span,
                 cwd: self.cwd.clone(),
+                pre,
+                metrics_state,
             }
         });
         // The task op-log (#15) folds HERE, at the accumulator — task state is
@@ -458,6 +477,8 @@ impl<S: BlockStore> SessionAccumulator<S> {
             window: 0,
             prev_ts: e.prev_ts,
             pending_ts: e.pending_ts,
+            pre: e.pre.clone(),
+            metrics_state: e.metrics_state.clone(),
         });
         self.emitted = e;
     }
