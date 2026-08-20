@@ -51,7 +51,7 @@ One component touches bytes; everything else drives it:
 | --- | --- | --- |
 | `read_line_elided` | **the only byte-toucher** — a streaming state machine over `fill_buf`/`consume`: reads one line, shortens oversized string values in flight, never holds a whole raw line | adopted from `agent-metrics/src/elide.rs`, three deltas (§4) |
 | `LineSource` | the **batch driver** — wraps the primitive for the whole-file loops: raw-offset accounting, torn-tail policy, blank skipping, elision counters, each written once | new, small (§5) |
-| `LineReader` (exists) | the **tail batcher** — the follower's poll path; keeps its name and its resume contract, swaps its `read_to_end` for chunked reads through the same primitive, returns a bounded batch per poll | changed inside (§9.1) |
+| `FollowParser` (exists) | the **follower** — drives the *same* `LineSource` over its live tail: up to a bounded batch of `next()` calls per poll, `rewind_to_cursor` at a torn tail, a truncation reset; today's `LineReader` dissolves into it — its resume constructors only ever computed a starting offset | `LineReader` deleted (§9.1) |
 | `load_attachment` | the one path that *wants* the bytes — an elided value's locator carries its **span** (recorded by the scan that elided it), so load validates the marker and seeks straight to the dropped bytes; sub-threshold values use the same state machine with a **capture sink** to the *n*-th content-bearing value | span hint + new mode (§9.2) |
 
 Policy enters once, through the seam (§6): the adapter says *what may be elided*; the machinery
@@ -253,7 +253,7 @@ skipping, and a torn-tail rule — three different torn-tail rules, in fact (§1
 is the one loop, written once, wrapping the primitive:
 
 ```rust
-// engine/reader.rs — beside LineReader (the tail batcher, §9.1), not replacing it.
+// engine/reader.rs — the ONE line-reading driver; the follower drives it too (§9.1).
 
 /// What to do with a final line that has no newline yet.
 pub enum TornTail {
@@ -279,8 +279,8 @@ impl<R: io::BufRead> LineSource<R> {
     /// The offset of the next unread line — the durable cursor.
     pub fn offset(&self) -> ByteOffset;
 
-    /// Reposition the underlying reader to `offset()`. Needed by exactly one consumer:
-    /// the live metrics tail, which keeps its reader open across polls (see below).
+    /// Reposition the underlying reader to `offset()`. Needed only by the live tails —
+    /// the metrics fold and the follower — which keep their reader open across polls.
     pub fn rewind_to_cursor(&mut self) -> io::Result<()> where R: io::Seek;
 }
 ```
@@ -289,10 +289,11 @@ impl<R: io::BufRead> LineSource<R> {
 offset unadvanced so the next run re-reads it whole. `LineSource` expresses that per driver
 mode: under `Stop` the torn line is never yielded and `offset()` stays on the last complete
 line; under `Yield` it is delivered and counted. The bytes, however, have been consumed from the
-reader either way — so a consumer that *keeps its reader open across polls* (only the live
-metrics tail does; every other site opens, reads to EOF, drops) must call `rewind_to_cursor()`
-before its next poll. That is the entire `Seek` story: one method, one bound, one consumer —
-today's fold does the same seek inline, for the same reason.
+reader either way — so the consumers that *keep their reader open across polls* (the two live
+tails: the metrics fold and the follower, §9.1; every batch site opens, reads to EOF, drops)
+call `rewind_to_cursor()` before their next poll. That is the entire `Seek` story: one method,
+one bound, two consumers — today's metrics fold does the same seek inline, for the same reason,
+and today's follower holds a pending-partial buffer that this replaces outright.
 
 **The four sites, after** (policy per §6; the α/β choice changes only the `policy` argument):
 
@@ -368,7 +369,8 @@ bytes are consumed and unrevisitable. The seed's rule is deliberately "a propert
 *not* a list of known paths", so this is new state on the one component whose stated hazard
 is mis-tracking JSON string escapes — and an *unbounded* tracker would itself violate the
 invariant (nesting depth and key length are content-controlled) — plus the policy plumbed
-through `LineSource` *and* `LineReader`.
+through `LineSource` (the follower drives the same source, §9.1, so there is exactly one
+plumbing point).
 
 **α-lite — the key-suffix form (recommended shape of α).** Full JSON-path tracking is more
 machinery than the policy needs: every target node is named by its last one or two object
@@ -509,16 +511,30 @@ file — a different trust domain.)
 
 ## 9. The three reads the loop does not cover
 
-### 9.1 `LineReader` — the tail batcher gets a chunked poll
+### 9.1 The follower — `LineReader` dissolves; `FollowParser` drives the source
 
-`LineReader` keeps its name, its resume contract, and its role as the follower's line source;
-what changes is inside: the `read_to_end` becomes chunked reads through `read_line_elided`, and
-`poll` returns a **bounded batch** of lines per call instead of "everything to EOF". The
-follower's loop already re-polls, so a bounded batch is a latency choice, not a semantics
-change; the partial-line pending buffer it keeps today maps onto the primitive's `Torn`
-outcome. This is the step that bounds the cold open — the single largest allocation in the
-inventory — and it is a named migration step with its own oracle (§10 step 4), not a deferred
-aside.
+v2.2 first kept `LineReader` as a second driver ("keeps its name, swaps its internals");
+owner review challenged the duplication, and the challenge holds: **`LineReader`'s only
+consumer is `FollowParser`, and once `LineSource` exists, everything left in it is wiring,
+not reading machinery.** A follower is just a consumer that calls `next()` until `None`,
+rewinds at a torn tail, and comes back later:
+
+- **The poll loop** = up to a bounded batch of `LineSource::next()` calls per poll — the
+  batch cap lives in the caller, no second batching mechanism. This is what bounds the cold
+  open (the single largest allocation in the inventory): the whole-file-twice
+  `read_to_end` + `Vec<String>` simply ceases to exist.
+- **The torn tail** = `TornTail::Stop` + `rewind_to_cursor()` before the next poll — which
+  *deletes* today's cross-poll pending-partial buffer: a transient torn prefix is re-read
+  from disk once the writer finishes the line, strictly less state for negligible I/O.
+- **The resume contract** (`open_at_start` / `open_at_offset` / `replay_from`) only ever
+  computed a starting offset; it moves into `FollowParser`'s constructors, which hand that
+  offset to `LineSource::new`.
+- **Truncation** (`file_len < cursor` — today's "re-read from 0" semantics) is one metadata
+  check in the follower's poll, resetting the source to offset 0.
+
+Net: **one primitive, one driver, zero duplicated loops.** The engine's reading machinery is
+`read_line_elided` + `LineSource`, full stop; `FollowParser` and the metrics fold are the two
+live-tail consumers of it, and the batch sites are the one-shot consumers.
 
 ### 9.2 `load_attachment` — the span fast path, the capture-sink base
 
@@ -622,9 +638,10 @@ function; no new machinery.
      value from the payload *string itself* (length, decoded dimensions, a stringified copy).
      The classification walks are verified structural; this closes the derivation question. Any
      node that does is excluded from α's policy (or preserved).
-4. **`LineReader`'s chunked poll** (§9.1). **Oracle:** `follow_matches_full_reparse` stays
-   green, and a peak-RSS assertion over a fixture containing one 8 MB line, against the
-   un-elided baseline.
+4. **The follower** (§9.1): delete `LineReader`; `FollowParser` drives `LineSource` — bounded
+   batch per poll, `rewind_to_cursor` at a torn tail, the truncation reset. **Oracle:**
+   `follow_matches_full_reparse` stays green, and a peak-RSS assertion over a fixture
+   containing one 8 MB line, against the un-elided baseline.
 5. **`session_card` cap + the `load_attachment` paths** (§9.2–9.3). **Oracle:** card equality
    on a re-windowed read; attachment bytes identical through span path, capture-sink walk, and
    un-elided parse; the three span validations each force the walk fallback (a forged
@@ -651,16 +668,13 @@ Two things are settled, not open:
   of re-scanning. This carries the FOLD_VERSION bump for the locator field — which re-weighs
   decisions ① and ③ below.
 
-1. **α vs β** (§6) — *the headline, now a principle question.* The fold is sans-io, so the
-   invariant on offer is `fold(elide(line)) ≡ fold(line)` (modulo the hint) — and only α's
-   policy upholds it, by eliding exactly what the fold already treats as opaque. Its price
-   fell with **α-lite** (§6): a bounded key-suffix tracker beside the scanner rather than full
-   path machinery — no longer the larger half of the change. β abandons the invariant for
-   non-attachment strings (formally: the byte-gate re-baseline) with the loss *bounded* by the
-   substitution marker — the text is one click away at the IO-ful presentation layer, but the
-   folded blocks differ. β-first-then-α remains a valid build order; the owner leans α on the
-   principle ("policy may still be required — elided blocks should not affect the folding
-   logic"), α-lite the recommended form — pending the final call with constants.
+1. **α vs β** (§6) — **DECIDED (owner, 2026-08-20): α, in the α-lite form.** The fold is
+   sans-io, so the invariant on offer is `fold(elide(line)) ≡ fold(line)` (modulo the hint) —
+   and only α's policy upholds it, by eliding exactly what the fold already treats as opaque.
+   The price that once argued for β fell with α-lite: a bounded key-suffix tracker beside the
+   scanner rather than full path machinery. β stays recorded above as the fallback shape (the
+   seed's scanner as-is + one re-baseline + presentation-layer recovery) should the suffix
+   tracker prove unexpectedly costly in practice — a recorded escape hatch, not a plan.
 2. **Constants** — `ELIDE_STRING_BYTES = 64 KB`, `SCAN_THRESHOLD = 256 KB`, prefix `K = 64 B`,
    postfix `J = 64 B`, `ELIDE_CEILING = 64 MB`. All inherited from the seed except `K` and
    `J`, the engine's additions (§7 for the prefix; reconstruction + the §9.2 content check
@@ -794,3 +808,10 @@ What the exchange established, kept because the next reviewer will re-ask it:
   path, both cuts escape-aligned, and `J` joins the format-contract constants (§11.2).
   Deliberate same-file forgery remains possible and remains contained — content checks defeat
   accident; containment is the security boundary (§9.2).
+- **The owner then collapsed the second driver.** "Why do we need `LineReader` now that we
+  have `LineSource`? I hope we don't duplicate logic" — and the challenge held: its only
+  consumer is `FollowParser`, its resume constructors only compute a starting offset, its
+  pending-partial buffer is replaced outright by `Stop` + `rewind_to_cursor`, and its batch
+  is the caller taking N lines per poll. `LineReader` is deleted rather than rewritten
+  (§9.1): one primitive, one driver, two live-tail consumers, zero duplicated loops — and
+  α's policy now has exactly one plumbing point.
