@@ -538,14 +538,25 @@ live-tail consumers of it, and the batch sites are the one-shot consumers.
 
 ### 9.2 `load_attachment` — the span fast path, the capture-sink base
 
-The one path whose *purpose* is the bytes, so elision is the wrong operation. Today:
+The one path whose *purpose* is the bytes, so elision is the wrong operation.
 
 ```rust
-// core/transcript.rs — seeks to `at`, re-reads that ONE line raw, re-runs the adapter's
-// extraction to the `index`-th content-bearing node.
+// core/transcript.rs — TODAY: seeks to `at`, re-reads that ONE line raw, re-runs the
+// adapter's extraction to the `index`-th content-bearing node.
 pub fn load_attachment(&self, at: ByteOffset, index: usize)
     -> io::Result<Option<LoadedAttachment>>
+
+// BECOMES: the locator travels WHOLE. The exploded-fields signature is exactly the shape
+// the span cannot fit through — and any future locator field would break it again. The
+// frontends already hold the block's `AttachmentContent`; hand it over intact.
+pub fn load_attachment(&self, content: &AttachmentContent)
+    -> io::Result<Option<LoadedAttachment>>
 ```
+
+Inside, the split is clean: the **span path is agent-neutral machinery** (seek, read, splice
+prefix + dropped + postfix, unescape, base64-decode — the `Span` carries the mime, so no
+adapter is consulted at all), while the **walk path delegates to the adapter** as today
+(`adapter.load_attachment(&line, index)` — re-classification is agent knowledge).
 
 The transcript on disk is never rewritten — elision is a read-time, in-memory transformation —
 so the raw file is the only durable artifact and the placeholder itself never survives to load
