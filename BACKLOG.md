@@ -13,38 +13,17 @@
 
 ## Needs an owner decision
 
-- **#193 — the eliding line reader** — [design/bounded-line-reads.md](design/bounded-line-reads.md).
-  Study complete; build nothing until reviewed. Decisions: **α vs β** (α recommended:
-  adapter-supplied elision policy through a seam hook, viewer-lossless, no byte-gate
-  re-baseline), the **counter home** for elision gauges (b recommended: per-fold report
-  output, no FOLD_VERSION bump), and — added by the §10 review addendum (2026-08-20) —
-  **placement**: per-read-site elision as §4 specifies, or one `LineSource` collapsing the
-  four hand-rolled whole-file `read_line` loops into one, which makes §4's offset invariant
-  structural — and §10.6 (review, 2026-08-20) raises the stakes on that choice: elision over an
-  already-buffered `&str` removes the `Value` DOM multiplier but **not** the buffer, so §4's
-  per-site placement leaves the raw read unbounded permanently unless the chunked read is later
-  written four times. Also measured in review: `LineReader::poll` is `read_to_end` + a
-  `Vec<String>`, so a followed session's COLD poll materializes the whole file twice — larger
-  than anything else in the inventory and unreachable from `advance_at`.
-  **§11 (2026-08-20) is a full boundedness audit and the go/no-go answer: GO, scope corrected.**
-  13 unbounded transcript reads found (12 unbounded per line, 1 unbounded per file); 4 sites are
-  already bounded and need nothing. The trap: `.lines().take(N)` bounds the line COUNT, not its
-  SIZE, so `detect_agent`'s five-line sniff reads an ENTIRE file with no newlines — and discovery
-  runs it on every candidate. Mechanism (§3/§5.3/§7/§8) is sound and unchanged; what fails is a
-  scope that cannot deliver the property. Cost is far below "rewrite every read": the streaming
-  primitive is already implemented and tested in `agent-metrics/src/elide.rs`
-  (`read_line_elided`, 475 lines) — adopting it is the stated point of #193. Two pieces are new:
-  `load_attachment` (capture sink on the same state machine) and, **under α only**, making that
-  scanner path-aware — the seed is explicitly size-driven, "not a list of known paths". So
-  **α vs β is re-opened on new terms**: boundedness forces the policy inside the read, which
-  makes α the larger half of the change rather than nearly free. Also corrected: `session_card`
-  is bounded on its COLD read only — its memoized path reads everything appended since the last
-  scan and pre-reserves it. Agent-written sidecars (`qoderwork` `sidecar`, `load_tasks_in`) are
-  read whole too: same invariant, separate issue. Constants (64 KB / 256 KB / K=64 / 64 MB) need a nod. Docs updated alongside:
-  `docs/architecture.md` §7 (+ the html twin) now names the raw line as the ladder's one
-  unbounded rung, marked designed-not-built. Addendum also records a **pre-existing**
-  torn-tail divergence (`advance_reader` counts a torn final line malformed;
-  `parse_reader` documents why it must not) — out of #193's scope, surfaced not fixed.
+- **#193 — the bounded eliding line reader** —
+  [design/bounded-line-reads.md](design/bounded-line-reads.md), **v2 (2026-08-20)**: the
+  boundedness-audit review is integrated and the doc rewritten as one piece (v1 + addenda in
+  git history; audit verdict GO, scope corrected — placement settled as `LineSource` + the
+  seed's streaming `read_line_elided`). Decisions on the owner, per its §11: **① α vs β**,
+  re-priced — α (adapter policy, viewer-lossless, no re-baseline) now needs a path-tracking
+  scanner and is the larger half of the change; β (seed as-is) takes a FOLD_VERSION bump +
+  one re-baseline + the 0.8 MB-text viewer regression; β-then-α is a valid order.
+  **② constants** (64 KB / 256 KB / K=64 / 64 MB) need a nod. **③ counter home** for the
+  elision gauges (b recommended: per-fold report, no bump). Build starts on sign-off, per
+  the doc's §10 migration order.
 - **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
   owner's **final design review** (requested 2026-08-20) of
   [design/session-cache-redesign.md](design/session-cache-redesign.md);
