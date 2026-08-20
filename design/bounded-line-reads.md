@@ -569,7 +569,25 @@ The three fields have three provenances, which is why only the span is a *hint*:
 was never scanned and has no marker) and because they are producer-side facts the fold computed
 itself; the span is content read *out of the file* — untrusted until validated — so it
 accelerates the load it can serve and falls back to the `(at, index)` walk everywhere else.
-Two load paths follow:
+
+The table is also the sans-io division of labor, stated as a rule: **measurement is IO-side;
+interpretation is decode-side; the marker is the in-band bridge.** Every number that indexes
+the *file* (`at`, `off`, `len`) is measured by the reader/scanner at the only moment it is
+knowable — decode could not compute them even in principle, since the line it holds is already
+elided (its positions no longer correspond to file positions) and it has no file handle.
+Decode only classifies, counts, and parses numbers out of text it was handed. This is also why
+the measurements travel in-band rather than in a side-channel: they arrive attached to the
+very string decode is classifying — nothing to join, nothing to desync.
+
+Three clarifications review asked for. **Several elided values on one line need no
+cross-marker arithmetic**: each marker is self-contained, and decode's walk still numbers the
+nodes 0, 1, … by document order — `index` is a counter, never derived from offsets. **A
+*valid* span is by itself a complete locator** — the `Option<Span>` encodes *acceleration
+present*, not *data missing*. And `(at, index)` are not made redundant by it, for exactly two
+reasons: the span is untrusted, and the validation-failure fallback *is* the `(at, index)`
+walk — span-only locators would lose the attachment whenever a marker fails its checks; and
+sub-threshold attachments never have a span to be located by, so `(at, index)` is the one
+shape every locator shares. Two load paths follow:
 
 - **Span path (the fast one — every elided value has it).** `seek(off)`, read `len` bytes —
   exactly the dropped bytes, by the §4 substitution invariant — prepend the stored prefix and
