@@ -1056,12 +1056,12 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · uatobre: prefix scopes to user/agent/thinking/tools/bash/reads/edits in any order (e.g. aut:) · a leading : searches the literal text" autocomplete="off">
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · uatobrew: prefix scopes by type; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
       <span class="qscopewrap">
-        <span id="qscope" class="qscope" title="Restrict the search by message type — mirrors the uatobre: prefix (gray = everything)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2.5h13L9.75 8.4v4.6l-3.5 1.5V8.4L1.5 2.5z"/></svg></span>
+        <span id="qscope" class="qscope" title="Restrict search by message type or whole words — mirrors the uatobrew: prefix (gray = defaults)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2.5h13L9.75 8.4v4.6l-3.5 1.5V8.4L1.5 2.5z"/></svg></span>
         <div id="qscopemenu">
           <div class="menu-head">Search only…</div>
           <label class="qs-item"><input type="checkbox" id="qs-u"> user messages (u)<span class="qs-n" id="qsn-u"></span></label>
@@ -1071,6 +1071,7 @@ fn build_page(
           <label class="qs-item"><input type="checkbox" id="qs-b"> bash output (b)<span class="qs-n" id="qsn-b"></span></label>
           <label class="qs-item"><input type="checkbox" id="qs-r"> read content (r)<span class="qs-n" id="qsn-r"></span></label>
           <label class="qs-item"><input type="checkbox" id="qs-e"> file edits/writes (e)<span class="qs-n" id="qsn-e"></span></label>
+          <label class="qs-item qs-whole"><input type="checkbox" id="qs-w"> whole words (w)</label>
         </div>
       </span>
     </div>
@@ -2667,16 +2668,16 @@ mod tests {
         );
     }
 
-    /// The search box supports the `uatobre:` scope prefix (same syntax as the TUI's
+    /// The search box supports the `uatobrew:` scope prefix (same syntax as the TUI's
     /// `/` search): a run of distinct letters — u (user+command), a (assistant),
     /// t (think+act), o (all tool kinds), b (bash), r (reads), e (edits+writes) — in
     /// any order, with a leading `:` escaping a scope-shaped literal and a PURE run
     /// searching itself. The contract with the JS: the one parser, the kind-based
     /// gate, and a tooltip that teaches the syntax.
     #[test]
-    fn search_supports_the_uatobre_scope_prefix() {
+    fn search_supports_scoped_and_whole_word_prefixes() {
         assert!(
-            JS.contains(r"/^([uatobre+]{1,13}):/i") && JS.contains("function parseScope"),
+            JS.contains(r"/^([uatobrew+]{1,15}):/i") && JS.contains("function parseScope"),
             "the order-free letter-run grammar is the one parser"
         );
         assert!(
@@ -2688,25 +2689,33 @@ mod tests {
             "a pure scope run searches itself — the scope reading has nothing to search"
         );
         assert!(
-            JS.contains("function recClasses")
-                && JS.contains(r#"r.kind === "user" || r.kind === "command""#)
-                && JS.contains(r#"r.kind === "assistant""#)
+            JS.contains("function directMask")
+                && JS.contains(r#"k === "user" || k === "command""#)
+                && JS.contains(r#"k === "assistant""#)
                 && JS.contains(r"^(bash|edit|write|read|skill|tool)$")
                 && JS.contains(r#"k === "edit" || k === "write""#),
             "scope gating maps u/a/t/o/b/r/e onto the record kinds via one class table"
         );
         assert!(
-            JS.contains("toolLetters(it.kind, cls)"),
-            "the tool scopes reach the tools a thinking span absorbed (kind act)"
+            JS.contains("recSearchParts")
+                && JS.contains("function countRec")
+                && JS.contains("each absorbed child tool owns its command/output"),
+            "thinking prose and absorbed tool content have independent search projections"
         );
         assert!(
-            build_shell("t", "root", false, false).contains("uatobre: prefix"),
+            JS.contains("function wholeAt")
+                && JS.contains("WORD_LEFT")
+                && JS.contains("whole words"),
+            "w: uses explicit Unicode-aware word boundaries"
+        );
+        assert!(
+            build_shell("t", "root", false, false).contains("uatobrew: prefix"),
             "the search box tooltip mentions the scope syntax"
         );
     }
 
-    /// The scope's visible face: a dropdown of seven checkboxes that rewrites the
-    /// `uatobre:` prefix in the box,
+    /// The scope's visible face: seven type checkboxes plus a whole-word toggle that
+    /// rewrite the `uatobrew:` prefix in the box,
     /// and lights up reading back the active letters when a prefix is typed by hand.
     /// The box stays the single source of truth — one parser feeds both faces.
     #[test]
@@ -2722,6 +2731,7 @@ mod tests {
             "id=\"qs-b\"",
             "id=\"qs-r\"",
             "id=\"qs-e\"",
+            "id=\"qs-w\"",
         ] {
             assert!(
                 shell.contains(id),
@@ -2735,8 +2745,9 @@ mod tests {
                 && shell.contains("all tools")
                 && shell.contains("bash output")
                 && shell.contains("read content")
-                && shell.contains("file edits/writes"),
-            "the seven choices are named, letters included"
+                && shell.contains("file edits/writes")
+                && shell.contains("whole words (w)"),
+            "the type choices and whole-word modifier are named, letters included"
         );
         assert!(
             JS.contains("applyScopeFromMenu") && JS.contains("syncQScope"),

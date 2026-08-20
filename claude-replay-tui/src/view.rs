@@ -1508,10 +1508,7 @@ impl View {
             return;
         }
         for (i, b) in self.blocks.iter().enumerate() {
-            if !scope.admits(b) {
-                continue;
-            }
-            let n = block_occurrences(b, &q);
+            let n = scope.occurrences(b, &q);
             if n > 0 {
                 self.matches.push(i);
                 self.occurrences += n;
@@ -1974,13 +1971,13 @@ impl View {
             // Detect the diff-inset need from the original line, before search
             // highlighting overwrites the bg (else the matched row shifts left).
             let inset = is_diff_line(&line);
-            let in_scope = !scope.is_scoped()
-                || self
-                    .tag_of(ai)
-                    .and_then(|b| self.blocks.get(b))
-                    .is_some_and(|b| scope.admits(b));
+            let tag = self.tag_of(ai);
+            let in_scope = tag.is_some_and(|b| {
+                self.matches.binary_search(&b).is_ok()
+                    && (!scope.is_scoped() || self.blocks.get(b).is_some_and(|b| scope.admits(b)))
+            });
             let styled = match &needle {
-                Some(q) if in_scope && row_text(&line).to_lowercase().contains(q.as_str()) => {
+                Some(q) if in_scope && text_occurrences(&row_text(&line), q, scope.whole) > 0 => {
                     highlight_bg(&line, self.tag_of(ai) == cur)
                 }
                 _ => line,
@@ -2238,8 +2235,8 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         ("Enter", "fold focused · or download/reveal an attachment"),
         ("/   n / N", "search, then next / prev match"),
         (
-            "/uatobre:x",
-            "scope: you/agent/think/tools/bash/reads/edits · : escapes",
+            "/uatobrew:x",
+            "scope: you/agent/think/tools/bash/reads/edits · w=whole word",
         ),
         ("t", "task/todo panel (session task queue)"),
         (
@@ -2406,8 +2403,8 @@ struct SearchScope {
     user: bool,
     /// `a` — the agent's replies: `AssistantText` prose.
     assistant: bool,
-    /// `t` — thinking blocks, as displayed: a `Thinking` block that absorbed tool
-    /// calls matches on its whole content, exactly like unscoped block search.
+    /// `t` — the thinking prose itself. Absorbed tool calls remain nested for display,
+    /// but belong only to their `o`/`b`/`r`/`e` scopes for search.
     thinking: bool,
     /// `o` — ALL tool calls and their output: every `ToolUse` kind plus standalone
     /// `ToolResult` blocks. The umbrella over `b`/`r`/`e`.
@@ -2420,6 +2417,10 @@ struct SearchScope {
     /// (An agent writing long text through bash lands under `b` — the block's kind
     /// is what it is, not what it was used for.)
     edits: bool,
+    /// `w` — require non-word boundaries on both sides of each occurrence. This is a
+    /// modifier, not a message class: `w:x` searches all blocks and `tw:x` composes it
+    /// with the thinking projection.
+    whole: bool,
 }
 
 impl SearchScope {
@@ -2442,6 +2443,32 @@ impl SearchScope {
             K::Read => self.tools || self.reads,
             K::Skill | K::Tool | K::ToolResult => self.tools,
             _ => false,
+        }
+    }
+    /// Count only content owned by the selected message classes. A `Thinking` block is
+    /// a display container for absorbed tools, so its own prose and each nested tool are
+    /// projected independently; otherwise `t:needle` falsely finds grep/bash output.
+    fn occurrences(self, b: &Block, needle: &str) -> usize {
+        if !self.is_scoped() {
+            return block_occurrences(b, needle, self.whole);
+        }
+        if let Block::Thinking { text, tools, .. } = b {
+            let own = if self.thinking {
+                text_occurrences(text, needle, self.whole)
+            } else {
+                0
+            };
+            return own
+                + tools
+                    .iter()
+                    .filter(|tool| self.admits_tool_kind(crate::model::block_kind(tool)))
+                    .map(|tool| block_occurrences(tool, needle, self.whole))
+                    .sum::<usize>();
+        }
+        if self.admits(b) {
+            block_occurrences(b, needle, self.whole)
+        } else {
+            0
         }
     }
     /// Whether a block belongs to this scope, by its [`block_kind`](crate::model::block_kind) — the ONE
@@ -2476,8 +2503,9 @@ impl SearchScope {
 /// Split a raw search query into `(scope, needle)`. The prefix grammar (shared with the
 /// HTML viewer's search box, case-insensitive): a run of DISTINCT letters — `u` (your
 /// turns) / `a` (agent replies) / `t` (thinking) / `o` (all tools) / `b` (bash) /
-/// `r` (reads) / `e` (edits+writes) — then `:`, **order-free**, so `aut:` ≡ `uat:` and
-/// `br:` ≡ `rb:`. (`u+a+t:`, the v1.73 spelling, still parses.) A LEADING colon
+/// `r` (reads) / `e` (edits+writes), plus `w` (whole-word modifier) — then `:`,
+/// **order-free**, so `aut:` ≡ `uat:` and `tw:` means whole words in thinking prose.
+/// (`u+a+t:`, the v1.73 spelling, still parses.) A LEADING colon
 /// escapes: `:aut:x` searches the literal text `aut:x` — needed whenever the needle
 /// itself starts with a scope-shaped run followed by MORE text (`:rate:limit` for the
 /// literal `rate:limit`). A PURE run with nothing after it searches itself — `auto:`
@@ -2490,8 +2518,8 @@ fn scoped_query(raw: &str) -> (SearchScope, &str) {
     if let Some(rest) = raw.strip_prefix(':') {
         return (SearchScope::default(), rest);
     }
-    // The longest valid prefix is the v1.73 spelling fully separated: "u+a+t+o+b+r+e".
-    if let Some(colon) = raw.find(':').filter(|&c| (1..=13).contains(&c)) {
+    // The longest valid prefix is the fully separated "u+a+t+o+b+r+e+w".
+    if let Some(colon) = raw.find(':').filter(|&c| (1..=15).contains(&c)) {
         let mut scope = SearchScope::default();
         let mut valid = true;
         for ch in raw[..colon].chars() {
@@ -2503,6 +2531,7 @@ fn scoped_query(raw: &str) -> (SearchScope, &str) {
                 'b' => &mut scope.bash,
                 'r' => &mut scope.reads,
                 'e' => &mut scope.edits,
+                'w' => &mut scope.whole,
                 '+' => continue, // the v1.73 separator, still accepted
                 _ => {
                     valid = false;
@@ -2515,20 +2544,34 @@ fn scoped_query(raw: &str) -> (SearchScope, &str) {
             }
             *slot = true;
         }
-        if valid && scope.is_scoped() && colon + 1 < raw.len() {
+        if valid && (scope.is_scoped() || scope.whole) && colon + 1 < raw.len() {
             return (scope, &raw[colon + 1..]);
         }
     }
     (SearchScope::default(), raw)
 }
 
-fn block_occurrences(b: &Block, needle: &str) -> usize {
-    fn count(hay: &str, needle: &str) -> usize {
-        if needle.is_empty() {
-            return 0;
-        }
-        hay.to_lowercase().matches(needle).count()
+fn text_occurrences(hay: &str, needle: &str, whole: bool) -> usize {
+    if needle.is_empty() {
+        return 0;
     }
+    let hay = hay.to_lowercase();
+    if !whole {
+        return hay.matches(needle).count();
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    hay.match_indices(needle)
+        .filter(|(start, found)| {
+            let end = *start + found.len();
+            let left = hay[..*start].chars().next_back();
+            let right = hay[end..].chars().next();
+            !left.is_some_and(word) && !right.is_some_and(word)
+        })
+        .count()
+}
+
+fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
+    let count = |hay: &str, needle: &str| text_occurrences(hay, needle, whole);
     match b {
         Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
         Block::AssistantMessage { text, .. } => count(text, needle),
@@ -2537,7 +2580,7 @@ fn block_occurrences(b: &Block, needle: &str) -> usize {
             count(text, needle)
                 + tools
                     .iter()
-                    .map(|t| block_occurrences(t, needle))
+                    .map(|t| block_occurrences(t, needle, whole))
                     .sum::<usize>()
         }
         Block::ToolUse {
@@ -2567,7 +2610,7 @@ fn block_occurrences(b: &Block, needle: &str) -> usize {
                 + sa.result.as_deref().map(|r| count(r, needle)).unwrap_or(0)
                 + sa.blocks
                     .iter()
-                    .map(|c| block_occurrences(c, needle))
+                    .map(|c| block_occurrences(c, needle, whole))
                     .sum::<usize>()
         }
         Block::AgentDone {
@@ -4878,7 +4921,8 @@ mod tests {
             execution: None,
         };
         // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
-        // absorbed tool, so `t:` reaches it as thinking and `b:`/`o:` reach it as bash.
+        // absorbed tool, so only `b:`/`o:` reach it. `t:` owns the thinking prose, not
+        // the child tool's command or output.
         bs[7] = Block::Thinking {
             text: "pondering quietly".into(),
             duration_secs: None,
@@ -4918,7 +4962,7 @@ mod tests {
         assert_eq!(count_for(&mut v, "UNIQUEMATCH"), 8, "unscoped: every block");
         assert_eq!(count_for(&mut v, "u:UNIQUEMATCH"), 2, "u: turns + commands");
         assert_eq!(count_for(&mut v, "a:UNIQUEMATCH"), 1, "a: agent prose");
-        assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 2, "t: think + act");
+        assert_eq!(count_for(&mut v, "t:UNIQUEMATCH"), 1, "t: prose only");
         assert_eq!(
             count_for(&mut v, "b:UNIQUEMATCH"),
             2,
@@ -4941,13 +4985,13 @@ mod tests {
             "ob: b is inside o — the union adds nothing"
         );
         assert_eq!(count_for(&mut v, "ua:UNIQUEMATCH"), 3, "ua: composes");
-        assert_eq!(count_for(&mut v, "ta:UNIQUEMATCH"), 3, "ta: order-free");
+        assert_eq!(count_for(&mut v, "ta:UNIQUEMATCH"), 2, "ta: order-free");
         assert_eq!(count_for(&mut v, "br:UNIQUEMATCH"), 3, "br: ≡ rb:");
         assert_eq!(count_for(&mut v, "rb:UNIQUEMATCH"), 3, "rb: ≡ br:");
         for p in ["uat", "aut", "tua", "AUT"] {
             assert_eq!(
                 count_for(&mut v, &format!("{p}:UNIQUEMATCH")),
-                5,
+                4,
                 "{p}: three classes, no standalone tool blocks"
             );
         }
@@ -4976,6 +5020,70 @@ mod tests {
             0,
             "an invalid letter is no prefix — the colon-bearing text matches nothing"
         );
+    }
+
+    #[test]
+    fn whole_word_search_is_opt_in_and_composes_with_message_scopes() {
+        assert_eq!(
+            text_occurrences("cat scatter cat2 _cat cat-cat", "cat", false),
+            6,
+            "partial matching remains the default"
+        );
+        assert_eq!(
+            text_occurrences("cat scatter cat2 _cat cat-cat", "cat", true),
+            3,
+            "letters, digits, and underscore continue a word; punctuation separates it"
+        );
+        assert_eq!(
+            text_occurrences("猫 猫咪 山猫-猫", "猫", true),
+            2,
+            "word boundaries use Unicode alphanumeric characters"
+        );
+
+        let (whole, needle) = scoped_query("w:Cat");
+        assert_eq!(needle, "Cat");
+        assert!(whole.whole);
+        assert!(!whole.is_scoped(), "w modifies an otherwise global search");
+
+        let (thinking_whole, needle) = scoped_query("wt:Cat");
+        assert_eq!(needle, "Cat");
+        assert!(thinking_whole.whole && thinking_whole.thinking);
+        assert!(thinking_whole.is_scoped());
+    }
+
+    #[test]
+    fn thinking_scope_does_not_claim_absorbed_grep_output() {
+        let act = Block::Thinking {
+            text: "THOUGHT_ONLY about the search".into(),
+            duration_secs: None,
+            tools: vec![Block::ToolUse {
+                name: "Grep".into(),
+                target: "pattern".into(),
+                diffs: vec![],
+                output: Some("OUTPUT_ONLY from grep".into()),
+                patch: None,
+                read_lines: None,
+                cwd: String::new(),
+                execution: None,
+            }],
+        };
+        let mut v = View::new(vec![act], "t", false, FoldPolicy::none());
+        draw(&mut v, 60, 8);
+        let count_for = |v: &mut View, q: &str| {
+            v.search_start();
+            for c in q.chars() {
+                v.search_input(c);
+            }
+            let n = v.match_count();
+            v.search_cancel();
+            n
+        };
+
+        assert_eq!(count_for(&mut v, "t:OUTPUT_ONLY"), 0);
+        assert_eq!(count_for(&mut v, "r:OUTPUT_ONLY"), 1);
+        assert_eq!(count_for(&mut v, "o:OUTPUT_ONLY"), 1);
+        assert_eq!(count_for(&mut v, "t:THOUGHT_ONLY"), 1);
+        assert_eq!(count_for(&mut v, "r:THOUGHT_ONLY"), 0);
     }
 
     /// The `:` escape: a leading colon makes the rest LITERAL, so a needle that itself

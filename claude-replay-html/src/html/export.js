@@ -191,7 +191,7 @@
   var records = [];      // block records, stream order — the source of truth
   var recHeights = [];   // effective px height per record (EST_H until measured)
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
-  var recClass = [];     // lazy scope letters per record (u/a/t/o/b/r/e; null = unbuilt)
+  var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
   var idIndex = {};      // block id (incl. nested items) -> top-level record index
   var loIdx = 0, hiIdx = 0; // materialized window [loIdx, hiIdx)
@@ -200,7 +200,7 @@
   var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
   var topPad = null, botPad = null;
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
-  var searchScope = null; // `uato:` prefix parse — {u,a,t,o} booleans, null = unscoped
+  var searchScope = null; // `uatobrew:` prefix parse; w modifies matching, null = unscoped
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -241,6 +241,7 @@
     var b = records[i];
     var e = renderBlock(b);
     e.dataset.idx = i;
+    e.dataset.kind = b.kind;
     if (filter) {
       if (isTurnKind(b)) e.classList.add("filter-dim");
       else if (recHit[i]) {
@@ -263,7 +264,7 @@
     applyWrapIn(e);
     reapplySmallMore(e);
     if (searchNeedle && searchInScope(+e.dataset.idx)) {
-      markHits(e, searchNeedle, searchNeedle.length);
+      markHits(e, searchNeedle, searchNeedle.length, !!(searchScope && searchScope.w));
       // The current hit survives rematerialization (#66) — same id-keyed idea as
       // the filter's `.filter-cur`.
       if (curHit && +e.dataset.idx === curHit.rec) {
@@ -495,6 +496,7 @@
     records.push(b);
     recHeights.push(EST_H);
     recText.push(null);
+    recSearchParts.push(null);
     recHit.push(false);
     indexIds(b, records.length - 1);
     if (b.turn != null) addTurn(b);
@@ -1235,7 +1237,7 @@
     records.length = from;
     recHeights.length = from;
     recText.length = from;
-    recClass.length = from;
+    recSearchParts.length = from;
     recHit.length = from;
     // Ids of dropped records (incl. nested) leave the index; a full rebuild is
     // cheap and only runs on tail rewrites.
@@ -2511,8 +2513,9 @@
     touched.forEach(function (p) { p.normalize(); }); // merge the split text nodes back
   }
   // Search scans the RECORDS' text (#50 — the DOM only holds the window). Text per
-  // record is extracted once, lazily, in tree order (headers then body, nested items
-  // recursively) and cached lowercase.
+  // record is extracted once, lazily, in tree order. The same walk also builds one
+  // projection per search class: an `act` owns only its thinking prose under `t`, while
+  // each absorbed child tool owns its command/output under `o`/`b`/`r`/`e`.
   var stripDiv = null;
   function stripHtml(h) {
     if (!stripDiv) stripDiv = el("div");
@@ -2521,66 +2524,127 @@
     stripDiv.textContent = "";
     return t;
   }
-  function textOfRec(i) {
-    if (recText[i] != null) return recText[i];
-    var parts = [];
+  function ownTextParts(b) {
+    var parts = [], h = b.head || {};
+    ["summary", "badge", "preview", "name", "target", "att_name"].forEach(function (k) {
+      if (h[k]) parts.push(String(h[k]));
+    });
+    (b.body || []).forEach(function (p) {
+      if (p.p === "md" || p.p === "think") parts.push(stripHtml(p.h));
+      else if (p.p === "pre" || p.p === "note") parts.push(String(p.x));
+      else if (p.p === "num") p.rows.forEach(function (r) { parts.push(stripHtml(String(r[1]))); });
+      else if (p.p === "diff") p.rows.forEach(function (r) { parts.push(String(r[2])); });
+    });
+    return parts;
+  }
+  var CLASS_BIT = { u: 1, a: 2, t: 4, o: 8, b: 16, r: 32, e: 64 };
+  function directMask(k) {
+    if (k === "user" || k === "command") return CLASS_BIT.u;
+    if (k === "assistant") return CLASS_BIT.a;
+    if (k === "think" || k === "act") return CLASS_BIT.t;
+    if (!/^(bash|edit|write|read|skill|tool)$/.test(k)) return 0;
+    var mask = CLASS_BIT.o;
+    if (k === "bash") mask |= CLASS_BIT.b;
+    if (k === "read") mask |= CLASS_BIT.r;
+    if (k === "edit" || k === "write") mask |= CLASS_BIT.e;
+    return mask;
+  }
+  function scopeMask(set) {
+    var mask = 0;
+    scopeLetters(set).forEach(function (k) { mask |= CLASS_BIT[k]; });
+    return mask;
+  }
+  function ensureRecText(i) {
+    if (recText[i] != null && recSearchParts[i] != null) return;
+    var allParts = [], ownership = [], length = 0;
     (function walk(b) {
-      var h = b.head || {};
-      ["summary", "badge", "preview", "name", "target", "att_name"].forEach(function (k) {
-        if (h[k]) parts.push(String(h[k]));
-      });
+      var own = ownTextParts(b).join("\n").toLowerCase();
+      if (own) {
+        if (allParts.length) { allParts.push("\n"); length++; }
+        var start = length;
+        allParts.push(own);
+        length += own.length;
+        ownership.push({ start: start, end: length, mask: directMask(b.kind) });
+      }
       (b.body || []).forEach(function (p) {
-        if (p.p === "md" || p.p === "think") parts.push(stripHtml(p.h));
-        else if (p.p === "pre" || p.p === "note") parts.push(String(p.x));
-        else if (p.p === "num") p.rows.forEach(function (r) { parts.push(stripHtml(String(r[1]))); });
-        else if (p.p === "diff") p.rows.forEach(function (r) { parts.push(String(r[2])); });
-        else if (p.p === "blocks") p.items.forEach(walk);
+        if (p.p === "blocks") p.items.forEach(walk);
       });
     })(records[i]);
-    recText[i] = parts.join("\n").toLowerCase();
+    recText[i] = allParts.join("");
+    recSearchParts[i] = ownership;
+  }
+  function textOfRec(i) {
+    ensureRecText(i);
     return recText[i];
   }
-  function countOcc(t, lc) {
-    var n = 0, i = 0;
-    while ((i = t.indexOf(lc, i)) !== -1) { n++; i += lc.length; }
+  function countRec(i, set, lc, whole) {
+    ensureRecText(i);
+    var wanted = scopeMask(set);
+    if (!wanted) return countOcc(recText[i], lc, whole);
+    var n = 0;
+    recSearchParts[i].forEach(function (part) {
+      if (part.mask & wanted) n += countOcc(recText[i].slice(part.start, part.end), lc, whole);
+    });
     return n;
   }
-  function markHits(blk, lc, len) {
+  var WORD_LEFT = /[\p{L}\p{N}\p{M}_]$/u;
+  var WORD_RIGHT = /^[\p{L}\p{N}\p{M}_]/u;
+  function wholeAt(t, start, len) {
+    return !WORD_LEFT.test(t.slice(0, start)) && !WORD_RIGHT.test(t.slice(start + len));
+  }
+  function countOcc(t, lc, whole) {
+    var n = 0, i = 0;
+    while ((i = t.indexOf(lc, i)) !== -1) {
+      if (!whole || wholeAt(t, i, lc.length)) n++;
+      i += lc.length;
+    }
+    return n;
+  }
+  function kindInScope(k, set) {
+    var wanted = scopeMask(set);
+    return !wanted || !!(directMask(k) & wanted);
+  }
+  function markHits(blk, lc, len, whole) {
     // Collect matching text nodes first (the walk is read-only), then rewrite each so we
     // never mutate the tree we're walking. Matches within a single text node only — good
     // enough for a viewer, and it never splits across the pre-rendered highlight spans.
     var walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT, null);
     var nodes = [], n;
     while ((n = walker.nextNode())) {
-      if (n.nodeValue.toLowerCase().indexOf(lc) !== -1) nodes.push(n);
+      var owner = n.parentElement && n.parentElement.closest(".blk");
+      if ((!searchScope || (owner && kindInScope(owner.dataset.kind, searchScope)))
+          && countOcc(n.nodeValue.toLowerCase(), lc, whole)) nodes.push(n);
     }
     nodes.forEach(function (tn) {
       var text = tn.nodeValue, lower = text.toLowerCase();
-      var frag = document.createDocumentFragment(), i = 0, idx;
+      var frag = document.createDocumentFragment(), i = 0, emitted = 0, idx;
       while ((idx = lower.indexOf(lc, i)) !== -1) {
-        if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
+        if (whole && !wholeAt(lower, idx, len)) { i = idx + len; continue; }
+        if (idx > emitted) frag.appendChild(document.createTextNode(text.slice(emitted, idx)));
         var mk = el("mark", "hl");
         mk.textContent = text.slice(idx, idx + len);
         frag.appendChild(mk);
-        i = idx + len;
+        emitted = idx + len;
+        i = emitted;
       }
-      if (i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
+      if (emitted < text.length) frag.appendChild(document.createTextNode(text.slice(emitted)));
       tn.parentNode.replaceChild(frag, tn);
     });
   }
-  // The `uatobre:` scope grammar (same syntax as the TUI's `/` search,
+  // The `uatobrew:` scope grammar (same syntax as the TUI's `/` search,
   // case-insensitive): a run of DISTINCT letters — u (your turns: user+command),
   // a (agent replies), t (thinking, both think and act), o (ALL tools), b (bash),
-  // r (reads), e (edits+writes) — then `:`, ORDER-FREE, so `aut:` ≡ `uat:` and
-  // `br:` ≡ `rb:` (the v1.73 `+` spelling still parses). A LEADING colon escapes:
+  // r (reads), e (edits+writes), w (whole-word modifier) — then `:`, ORDER-FREE,
+  // so `aut:` ≡ `uat:` and `tw:` means whole words in thinking prose (`+` still parses).
+  // A LEADING colon escapes:
   // `:rate:limit` searches the literal `rate:limit`. Returns {set, len}; {set:null}
   // for the escape; null when the text has no prefix (repeats, foreign letters —
   // including the dropped `user:` alias — and colons in ordinary text like `http://`).
   function parseScope(needle) {
     if (needle.charAt(0) === ":") return { set: null, len: 1 };
-    var m = /^([uatobre+]{1,13}):/i.exec(needle);
+    var m = /^([uatobrew+]{1,15}):/i.exec(needle);
     if (!m) return null;
-    var set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false };
+    var set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
     var run = m[1].toLowerCase();
     for (var i = 0; i < run.length; i++) {
       var p = run.charAt(i);
@@ -2588,48 +2652,17 @@
       if (set[p]) return null; // a repeated letter is a word, not a scope
       set[p] = true;
     }
-    if (!scopeLetters(set).length) return null;
+    if (!activeLetters(set).length) return null;
     return { set: set, len: m[0].length };
   }
-  // The scope letters a record belongs to — u/a/t plus the tool letters, where a
-  // thinking span that ABSORBED tool calls (kind "act") carries the absorbed items'
-  // letters too: on thinking-heavy sessions most bash/read/edit activity lives inside
-  // those spans, and a `b:` that could not see it would scope over almost nothing.
-  // Cached per record (kinds never change; the tail rewrite truncates the cache).
-  function toolLetters(k, cls) {
-    if (!/^(bash|edit|write|read|skill|tool)$/.test(k)) return;
-    if (cls.indexOf("o") < 0) cls.push("o");
-    if (k === "bash" && cls.indexOf("b") < 0) cls.push("b");
-    if (k === "read" && cls.indexOf("r") < 0) cls.push("r");
-    if ((k === "edit" || k === "write") && cls.indexOf("e") < 0) cls.push("e");
-  }
-  function recClasses(i) {
-    if (recClass[i]) return recClass[i];
-    var r = records[i] || {};
-    var cls = [];
-    if (r.kind === "user" || r.kind === "command") cls.push("u");
-    else if (r.kind === "assistant") cls.push("a");
-    else if (r.kind === "think") cls.push("t");
-    else if (r.kind === "act") {
-      cls.push("t");
-      (r.body || []).forEach(function (part) {
-        if (part.p !== "blocks") return;
-        (part.items || []).forEach(function (it) { toolLetters(it.kind, cls); });
-      });
-    } else toolLetters(r.kind, cls);
-    recClass[i] = cls;
-    return cls;
-  }
   function searchInScope(i) {
-    if (!searchScope) return true;
-    var cls = recClasses(i);
-    for (var ci = 0; ci < cls.length; ci++) {
-      if (searchScope[cls[ci]]) return true;
-    }
-    return false;
+    return !searchScope || countRec(i, searchScope, searchNeedle, !!searchScope.w) > 0;
   }
   function scopeLetters(set) {
     return ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) { return set && set[k]; });
+  }
+  function activeLetters(set) {
+    return ["u", "a", "t", "o", "b", "r", "e", "w"].filter(function (k) { return set && set[k]; });
   }
   function search(v) {
     var qc = $("qcount");
@@ -2662,20 +2695,25 @@
     searchNeedle = lc;
     classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
     for (var i = 0; i < records.length; i++) {
-      var n = countOcc(textOfRec(i), lc);
-      if (!n) continue;
-      // Every class the record belongs to gets its occurrences — the dropdown shows
-      // what each scope WOULD find for this query, whatever is selected right now.
-      var cls = recClasses(i);
-      for (var ci = 0; ci < cls.length; ci++) classCounts[cls[ci]] += n;
-      if (searchInScope(i)) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
+      ensureRecText(i);
+      var whole = !!(searchScope && searchScope.w);
+      recSearchParts[i].forEach(function (part) {
+        var partHits = countOcc(recText[i].slice(part.start, part.end), lc, whole);
+        if (!partHits) return;
+        ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+          if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
+        });
+      });
+      var n = countRec(i, searchScope, lc, whole);
+      if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
     }
     updateScopeCounts();
     matEls().forEach(function (e) {
-      if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length);
+      if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length, whole);
     });
     qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s")
-      + (searchScope ? " in " + scopeLetters(searchScope).join("") : "");
+      + (scopeLetters(searchScope).length ? " in " + scopeLetters(searchScope).join("") : "")
+      + (whole ? " · whole words" : "");
     showQNav(totalHits > 0);
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
@@ -2853,7 +2891,7 @@
       if (b) b.classList.toggle("on", !!on);
     });
   }
-  // The scope dropdown is the visible face of the `uato:` prefix, and the BOX is the
+  // The scope dropdown is the visible face of the `uatobrew:` prefix, and the BOX is the
   // single source of truth: checking a box rewrites the prefix in the input, typing a
   // prefix by hand checks the boxes — neither can drift from the other. The rebuilt
   // prefix is canonical (`uato` order); a hand-typed permutation is honored as typed.
@@ -2874,17 +2912,17 @@
   function syncQScope() {
     var parsed = parseScope(q.value.trim());
     var set = (parsed && parsed.set)
-      || { u: false, a: false, t: false, o: false, b: false, r: false, e: false };
-    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+      || { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
+    ["u", "a", "t", "o", "b", "r", "e", "w"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.checked = !!set[k];
     });
     // The trigger is a plain funnel icon: gray = no scope (everything searched),
     // colored = some scope active. The letters live in the box, not the icon.
-    if (qscope) qscope.classList.toggle("on", scopeLetters(set).length > 0);
+    if (qscope) qscope.classList.toggle("on", activeLetters(set).length > 0);
   }
   function applyScopeFromMenu() {
-    var letters = ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) {
+    var letters = ["u", "a", "t", "o", "b", "r", "e", "w"].filter(function (k) {
       var cb = $("qs-" + k);
       return cb && cb.checked;
     });
@@ -2899,7 +2937,7 @@
     qscope.addEventListener("click", function () {
       scopeMenu(!$("qscopemenu").classList.contains("on"));
     });
-    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+    ["u", "a", "t", "o", "b", "r", "e", "w"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });

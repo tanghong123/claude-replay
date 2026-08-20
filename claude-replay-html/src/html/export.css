@@ -142,7 +142,7 @@ input::placeholder { color: var(--faint); }
 }
 .qnav.on { display: inline; }
 .qnav:hover { color: var(--fg); }
-/* The scope dropdown — the clickable face of the `uatobre:` prefix: checking a box
+/* The scope dropdown — the clickable face of the `uatobrew:` prefix: checking a box
    edits the prefix in the input, typing a prefix checks the boxes. The trigger is a
    plain funnel icon: gray means no scope (everything is searched), colored means some
    scope is active. Each menu row shows the CURRENT query's hit count for that class. */
@@ -166,6 +166,7 @@ input::placeholder { color: var(--faint); }
 }
 .qs-item:hover { background: var(--panel); }
 .qs-item input { margin: 0; accent-color: var(--link); }
+.qs-item.qs-whole { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
 /* The current query's hit count for that class — blank when no query is typed. */
 .qs-item .qs-n {
   margin-left: auto; padding-left: 14px;
