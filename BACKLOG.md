@@ -26,20 +26,16 @@
   persistence — durability comes from `BlockStore` and the other provider interfaces,
   so the durable directory leaves the main cache API. Build starts on sign-off.
 
-## Unblocked — revisit (the owner now has real Codex sessions, 2026-08-20)
-
-- **#29 — Codex `update_goal` collapses goal states** (blocked→completed, unknown→pending).
-  Verify the real vocabulary against the local Codex store, then fix.
-- **#31 — Codex metrics assume no cache-write tier** (`cache_creation` hardcoded 0).
-  Verify against real Codex token payloads.
-- **#28 — unrecognized spawn-result status leaves a sub-agent Running forever.**
-  The fix needs no per-agent vocabulary (absent ≠ present-but-unrecognized; the latter
-  should read `AgentStatus::Unknown`); the new sessions let it be verified end to end.
-- **#30 — Qoder credits: absent `billable` defaults to billable.** Check whether the
-  local QoderWork store carries `billable` evidence before deciding the default.
-
 ## Evidence-blocked
 
+- **#29 — Codex `update_goal` collapses goal states** (blocked→completed,
+  unknown→pending). Scanned 2026-08-20: the local 9-session Codex corpus never calls
+  `update_goal`/`update_plan` (only exec/wait/rowt/parity fired), so the real vocabulary
+  is still unobserved — and the fix wants a rendering call (should `blocked` stay
+  distinct from `completed`?) along with it.
+- **#30 — Qoder credits: absent `billable` defaults to billable.** Scanned 2026-08-20:
+  zero `credits` lines across all 52 local QoderWork sessions — the credits path belongs
+  to Qoder-the-IDE, which the owner does not use. Stays open awaiting a Qoder corpus.
 - **#32 — `fork_origin` is sidecar-only**, so fork families degrade for sidecar-less
   (post-July-2026) QoderWork sessions. Needs a post-July fork in the store to see where
   QoderWork now records the relation (candidate: `sub_chats.ext`). Softened by the rail's

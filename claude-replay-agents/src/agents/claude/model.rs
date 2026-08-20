@@ -21,6 +21,10 @@ fn status_from_str(s: &str) -> Option<AgentStatus> {
         "async_launched" => AgentStatus::AsyncLaunched,
         "completed" => AgentStatus::Completed,
         "failed" => AgentStatus::Failed,
+        // QoderWork's word for a failed spawn (#28, measured on a real store:
+        // `{kind:"agent-result", state:"error", terminateReason:"ERROR"}`, beside 307
+        // `completed`) — a failure, not a mystery, so it maps to `Failed` not `Unknown`.
+        "error" => AgentStatus::Failed,
         "killed" => AgentStatus::Killed,
         "stopped" => AgentStatus::Stopped,
         _ => return None,
@@ -653,13 +657,17 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
             // `agent-result` records the TERMINAL state under `state` (#95:
             // `{kind:"agent-result", state:"completed", terminateReason:"GOAL", …}`) —
             // accept either, so a QoderWork spawn resolves instead of staying running.
-            if let Some(st) = tur
+            // A PRESENT word outside the vocabulary resolves to `Unknown` (#28), never
+            // silently stays `Running`: a result line is the spawn's outcome, so whatever
+            // it says, the spawn is over (measured: no in-progress word on any result line
+            // across ~60 sessions in two stores — `async_launched`, the detached marker,
+            // is in the vocabulary). Absent status/state changes nothing, as before.
+            if let Some(word) = tur
                 .get("status")
                 .or_else(|| tur.get("state"))
                 .and_then(|v| v.as_str())
-                .and_then(status_from_str)
             {
-                sa.status = st;
+                sa.status = status_from_str(word).unwrap_or(AgentStatus::Unknown);
             }
             if let Some(of) = tur.get("outputFile").and_then(|v| v.as_str()) {
                 if !of.is_empty() {
@@ -2160,6 +2168,44 @@ mod tests {
         };
         assert_eq!(sa.agent_id, "aExplore-8df2c962");
         assert_eq!(sa.status, AgentStatus::Completed, "{blocks:?}");
+    }
+
+    /// #28, confirmed on a real store: QoderWork reports a failed spawn as
+    /// `state:"error"` + `terminateReason:"ERROR"` — a word outside the original
+    /// vocabulary, which used to leave the agent `Running` forever (an inflated
+    /// live-agent count that never resolved). It is a failure, so it reads `Failed`.
+    #[test]
+    fn qoderwork_agent_result_error_state_is_failed_not_running() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-08-13T00:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-08-13T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"call_1","name":"Agent","input":{"subagent_type":"general-purpose","description":"recover","prompt":"try"}}]}}
+{"type":"user","timestamp":"2026-08-13T00:00:02.000Z","toolUseResult":{"kind":"agent-result","agentId":"ageneral-purpose-fe5c9aa2","agentType":"general-purpose","content":"model queue recovery attempts exceeded","state":"error","terminateReason":"ERROR"},"message":{"content":[{"type":"tool_result","tool_use_id":"call_1","content":"terminated"}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        assert_eq!(sa.status, AgentStatus::Failed, "{blocks:?}");
+    }
+
+    /// #28, the general rule: a PRESENT-but-unrecognized result word resolves to
+    /// `Unknown` — terminal and honest — never silently stays `Running`. A result line
+    /// is the spawn's outcome; whatever it says, the spawn is over.
+    #[test]
+    fn an_unrecognized_result_state_reads_unknown_not_running() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-08-13T00:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-08-13T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"call_1","name":"Agent","input":{"subagent_type":"Explore","description":"find","prompt":"x"}}]}}
+{"type":"user","timestamp":"2026-08-13T00:00:02.000Z","toolUseResult":{"kind":"agent-result","agentId":"aExplore-11","agentType":"Explore","content":"done-ish","state":"exploded"},"message":{"content":[{"type":"tool_result","tool_use_id":"call_1","content":"done-ish"}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        assert_eq!(sa.status, AgentStatus::Unknown, "{blocks:?}");
+        assert!(sa.status.is_terminal(), "unknown is terminal, not running");
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:

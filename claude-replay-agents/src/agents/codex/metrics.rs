@@ -187,9 +187,19 @@ impl CodexMetricsAcc {
             };
             let field = |name: &str| total.get(name).and_then(Value::as_u64).unwrap_or(0);
             let cached = field("cached_input_tokens");
+            // #31: Codex DOES have a cache-write tier — `cache_write_input_tokens` rides in
+            // the modern payload (1,950 of 1,977 lines on a real store), a sibling of
+            // `cached_input_tokens` and by the same naming a SUBSET of `input_tokens`, so
+            // it is split out the same way. Every observed value is 0 so far, which is why
+            // hardcoding 0 here used to be output-identical; the moment Codex emits a
+            // nonzero write, this records it instead of silently dropping the tier. (If
+            // nonzero evidence ever contradicts the subset reading, this is the spot.)
+            let cache_write = field("cache_write_input_tokens");
             let now = TokenCounts {
-                input: field("input_tokens").saturating_sub(cached),
-                cache_creation: 0, // Codex has no cache-write tier
+                input: field("input_tokens")
+                    .saturating_sub(cached)
+                    .saturating_sub(cache_write),
+                cache_creation: cache_write,
                 cache_read: cached,
                 output: field("output_tokens"),
             };
@@ -204,11 +214,14 @@ impl CodexMetricsAcc {
                 if let Some(last) = value.pointer("/payload/info/last_token_usage") {
                     let lfield = |name: &str| last.get(name).and_then(Value::as_u64).unwrap_or(0);
                     let lcached = lfield("cached_input_tokens");
+                    let lcache_write = lfield("cache_write_input_tokens");
                     self.last_total = TokenCounts {
-                        input: now
-                            .input
-                            .saturating_sub(lfield("input_tokens").saturating_sub(lcached)),
-                        cache_creation: 0,
+                        input: now.input.saturating_sub(
+                            lfield("input_tokens")
+                                .saturating_sub(lcached)
+                                .saturating_sub(lcache_write),
+                        ),
+                        cache_creation: now.cache_creation.saturating_sub(lcache_write),
                         cache_read: now.cache_read.saturating_sub(lcached),
                         output: now.output.saturating_sub(lfield("output_tokens")),
                     };
@@ -218,6 +231,9 @@ impl CodexMetricsAcc {
             // that goes backwards (a reset) must contribute nothing, never wrap.
             let e = self.per_model.entry(self.model.clone()).or_default();
             e.input += now.input.saturating_sub(self.last_total.input);
+            e.cache_creation += now
+                .cache_creation
+                .saturating_sub(self.last_total.cache_creation);
             e.cache_read += now.cache_read.saturating_sub(self.last_total.cache_read);
             e.output += now.output.saturating_sub(self.last_total.output);
             self.last_total = now;
@@ -535,6 +551,60 @@ mod tests {
         );
         assert_eq!(m.cache_read_tokens, 1_200);
         assert_eq!(m.output_tokens, 80);
+    }
+
+    /// #31: the modern payload carries `cache_write_input_tokens` (1,950 of 1,977 lines on
+    /// a real store — every observed value 0 so far). A nonzero write must be banked into
+    /// `cache_creation` and split OUT of input like its sibling `cached_input_tokens`, not
+    /// dropped by a hardcoded 0. This fixture is nonzero on purpose: the all-zero corpus
+    /// cannot tell the fix from the old hardcode.
+    #[test]
+    fn a_cache_write_tier_is_banked_not_dropped() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&turn_context("gpt-5.6"));
+        acc.push(
+            &serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {
+                    "input_tokens": 10_000, "cached_input_tokens": 4_000,
+                    "cache_write_input_tokens": 1_000, "output_tokens": 500,
+                }
+            }}}),
+        );
+        let m = acc.finish();
+        assert_eq!(m.input_tokens, 5_000, "input minus BOTH cache subsets");
+        assert_eq!(m.cache_creation_tokens, 1_000, "the write tier is recorded");
+        assert_eq!(m.cache_read_tokens, 4_000);
+        assert_eq!(m.output_tokens, 500);
+    }
+
+    /// #31 × the fork baseline: an inherited total's cache-write share is the parent's,
+    /// priced in the parent's own rollout — the first event banks only its own
+    /// `last_token_usage` write share, mirroring the other three counters.
+    #[test]
+    fn an_inherited_cache_write_total_is_a_baseline_not_a_delta() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&turn_context("gpt-5.6"));
+        acc.push(
+            &serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {
+                    "input_tokens": 1_001_000, "cached_input_tokens": 400,
+                    "cache_write_input_tokens": 5_100, "output_tokens": 50,
+                },
+                "last_token_usage": {
+                    "input_tokens": 1_000, "cached_input_tokens": 400,
+                    "cache_write_input_tokens": 100, "output_tokens": 50,
+                }
+            }}}),
+        );
+        let m = acc.finish();
+        assert_eq!(
+            m.cache_creation_tokens, 100,
+            "own write share only — the inherited 5,000 stays with the parent"
+        );
+        assert_eq!(
+            m.input_tokens, 500,
+            "own input minus own cached and own write"
+        );
     }
 
     /// The baseline is established ONCE: a resumed fold must not re-baseline against the
