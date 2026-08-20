@@ -360,9 +360,15 @@ one class and admits it formally (the FOLD_VERSION bump).
 `input_image` url, `image_generation_call.result`), false for everything else, so a giant
 assistant *text* stays intact. **Viewer-lossless and rendered-output-neutral ⇒ no byte-gate
 re-baseline.** Cost, at the audit's price: the scanner must become **path-tracking while
-streaming** — the seed's rule is deliberately "a property of JSON, *not* a list of known paths"
-— plus the policy plumbed through `LineSource` *and* `LineReader`. Real new logic on the one
-component whose stated hazard is mis-tracking JSON string escapes.
+streaming** — knowing, at the moment a value crosses the threshold, the key chain from the
+document root to its cursor (`toolUseResult → file → base64`), which means maintaining a live
+stack for *every* structural byte (push/pop on braces, array counters, key capture through
+the same escape machinery), because by the time a value turns out to be oversized the earlier
+bytes are consumed and unrevisitable. The seed's rule is deliberately "a property of JSON,
+*not* a list of known paths", so this is new state on the one component whose stated hazard
+is mis-tracking JSON string escapes — and an *unbounded* tracker would itself violate the
+invariant (nesting depth and key length are content-controlled) — plus the policy plumbed
+through `LineSource` *and* `LineReader`.
 
 **α-lite — the key-suffix form (recommended shape of α).** Full JSON-path tracking is more
 machinery than the policy needs: every target node is named by its last one or two object
