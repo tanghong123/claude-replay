@@ -22,9 +22,11 @@
   allocating, identity reads run elision-off, and α gained a cheap form (α-lite, key-suffix
   policy). Settled: placement, the substitution marker. On the owner, per its §11:
   **① α vs β** — owner leans α on the sans-io principle, α-lite recommended, no longer the
-  larger half; **② constants** (64 KB / 256 KB / K=64 / 64 MB — now part of the
+  larger half; **② constants** (64 KB / 256 KB / K=64 / J=64 / 64 MB — now part of the
   persisted-format contract) need a nod; **③ counter home** — (a) `Metrics::extra`,
-  free since the hint bumps FOLD_VERSION anyway. Build starts on sign-off, per §10.
+  free since the hint bumps FOLD_VERSION anyway. The marker is postfix-framed
+  (`{prefix}<elided:{off},{len}>{postfix}` — reconstruction + the load-time content check).
+  Build starts on sign-off, per §10.
 - **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
   owner's **final design review** (requested 2026-08-20) of
   [design/session-cache-redesign.md](design/session-cache-redesign.md);

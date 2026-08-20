@@ -12,10 +12,11 @@
 > **v2.1, 2026-08-20 (owner review).** The placeholder gained the elided value's span; the
 > loader seeks instead of re-scanning. Refined in the same review wave by v2.2.
 >
-> **v2.2, 2026-08-20 (owner review, continued).** The marker is an **exact substitution
-> pointer** — `<elided:{off},{len}>`, `off` the *absolute* file offset of the dropped bytes —
-> with the invariant that splicing `file[off, off+len)` over the marker reconstructs the
-> original line **byte for byte**. Nothing is lost; elision is invertible by construction, and
+> **v2.2, 2026-08-20 (owner review, continued).** The elided value is **framed**:
+> `{prefix}<elided:{off},{len}>{postfix}`, the marker an exact substitution pointer (`off` the
+> *absolute* file offset of the dropped middle) with the invariant that splicing
+> `file[off, off+len)` over the marker reconstructs the original line **byte for byte**.
+> Nothing is lost; elision is invertible by construction, and
 > the round trip is the scanner's own oracle (§10 step 0). Two principles joined it: **the
 > fold is sans-io**, so elision must commute with folding — the architectural statement of
 > α vs β (§6) — and **a marker is untrusted input**, so the span load validates before it
@@ -171,27 +172,34 @@ The output stays syntactically valid JSON with the same shape, so every downstre
 — works unmodified and sees a small line.
 
 ```
-{"type":"user","toolUseResult":{"file":{"base64":"data:image/png;base64,iVBORw0KGgo<elided:52981042,8117260>"}}, …}
-                                        └── kept K=64-byte prefix ─┘        └─ off ──┘ └ len ┘
+{"type":"user","toolUseResult":{"file":{"base64":"data:image/png;base64,iVBORw0KGgo<elided:52981042,8117196>ASUVORK5CYII="}}, …}
+                                        └── kept K=64-byte prefix ─┘        └─ off ──┘ └ len ┘└ J=64-byte postfix ┘
 ```
 
-**The marker is an exact substitution pointer.** `off` is the **absolute file offset** of the
-first dropped byte, `len` the count of dropped (raw, escaped) bytes — measured by the scanner
-as it consumes them, in the same pass that elides. The defining invariant:
+**The marker is an exact substitution pointer, framed by kept bytes on both sides.** The
+elided value reads `{prefix}<elided:{off},{len}>{postfix}` — the first **K = 64** and last
+**J = 64** raw bytes of the value stay in place, and the marker stands for exactly the dropped
+middle. `off` is the **absolute file offset** of the first dropped byte, `len` the count of
+dropped (raw, escaped) bytes — measured by the scanner as it consumes them, in the same pass
+that elides. The defining invariant:
 
 > Replacing the marker substring `<elided:{off},{len}>` with `file[off, off + len)` yields the
 > **original line, byte for byte**. Nothing is lost — elision is invertible by construction,
 > and any consumer holding only the elided text and the file handle can splice any value (or
 > the whole line) back with no JSON understanding at all.
 
-The kept prefix stays in place (the marker stands for exactly what was dropped, so the splice
-is character-exact — no decorative ellipsis), and the scanner never cuts the prefix
-mid-escape-sequence (it is a state machine and lands the cut on a boundary; moot for base64,
-which has no escapes, but load-bearing under β for general text). Absolute rather than
-line-relative because it makes the elided line self-describing against the file — resolving a
-marker needs no `at`-plus-offset arithmetic and no notion of which line it came from; the
-primitive learns the line's absolute start from its caller, which is exactly the cursor every
-caller already tracks.
+The splice is character-exact (no decorative ellipsis), and the scanner never cuts
+mid-escape-sequence at **either** end (it is a state machine and lands both cuts on
+boundaries; moot for base64, which has no escapes, but load-bearing under β for general text).
+The postfix costs one J-byte ring buffer on the cold path — the scanner cannot know the
+value's end while streaming, so it holds the last J bytes as it drops; the emit already
+defers to value end, which is where `len` comes from. What the postfix buys: the tail is part
+of the value, so reconstruction needs it anyway (`value = prefix + dropped + postfix`), it
+frames β's elided text usefully (head … tail), and it upgrades the load-time structural check
+into a content check (§9.2). Absolute rather than line-relative because it makes the elided
+line self-describing against the file — resolving a marker needs no `at`-plus-offset
+arithmetic and no notion of which line it came from; the primitive learns the line's absolute
+start from its caller, which is exactly the cursor every caller already tracks.
 
 The contract answers, once, three questions the engine's four hand-rolled loops answer
 inconsistently today (§12.2): `raw_len` is always the true byte count for offset accounting;
@@ -214,17 +222,21 @@ is the ceiling overflow, counted rather than silent. And the properties fall out
 
 The engine adopts the seed with **three deltas**, each argued elsewhere in this document:
 
-1. **The prefix-preserving, substitution-exact placeholder.** The seed emits a bare
-   `"<elided:N>"`; the engine keeps the first **K = 64 bytes** of the value, then
-   `<elided:{off},{len}>` — the prefix forced by the Codex asymmetry (§7), the marker made an
-   exact substitution pointer by the owner-review principle that *the scan already passing over
-   every byte records where they live, so nothing is lost and nothing rescans* (§12.5). The
-   emit change needs one signature addition: the primitive takes the line's absolute start
-   offset from its caller (the cursor every caller already tracks). Disambiguation is by
-   visible length: an elided value's visible text is ~K + marker (~100 bytes), while any
-   genuine value that merely *ends* with marker-shaped text is, by construction, over the
-   64 KB threshold — decode treats a value as elided only when it is smaller than the
-   threshold AND ends with the marker, so a false match cannot occur.
+1. **The framed, substitution-exact placeholder.** The seed emits a bare `"<elided:N>"`; the
+   engine emits `{prefix}<elided:{off},{len}>{postfix}` — the first **K = 64** and last
+   **J = 64** bytes of the value kept in place, the marker standing for exactly the dropped
+   middle. The prefix is forced by the Codex asymmetry (§7); the marker is an exact
+   substitution pointer by the owner-review principle that *the scan already passing over
+   every byte records where they live, so nothing is lost and nothing rescans* (§12.5); the
+   postfix completes the value's frame — needed for reconstruction, shown as the tail under β,
+   and the load-time content check (§9.2). The emit change needs one signature addition: the
+   primitive takes the line's absolute start offset from its caller (the cursor every caller
+   already tracks). Decode recognizes an elided value by three sans-io tests together: visible
+   length under the threshold (~K + J + marker ≈ 170 bytes for a real one), exactly one
+   marker, and a **plausible `len`** — a genuine dropped middle is necessarily
+   `> ELIDE_STRING_BYTES − K − J`, so an innocent literal marker with small numbers (prose
+   quoting this document, say) is dismissed without IO; whatever survives still faces the
+   §9.2 load-time checks.
 2. **A policy parameter — only under α** (§6): `read_line_elided(reader, out, policy)`. Under β
    the seed's size-driven signature stands unchanged. This is α's cost line in §11.
 3. **A torn-tail mode above the primitive** (§5): the seed's `Torn` matches `TornTail::Stop`;
@@ -518,29 +530,36 @@ so the raw file is the only durable artifact and the placeholder itself never su
 time. What survives is the **locator**, and v2.1 widens it: when decode classifies an elided
 node as a content-bearing attachment, it parses `{off, len}` out of the marker and stores it,
 so `Deferred` gains an optional hint — `{ at, index, span: Option<Span> }`, where `Span`
-carries the marker's absolute `(off, len)`, the kept prefix (≤ 64 B — for Codex this includes
-the `data:<mime>;base64,` header), and what the walk would otherwise re-derive from *sibling*
+carries the marker's absolute `(off, len)`, the kept prefix and postfix (≤ 64 B each — the
+value's own head and tail, both needed to reconstruct it; for Codex the prefix includes the
+`data:<mime>;base64,` header), and what the walk would otherwise re-derive from *sibling*
 fields (Claude's `media_type` lives beside the value, not inside it). Two load paths follow:
 
 - **Span path (the fast one — every elided value has it).** `seek(off)`, read `len` bytes —
-  exactly the dropped bytes, by the §4 substitution invariant — prepend the stored prefix,
-  unescape (a no-op for base64 — its alphabet has no `"` or `\` — and a real per-part pass for
-  a general string, valid because the prefix cut never splits an escape, §4), decode. O(the
-  value), no scan, no re-classification — the one scan that ever touched the line already
-  recorded where the bytes live.
+  exactly the dropped bytes, by the §4 substitution invariant — prepend the stored prefix and
+  append the stored postfix, unescape (a no-op for base64 — its alphabet has no `"` or `\` —
+  and a real per-part pass for a general string, valid because neither cut splits an escape,
+  §4), decode. O(the value), no scan, no re-classification — the one scan that ever touched
+  the line already recorded where the bytes live.
 
   **A marker is untrusted input — validate before allocating.** A transcript can *contain*
   marker-shaped text (an agent echoing one into a tool result passes the §4 visible-length
   test), and a crafted `(off, len)` must not turn the bounded-reads design's own pointer into
   an unbounded allocation or a read of the wrong bytes. In order: (i) `len ≤ ELIDE_CEILING` —
   checkable sans-io at decode, so a forged giant never even becomes a hint; (ii) at load,
-  `off + len ≤ file_size`; (iii) the structural check: `file[off + len]` must be the value's
-  **closing quote** (`"`) — the dropped bytes run to the end of the value's raw content by the
-  scanner's own emit rule, so every genuine marker satisfies it and a forged span fails with
-  high probability. Any failure falls back to the walk path — never an error, and the walk
-  then finds whatever is really there. (A prefix-bytes compare is NOT the check: the stored
-  prefix is serde-unescaped, its raw span is unknowable from the string, and an in-file forger
-  controls the adjacent prefix anyway.)
+  `off + len ≤ file_size`; (iii) the **postfix content check**: read forward from
+  `off + len` to the value's closing quote (bounded — the postfix is ≤ J raw bytes, ≤ ~6·J
+  escaped), unescape, and compare with the stored postfix. Every genuine marker satisfies it
+  by the emit rule — the dropped bytes end exactly where the kept tail begins — and an
+  accidental or corrupted span fails with near-certainty. The postfix is the verifiable end
+  because JSON escapes parse left-to-right: scanning *forward* from `off + len` is
+  unambiguous, while the prefix's raw start would need an ill-defined backward scan (and the
+  serde-unescaped prefix string's raw span is unknowable — why a prefix compare was rejected,
+  §12.5). Any failure falls back to the walk path — never an error, and the walk then finds
+  whatever is really there. The honest boundary: a *deliberate* same-file forger can still
+  pass by pointing `(off, len)` at a real value and copying its actual tail — content checks
+  defeat accident and corruption; **containment** (a bounded, ceiling-capped read confined to
+  the same transcript file) is the security boundary.
 - **Walk path (the base mechanism).** The same scanner in **capture-sink** mode: stream the raw
   line to the *n*-th content-bearing string and feed that one value into the decoder, dropping
   everything else as it passes — one extra mode on a state machine that has to exist anyway.
@@ -603,7 +622,7 @@ function; no new machinery.
 5. **`session_card` cap + the `load_attachment` paths** (§9.2–9.3). **Oracle:** card equality
    on a re-windowed read; attachment bytes identical through span path, capture-sink walk, and
    un-elided parse; the three span validations each force the walk fallback (a forged
-   over-ceiling `len` at decode, an out-of-range `off + len` at load, a wrong closing byte).
+   over-ceiling `len` at decode, an out-of-range `off + len` at load, a postfix mismatch).
    No wire change: attachment resolution is server-side (`html_export`'s renderer resolves
    `Deferred` from the Rust block model and calls `Transcript::load_attachment` itself), so
    the hint travels only through the persisted block stream, never the browser.
@@ -637,8 +656,9 @@ Two things are settled, not open:
    principle ("policy may still be required — elided blocks should not affect the folding
    logic"), α-lite the recommended form — pending the final call with constants.
 2. **Constants** — `ELIDE_STRING_BYTES = 64 KB`, `SCAN_THRESHOLD = 256 KB`, prefix `K = 64 B`,
-   `ELIDE_CEILING = 64 MB`. All inherited from the seed except `K`, the engine's addition for
-   §7. Note what accepting them now means: **the constants — and, under α, the policy's
+   postfix `J = 64 B`, `ELIDE_CEILING = 64 MB`. All inherited from the seed except `K` and
+   `J`, the engine's additions (§7 for the prefix; reconstruction + the §9.2 content check
+   for the postfix). Note what accepting them now means: **the constants — and, under α, the policy's
    suffix list — are part of the persisted-format contract.** They decide which values carry
    hints, so changing either changes persisted blocks: a FOLD_VERSION bump by this repo's own
    doctrine. Identity-sensitive reads are kept off elision entirely (§6.1) precisely so
@@ -751,9 +771,20 @@ What the exchange established, kept because the next reviewer will re-ask it:
   ("elided blocks should not affect the folding logic") and is why ① leans α.
 - **The hardening pass (same review).** A marker is untrusted input — a transcript can contain
   forged marker-shaped text — so the span load validates before allocating (ceiling at decode,
-  range at load, closing-quote structural check; fallback to the walk, §9.2). A prefix-bytes
+  range at load, the postfix content check; fallback to the walk, §9.2). A prefix-bytes
   compare was considered and rejected as the check: the stored prefix is serde-unescaped (its
   raw span is unknowable) and an in-file forger controls the adjacent bytes anyway.
   Identity-sensitive reads (`anchor_of`) run with elision off so anchors never depend on the
   constants (§6.1). And α gained its cheap form: α-lite, a bounded key-suffix tracker with
   fail-safe overflow, which removed "α is the larger half" from the decision's price (§6).
+- **The owner then closed the frame with a postfix.** Keeping the value's last J bytes after
+  the marker looked like an extra at first and turned out to be owed anyway: the tail is part
+  of the value, so reconstruction requires it. What it adds on top: the load-time check
+  upgrades from structural (a closing quote at `off + len`) to **content** (the bytes after
+  the span must unescape to the stored postfix) — near-certain rejection of accidental and
+  corrupted spans — and β's elided text renders as head … tail. The postfix is the verifiable
+  end because JSON escapes parse left-to-right (forward from `off + len` is unambiguous; the
+  prefix's raw start is not recoverable backward). Cost: one J-byte ring buffer on the cold
+  path, both cuts escape-aligned, and `J` joins the format-contract constants (§11.2).
+  Deliberate same-file forgery remains possible and remains contained — content checks defeat
+  accident; containment is the security boundary (§9.2).
