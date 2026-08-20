@@ -1,7 +1,9 @@
 # Design: the bounded eliding line reader
 
-> **Status:** study only (#193) — a design to review. **Build nothing until it is reviewed.**
-> The exit condition for #193 is *this document read and accepted*, not a merge.
+> **Status: ACCEPTED (owner, 2026-08-20) — building per §10.** The review ran §12's whole
+> trail in one sitting; every decision in §11 is closed: ① α in the α-lite form, ② the
+> constants as specified (format-contract), ③ counter home (a) `Metrics::extra`. This
+> document is now the spec of record for the build.
 >
 > **v2, 2026-08-20.** v1 proposed elision at each read site; review found that placement cannot
 > deliver the property the design is for, and a full boundedness audit (§8) re-scoped it around
@@ -718,10 +720,10 @@ Two things are settled, not open:
    scanner rather than full path machinery. β stays recorded above as the fallback shape (the
    seed's scanner as-is + one re-baseline + presentation-layer recovery) should the suffix
    tracker prove unexpectedly costly in practice — a recorded escape hatch, not a plan.
-2. **Constants** — `ELIDE_STRING_BYTES = 64 KB`, `SCAN_THRESHOLD = 256 KB`, prefix `K = 64 B`,
-   postfix `J = 64 B`, `ELIDE_CEILING = 64 MB`. All inherited from the seed except `K` and
-   `J`, the engine's additions (§7 for the prefix; reconstruction + the §9.2 content check
-   for the postfix). Note what accepting them now means: **the constants — and, under α, the policy's
+2. **Constants — ACCEPTED (owner, 2026-08-20)** — `ELIDE_STRING_BYTES = 64 KB`,
+   `SCAN_THRESHOLD = 256 KB`, prefix `K = 64 B`, postfix `J = 64 B`, `ELIDE_CEILING = 64 MB`.
+   All inherited from the seed except `K` and `J`, the engine's additions (§7 for the prefix;
+   reconstruction + the §9.2 content check for the postfix). Note what accepting them now means: **the constants — and, under α, the policy's
    suffix list — are part of the persisted-format contract.** They decide which values carry
    hints, so changing either changes persisted blocks: a FOLD_VERSION bump by this repo's own
    doctrine. Identity-sensitive reads are kept off elision entirely (§6.1) precisely so
@@ -739,7 +741,7 @@ Two things are settled, not open:
      report do).
    - **(c) Compute-but-don't-persist** — in the live accumulator for the footer, dropped from
      the checkpoint. A *resumed* view loses them.
-   Recommendation updated: **(a)** — it is now the free option, and the durable elision signal
+   **ACCEPTED (owner, 2026-08-20): (a)** — the free option, and the durable elision signal
    is exactly what the monitor should see when a store grows a pathological transcript.
 
 Build gating is the usual: `cargo fmt`/`clippy`/`test`, the byte gate on the frozen fixtures

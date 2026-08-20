@@ -21,12 +21,12 @@
   architectural α/β statement), the span load validates its untrusted marker before
   allocating, identity reads run elision-off, and α gained a cheap form (α-lite, key-suffix
   policy). Settled: placement, the substitution marker. On the owner, per its §11:
-  **① α vs β — DECIDED: α, in the α-lite form** (owner, 2026-08-20; β recorded as escape
-  hatch). Still open: **② constants** (64 KB / 256 KB / K=64 / J=64 / 64 MB — part of the
-  persisted-format contract) need a nod; **③ counter home** — (a) `Metrics::extra`,
-  free since the hint bumps FOLD_VERSION anyway. The marker is postfix-framed
-  (`{prefix}<elided:{off},{len}>{postfix}` — reconstruction + the load-time content check).
-  Build starts on ②③, per §10.
+  **ACCEPTED (owner, 2026-08-20) — in build.** All three decisions closed: ① α in the
+  α-lite form (β recorded as escape hatch), ② constants as specified (64 KB / 256 KB /
+  K=64 / J=64 / 64 MB — format-contract), ③ counter home (a) `Metrics::extra`. The marker
+  is postfix-framed (`{prefix}<elided:{off},{len}>{postfix}`), `LineReader` dissolves into
+  the follower, one FOLD_VERSION bump carries the Span hint + gauges. Executing §10's six
+  steps in order, one commit per step, release at completion.
 - **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
   owner's **final design review** (requested 2026-08-20) of
   [design/session-cache-redesign.md](design/session-cache-redesign.md);
