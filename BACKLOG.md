@@ -18,15 +18,13 @@
   adapter-supplied elision policy through a seam hook, viewer-lossless, no byte-gate
   re-baseline) and the **counter home** for elision gauges (b recommended: per-fold report
   output, no FOLD_VERSION bump). Constants (64 KB / 256 KB / K=64 / 64 MB) need a nod.
-
-## Agreed, ready to build
-
-- **#167 — the durable cache refactor ("one cache, three providers")** —
-  [design/session-cache-redesign.md](design/session-cache-redesign.md) is the agreed spec;
+- **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
+  owner's **final design review** (requested 2026-08-20) of
+  [design/session-cache-redesign.md](design/session-cache-redesign.md);
   [design/cache-persistence-seam.md](design/cache-persistence-seam.md) preserves the
   exploration. The rule being implemented: the session cache has no knowledge of
   persistence — durability comes from `BlockStore` and the other provider interfaces,
-  so the durable directory leaves the main cache API. Nothing built yet.
+  so the durable directory leaves the main cache API. Build starts on sign-off.
 
 ## Unblocked — revisit (the owner now has real Codex sessions, 2026-08-20)
 
