@@ -398,6 +398,9 @@ never bytes; the fold replaces provisional blocks rather than mutating them, and
 `provisional_gen`/`epoch` tell a client its snapshot aged. The reply's metadata —
 `SessionMeta`/`Metrics`/`TaskList` — ships as value clones under the same lock: small
 maintained scalars need no `Arc` and, having no cursor into them, no generations either.
+It is STORED one level down, in the fold's accumulator (`committed_meta` maintained per
+commit + the open turn derived on top at read time; the durable twin rides the meta
+stream's checkpoints) — the resident wrapper owns only the protocol counters.
 `shared.rs` §9a, untouched by this redesign.) There is **no special one-off initialization** — initialization is tailing
 for the first time.
 
