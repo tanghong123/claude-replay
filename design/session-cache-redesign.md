@@ -329,7 +329,13 @@ pub struct SessionCache<P: BlockStore, A = (), E: Entries<P>> {
     registry:   Mutex<HashMap<String, Transcript>>,      // unchanged
     residents:  Mutex<HashMap<String, (Instant, Arc<SharedSession<P>>)>>,  // unchanged
     aux:        Mutex<HashMap<String, A>>,               // unchanged
-    admitting:  Mutex<()>,                               // unchanged — the thread gate stays HERE
+    admitting:  Mutex<()>,   // unchanged — the thread gate stays HERE. Not redundant with the
+                             // per-map mutexes: those protect each map's bytes, this makes the
+                             // admission SEQUENCE atomic (peek-miss → slow open → install).
+                             // The entry LOCK cannot arbitrate threads (pid-based: our own pid
+                             // reads as ours), and holding `residents` across the open would
+                             // starve every unrelated reader — see #169, where N concurrent
+                             // first-pulls each folded and wrote the same backing.
     entries:    E,                                       // ALWAYS present. No Option, no forked behavior.
 }
 
