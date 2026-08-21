@@ -318,12 +318,12 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// `alive` decides whether a lock's holder is still running. [`lock::pid_alive`] is right
     /// for the TUI; a server ANDs in a port probe, since a recycled pid would otherwise make a
     /// stale lock look live forever.
-    pub fn admit(
+    pub fn admit<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
         &self,
         id: &str,
         make_store: impl FnOnce(&Path) -> std::io::Result<P>,
-        alive: impl Fn(&Holder<P::Note>) -> bool,
-    ) -> Admission<P> {
+        alive: impl Fn(&Holder<N>) -> bool,
+    ) -> Admission<P, N> {
         // Admissions of ANY session are serialized, and the resident is re-checked once this
         // caller is through the gate (#169). Without both halves, concurrent first-pulls of one
         // session each open their own store on the same backing and each fold into it — every
@@ -355,7 +355,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         // why the ordering is load-bearing. It comes back out through this slot.
         let mut store: Option<P> = None;
         let mut loaded: Vec<P::Bv> = Vec::new();
-        let claimed = admit::claim::<P::Note>(
+        let claimed = admit::claim::<N>(
             Some(&d.root),
             d.presentation,
             id,
@@ -489,14 +489,14 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     }
 
     /// A resume that could not adopt its prefix: fall back to a cold session on the same entry.
-    fn cold_fallback(
+    fn cold_fallback<N>(
         &self,
         id: &str,
         src: &Transcript,
         dir: PathBuf,
         mut store: P,
         why: ColdReason,
-    ) -> Admission<P> {
+    ) -> Admission<P, N> {
         store.reset();
         let session = self.install(
             id,
@@ -533,7 +533,11 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// publishing before admitting is silently a no-op, and an HTML server that did exactly
     /// that left every lock's note `null`, so a peer finding it held had nowhere to redirect.
     #[must_use]
-    pub fn publish(&self, id: &str, note: P::Note) -> bool {
+    pub fn publish<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
+        &self,
+        id: &str,
+        note: N,
+    ) -> bool {
         let Some(d) = &self.durable else { return false };
         let owned = lock_recover(&d.owned);
         let Some(o) = owned.get(id) else { return false };
@@ -590,14 +594,16 @@ impl<P: BlockStore, A> Drop for SessionCache<P, A> {
 /// site"; every caller reached for it on denial, which is how one transcript ended up with two
 /// folds appending to one log. A session this process does not own is a session it does not
 /// serve — it routes the client to the owner, or says why it cannot.
-pub enum Admission<P: DurableStore> {
+pub enum Admission<P: BlockStore, N> {
     /// Exclusive owner. Durable, and resumed when the cache was valid.
     Owned {
         session: std::sync::Arc<SharedSession<P>>,
         origin: Origin,
     },
-    /// Not the owner. **Nothing was opened, nothing is shared.**
-    Denied(Denial<P::Note>),
+    /// Not the owner. **Nothing was opened, nothing is shared.** `N` is the note a live
+    /// peer published (#167 step 1: the note now names the PROCESS holding the lock, not
+    /// the store — `DurableStore` is back to purely "how blocks become bytes").
+    Denied(Denial<N>),
 }
 
 /// The **in-process view surface** (#85) — on any cache whose blocks are `Arc<Block>`: ONE call

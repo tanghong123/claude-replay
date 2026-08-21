@@ -49,6 +49,15 @@
   persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
   scope, or file as its own issue.
 
+## Queued (after #167's build)
+
+- **Architecture doc refresh** (owner, 2026-08-21): bring `docs/architecture.md` (+ the
+  `.html` twin) up to date on the two structural changes — the #193 bounded eliding
+  reader (one byte-toucher, `LineSource`, span-hinted locators; §7's rung note exists but
+  the read-path narrative predates it) and the #167 durable-cache interface (providers
+  behind `Entries`, the slot topology, `admit` as veneer, the aux contract). Do after the
+  #167 build lands so the doc describes what shipped, not the plan.
+
 ## Parked — explicit go-ahead needed
 
 - **Fleet relay (Phase 2)** — [design/fleet-pairing.md](design/fleet-pairing.md) §6:

@@ -46,7 +46,9 @@ fn admit_root(
     match cache.admit(
         id,
         |dir| crate::store::ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |h| claude_replay_present::cache::lock::pid_alive(h.pid),
+        |h: &claude_replay_present::cache::Holder<crate::store::TuiNote>| {
+            claude_replay_present::cache::lock::pid_alive(h.pid)
+        },
     ) {
         Admission::Owned { session, .. } => {
             // Publishes here because the entry is ours from this line on, and the TUI's note

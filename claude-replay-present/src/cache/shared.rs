@@ -530,13 +530,6 @@ impl<S: BlockStore> SharedSession<S> {
 /// no presentation state is persisted at all — a continuation is **derived** from the restored
 /// prefix instead, which cannot go stale against it.
 pub trait DurableStore: BlockStore + Sized {
-    /// What this frontend leaves in its lock for a peer that finds it held: a port for the
-    /// server, a pane for the TUI. **Typed, not opaque** — locks are per-presentation, so the
-    /// only reader is the same frontend that wrote it. Keeping it here rather than on
-    /// [`Holder`](super::Holder) is what stops a `port` field, meaningless to the TUI, from
-    /// leaking into a shared type.
-    type Note: serde::Serialize + serde::de::DeserializeOwned + Clone;
-
     /// Reload the committed `Bv`s **from byte `at` onward** — the ONE frontend-specific step in
     /// the load (§6.2). HTML scans its record log for locators; the TUI decodes serialized blocks.
     ///

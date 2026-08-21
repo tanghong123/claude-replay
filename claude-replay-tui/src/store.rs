@@ -5,7 +5,8 @@
 //! serialized once as it crosses the durability frontier, so a later process can
 //! [`load`](ArcLog::load) the committed prefix instead of re-folding the transcript to reach it.
 //!
-//! It lives here, not in the engine, because [`DurableStore::Note`] is the frontend's own type:
+//! It lives here, not in the engine, because the lock note is the frontend's own type (#167
+//! step 1: it names the process holding the lock, not the store):
 //! the store and the note a peer reads out of the lock are two halves of one frontend's contract.
 //!
 //! It is not tier-b. Tier-b exists to keep content *off* the heap and pays a positional read per
@@ -236,8 +237,6 @@ impl TuiNote {
 }
 
 impl DurableStore for ArcLog {
-    type Note = TuiNote;
-
     fn load_from(&mut self, at: u64) -> std::io::Result<Vec<Arc<Block>>> {
         ArcLog::load_from(self, at)
     }
