@@ -371,6 +371,10 @@ Two deliberate details:
 let cache = SessionCache::new(Transient::in_dir(run_dir));
 
 // (b) the viewer / HTML server: entry lock per <session, frontend>, resume, redirect notes.
+//     No construction-time claim — several processes on one root are LEGITIMATE here (each
+//     serving different sessions), so the redirect surfaces per ADMISSION instead:
+//     `Admission::Denied(Denial::Held(h))` at the admit call site, where the frontend sends
+//     the client to `h.note`'s port (serve.rs's existing match, kept compiling by design).
 let entries = PerSession::new(root, Namespace::Html)     // Presentation retreats into cache::fs
     .versions(Versions::current(Some(render_flavor(&fold))))  // fold stamp: stale entries rebuild
     .liveness(alive_rule);                                // pid + port probe — configured ONCE
@@ -395,7 +399,9 @@ What each one's `open` does:
 | metadata / resume | none — always cold; the cache resets the store first | yes | yes |
 | note (for redirects) | none | in the entry's lock | in the root lock |
 
-Rule of thumb that falls out: **the note lives wherever the lock lives.**
+Rule of thumb that falls out: **the note lives wherever the lock lives — and the redirect is
+handled wherever `Denied` can surface**: at construction for (c) (a second monitor never builds
+a cache), per admission for (b) (the request redirects to the entry's holder), nowhere for (a).
 
 The `Transient` row is what fixes `--no-cache` for good: no metadata stream means a
 re-materialized session always starts from a `store.reset()` (truncate) and refolds — so the
