@@ -100,6 +100,11 @@ impl TranscriptAdapter for ClaudeAdapter {
             &crate::agents::claude::discover::projects_dir(),
         )
     }
+    fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
+        crate::agents::claude::discover::subagent_transcripts_in(
+            &crate::agents::claude::discover::projects_dir(),
+        )
+    }
 
     fn agent(&self) -> Agent {
         Agent::CLAUDE
@@ -241,6 +246,11 @@ pub struct QoderAdapter;
 impl TranscriptAdapter for QoderAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::qoder::discover::store_transcripts()
+    }
+    fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
+        crate::agents::claude::discover::subagent_transcripts_in(
+            &crate::agents::qoder::discover::projects_dir(),
+        )
     }
 
     fn agent(&self) -> Agent {
