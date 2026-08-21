@@ -395,8 +395,10 @@ the whole of admission: claim the entry `LOCK`, read the meta stream, run the `o
 align, fold); don't hold it: someone is driving, read what is committed. (Reads are
 snapshot-out under the resident's brief mutex — `Arc`-per-block, so a pull copies pointers,
 never bytes; the fold replaces provisional blocks rather than mutating them, and
-`provisional_gen`/`epoch` tell a client its snapshot aged — `shared.rs` §9a, untouched by
-this redesign.) There is **no special one-off initialization** — initialization is tailing
+`provisional_gen`/`epoch` tell a client its snapshot aged. The reply's metadata —
+`SessionMeta`/`Metrics`/`TaskList` — ships as value clones under the same lock: small
+maintained scalars need no `Arc` and, having no cursor into them, no generations either.
+`shared.rs` §9a, untouched by this redesign.) There is **no special one-off initialization** — initialization is tailing
 for the first time.
 
 Registration stays a separate, drive-free API: `register`/`register_new` get-or-insert an
