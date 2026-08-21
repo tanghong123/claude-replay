@@ -392,8 +392,12 @@ The owner's review replaced the first cut's internals (three maps + a global `ad
 gate) with the model above. The consumer protocol is *try-drive-then-read*: get the slot's
 `Arc`, try the driver mutex — hold it: drive the tail (a COLD slot's first drive performs
 the whole of admission: claim the entry `LOCK`, read the meta stream, run the `ours` witness,
-align, fold); don't hold it: someone is driving, read what is committed. There is **no
-special one-off initialization** — initialization is tailing for the first time.
+align, fold); don't hold it: someone is driving, read what is committed. (Reads are
+snapshot-out under the resident's brief mutex — `Arc`-per-block, so a pull copies pointers,
+never bytes; the fold replaces provisional blocks rather than mutating them, and
+`provisional_gen`/`epoch` tell a client its snapshot aged — `shared.rs` §9a, untouched by
+this redesign.) There is **no special one-off initialization** — initialization is tailing
+for the first time.
 
 Registration stays a separate, drive-free API: `register`/`register_new` get-or-insert an
 **un-driven** slot (transcript + empty state — a map op, no I/O, no `LOCK`), and
