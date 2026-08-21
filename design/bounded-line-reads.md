@@ -901,3 +901,12 @@ batch), `2d62d4e` (the load paths + card cap). Where the build deviated:
 - **Two seed hardenings** (for agent-metrics to backport into its `elide.rs`): `pending`
   no longer buffers a non-elidable string without bound (passthrough past the threshold),
   and the ceiling-skip path gained coverage.
+- **Two watch-items the equivalence oracles structurally cannot see**, recorded rather than
+  fixed: the follower now holds an **open fd per live follow** for its lifetime (the old
+  reader opened per poll; bounded in practice by cache TTL reaping, but macOS's default
+  soft limit is 256); and a same-path replace with a **larger** file is invisible to the
+  persistent handle (shrink is caught; a bigger replacement leaves the follower on the old
+  inode to EOF — near-impossible for append-only stores, and the one-line revert is
+  reopen-per-poll if it ever bites). Also faithful, not new: C1 excludes a
+  torn-but-valid-JSON final line (`Stop`) while A2 pushes it (`Yield`) — the same divergence
+  the two hand-rolled loops always had, for the same reasons.

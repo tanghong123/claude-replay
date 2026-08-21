@@ -450,10 +450,13 @@ may be elided arrives through the seam like `Shaping` does; and elision must run
 downstream of raw-offset accounting**, because `Deferred.at`, the resume cursor and the durable
 cache's window CRC all index raw bytes on disk.
 
-Status: designed and under review, not built — `design/bounded-line-reads.md` (#193), where the
-per-consumer rules (aggressive for metrics folds, attachment-only for block building) and the
-migration order with a per-step equivalence oracle are worked out. Until it lands, this rung is
-the one place the "every representation is windowed" claim is aspirational.
+Status: **BUILT** (v1.97.0) — `design/bounded-line-reads.md` (#193) is the spec of record,
+its §13 the as-built trail. Every transcript read now runs through the eliding primitive
+(`engine/elide.rs`) or its drivers: per-line allocation is bounded by the elision policy
+(aggressive for metrics folds, the α-lite key-suffix policy for block building), backstopped
+by the 64 MB ceiling, and an elided value's marker is an exact substitution pointer — splice
+the file bytes back and the original line returns byte for byte. The "every representation
+is windowed" claim now holds at this rung too.
 
 The windows at the top rung deserve emphasis, because both frontends independently converged
 on the same structure — an O(N) *index* of cheap integers plus an O(viewport) cache of
