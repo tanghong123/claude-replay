@@ -25,10 +25,15 @@
   (1) a **Codex** live session — 57f4090 maps exploration into coalescing activity
   spans, the one shape that rewrites rendered ids; (2) an uninterrupted
   thinking+activity span (no prose between calls) growing live; (3) the monitor's
-  iframe context. Mechanism to check when it reproduces: provisional `b{n}` anchors are
-  positional, so a coalesce makes `restoreAnchor` hold the WRONG element (id names
-  shifted content) — fix sketch: capture a content signature beside the id and hold
-  absolute `scrollY` when it mismatches.
+  iframe context. **Concrete next step — real-codex tail-replay**: copy a local Codex
+  transcript (the #28–31 corpus), truncate to ~80%, serve the copy, append the
+  original's remaining lines chunk-by-chunk while the harness browser watches
+  `__ids` churn and `scrollY` — real coalescing shapes, no synthetic-fixture risk of
+  authoring another span-breaking artifact. Mechanism to check when it reproduces:
+  provisional `b{n}` anchors are positional, so a coalesce makes `restoreAnchor`
+  hold the WRONG element (id names shifted content) — fix sketch: capture a content
+  signature beside the id and hold absolute `scrollY` when it mismatches. Ask the
+  owner which session they were watching (claude / codex / via the monitor rail).
 
 ## Evidence-blocked
 
