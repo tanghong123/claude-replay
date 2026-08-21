@@ -21,12 +21,12 @@
 //! owned bytes, so at most one attachment is resident at a time. Caching, if ever wanted, is a
 //! presentation-layer concern.
 
-use std::io::{self, BufRead, Seek, SeekFrom};
+use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::engine::session::{populate_sub_agent_transcripts, Session};
 use crate::follow::FollowParser;
-use crate::model::{ByteOffset, LoadedAttachment};
+use crate::model::LoadedAttachment;
 use crate::Agent;
 
 /// A cheap, clonable handle to a transcript file — the canonical source object the API threads
@@ -114,11 +114,6 @@ impl Transcript {
         FollowParser::open(crate::adapter::adapter(self.agent), &self.path)
     }
 
-    /// Load the content embedded at byte offset `at`, `index`-th content-bearing attachment on
-    /// that line (see [`Deferred`](crate::model::AttachmentContent::Deferred)). Opens the file,
-    /// seeks to `at`, reads that ONE line, and re-runs the agent's attachment extraction —
-    /// O(1) memory (one line, one attachment). Returns `Ok(None)` when the line holds no such
-    /// loadable attachment (a stale locator / a non-content-bearing line).
     /// What this session is called, and what it was last asked — the agent's own answer, or
     /// `None` when it has none. See [`SessionCard`](crate::discover::SessionCard).
     ///
@@ -128,23 +123,104 @@ impl Transcript {
         crate::discover::session_card(self.agent(), self.path())
     }
 
+    /// Load a [`Deferred`](crate::model::AttachmentContent::Deferred) attachment's bytes.
+    /// The locator travels WHOLE (#193 §9.2) — the exploded-fields signature was exactly the
+    /// shape the span hint could not fit through. Two paths, both bounded:
+    ///
+    /// - **Span fast path** — an elided value's hint names exactly where its dropped bytes
+    ///   live; [`read_validated_span`](claude_replay_engine::engine::elide::read_validated_span)
+    ///   validates the untrusted marker (ceiling, range, postfix content check) and splices
+    ///   `prefix + dropped + postfix`. Agent-neutral end to end: the hint carries the MIME.
+    /// - **Walk path** (the base mechanism) — re-read the line at `at` through the eliding
+    ///   primitive (bounded), re-run the agent's ordinal walk (the §7 agreement: the kept
+    ///   prefix classifies exactly as the raw value would), and resolve any marker the
+    ///   returned content carries through the same validated splice. If a splice refuses —
+    ///   forged marker, literal marker-shaped content — the line is re-read VERBATIM
+    ///   (ceiling-bounded) and walked raw: correctness never depends on a marker.
+    ///
+    /// Returns `Ok(None)` for a stale locator / non-content-bearing line.
     pub fn load_attachment(
         &self,
-        at: ByteOffset,
-        index: usize,
+        content: &crate::model::AttachmentContent,
     ) -> io::Result<Option<LoadedAttachment>> {
-        let file = std::fs::File::open(&self.path)?;
-        let mut reader = io::BufReader::new(file);
-        reader.seek(SeekFrom::Start(at))?;
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        Ok(crate::adapter::adapter(self.agent).load_attachment(&line, index))
+        use claude_replay_engine::engine::elide::{parse_marker, read_validated_span, Elision};
+        let crate::model::AttachmentContent::Deferred { at, index, span } = content else {
+            return Ok(None);
+        };
+        let (at, index) = (*at, *index);
+
+        // ── span fast path ──
+        if let Some(h) = span {
+            let mut f = std::fs::File::open(&self.path)?;
+            if let Some(value) = read_validated_span(&mut f, h.off, h.len, &h.prefix, &h.postfix)? {
+                return Ok(Some(match &h.mime {
+                    Some(mime) => LoadedAttachment::Base64 {
+                        mime: mime.clone(),
+                        b64: value,
+                    },
+                    None => LoadedAttachment::Text(value),
+                }));
+            }
+            // A hint that fails validation falls through to the walk — never an error.
+        }
+
+        // ── walk path: elided read (bounded), ordinal walk, splice any marker ──
+        let read_line_at = |policy: Elision| -> io::Result<String> {
+            let file = std::fs::File::open(&self.path)?;
+            let mut reader = io::BufReader::new(file);
+            reader.seek(SeekFrom::Start(at))?;
+            let mut out = Vec::new();
+            claude_replay_engine::engine::elide::read_line_elided(
+                &mut reader,
+                &mut out,
+                at,
+                policy,
+            )?;
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        };
+        let adapter = crate::adapter::adapter(self.agent);
+        let line = read_line_at(Elision::Aggressive)?;
+        let loaded = adapter.load_attachment(&line, index);
+        // Resolve a marker the walked content may carry (its value was elided in the read).
+        let resolve = |s: &str| -> io::Result<Option<String>> {
+            match parse_marker(s) {
+                None => Ok(None), // plain content — nothing to resolve
+                Some(m) => {
+                    let mut f = std::fs::File::open(&self.path)?;
+                    read_validated_span(&mut f, m.off, m.len, &m.prefix, &m.postfix)
+                }
+            }
+        };
+        match loaded {
+            Some(LoadedAttachment::Base64 { mime, b64 }) => {
+                if parse_marker(&b64).is_none() {
+                    return Ok(Some(LoadedAttachment::Base64 { mime, b64 }));
+                }
+                if let Some(v) = resolve(&b64)? {
+                    return Ok(Some(LoadedAttachment::Base64 { mime, b64: v }));
+                }
+            }
+            Some(LoadedAttachment::Text(t)) => {
+                if parse_marker(&t).is_none() {
+                    return Ok(Some(LoadedAttachment::Text(t)));
+                }
+                if let Some(v) = resolve(&t)? {
+                    return Ok(Some(LoadedAttachment::Text(v)));
+                }
+            }
+            None => return Ok(None),
+        }
+        // A splice refused (or the content merely looked marker-shaped): the verbatim walk
+        // is the floor — ceiling-bounded, exactly the pre-#193 read.
+        let raw = read_line_at(Elision::None)?;
+        Ok(adapter.load_attachment(&raw, index))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ByteOffset;
     use crate::model::{Attachment, AttachmentContent, Block};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -212,18 +288,33 @@ mod tests {
         // Round-trip each locator through the Transcript loader → the embedded bytes.
         let t = Transcript::open(Agent::CLAUDE, &path);
         assert_eq!(
-            t.load_attachment(off0, 0).unwrap(),
+            t.load_attachment(&crate::model::AttachmentContent::Deferred {
+                at: off0,
+                index: 0,
+                span: None
+            })
+            .unwrap(),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
         );
         assert_eq!(
-            t.load_attachment(off1, 0).unwrap(),
+            t.load_attachment(&crate::model::AttachmentContent::Deferred {
+                at: off1,
+                index: 0,
+                span: None
+            })
+            .unwrap(),
             Some(LoadedAttachment::Base64 {
                 mime: "image/png".into(),
                 b64: "Zm9v".into()
             })
         );
         assert_eq!(
-            t.load_attachment(off2, 0).unwrap(),
+            t.load_attachment(&crate::model::AttachmentContent::Deferred {
+                at: off2,
+                index: 0,
+                span: None
+            })
+            .unwrap(),
             Some(LoadedAttachment::Text("# Plan".into()))
         );
         let _ = std::fs::remove_file(&path);
@@ -242,14 +333,24 @@ mod tests {
 
         let t = Transcript::open(Agent::CLAUDE, &path);
         assert_eq!(
-            t.load_attachment(0, 0).unwrap(),
+            t.load_attachment(&crate::model::AttachmentContent::Deferred {
+                at: 0,
+                index: 0,
+                span: None
+            })
+            .unwrap(),
             Some(LoadedAttachment::Base64 {
                 mime: "image/png".into(),
                 b64: "AAA=".into()
             })
         );
         assert_eq!(
-            t.load_attachment(0, 1).unwrap(),
+            t.load_attachment(&crate::model::AttachmentContent::Deferred {
+                at: 0,
+                index: 1,
+                span: None
+            })
+            .unwrap(),
             Some(LoadedAttachment::Base64 {
                 mime: "image/jpeg".into(),
                 b64: "BBB=".into()

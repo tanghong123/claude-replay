@@ -1335,14 +1335,30 @@ fn elided_blocks_match_raw_modulo_the_span_hint_and_attachments_load() {
     assert_eq!(blocks.len(), raw.blocks().len(), "same block count");
     assert_eq!(left.matches("User").count(), right.matches("User").count());
 
-    // The §7 pin: the loader (raw-line walk) returns the exact bytes.
+    // The three-way §9.2 oracle: span path ≡ walk path ≡ forged-hint fallback, all equal
+    // to the original bytes.
     let t = claude_replay_core::Transcript::open(Agent::CLAUDE, path.clone());
-    match t.load_attachment(at, index).unwrap() {
-        Some(LoadedAttachment::Base64 { mime, b64: got }) => {
-            assert_eq!(mime, "image/png");
-            assert_eq!(got, b64, "byte-identical after an elided parse");
+    let mut forged = hint.clone();
+    forged.postfix = "NOTTHETAIL".into(); // fails the content check → the walk floor
+    for (label, sp) in [
+        ("span path", span.clone()),
+        ("walk path", None),
+        ("forged hint falls back", Some(forged)),
+    ] {
+        match t
+            .load_attachment(&AttachmentContent::Deferred {
+                at,
+                index,
+                span: sp,
+            })
+            .unwrap()
+        {
+            Some(LoadedAttachment::Base64 { mime, b64: got }) => {
+                assert_eq!(mime, "image/png", "{label}");
+                assert_eq!(got, b64, "{label}: byte-identical");
+            }
+            other => panic!("{label}: expected the image bytes, got {other:?}"),
         }
-        other => panic!("expected the image bytes, got {other:?}"),
     }
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&p2);
@@ -1377,10 +1393,20 @@ fn codex_data_image_survives_elision_and_loads() {
     let (at, index) = (*at, *index);
     let hint = span.as_ref().expect("hint present");
     assert_eq!(hint.mime.as_deref(), Some("image/png"));
-    assert!(hint.prefix.starts_with("data:image/png;base64,"));
+    // The hint's frame reconstructs the LOADED payload, so the data: header is stripped
+    // at decode time (the classification still used it — that is what the kept prefix
+    // preserved).
+    assert!(hint.prefix.starts_with("iVBOR"));
 
     let t = claude_replay_core::Transcript::open(Agent::CODEX, path.clone());
-    match t.load_attachment(at, index).unwrap() {
+    match t
+        .load_attachment(&AttachmentContent::Deferred {
+            at,
+            index,
+            span: span.clone(),
+        })
+        .unwrap()
+    {
         Some(LoadedAttachment::Base64 { mime, b64 }) => {
             assert_eq!(mime, "image/png");
             assert_eq!(

@@ -2322,13 +2322,13 @@ fn load_attachment_content(
     source: Option<&Transcript>,
 ) -> std::io::Result<LoadedAttachment> {
     use std::io::{Error, ErrorKind};
-    let AttachmentContent::Deferred { at, index, .. } = &a.content else {
+    if !matches!(a.content, AttachmentContent::Deferred { .. }) {
         return Err(Error::new(ErrorKind::InvalidInput, "nothing to download"));
-    };
+    }
     let source =
         source.ok_or_else(|| Error::new(ErrorKind::NotFound, "no transcript to load from"))?;
     source
-        .load_attachment(*at, *index)?
+        .load_attachment(&a.content)?
         .ok_or_else(|| Error::new(ErrorKind::InvalidData, "attachment content not found"))
 }
 

@@ -296,10 +296,15 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
     };
     let prev: Option<Memo> = CardMemo::decode(memo).filter(|m: &Memo| m.v == MEMO_V && m.at <= len);
 
-    // Resume where the last scan stopped, or cold-read the tail.
+    // Resume where the last scan stopped, or cold-read the tail. #193 §9.3: the memoized
+    // catch-up is CAPPED — a session not visited for a long time (or one that appended a
+    // single huge line) used to be read whole, pre-reserved; past `TAIL_BYTES` of gap the
+    // scan re-windows to the tail instead, exactly the cold read. The card protocol already
+    // tolerates a re-derived card, so the only cost is re-reading a window it would have
+    // read cold anyway.
     let from = match &prev {
-        Some(m) => m.at,
-        None => len.saturating_sub(TAIL_BYTES),
+        Some(m) if len.saturating_sub(m.at) <= TAIL_BYTES => m.at,
+        _ => len.saturating_sub(TAIL_BYTES),
     };
     if let Some(m) = &prev {
         if from == len {

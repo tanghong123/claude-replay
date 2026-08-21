@@ -422,10 +422,9 @@ impl Emitter<'_> {
     /// path-only (`None`) locator, a missing transcript, or a read/miss. The returned value is
     /// owned and dropped by the caller after it's embedded, so nothing stays resident.
     fn load_attachment(&self, content: &AttachmentContent) -> Option<LoadedAttachment> {
-        let AttachmentContent::Deferred { at, index, .. } = content else {
-            return None;
-        };
-        self.transcript?.load_attachment(*at, *index).ok().flatten()
+        // #193: the locator travels whole — the span hint rides along, so an elided value
+        // loads by direct seek and everything else by the ordinal walk.
+        self.transcript?.load_attachment(content).ok().flatten()
     }
 
     /// One block → its JSON object, recursing into a turn's absorbed tool calls.

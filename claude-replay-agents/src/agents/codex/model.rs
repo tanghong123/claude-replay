@@ -1397,12 +1397,19 @@ fn input_image_attachment(item: &Value) -> Option<Attachment> {
     if let Some((mime, _)) = data_image(url) {
         // #193: the kept prefix carries the whole `data:<mime>;base64,` header, so an
         // elided payload classifies exactly as a raw one; the marker becomes the hint.
-        let span = parse_marker(url).map(|m| SpanHint {
-            off: m.off,
-            len: m.len,
-            prefix: m.prefix,
-            postfix: m.postfix,
-            mime: Some(mime.to_string()),
+        // The hint's frame reconstructs the LOADED content (`Base64.b64` is payload-only),
+        // so the header is stripped here — it is always inside the kept 64 bytes. A prefix
+        // that unexpectedly fails to strip yields no hint, and the walk handles it.
+        let header = format!("data:{mime};base64,");
+        let span = parse_marker(url).and_then(|m| {
+            let payload_prefix = m.prefix.strip_prefix(&header)?;
+            Some(SpanHint {
+                off: m.off,
+                len: m.len,
+                prefix: payload_prefix.to_string(),
+                postfix: m.postfix,
+                mime: Some(mime.to_string()),
+            })
         });
         let mut a = deferred_image(mime);
         a.content = AttachmentContent::Deferred {

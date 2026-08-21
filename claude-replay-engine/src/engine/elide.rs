@@ -1136,3 +1136,241 @@ mod marker_tests {
         );
     }
 }
+
+/// Unescape a JSON string *fragment* — raw escaped bytes cut at escape-unit boundaries
+/// (which the scanner guarantees for both frame cuts, §4). Returns `None` on a malformed
+/// escape, so a corrupt splice is detected rather than decoded. A lone surrogate half
+/// (an emoji pair split across the dropped/kept boundary) becomes U+FFFD — the postfix
+/// content check then mismatches and the loader falls back to the walk, which is the safe
+/// direction.
+pub fn unescape_json_fragment(raw: &[u8]) -> Option<String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let b = raw[i];
+        if b != b'\\' {
+            if b < 0x80 {
+                out.push(b as char);
+                i += 1;
+                continue;
+            }
+            // Multi-byte UTF-8: decode exactly one character (bounded — never re-validate
+            // the whole remaining slice, which made this quadratic).
+            let width = match b {
+                0xC0..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF7 => 4,
+                _ => return None,
+            };
+            let chunk = raw.get(i..i + width)?;
+            let c = std::str::from_utf8(chunk).ok()?.chars().next()?;
+            out.push(c);
+            i += width;
+            continue;
+        }
+        i += 1;
+        let e = *raw.get(i)?;
+        i += 1;
+        match e {
+            b'"' => out.push('"'),
+            b'\\' => out.push('\\'),
+            b'/' => out.push('/'),
+            b'b' => out.push('\u{0008}'),
+            b'f' => out.push('\u{000C}'),
+            b'n' => out.push('\n'),
+            b'r' => out.push('\r'),
+            b't' => out.push('\t'),
+            b'u' => {
+                let hex = raw.get(i..i + 4)?;
+                i += 4;
+                let cp = u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+                if (0xD800..0xDC00).contains(&cp) {
+                    // High surrogate: pair with the next \uXXXX if present.
+                    if raw.get(i) == Some(&b'\\') && raw.get(i + 1) == Some(&b'u') {
+                        let hex2 = raw.get(i + 2..i + 6)?;
+                        let lo = u32::from_str_radix(std::str::from_utf8(hex2).ok()?, 16).ok()?;
+                        if (0xDC00..0xE000).contains(&lo) {
+                            i += 6;
+                            let c = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            out.push(char::from_u32(c).unwrap_or('\u{FFFD}'));
+                            continue;
+                        }
+                    }
+                    out.push('\u{FFFD}');
+                } else if (0xDC00..0xE000).contains(&cp) {
+                    out.push('\u{FFFD}');
+                } else {
+                    out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Read a span hint's dropped bytes from the transcript, **validated** — a marker is
+/// untrusted input (§9.2). In order: `len` under the ceiling (a forged giant never
+/// allocates), `off + len` within the file, and the **postfix content check** — the raw
+/// bytes after the span, up to the value's closing quote, must unescape to `postfix`
+/// exactly (every genuine marker satisfies this by the emit rule; an accidental or
+/// corrupted span fails with near-certainty). Returns the reconstructed, unescaped VALUE
+/// (`prefix + dropped + postfix`) — or `None`, and the caller falls back to the ordinal
+/// walk. Never errors on validation failure; IO errors are real errors.
+pub fn read_validated_span<F: std::io::Read + std::io::Seek>(
+    file: &mut F,
+    off: u64,
+    len: u64,
+    prefix: &str,
+    postfix: &str,
+) -> std::io::Result<Option<String>> {
+    use std::io::SeekFrom;
+    if len > ELIDE_CEILING as u64 {
+        return Ok(None);
+    }
+    let file_len = file.seek(SeekFrom::End(0))?;
+    if off.checked_add(len).is_none_or(|end| end > file_len) {
+        return Ok(None);
+    }
+    // The postfix content check: raw bytes after the span, up to the closing quote.
+    // Escaped, the postfix occupies at most ~6× its unescaped length.
+    file.seek(SeekFrom::Start(off + len))?;
+    let budget = postfix.len() * 6 + 8;
+    let mut tail = vec![0u8; budget.min((file_len - off - len) as usize)];
+    file.read_exact(&mut tail)?;
+    let quote = {
+        // The first UNESCAPED closing quote terminates the value's raw content.
+        let mut q = None;
+        let mut i = 0;
+        while i < tail.len() {
+            match tail[i] {
+                b'\\' => i += 2,
+                b'"' => {
+                    q = Some(i);
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        q
+    };
+    let Some(q) = quote else { return Ok(None) };
+    match unescape_json_fragment(&tail[..q]) {
+        Some(got) if got == postfix => {}
+        _ => return Ok(None),
+    }
+    // Validated: read the dropped bytes and reconstruct the value.
+    file.seek(SeekFrom::Start(off))?;
+    let mut dropped = vec![0u8; len as usize];
+    file.read_exact(&mut dropped)?;
+    let Some(mid) = unescape_json_fragment(&dropped) else {
+        return Ok(None);
+    };
+    let mut value = String::with_capacity(prefix.len() + mid.len() + postfix.len());
+    value.push_str(prefix);
+    value.push_str(&mid);
+    value.push_str(postfix);
+    Ok(Some(value))
+}
+
+#[cfg(test)]
+mod span_read_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// End to end: elide a line, harvest the marker, resolve it through the validated
+    /// span read — the reconstructed value equals the original, byte for byte.
+    #[test]
+    fn a_genuine_span_resolves_to_the_original_value() {
+        let blob = format!(
+            "HEAD{}TAIL==",
+            "k".repeat(SCAN_THRESHOLD + ELIDE_STRING_BYTES)
+        );
+        let line = format!("{{\"big\":\"{blob}\"}}\n");
+        let mut out = Vec::new();
+        read_line_elided(
+            &mut Cursor::new(line.as_bytes().to_vec()),
+            &mut out,
+            0,
+            Elision::Aggressive,
+        )
+        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&out).unwrap().trim_end()).unwrap();
+        let m = parse_marker(v["big"].as_str().unwrap()).unwrap();
+        let got = read_validated_span(
+            &mut Cursor::new(line.as_bytes().to_vec()),
+            m.off,
+            m.len,
+            &m.prefix,
+            &m.postfix,
+        )
+        .unwrap()
+        .expect("a genuine marker validates");
+        assert_eq!(got, blob);
+    }
+
+    /// The three validation failures each refuse quietly (→ the walk), never error.
+    #[test]
+    fn forged_spans_are_refused_not_read() {
+        let file = b"{\"big\":\"REALDATA\"}\n".to_vec();
+        // Past the ceiling.
+        assert_eq!(
+            read_validated_span(
+                &mut Cursor::new(file.clone()),
+                0,
+                ELIDE_CEILING as u64 + 1,
+                "",
+                ""
+            )
+            .unwrap(),
+            None
+        );
+        // Out of range.
+        assert_eq!(
+            read_validated_span(&mut Cursor::new(file.clone()), 10, 1_000_000, "x", "y").unwrap(),
+            None
+        );
+        // In range, wrong content: the postfix check fails.
+        assert_eq!(
+            read_validated_span(&mut Cursor::new(file.clone()), 8, 4, "p", "NOPE").unwrap(),
+            None
+        );
+    }
+
+    /// Escapes across the frame: the per-part unescape is exact because the cuts are
+    /// unit-aligned — including a value whose kept tail contains escapes.
+    #[test]
+    fn escaped_frames_resolve_exactly() {
+        let blob = format!(
+            "\\u0041{}\\\"tail\\\\",
+            "e".repeat(SCAN_THRESHOLD + ELIDE_STRING_BYTES)
+        );
+        let expected: String = format!(
+            "A{}\"tail\\",
+            "e".repeat(SCAN_THRESHOLD + ELIDE_STRING_BYTES)
+        );
+        let line = format!("{{\"big\":\"{blob}\"}}\n");
+        let mut out = Vec::new();
+        read_line_elided(
+            &mut Cursor::new(line.as_bytes().to_vec()),
+            &mut out,
+            0,
+            Elision::Aggressive,
+        )
+        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&out).unwrap().trim_end()).unwrap();
+        let m = parse_marker(v["big"].as_str().unwrap()).unwrap();
+        let got = read_validated_span(
+            &mut Cursor::new(line.as_bytes().to_vec()),
+            m.off,
+            m.len,
+            &m.prefix,
+            &m.postfix,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(got, expected);
+    }
+}
