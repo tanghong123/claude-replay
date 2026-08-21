@@ -29,8 +29,16 @@ pub use crate::discover::{
     ancestors_below, home_dir, Candidate, CardMemo, CardOutcome, SessionCard, SNIPPET_CHARS,
 };
 pub use crate::engine::builder::SessionAccumulator;
+// #193: the bounded eliding line reader — the one scanner every consumer shares (adapters
+// hand out an `Elision` policy the way they hand out `Shaping`; third parties drive
+// `LineSource` instead of growing their own scanner that drifts).
+pub use crate::engine::elide::{
+    read_line_elided, Elision, LineOutcome, ELIDE_CEILING, ELIDE_STRING_BYTES, POSTFIX_KEEP,
+    PREFIX_KEEP, SCAN_THRESHOLD,
+};
 pub use crate::engine::message::{Message, QueueOpKind};
 pub use crate::engine::path::relativize;
+pub use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
 pub use crate::engine::replay::Shaping;
 // The frozen whole-file reference vocabulary the adapter crates' equivalence gates
 // drive. `#[doc(hidden)]` rather than cfg(test): a cfg(test) item is invisible to a
