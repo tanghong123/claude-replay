@@ -5,14 +5,14 @@
 //! - **registered** — a keyed [`Transcript`] source handle: we know where
 //!   the session lives, but hold nothing else. Costs nothing; the common case for a large
 //!   sub-agent tree whose children were discovered but never opened.
-//! - **resident** — a [`SharedSession<P>`] (see [`shared_session`](SessionCache::shared_session)):
+//! - **resident** — a [`SharedSession<P>`] (see [`admit`](SessionCache::admit)):
 //!   an open incremental follower plus the committed store `P` — the ONE live tier every
 //!   consumer shares. The TUI ticks it in-process via [`poll_view`](SessionCache::poll_view)
 //!   (a [`ViewDelta`] splice against `P = ArcStore`, blocks shared by `Arc` — the cache keeps
 //!   the authoritative copy, views hold clones of the pointers); the HTML server serves any
 //!   number of stateless clients from the same resident via the cursor [`pull`] protocol
 //!   (`P = RecordStore`, committed blocks living as wire-format pointers on disk).
-//! - **durable** (#96) — a cache built with [`durable`](SessionCache::durable) keeps each owned
+//! - **durable** (#96) — a cache over a durable provider (#167 §4.3) keeps each owned
 //!   session's committed blocks and meta records on disk under `root/<presentation>/<session>/`,
 //!   so a LATER PROCESS resumes the fold instead of re-reading the transcript from byte 0. The
 //!   frontend's whole view of it is [`admit`](SessionCache::admit) and its two outcomes.
@@ -27,7 +27,6 @@
 //! under a cache lock is the brief O(delta) follower advance.
 // SharedSession: the one live tier — the follower + store both frontends share.
 mod shared;
-use crate::engine::meta_stream::Versions;
 #[allow(unused_imports)]
 pub use crate::engine::tier_b::{Deferred, TierBSession, TierBStore};
 use crate::engine::BlockStore;
@@ -37,7 +36,7 @@ pub mod fs; // #167: the entry providers — everything filesystem-shaped, behin
 pub mod lock;
 pub mod stream;
 pub use admit::{ColdReason, Denial, Origin, Presentation, Unavailable};
-pub use fs::{Entries, EntryWriter, Opened, PerSession, SingleWriter, Witness};
+pub use fs::{Entries, EntryWriter, Opened, PerSession, SingleWriter, Transient, Witness};
 pub use lock::Holder;
 pub use shared::{DurableStore, PullDelta, SharedSession, ViewDelta};
 pub use stream::{MetaReader, MetaWriter};
@@ -45,7 +44,7 @@ pub use stream::{MetaReader, MetaWriter};
 pub use crate::pull::{pull, pull_indices, Applied, Cursor, PullClient, PullReply};
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -70,11 +69,9 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = (), E = fs::PerSession<(
     /// nothing else at this level to coordinate — the old global `admitting` gate and the
     /// three-way registry/residents/aux split are gone.
     slots: Mutex<HashMap<String, std::sync::Arc<Slot<P, A>>>>,
-    /// The entry provider (#96/#167), absent on an [`ephemeral`](Self::ephemeral) cache. No
-    /// flag selects `None` any more — `--no-cache` builds a real cache at its own root (#165)
-    /// — so in production this is always `Some`, and a cache without it can only deny.
-    /// (`Option` dies at §8 step 4, when `Transient` makes every cache a real cache.)
-    entries: Option<E>,
+    /// The entry provider (#167 §4.3) — every cache has one: [`Transient`] IS the
+    /// `--no-cache` case, so there is no provider-less state left to represent.
+    entries: E,
 }
 
 /// Everything the cache knows about one session, as one unit (#167 §4.2a).
@@ -118,34 +115,14 @@ impl<P: BlockStore, A> Slot<P, A> {
     }
 }
 
-impl<P: BlockStore, A, E> Default for SessionCache<P, A, E> {
-    fn default() -> Self {
-        Self {
-            slots: Mutex::new(HashMap::new()),
-            entries: None,
-        }
-    }
-}
-
 impl<P: BlockStore, A, E> SessionCache<P, A, E> {
-    /// A cache that persists nothing. Every [`admit`](Self::admit) on one of these denies with
-    /// `Unavailable(NoCacheFlag)`, and since #163 a denial has nothing behind it — so this is a
-    /// cache that cannot hand out a session at all. `--no-cache` does NOT select it (#165): that
-    /// flag builds a real cache at a root of its own.
-    pub fn ephemeral() -> Self {
-        Self::default()
-    }
-
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// A cache over an explicit provider (#167 §4.3) — THE constructor; no I/O side
     /// effects (`gc` is the client's explicit call, where the root is known).
-    pub fn with_entries(entries: E) -> Self {
-        let mut c = Self::default();
-        c.entries = Some(entries);
-        c
+    pub fn new(entries: E) -> Self {
+        Self {
+            slots: Mutex::new(HashMap::new()),
+            entries,
+        }
     }
 
     /// The slot for `id`, if one exists — a brief map lookup, the `Arc` cloned out.
@@ -239,23 +216,6 @@ impl<P: BlockStore, A, E> SessionCache<P, A, E> {
         }
     }
 
-    /// The pull-servable resident for `id`, materializing it via `open` on first use and bumping
-    /// its idle clock on every call — the `/pull` handler's one entry point to the session domain.
-    /// The returned `Arc` stays valid across a concurrent [`reap`](Self::reap) (the reap drops the
-    /// cache's reference; in-flight requests finish on theirs).
-    pub fn shared_session(
-        &self,
-        id: &str,
-        open: impl FnOnce() -> SharedSession<P>,
-    ) -> std::sync::Arc<SharedSession<P>> {
-        let slot = self.slot_or_insert(id);
-        let mut g = lock_recover(&slot.state);
-        g.last_seen = Instant::now();
-        g.resident
-            .get_or_insert_with(|| std::sync::Arc::new(open()))
-            .clone()
-    }
-
     /// Peek at an already-resident pull session **without** materializing or touching its idle
     /// clock — for a read that shouldn't keep the session alive (e.g. a child deriving its title
     /// from its parent's maintained meta iff the parent happens to be resident).
@@ -264,10 +224,10 @@ impl<P: BlockStore, A, E> SessionCache<P, A, E> {
     }
 
     /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their registry
-    /// sources remain, so a later `shared_session` re-materializes them — and on a durable cache
-    /// that re-materialization is a RESUME, not a re-fold, which is what makes an aggressive TTL
-    /// affordable. Returns the evicted residents so the owner can act on the reference before it
-    /// drops.
+    /// sources remain, so a later [`admit`](Self::admit) re-materializes them — and on a durable
+    /// provider that re-materialization is a RESUME, not a re-fold, which is what makes an
+    /// aggressive TTL affordable. Returns the evicted residents so the owner can act on the
+    /// reference before it drops.
     ///
     /// **In use is not idle** (#168). The idle clock is stamped when a request TAKES the session,
     /// not when it finishes with it, so a fold longer than the TTL — a cold 132 MB transcript
@@ -280,7 +240,7 @@ impl<P: BlockStore, A, E> SessionCache<P, A, E> {
     /// forever with nothing logged anywhere.
     ///
     /// `strong_count` is exact here, not a heuristic: every clone of a resident (`touch`,
-    /// `shared_peek`, `shared_session`) is handed out under this same map lock, so no new
+    /// `shared_peek`, `admit`) is handed out under this same map lock, so no new
     /// reference can appear while the count is being read.
     pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<P>>)> {
         let slots: Vec<(String, std::sync::Arc<Slot<P, A>>)> = lock_recover(&self.slots)
@@ -327,17 +287,6 @@ impl<P: BlockStore, A, E> SessionCache<P, A, E> {
     }
 }
 
-impl<P: BlockStore, A, N: fs::NoteBounds> SessionCache<P, A, fs::PerSession<N>> {
-    /// Transitional sugar for the old constructor shape (deleted at §8 step 4): a
-    /// [`PerSession`] cache with the default pid liveness, gc'd here as it
-    /// always was.
-    pub fn durable(presentation: Presentation, root: PathBuf, versions: Versions) -> Self {
-        let e = fs::PerSession::new(root, presentation, versions);
-        e.gc();
-        Self::with_entries(e)
-    }
-}
-
 /// **The durable frontend API** (#96 §8). One call in, an exhaustive outcome out.
 impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
     /// Take exclusive ownership of `id`, or say why not. Never blocks on another holder.
@@ -371,13 +320,8 @@ impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
             };
         }
         let Some(slot) = self.slot(id) else {
-            // No slot: nothing was ever registered here. The denial names the sharper of
-            // the two absences, exactly as before.
-            return Admission::Denied(Denial::Unavailable(if self.entries.is_some() {
-                Unavailable::UnknownSession
-            } else {
-                Unavailable::NoCacheFlag
-            }));
+            // No slot: nothing was ever registered here.
+            return Admission::Denied(Denial::Unavailable(Unavailable::UnknownSession));
         };
         // The per-session single-flight (#169, §4.2a): concurrent first-admits of ONE
         // session serialize here — the winner installs, the losers re-check below and take
@@ -396,9 +340,6 @@ impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
                 origin: Origin::Retained { committed },
             };
         }
-        let Some(entries) = &self.entries else {
-            return Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
-        };
         let Some(src) = lock_recover(&slot.transcript).clone() else {
             return Admission::Denied(Denial::Unavailable(Unavailable::UnknownSession));
         };
@@ -413,7 +354,7 @@ impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
         });
         let mut make_store = Some(make_store);
         let mut make_store = |dir: &Path| (make_store.take().expect("called once"))(dir);
-        match entries.open(id, &src, ours, &mut make_store) {
+        match self.entries.open(id, &src, ours, &mut make_store) {
             Opened::Denied(x) => Admission::Denied(x),
             Opened::Retained { writer } => {
                 let session = resident.expect("Retained is only reachable with a resident");
@@ -484,10 +425,7 @@ impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
     /// that left every lock's note `null`, so a peer finding it held had nowhere to redirect.
     #[must_use]
     pub fn publish(&self, id: &str, note: E::Note) -> bool {
-        let Some(entries) = &self.entries else {
-            return false;
-        };
-        entries.publish(id, note)
+        self.entries.publish(id, note)
     }
 }
 
@@ -561,25 +499,12 @@ pub enum Admission<P: BlockStore, N> {
 /// durable TUI keeps `Arc<Block>` blocks *and* a log behind them (#96) — the tick is the same
 /// either way.
 impl<P: BlockStore<Bv = std::sync::Arc<crate::model::Block>>, A, E> SessionCache<P, A, E> {
-    /// `open` builds the store when `id` is not yet resident.
-    ///
-    /// On a **durable** cache it is never called: [`admit`](Self::admit) is the only way a
-    /// durable session comes into being, because it is the only path that takes the lock. A tick
-    /// on an id that was never admitted is idle, not a silently unlocked session.
-    pub fn poll_view(
-        &self,
-        id: &str,
-        open: impl FnOnce() -> P,
-    ) -> Option<std::io::Result<crate::cache::ViewDelta>> {
-        let ss = if self.entries.is_some() {
-            self.touch(id)?
-        } else {
-            let src = self.resolve(id)?;
-            self.shared_session(id, || {
-                SharedSession::with_store(src.agent(), src.path(), open())
-            })
-        };
-        ss.poll_view().transpose()
+    /// [`admit`](Self::admit) is the ONLY way a resident comes into being — it is the one
+    /// path that takes the entry (#167 step 4 deleted the second, admission-bypassing
+    /// lifecycle). A tick on an id that was never admitted is idle, not a silently
+    /// unlocked session.
+    pub fn poll_view(&self, id: &str) -> Option<std::io::Result<crate::cache::ViewDelta>> {
+        self.touch(id)?.poll_view().transpose()
     }
 }
 
@@ -609,6 +534,40 @@ mod tests {
         f.write_all(s.as_bytes()).unwrap();
     }
 
+    /// The RAM store as a trivially durable one — nothing persists, a (re)load finds
+    /// nothing, adopting a prefix is a no-op. Exactly the shape [`Transient`] admissions
+    /// need, and test-only: production durable stores live frontend-side.
+    impl DurableStore for crate::engine::ArcStore {
+        fn load_from(&mut self, _at: u64) -> std::io::Result<Vec<Self::Bv>> {
+            Ok(Vec::new())
+        }
+        fn backing_len(&self) -> u64 {
+            0
+        }
+        fn adopt(&mut self, _n: usize, _meta: &crate::engine::SessionMeta) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Since #167 step 4 a cache always has a provider; these tests exercise the residency
+    /// machinery, so they take the one with no filesystem behavior at all.
+    fn ram_cache() -> SessionCache<crate::engine::ArcStore, (), Transient> {
+        SessionCache::new(Transient::in_dir(
+            std::env::temp_dir().join(format!("cr-cache-transient-{}", std::process::id())),
+        ))
+    }
+
+    /// Admit `id` — the ONE way a resident comes into being.
+    fn admit_ram(
+        cache: &SessionCache<crate::engine::ArcStore, (), Transient>,
+        id: &str,
+    ) -> std::sync::Arc<SharedSession<crate::engine::ArcStore>> {
+        match cache.admit(id, |_| Ok(crate::engine::ArcStore)) {
+            Admission::Owned { session, .. } => session,
+            Admission::Denied(_) => panic!("a transient admission cannot be denied"),
+        }
+    }
+
     /// #168: a resident someone is STILL USING is not idle, whatever its clock says.
     ///
     /// The clock is stamped when a request takes the session, not when it finishes, so a fold
@@ -620,13 +579,10 @@ mod tests {
     fn reap_spares_a_resident_that_is_still_held() {
         let path = tmp();
         std::fs::write(&path, CLAUDE_1).unwrap();
-        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
-        let src = Transcript::open(Agent::CLAUDE, path.clone());
-        cache.register("s", src.clone());
+        let cache = ram_cache();
+        cache.register("s", Transcript::open(Agent::CLAUDE, path.clone()));
 
-        let held = cache.shared_session("s", || {
-            SharedSession::with_store(src.agent(), src.path(), crate::engine::ArcStore)
-        });
+        let held = admit_ram(&cache, "s");
         assert!(
             cache.reap(0).is_empty(),
             "a zero TTL still cannot evict a session a request is holding"
@@ -649,30 +605,23 @@ mod tests {
     fn poll_view_lifecycle_equals_full_parse() {
         let path = tmp();
         std::fs::write(&path, CLAUDE_1).unwrap();
-        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
+        let cache = ram_cache();
 
-        assert!(
-            cache.poll_view("s", || crate::engine::ArcStore).is_none(),
-            "unregistered"
-        );
+        assert!(cache.poll_view("s").is_none(), "unregistered");
         cache.register("s", Transcript::open(Agent::CLAUDE, path.clone()));
-        let d1 = cache
-            .poll_view("s", || crate::engine::ArcStore)
-            .expect("registered")
-            .expect("readable");
+        assert!(
+            cache.poll_view("s").is_none(),
+            "registered but never admitted: a tick is idle, not a silent admission"
+        );
+        let held = admit_ram(&cache, "s");
+        let d1 = cache.poll_view("s").expect("admitted").expect("readable");
         assert_eq!(d1.changed_from, 0, "first poll: everything is new");
         let n1 = d1.committed_len + d1.provisional.len();
         assert!(n1 > 0);
-        assert!(
-            cache.poll_view("s", || crate::engine::ArcStore).is_none(),
-            "idle on an unchanged file"
-        );
+        assert!(cache.poll_view("s").is_none(), "idle on an unchanged file");
 
         append(&path, CLAUDE_2);
-        let d2 = cache
-            .poll_view("s", || crate::engine::ArcStore)
-            .expect("registered")
-            .expect("readable");
+        let d2 = cache.poll_view("s").expect("admitted").expect("readable");
         assert!(
             d2.changed_from <= d1.committed_len + d1.provisional.len(),
             "boundary within the previously-seen view"
@@ -691,34 +640,46 @@ mod tests {
             "spliced view == full parse"
         );
 
-        // Reap evicts; the registry survives; a later poll re-materializes whole-file.
+        // Reap evicts; the registry survives; polling stays idle until the NEXT admission
+        // re-materializes (whole-file under a transient provider).
+        drop(held);
         cache.reap(0);
         assert!(cache.shared_peek("s").is_none());
         assert!(cache.is_registered("s"));
-        let d3 = cache
-            .poll_view("s", || crate::engine::ArcStore)
-            .expect("registered")
-            .expect("readable");
+        assert!(
+            cache.poll_view("s").is_none(),
+            "evicted: a poll cannot re-materialize — only admit can"
+        );
+        let _held = admit_ram(&cache, "s");
+        let d3 = cache.poll_view("s").expect("admitted").expect("readable");
         assert_eq!(d3.changed_from, 0, "re-materialized from scratch");
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The pull-resident lifecycle: `shared_session` materializes once (same `Arc` back on every
-    /// call), `shared_peek` sees it without materializing, `reap` evicts it alongside the follower
-    /// residents **once nobody holds it** (#168), and a later `shared_session` re-materializes
-    /// fresh — on a genuinely new session, the old one having been dropped and its store closed.
+    /// The resident lifecycle through [`admit`] — the one entry point since #167 step 4:
+    /// the first admission materializes, a second returns the SAME resident without touching
+    /// the provider, `shared_peek` sees it without materializing, `reap` evicts it **once
+    /// nobody holds it** (#168), and a later admission re-materializes fresh — a genuinely
+    /// new session, the old one having been dropped and its store closed.
     #[test]
     fn pull_resident_lifecycle_materialize_peek_reap() {
         use std::sync::Arc;
         let path = tmp();
         std::fs::write(&path, CLAUDE_1).unwrap();
-        let cache: SessionCache = SessionCache::new();
+        let cache = ram_cache();
+        cache.register("s", Transcript::open(Agent::CLAUDE, path.clone()));
 
         assert!(cache.shared_peek("s").is_none(), "nothing resident yet");
-        let a = cache.shared_session("s", || {
-            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::new())
-        });
-        let b = cache.shared_session("s", || panic!("must not re-open a resident session"));
+        let a = admit_ram(&cache, "s");
+        let b = match cache.admit(
+            "s",
+            |_: &Path| -> std::io::Result<crate::engine::ArcStore> {
+                panic!("must not re-open a resident session")
+            },
+        ) {
+            Admission::Owned { session, .. } => session,
+            Admission::Denied(_) => unreachable!(),
+        };
         assert!(Arc::ptr_eq(&a, &b), "materialized once, shared");
         assert!(
             cache.shared_peek("s").is_some_and(|p| Arc::ptr_eq(&p, &a)),
@@ -736,9 +697,7 @@ mod tests {
             gone.upgrade().is_none(),
             "and really dropped — its store is closed before anything reopens the entry"
         );
-        let c = cache.shared_session("s", || {
-            SharedSession::with_store(Agent::CLAUDE, &path, TierBStore::new())
-        });
+        let c = admit_ram(&cache, "s");
         assert!(gone.upgrade().is_none(), "re-admit re-materializes");
         drop(c);
         let _ = std::fs::remove_file(&path);
@@ -749,7 +708,7 @@ mod tests {
     /// residents go; the registry survives so a later poll re-materializes.
     #[test]
     fn reap_over_budget_pins_root_and_evicts_lru() {
-        let cache: SessionCache<crate::engine::ArcStore> = SessionCache::new();
+        let cache = ram_cache();
         for id in ["root", "a", "b", "c"] {
             let path = tmp();
             std::fs::write(&path, CLAUDE_1).unwrap();
@@ -757,7 +716,7 @@ mod tests {
         }
         // Materialize in a known touch order: root, then a (oldest child), b, c (newest).
         for id in ["root", "a", "b", "c"] {
-            cache.poll_view(id, || crate::engine::ArcStore);
+            let _ = admit_ram(&cache, id);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         cache.reap_over_budget(2, "root");
@@ -777,7 +736,7 @@ mod tests {
     /// `register_new` keeps the first descriptor against a later bare fallback.
     #[test]
     fn register_new_preserves_first_source() {
-        let cache: SessionCache = SessionCache::new();
+        let cache = ram_cache();
         cache.register_new("c", Transcript::open(Agent::CLAUDE, PathBuf::from("rich")));
         cache.register_new("c", Transcript::open(Agent::CODEX, PathBuf::from("bare")));
         let s = cache.resolve("c").expect("registered");

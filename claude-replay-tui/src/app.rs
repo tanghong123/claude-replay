@@ -9,20 +9,51 @@ use crate::sys::{deduce_stem, reveal_in_file_manager};
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
     crate::store::ArcLog, // live store: cache-owned shared copy (#84), logged for #96
     crate::view::ViewSidecar, // aux slot: evicted frames' derived state (#75)
-    claude_replay_present::cache::PerSession<crate::store::TuiNote>, // the entry provider (#167)
+    TuiEntries,           // the entry provider, either discipline (#167 §4.3)
 >;
 
-/// This run's cache. Always a real cache; what `--no-cache` chooses is a different ROOT (#165) —
-/// this run's own [`throwaway_root`](crate::sys::throwaway_root) instead of the shared one, so a
-/// second view of a session someone else holds folds, locks and resumes exactly like the first,
-/// just without coordinating with it. Same root when the cache home cannot be resolved at all:
-/// there is then nowhere to coordinate, which is a fact about the machine, not a degraded mode.
+/// The TUI's provider: durable per-session entries normally,
+/// [`Transient`](claude_replay_present::cache::Transient) under
+/// `--no-cache` — one `Entries` impl so [`TuiCache`] is a single concrete type.
+pub(crate) enum TuiEntries {
+    Per(claude_replay_present::cache::PerSession<crate::store::TuiNote>),
+    Transient(claude_replay_present::cache::Transient<crate::store::TuiNote>),
+}
+
+impl claude_replay_present::cache::Entries<crate::store::ArcLog> for TuiEntries {
+    type Note = crate::store::TuiNote;
+
+    fn open(
+        &self,
+        id: &str,
+        src: &crate::Transcript,
+        ours: Option<claude_replay_present::cache::Witness>,
+        make_store: &mut dyn FnMut(&std::path::Path) -> std::io::Result<crate::store::ArcLog>,
+    ) -> claude_replay_present::cache::Opened<crate::store::ArcLog, Self::Note> {
+        match self {
+            TuiEntries::Per(e) => e.open(id, src, ours, make_store),
+            TuiEntries::Transient(e) => e.open(id, src, ours, make_store),
+        }
+    }
+}
+
+/// This run's cache. Always a real cache; what `--no-cache` chooses is the
+/// [`Transient`](claude_replay_present::cache::Transient)
+/// provider (#167 §4.3 a) — the viewer folds and serves exactly like the durable one, just
+/// with no locks, no resume, and no coordination with other viewers, which is the entire
+/// point of the flag (a genuine second view of a session someone else is holding). Same
+/// when the cache home cannot be resolved at all: there is then nowhere durable to put an
+/// entry, which is a fact about the machine, not a degraded mode.
 fn make_cache(args: &Args) -> TuiCache {
     // Take back what dead runs left behind, once per run.
     crate::sys::reclaim();
-    let root = match args.no_cache {
-        true => crate::sys::throwaway_root(),
-        false => cache::admit::default_root().unwrap_or_else(crate::sys::throwaway_root),
+    let root = (!args.no_cache).then(cache::admit::default_root).flatten();
+    let Some(root) = root else {
+        // The TUI's store is RAM (`ArcLog::memory` — the log half is only for resume, and
+        // a transient run never resumes), so the run dir is a name, not a write.
+        return TuiCache::new(TuiEntries::Transient(
+            claude_replay_present::cache::Transient::in_dir(crate::sys::run_dir()),
+        ));
     };
     // #167 step 3: the client builds its provider. The default pid liveness is exactly the
     // TUI's rule, and the note (our tmux pane) is known at startup — configured once here,
@@ -36,7 +67,7 @@ fn make_cache(args: &Args) -> TuiCache {
     )
     .note(crate::store::TuiNote::here());
     entries.gc(); // explicit, where the root is known (§4.3)
-    TuiCache::with_entries(entries)
+    TuiCache::new(TuiEntries::Per(entries))
 }
 
 /// Bring `id`'s session into the cache, or explain why we will not.
@@ -67,15 +98,12 @@ fn admit_root(
         Admission::Denied(Denial::Unavailable(why)) => Err(anyhow::anyhow!(
             "session {id} cannot be opened: {}",
             match why {
-                Unavailable::NoCacheFlag => "this viewer has no cache root".to_string(),
                 Unavailable::UnwritableRoot => format!(
                     "the cache directory is not writable{}",
                     cache::admit::cache_home()
                         .map(|h| format!(" ({})", h.display()))
                         .unwrap_or_default()
                 ),
-                Unavailable::NoLivenessCheck =>
-                    "this platform cannot tell whether a lock's holder is still running".to_string(),
                 Unavailable::UnknownSession =>
                     "no transcript is registered under that id".to_string(),
             }
@@ -710,9 +738,7 @@ fn build_frame(
     // above the resume point, matching a one-shot `parse_session_as` from there.
     cache.register(&id, transcript.clone());
     let session = admit_root(cache, &id)?;
-    let polled = cache
-        .poll_view(&id, crate::store::ArcLog::memory)
-        .and_then(|r| r.ok());
+    let polled = cache.poll_view(&id).and_then(|r| r.ok());
     let (blocks, cwd, metrics, oplog_tasks) = match polled {
         Some(d) => {
             // The WHOLE committed prefix, not the tick's delta: this process has no blocks yet,
@@ -940,7 +966,7 @@ fn event_loop<B: ratatui::backend::Backend>(
             // Every viewer tails. The only thing that can have no follower is a frame with no
             // session id (a sub-agent whose child transcript was never found).
             if !id.is_empty() {
-                if let Some(Ok(d)) = cache.poll_view(id, crate::store::ArcLog::memory) {
+                if let Some(Ok(d)) = cache.poll_view(id) {
                     // The tick carries the task op-log state (#15) — one call, no second
                     // cache lock; the on-disk side refreshes when the panel opens.
                     view.set_tasks(crate::engine::tasks::merged(
@@ -1570,7 +1596,13 @@ mod tests {
 
         // A durable cache at the TEST's own root — never the developer's.
         let root = base.join("cache");
-        let cache = TuiCache::durable(Presentation::Tui, root.clone(), Versions::current(None));
+        let cache = TuiCache::new(TuiEntries::Per(
+            claude_replay_present::cache::PerSession::new(
+                root.clone(),
+                Presentation::Tui,
+                Versions::current(None),
+            ),
+        ));
         let args = Args {
             target: Some(sess.display().to_string()),
             ..Default::default()
@@ -1592,7 +1624,7 @@ mod tests {
 
         // The point of admitting it: the follower materializes and the child advances.
         let delta = cache
-            .poll_view(&child.id, crate::store::ArcLog::memory)
+            .poll_view(&child.id)
             .expect("registered")
             .expect("readable");
         assert!(
@@ -1702,7 +1734,12 @@ mod tests {
         let n = MAX_RESIDENT_SUBAGENTS + 2;
         let mut stack: Vec<Frame> = (0..=n as u64).map(frame).collect();
         let top = stack.len() - 1;
-        enforce_cap(&TuiCache::new(), &mut stack);
+        enforce_cap(
+            &TuiCache::new(TuiEntries::Transient(
+                claude_replay_present::cache::Transient::in_dir(std::env::temp_dir()),
+            )),
+            &mut stack,
+        );
 
         let loaded: Vec<usize> = (1..stack.len())
             .filter(|&i| stack[i].view.is_some())
@@ -1801,11 +1838,13 @@ mod tests {
         .unwrap();
 
         // A durable cache rooted in this test's own directory (never the user's real one).
-        let cache: TuiCache = TuiCache::durable(
-            Presentation::Tui,
-            dir.join("cache"),
-            Versions::current(None),
-        );
+        let cache: TuiCache = TuiCache::new(TuiEntries::Per(
+            claude_replay_present::cache::PerSession::new(
+                dir.join("cache"),
+                Presentation::Tui,
+                Versions::current(None),
+            ),
+        ));
         let args = Args::default();
 
         let mut first = build_frame(&args, &cache, &src, false, 0).expect("frame");
@@ -1885,11 +1924,13 @@ mod tests {
         )
         .unwrap();
 
-        let cache: TuiCache = TuiCache::durable(
-            Presentation::Tui,
-            dir.join("cache"),
-            Versions::current(None),
-        );
+        let cache: TuiCache = TuiCache::new(TuiEntries::Per(
+            claude_replay_present::cache::PerSession::new(
+                dir.join("cache"),
+                Presentation::Tui,
+                Versions::current(None),
+            ),
+        ));
         cache.register("s", crate::Transcript::open(Agent::CLAUDE, src));
         let e = match admit_root(&cache, "s") {
             Err(e) => e,

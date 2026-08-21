@@ -350,11 +350,11 @@ mod tests {
     }
 
     fn cache(root: &Path) -> Cache {
-        Cache::durable(
-            Presentation::Html,
+        Cache::new(crate::cache::PerSession::new(
             root.to_path_buf(),
+            Presentation::Html,
             Versions::current(Some(7)),
-        )
+        ))
     }
 
     /// Open through the real API and fold to EOF; returns the record log's bytes.
@@ -519,11 +519,11 @@ mod tests {
             open_and_fold(&c, &root, &src);
             c.release_all();
         }
-        let c = Cache::durable(
-            Presentation::Html,
+        let c = Cache::new(crate::cache::PerSession::new(
             root.clone(),
+            Presentation::Html,
             Versions::current(Some(99)), // a different render fingerprint
-        );
+        ));
         let (_, origin) = open_and_fold(&c, &root, &src);
         assert_eq!(
             origin,

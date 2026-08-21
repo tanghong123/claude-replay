@@ -198,7 +198,7 @@ impl<P: DurableStore, N: NoteBounds> Entries<P> for PerSession<N> {
         let mut loaded: Vec<P::Bv> = Vec::new();
         let mut prefix_reused = false;
         let claimed = admit::claim::<N>(
-            Some(&self.root),
+            &self.root,
             self.presentation,
             id,
             src.path(),
@@ -486,6 +486,63 @@ impl<P: DurableStore, N: NoteBounds> Entries<P> for SingleWriter<N> {
                     ),
                 }
             }
+        }
+    }
+}
+
+/// The `--no-cache` provider (§4.3 a): no lock, no metadata, no resume — `open` always
+/// succeeds, cold, and no peer can exist. What the flag gives up is durability and
+/// coordination, NOT the ability to serve (#165's regression class — a "cache" that could
+/// only deny — is unrepresentable here).
+///
+/// The store may still write under `in_dir`'s root (the HTML server's serving artifacts
+/// land in run scratch, wiped next start); a RAM store never touches the path.
+pub struct Transient<N: NoteBounds = ()> {
+    root: PathBuf,
+    _note: std::marker::PhantomData<N>,
+}
+
+impl<N: NoteBounds> Transient<N> {
+    /// A provider whose per-session directories live under `root` — typically this RUN's
+    /// scratch, so whatever a store writes there is reclaimed with the run.
+    pub fn in_dir(root: PathBuf) -> Self {
+        Transient {
+            root,
+            _note: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: DurableStore, N: NoteBounds> Entries<P> for Transient<N> {
+    type Note = N;
+
+    fn open(
+        &self,
+        id: &str,
+        _src: &Transcript,
+        _ours: Option<Witness>,
+        make_store: &mut dyn FnMut(&Path) -> std::io::Result<P>,
+    ) -> Opened<P, N> {
+        // The same raw-id path component the durable entry dirs use (`admit::entry_dir`);
+        // no presentation namespace — a run-private root serves exactly one frontend.
+        let dir = self.root.join(id);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Opened::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+        }
+        let Ok(mut s) = make_store(&dir) else {
+            return Opened::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
+        };
+        // ALWAYS cold: no metadata stream exists to corroborate anything, so leftovers
+        // under a reused path are truncated, never adopted — the historical unbounded-
+        // growth bug (append-forever without reset) is structurally impossible.
+        s.reset();
+        Opened::Owned {
+            store: s,
+            loaded: Vec::new(),
+            prefix_reused: false,
+            origin: Origin::Cold(admit::ColdReason::NoPriorCache),
+            resumed: None,
+            writer: None,
         }
     }
 }

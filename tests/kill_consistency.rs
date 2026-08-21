@@ -103,7 +103,7 @@ fn resume_and_fold(root: &Path, src: &Path) -> (Vec<claude_replay::model::Block>
     // #167 step 3: liveness lives on the provider — the killed process is gone, so any
     // holder is dead and its lock reclaims.
     let c: SessionCache<ArcLog, (), claude_replay_present::cache::PerSession<TuiNote>> =
-        SessionCache::with_entries(
+        SessionCache::new(
             claude_replay_present::cache::PerSession::<TuiNote>::new(
                 root.to_path_buf(),
                 Presentation::Tui,
@@ -118,10 +118,7 @@ fn resume_and_fold(root: &Path, src: &Path) -> (Vec<claude_replay::model::Block>
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(d) => panic!("a dead holder must not deny: {d:?}"),
     };
-    let d = c
-        .poll_view(&id, ArcLog::memory)
-        .expect("registered")
-        .expect("readable");
+    let d = c.poll_view(&id).expect("registered").expect("readable");
     let mut blocks: Vec<_> = session
         .committed_arcs()
         .iter()

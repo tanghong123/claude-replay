@@ -11,15 +11,13 @@
 > its entry (the commit and the design doc's status header are the record; this file lists
 > only live work). Any agent picking up work in this repo reads this file first.
 
-## Needs an owner decision
+## Bugs / regressions
 
-- **#167 — the durable cache refactor ("one cache, three providers")** — **SIGNED OFF
-  (owner, 2026-08-21) — in build.** Spec: [design/session-cache-redesign.md](design/session-cache-redesign.md)
-  (v: slot topology §4.2a, aux contract, anchors future-proofed, deny-only default at the
-  quiesce/peer boundary). Executing §8: 1 Note off the store trait → 2 cache::fs providers
-  behind old constructors → 2b slot-map collapse behind the admit() veneer (+ non_exhaustive
-  replies) → 3 constructor flip (monitor adopts SingleWriter) → 4 Transient / --no-cache
-  rewire + deletions. One commit per step, release at completion.
+- **HTML view: near-bottom viewport creeps on tail growth** (owner, 2026-08-20): with the
+  "jump to the bottom" affordance showing (i.e. follow OFF, scrolled near but not at the
+  bottom), arriving blocks keep scrolling the view down; expected a stable viewport, and it
+  used to be. Suspect the export.js follow/anchor logic. Next: reproduce against a live
+  session, then bisect the scroll-anchoring path.
 
 ## Evidence-blocked
 
@@ -49,14 +47,14 @@
   persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
   scope, or file as its own issue.
 
-## Queued (after #167's build)
+## Queued
 
-- **Architecture doc refresh** (owner, 2026-08-21): bring `docs/architecture.md` (+ the
-  `.html` twin) up to date on the two structural changes — the #193 bounded eliding
-  reader (one byte-toucher, `LineSource`, span-hinted locators; §7's rung note exists but
-  the read-path narrative predates it) and the #167 durable-cache interface (providers
-  behind `Entries`, the slot topology, `admit` as veneer, the aux contract). Do after the
-  #167 build lands so the doc describes what shipped, not the plan.
+- **Architecture doc refresh** (owner, 2026-08-21; unblocked — #167 shipped v1.98.0):
+  bring `docs/architecture.md` (+ the `.html` twin) up to date on the two structural
+  changes — the #193 bounded eliding reader (one byte-toucher, `LineSource`, span-hinted
+  locators; §7's rung note exists but the read-path narrative predates it) and the #167
+  durable-cache interface (providers behind `Entries`, the three providers incl.
+  `Transient`, the slot topology, `admit` as veneer, the aux contract).
 
 ## Parked — explicit go-ahead needed
 

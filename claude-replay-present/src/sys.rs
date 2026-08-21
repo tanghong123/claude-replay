@@ -55,21 +55,13 @@ pub fn relocate(path: &Path, old_root: &Path, new_root: &Path) -> PathBuf {
     }
 }
 
-/// The root a `--no-cache` run hands to [`SessionCache::durable`](crate::SessionCache::durable)
-/// as its own private cache: `<cache home>/throwaway/<pid>/`.
+/// The private per-run cache root `--no-cache` USED to select: `<cache home>/throwaway/<pid>/`.
 ///
-/// `--no-cache` does not mean "no cache": it means *not the shared one*. The run gets the same
-/// implementation at a private root, so folding, locking and resume all work exactly as they
-/// always do — what it gives up is coordination with other viewers, which is the entire point of
-/// the flag (a second, independent view of a session someone else is holding).
-///
-/// Pid-keyed, and that does not break the "no pid in a durable path" rule: this root is not
-/// durable. Two `--no-cache` runs have no root lock making them single-entity, so a *shared*
-/// throwaway root would have them denying each other every session — the flag defeating itself.
-/// The pid is also what lets [`reclaim`] tell a crashed run's leftovers from a live run's cache.
-///
-/// Infallible where the durable root is not: a throw-away root may be guessed at.
-pub fn throwaway_root() -> PathBuf {
+/// Retired at #167 step 4 — the flag is the `Transient` provider now, whose artifacts (if
+/// any) live in [`run_dir`] — but [`reclaim`] still sweeps this tree, because runs of older
+/// versions left directories here and a crashed one's stays until something takes it back.
+#[cfg(test)]
+fn throwaway_root() -> PathBuf {
     run_space().join("throwaway").join(pid())
 }
 

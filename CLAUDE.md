@@ -128,13 +128,14 @@ Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (cla
 `diff` (`DiffKind`/`DiffRow`/`DiffGroup`/`diff_row_groups`/`line_diff` + `base64_decode`).
 
 **`claude-replay-present/`** — presentation SUPPORT, frontend-agnostic: `cache/` the session
-residency cache (`SessionCache` registry + TTL reaping, `SharedSession` + the cursor-pull
-protocol, tier-b spill wiring) · `present.rs` the plain-text summary formatters (spawn chips,
-tool display names, edit summaries; re-exports core's `summary` phrasing) · `highlight.rs` the
-syntect highlighter (returns ratatui `Span`s — the shared span vocabulary; ratatui is a
+residency cache (`SessionCache` over a client-built `Entries` provider (#167) — `PerSession` /
+`SingleWriter` / `Transient` (`--no-cache`) — registry + TTL reaping, `SharedSession` + the
+cursor-pull protocol, tier-b spill wiring) · `present.rs` the plain-text summary formatters (spawn
+chips, tool display names, edit summaries; re-exports core's `summary` phrasing) · `highlight.rs`
+the syntect highlighter (returns ratatui `Span`s — the shared span vocabulary; ratatui is a
 types-only dep here, no terminal backend) · `sys.rs` (`deduce_stem`, `reveal_in_file_manager`, and
-where a RUN puts its own directories — `throwaway_root`/`run_dir`/`reclaim`, client-side on purpose:
-the cache owns only the SHARED root, a client wanting a private cache hands one in) ·
+where a RUN puts its own directories — `run_dir`/`reclaim`, client-side on purpose: the cache owns
+only the SHARED root) ·
 `args.rs` the shared `Args` options type (plain data; the `cli` feature adds the clap derive —
 library consumers stay clap-free).
 

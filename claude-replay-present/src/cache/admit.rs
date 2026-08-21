@@ -75,12 +75,8 @@ pub enum Denial<N> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
-    /// `--no-cache`.
-    NoCacheFlag,
     /// The durable root, or the entry's own backing, could not be created or written.
     UnwritableRoot,
-    /// No liveness check on this platform, so a lock cannot be reclaimed safely (§9).
-    NoLivenessCheck,
     /// The id is not registered — there is no source to open, cached or not.
     UnknownSession,
 }
@@ -92,12 +88,11 @@ pub enum Unavailable {
 /// `/claude-replay`. `None` when nothing resolves, which denies durability rather than
 /// guessing at a writable location.
 ///
-/// The cache's own child of it is `sessions/` ([`default_root`]). A CLIENT that wants a private
-/// cache of its own — a `--no-cache` run — picks its own directory under this home and passes it
-/// to [`SessionCache::durable`](super::SessionCache::durable); where that goes is the client's
-/// business, not the cache's (see `sys::throwaway_root`). It must be a SIBLING of `sessions/`,
-/// never nested inside it: [`gc`] walks `<root>/<presentation>/<entry>`, so a directory under
-/// `sessions/` would read as a presentation namespace and its contents as reapable entries.
+/// The cache's own child of it is `sessions/` ([`default_root`]). A CLIENT that wants a root
+/// of its own builds a provider over its own directory (#167 §4.3) — where that goes is the
+/// client's business, not the cache's. It must be a SIBLING of `sessions/`, never nested
+/// inside it: [`gc`] walks `<root>/<presentation>/<entry>`, so a directory under `sessions/`
+/// would read as a presentation namespace and its contents as reapable entries.
 ///
 /// `$TMPDIR` is not an option for any of them: on macOS it resolves to an opaque `/var/folders/…`
 /// path nothing sweeps and nobody finds, which is where 14 GB accumulated unnoticed (#161).
@@ -169,7 +164,7 @@ pub enum ColdReason {
 /// The callback is also what keeps this function free of `BV` decoding, and therefore one
 /// implementation for every presentation (R5).
 pub fn claim<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
-    root: Option<&Path>,
+    root: &Path,
     p: Presentation,
     session: &str,
     src: &Path,
@@ -177,14 +172,11 @@ pub fn claim<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
     open: impl FnOnce(&Path) -> Backing,
     alive: impl Fn(&Holder<N>) -> bool,
 ) -> Claim<N> {
-    let Some(root) = root else {
-        return Claim::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
-    };
-    if !lock::liveness_decidable() {
-        // Assuming a lock is stale would fail INTO concurrent writers — the one outcome the
-        // lock exists to prevent. Better to serve cache-less.
-        return Claim::Denied(Denial::Unavailable(Unavailable::NoLivenessCheck));
-    }
+    // Liveness undecidable (§9, non-unix): assuming a lock stale would fail INTO concurrent
+    // writers, so NEVER reclaim — every holder reads as live. A held lock then denies
+    // (`Held`), an absent one admits. This used to refuse the whole cache
+    // (`NoLivenessCheck`, deleted at #167 step 4); conservatism serves strictly more.
+    let alive = |h: &Holder<N>| !lock::liveness_decidable() || alive(h);
     let dir = entry_dir(root, p, session);
     if std::fs::create_dir_all(&dir).is_err() {
         return Claim::Denied(Denial::Unavailable(Unavailable::UnwritableRoot));
@@ -423,7 +415,7 @@ mod tests {
     }
     fn admit_at(root: &Path, src: &Path, committed: usize) -> Claim<Note> {
         claim(
-            Some(root),
+            root,
             Presentation::Tui,
             "s1",
             src,
@@ -431,23 +423,6 @@ mod tests {
             |_| Backing::Committed(committed),
             |_| true,
         )
-    }
-
-    #[test]
-    fn no_cache_flag_denies_without_touching_anything() {
-        let a = claim::<Note>(
-            None,
-            Presentation::Tui,
-            "s",
-            Path::new("/nope"),
-            versions(),
-            |_| Backing::Committed(0),
-            |_| true,
-        );
-        assert!(matches!(
-            a,
-            Claim::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
-        ));
     }
 
     #[test]
@@ -554,7 +529,7 @@ mod tests {
             flavor: None,
         };
         match claim::<Note>(
-            Some(&root),
+            &root,
             Presentation::Tui,
             "s1",
             &src,
@@ -648,7 +623,7 @@ mod tests {
         let src = root.join("t.jsonl");
         std::fs::write(&src, "x\n").unwrap();
         let tui = claim::<Note>(
-            Some(&root),
+            &root,
             Presentation::Tui,
             "s",
             &src,
@@ -657,7 +632,7 @@ mod tests {
             |_| true,
         );
         let html = claim::<Note>(
-            Some(&root),
+            &root,
             Presentation::Html,
             "s",
             &src,

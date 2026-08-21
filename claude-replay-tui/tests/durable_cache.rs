@@ -13,7 +13,7 @@ use claude_replay_core::engine::meta_stream::Versions;
 use claude_replay_core::model::Block;
 use claude_replay_core::{parse_session_as, Agent, Transcript};
 use claude_replay_present::cache::{
-    admit::Origin, Admission, Denial, Holder, Presentation, SessionCache, Unavailable,
+    admit::Origin, Admission, Denial, Holder, Presentation, SessionCache,
 };
 use claude_replay_tui::store::{ArcLog, TuiNote};
 use std::path::{Path, PathBuf};
@@ -109,7 +109,7 @@ fn append(path: &Path, s: &str) {
 /// the rule from the admit call to the provider, so tests that used to vary it per call
 /// build one cache per rule (which is truer anyway: each cache is one "process").
 fn cache_believing(root: &Path, answer: bool) -> Cache {
-    Cache::with_entries(
+    Cache::new(
         claude_replay_present::cache::PerSession::<TuiNote>::new(
             root.to_path_buf(),
             Presentation::Tui,
@@ -151,10 +151,7 @@ fn open<E: claude_replay_present::cache::Entries<ArcLog>>(
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
-    let d = c
-        .poll_view(id, ArcLog::memory)
-        .expect("registered")
-        .expect("readable");
+    let d = c.poll_view(id).expect("registered").expect("readable");
     let mut blocks: Vec<Block> = session
         .committed_arcs()
         .iter()
@@ -468,7 +465,7 @@ fn a_child_is_admitted_like_any_other_session() {
     c.register("child", Transcript::open(Agent::CLAUDE, src.clone()));
     // Registration alone is NOT enough on a durable cache — this is the trap.
     assert!(
-        c.poll_view("child", ArcLog::memory).is_none(),
+        c.poll_view("child").is_none(),
         "a durable cache must not materialize an unadmitted session behind the lock's back"
     );
     assert!(matches!(
@@ -478,7 +475,7 @@ fn a_child_is_admitted_like_any_other_session() {
         Admission::Owned { .. }
     ));
     let d = c
-        .poll_view("child", ArcLog::memory)
+        .poll_view("child")
         .expect("resident now")
         .expect("readable");
     assert!(
@@ -575,7 +572,11 @@ fn a_fold_version_bump_rebuilds_cold() {
         fold: Versions::current(None).fold + 1,
         ..Versions::current(None)
     };
-    let c = Cache::durable(Presentation::Tui, root.clone(), newer);
+    let c = Cache::new(claude_replay_present::cache::PerSession::<TuiNote>::new(
+        root.clone(),
+        Presentation::Tui,
+        newer,
+    ));
     let (got, origin) = open(&c, "s", &src);
     assert_eq!(
         origin,
@@ -638,27 +639,58 @@ fn a_live_holder_denies_the_second_process() {
     ));
 }
 
-/// An ephemeral cache denies with `NoCacheFlag` and writes nothing.
-///
-/// No flag selects one any more: `--no-cache` builds a real cache at its own root (#165), and a
-/// denial no longer has a cache-less path behind it (#163). What is left is the type-level state
-/// — a cache with no durable wiring — and its one guarantee: it denies, and it touches nothing.
+/// `--no-cache` is the `Transient` provider (#167 §4.3 a) — the TUI's shape of it: a RAM
+/// store, so admission serves a correct session while the provider's directory stays
+/// EMPTY — no blocks log, no metadata, no `LOCK` — and a re-admission after release is
+/// always COLD (nothing exists to resume from; the flag's whole point).
 #[test]
-fn an_ephemeral_cache_denies_and_writes_nothing() {
-    let root = tmp("ephem");
+fn a_transient_cache_serves_without_writing_or_resuming() {
+    use claude_replay_present::cache::Transient;
+    let root = tmp("transient");
     let src = root.join("t.jsonl");
     transcript(&src, 2);
 
-    let c = Cache::ephemeral();
+    type TrCache = SessionCache<ArcLog, (), Transient<TuiNote>>;
+    let c = TrCache::new(Transient::in_dir(root.join("run")));
     c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
-    assert!(matches!(
-        c.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))),
-        Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
-    ));
-    assert!(
-        !root.join("tui").exists(),
-        "nothing was created for a session that was never admitted"
+    // The TUI's `--no-cache` store is RAM (`ArcLog::memory`) — the shared `open` helper's
+    // file-backed store belongs to the durable providers.
+    let open_ram = |c: &TrCache| -> (Vec<Block>, Origin) {
+        let (session, origin) = match c.admit("s", |_| Ok(ArcLog::memory())) {
+            Admission::Owned { session, origin } => (session, origin),
+            Admission::Denied(_) => panic!("a transient admission cannot be denied"),
+        };
+        let d = c.poll_view("s").expect("admitted").expect("readable");
+        let mut blocks: Vec<Block> = session
+            .committed_arcs()
+            .iter()
+            .map(|a| a.as_ref().clone())
+            .collect();
+        blocks.extend(d.provisional.iter().map(|a| a.as_ref().clone()));
+        (blocks, origin)
+    };
+    let (blocks, origin) = open_ram(&c);
+    assert!(matches!(origin, Origin::Cold(_)), "nothing durable exists");
+    assert_eq!(blocks, cold(&src), "a transient session is still correct");
+    let files: Vec<_> = std::fs::read_dir(root.join("run").join("s"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(
+        files,
+        Vec::<std::ffi::OsString>::new(),
+        "a RAM store under a transient entry writes NOTHING — no log, no meta, no LOCK"
     );
+
+    c.release("s");
+    c.remove_pull("s");
+    let (blocks, origin) = open_ram(&c);
+    assert!(
+        matches!(origin, Origin::Cold(_)),
+        "re-admission is cold again: transient means no resume, ever (got {origin:?})"
+    );
+    assert_eq!(blocks, cold(&src));
 }
 
 /// The lock does not outlive the process even on an ERROR path, where nobody called
@@ -703,7 +735,7 @@ fn admit_and_fold(c: &Cache, id: &str, src: &Path) -> (Session, Origin) {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
-    c.poll_view(id, ArcLog::memory);
+    c.poll_view(id);
     (session, origin)
 }
 
@@ -744,7 +776,7 @@ fn a_released_session_is_re_admitted_without_rebuilding() {
     // And it is still a correct session: folding on from here matches a cold parse.
     append(&src, &user("more", 900));
     append(&src, &assistant("ok", 901));
-    c.poll_view("s", ArcLog::memory);
+    c.poll_view("s");
     let mut blocks: Vec<Block> = again
         .committed_arcs()
         .iter()
@@ -779,7 +811,7 @@ fn a_released_session_writes_nothing() {
         append(&src, &assistant("reply", 901 + i * 2));
     }
     assert!(
-        c.poll_view("s", ArcLog::memory).is_none(),
+        c.poll_view("s").is_none(),
         "a frozen session is idle, however much the source grew"
     );
     assert!(!ss.advance().unwrap(), "and so is a direct advance");
@@ -910,15 +942,15 @@ fn a_version_change_defeats_retention() {
 
     // A cache on the same root, folding with a different version, must not retain the resident it
     // shares the process with.
-    let newer: Cache = SessionCache::durable(
-        Presentation::Tui,
+    let newer: Cache = SessionCache::new(claude_replay_present::cache::PerSession::new(
         root.clone(),
+        Presentation::Tui,
         Versions {
             format: 1,
             fold: u16::MAX,
             flavor: None,
         },
-    );
+    ));
     newer.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
     // The resident belongs to `c`, so `newer` cannot retain it in any case; what this pins is the
     // check itself — the header a re-admission reads no longer describes this fold.
@@ -1060,10 +1092,7 @@ fn a_codex_child_rollout_resumes_equal_to_cold() {
             ),),
             Admission::Owned { .. }
         ));
-        let _ = c
-            .poll_view("child", ArcLog::memory)
-            .expect("registered")
-            .expect("readable");
+        let _ = c.poll_view("child").expect("registered").expect("readable");
         c.release_all();
     }
 
@@ -1083,10 +1112,7 @@ fn a_codex_child_rollout_resumes_equal_to_cold() {
         matches!(origin, Origin::Resumed { .. }),
         "must resume, not silently re-fold (a cold rebuild would fake the equality): {origin:?}"
     );
-    let d = c
-        .poll_view("child", ArcLog::memory)
-        .expect("registered")
-        .expect("readable");
+    let d = c.poll_view("child").expect("registered").expect("readable");
     let mut got: Vec<Block> = session
         .committed_arcs()
         .iter()
@@ -1205,7 +1231,7 @@ fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
             Admission::Owned { .. }
         ));
         let _ = c
-            .poll_view("modern", ArcLog::memory)
+            .poll_view("modern")
             .expect("registered")
             .expect("readable");
         c.release_all();
@@ -1284,7 +1310,7 @@ fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
     };
     assert!(matches!(origin, Origin::Resumed { .. }), "{origin:?}");
     let d = c
-        .poll_view("modern", ArcLog::memory)
+        .poll_view("modern")
         .expect("registered")
         .expect("readable");
     let resumed_metrics = d.metrics.clone();
@@ -1323,7 +1349,7 @@ fn single_writer_resumes_without_entry_locks() {
     use claude_replay_present::cache::SingleWriter;
     type SwCache = SessionCache<ArcLog, (), SingleWriter<TuiNote>>;
     let sw = |root: &Path| {
-        SwCache::with_entries(SingleWriter::over_claimed_root(
+        SwCache::new(SingleWriter::over_claimed_root(
             root.to_path_buf(),
             Presentation::Tui,
             Versions::current(None),

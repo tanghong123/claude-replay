@@ -1,8 +1,10 @@
 # The session cache, redesigned: one cache, three providers
 
-> **Status: SIGNED OFF (owner, 2026-08-21) — building per §8.** Twelve review questions
+> **Status: BUILT (v1.98.0, 2026-08-20; signed off by the owner 2026-08-21).** All four §8
+> steps landed, one commit each, every step green on all oracles. Twelve review questions
 > folded in, the §4.2a slot topology amended in, the aux contract stated, anchors
-> interface-future-proofed. This is the spec to build against. The exploration that led here — every dead end, bug post-mortem and rejected
+> interface-future-proofed. §8's as-built notes record where the build deviated (deliberately)
+> from the sketches here. The exploration that led here — every dead end, bug post-mortem and rejected
 > alternative — is preserved in [`cache-persistence-seam.md`](cache-persistence-seam.md); read
 > that when you want to know *why not something else*. Read this when you want to know *what
 > we are building*.
@@ -732,6 +734,34 @@ knowledge of lock liveness rules.
    moves to construction.
 4. Add `Transient`; rewire `--no-cache`; delete `shared_session`, `ephemeral`, `NoCacheFlag`,
    and the `poll_view` branch; retire the throwaway durable root.
+
+### 8.1 As-built (v1.98.0) — where the build deviated, and why
+
+- **Names/idioms.** `Presentation` stayed (no `Namespace` rename); providers are built
+  `PerSession::new(root, presentation, versions)` + builder methods (`.liveness()`,
+  `.note()`) rather than §4.3's sketch; the one constructor is `SessionCache::new(provider)`.
+- **The monitor kept its `claim_root`** (step 3 said "deleting … hand-rolled `claim_root`"):
+  the claim/redirect ceremony owns a user-facing stdout contract (hand-off URL printing), so
+  it stays with the monitor and the provider rides `SingleWriter::over_claimed_root`. The
+  per-entry locks are gone as specified — proven by
+  `single_writer_resumes_without_entry_locks` (no `LOCK` file ever exists under that root).
+- **Provider dispatch is per-frontend enums**, not generics-through-the-service:
+  `HtmlEntries::{Per, Single, Transient}` in serve.rs behind a `ServiceConfig::root_lock`
+  knob (the monitor passes `RootLock::SingleWriter`); `TuiEntries::{Per, Transient}` in
+  app.rs. `SessionService`/`App` stay non-generic.
+- **`NoLivenessCheck` deletion made the platform conservative, not refused**: where
+  liveness is undecidable (non-unix), `claim` now treats every holder as live — a held
+  lock denies (`Held`), an absent one admits — instead of refusing the whole cache.
+- **`poll_view` lost its `open` parameter** along with the second lifecycle: a tick on an
+  id that was never admitted is idle. The TUI's `--no-cache` store is `ArcLog::memory`, so
+  a transient TUI entry's directory stays byte-empty (pinned by
+  `a_transient_cache_serves_without_writing_or_resuming`).
+- **`Transient` reuses `ColdReason::NoPriorCache`** (there is never a prior) rather than
+  growing a variant, and namespaces entries `root/<id>` with no presentation segment — a
+  run-private root serves exactly one frontend.
+- The `--no-cache` HTML contract test now pins the new shape: serving artifacts under the
+  run's scratch, no durable entry, no `LOCK`, `throwaway/` never created (#165's
+  "a cache that can only deny" stays unrepresentable — `Transient` serves every admission).
 
 ## 9. Out of scope
 

@@ -23,7 +23,7 @@ fn open(c: &Cache, src: &Path) -> (Vec<Block>, Origin) {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a private root must be Owned"),
     };
-    let d = c.poll_view("s", ArcLog::memory).unwrap().unwrap();
+    let d = c.poll_view("s").unwrap().unwrap();
     let mut blocks: Vec<Block> = session
         .committed_arcs()
         .iter()
@@ -56,7 +56,11 @@ fn real_transcripts_resume_identically() {
         let want = parse_session_as(agent, src).unwrap().blocks();
 
         let cold_origin = {
-            let c = Cache::durable(Presentation::Tui, root.clone(), Versions::current(None));
+            let c = Cache::new(claude_replay_present::cache::PerSession::new(
+                root.clone(),
+                Presentation::Tui,
+                Versions::current(None),
+            ));
             let (got, o) = open(&c, src);
             assert_eq!(got, want, "cold run differs from a cold parse: {src:?}");
             c.release_all();
@@ -64,7 +68,11 @@ fn real_transcripts_resume_identically() {
         };
         assert!(matches!(cold_origin, Origin::Cold(_)));
 
-        let c = Cache::durable(Presentation::Tui, root.clone(), Versions::current(None));
+        let c = Cache::new(claude_replay_present::cache::PerSession::new(
+            root.clone(),
+            Presentation::Tui,
+            Versions::current(None),
+        ));
         let (got, origin) = open(&c, src);
         assert_eq!(got, want, "RESUMED run differs from a cold parse: {src:?}");
         match origin {

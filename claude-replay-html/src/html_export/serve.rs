@@ -97,13 +97,8 @@ fn redirect_reply(url: &str) -> String {
 /// Plain English for a denial that is nobody's fault but the machine's.
 fn reason(why: Unavailable) -> &'static str {
     match why {
-        Unavailable::NoCacheFlag => "this server has no cache root",
         Unavailable::UnwritableRoot => {
             "its cache directory cannot be written — set $CLAUDE_REPLAY_CACHE somewhere writable"
-        }
-        Unavailable::NoLivenessCheck => {
-            "this platform cannot tell whether a lock's holder is still running, so entries \
-             cannot be shared safely"
         }
         Unavailable::UnknownSession => "no transcript is registered under that id",
     }
@@ -184,7 +179,9 @@ struct TitleInfo {
 /// used to hardcode. `--html` passes claude-replay's own values; the monitor passes its
 /// root and scratch. One implementation either way, so the byte gate keeps covering it.
 pub struct ServiceConfig {
-    /// Durable cache root. `None` ⇒ ephemeral (exactly `--no-cache`).
+    /// Durable cache root. `None` ⇒ transient in this run's `scratch` (exactly
+    /// `--no-cache`, #167 §4.3 a): admissions work and serving artifacts land in scratch,
+    /// but nothing is durable, no locks exist, and no peer is consulted.
     pub cache_root: Option<std::path::PathBuf>,
     /// Namespace within that root. Both known hosts pass [`Presentation::Html`] — they
     /// differ by ROOT, not by namespace (§10).
@@ -217,6 +214,7 @@ pub enum RootLock {
 pub enum HtmlEntries {
     Per(PerSession<HtmlNote>),
     Single(cache::SingleWriter<HtmlNote>),
+    Transient(cache::Transient<HtmlNote>),
 }
 
 impl cache::Entries<RecordStore> for HtmlEntries {
@@ -232,6 +230,7 @@ impl cache::Entries<RecordStore> for HtmlEntries {
         match self {
             HtmlEntries::Per(e) => e.open(id, src, ours, make_store),
             HtmlEntries::Single(e) => e.open(id, src, ours, make_store),
+            HtmlEntries::Transient(e) => e.open(id, src, ours, make_store),
         }
     }
 
@@ -239,8 +238,8 @@ impl cache::Entries<RecordStore> for HtmlEntries {
         match self {
             HtmlEntries::Per(e) => cache::Entries::<RecordStore>::publish(e, id, note),
             // The monitor's note lives in its ROOT lock, which the monitor itself owns —
-            // nothing per-entry to publish into.
-            HtmlEntries::Single(_) => false,
+            // nothing per-entry to publish into; a transient run has no locks at all.
+            HtmlEntries::Single(_) | HtmlEntries::Transient(_) => false,
         }
     }
 }
@@ -250,6 +249,8 @@ impl HtmlEntries {
         match self {
             HtmlEntries::Per(e) => e.gc(),
             HtmlEntries::Single(e) => e.gc(),
+            // Scratch is wiped by run reclaim, not entry gc.
+            HtmlEntries::Transient(_) => {}
         }
     }
 }
@@ -297,9 +298,11 @@ impl SessionService {
                     ),
                 };
                 entries.gc(); // explicit, where the root is known (§4.3)
-                SessionCache::with_entries(entries)
+                SessionCache::new(entries)
             }
-            None => SessionCache::new(),
+            None => SessionCache::new(HtmlEntries::Transient(cache::Transient::in_dir(
+                cfg.scratch.clone(),
+            ))),
         };
         Ok(Self {
             fold: cfg.fold,
@@ -960,18 +963,17 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     // the other caller, with its own values — one implementation either way, which is what
     // keeps the byte gate covering this path.
     //
-    // `--no-cache` selects a private cache root, NOT the absence of one (#165): the same
-    // implementation, at a root no other viewer coordinates over. That is what makes the flag
-    // a genuine second view rather than a degraded mode — and it is why nothing here needs a
-    // fallback for "the cache said no".
-    // `None` under `--no-cache`: the flag opts out of the shared root AND of deferring to whoever
-    // holds it, or it would send you back to the process you were trying to bypass.
+    // `--no-cache` opts out of the shared root AND of deferring to whoever holds it — a
+    // redirect would send you back to the process you were trying to bypass. It used to
+    // select a private DURABLE root for that (#165); since #167 step 4 it is the
+    // `Transient` provider in this run's scratch: still a real cache that serves every
+    // admission — the #165 regression class, a "cache" that could only deny, stays
+    // unrepresentable — just with nothing durable and no locks at all. Same when the cache
+    // home cannot be resolved: there is then nowhere durable to coordinate over, which is
+    // a fact about the machine, not a degraded mode.
     let shared_root = (!args.no_cache).then(cache::admit::default_root).flatten();
     let live = Arc::new(SessionService::new(ServiceConfig {
-        cache_root: Some(match &shared_root {
-            Some(root) => root.clone(),
-            None => crate::sys::throwaway_root(),
-        }),
+        cache_root: shared_root.clone(),
         presentation: Presentation::Html,
         fold: args.fold_policy(),
         scratch: dir.clone(),
@@ -2229,7 +2231,7 @@ mod tests {
             cache: {
                 let c = std::sync::Arc::new(std::sync::OnceLock::new());
                 let _ = c.set(port);
-                SessionCache::with_entries(HtmlEntries::Per(html_entries(
+                SessionCache::new(HtmlEntries::Per(html_entries(
                     root.clone(),
                     Presentation::Html,
                     Versions::current(Some(render_flavor(&FoldPolicy::default()))),
@@ -2579,7 +2581,7 @@ mod tests {
     /// feed, so a test that expects to be served needs a real entry. Its own root, never the
     /// developer's — the isolation rule is the same one the suite has always had.
     fn test_cache(base: &Path) -> SessionCache<RecordStore, ServeAux, HtmlEntries> {
-        SessionCache::with_entries(HtmlEntries::Per(PerSession::<HtmlNote>::new(
+        SessionCache::new(HtmlEntries::Per(PerSession::<HtmlNote>::new(
             base.join("cache"),
             Presentation::Html,
             Versions::current(Some(render_flavor(&FoldPolicy::default()))),
@@ -2599,8 +2601,9 @@ mod tests {
 
     /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering
     /// `/pull` for its own `?session=`  — the server half of "stay on the picker, open a tab
-    /// per session". Also pins where a `--no-cache` run puts things (#165): a real cache at its
-    /// OWN root, and a per-run bundle dir, both under the cache home rather than `$TMPDIR`.
+    /// per session". Also pins where a `--no-cache` run puts things (#167 §4.3 a): a
+    /// `Transient` cache whose serving artifacts land in the run's own bundle dir under the
+    /// cache home — no durable entry, no lock, and never the shared root.
     #[test]
     fn start_server_hosts_every_root_on_one_port() {
         use clap::Parser as _;
@@ -2630,7 +2633,8 @@ mod tests {
             paths.push(p);
         }
 
-        // `--no-cache` is a different ROOT, not the absence of one (#165).
+        // `--no-cache` is the Transient provider (#167 §4.3 a) — a real cache that serves;
+        // what it gives up is durability and coordination, not admission.
         let args = crate::Args::parse_from(["claude-replay", "--html", "--no-cache"]);
         let server = start_server(&args, &paths).expect("server starts");
         assert_eq!(server.root_ids, vec!["one".to_string(), "two".to_string()]);
@@ -2647,28 +2651,31 @@ mod tests {
         assert_ne!(u0, u1);
         assert!(u0.contains("?session=one") && u1.contains("?session=two"));
 
-        // Each root really answers for itself, over the wire — and its records land in its own
-        // durable entry under the run's PRIVATE cache root, which is what `--no-cache` now
-        // selects. Nothing is written to the shared root, and nothing is served from a store
-        // opened outside a cache entry.
-        let private = base.join("throwaway").join(std::process::id().to_string());
+        // Each root really answers for itself, over the wire — and its serving artifacts
+        // land under the run's OWN scratch (the bundle dir), which is what `--no-cache`
+        // selects since #167 step 4. Nothing is durable, nothing is locked, and nothing is
+        // written to the shared root.
         for (sid, want) in [("one", "first root"), ("two", "second root")] {
             let body = http_post(server.port, &format!("/pull?session={sid}&cursor=0"))
                 .unwrap_or_else(|| panic!("{sid} pull"));
             let v: Value = serde_json::from_str(&body).unwrap();
             assert_eq!(v["meta"]["sid"], json!(sid));
-            let entry = private.join("html").join(sid);
+            let entry = server.dir.join(sid);
             let records =
                 std::fs::read_to_string(entry.join("records.jsonl")).unwrap_or_else(|e| {
-                    panic!("{sid} has a durable entry at {}: {e}", entry.display())
+                    panic!("{sid} serves from run scratch at {}: {e}", entry.display())
                 });
             assert!(
                 body.contains(want) || records.contains(want),
                 "{sid} serves its own transcript"
             );
             assert!(
-                entry.join("LOCK").exists(),
-                "{sid} is locked like any other entry — a private cache is still a cache"
+                !entry.join("LOCK").exists(),
+                "a transient entry is never locked — no peer can exist"
+            );
+            assert!(
+                !base.join("throwaway").exists(),
+                "the durable throwaway root is retired (#167 step 4)"
             );
             assert!(
                 !base.join("sessions").exists(),
