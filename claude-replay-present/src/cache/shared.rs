@@ -119,7 +119,7 @@ struct Inner<S: BlockStore> {
     /// under the same lock as the fold, so records are appended in the same critical section
     /// that produced them: content reaches disk before the meta describing it (I1's ordering),
     /// and there is no "remember to record after advancing" for a caller to get wrong.
-    meta: Option<super::stream::MetaWriter>,
+    meta: Option<super::fs::EntryWriter>,
     /// Set while this session is RESIDENT but no longer OWNED — [`quiesce`](SharedSession::quiesce)d
     /// so its blocks survive a release (#109). A frozen session must not fold, and the reason is
     /// not only the detached `meta`: `put` appends to the frontend's content backing too, so a
@@ -137,9 +137,9 @@ impl<S: BlockStore> Inner<S> {
     fn record(&mut self) {
         let Some(w) = self.meta.as_mut() else { return };
         for r in &self.follower.drain_meta() {
-            let _ = w.append(r);
+            let _ = w.meta.append(r);
         }
-        let _ = w.flush();
+        let _ = w.meta.flush();
     }
 }
 
@@ -455,7 +455,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// Records authored BEFORE this call are drained and written straight away, which matters on
     /// a cold start — the load itself folds the whole transcript, and those commits would
     /// otherwise never be recorded.
-    pub fn attach_writer(&self, w: super::stream::MetaWriter) {
+    pub fn attach_writer(&self, w: super::fs::EntryWriter) {
         let mut g = super::lock_recover(&self.inner);
         g.meta = Some(w);
         g.frozen = false;
