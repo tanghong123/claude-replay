@@ -34,6 +34,29 @@ use std::time::SystemTime;
 /// appends are a few KiB and never feel the cap.
 pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
+/// One scan cycle's fresh-byte allowance. It carries its own CAPACITY so the ledger can
+/// tell "would not fit THIS cycle" from "would not fit ANY cycle" — the latter must fold
+/// at the first opportunity, or it is deferred every cycle forever. That starvation was
+/// real: a 364 MB rollout (> the 256 MB cap) never priced, so its rail card silently
+/// showed only the sub-agent roll-up ($331 of $1,370).
+pub(crate) struct Budget {
+    remaining: u64,
+    capacity: u64,
+}
+
+impl Budget {
+    pub(crate) fn new(capacity: u64) -> Self {
+        Self {
+            remaining: capacity,
+            capacity,
+        }
+    }
+
+    fn charge(&mut self, bytes: u64) {
+        self.remaining = self.remaining.saturating_sub(bytes);
+    }
+}
+
 /// The ledger's own JSON-shape version — bumped when the entry's fields change.
 const LEDGER_SHAPE: u32 = 1;
 
@@ -84,13 +107,14 @@ impl CostLedger {
     /// The equivalent-API cost of the transcript at `path`, `(cost, partial)`, folded
     /// incrementally. `budget` is the cycle's remaining fresh-byte allowance: a fold that
     /// would read more than is left is deferred (the cached value — possibly stale,
-    /// possibly `None` — is returned, and a later cycle picks it up). One fold may
-    /// overshoot the remainder rather than starve forever behind one huge file.
+    /// possibly `None` — is returned, and a later cycle picks it up). A fold may overshoot
+    /// the remainder — a small one at any time, an arbitrarily large one from an untouched
+    /// budget — rather than starve forever behind one huge file.
     pub(crate) fn cost(
         &mut self,
         agent: Agent,
         path: &Path,
-        budget: &mut u64,
+        budget: &mut Budget,
     ) -> Option<(f64, bool)> {
         let stem = stem_of(path);
         if !self.entries.contains_key(&stem) && self.probed.insert(stem.clone()) {
@@ -111,13 +135,21 @@ impl CostLedger {
                 .and_then(|e| e.cursor.as_ref())
                 .map_or(0, |c| c.offset.min(len)),
         );
-        if *budget == 0 || (fresh > *budget && fresh > COST_BUDGET_BYTES / 8) {
-            // Out of allowance this cycle — answer from the cache, fold later. (A small
-            // overshoot is allowed so one giant file cannot monopolize every cycle's
-            // budget without ever finishing.)
+        // Fold when it fits, when the overshoot is small (a giant file must not
+        // monopolize every cycle's budget without ever finishing), or when the file
+        // exceeds even a WHOLE cycle's capacity — no amount of waiting ever fits that
+        // one, so it folds at the first cycle not already spent. (Requiring an UNTOUCHED
+        // budget instead would starve it again on a busy machine: any live session's
+        // few-KiB append earlier in the same cycle already breaks "untouched".)
+        let allowed = budget.remaining > 0
+            && (fresh <= budget.remaining
+                || fresh <= budget.capacity / 8
+                || fresh > budget.capacity);
+        if !allowed {
+            // Out of allowance this cycle — answer from the cache, fold later.
             return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
         }
-        *budget = budget.saturating_sub(fresh);
+        budget.charge(fresh);
 
         let cursor = cached.and_then(|e| e.cursor.clone());
         let Ok(mut fold) = MetricsFold::open(adapter(agent), path, cursor.as_ref()) else {
@@ -231,17 +263,20 @@ mod tests {
         drop(f);
 
         let mut ledger = CostLedger::new(&d.join("cache"));
-        let mut budget = COST_BUDGET_BYTES;
+        let mut budget = Budget::new(COST_BUDGET_BYTES);
         let (c1, partial) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
         assert!((c1 - 1.25).abs() < 1e-9, "1M input on gpt-5: {c1}");
         assert!(!partial);
-        assert!(budget < COST_BUDGET_BYTES, "fresh bytes were charged");
+        assert!(
+            budget.remaining < COST_BUDGET_BYTES,
+            "fresh bytes were charged"
+        );
 
         // Quiet file: the fast path answers, spending no budget.
-        let mut b2 = COST_BUDGET_BYTES;
+        let mut b2 = Budget::new(COST_BUDGET_BYTES);
         assert_eq!(ledger.cost(Agent::CODEX, &t, &mut b2), Some((c1, false)));
         assert_eq!(
-            b2, COST_BUDGET_BYTES,
+            b2.remaining, COST_BUDGET_BYTES,
             "a quiet file costs a stat, not bytes"
         );
 
@@ -256,13 +291,13 @@ mod tests {
         .unwrap();
         drop(f);
         let mut restarted = CostLedger::new(&d.join("cache"));
-        let mut b3 = COST_BUDGET_BYTES;
+        let mut b3 = Budget::new(COST_BUDGET_BYTES);
         let (c2, _) = restarted
             .cost(Agent::CODEX, &t, &mut b3)
             .expect("still priced");
         assert!((c2 - 2.50).abs() < 1e-9, "2M cumulative input: {c2}");
         // The resumed fold read only the appended line, not the whole file.
-        let spent = COST_BUDGET_BYTES - b3;
+        let spent = COST_BUDGET_BYTES - b3.remaining;
         assert!(
             spent < std::fs::metadata(&t).unwrap().len(),
             "resume folds the delta, not the file: spent {spent}"
@@ -286,13 +321,13 @@ mod tests {
         )
         .unwrap();
         let mut ledger = CostLedger::new(&d.join("cache"));
-        let mut none = 0u64;
+        let mut none = Budget::new(0);
         assert_eq!(
             ledger.cost(Agent::CODEX, &t, &mut none),
             None,
             "no budget, never folded: honestly unknown"
         );
-        let mut full = COST_BUDGET_BYTES;
+        let mut full = Budget::new(COST_BUDGET_BYTES);
         let priced = ledger.cost(Agent::CODEX, &t, &mut full);
         assert!(priced.is_some());
         // Grown file + zero budget: the STALE price, not a stall and not None.
@@ -304,7 +339,7 @@ mod tests {
         )
         .unwrap();
         drop(f);
-        let mut none2 = 0u64;
+        let mut none2 = Budget::new(0);
         assert_eq!(
             ledger.cost(Agent::CODEX, &t, &mut none2),
             priced,
@@ -352,13 +387,59 @@ mod tests {
         )
         .unwrap();
         let mut ledger = CostLedger::new(&d.join("cache"));
-        let mut budget = COST_BUDGET_BYTES;
+        let mut budget = Budget::new(COST_BUDGET_BYTES);
         let (c, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
         assert!(
             (c - 1.25).abs() < 1e-9,
             "the stale entry was discarded and the file re-folded: {c}"
         );
-        assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
+        assert!(
+            budget.remaining < COST_BUDGET_BYTES,
+            "a real re-fold spent bytes"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A transcript whose fresh bytes exceed a WHOLE cycle's budget must not starve.
+    /// `fresh > budget` never becomes false by waiting — before this, such a file was
+    /// deferred every cycle forever, its cost stayed `None`, and the rail card silently
+    /// showed only the session's sub-agent roll-up. It folds at the first cycle that is
+    /// not already spent — even a partially-consumed one, because on a busy machine some
+    /// live session's append lands earlier in nearly every cycle.
+    #[test]
+    fn a_file_bigger_than_the_whole_budget_still_folds() {
+        let d = scratch("oversize");
+        let t = d.join("rollout-2026-08-12T01-00-00-oversize-test.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+        let len = std::fs::metadata(&t).unwrap().len();
+        let mut ledger = CostLedger::new(&d.join("cache"));
+
+        // Capacity smaller than the file — the oversized case, without a 256 MB
+        // fixture — and a cycle already partially spent by smaller folds.
+        let mut b = Budget::new(len / 2);
+        b.charge(1);
+        let (c, _) = ledger
+            .cost(Agent::CODEX, &t, &mut b)
+            .expect("an unspent cycle lets the oversized fold run");
+        assert!((c - 1.25).abs() < 1e-9, "priced in full: {c}");
+        assert_eq!(b.remaining, 0, "the fold consumed the rest of the cycle");
+
+        // A FULLY spent cycle still defers it — oversized is not a budget bypass.
+        let t2 = d.join("rollout-2026-08-12T01-00-00-oversize-second.jsonl");
+        std::fs::copy(&t, &t2).unwrap();
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t2, &mut b),
+            None,
+            "a spent cycle defers the second oversized fold"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

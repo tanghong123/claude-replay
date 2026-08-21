@@ -586,7 +586,7 @@ impl Index {
         // Budgeted per CYCLE across all files: a cold start streams prices in over a few
         // polls instead of stalling the first paint; steady-state appends are a few KiB
         // and never feel the cap. A deferred fold keeps the row's previous price.
-        let mut budget = crate::cost::COST_BUDGET_BYTES;
+        let mut budget = crate::cost::Budget::new(crate::cost::COST_BUDGET_BYTES);
         let ledger = st
             .ledger
             .get_or_insert_with(|| crate::cost::CostLedger::new(&self.cache_root));

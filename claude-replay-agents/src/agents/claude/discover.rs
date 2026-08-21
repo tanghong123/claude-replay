@@ -186,6 +186,49 @@ pub(crate) fn store_transcripts_in(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Every SUB-AGENT transcript in a Claude-format store, MACHINE-WIDE, with its lineage:
+/// `(path, own id, parent session id)` — the complement of [`store_transcripts_in`]'s
+/// exclusion, for the cost roll-up. Sub-agent activity in this store is NOT inside the
+/// main transcript (the assumption the adapter default encodes): modern stores file each
+/// spawn as `<project>/<sid>/subagents/agent-<id>.jsonl`, so a consumer folding only
+/// main transcripts misses everything the sub-agents burned.
+///
+/// Lineage comes from the PATH alone — the parent is the `<sid>` directory component —
+/// so listing a store reads no file contents. (A sub-agent's own spawns land in the same
+/// `<sid>/subagents/` dir, so every file's path-derived parent is already the root
+/// session.)
+pub(crate) fn subagent_transcripts_in(root: &Path) -> Vec<(PathBuf, String, String)> {
+    let mut out = Vec::new();
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for p in projects.flatten() {
+        let Ok(sids) = std::fs::read_dir(p.path()) else {
+            continue;
+        };
+        for sid in sids.flatten() {
+            let dir = sid.path().join("subagents");
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue; // a `<sid>.jsonl` file, or a session dir without spawns
+            };
+            let parent = sid.file_name().to_string_lossy().into_owned();
+            for f in files.flatten() {
+                let path = f.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                    && stem.starts_with("agent-")
+                    && path.is_file()
+                {
+                    out.push((path.clone(), stem.to_string(), parent.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The newest Claude transcript for `cwd` **or its nearest ancestor that has one**:
 /// the session id (filename stem), path, and mtime — never a session from an
 /// unrelated directory. Used by the `agent-jdi` Claude adapter to pick a resume
@@ -428,6 +471,33 @@ pub(crate) fn load_tasks_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sub-agent listing is the complement of the main listing: `agent-*.jsonl` under
+    /// `<project>/<sid>/subagents/`, parented to `<sid>` by path alone — main transcripts
+    /// and stray files contribute nothing.
+    #[test]
+    fn subagent_listing_pairs_each_spawn_with_its_session() {
+        let root = std::env::temp_dir().join(format!("cr-subs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sid = "f4d4b2d3-c2c0-4e5e-917d-4617babf9cb4";
+        let subs = root.join("-Users-dev-repo").join(sid).join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        std::fs::write(
+            root.join("-Users-dev-repo").join(format!("{sid}.jsonl")),
+            "{}\n",
+        )
+        .unwrap();
+        std::fs::write(subs.join("agent-aExplore-1234.jsonl"), "{}\n").unwrap();
+        std::fs::write(subs.join("notes.txt"), "not a transcript").unwrap();
+
+        let got = subagent_transcripts_in(&root);
+        assert_eq!(got.len(), 1, "only the agent-*.jsonl: {got:?}");
+        let (path, own, parent) = &got[0];
+        assert!(path.ends_with("subagents/agent-aExplore-1234.jsonl"));
+        assert_eq!(own, "agent-aExplore-1234");
+        assert_eq!(parent, sid, "the parent is the <sid> path component");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn slug_matches_claude_code_convention() {

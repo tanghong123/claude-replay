@@ -315,9 +315,16 @@
       var pp=[];
       var span=fmtSpan(r.startTs,r.activityTs);
       if(span)pp.push(span);
-      if(r.visited&&r.subs)pp.push(r.subs+" sub");
       // §14: cost comes from the ledger, not the visit — an unopened session is priced too.
-      if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
+      // A sub-agent roll-up is shown SPLIT: the own share is what the viewer's usage panel
+      // reports, so one opaque total would read as a mismatch against it.
+      if(r.costSubs){
+        var own=r.cost-r.costSubs;
+        pp.push("$"+own.toFixed(2)+" +"+(r.visited&&r.subs?r.subs+" sub ":"sub ")+"$"+r.costSubs.toFixed(2));
+      }else{
+        if(r.visited&&r.subs)pp.push(r.subs+" sub");
+        if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
+      }
       return pp.length?pp.join(" · "):"tbd";
     }
     if(!r.visited)return r.cost!=null?"$"+r.cost.toFixed(2):"tbd";
@@ -325,6 +332,12 @@
     if(r.subs)parts.push(r.subs+" sub");
     if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
     return parts.join(" · ");
+  }
+  // The hover breakdown for a split cost — the sum the card no longer prints.
+  function costTip(r){
+    if(!r.costSubs)return "";
+    return "total $"+r.cost.toFixed(2)+" = this session $"+(r.cost-r.costSubs).toFixed(2)
+      +" + sub-agents $"+r.costSubs.toFixed(2);
   }
   // #148 (design/compose-to-terminal.md §5.1): the R8-safe half of "reach this session" —
   // hand the user the command that ATTACHES to it and let them run it themselves. The
@@ -458,7 +471,7 @@
     +(state.copied&&state.copied.id===r.id?(state.copied.ok?"copied":"⌘C it"):"&gt;_ "+esc(r.term))+'</span>':"")
       +(canCompose(r)?'<button class="rowsend'+(canInject(r)?" inject"+(r.consented?" armed":""):"")+'" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" data-mode="'+(canInject(r)?"tmux":"resume")+'"'+(canInject(r)&&r.consented?' data-consented="1"':"")+' title="'+(canInject(r)?"Send a prompt into this live tmux pane"+(r.consented?" (consent granted)":" (asks consent first)"):"Send a prompt — resumes this finished session")+'">✎</button>':"")
       +forks+rowx
-      +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'">'+esc(subLine(r,g))+'</span>'
+      +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'"'+(r.costSubs?' title="'+esc(costTip(r))+'"':"")+'>'+esc(subLine(r,g))+'</span>'
       +'<span class="age">'+esc(fam?famActivity(fam,r):r.activity)+'</span></div></div>';
   }
   // The family's age is its most recent member's, so a family with a live fork never reads stale.
