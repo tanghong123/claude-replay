@@ -1,9 +1,10 @@
 # Design: the bounded eliding line reader
 
-> **Status: ACCEPTED (owner, 2026-08-20) — building per §10.** The review ran §12's whole
-> trail in one sitting; every decision in §11 is closed: ① α in the α-lite form, ② the
-> constants as specified (format-contract), ③ counter home (a) `Metrics::extra`. This
-> document is now the spec of record for the build.
+> **Status: BUILT (v1.97.0, 2026-08-20).** Accepted and built the same day; every §10 step
+> shipped in order, each on its own oracle, FOLD_VERSION 15→16 carrying the span hint and
+> the gauges. §13 records where the build deviated from the letter of this spec (and why);
+> everything else stands exactly as written. Decisions as closed: ① α in the α-lite form,
+> ② the constants (format-contract), ③ counter home (a) `Metrics::extra`.
 >
 > **v2, 2026-08-20.** v1 proposed elision at each read site; review found that placement cannot
 > deliver the property the design is for, and a full boundedness audit (§8) re-scoped it around
@@ -860,3 +861,43 @@ What the exchange established, kept because the next reviewer will re-ask it:
   is the caller taking N lines per poll. `LineReader` is deleted rather than rewritten
   (§9.1): one primitive, one driver, two live-tail consumers, zero duplicated loops — and
   α's policy now has exactly one plumbing point.
+
+---
+
+## 13. As built (v1.97.0, 2026-08-20) — deviations from the letter, recorded
+
+Steps 0–5 landed as commits `82e75d3` (primitive + `LineSource`), `b4739db` (metrics
+folds), `c1cea3e` (discovery), `1ab4d50` (block fold + follower, steps 3+4 together — both
+feed `advance_at`, and a fold that elided in batch but not live would break follower ≡
+batch), `2d62d4e` (the load paths + card cap). Where the build deviated:
+
+- **A2 takes `Yield`, not §5's sketched `Stop`.** The sketch missed that `parse_reader`
+  *pushes* a torn-but-valid-JSON final line today (a complete record awaiting its newline —
+  common on static files); `Stop` would have silently under-counted them.
+  `LineSource::last_was_torn()` keeps the excuse-if-unparseable half.
+- **`next()` yields `(offset, &str)` tuples** with `last_was_torn()` as a separate query
+  (NLL permits it once the borrow ends), not a richer item struct.
+- **The follower folds to EOF per poll** — no batch cap. The cap's motivation was the
+  `Vec<String>` materialization, and the lending source deleted that; per-poll memory is
+  one elided line regardless, and poll-to-EOF preserves today's semantics exactly.
+- **Sniffs run `Elision::None`; only `latest_cwd` is aggressive** (§6.1's "it does not
+  matter" resolved toward zero behavioral change: the sniffs' point is the ceiling bound).
+- **The capture sink is composed, not a new mode**: the walk re-reads the line through the
+  eliding primitive (bounded, small), runs the adapter's ordinal walk on the elided line
+  (§7), and resolves any marker in the walked content through the validated splice —
+  falling to a verbatim ceiling-bounded read if a splice refuses. Same O(elided-line)
+  effect, zero new scanner states.
+- **The hint's frame reconstructs the LOADED content**, so Codex strips its
+  `data:<mime>;base64,` header from the hint prefix at decode (always inside the kept
+  64 bytes; classification already consumed it). Engine stays agent-neutral.
+- **The Codex evidence is an in-repo oracle**, not a gate fixture: a synthetic > 64 KB
+  `data:` image parsed, hinted, and loaded byte-identically three ways (span / walk /
+  forged-hint fallback). The byte gate stayed PASS over `frozen_self`'s 49 over-threshold
+  lines — α's no-re-baseline promise, proven on real data.
+- **α-lite lists shipped narrower than §6's illustration**: Claude = `file.base64`,
+  `source.data`, `planContent` — NOT `file.content`, whose suffix also names the Read
+  tool's *rendered* output; Codex = `image_url` only — NOT `image_generation_call`'s bare
+  `result`, too generic for a suffix rule. Both excluded values stay ceiling-bounded.
+- **Two seed hardenings** (for agent-metrics to backport into its `elide.rs`): `pending`
+  no longer buffers a non-elidable string without bound (passthrough past the threshold),
+  and the ceiling-skip path gained coverage.
