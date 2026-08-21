@@ -400,7 +400,10 @@ never bytes; the fold replaces provisional blocks rather than mutating them, and
 maintained scalars need no `Arc` and, having no cursor into them, no generations either.
 It is STORED one level down, in the fold's accumulator (`committed_meta` maintained per
 commit + the open turn derived on top at read time; the durable twin rides the meta
-stream's checkpoints) — the resident wrapper owns only the protocol counters.
+stream's checkpoints) — the resident wrapper owns only the protocol counters. The copy
+SITE is the accessor itself: the handle's only field is the private `Mutex<Inner>`, so
+every public method must build an owned reply inside the guard — the borrow checker, not
+discipline, is what makes a reference into the shared state impossible to leak.
 `shared.rs` §9a, untouched by this redesign.) There is **no special one-off initialization** — initialization is tailing
 for the first time.
 
