@@ -1,7 +1,8 @@
 # The session cache, redesigned: one cache, three providers
 
-> **Status:** the agreed target (task #167). Nothing is built yet; this is the spec to build
-> against. The exploration that led here — every dead end, bug post-mortem and rejected
+> **Status: SIGNED OFF (owner, 2026-08-21) — building per §8.** Twelve review questions
+> folded in, the §4.2a slot topology amended in, the aux contract stated, anchors
+> interface-future-proofed. This is the spec to build against. The exploration that led here — every dead end, bug post-mortem and rejected
 > alternative — is preserved in [`cache-persistence-seam.md`](cache-persistence-seam.md); read
 > that when you want to know *why not something else*. Read this when you want to know *what
 > we are building*.
@@ -457,11 +458,11 @@ mutex scopes the wait to the session it belongs to), and the #169 bug class is s
 rather than guarded (no gate exists to forget — the mutex that prevents the double-open is
 the same mutex that drives).
 
-> **OPEN — owner call, before build:** after a `quiesce`, if a *peer process* takes the entry
-> before our next drive, the slot holds readable (stale) blocks AND a `Denied(note)`.
-> Frontend policy: serve the retained blocks read-only, or redirect to the peer? (The
-> question exists in the current design too — re-admission after quiesce can be denied the
-> same way — the slot shape just makes it visible enough to need an answer in writing.)
+> **Resolved at sign-off (2026-08-21) — today-faithful default:** `Denied` stays
+> deny-only (the note, nothing else); each frontend keeps its existing fallback — the HTML
+> server redirects to the peer's published port, the TUI falls back to a cache-less parse.
+> The retained blocks are NOT served alongside a denial. Revisit only if a genuine
+> serve-stale need appears; this default is zero behavior change.
 
 ### 4.3 The three providers
 

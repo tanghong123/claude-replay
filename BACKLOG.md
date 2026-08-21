@@ -13,20 +13,13 @@
 
 ## Needs an owner decision
 
-- **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
-  owner's **final design review** (requested 2026-08-20) of
-  [design/session-cache-redesign.md](design/session-cache-redesign.md);
-  [design/cache-persistence-seam.md](design/cache-persistence-seam.md) preserves the
-  exploration. The rule being implemented: the session cache has no knowledge of
-  persistence — durability comes from `BlockStore` and the other provider interfaces,
-  so the durable directory leaves the main cache API. Build starts on sign-off.
-  Review in progress — the spec sharpened four times on 2026-08-20/21 (`ours` named as the
-  entry-backing witness; quiesce's UNLOCK leveled; redirect placement per provider; the
-  admitting gate's why) and **amended once**: §4.2a (owner, 2026-08-21) replaces the
-  three-maps + global-gate internals with one slot per session, the first drive being the
-  admission, `admit()` kept as the compatibility veneer (migration step 2b). **One flagged
-  question for the owner before build**: post-quiesce peer takeover — serve the retained
-  blocks read-only, or redirect (§4.2a's OPEN box).
+- **#167 — the durable cache refactor ("one cache, three providers")** — **SIGNED OFF
+  (owner, 2026-08-21) — in build.** Spec: [design/session-cache-redesign.md](design/session-cache-redesign.md)
+  (v: slot topology §4.2a, aux contract, anchors future-proofed, deny-only default at the
+  quiesce/peer boundary). Executing §8: 1 Note off the store trait → 2 cache::fs providers
+  behind old constructors → 2b slot-map collapse behind the admit() veneer (+ non_exhaustive
+  replies) → 3 constructor flip (monitor adopts SingleWriter) → 4 Transient / --no-cache
+  rewire + deletions. One commit per step, release at completion.
 
 ## Evidence-blocked
 
