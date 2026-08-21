@@ -293,8 +293,14 @@ pub trait Entries<P: BlockStore> {
     type Note;
 
     /// Take exclusive ownership of session `id`'s entry — or say who has it.
-    /// `ours`: how many bytes OUR still-in-memory resident already wrote (None if none) —
-    ///          lets the provider prove nothing changed and skip all loading (a "retained" open).
+    /// `ours`: the byte length of the ENTRY'S BLOCK BACKING as our still-in-memory resident
+    ///          last wrote it (`BlockStore::backing_len` — the #109 witness; `None` when no
+    ///          resident survives). An ON-DISK-ARTIFACT length, never a transcript offset —
+    ///          the transcript's identity/position is owned by the versions+anchor checks and
+    ///          the resume machinery. It buys three outcomes with one stat: equal ⇒ nothing
+    ///          touched the entry since we let go — a "retained" open, zero loading; ours <
+    ///          on-disk ⇒ our blocks are a valid prefix, load only from `ours`; ours >
+    ///          on-disk ⇒ a peer cut below us, the prefix is no longer ours to trust.
     /// `make_store`: the caller still builds the store (only it knows this session's
     ///          working directory and fold options); the provider supplies the *place*.
     fn open(&self, id: &str, src: &Transcript, ours: Option<u64>,
