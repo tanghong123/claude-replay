@@ -20,6 +20,12 @@ drift.
   `tmux -L` server with no controlling TTY and drives it via `send-keys` /
   `capture-pane` (`tmux new-session -d` works without a TTY). `#[ignore]`d; run
   `cargo test --test tmux_smoke -- --ignored`.
+- **Browser (HTML live page):** `claude-replay-html/tests/browser_follow.rs` drives the
+  real `--html` server in headless Chrome over CDP (`headless_chrome` dev-dep) — the
+  follow/anchor viewport contract lives in renderer-fired scroll events, layout clamping
+  and native scroll anchoring, which only a real engine has. `#[ignore]`d (needs a local
+  Chrome); run `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
+  Scroll/viewport changes to `export.js` must extend this harness.
 - **Quick plain check:** `claude-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or

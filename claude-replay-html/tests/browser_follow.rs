@@ -1,0 +1,399 @@
+//! **The browser-level viewport harness** — the live page's follow/anchor contract, in a
+//! REAL engine. The behaviors under test are exactly the ones a DOM stub cannot fake:
+//! scroll events the renderer fires, `scrollY` clamping at layout, and the browser's
+//! native scroll anchoring — the machinery `export.js`'s follow classifier and viewport
+//! anchor (#88/#89/#103) are written against, and the machinery every past scroll
+//! regression lived in.
+//!
+//! The contract pinned here:
+//! 1. a fresh live page is PINNED and follows appended turns down;
+//! 2. a user scroll away from the bottom UNPINS (the "jump to bottom" pill appears);
+//! 3. an unpinned viewport is STABLE: applies — plain appends and provisional tail
+//!    reshapes (an open tool call whose result then lands) — must not move `scrollY`;
+//! 4. arrivals while unpinned surface in the pill as a count.
+//!
+//! `#[ignore]`d like the tmux e2e: it needs a Chrome/Chromium on the machine. Run with
+//! `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
+
+use claude_replay_html::start_server;
+use claude_replay_present::Args;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+fn base() -> PathBuf {
+    let d = std::env::temp_dir().join(format!("cr-browser-follow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn user(t: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
+    )
+}
+fn assistant(t: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":8}}}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
+    )
+}
+fn tool_open(id: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {id}\"}}}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
+    )
+}
+fn tool_result(id: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
+    )
+}
+fn thinking(t: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"thinking\",\"thinking\":\"{t}\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
+    )
+}
+
+fn append(path: &Path, s: &str) {
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    f.write_all(s.as_bytes()).unwrap();
+    f.flush().unwrap();
+}
+
+/// Evaluate `expr` (may be an async IIFE when `await_promise`) and return its value.
+/// Everything is passed through `JSON.stringify` on the page side, so only string
+/// primitives cross CDP — no RemoteObject preview shape to depend on.
+fn eval(tab: &headless_chrome::Tab, expr: &str, await_promise: bool) -> serde_json::Value {
+    // For a promise the stringify must ride the chain — stringifying the promise itself
+    // yields "{}" before it resolves.
+    let wrapped = if await_promise {
+        format!("({expr}).then(function (v) {{ return JSON.stringify(v); }})")
+    } else {
+        format!("JSON.stringify(({expr}))")
+    };
+    let ro = tab
+        .evaluate(&wrapped, await_promise)
+        .unwrap_or_else(|e| panic!("evaluate failed: {e}\nexpr: {expr}"));
+    let s = ro
+        .value
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| panic!("expression produced no string value: {expr}"));
+    serde_json::from_str(&s).unwrap()
+}
+
+/// One snapshot of everything the assertions consume.
+fn view_state(tab: &headless_chrome::Tab) -> serde_json::Value {
+    eval(
+        tab,
+        r#"{
+            y: Math.round(window.scrollY),
+            h: document.body.scrollHeight,
+            gap: Math.round(document.body.scrollHeight - window.innerHeight - window.scrollY),
+            following: document.body.classList.contains("following"),
+            badge: (document.getElementById("newbadge") || {}).textContent || "",
+            badgeOn: /\bon\b/.test((document.getElementById("newbadge") || {className:""}).className),
+            blocks: (document.getElementById("stream") || {childElementCount:-1}).childElementCount
+        }"#,
+        false,
+    )
+}
+
+/// Wait until `pred` holds on the sampled state, or panic with the last state.
+fn wait_for(
+    tab: &headless_chrome::Tab,
+    what: &str,
+    timeout: Duration,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let t0 = Instant::now();
+    let mut last = serde_json::Value::Null;
+    while t0.elapsed() < timeout {
+        last = view_state(tab);
+        if pred(&last) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!("timed out waiting for {what}; last state: {last}");
+}
+
+/// The user's gesture, as the page classifies one: wheel events mark intent, and the
+/// renderer fires the real scroll events for the movement (headless "new" renders, so
+/// no synthetic scroll dispatch is needed — that is the point of this harness).
+fn user_scroll_by(tab: &headless_chrome::Tab, dy: i64) {
+    eval(
+        tab,
+        &format!(
+            r#"(function () {{
+                window.dispatchEvent(new WheelEvent("wheel", {{deltaY: {dy}}}));
+                window.scrollBy(0, {dy});
+                return true;
+            }})()"#
+        ),
+        false,
+    );
+}
+
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn live_viewport_follows_pinned_and_holds_unpinned() {
+    let base = base();
+    // The run's cache home — never the developer's real one (the suite-wide isolation rule).
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("live.jsonl");
+    {
+        let mut s = String::new();
+        for i in 0..30u32 {
+            s.push_str(&user(
+                &format!(
+                    "question {i}: {}",
+                    "lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(3)
+                ),
+                i,
+            ));
+            s.push_str(&assistant(
+                &format!(
+                    "answer {i}: {}",
+                    "sed do eiusmod tempor incididunt ut labore et dolore. ".repeat(5)
+                ),
+                i,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+
+    // `--no-cache`: the Transient provider — this run coordinates with nothing.
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            // Never let tab-backgrounding heuristics starve timers or rendering — the
+            // page's poll loop and the renderer's scroll events are the test subject.
+            .args(vec![
+                std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+            ])
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    // Phase 0 — the fresh live page renders and lands PINNED at the tail.
+    // `blocks` counts MATERIALIZED elements — the virtualizer keeps only the window
+    // around the viewport in the DOM, so "rendered" is a handful, not the whole session.
+    let s0 = wait_for(
+        &tab,
+        "initial render, pinned at bottom",
+        Duration::from_secs(15),
+        |s| {
+            s["blocks"].as_i64().unwrap_or(-1) > 5
+                && s["following"] == true
+                && s["gap"].as_i64().unwrap_or(9999) <= 80
+        },
+    );
+
+    // Phase 1 (premise) — the renderer really fires scroll events here; the whole
+    // classifier is dead without them (a hidden tab suppresses them, which is why this
+    // harness exists instead of a background-tab drive).
+    let fired = eval(
+        &tab,
+        r#"(async function () {
+            var n = 0;
+            window.addEventListener("scroll", function () { n++; }, {passive: true});
+            window.scrollBy(0, -50);
+            await new Promise(function (r) { setTimeout(r, 400); });
+            window.scrollBy(0, 50);
+            await new Promise(function (r) { setTimeout(r, 400); });
+            return n;
+        })()"#,
+        true,
+    );
+    assert!(
+        fired.as_i64().unwrap_or(0) > 0,
+        "premise: headless rendering must fire scroll events (got {fired})"
+    );
+
+    // Phase 2 — pinned follows: an appended turn grows the page and the view rides down.
+    let h0 = s0["h"].as_i64().unwrap();
+    append(&src, &user("appended while pinned", 40));
+    append(
+        &src,
+        &assistant(&"the reply rides the tail down. ".repeat(8), 40),
+    );
+    wait_for(
+        &tab,
+        "pinned view to follow the append",
+        Duration::from_secs(10),
+        |s| {
+            s["h"].as_i64().unwrap_or(0) > h0
+                && s["following"] == true
+                && s["gap"].as_i64().unwrap_or(9999) <= 80
+        },
+    );
+
+    // Phase 3 — a user scroll AWAY unpins and offers the way back.
+    for _ in 0..6 {
+        user_scroll_by(&tab, -60);
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    let s3 = wait_for(
+        &tab,
+        "unpin after user scroll away",
+        Duration::from_secs(5),
+        |s| s["following"] == false && s["gap"].as_i64().unwrap_or(0) > 80,
+    );
+    // The pill's visibility is its `on` class; `textContent` lingers from earlier paints.
+    assert!(
+        s3["badgeOn"] == true && s3["badge"].as_str().unwrap_or("") == "\u{2193} Jump to bottom",
+        "away from the bottom with nothing new, the pill offers the jump (got {s3})"
+    );
+    let y_held = s3["y"].as_i64().unwrap();
+
+    // Phase 4 — THE regression pin (owner, 2026-08-20): an unpinned near-bottom viewport
+    // must hold absolutely still through applies. Both apply shapes:
+    //   (a) plain committed appends;
+    //   (b) provisional tail reshapes — an OPEN tool call rendered provisionally, whose
+    //       result then lands and rewrites the tail (`reset` + re-render).
+    let h3 = s3["h"].as_i64().unwrap();
+    for k in 0..3u32 {
+        append(&src, &tool_open(&format!("rp{k}"), 45 + k));
+        std::thread::sleep(Duration::from_millis(2600)); // > POLL_MS: its own apply
+        let mid = view_state(&tab);
+        assert!(
+            (mid["y"].as_i64().unwrap() - y_held).abs() <= 2 && mid["following"] == false,
+            "unpinned viewport moved on the OPEN-tool apply {k}: held {y_held}, now {mid}"
+        );
+        append(&src, &tool_result(&format!("rp{k}"), 45 + k));
+        append(
+            &src,
+            &assistant(
+                &format!("after result {k}. {}", "steady prose. ".repeat(6)),
+                45 + k,
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(2600));
+        let s = view_state(&tab);
+        assert!(
+            (s["y"].as_i64().unwrap() - y_held).abs() <= 2 && s["following"] == false,
+            "unpinned viewport moved on the RESHAPE apply {k}: held {y_held}, now {s}"
+        );
+    }
+    let s4 = view_state(&tab);
+    assert!(
+        s4["h"].as_i64().unwrap() > h3,
+        "the storm must actually have grown the page (h {h3} -> {s4})"
+    );
+
+    // Phase 4b — the GROWING OPEN TURN (the owner's 2026-08-20 report signature): a turn
+    // still being written re-emits its provisional tail taller on every poll with NO new
+    // records — `added == 0`, so the pill keeps saying "Jump to bottom" the whole time,
+    // exactly as reported. The viewport must still hold.
+    let y4 = s4["y"].as_i64().unwrap();
+    for k in 0..4u32 {
+        append(
+            &src,
+            &assistant(
+                &format!(
+                    "streamed continuation {k}. {}",
+                    "growing tail prose. ".repeat(10)
+                ),
+                55,
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(2600));
+        let s = view_state(&tab);
+        assert!(
+            (s["y"].as_i64().unwrap() - y4).abs() <= 2 && s["following"] == false,
+            "unpinned viewport moved on the growing-turn apply {k}: held {y4}, now {s}"
+        );
+    }
+
+    // Phase 4c — viewport INSIDE a tall open turn's provisional zone. The provisional
+    // tail re-renders each poll from a clone of the committed emitter state, so its
+    // `b{n}` anchors are POSITIONAL within the zone: when a reshape absorbs or coalesces
+    // blocks there, an id captured before the apply can name a DIFFERENT block after it —
+    // and an anchor restore against the wrong block walks the page. This is the geometry
+    // of the 2026-08-20 report (watching a working agent's current turn near the bottom).
+    // Build the turn tall enough to fill the viewport, live inside it, then land results
+    // and new calls in it.
+    append(&src, &user("the last question, whose answer is long", 56));
+    append(
+        &src,
+        &thinking(
+            &"a long deliberation that fills real screen height. ".repeat(30),
+            56,
+        ),
+    );
+    append(&src, &tool_open("in0", 56));
+    append(&src, &tool_result("in0", 56));
+    append(
+        &src,
+        &assistant(&"intermediate reasoning between the calls. ".repeat(12), 56),
+    );
+    append(&src, &tool_open("in1", 56));
+    std::thread::sleep(Duration::from_millis(2600));
+    // Pin to the tail, then step up a screenful — the viewport now sits wholly inside
+    // the open turn.
+    eval(
+        &tab,
+        "(function () { window.scrollTo({top: document.body.scrollHeight}); return true; })()",
+        false,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    for _ in 0..5 {
+        user_scroll_by(&tab, -70);
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    let s5 = wait_for(
+        &tab,
+        "unpinned inside the open turn",
+        Duration::from_secs(5),
+        |s| s["following"] == false && s["gap"].as_i64().unwrap_or(0) > 80,
+    );
+    let y5 = s5["y"].as_i64().unwrap();
+    // Instrument: how do the materialized ids churn per apply? (diagnostic print only)
+    eval(&tab, "(function () { window.__ids = function () { return Array.from(document.getElementById('stream').children).map(function (e) { return e.id + ':' + Math.round(e.getBoundingClientRect().height); }); }; return true; })()", false);
+    for k in 0..3u32 {
+        // Each apply reshapes the OPEN turn: the running call's result lands (absorb),
+        // prose grows, and a new call opens.
+        append(&src, &tool_result(&format!("in{}", k + 1), 57));
+        append(
+            &src,
+            &assistant(
+                &format!("progress {k}. {}", "the turn keeps going. ".repeat(10)),
+                57,
+            ),
+        );
+        append(&src, &tool_open(&format!("in{}", k + 2), 57));
+        let before_ids = eval(&tab, "window.__ids()", false);
+        std::thread::sleep(Duration::from_millis(2600));
+        let after_ids = eval(&tab, "window.__ids()", false);
+        eprintln!("reshape {k}: before {before_ids}\n           after  {after_ids}");
+        let s = view_state(&tab);
+        assert!(
+            (s["y"].as_i64().unwrap() - y5).abs() <= 2 && s["following"] == false,
+            "viewport inside the open turn moved on reshape {k}: held {y5}, now {s}"
+        );
+    }
+
+    // Phase 5 — what arrived while unpinned is offered as a count.
+    let badge = s4["badge"].as_str().unwrap_or("").to_string();
+    assert!(
+        s4["badgeOn"] == true && badge.contains("new message"),
+        "arrivals while unpinned surface in the pill (got {s4})"
+    );
+
+    drop(tab);
+    drop(browser);
+    let _ = std::fs::remove_dir_all(&base);
+}

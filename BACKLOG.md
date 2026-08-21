@@ -14,10 +14,21 @@
 ## Bugs / regressions
 
 - **HTML view: near-bottom viewport creeps on tail growth** (owner, 2026-08-20): with the
-  "jump to the bottom" affordance showing (i.e. follow OFF, scrolled near but not at the
-  bottom), arriving blocks keep scrolling the view down; expected a stable viewport, and it
-  used to be. Suspect the export.js follow/anchor logic. Next: reproduce against a live
-  session, then bisect the scroll-anchoring path.
+  "jump to the bottom" affordance showing (follow OFF, scrolled near but not at the
+  bottom), arriving blocks keep scrolling the view down; expected a stable viewport, and
+  it used to be. **Investigated 2026-08-21** with the new browser harness
+  (`claude-replay-html/tests/browser_follow.rs`, headless Chrome, `--ignored`): the
+  claude-shaped legs all HOLD — pinned-follow, unpin-on-scroll, appends, open-tool +
+  result reshapes, growing open turn, viewport inside a tall open turn (ids observed
+  append-only; zero churn). The report's tell — the pill stuck on "Jump to bottom" while
+  blocks arrive — means `added ≤ 0` applies. Un-exercised legs, in suspicion order:
+  (1) a **Codex** live session — 57f4090 maps exploration into coalescing activity
+  spans, the one shape that rewrites rendered ids; (2) an uninterrupted
+  thinking+activity span (no prose between calls) growing live; (3) the monitor's
+  iframe context. Mechanism to check when it reproduces: provisional `b{n}` anchors are
+  positional, so a coalesce makes `restoreAnchor` hold the WRONG element (id names
+  shifted content) — fix sketch: capture a content signature beside the id and hold
+  absolute `scrollY` when it mismatches.
 
 ## Evidence-blocked
 
