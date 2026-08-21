@@ -33,8 +33,8 @@ pub use crate::engine::builder::SessionAccumulator;
 // hand out an `Elision` policy the way they hand out `Shaping`; third parties drive
 // `LineSource` instead of growing their own scanner that drifts).
 pub use crate::engine::elide::{
-    read_line_elided, Elision, LineOutcome, ELIDE_CEILING, ELIDE_STRING_BYTES, POSTFIX_KEEP,
-    PREFIX_KEEP, SCAN_THRESHOLD,
+    parse_marker, read_line_elided, Elision, LineOutcome, MarkerSpan, ELIDE_CEILING,
+    ELIDE_STRING_BYTES, POSTFIX_KEEP, PREFIX_KEEP, SCAN_THRESHOLD,
 };
 pub use crate::engine::message::{Message, QueueOpKind};
 pub use crate::engine::path::relativize;

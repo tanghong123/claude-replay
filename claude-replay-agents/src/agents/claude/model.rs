@@ -1486,18 +1486,33 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 kind: AttachmentKind::File,
                 name,
                 path: path.map(str::to_string),
-                content: AttachmentContent::Deferred { at: 0, index: 0 },
+                content: AttachmentContent::Deferred {
+                    at: 0,
+                    index: 0,
+                    span: None,
+                },
             })
         }
         // Full plan markdown, embedded and not shown inline anywhere → downloadable.
         "plan_file_reference" => {
-            s("planContent")?; // require plan content, but never build it
+            let plan = s("planContent")?; // require plan content, but never build it
             let path = s("planFilePath");
+            let span = parse_marker(plan).map(|m| SpanHint {
+                off: m.off,
+                len: m.len,
+                prefix: m.prefix,
+                postfix: m.postfix,
+                mime: None,
+            });
             Some(Attachment {
                 kind: AttachmentKind::Plan,
                 name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
                 path: path.map(str::to_string),
-                content: AttachmentContent::Deferred { at: 0, index: 0 },
+                content: AttachmentContent::Deferred {
+                    at: 0,
+                    index: 0,
+                    span,
+                },
             })
         }
         // An in-editor file — its inline `snippet` is truncated, so reveal the real file.
@@ -1555,13 +1570,30 @@ fn image_attachment(blk: &Value) -> Option<Attachment> {
         .next()
         .filter(|e| !e.is_empty())
         .unwrap_or("png");
+    // #193: an elided body carries its marker; decode harvests it as the locator hint,
+    // with the MIME the walk would re-derive from the SIBLING `media_type` field.
+    let span = src
+        .get("data")
+        .and_then(Value::as_str)
+        .and_then(parse_marker)
+        .map(|m| SpanHint {
+            off: m.off,
+            len: m.len,
+            prefix: m.prefix,
+            postfix: m.postfix,
+            mime: Some(mime.clone()),
+        });
     Some(Attachment {
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
         // The base64 bytes are NEVER built here — `load_image_attachment` re-extracts them on
         // demand. `at`/`index` are placeholders; `advance_at` stamps the real byte offset.
-        content: AttachmentContent::Deferred { at: 0, index: 0 },
+        content: AttachmentContent::Deferred {
+            at: 0,
+            index: 0,
+            span,
+        },
     })
 }
 
@@ -1687,7 +1719,11 @@ fn exit_plan_attachment(blk: &Value) -> Option<Attachment> {
         kind: AttachmentKind::Plan,
         name: "plan.md".to_string(),
         path: None,
-        content: AttachmentContent::Deferred { at: 0, index: 0 },
+        content: AttachmentContent::Deferred {
+            at: 0,
+            index: 0,
+            span: None,
+        },
     })
 }
 
@@ -1808,6 +1844,25 @@ fn is_queue_prose(s: &str) -> bool {
         && !t.starts_with("[Request interrupted")
         && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
 }
+
+/// The α-lite elision policy (#193): the attachment-body nodes this fold DEFERS and never
+/// renders, named by key suffix. Deliberately narrow — audited against the derivation rule
+/// (nothing renders or derives from these values beyond the kept prefix):
+///
+/// - `file.base64` — a pasted file's base64 body (`toolUseResult.file.base64`).
+/// - `source.data` — an image content block's base64 (`{type:"image",source:{data}}`, both
+///   the pasted form and the tool_result twin; MIME rides the SIBLING `media_type`).
+/// - `planContent` — the plan attachment's full markdown, loaded on demand.
+///
+/// NOT listed, deliberately: `file.content` — the same suffix names the Read tool's
+/// RENDERED output (`toolUseResult.file.content`), so eliding it would break the sans-io
+/// invariant; file-text attachment bodies therefore stay unelided (ceiling-bounded).
+pub const CLAUDE_ELISION: claude_replay_engine::seam::Elision =
+    claude_replay_engine::seam::Elision::Keys(&[
+        &["file", "base64"],
+        &["source", "data"],
+        &["planContent"],
+    ]);
 
 #[cfg(test)]
 mod tests {

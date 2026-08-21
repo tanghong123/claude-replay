@@ -1016,3 +1016,123 @@ mod tests {
         assert_round_trip(&line);
     }
 }
+
+/// A marker parsed back out of an elided value by DECODE (sans-io): the span and the kept
+/// frame, destined for the locator hint. The three recognition tests (§4 of the design)
+/// all run here, with no IO: visible length under the threshold, exactly one marker, and a
+/// plausible `len` — a genuine dropped middle is necessarily larger than
+/// `ELIDE_STRING_BYTES − PREFIX_KEEP − POSTFIX_KEEP`, so an innocent literal marker in
+/// prose (quoting the design doc, say) is dismissed without ever becoming a hint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkerSpan {
+    /// Absolute file offset of the first dropped byte.
+    pub off: u64,
+    /// Dropped byte count.
+    pub len: u64,
+    /// The kept head of the value (unescaped, as decode received it).
+    pub prefix: String,
+    /// The kept tail of the value (unescaped).
+    pub postfix: String,
+}
+
+/// Recognize an elided value and parse its marker. `None` = an ordinary value (content
+/// that merely looks like a marker is content).
+pub fn parse_marker(value: &str) -> Option<MarkerSpan> {
+    if value.len() >= ELIDE_STRING_BYTES {
+        return None; // a real elided value is ~K + marker + J; an oversized one is content
+    }
+    let start = value.find("<elided:")?;
+    let rest = &value[start + 8..];
+    let end = rest.find('>')?;
+    let body = &rest[..end];
+    let (off, len) = body.split_once(',')?;
+    let (off, len): (u64, u64) = (off.parse().ok()?, len.parse().ok()?);
+    let after = &rest[end + 1..];
+    if after.contains("<elided:") {
+        return None; // exactly one marker — several is prose about markers
+    }
+    if len <= (ELIDE_STRING_BYTES - PREFIX_KEEP - POSTFIX_KEEP) as u64 || len > ELIDE_CEILING as u64
+    {
+        return None; // implausible dropped middle — dismissed sans-io
+    }
+    Some(MarkerSpan {
+        off,
+        len,
+        prefix: value[..start].to_string(),
+        postfix: after.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn a_genuine_marker_parses_with_its_frame() {
+        let v = format!(
+            "data:image/png;base64,iVBOR<elided:52981042,{}>SuQmCC",
+            ELIDE_STRING_BYTES * 2
+        );
+        let m = parse_marker(&v).unwrap();
+        assert_eq!(m.off, 52_981_042);
+        assert_eq!(m.len, (ELIDE_STRING_BYTES * 2) as u64);
+        assert_eq!(m.prefix, "data:image/png;base64,iVBOR");
+        assert_eq!(m.postfix, "SuQmCC");
+    }
+
+    #[test]
+    fn innocent_literal_markers_are_dismissed_sans_io() {
+        // Small numbers: implausible dropped middle.
+        assert_eq!(parse_marker("the doc quotes <elided:0,999> here"), None);
+        // Giant claimed len: past the ceiling.
+        assert_eq!(
+            parse_marker(&format!("x<elided:0,{}>y", ELIDE_CEILING as u64 + 1)),
+            None
+        );
+        // Two markers: prose about markers.
+        let n = (ELIDE_STRING_BYTES * 2) as u64;
+        assert_eq!(
+            parse_marker(&format!("a<elided:0,{n}>b<elided:9,{n}>c")),
+            None
+        );
+        // No marker at all.
+        assert_eq!(parse_marker("just text"), None);
+        // An oversized VALUE that happens to end marker-shaped is content.
+        let big = format!(
+            "{}{}",
+            "z".repeat(ELIDE_STRING_BYTES + 1),
+            "<elided:1,999999>"
+        );
+        assert_eq!(parse_marker(&big), None);
+    }
+
+    /// The scanner's own emissions always parse back — the two halves agree.
+    #[test]
+    fn scanner_emissions_round_trip_through_parse_marker() {
+        use std::io::Cursor;
+        let blob = format!(
+            "HEAD{}TAIL",
+            "m".repeat(SCAN_THRESHOLD + ELIDE_STRING_BYTES)
+        );
+        let line = format!("{{\"big\":\"{blob}\"}}\n");
+        let mut out = Vec::new();
+        read_line_elided(
+            &mut Cursor::new(line.as_bytes().to_vec()),
+            &mut out,
+            7_000,
+            Elision::Aggressive,
+        )
+        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&out).unwrap().trim_end()).unwrap();
+        let m = parse_marker(v["big"].as_str().unwrap()).unwrap();
+        assert!(m.off >= 7_000, "absolute, based on the line start");
+        assert!(m.prefix.starts_with("HEAD"));
+        assert!(m.postfix.ends_with("TAIL"));
+        // And the frame + span cover the whole value.
+        assert_eq!(
+            m.prefix.len() as u64 + m.len + m.postfix.len() as u64,
+            blob.len() as u64
+        );
+    }
+}

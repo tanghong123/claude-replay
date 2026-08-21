@@ -316,7 +316,39 @@ pub enum AttachmentContent {
     /// `index` disambiguates several content-bearing attachments on ONE line (e.g. two images
     /// pasted into one user message) — the 0-based ordinal among that line's loadable
     /// attachments, in document order. Almost always `0` (one per line).
-    Deferred { at: ByteOffset, index: usize },
+    ///
+    /// `span` (#193) is the OPTIONAL acceleration an elided value carries: the scanner
+    /// recorded exactly where the dropped bytes live, so the loader can seek instead of
+    /// re-walking the line. `(at, index)` remain the authority — every attachment has them,
+    /// only elided values have a span, and a span that fails its load-time validation falls
+    /// back to the `(at, index)` walk. Skipped when `None` so an un-elided fold serializes
+    /// byte-identically to the pre-#193 shape.
+    Deferred {
+        at: ByteOffset,
+        index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<SpanHint>,
+    },
+}
+
+/// The locator hint for an elided attachment body (#193): the marker's absolute span, the
+/// kept frame (both needed to reconstruct the value: `prefix + dropped + postfix`), and
+/// what the walk would otherwise re-derive from sibling fields (`mime` — Claude keeps it
+/// beside the value, not inside it). Parsed by decode from the in-band marker; validated
+/// at load time — a marker is untrusted input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpanHint {
+    /// Absolute file offset of the first dropped byte.
+    pub off: u64,
+    /// Dropped byte count.
+    pub len: u64,
+    /// The value's kept head (as decode received it).
+    pub prefix: String,
+    /// The value's kept tail.
+    pub postfix: String,
+    /// The MIME type decode derived from context, where the value alone doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
 }
 
 /// Attachment content actually loaded into memory (transiently) by

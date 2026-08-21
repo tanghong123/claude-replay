@@ -166,7 +166,12 @@ mod tests {
     fn deferred(b: &Block) -> Option<(ByteOffset, usize)> {
         match b {
             Block::Attachment(Attachment {
-                content: AttachmentContent::Deferred { at, index },
+                content:
+                    AttachmentContent::Deferred {
+                        at,
+                        index,
+                        span: None,
+                    },
                 ..
             }) => Some((*at, *index)),
             _ => None,

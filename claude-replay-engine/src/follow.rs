@@ -7,11 +7,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
-use crate::engine::reader::LineReader;
+use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
 use crate::engine::session::{BlockStore, InMemoryStore, Session};
 use crate::metrics::Metrics;
 use crate::model::{Block, EpochSeconds};
 use crate::Agent;
+use std::io::{BufReader, Seek, SeekFrom};
 
 /// One `poll_delta` tick's payload: `(blocks, user_times, metrics, changed_from)`.
 pub type PollDelta = (Vec<Block>, Vec<Option<EpochSeconds>>, Metrics, usize);
@@ -48,7 +49,12 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     adapter: &'static dyn crate::adapter::TranscriptAdapter,
     path: PathBuf,
     builder: SessionAccumulator<S>,
-    reader: LineReader,
+    /// Cursor into the file: the next unread byte. The live source is (re)opened lazily and
+    /// kept across polls (#193 §9.1 — `LineReader` dissolved into this).
+    cursor: crate::model::ByteOffset,
+    src: Option<LineSource<BufReader<std::fs::File>>>,
+    /// Gauges already banked into the metrics accumulator; each poll banks the delta.
+    banked: ElisionCounts,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
     /// `poll_delta`.
@@ -84,7 +90,9 @@ impl<S: BlockStore> FollowParser<S> {
             adapter,
             path: path.to_path_buf(),
             builder: SessionAccumulator::with_store(adapter, store),
-            reader: LineReader::open_at_start(path),
+            cursor: 0,
+            src: None,
+            banked: ElisionCounts::default(),
             prev_committed: 0,
             prev_provisional: Vec::new(),
         }
@@ -113,7 +121,9 @@ impl<S: BlockStore> FollowParser<S> {
             adapter,
             path: path.to_path_buf(),
             builder: SessionAccumulator::restore(adapter, store, committed, mm, resume),
-            reader: LineReader::open_at_offset(path, resume.replay_from),
+            cursor: resume.replay_from,
+            src: None,
+            banked: ElisionCounts::default(),
             prev_committed,
             prev_provisional: Vec::new(),
         }
@@ -125,27 +135,73 @@ impl<S: BlockStore> FollowParser<S> {
     /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
     /// O(delta) except on a rewrite.
     fn advance_from_source(&mut self) -> std::io::Result<Tick> {
-        let p = self.reader.poll()?;
-        if !p.reset && p.lines.is_empty() {
-            return Ok(Tick::idle()); // nothing new this tick
-        }
-        if p.reset {
-            // Truncation / compaction: the kept prefix changed. Rebuild from scratch — the
-            // LineReader re-read from 0, so `p.lines` is the whole new file.
+        // Truncation / compaction: the file shrank below the cursor — the kept prefix
+        // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
+        // restarts with it) and re-fold the whole new file.
+        let len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let cursor = self.src.as_ref().map(|s| s.offset()).unwrap_or(self.cursor);
+        let reset = len < cursor;
+        if reset {
             self.builder.reset();
+            self.src = None;
+            self.cursor = 0;
+            self.banked = ElisionCounts::default();
         }
-        // Fold each appended line with its file start offset, so attachment locators in a LIVE
-        // session get correct byte offsets (same as a batch parse). OR-reduce the per-line
-        // back-patch reports into the batch's min (the streaming layer's provisional-gen signal).
+        match self.src.as_mut() {
+            None => {
+                // (Re)open — lazily on the first poll, after a reset, or if the file was
+                // briefly unopenable. A missing file is an idle tick, exactly as before.
+                let Ok(f) = std::fs::File::open(&self.path) else {
+                    return Ok(if reset {
+                        Tick {
+                            advanced: true,
+                            reset: true,
+                            patch_floor: None,
+                        }
+                    } else {
+                        Tick::idle()
+                    });
+                };
+                let mut r = BufReader::new(f);
+                r.seek(SeekFrom::Start(self.cursor))?;
+                self.src = Some(LineSource::new(
+                    r,
+                    self.cursor,
+                    TornTail::Stop,
+                    self.adapter.elision(),
+                ));
+            }
+            // The reader consumed torn bytes discovering the last tail — walk it back to
+            // the cursor so a completed line is re-read WHOLE (§9.1).
+            Some(src) => src.rewind_to_cursor()?,
+        }
+        let src = self.src.as_mut().expect("just ensured");
+        // Fold each appended line with its file start offset, so attachment locators in a
+        // LIVE session get correct byte offsets (same as a batch parse). OR-reduce the
+        // per-line back-patch reports into the batch's min.
+        let mut advanced = false;
         let mut patch_floor: Option<usize> = None;
-        for (offset, line) in p.offsets.iter().zip(&p.lines) {
-            if let Some(i) = self.builder.advance_at(*offset, line) {
+        while let Some((offset, line)) = src.next()? {
+            advanced = true;
+            if let Some(i) = self.builder.advance_at(offset, line) {
                 patch_floor = Some(patch_floor.map_or(i, |cur| cur.min(i)));
             }
         }
+        self.cursor = src.offset();
+        let counts = src.elided;
+        let delta = ElisionCounts {
+            elided_lines: counts.elided_lines - self.banked.elided_lines,
+            elided_bytes: counts.elided_bytes - self.banked.elided_bytes,
+            skipped_lines: counts.skipped_lines - self.banked.skipped_lines,
+        };
+        self.banked = counts;
+        self.builder.bank_elision(delta);
+        if !reset && !advanced {
+            return Ok(Tick::idle()); // nothing new this tick
+        }
         Ok(Tick {
             advanced: true,
-            reset: p.reset,
+            reset,
             patch_floor,
         })
     }

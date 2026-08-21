@@ -1,8 +1,8 @@
 use claude_replay_engine::seam::{
-    epoch_secs, parse_path_timed_for, relativize, AgentStatus, AssistantPhase, Attachment,
-    AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor, LoadedAttachment,
-    Message, Metrics, PreprocessedLine, Shaping, SubAgent, TaskOp, Todo, ToolDuration,
-    ToolExecution, ToolStatus, UsdCost,
+    epoch_secs, parse_marker, parse_path_timed_for, relativize, AgentStatus, AssistantPhase,
+    Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor,
+    LoadedAttachment, Message, Metrics, PreprocessedLine, Shaping, SpanHint, SubAgent, TaskOp,
+    Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{
@@ -1395,7 +1395,22 @@ fn codex_plan_update_text(input: &Value) -> String {
 fn input_image_attachment(item: &Value) -> Option<Attachment> {
     let url = item.get("image_url").and_then(Value::as_str)?;
     if let Some((mime, _)) = data_image(url) {
-        return Some(deferred_image(mime));
+        // #193: the kept prefix carries the whole `data:<mime>;base64,` header, so an
+        // elided payload classifies exactly as a raw one; the marker becomes the hint.
+        let span = parse_marker(url).map(|m| SpanHint {
+            off: m.off,
+            len: m.len,
+            prefix: m.prefix,
+            postfix: m.postfix,
+            mime: Some(mime.to_string()),
+        });
+        let mut a = deferred_image(mime);
+        a.content = AttachmentContent::Deferred {
+            at: 0,
+            index: 0,
+            span,
+        };
+        return Some(a);
     }
     (!url.trim().is_empty()).then(|| Attachment {
         kind: AttachmentKind::Image,
@@ -1416,7 +1431,11 @@ fn deferred_image(mime: &str) -> Attachment {
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
-        content: AttachmentContent::Deferred { at: 0, index: 0 },
+        content: AttachmentContent::Deferred {
+            at: 0,
+            index: 0,
+            span: None,
+        },
     }
 }
 
@@ -1933,6 +1952,14 @@ fn apply_output(block: &mut Block, output: String) {
     }
 }
 
+/// The α-lite elision policy (#193). One node: `image_url` — an `input_image`'s
+/// `data:<mime>;base64,…` payload; classification reads only the data: header, which the
+/// kept prefix preserves. NOT listed, deliberately: `image_generation_call`'s `result` —
+/// the bare key `result` is too generic for a suffix rule (other records render a
+/// `result`), so that value stays unelided (ceiling-bounded), fail-safe.
+pub const CODEX_ELISION: claude_replay_engine::seam::Elision =
+    claude_replay_engine::seam::Elision::Keys(&[&["image_url"]]);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2045,7 +2072,7 @@ mod tests {
             Block::Attachment(attachment)
                 if attachment.kind == AttachmentKind::Image
                     && attachment.name == "image.png"
-                    && attachment.content == AttachmentContent::Deferred { at: 0, index: 0 }
+                    && attachment.content == (AttachmentContent::Deferred { at: 0, index: 0, span: None })
         )));
         assert_eq!(
             nth_loaded_attachment(jsonl, 0),

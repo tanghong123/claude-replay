@@ -22,8 +22,8 @@ pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metric
 
 pub use builder::{SessionAccumulator, StreamRead};
 pub use elide::{
-    read_line_elided, Elision, LineOutcome, ELIDE_CEILING, ELIDE_STRING_BYTES, POSTFIX_KEEP,
-    PREFIX_KEEP, SCAN_THRESHOLD,
+    parse_marker, read_line_elided, Elision, LineOutcome, MarkerSpan, ELIDE_CEILING,
+    ELIDE_STRING_BYTES, POSTFIX_KEEP, PREFIX_KEEP, SCAN_THRESHOLD,
 };
 pub use reader::{bounded_lines, ElisionCounts, LineSource, TornTail};
 // The frontier's one tuning bound — public so a consumer (and the test that guards it) can name

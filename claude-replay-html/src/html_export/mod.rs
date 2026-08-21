@@ -422,7 +422,7 @@ impl Emitter<'_> {
     /// path-only (`None`) locator, a missing transcript, or a read/miss. The returned value is
     /// owned and dropped by the caller after it's embedded, so nothing stays resident.
     fn load_attachment(&self, content: &AttachmentContent) -> Option<LoadedAttachment> {
-        let AttachmentContent::Deferred { at, index } = content else {
+        let AttachmentContent::Deferred { at, index, .. } = content else {
             return None;
         };
         self.transcript?.load_attachment(*at, *index).ok().flatten()
@@ -2827,7 +2827,11 @@ mod tests {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
-            content: AttachmentContent::Deferred { at: 0, index: 0 },
+            content: AttachmentContent::Deferred {
+                at: 0,
+                index: 0,
+                span: None,
+            },
         });
         // Served (reveal = true): name + downloadable flag + inline text (loaded) + path.
         let served = stream_from(std::slice::from_ref(&file), &FoldPolicy::none(), Some(&src));
@@ -3103,7 +3107,11 @@ mod tests {
             kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
             path: None,
-            content: AttachmentContent::Deferred { at: 0, index: 0 },
+            content: AttachmentContent::Deferred {
+                at: 0,
+                index: 0,
+                span: None,
+            },
         });
         let mut sink = AssetSink::new(&base).unwrap();
         let (jsonl, _) = build_jsonl_inner(

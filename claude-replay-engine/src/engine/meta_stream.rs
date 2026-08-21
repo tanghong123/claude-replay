@@ -93,7 +93,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// Without them, a resumed modern Codex fold forgets `semantic_exec` and renders JavaScript
 /// orchestration as Bash; its cumulative usage fold also loses the model/last-total baseline,
 /// producing a different cost in the HTML view than the monitor index.
-pub const FOLD_VERSION: u16 = 15;
+///
+/// v16 (#193): the bounded eliding reader. Deferred attachment locators may carry a `span`
+/// hint (the marker's absolute span + kept frame), and `Metrics::extra` may carry the
+/// elision gauges (`elided_lines`/`elided_bytes`/`skipped_lines`). The elision constants and
+/// the adapters' key-suffix lists are part of this persisted-format contract: changing
+/// either changes which blocks carry hints, and is a bump by this same doctrine.
+pub const FOLD_VERSION: u16 = 16;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

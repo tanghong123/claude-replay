@@ -2322,7 +2322,7 @@ fn load_attachment_content(
     source: Option<&Transcript>,
 ) -> std::io::Result<LoadedAttachment> {
     use std::io::{Error, ErrorKind};
-    let AttachmentContent::Deferred { at, index } = &a.content else {
+    let AttachmentContent::Deferred { at, index, .. } = &a.content else {
         return Err(Error::new(ErrorKind::InvalidInput, "nothing to download"));
     };
     let source =
@@ -4069,7 +4069,11 @@ mod tests {
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
-            content: AttachmentContent::Deferred { at: 0, index: 0 },
+            content: AttachmentContent::Deferred {
+                at: 0,
+                index: 0,
+                span: None,
+            },
         };
         let p1 = write_attachment_to(&dir, &text, Some(&src)).unwrap();
         assert_eq!(p1.file_name().unwrap(), "notes.md");
@@ -4086,6 +4090,7 @@ mod tests {
             content: AttachmentContent::Deferred {
                 at: off_img,
                 index: 0,
+                span: None,
             },
         };
         let pi = write_attachment_to(&dir, &img, Some(&src)).unwrap();

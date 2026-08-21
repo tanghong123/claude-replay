@@ -338,7 +338,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         let mut index = 0usize;
         for m in &mut delta {
             if let Message::Attachment(a) = m {
-                if let AttachmentContent::Deferred { at, index: ix } = &mut a.content {
+                if let AttachmentContent::Deferred { at, index: ix, .. } = &mut a.content {
                     *at = offset;
                     *ix = index;
                     index += 1;
@@ -495,25 +495,36 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// parse entry points feed the builder through this; the live follower uses
     /// [`advance_at`](Self::advance_at) directly with the reader's per-line offsets.
     pub fn advance_reader(&mut self, reader: &mut dyn io::BufRead) -> io::Result<()> {
-        let mut offset: ByteOffset = 0;
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            let n = reader.read_line(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let start = offset;
-            offset += n as ByteOffset;
-            // Match `BufRead::lines()`: strip a trailing `\n` (and a paired `\r`). `decode_line`
-            // trims anyway, but this keeps the fed line byte-for-byte what the old loop produced.
-            let line = buf
-                .strip_suffix('\n')
-                .map(|s| s.strip_suffix('\r').unwrap_or(s))
-                .unwrap_or(&buf);
-            self.advance_at(start, line);
+        // #193: the one bounded source, under the adapter's α-lite policy — only values the
+        // fold defers (attachment bodies) are elided, so `fold(elide(line)) ≡ fold(line)`.
+        // `Yield` because a batch parse folds a torn final line, as it always has.
+        let mut src = crate::engine::reader::LineSource::new(
+            reader,
+            0,
+            crate::engine::reader::TornTail::Yield,
+            self.adapter.elision(),
+        );
+        while let Some((at, line)) = src.next()? {
+            self.advance_at(at, line);
         }
+        let counts = src.elided;
+        self.bank_elision(counts);
         Ok(())
+    }
+
+    /// Bank the read layer's elision gauges into the accumulating `Metrics::extra` (#193,
+    /// decision ③a): the reader owns the counts, the accumulator owns the bag. Zeroes are
+    /// never banked, so an un-elided fold's `extra` is byte-identical to the pre-#193 shape.
+    pub(crate) fn bank_elision(&mut self, c: crate::engine::reader::ElisionCounts) {
+        for (key, n) in [
+            ("elided_lines", c.elided_lines),
+            ("elided_bytes", c.elided_bytes),
+            ("skipped_lines", c.skipped_lines),
+        ] {
+            if n > 0 {
+                self.metrics.bump_extra(key, n);
+            }
+        }
     }
 
     /// Consume the accumulator, returning its [`BlockStore`]. For a tier-b store this is how a

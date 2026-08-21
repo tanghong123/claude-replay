@@ -99,6 +99,8 @@ pub struct MetricsFold {
     /// The one bounded line source (#193): `Stop` — the durable cursor must never pass a
     /// torn line — and aggressive elision, provably metric-neutral.
     src: LineSource<BufReader<std::fs::File>>,
+    /// Gauges already banked into `acc.extra` — the next [`Self::next_event`] banks the delta.
+    banked: crate::engine::reader::ElisionCounts,
     pre: Box<dyn LinePreprocessor>,
     acc: Box<dyn MetricsAccumulator>,
     start: FoldStart,
@@ -140,10 +142,28 @@ impl MetricsFold {
         Ok(Self {
             path: path.to_path_buf(),
             src: LineSource::new(reader, offset, TornTail::Stop, Elision::Aggressive),
+            banked: Default::default(),
             pre,
             acc,
             start,
         })
+    }
+
+    /// Bank the source's elision gauges into the accumulator's `extra` (#193 ③a), as deltas
+    /// since the last bank — outside any event's before/after capture, so events report only
+    /// their own line's movement while the cursor state still carries the totals.
+    fn bank_elision(&mut self) {
+        let c = self.src.elided;
+        for (key, n) in [
+            ("elided_lines", c.elided_lines - self.banked.elided_lines),
+            ("elided_bytes", c.elided_bytes - self.banked.elided_bytes),
+            ("skipped_lines", c.skipped_lines - self.banked.skipped_lines),
+        ] {
+            if n > 0 {
+                self.acc.bump_extra(key, n);
+            }
+        }
+        self.banked = c;
     }
 
     /// How this fold started — [`Resumed`](FoldStart::Resumed), or cold and why.
@@ -161,11 +181,13 @@ impl MetricsFold {
     /// [`malformed_line`](MetricsAccumulator::malformed_line), which surfaces here as an
     /// `extra` delta when the adapter records such diagnostics.
     pub fn next_event(&mut self) -> std::io::Result<Option<MetricsEvent>> {
+        self.bank_elision();
         loop {
             let Some((_, body)) = self.src.next()? else {
-                // Torn tail or EOF: reposition the reader on the cursor (discovering a torn
-                // line consumed its bytes), so the next poll re-reads it whole — the same
-                // seek this loop used to do inline.
+                // Torn tail or EOF: bank whatever the tail's reads counted, then reposition
+                // the reader on the cursor (discovering a torn line consumed its bytes), so
+                // the next poll re-reads it whole — the same seek this loop did inline.
+                self.bank_elision();
                 self.src.rewind_to_cursor()?;
                 return Ok(None);
             };

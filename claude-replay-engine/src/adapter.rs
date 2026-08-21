@@ -79,6 +79,11 @@ pub trait MetricsAccumulator: Send {
     /// One raw JSONL record could not be parsed. Default no-op for adapters that deliberately
     /// expose no schema diagnostics; adapters with an observability counter record it here.
     fn malformed_line(&mut self) {}
+    /// Fold a machinery-side counter into the accumulating [`Metrics::extra`] bag (#193:
+    /// the elision gauges — `elided_lines` / `elided_bytes` / `skipped_lines` — banked by
+    /// the read layer, which owns the counts the accumulator cannot see). Default no-op so
+    /// an adapter without a bag simply drops them.
+    fn bump_extra(&mut self, _key: &str, _n: u64) {}
     /// The metrics so far, without consuming the accumulator (for a live snapshot).
     fn finish(&self) -> Metrics;
 
@@ -188,12 +193,32 @@ pub trait TranscriptAdapter: Sync {
                 Err(_) => {}
             }
         }
+        let c = src.elided;
+        for (key, n) in [
+            ("elided_lines", c.elided_lines),
+            ("elided_bytes", c.elided_bytes),
+            ("skipped_lines", c.skipped_lines),
+        ] {
+            if n > 0 {
+                acc.bump_extra(key, n);
+            }
+        }
         acc.finish()
     }
 
     // ── incremental-follower primitives ──
     /// This agent's L2 shaping hooks (`&'static`, a per-agent const).
     fn shaping(&self) -> &'static Shaping;
+
+    /// Which values the BLOCK fold may elide (#193, design α-lite): the agent's
+    /// attachment-body nodes, named by key suffix — values the fold already defers and
+    /// never renders, so `fold(elide(line)) ≡ fold(line)` holds. The default elides
+    /// nothing: an adapter that has not audited its nodes stays correct (bounded by the
+    /// ceiling alone). The metrics folds do NOT consult this — they use the aggressive
+    /// size rule, provably metric-neutral.
+    fn elision(&self) -> Elision {
+        Elision::None
+    }
     /// Decode one raw line into 0+ canonical messages (`cwd` threads across lines).
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>);
     /// A fresh per-session raw-line preprocessor. The default is a stateless pass-through;

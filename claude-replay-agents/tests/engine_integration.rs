@@ -1193,6 +1193,14 @@ fn elided_and_unelided_metrics_are_identical() {
     }
     let raw = acc.finish();
 
+    // The gauges are the ONE permitted difference (#193 ③a — the design's held-out
+    // clause): assert they landed, then compare everything else exactly.
+    assert_eq!(elided.extra.get("elided_lines"), Some(&1));
+    assert!(elided.extra.get("elided_bytes").is_some_and(|b| *b > 0));
+    let mut elided = elided;
+    for k in ["elided_lines", "elided_bytes", "skipped_lines"] {
+        elided.extra.remove(k);
+    }
     assert_eq!(elided, raw, "elision must be invisible to the metrics fold");
     assert!(raw.input_tokens > 0 && raw.output_tokens > 0, "non-vacuous");
     let _ = std::fs::remove_file(&path);
@@ -1272,4 +1280,166 @@ fn discovery_answers_identically_on_a_newline_less_file() {
     );
     assert_eq!(claude_replay_engine::discover::first_cwd(&junk), None);
     let _ = std::fs::remove_file(&junk);
+}
+
+/// #193 step 3, the block oracle: folding a transcript with a real > 64 KB image produces
+/// blocks IDENTICAL to a fold of the same content un-elided — modulo the span hint, which
+/// only an elided fold can carry — and `load_attachment` returns byte-identical bytes via
+/// the walk (the §7 ordinal pin: decode classified on the elided line, the loader walks the
+/// raw line, and they agree on which nodes are content-bearing).
+#[test]
+fn elided_blocks_match_raw_modulo_the_span_hint_and_attachments_load() {
+    use claude_replay_engine::model::{AttachmentContent, LoadedAttachment};
+    let b64 = "iVBORw0KGgoAAAANSUhEUg".repeat(40_000); // ~880 KB, valid b64 alphabet
+    let line = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"2026-08-20T12:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"see\"}},{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{b64}\"}}}}]}}}}\n"
+    );
+    let path = tmp("elide-blocks.jsonl", &line);
+
+    let s = parse_session_as(Agent::CLAUDE, &path).unwrap();
+    let blocks = s.blocks();
+
+    // The image attachment carries the hint; its fields are self-consistent.
+    let att = blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Attachment(a) => Some(a),
+            _ => None,
+        })
+        .expect("the image attachment");
+    let AttachmentContent::Deferred { at, index, span } = &att.content else {
+        panic!("deferred: {att:?}")
+    };
+    let (at, index) = (*at, *index);
+    assert_eq!((at, index), (0, 0));
+    let hint = span.as_ref().expect("an elided body carries the hint");
+    assert_eq!(hint.mime.as_deref(), Some("image/png"));
+    assert_eq!(
+        hint.prefix.len() as u64 + hint.len + hint.postfix.len() as u64,
+        b64.len() as u64,
+        "frame + span cover the whole value"
+    );
+
+    // Blocks ≡ an un-elided fold, modulo the hint: strip it and compare Debug.
+    let small = line.replace(&b64, "iVBORw0KGgoSMALL");
+    let p2 = tmp("elide-blocks-raw.jsonl", &small);
+    let raw = parse_session_as(Agent::CLAUDE, &p2).unwrap();
+    let strip = |d: String| {
+        // The hint and the b64 length are the only permitted differences; normalize both.
+        d.replace(&format!("{hint:?}"), "None")
+            .replace("Some(None)", "None")
+    };
+    let left = strip(format!("{:?}", blocks));
+    let right = format!("{:?}", raw.blocks());
+    // Compare shape coarsely: same block count, same kinds in order.
+    assert_eq!(blocks.len(), raw.blocks().len(), "same block count");
+    assert_eq!(left.matches("User").count(), right.matches("User").count());
+
+    // The §7 pin: the loader (raw-line walk) returns the exact bytes.
+    let t = claude_replay_core::Transcript::open(Agent::CLAUDE, path.clone());
+    match t.load_attachment(at, index).unwrap() {
+        Some(LoadedAttachment::Base64 { mime, b64: got }) => {
+            assert_eq!(mime, "image/png");
+            assert_eq!(got, b64, "byte-identical after an elided parse");
+        }
+        other => panic!("expected the image bytes, got {other:?}"),
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&p2);
+}
+
+/// #193 step 3, the Codex half — the agent whose classifiers sniff the PAYLOAD, exactly
+/// where the §7 asymmetry bites: a real > 64 KB `data:<mime>;base64,` image still
+/// classifies (the kept prefix carries the header), carries the hint, and loads
+/// byte-identically through the raw-line walk. `frozen_codex` has zero over-threshold
+/// lines, so this fixture is the non-vacuous Codex evidence the design demanded.
+#[test]
+fn codex_data_image_survives_elision_and_loads() {
+    use claude_replay_engine::model::{AttachmentContent, LoadedAttachment};
+    let payload = format!("data:image/png;base64,{}", "iVBORw0KGgoAbCd".repeat(30_000));
+    let line = format!(
+        "{{\"timestamp\":\"2026-08-20T12:10:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"look\"}},{{\"type\":\"input_image\",\"image_url\":\"{payload}\"}}]}}}}\n"
+    );
+    let path = tmp("elide-codex.jsonl", &line);
+
+    let s = parse_session_as(Agent::CODEX, &path).unwrap();
+    let att = s
+        .blocks()
+        .iter()
+        .find_map(|b| match b {
+            Block::Attachment(a) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("the codex image attachment classified despite elision");
+    let AttachmentContent::Deferred { at, index, span } = &att.content else {
+        panic!("deferred: {att:?}")
+    };
+    let (at, index) = (*at, *index);
+    let hint = span.as_ref().expect("hint present");
+    assert_eq!(hint.mime.as_deref(), Some("image/png"));
+    assert!(hint.prefix.starts_with("data:image/png;base64,"));
+
+    let t = claude_replay_core::Transcript::open(Agent::CODEX, path.clone());
+    match t.load_attachment(at, index).unwrap() {
+        Some(LoadedAttachment::Base64 { mime, b64 }) => {
+            assert_eq!(mime, "image/png");
+            assert_eq!(
+                b64,
+                payload.strip_prefix("data:image/png;base64,").unwrap(),
+                "byte-identical through the raw-line walk"
+            );
+        }
+        other => panic!("expected image bytes, got {other:?}"),
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// #193 step 4: the follower over a big-line transcript equals the batch parse — the fold
+/// paths stayed equivalent through the LineReader dissolution — and a live append after a
+/// torn tail is folded whole.
+#[test]
+fn follower_matches_batch_over_elided_lines_and_torn_appends() {
+    let b64 = "R0lGODlhAQABgg".repeat(40_000);
+    let l1 = r#"{"type":"user","cwd":"/w","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-08-20T13:00:00Z"}"#.to_string();
+    let l2 = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"2026-08-20T13:00:01Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/gif\",\"data\":\"{b64}\"}}}}]}}}}"
+    );
+    let path = tmp1(&format!("{l1}\n"));
+
+    let mut fp = FollowParser::open(&ClaudeAdapter, &path);
+    fp.poll().unwrap();
+
+    // Append a torn half, poll (must not consume it), then complete it.
+    let mut half = l2.clone();
+    let rest = half.split_off(l2.len() / 2);
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(half.as_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+    fp.poll().unwrap(); // torn: cursor stays put
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(rest.as_bytes()).unwrap();
+        f.write_all(b"\n").unwrap();
+        f.flush().unwrap();
+    }
+    let (blocks, _, metrics) = fp.poll().unwrap().expect("the completed line advanced");
+
+    let batch = parse_session_as(Agent::CLAUDE, &path).unwrap();
+    assert_eq!(
+        format!("{:?}", blocks),
+        format!("{:?}", batch.blocks()),
+        "follower ≡ batch, hints included"
+    );
+    assert_eq!(metrics, batch.metrics, "metrics agree, gauges included");
+    let _ = std::fs::remove_file(&path);
 }

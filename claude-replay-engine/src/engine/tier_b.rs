@@ -309,7 +309,11 @@ mod tests {
                 kind: AttachmentKind::Image,
                 name: "shot.png".into(),
                 path: Some("/t/shot.png".into()),
-                content: AttachmentContent::Deferred { at: 99, index: 1 },
+                content: AttachmentContent::Deferred {
+                    at: 99,
+                    index: 1,
+                    span: None,
+                },
             }),
             Block::Command {
                 name: "/compact".into(),

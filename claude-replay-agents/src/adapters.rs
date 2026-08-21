@@ -28,6 +28,9 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::claude::metrics::MetricsAcc::push(self, v)
     }
+    fn bump_extra(&mut self, key: &str, n: u64) {
+        self.bump(key, n)
+    }
     fn finish(&self) -> Metrics {
         self.clone().finish()
     }
@@ -57,6 +60,9 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
 impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)
+    }
+    fn bump_extra(&mut self, key: &str, n: u64) {
+        self.bump(key, n)
     }
     fn malformed_line(&mut self) {
         agents::codex::metrics::CodexMetricsAcc::malformed_line(self)
@@ -113,6 +119,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING
+    }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::claude::model::CLAUDE_ELISION
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
@@ -190,6 +199,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn shaping(&self) -> &'static Shaping {
         &agents::codex::model::CODEX_SHAPING
     }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::codex::model::CODEX_ELISION
+    }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::codex::model::decode_line(line, cwd, out)
     }
@@ -257,6 +269,9 @@ impl TranscriptAdapter for QoderAdapter {
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING
+    }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::claude::model::CLAUDE_ELISION
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
@@ -343,6 +358,9 @@ impl TranscriptAdapter for QoderWorkAdapter {
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING
+    }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::claude::model::CLAUDE_ELISION
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
