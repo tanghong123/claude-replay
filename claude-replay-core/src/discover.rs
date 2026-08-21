@@ -31,6 +31,66 @@ pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
     out
 }
 
+/// One transcript found by sweeping an agent's STORE, with the two facts a caller needs
+/// BEFORE deciding whether to read it: who wrote it, and when it last changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoreEntry {
+    /// Which agent's store this came from — provenance, not a sniff: the file was found by
+    /// asking that adapter for its own transcripts.
+    pub agent: Agent,
+    /// Absolute path to the transcript.
+    pub path: PathBuf,
+    /// Last-modified time, epoch seconds. The cheap recency key: a machine can hold a
+    /// gigabyte of transcripts, and the per-file `discover` reads (`latest_cwd` scans the
+    /// whole file) are worth paying only for the ones a caller's window actually covers.
+    pub mtime: f64,
+}
+
+/// **Every transcript on this machine**, from every agent's own store, newest first —
+/// filtered to `only` when set. The machine-wide counterpart to [`candidates_all`], which
+/// deliberately scopes to the current directory so an unrelated session never shows in a
+/// picker.
+///
+/// This is the enumeration half of the shell-out vocabulary (`claude-replay --paths --all`):
+/// a consumer that cannot link the crate — a collector summarizing a week's work across
+/// every repo — otherwise has to hard-code four store layouts and keep them in step with
+/// this one as adapters are added. Provenance comes free: an entry's `agent` is the adapter
+/// whose store held the file, so no sniffing is involved and store twins (Qoder/QoderWork,
+/// whose transcripts are in-band identical) are still told apart correctly.
+///
+/// Files that vanish or fail to stat between the sweep and the read are skipped, not
+/// reported: a store is live, and a session can be deleted while this runs.
+pub fn store_all(only: Option<Agent>) -> Vec<StoreEntry> {
+    let mut out: Vec<StoreEntry> = Vec::new();
+    for a in crate::adapter::adapters() {
+        if only.is_some_and(|w| w != a.agent()) {
+            continue;
+        }
+        for path in a.store_transcripts() {
+            let Ok(md) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let mtime = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            out.push(StoreEntry {
+                agent: a.agent(),
+                path,
+                mtime,
+            });
+        }
+    }
+    out.sort_by(|x, y| {
+        y.mtime
+            .total_cmp(&x.mtime)
+            .then_with(|| x.path.cmp(&y.path))
+    });
+    out
+}
+
 /// Auto-detect which agent wrote a transcript: **provenance first, sniff second**.
 ///
 /// A file inside an agent's own store IS that agent's — the same principle
@@ -381,6 +441,74 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    /// Env-scoped store roots are process-global; two tests racing on them silently scan the
+    /// developer's REAL store. Hold this for the whole window (the idiom the agent crates'
+    /// discover tests already use).
+    static STORE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The machine-wide sweep behind `--paths --all`: every adapter's store, tagged with the
+    /// agent whose store held it (PROVENANCE — no sniffing), newest first, with a `mtime` a
+    /// caller can filter on before opening anything. Store twins matter here: Claude and
+    /// QoderWork transcripts are in-band identical, so a content sniff could not tell these
+    /// two fixtures apart — only the store they came from can.
+    #[test]
+    fn store_all_sweeps_every_store_and_tags_by_provenance() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("crstoreall{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let line =
+            |id: &str| format!(r#"{{"type":"user","cwd":"/tmp","sessionId":"{id}"}}"#) + "\n";
+
+        let claude = base.join("claude");
+        std::fs::create_dir_all(claude.join("-tmp-a")).unwrap();
+        std::fs::write(claude.join("-tmp-a/c1.jsonl"), line("c1")).unwrap();
+        let qw = base.join("qw");
+        std::fs::create_dir_all(qw.join("-tmp-a")).unwrap();
+        // Over MIN_TRANSCRIPT_BYTES: the QoderWork store drops sub-4KB throwaways (#111).
+        std::fs::write(qw.join("-tmp-a/q1.jsonl"), line("q1").repeat(200)).unwrap();
+        // Empty roots for the stores this test is not about, so a real one never leaks in.
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &claude);
+        std::env::set_var("QODERWORK_PROJECTS_DIR", &qw);
+        std::env::set_var("QODER_PROJECTS_DIR", &empty);
+        std::env::set_var("CODEX_SESSIONS_DIR", &empty);
+        let all = store_all(None);
+        let claude_only = store_all(Some(Agent::CLAUDE));
+        for v in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_SESSIONS_DIR",
+        ] {
+            std::env::remove_var(v);
+        }
+
+        let seen: Vec<(&str, String)> = all
+            .iter()
+            .map(|e| {
+                (
+                    e.agent.label(),
+                    e.path.file_name().unwrap().to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen.len(),
+            2,
+            "one per store, sub-agent dirs excluded: {seen:?}"
+        );
+        assert!(seen.contains(&("claude", "c1.jsonl".into())), "{seen:?}");
+        assert!(seen.contains(&("qoderwork", "q1.jsonl".into())), "{seen:?}");
+        assert!(all.iter().all(|e| e.mtime > 0.0), "mtime is populated");
+        // Newest first — the order a windowed consumer walks.
+        assert!(all[0].mtime >= all[1].mtime, "sorted newest-first");
+        assert_eq!(claude_only.len(), 1, "--agent filters the sweep");
+        assert_eq!(claude_only[0].agent, Agent::CLAUDE);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The no-target-no-`--latest` rule (#51): one cwd-scoped candidate is
     /// unambiguous and auto-selects; several error NAMING each (id, agent, snippet)
     /// so the user can pick; zero keeps the no-session error.
@@ -598,6 +726,9 @@ mod tests {
     /// sniff-owned anywhere.
     #[test]
     fn detection_ownership_combines_sniff_and_provenance() {
+        // Reads the REAL store through `projects_dir()`, so it must not run while another
+        // test has the store roots pointed at a fixture — see `STORE_ENV`.
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let stray = dir.join(format!("own-stray-{}.jsonl", std::process::id()));
         std::fs::write(

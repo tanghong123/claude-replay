@@ -104,25 +104,90 @@ pub fn run_viewer() -> Result<()> {
 /// and the repo-root walk, not a re-implementation per language. Each field is `null` when the
 /// corresponding function returns `None`. See [`discover`] for the semantics of each.
 fn print_session_paths(args: &Args) -> Result<()> {
+    // `--all`: the machine-wide sweep. The store registry decides what exists; `--since`
+    // trims it by mtime BEFORE any transcript is opened, because the per-file facts below
+    // include `latest_cwd`, a whole-file scan.
+    if args.all {
+        let cutoff = match args.since.as_deref() {
+            Some(w) => Some(window_cutoff(w)?),
+            None => None,
+        };
+        let rows: Vec<serde_json::Value> = discover::store_all(args.agent)
+            .into_iter()
+            .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
+            .map(|e| session_paths_json(&e.path, Some(e.agent), Some(e.mtime)))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&session_paths_json(&path))?
+        serde_json::to_string_pretty(&session_paths_json(&path, args.agent, None))?
     );
     Ok(())
 }
 
+/// `90m` / `24h` / `7d` → the epoch-second cutoff that window starts at.
+fn window_cutoff(w: &str) -> Result<f64> {
+    let (n, unit) = w.split_at(w.len().saturating_sub(1));
+    let secs: f64 = match unit {
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => anyhow::bail!("--since takes a window like 90m, 24h or 7d (got {w:?})"),
+    };
+    // Unsigned integer on purpose: `-1d` would parse as a f64 and put the cutoff in the
+    // FUTURE, filtering everything out with no error — the worst failure a sweep can have,
+    // because an empty result looks like an answer. Same for `inf`/`NaN`.
+    let n: u64 = n
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--since takes a window like 90m, 24h or 7d (got {w:?})"))?;
+    let n = n as f64;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    Ok(now - n * secs)
+}
+
 /// The `--paths` JSON object for one transcript — split from the printing so the contract can be
 /// asserted without a subprocess. Every field comes straight from a `discover` function.
-fn session_paths_json(path: &std::path::Path) -> serde_json::Value {
+///
+/// One shape for both forms (single target and `--all`), so a consumer parses one object: the
+/// sweep supplies `agent`/`mtime` from the store entry it already holds, and the single form
+/// detects the agent when the caller did not name one. `session_key` is the canonical GROUP
+/// identity from [`discover::session_key_from`] — the exact string a hide list stores, so a
+/// consumer tests ONE string instead of probing `p:<cwd>` or `p:<repo_root>` and hoping.
+///
+/// Deliberately NOT emitted: whether the session is hidden. The hide list belongs to
+/// claude-monitor; a verdict here would make the viewer a reader of another tool's state, and
+/// a consumer that keeps its own list would get two answers. We emit the key it tests.
+fn session_paths_json(
+    path: &std::path::Path,
+    agent: Option<Agent>,
+    mtime: Option<f64>,
+) -> serde_json::Value {
     let show = |o: Option<std::path::PathBuf>| o.map(|p| p.display().to_string());
+    let agent = agent.unwrap_or_else(|| discover::detect_agent(path));
+    let repo_root = discover::repo_root(path);
+    let project_path = discover::project_path(path);
+    let key = discover::session_key_from(agent, repo_root.as_deref(), project_path.as_deref());
     serde_json::json!({
         "path": path.display().to_string(),
+        "agent": agent.label(),
+        "mtime": mtime,
         "session_id": discover::session_id(path),
         "first_cwd": show(discover::first_cwd(path)),
         "latest_cwd": show(discover::latest_cwd(path)),
-        "project_path": show(discover::project_path(path)),
-        "repo_root": show(discover::repo_root(path)),
+        "project_path": show(project_path),
+        "repo_root": show(repo_root),
+        "session_key": key.key,
+        "key_kind": match key.kind {
+            discover::SessionKeyKind::Project => "project",
+            discover::SessionKeyKind::Agent => "agent",
+        },
+        "label": key.label,
     })
 }
 
@@ -149,7 +214,7 @@ mod paths_tests {
         )
         .unwrap();
 
-        let v = session_paths_json(&t);
+        let v = session_paths_json(&t, None, None);
         let repo_s = repo.display().to_string();
         assert_eq!(v["path"], t.display().to_string());
         assert_eq!(v["session_id"], "sid1");
@@ -157,7 +222,56 @@ mod paths_tests {
         assert_eq!(v["latest_cwd"], repo_s);
         assert_eq!(v["project_path"], repo_s);
         assert_eq!(v["repo_root"], repo_s);
+        // The sweep's extra facts ride the SAME object, so a consumer parses one shape.
+        // `session_key` is the canonical hide/group identity — one string to test, not a
+        // `p:<cwd>`-or-`p:<repo_root>` guess.
+        assert_eq!(v["agent"], "claude", "detected when the caller names none");
+        assert_eq!(v["session_key"], format!("p:{repo_s}"));
+        assert_eq!(v["key_kind"], "project");
+        assert_eq!(v["label"], "repo");
+        assert!(
+            v["mtime"].is_null(),
+            "no mtime unless the sweep supplied one"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A non-workspace-anchored agent (QoderWork, whose cwd is noise) keys by AGENT, not
+    /// project — the rule lives in `discover::session_key_from`, and `--paths` must report
+    /// it rather than assuming every session groups by directory.
+    #[test]
+    fn session_key_follows_the_agent_anchoring_rule() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("crpathskey{pid}"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let t = base.join("s.jsonl");
+        std::fs::write(&t, "{\"type\":\"user\",\"sessionId\":\"sid2\"}\n").unwrap();
+
+        let v = session_paths_json(&t, Some(Agent::QODERWORK), Some(1.5));
+        assert_eq!(v["agent"], "qoderwork");
+        assert_eq!(v["key_kind"], "agent");
+        assert_eq!(v["session_key"], "a:qoderwork");
+        assert_eq!(v["mtime"], 1.5, "the sweep's mtime rides through");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `--since` is a window back from now, and anything else is a clean error rather than a
+    /// silently-empty sweep.
+    #[test]
+    fn window_cutoff_parses_the_three_units_and_rejects_the_rest() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let approx = |got: f64, want_back: f64| (now - got - want_back).abs() < 5.0;
+        assert!(approx(window_cutoff("90m").unwrap(), 5400.0));
+        assert!(approx(window_cutoff("24h").unwrap(), 86400.0));
+        assert!(approx(window_cutoff("7d").unwrap(), 604800.0));
+        for bad in ["7", "d", "7w", "", "abcd", "-1d"] {
+            assert!(window_cutoff(bad).is_err(), "{bad:?} should not parse");
+        }
     }
 }

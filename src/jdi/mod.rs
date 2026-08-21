@@ -2163,6 +2163,8 @@ fn follow_viewer(path: &Path) -> Result<()> {
         html: false,
         width: None,
         paths: false,
+        all: false,
+        since: None,
     };
     crate::tui::app::run(&args, path)
 }

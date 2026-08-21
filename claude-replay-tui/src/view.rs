@@ -4232,6 +4232,8 @@ mod tests {
             html: false,
             width: None,
             paths: false,
+            all: false,
+            since: None,
         }
     }
 

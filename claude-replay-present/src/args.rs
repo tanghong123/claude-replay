@@ -120,6 +120,22 @@ pub struct Args {
     /// `--latest` / `--agent` selection exactly like the viewer.
     #[cfg_attr(feature = "cli", arg(long))]
     pub paths: bool,
+
+    /// With `--paths`: sweep **every agent's store** instead of resolving one session, and
+    /// print a JSON ARRAY — one object per transcript on this machine, each carrying the
+    /// same directory facts plus `agent`, `mtime` and the canonical `session_key`. This is
+    /// what lets a non-Rust consumer stop hard-coding store layouts: the adapter registry
+    /// already knows where every agent writes, and a copy of that knowledge in another
+    /// language drifts the moment an adapter is added. Not a viewer; ignores the target.
+    #[cfg_attr(feature = "cli", arg(long, requires = "paths"))]
+    pub all: bool,
+
+    /// With `--paths --all`: only transcripts modified within this window — `90m`, `24h`,
+    /// `7d`. Filtered on mtime BEFORE any file is opened, which is the difference between
+    /// a sweep that costs milliseconds and one that reads every byte on the machine
+    /// (`latest_cwd` is a whole-file scan).
+    #[cfg_attr(feature = "cli", arg(long, value_name = "WINDOW", requires = "all"))]
+    pub since: Option<String>,
 }
 
 impl Args {
