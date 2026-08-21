@@ -255,6 +255,7 @@ pub struct LineSource<R> {
     tail: TornTail,
     policy: Elision,
     out: Vec<u8>,
+    last_torn: bool,
     /// The gauges, accumulated across the source's lifetime.
     pub elided: ElisionCounts,
 }
@@ -269,6 +270,7 @@ impl<R: BufRead> LineSource<R> {
             tail,
             policy,
             out: Vec::new(),
+            last_torn: false,
             elided: ElisionCounts::default(),
         }
     }
@@ -280,6 +282,7 @@ impl<R: BufRead> LineSource<R> {
     /// the next call — which is why this is not `Iterator::next` (that trait cannot lend).
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> std::io::Result<Option<(crate::model::ByteOffset, &str)>> {
+        self.last_torn = false;
         loop {
             let start = self.offset;
             match read_line_elided(&mut self.reader, &mut self.out, start, self.policy)? {
@@ -287,6 +290,7 @@ impl<R: BufRead> LineSource<R> {
                 LineOutcome::Torn { raw_len } => match self.tail {
                     TornTail::Stop => return Ok(None),
                     TornTail::Yield => {
+                        self.last_torn = true;
                         self.offset += raw_len;
                         return Ok(Some((start, self.body())));
                     }
@@ -317,6 +321,13 @@ impl<R: BufRead> LineSource<R> {
     /// The offset of the next unread line — the durable cursor.
     pub fn offset(&self) -> crate::model::ByteOffset {
         self.offset
+    }
+
+    /// Did [`next`](Self::next) most recently yield a TORN line (under [`TornTail::Yield`])?
+    /// A consumer that diagnoses malformed lines excuses a torn one — it is a write in
+    /// progress, not schema drift. Query after the yielded body's borrow ends.
+    pub fn last_was_torn(&self) -> bool {
+        self.last_torn
     }
 
     /// Reposition the underlying reader to [`offset`](Self::offset). Needed only by the

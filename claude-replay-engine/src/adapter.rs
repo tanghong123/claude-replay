@@ -9,6 +9,7 @@
 //! (This mirrors `jdi::agent::adapter` on the supervisor side.)
 
 use crate::discover::Candidate;
+use crate::engine::elide::Elision;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
@@ -164,25 +165,26 @@ pub trait TranscriptAdapter: Sync {
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
         let mut acc = self.metrics_acc();
         let mut preprocessor = self.line_preprocessor();
-        let mut line = String::new();
-        while {
-            line.clear();
-            matches!(reader.read_line(&mut line), Ok(n) if n > 0)
-        } {
-            let complete = line.ends_with('\n');
-            let body = line.trim_end();
-            if body.is_empty() {
-                continue; // a blank line carries nothing — neither content nor a diagnostic
-            }
-            if matches!(preprocessor.process(body), PreprocessedLine::Ignore) {
+        // #193: the one bounded line source, aggressive elision — provably metric-neutral
+        // (every metric-bearing field is a small scalar, far under the threshold). `Yield`
+        // because a torn final line that PARSES is a complete record awaiting its newline
+        // and has always been counted; one that does not parse is a write in progress —
+        // excused below, not schema drift.
+        let mut src = crate::engine::LineSource::new(
+            reader,
+            0,
+            crate::engine::TornTail::Yield,
+            Elision::Aggressive,
+        );
+        while let Ok(Some((_, body))) = src.next() {
+            let parsed = if matches!(preprocessor.process(body), PreprocessedLine::Ignore) {
                 continue;
-            }
-            match serde_json::from_str::<Value>(body) {
+            } else {
+                serde_json::from_str::<Value>(body)
+            };
+            match parsed {
                 Ok(v) => acc.push(&v),
-                // A final line without its newline is a write IN PROGRESS — the agent is
-                // appending at this moment — not schema drift. Counting it would flash a
-                // "skipped" diagnostic on every one-shot parse of a live transcript.
-                Err(_) if complete => acc.malformed_line(),
+                Err(_) if !src.last_was_torn() => acc.malformed_line(),
                 Err(_) => {}
             }
         }

@@ -17,12 +17,14 @@
 //! records — so a consumer gets per-event deltas without copying `parse_reader`'s rules.
 
 use crate::adapter::{LinePreprocessor, MetricsAccumulator, PreprocessedLine, TranscriptAdapter};
+use crate::engine::elide::Elision;
 use crate::engine::meta_stream::{window_at, FOLD_VERSION};
+use crate::engine::reader::{LineSource, TornTail};
 use crate::metrics::{Metrics, TokenCounts};
 use crate::model::EpochSeconds;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Where a metrics fold stopped, serializable — store it anywhere, hand it back to
@@ -94,8 +96,9 @@ pub struct MetricsEvent {
 /// A metrics fold over one transcript, resumable at a [`MetricsCursor`].
 pub struct MetricsFold {
     path: PathBuf,
-    reader: BufReader<std::fs::File>,
-    offset: u64,
+    /// The one bounded line source (#193): `Stop` — the durable cursor must never pass a
+    /// torn line — and aggressive elision, provably metric-neutral.
+    src: LineSource<BufReader<std::fs::File>>,
     pre: Box<dyn LinePreprocessor>,
     acc: Box<dyn MetricsAccumulator>,
     start: FoldStart,
@@ -136,8 +139,7 @@ impl MetricsFold {
         reader.seek(SeekFrom::Start(offset))?;
         Ok(Self {
             path: path.to_path_buf(),
-            reader,
-            offset,
+            src: LineSource::new(reader, offset, TornTail::Stop, Elision::Aggressive),
             pre,
             acc,
             start,
@@ -159,24 +161,14 @@ impl MetricsFold {
     /// [`malformed_line`](MetricsAccumulator::malformed_line), which surfaces here as an
     /// `extra` delta when the adapter records such diagnostics.
     pub fn next_event(&mut self) -> std::io::Result<Option<MetricsEvent>> {
-        let mut line = String::new();
         loop {
-            let at = self.offset;
-            line.clear();
-            let n = self.reader.read_line(&mut line)?;
-            if n == 0 {
+            let Some((_, body)) = self.src.next()? else {
+                // Torn tail or EOF: reposition the reader on the cursor (discovering a torn
+                // line consumed its bytes), so the next poll re-reads it whole — the same
+                // seek this loop used to do inline.
+                self.src.rewind_to_cursor()?;
                 return Ok(None);
-            }
-            if !line.ends_with('\n') {
-                // Torn tail: rewind so the cursor stays at the last complete line.
-                self.reader.seek(SeekFrom::Start(at))?;
-                return Ok(None);
-            }
-            self.offset += n as u64;
-            let body = line.trim_end();
-            if body.is_empty() {
-                continue;
-            }
+            };
             if matches!(self.pre.process(body), PreprocessedLine::Ignore) {
                 continue;
             }
@@ -215,8 +207,8 @@ impl MetricsFold {
     /// Always at a line boundary (see [`next_event`](Self::next_event) on torn tails).
     pub fn cursor(&self) -> std::io::Result<MetricsCursor> {
         Ok(MetricsCursor {
-            offset: self.offset,
-            window: window_at(&self.path, self.offset)?,
+            offset: self.src.offset(),
+            window: window_at(&self.path, self.src.offset())?,
             fold: FOLD_VERSION,
             acc: self.acc.state(),
             pre: self.pre.state(),

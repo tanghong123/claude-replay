@@ -1147,3 +1147,88 @@ fn the_default_cursor_path_resumes_a_claude_fold_equal_to_cold() {
         assert_eq!(f.metrics(), cold, "claude resumed-from-{split} equals cold");
     }
 }
+
+/// #193 step 1: eliding produces **identical** metrics to not eliding, over a real
+/// 512 KB attachment line. The un-elided reference feeds the same records straight into
+/// the adapter's accumulator (no line reader at all); the elided side goes through
+/// `parse_reader`'s `LineSource`. Every metric-bearing field is a small scalar, so the
+/// aggressive rule is metric-neutral — this is the equivalence that makes it provable.
+#[test]
+fn elided_and_unelided_metrics_are_identical() {
+    use claude_replay_engine::adapter::TranscriptAdapter;
+    let blob = "A".repeat(claude_replay_engine::engine::ELIDE_STRING_BYTES * 8);
+    let big = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"2026-08-20T10:00:02Z\",\"toolUseResult\":{{\"file\":{{\"base64\":\"{blob}\"}}}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"ok\"}}]}}}}"
+    );
+    let body = format!(
+        concat!(
+            r#"{{"type":"user","cwd":"/repo","message":{{"role":"user","content":[{{"type":"text","text":"hi"}}]}},"timestamp":"2026-08-20T10:00:00Z"}}"#,
+            "\n",
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"hello"}}],"usage":{{"input_tokens":3,"output_tokens":5,"cache_creation_input_tokens":7,"cache_read_input_tokens":11}},"model":"claude-opus-4-8"}},"timestamp":"2026-08-20T10:00:01Z"}}"#,
+            "\n{}\n",
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"done"}}],"usage":{{"input_tokens":2,"output_tokens":9}},"model":"claude-opus-4-8"}},"timestamp":"2026-08-20T10:00:03Z"}}"#,
+            "\n"
+        ),
+        big
+    );
+    let path = tmp("elide-metrics.jsonl", &body);
+
+    // Elided side: the production path (LineSource, aggressive).
+    let elided = claude_replay_engine::seam::parse_reader_with(
+        &ClaudeAdapter,
+        std::io::BufReader::new(std::fs::File::open(&path).unwrap()),
+    );
+
+    // Un-elided reference: the same records pushed raw, no reader in the way.
+    let mut acc = ClaudeAdapter.metrics_acc();
+    let mut pre = ClaudeAdapter.line_preprocessor();
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        if matches!(
+            pre.process(line),
+            claude_replay_engine::seam::PreprocessedLine::Ignore
+        ) {
+            continue;
+        }
+        acc.push(&serde_json::from_str(line).unwrap());
+    }
+    let raw = acc.finish();
+
+    assert_eq!(elided, raw, "elision must be invisible to the metrics fold");
+    assert!(raw.input_tokens > 0 && raw.output_tokens > 0, "non-vacuous");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// #193 step 1, the C1 twin: the incremental `MetricsFold` over the same big-line fixture
+/// equals the whole-file parse — and its cursor still lands on a line boundary.
+#[test]
+fn metrics_fold_over_an_elided_line_matches_the_batch_parse() {
+    let blob = "B".repeat(claude_replay_engine::engine::ELIDE_STRING_BYTES * 8);
+    let body = format!(
+        concat!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"a"}}],"usage":{{"input_tokens":10,"output_tokens":20}},"model":"claude-opus-4-8"}},"timestamp":"2026-08-20T11:00:00Z"}}"#,
+            "\n",
+            r#"{{"type":"user","timestamp":"2026-08-20T11:00:01Z","toolUseResult":{{"file":{{"base64":"{}"}}}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"ok"}}]}}}}"#,
+            "\n"
+        ),
+        blob
+    );
+    let path = tmp("elide-fold.jsonl", &body);
+
+    let mut fold =
+        claude_replay_engine::metrics_fold::MetricsFold::open(&ClaudeAdapter, &path, None).unwrap();
+    while fold.next_event().unwrap().is_some() {}
+    let incremental = fold.metrics();
+    let cursor = fold.cursor().unwrap();
+    assert_eq!(
+        cursor.offset,
+        body.len() as u64,
+        "cursor at the line boundary"
+    );
+
+    let batch = claude_replay_engine::seam::parse_reader_with(
+        &ClaudeAdapter,
+        std::io::BufReader::new(std::fs::File::open(&path).unwrap()),
+    );
+    assert_eq!(incremental, batch, "C1 ≡ A2 over an elided line");
+    let _ = std::fs::remove_file(&path);
+}
