@@ -432,6 +432,10 @@ fn quote_bare_js_keys(input: &str) -> String {
             };
             out.push(ch);
             i += ch.len_utf8();
+            // A multi-byte char after `\` CONSUMES the escape, exactly as the byte path
+            // below does — left set, it would swallow the string's closing quote and no
+            // later key would ever be quoted.
+            escaped = false;
             continue;
         }
         if let Some(q) = quote {
@@ -2128,6 +2132,17 @@ mod tests {
                     && todos[1].text == "fix"
                     && todos[1].status == "in_progress"
         )));
+    }
+
+    /// The escape state must survive the non-ASCII fast path: a literal backslash before
+    /// a multi-byte char consumes the escape (a JS identity-escape), so the string's REAL
+    /// closing quote still closes it and keys after the string still get quoted.
+    #[test]
+    fn escape_before_multibyte_consumes_the_escape() {
+        assert_eq!(
+            quote_bare_js_keys(r#"{a:"x\é",b:1}"#),
+            r#"{"a":"x\é","b":1}"#
+        );
     }
 
     /// Modern Codex wraps plan calls in JavaScript and may leave object keys unquoted. The
