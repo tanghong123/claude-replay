@@ -1266,7 +1266,10 @@ fn discovery_answers_identically_on_a_newline_less_file() {
 
     // And pure garbage — no newline, no JSON — still answers, still the default.
     let junk = tmp("junk.bin", &"Z".repeat(1024 * 1024));
-    assert_eq!(claude_replay_core::discover::detect_agent(&junk), Agent::CLAUDE);
+    assert_eq!(
+        claude_replay_core::discover::detect_agent(&junk),
+        Agent::CLAUDE
+    );
     assert_eq!(claude_replay_engine::discover::first_cwd(&junk), None);
     let _ = std::fs::remove_file(&junk);
 }
