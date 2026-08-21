@@ -14,7 +14,7 @@ mod state;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;
-use claude_replay_html::{query_get, service_routes, HttpResponse, ServiceConfig};
+use claude_replay_html::{query_get, service_routes, HttpResponse, RootLock, ServiceConfig};
 use claude_replay_present::cache::Presentation;
 use serde_json::json;
 use std::sync::Arc;
@@ -583,11 +583,15 @@ fn main() -> Result<()> {
     reclaim_legacy_scratch();
     // The session service at the MONITOR's root (§3/§10): same presentation namespace,
     // different root — a running `claude-replay --html` and this server cannot contend.
+    // `claim_root` above established this process as the root's ONLY writer, so the
+    // service takes no per-entry locks at all (#167 §4.3 c) — `SingleWriter` under the
+    // monitor's claim, not `PerSession` re-proving exclusivity entry by entry.
     let service = Arc::new(claude_replay_html::SessionService::new(ServiceConfig {
         cache_root: Some(root.clone()),
         presentation: Presentation::Html,
         fold: Default::default(),
         scratch: scratch.clone(),
+        root_lock: RootLock::SingleWriter,
     })?);
     let idx = Arc::new(index::Index::new(root.clone(), only));
 

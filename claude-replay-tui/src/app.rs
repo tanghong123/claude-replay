@@ -9,6 +9,7 @@ use crate::sys::{deduce_stem, reveal_in_file_manager};
 pub(crate) type TuiCache = claude_replay_present::SessionCache<
     crate::store::ArcLog, // live store: cache-owned shared copy (#84), logged for #96
     crate::view::ViewSidecar, // aux slot: evicted frames' derived state (#75)
+    claude_replay_present::cache::PerSession<crate::store::TuiNote>, // the entry provider (#167)
 >;
 
 /// This run's cache. Always a real cache; what `--no-cache` chooses is a different ROOT (#165) —
@@ -23,13 +24,19 @@ fn make_cache(args: &Args) -> TuiCache {
         true => crate::sys::throwaway_root(),
         false => cache::admit::default_root().unwrap_or_else(crate::sys::throwaway_root),
     };
-    TuiCache::durable(
-        Presentation::Tui,
+    // #167 step 3: the client builds its provider. The default pid liveness is exactly the
+    // TUI's rule, and the note (our tmux pane) is known at startup — configured once here,
+    // written into the lock on every acquire.
+    let entries = claude_replay_present::cache::PerSession::<crate::store::TuiNote>::new(
         root,
+        Presentation::Tui,
         // The TUI has no render parameters baked into a stored block: `Block`s are stored,
         // and fold/scroll are applied at draw time. So no flavor.
         Versions::current(None),
     )
+    .note(crate::store::TuiNote::here());
+    entries.gc(); // explicit, where the root is known (§4.3)
+    TuiCache::with_entries(entries)
 }
 
 /// Bring `id`'s session into the cache, or explain why we will not.
@@ -43,19 +50,12 @@ fn admit_root(
     cache: &TuiCache,
     id: &str,
 ) -> Result<std::sync::Arc<claude_replay_present::cache::SharedSession<crate::store::ArcLog>>> {
-    match cache.admit(
-        id,
-        |dir| crate::store::ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |h: &claude_replay_present::cache::Holder<crate::store::TuiNote>| {
-            claude_replay_present::cache::lock::pid_alive(h.pid)
-        },
-    ) {
-        Admission::Owned { session, .. } => {
-            // Publishes here because the entry is ours from this line on, and the TUI's note
-            // (its tmux pane) is known at startup — unlike a server's port.
-            let _ = cache.publish(id, crate::store::TuiNote::here());
-            Ok(session)
-        }
+    match cache.admit(id, |dir| {
+        crate::store::ArcLog::open_append(&dir.join("blocks.jsonl"))
+    }) {
+        // The TUI's note (its tmux pane) is known at startup — unlike a server's port — so
+        // the provider writes it on every acquire (#167 §4.5); the publish call is gone.
+        Admission::Owned { session, .. } => Ok(session),
         Admission::Denied(Denial::Held(h)) => Err(anyhow::Error::new(HeldElsewhere {
             pid: h.pid,
             pane: h.note.and_then(|n| n.pane),

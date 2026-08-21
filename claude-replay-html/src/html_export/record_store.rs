@@ -299,7 +299,7 @@ pub struct HtmlNote {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{Admission, Holder, Presentation, SessionCache};
+    use crate::cache::{Admission, Presentation, SessionCache};
     use crate::engine::meta_stream::Versions;
     use crate::Agent;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -365,18 +365,14 @@ mod tests {
         );
         let fold = crate::fold::FoldPolicy::default();
         let srcp = src.to_path_buf();
-        let origin = match c.admit(
-            "s",
-            move |dir| {
-                RecordStore::open_append(
-                    &dir.join("records.jsonl"),
-                    fold.clone(),
-                    "/r".into(),
-                    crate::Transcript::open(Agent::CLAUDE, srcp.clone()),
-                )
-            },
-            |_: &Holder<HtmlNote>| false,
-        ) {
+        let origin = match c.admit("s", move |dir| {
+            RecordStore::open_append(
+                &dir.join("records.jsonl"),
+                fold.clone(),
+                "/r".into(),
+                crate::Transcript::open(Agent::CLAUDE, srcp.clone()),
+            )
+        }) {
             Admission::Owned { session, origin } => {
                 let _ = session.advance();
                 origin

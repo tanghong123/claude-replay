@@ -9,8 +9,8 @@
 use claude_replay_core::engine::meta_stream::Versions;
 use claude_replay_core::model::Block;
 use claude_replay_core::{discover, parse_session_as, Transcript};
-use claude_replay_present::cache::{admit::Origin, Admission, Holder, Presentation, SessionCache};
-use claude_replay_tui::store::{ArcLog, TuiNote};
+use claude_replay_present::cache::{admit::Origin, Admission, Presentation, SessionCache};
+use claude_replay_tui::store::ArcLog;
 use std::path::{Path, PathBuf};
 
 type Cache = SessionCache<ArcLog, ()>;
@@ -18,11 +18,8 @@ type Cache = SessionCache<ArcLog, ()>;
 fn open(c: &Cache, src: &Path) -> (Vec<Block>, Origin) {
     let agent = discover::detect_agent(src);
     c.register("s", Transcript::open(agent, src.to_path_buf()));
-    let (session, origin) = match c.admit(
-        "s",
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false,
-    ) {
+    let (session, origin) = match c.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl")))
+    {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a private root must be Owned"),
     };

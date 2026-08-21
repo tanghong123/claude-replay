@@ -10,10 +10,8 @@ use super::{
     assemble_meta, build_shell, build_shell_chrome, display_title, render_blocks, session_id,
     AgentInfo, PageChrome,
 };
-use crate::cache::{self, Presentation};
-use crate::cache::{
-    lock, pull_indices, Admission, Cursor, Denial, Holder, SharedSession, Unavailable,
-};
+use crate::cache::{self, PerSession, Presentation};
+use crate::cache::{lock, pull_indices, Admission, Cursor, Denial, SharedSession, Unavailable};
 use crate::engine::meta_stream::Versions;
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args, SessionCache, Transcript};
@@ -40,14 +38,14 @@ pub struct SessionService {
     /// working directories, so agent/cwd are per-session, never server-wide.
     roots: std::sync::Mutex<Vec<Root>>,
     /// The session domain: id→source registry + resident followers + TTL reaping.
-    cache: SessionCache<RecordStore, ServeAux>,
+    cache: SessionCache<RecordStore, ServeAux, HtmlEntries>,
     /// This server's port, set once the listener binds.
     ///
     /// It exists so the lock's note can name where we serve. The note cannot be written at
     /// startup: sessions are admitted lazily, on their first `/pull`, so at bind time this
     /// process owns nothing and a publish would silently do nothing — which is exactly what
     /// used to happen, leaving every lock's note `null` and a peer with nowhere to redirect.
-    port: std::sync::OnceLock<u16>,
+    port: std::sync::Arc<std::sync::OnceLock<u16>>,
 }
 
 /// Where an ALREADY-RUNNING server serves `sid`, if one does (#96's rendezvous).
@@ -197,6 +195,81 @@ pub struct ServiceConfig {
     /// the service itself writes nothing to it — it once held the cache-less fallback's private
     /// record logs, and that is gone (#163).
     pub scratch: std::path::PathBuf,
+    /// How the cache root is guarded (#167 §4.3). [`RootLock::PerSession`] (the default) —
+    /// an entry `LOCK` per `<session, frontend>`, for hosts whose root is shared between
+    /// processes (the standalone `--html` server). [`RootLock::SingleWriter`] — the host
+    /// already claimed the WHOLE root (the monitor's own root `LOCK` + redirect ceremony),
+    /// so entries take no locks at all: the monitor's uncontendable per-entry locks, and
+    /// the stale-self guard they necessitated, are deleted.
+    pub root_lock: RootLock,
+}
+
+/// See [`ServiceConfig::root_lock`].
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum RootLock {
+    #[default]
+    PerSession,
+    SingleWriter,
+}
+
+/// The HTML host's provider: either discipline, one `Entries` impl (#167 §4.3) — static
+/// dispatch without making the whole service generic over its provider.
+pub enum HtmlEntries {
+    Per(PerSession<HtmlNote>),
+    Single(cache::SingleWriter<HtmlNote>),
+}
+
+impl cache::Entries<RecordStore> for HtmlEntries {
+    type Note = HtmlNote;
+
+    fn open(
+        &self,
+        id: &str,
+        src: &Transcript,
+        ours: Option<cache::Witness>,
+        make_store: &mut dyn FnMut(&std::path::Path) -> std::io::Result<RecordStore>,
+    ) -> cache::Opened<RecordStore, HtmlNote> {
+        match self {
+            HtmlEntries::Per(e) => e.open(id, src, ours, make_store),
+            HtmlEntries::Single(e) => e.open(id, src, ours, make_store),
+        }
+    }
+
+    fn publish(&self, id: &str, note: HtmlNote) -> bool {
+        match self {
+            HtmlEntries::Per(e) => cache::Entries::<RecordStore>::publish(e, id, note),
+            // The monitor's note lives in its ROOT lock, which the monitor itself owns —
+            // nothing per-entry to publish into.
+            HtmlEntries::Single(_) => false,
+        }
+    }
+}
+
+impl HtmlEntries {
+    fn gc(&self) {
+        match self {
+            HtmlEntries::Per(e) => e.gc(),
+            HtmlEntries::Single(e) => e.gc(),
+        }
+    }
+}
+
+/// The HTML server's entry provider (#167 §4.3 b): liveness is pid probe AND port probe —
+/// a recycled pid would otherwise make a stale lock look live forever — with the SELF-GUARD:
+/// a note naming OUR OWN port is us (a recycled pid plus our own listener), not a peer.
+/// `ours` is read lazily; the port exists only after the bind.
+fn html_entries(
+    root: std::path::PathBuf,
+    presentation: Presentation,
+    versions: Versions,
+    ours: std::sync::Arc<std::sync::OnceLock<u16>>,
+) -> PerSession<HtmlNote> {
+    PerSession::<HtmlNote>::new(root, presentation, versions).liveness(move |h| {
+        let held = h.note.as_ref().map(|n| n.port);
+        held != ours.get().copied()
+            && claude_replay_present::cache::lock::pid_alive(h.pid)
+            && port_open(held)
+    })
 }
 
 impl SessionService {
@@ -205,19 +278,34 @@ impl SessionService {
     pub fn new(cfg: ServiceConfig) -> Result<Self> {
         std::fs::create_dir_all(&cfg.scratch)
             .with_context(|| format!("create {}", cfg.scratch.display()))?;
+        // #167 step 3: the client builds its provider (`html_entries`). Liveness is
+        // configured ONCE, reading OUR port lazily because it exists only after the bind.
+        let port = std::sync::Arc::new(std::sync::OnceLock::new());
         let cache = match cfg.cache_root {
-            Some(root) => SessionCache::durable(
-                cfg.presentation,
-                root,
-                Versions::current(Some(render_flavor(&cfg.fold))),
-            ),
-            None => SessionCache::ephemeral(),
+            Some(root) => {
+                let versions = Versions::current(Some(render_flavor(&cfg.fold)));
+                let entries = match cfg.root_lock {
+                    RootLock::PerSession => HtmlEntries::Per(html_entries(
+                        root,
+                        cfg.presentation,
+                        versions,
+                        port.clone(),
+                    )),
+                    // The host already claimed the whole root (#167 §4.3 c): no entry locks.
+                    RootLock::SingleWriter => HtmlEntries::Single(
+                        cache::SingleWriter::over_claimed_root(root, cfg.presentation, versions),
+                    ),
+                };
+                entries.gc(); // explicit, where the root is known (§4.3)
+                SessionCache::with_entries(entries)
+            }
+            None => SessionCache::new(),
         };
         Ok(Self {
             fold: cfg.fold,
             roots: std::sync::Mutex::new(Vec::new()),
             cache,
-            port: std::sync::OnceLock::new(),
+            port,
         })
     }
 
@@ -506,15 +594,7 @@ impl SessionService {
         // evidence of a peer. A recycled pid plus our own listener answering would otherwise
         // satisfy both halves of this predicate forever, and we would deny ourselves an entry we
         // could take and then "redirect" the client to the server it is already talking to.
-        let ours = self.port.get().copied();
-        let alive = |h: &Holder<HtmlNote>| {
-            let port = h.note.as_ref().map(|n| n.port);
-            port != ours && lock::pid_alive(h.pid) && port_open(port)
-        };
-        match self
-            .cache
-            .admit(id, |dir| open(&dir.join("records.jsonl")), alive)
-        {
+        match self.cache.admit(id, |dir| open(&dir.join("records.jsonl"))) {
             Admission::Owned { session, .. } => {
                 // Now that the entry is ours, say where we serve it. This is the first moment
                 // both facts are true: the lock is held AND the port is known.
@@ -895,6 +975,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
         presentation: Presentation::Html,
         fold: args.fold_policy(),
         scratch: dir.clone(),
+        root_lock: RootLock::PerSession,
     })?);
     let root_ids: Vec<String> = paths.iter().map(|p| live.register_root(p)).collect();
 
@@ -2058,8 +2139,7 @@ mod tests {
     #[test]
     fn the_lock_note_carries_the_serving_port_once_a_session_is_admitted() {
         use crate::cache::{admit, lock, Presentation};
-        use crate::engine::meta_stream::Versions;
-        use crate::{SessionCache, Transcript};
+        use crate::Transcript;
 
         let base = std::env::temp_dir().join(format!("cr-note-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -2081,12 +2161,8 @@ mod tests {
                 path: sess.clone(),
                 cwd: "/r".into(),
             }]),
-            cache: SessionCache::durable(
-                Presentation::Html,
-                root.clone(),
-                Versions::current(Some(1)),
-            ),
-            port: std::sync::OnceLock::new(),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         live.cache
             .register("nid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -2119,7 +2195,7 @@ mod tests {
     /// reply says that instead of inventing a target or quietly opening a second copy.
     #[test]
     fn a_session_a_peer_holds_is_redirected_not_served() {
-        use crate::cache::{admit, lock};
+        use crate::cache::{admit, lock, Holder};
         use crate::engine::meta_stream::Versions;
         use crate::{SessionCache, Transcript};
 
@@ -2150,13 +2226,18 @@ mod tests {
                 path: sess.clone(),
                 cwd: "/r".into(),
             }]),
-            cache: SessionCache::durable(
-                Presentation::Html,
-                root.clone(),
-                Versions::current(Some(render_flavor(&FoldPolicy::default()))),
-            ),
+            cache: {
+                let c = std::sync::Arc::new(std::sync::OnceLock::new());
+                let _ = c.set(port);
+                SessionCache::with_entries(HtmlEntries::Per(html_entries(
+                    root.clone(),
+                    Presentation::Html,
+                    Versions::current(Some(render_flavor(&FoldPolicy::default()))),
+                    c,
+                )))
+            },
             port: {
-                let c = std::sync::OnceLock::new();
+                let c = std::sync::Arc::new(std::sync::OnceLock::new());
                 let _ = c.set(port);
                 c
             },
@@ -2256,7 +2337,7 @@ mod tests {
                 cwd: "/r".into(),
             }]),
             cache: test_cache(&base),
-            port: std::sync::OnceLock::new(),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -2358,7 +2439,7 @@ mod tests {
                 cwd: "/r".into(),
             }]),
             cache: test_cache(&base),
-            port: std::sync::OnceLock::new(),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -2441,7 +2522,7 @@ mod tests {
                 cwd: "/r".into(),
             }]),
             cache: test_cache(&base),
-            port: std::sync::OnceLock::new(),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         live.cache
             .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
@@ -2497,12 +2578,12 @@ mod tests {
     /// ephemeral cache denies every session and the server answers with the reason instead of a
     /// feed, so a test that expects to be served needs a real entry. Its own root, never the
     /// developer's — the isolation rule is the same one the suite has always had.
-    fn test_cache(base: &Path) -> SessionCache<RecordStore, ServeAux> {
-        SessionCache::durable(
-            Presentation::Html,
+    fn test_cache(base: &Path) -> SessionCache<RecordStore, ServeAux, HtmlEntries> {
+        SessionCache::with_entries(HtmlEntries::Per(PerSession::<HtmlNote>::new(
             base.join("cache"),
+            Presentation::Html,
             Versions::current(Some(render_flavor(&FoldPolicy::default()))),
-        )
+        )))
     }
 
     /// A reply's body as text — `/pull` answers with a status now (#163), and every test here
@@ -2660,7 +2741,7 @@ mod tests {
                 },
             ]),
             cache: test_cache(&base),
-            port: std::sync::OnceLock::new(),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         for (id, agent, path) in [("c1", Agent::CLAUDE, &claude), ("x1", Agent::CODEX, &codex)] {
             live.cache
@@ -2756,7 +2837,7 @@ mod tests {
                 cwd: "/repo".into(),
             }]),
             cache: test_cache(&base),
-            port: std::sync::OnceLock::new(),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         live.cache
             .register("parent", Transcript::open(Agent::CODEX, parent));
@@ -2853,6 +2934,7 @@ mod tests {
             presentation: Presentation::Html,
             fold: FoldPolicy::default(),
             scratch: dir.join("scratch"),
+            root_lock: RootLock::PerSession,
         })
         .unwrap();
         let id = live.register_root(&sess);
@@ -2946,6 +3028,7 @@ mod tests {
             presentation: Presentation::Html,
             fold: FoldPolicy::default(),
             scratch: base.join("scratch"),
+            root_lock: RootLock::PerSession,
         })
         .unwrap();
         live.register_root(&sess);

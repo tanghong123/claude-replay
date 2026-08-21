@@ -19,7 +19,7 @@ use claude_replay_tui::store::{ArcLog, TuiNote};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-type Cache = SessionCache<ArcLog, ()>;
+type Cache = SessionCache<ArcLog, (), claude_replay_present::cache::PerSession<TuiNote>>;
 
 fn tmp(name: &str) -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
@@ -105,12 +105,22 @@ fn append(path: &Path, s: &str) {
     f.write_all(s.as_bytes()).unwrap();
 }
 
-fn cache(root: &Path) -> Cache {
-    Cache::durable(
-        Presentation::Tui,
-        root.to_path_buf(),
-        Versions::current(None),
+/// A cache whose liveness rule is `answer` for any other-pid holder — #167 step 3 moved
+/// the rule from the admit call to the provider, so tests that used to vary it per call
+/// build one cache per rule (which is truer anyway: each cache is one "process").
+fn cache_believing(root: &Path, answer: bool) -> Cache {
+    Cache::with_entries(
+        claude_replay_present::cache::PerSession::<TuiNote>::new(
+            root.to_path_buf(),
+            Presentation::Tui,
+            Versions::current(None),
+        )
+        .liveness(move |_| answer),
     )
+}
+
+fn cache(root: &Path) -> Cache {
+    cache_believing(root, false) // no live peer in these tests
 }
 
 /// The header a session reports — turns, tools, children.
@@ -129,13 +139,15 @@ fn meta_of(src: &Path) -> claude_replay_core::engine::SessionMeta {
 }
 
 /// Open `id` through the real API and fold to EOF, returning the joined view + the origin.
-fn open(c: &Cache, id: &str, src: &Path) -> (Vec<Block>, Origin) {
+/// Generic over the provider: the SAME frontend path serves `PerSession` and `SingleWriter`.
+fn open<E: claude_replay_present::cache::Entries<ArcLog>>(
+    c: &SessionCache<ArcLog, (), E>,
+    id: &str,
+    src: &Path,
+) -> (Vec<Block>, Origin) {
     c.register(id, Transcript::open(Agent::CLAUDE, src.to_path_buf()));
-    let (session, origin) = match c.admit(
-        id,
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false, // no live peer in these tests
-    ) {
+    let (session, origin) = match c.admit(id, |dir| ArcLog::open_append(&dir.join("blocks.jsonl")))
+    {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
@@ -460,11 +472,9 @@ fn a_child_is_admitted_like_any_other_session() {
         "a durable cache must not materialize an unadmitted session behind the lock's back"
     );
     assert!(matches!(
-        c.admit(
-            "child",
-            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-            |_: &Holder<TuiNote>| false,
-        ),
+        c.admit("child", |dir| ArcLog::open_append(
+            &dir.join("blocks.jsonl")
+        ),),
         Admission::Owned { .. }
     ));
     let d = c
@@ -601,13 +611,9 @@ fn a_live_holder_denies_the_second_process() {
     )
     .unwrap();
 
-    let c = cache(&root);
+    let c = cache_believing(&root, true); // it is alive
     c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
-    match c.admit(
-        "s",
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| true, // it is alive
-    ) {
+    match c.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))) {
         Admission::Denied(Denial::Held(h)) => {
             assert_eq!(h.pid, 999_999);
             assert_eq!(h.note.unwrap().pane.unwrap(), "%42", "the note reaches it");
@@ -624,12 +630,10 @@ fn a_live_holder_denies_the_second_process() {
     );
 
     // A DEAD holder's lock is reclaimed instead — otherwise a crash would pin the session.
+    let c_dead = cache_believing(&root, false);
+    c_dead.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
     assert!(matches!(
-        c.admit(
-            "s",
-            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-            |_: &Holder<TuiNote>| false
-        ),
+        c_dead.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))),
         Admission::Owned { .. }
     ));
 }
@@ -648,11 +652,7 @@ fn an_ephemeral_cache_denies_and_writes_nothing() {
     let c = Cache::ephemeral();
     c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
     assert!(matches!(
-        c.admit(
-            "s",
-            |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-            |_: &Holder<TuiNote>| false
-        ),
+        c.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))),
         Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag))
     ));
     assert!(
@@ -675,15 +675,11 @@ fn dropping_a_cache_releases_its_locks() {
         open(&c, "s", &src); // no release_all — the drop must do it
     }
 
-    let c = cache(&root);
+    let c = cache_believing(&root, true); // even believing any holder is alive
     c.register("s", Transcript::open(Agent::CLAUDE, src.clone()));
     assert!(
         matches!(
-            c.admit(
-                "s",
-                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-                |_: &Holder<TuiNote>| true // even believing any holder is alive
-            ),
+            c.admit("s", |dir| ArcLog::open_append(&dir.join("blocks.jsonl"))),
             Admission::Owned { .. }
         ),
         "a dropped cache leaves no lock behind"
@@ -702,11 +698,8 @@ fn stream_lens(root: &Path, id: &str) -> (u64, u64) {
 /// `admit` + fold to EOF, keeping the session handle (the `open` helper drops it).
 fn admit_and_fold(c: &Cache, id: &str, src: &Path) -> (Session, Origin) {
     c.register(id, Transcript::open(Agent::CLAUDE, src.to_path_buf()));
-    let (session, origin) = match c.admit(
-        id,
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false,
-    ) {
+    let (session, origin) = match c.admit(id, |dir| ArcLog::open_append(&dir.join("blocks.jsonl")))
+    {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
@@ -978,14 +971,10 @@ fn concurrent_admissions_of_one_session_open_exactly_one_store() {
         let hands: Vec<_> = (0..8)
             .map(|_| {
                 scope.spawn(|| {
-                    match c.admit(
-                        "s",
-                        |dir| {
-                            opened.fetch_add(1, Ordering::SeqCst);
-                            ArcLog::open_append(&dir.join("blocks.jsonl"))
-                        },
-                        |_: &Holder<TuiNote>| false,
-                    ) {
+                    match c.admit("s", |dir| {
+                        opened.fetch_add(1, Ordering::SeqCst);
+                        ArcLog::open_append(&dir.join("blocks.jsonl"))
+                    }) {
                         Admission::Owned { session, .. } => session,
                         Admission::Denied(_) => panic!("a free entry must be Owned"),
                     }
@@ -1066,11 +1055,9 @@ fn a_codex_child_rollout_resumes_equal_to_cold() {
         let c = cache(&root);
         c.register("child", Transcript::open(Agent::CODEX, src.clone()));
         assert!(matches!(
-            c.admit(
-                "child",
-                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-                |_: &Holder<TuiNote>| false,
-            ),
+            c.admit("child", |dir| ArcLog::open_append(
+                &dir.join("blocks.jsonl")
+            ),),
             Admission::Owned { .. }
         ));
         let _ = c
@@ -1086,11 +1073,9 @@ fn a_codex_child_rollout_resumes_equal_to_cold() {
     // Run 2: must RESUME — and resume to exactly what a cold fold of the whole file produces.
     let c = cache(&root);
     c.register("child", Transcript::open(Agent::CODEX, src.clone()));
-    let (session, origin) = match c.admit(
-        "child",
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false,
-    ) {
+    let (session, origin) = match c.admit("child", |dir| {
+        ArcLog::open_append(&dir.join("blocks.jsonl"))
+    }) {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
@@ -1214,11 +1199,9 @@ fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
         let c = cache(&root);
         c.register("modern", Transcript::open(Agent::CODEX, src.clone()));
         assert!(matches!(
-            c.admit(
-                "modern",
-                |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-                |_: &Holder<TuiNote>| false,
-            ),
+            c.admit("modern", |dir| ArcLog::open_append(
+                &dir.join("blocks.jsonl")
+            ),),
             Admission::Owned { .. }
         ));
         let _ = c
@@ -1293,11 +1276,9 @@ fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
 
     let c = cache(&root);
     c.register("modern", Transcript::open(Agent::CODEX, src.clone()));
-    let (session, origin) = match c.admit(
-        "modern",
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false,
-    ) {
+    let (session, origin) = match c.admit("modern", |dir| {
+        ArcLog::open_append(&dir.join("blocks.jsonl"))
+    }) {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(_) => panic!("a free entry must be Owned"),
     };
@@ -1330,4 +1311,67 @@ fn a_resumed_codex_session_keeps_semantic_exec_adapter_state() {
     assert!(!has_transport_wrapper(&got));
     c.release_all();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #167 step 3: the monitor's provider. `SingleWriter` wraps a root this process already
+/// claimed WHOLE (the monitor's own root lock), so entries carry **no per-entry `LOCK` at
+/// all** — that file simply never exists under the root — and a later run over the same
+/// root still resumes block-identically. The absence is the point: the monitor's entry
+/// locks were uncontendable by construction, and #167 deletes them rather than taking them.
+#[test]
+fn single_writer_resumes_without_entry_locks() {
+    use claude_replay_present::cache::SingleWriter;
+    type SwCache = SessionCache<ArcLog, (), SingleWriter<TuiNote>>;
+    let sw = |root: &Path| {
+        SwCache::with_entries(SingleWriter::over_claimed_root(
+            root.to_path_buf(),
+            Presentation::Tui,
+            Versions::current(None),
+        ))
+    };
+    fn lock_files(root: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.file_name().is_some_and(|n| n == "LOCK") {
+                    found.push(p);
+                }
+            }
+        }
+        found
+    }
+
+    let root = tmp("single-writer");
+    let src = root.join("t.jsonl");
+    transcript(&src, 6);
+
+    let first = {
+        let c = sw(&root);
+        let (blocks, origin) = open(&c, "s", &src);
+        assert!(matches!(origin, Origin::Cold(_)));
+        // While the entry is HELD and being written — still no lock file anywhere.
+        assert_eq!(lock_files(&root), Vec::<PathBuf>::new());
+        c.release_all();
+        blocks
+    };
+    assert_eq!(first, cold(&src));
+
+    // A second cache over the same root: resumes, block-identical, still lock-free.
+    let c = sw(&root);
+    let (second, origin) = open(&c, "s", &src);
+    assert!(
+        matches!(origin, Origin::Resumed { .. }),
+        "a clean quiesce must resume, got {origin:?}"
+    );
+    assert_eq!(second, cold(&src));
+    assert_eq!(
+        c.touch("s").unwrap().session_meta(),
+        meta_of(&src),
+        "the resumed header must match a cold fold's"
+    );
+    assert_eq!(lock_files(&root), Vec::<PathBuf>::new());
 }

@@ -16,7 +16,7 @@
 
 use claude_replay::engine::meta_stream::Versions;
 use claude_replay::{parse_session_as, Agent, Transcript};
-use claude_replay_present::cache::{admit, Admission, Holder, Presentation, SessionCache};
+use claude_replay_present::cache::{admit, Admission, Presentation, SessionCache};
 use claude_replay_tui::store::{ArcLog, TuiNote};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -100,18 +100,21 @@ fn entry_of(cache_home: &Path, src: &Path) -> PathBuf {
 
 /// Load the durable entry the killed process left and fold to EOF, exactly as a next run would.
 fn resume_and_fold(root: &Path, src: &Path) -> (Vec<claude_replay::model::Block>, admit::Origin) {
-    let c: SessionCache<ArcLog, ()> = SessionCache::durable(
-        Presentation::Tui,
-        root.to_path_buf(),
-        Versions::current(None),
-    );
+    // #167 step 3: liveness lives on the provider — the killed process is gone, so any
+    // holder is dead and its lock reclaims.
+    let c: SessionCache<ArcLog, (), claude_replay_present::cache::PerSession<TuiNote>> =
+        SessionCache::with_entries(
+            claude_replay_present::cache::PerSession::<TuiNote>::new(
+                root.to_path_buf(),
+                Presentation::Tui,
+                Versions::current(None),
+            )
+            .liveness(|_| false),
+        );
     let id = src.file_stem().unwrap().to_string_lossy().to_string();
     c.register(&id, Transcript::open(Agent::CLAUDE, src.to_path_buf()));
-    let (session, origin) = match c.admit(
-        &id,
-        |dir| ArcLog::open_append(&dir.join("blocks.jsonl")),
-        |_: &Holder<TuiNote>| false, // the killed process is gone; reclaim its lock
-    ) {
+    let (session, origin) = match c.admit(&id, |dir| ArcLog::open_append(&dir.join("blocks.jsonl")))
+    {
         Admission::Owned { session, origin } => (session, origin),
         Admission::Denied(d) => panic!("a dead holder must not deny: {d:?}"),
     };

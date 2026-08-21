@@ -78,45 +78,88 @@ pub enum Opened<P: BlockStore, N> {
 }
 
 /// Take exclusive ownership of a session's durable entry — or say who has it (#167 §4.2).
-/// The provider owns everything filesystem-shaped; the cache computes its half of the
-/// witness and hands one value across the seam.
+/// The provider owns everything filesystem-shaped — including the LIVENESS rule and any
+/// construction-time note, configured ONCE (§4.5: the per-call `alive` closure rebuilt what
+/// is provider configuration); the cache computes its half of the witness and hands one
+/// value across the seam.
 pub trait Entries<P: BlockStore> {
+    /// What a lock-holder publishes about itself so a second process can redirect: the
+    /// HTML server's port, the TUI's tmux pane. Typed per frontend.
+    type Note: NoteBounds;
+
     /// `make_store` is called at most once, with the entry's directory — only the caller
     /// knows the frontend's store and this session's fold context.
-    fn open<N: NoteBounds>(
+    fn open(
         &self,
         id: &str,
         src: &Transcript,
         ours: Option<Witness>,
         make_store: &mut dyn FnMut(&Path) -> std::io::Result<P>,
-        alive: &dyn Fn(&Holder<N>) -> bool,
-    ) -> Opened<P, N>;
+    ) -> Opened<P, Self::Note>;
 
     /// Publish a late-arriving fact into the entry's lock note (only the HTML port needs
-    /// this). `false` = this process does not hold the entry.
-    fn publish<N: NoteBounds>(&self, _id: &str, _note: N) -> bool {
+    /// this — a server has no port until it binds). `false` = this process does not hold
+    /// the entry.
+    fn publish(&self, _id: &str, _note: Self::Note) -> bool {
         false
     }
 }
 
+/// A liveness rule: whether a lock held by ANOTHER pid is still live.
+type Liveness<N> = Box<dyn Fn(&Holder<N>) -> bool + Send + Sync>;
+
 /// The per-`<session, frontend>` provider (§4.3 b): entry lock, resume, redirect notes.
-pub struct PerSession {
+/// Liveness and the construction-time note are configured ONCE here — no per-call closures.
+pub struct PerSession<N: NoteBounds = ()> {
     pub(crate) presentation: Presentation,
     pub(crate) root: PathBuf,
     pub(crate) versions: Versions,
+    /// Whether a lock held by ANOTHER pid is still live. Defaults to a pid probe; a server
+    /// ANDs in a port probe (a recycled pid would otherwise make a stale lock look live).
+    liveness: Liveness<N>,
+    /// A note known at construction (the TUI's pane — unlike a server's port, which arrives
+    /// late through [`Entries::publish`]). Written into the lock on every acquire.
+    note: Option<N>,
 }
 
-impl PerSession {
+impl<N: NoteBounds> PerSession<N> {
     pub fn new(root: PathBuf, presentation: Presentation, versions: Versions) -> Self {
         PerSession {
             presentation,
             root,
             versions,
+            liveness: Box::new(|h: &Holder<N>| lock::pid_alive(h.pid)),
+            note: None,
         }
+    }
+
+    /// Replace the default pid-probe liveness rule (configured once — §4.5).
+    pub fn liveness(mut self, f: impl Fn(&Holder<N>) -> bool + Send + Sync + 'static) -> Self {
+        self.liveness = Box::new(f);
+        self
+    }
+
+    /// A note known at construction, written into the lock on every acquire.
+    pub fn note(mut self, n: N) -> Self {
+        self.note = Some(n);
+        self
+    }
+
+    /// Delete unused durable entries — explicit, where the root is known (§4.3: the client
+    /// calls this; construction has no I/O side effects).
+    pub fn gc(&self) {
+        admit::gc(&self.root);
     }
 
     fn dir(&self, id: &str) -> PathBuf {
         admit::entry_dir(&self.root, self.presentation, id)
+    }
+
+    /// Write the construction-time note, if any, into a freshly acquired lock.
+    fn stamp_note(&self, dir: &Path) {
+        if let Some(n) = &self.note {
+            let _ = lock::publish(dir, n.clone());
+        }
     }
 }
 
@@ -138,15 +181,17 @@ fn armed_writer(
     }
 }
 
-impl<P: DurableStore> Entries<P> for PerSession {
-    fn open<N: NoteBounds>(
+impl<P: DurableStore, N: NoteBounds> Entries<P> for PerSession<N> {
+    type Note = N;
+
+    fn open(
         &self,
         id: &str,
         src: &Transcript,
         ours: Option<Witness>,
         make_store: &mut dyn FnMut(&Path) -> std::io::Result<P>,
-        alive: &dyn Fn(&Holder<N>) -> bool,
     ) -> Opened<P, N> {
+        let alive = &self.liveness;
         // The store is opened INSIDE the claim, after the lock is ours — the ordering is
         // load-bearing (see `claim`'s docs). It comes back out through these slots.
         let mut store: Option<P> = None;
@@ -203,6 +248,7 @@ impl<P: DurableStore> Entries<P> for PerSession {
         let (dir, origin, resumed) = match claimed {
             admit::Claim::Denied(x) => return Opened::Denied(x),
             admit::Claim::Retained { dir } => {
+                self.stamp_note(&dir);
                 let lease = lock::Lease::held(&dir);
                 return Opened::Retained {
                     // Re-arm: drain-preserving reattach (`Rewind::All` — nothing is being
@@ -222,6 +268,7 @@ impl<P: DurableStore> Entries<P> for PerSession {
                 resumed,
             } => (dir, origin, resumed),
         };
+        self.stamp_note(&dir);
         let lease = lock::Lease::held(&dir);
         let mut store = store.expect("claim only returns Ours after the store callback ran");
 
@@ -286,7 +333,7 @@ impl<P: DurableStore> Entries<P> for PerSession {
 
     /// Land the note iff this process still holds the entry's lock — the ownership check
     /// that used to need the `owned` map, answered by the lock file itself.
-    fn publish<N: NoteBounds>(&self, id: &str, note: N) -> bool {
+    fn publish(&self, id: &str, note: N) -> bool {
         let dir = self.dir(id);
         if !lock::held_by_us(&dir) {
             return false;
@@ -298,13 +345,14 @@ impl<P: DurableStore> Entries<P> for PerSession {
 /// The monitor's provider (§4.3 c): ONE root lock, taken at construction — a second monitor
 /// was redirected before any cache existed — so `open` takes no per-entry locks and can
 /// never deny. Adopted by the monitor in §8 step 3.
-pub struct SingleWriter {
+pub struct SingleWriter<N: NoteBounds = ()> {
     pub(crate) presentation: Presentation,
     pub(crate) root: PathBuf,
     pub(crate) versions: Versions,
+    _note: std::marker::PhantomData<N>,
 }
 
-impl SingleWriter {
+impl<N: NoteBounds> SingleWriter<N> {
     /// Wrap a root this process has already claimed (the monitor's own root lock — its
     /// claim/redirect ceremony stays with the monitor, which owns the user-facing message).
     pub fn over_claimed_root(
@@ -316,18 +364,25 @@ impl SingleWriter {
             presentation,
             root,
             versions,
+            _note: std::marker::PhantomData,
         }
+    }
+
+    /// Delete unused durable entries — explicit, where the root is known.
+    pub fn gc(&self) {
+        admit::gc(&self.root);
     }
 }
 
-impl<P: DurableStore> Entries<P> for SingleWriter {
-    fn open<N: NoteBounds>(
+impl<P: DurableStore, N: NoteBounds> Entries<P> for SingleWriter<N> {
+    type Note = N;
+
+    fn open(
         &self,
         id: &str,
         src: &Transcript,
         ours: Option<Witness>,
         make_store: &mut dyn FnMut(&Path) -> std::io::Result<P>,
-        _alive: &dyn Fn(&Holder<N>) -> bool,
     ) -> Opened<P, N> {
         let dir = admit::entry_dir(&self.root, self.presentation, id);
         if std::fs::create_dir_all(&dir).is_err() {

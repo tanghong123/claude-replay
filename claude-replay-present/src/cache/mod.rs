@@ -64,7 +64,7 @@ use crate::Transcript;
 /// A keyed cache of sessions (see the module docs for the residency lifecycle). Owns the
 /// session domain — every followed session's single full presentation copy, held by its
 /// [`SharedSession`] — so consumers keep only presentation state.
-pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
+pub struct SessionCache<P: BlockStore = TierBStore, A = (), E = fs::PerSession<()>> {
     /// ONE map: session key → the session's [`Slot`] (#167 §4.2a). Get-or-insert is cheap
     /// (no I/O under the map lock), so this mutex is held for microseconds and there is
     /// nothing else at this level to coordinate — the old global `admitting` gate and the
@@ -73,8 +73,8 @@ pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
     /// The entry provider (#96/#167), absent on an [`ephemeral`](Self::ephemeral) cache. No
     /// flag selects `None` any more — `--no-cache` builds a real cache at its own root (#165)
     /// — so in production this is always `Some`, and a cache without it can only deny.
-    /// (Becomes the always-present generic `E: Entries` at §8 step 3/4.)
-    entries: Option<fs::PerSession>,
+    /// (`Option` dies at §8 step 4, when `Transient` makes every cache a real cache.)
+    entries: Option<E>,
 }
 
 /// Everything the cache knows about one session, as one unit (#167 §4.2a).
@@ -118,7 +118,7 @@ impl<P: BlockStore, A> Slot<P, A> {
     }
 }
 
-impl<P: BlockStore, A> Default for SessionCache<P, A> {
+impl<P: BlockStore, A, E> Default for SessionCache<P, A, E> {
     fn default() -> Self {
         Self {
             slots: Mutex::new(HashMap::new()),
@@ -127,7 +127,7 @@ impl<P: BlockStore, A> Default for SessionCache<P, A> {
     }
 }
 
-impl<P: BlockStore, A> SessionCache<P, A> {
+impl<P: BlockStore, A, E> SessionCache<P, A, E> {
     /// A cache that persists nothing. Every [`admit`](Self::admit) on one of these denies with
     /// `Unavailable(NoCacheFlag)`, and since #163 a denial has nothing behind it — so this is a
     /// cache that cannot hand out a session at all. `--no-cache` does NOT select it (#165): that
@@ -138,6 +138,14 @@ impl<P: BlockStore, A> SessionCache<P, A> {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A cache over an explicit provider (#167 §4.3) — THE constructor; no I/O side
+    /// effects (`gc` is the client's explicit call, where the root is known).
+    pub fn with_entries(entries: E) -> Self {
+        let mut c = Self::default();
+        c.entries = Some(entries);
+        c
     }
 
     /// The slot for `id`, if one exists — a brief map lookup, the `Arc` cloned out.
@@ -319,19 +327,19 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     }
 }
 
-/// **The durable frontend API** (#96 §8). One call in, an exhaustive outcome out.
-impl<P: DurableStore, A> SessionCache<P, A> {
-    /// A cache whose entries live under `root/<presentation>/<session>/`.
-    ///
-    /// `versions` is what the fold is; a stream written by a different one is rejected rather
-    /// than spliced.
+impl<P: BlockStore, A, N: fs::NoteBounds> SessionCache<P, A, fs::PerSession<N>> {
+    /// Transitional sugar for the old constructor shape (deleted at §8 step 4): a
+    /// [`PerSession`] cache with the default pid liveness, gc'd here as it
+    /// always was.
     pub fn durable(presentation: Presentation, root: PathBuf, versions: Versions) -> Self {
-        admit::gc(&root); // one directory walk per run keeps the cache from growing forever
-        let mut c = Self::default();
-        c.entries = Some(fs::PerSession::new(root, presentation, versions));
-        c
+        let e = fs::PerSession::new(root, presentation, versions);
+        e.gc();
+        Self::with_entries(e)
     }
+}
 
+/// **The durable frontend API** (#96 §8). One call in, an exhaustive outcome out.
+impl<P: DurableStore, A, E: fs::Entries<P>> SessionCache<P, A, E> {
     /// Take exclusive ownership of `id`, or say why not. Never blocks on another holder.
     ///
     /// `make_store` is the ONE per-frontend piece, and it takes the entry's own directory: only
@@ -347,12 +355,11 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// `alive` decides whether a lock's holder is still running. [`lock::pid_alive`] is right
     /// for the TUI; a server ANDs in a port probe, since a recycled pid would otherwise make a
     /// stale lock look live forever.
-    pub fn admit<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
+    pub fn admit(
         &self,
         id: &str,
         make_store: impl FnOnce(&Path) -> std::io::Result<P>,
-        alive: impl Fn(&Holder<N>) -> bool,
-    ) -> Admission<P, N> {
+    ) -> Admission<P, E::Note> {
         // A live resident IS the admission — take it rather than opening a second one
         // beside it. (Checked before the flight so the hot path is one slot lookup.)
         if let Some(session) = self.shared_peek(id).filter(|ss| !ss.frozen()) {
@@ -406,7 +413,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         });
         let mut make_store = Some(make_store);
         let mut make_store = |dir: &Path| (make_store.take().expect("called once"))(dir);
-        match entries.open::<N>(id, &src, ours, &mut make_store, &alive) {
+        match entries.open(id, &src, ours, &mut make_store) {
             Opened::Denied(x) => Admission::Denied(x),
             Opened::Retained { writer } => {
                 let session = resident.expect("Retained is only reachable with a resident");
@@ -476,15 +483,11 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// publishing before admitting is silently a no-op, and an HTML server that did exactly
     /// that left every lock's note `null`, so a peer finding it held had nowhere to redirect.
     #[must_use]
-    pub fn publish<N: serde::Serialize + serde::de::DeserializeOwned + Clone>(
-        &self,
-        id: &str,
-        note: N,
-    ) -> bool {
+    pub fn publish(&self, id: &str, note: E::Note) -> bool {
         let Some(entries) = &self.entries else {
             return false;
         };
-        fs::Entries::<P>::publish(entries, id, note)
+        entries.publish(id, note)
     }
 }
 
@@ -492,7 +495,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
 /// [`Drop`] do it too. That matters: every `?` on an error path skips an explicit call, and a
 /// lock outliving its process denies the session to the next run until the pid dies, which for a
 /// recycled pid can be never.
-impl<P: BlockStore, A> SessionCache<P, A> {
+impl<P: BlockStore, A, E> SessionCache<P, A, E> {
     /// **Quiesce** and unlock ONE session — the TUI's `Outcome::Switch`, or a server dropping a
     /// root. The session stays RESIDENT and readable; what stops is every write, so re-admitting
     /// it later can retain its blocks instead of rebuilding them (#109).
@@ -521,7 +524,7 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     }
 }
 
-impl<P: BlockStore, A> Drop for SessionCache<P, A> {
+impl<P: BlockStore, A, E> Drop for SessionCache<P, A, E> {
     fn drop(&mut self) {
         self.release_all();
     }
@@ -557,7 +560,7 @@ pub enum Admission<P: BlockStore, N> {
 /// Generic over the store rather than fixed to [`ArcStore`](crate::engine::ArcStore), because a
 /// durable TUI keeps `Arc<Block>` blocks *and* a log behind them (#96) — the tick is the same
 /// either way.
-impl<P: BlockStore<Bv = std::sync::Arc<crate::model::Block>>, A> SessionCache<P, A> {
+impl<P: BlockStore<Bv = std::sync::Arc<crate::model::Block>>, A, E> SessionCache<P, A, E> {
     /// `open` builds the store when `id` is not yet resident.
     ///
     /// On a **durable** cache it is never called: [`admit`](Self::admit) is the only way a

@@ -36,8 +36,8 @@ mod serve;
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::{
     existing_server, handoff_url, mint_token, query_get, serve, service_routes, spawn_listener,
-    spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer, Request, RouteHandler,
-    ServiceConfig, SessionService, StaleEpoch,
+    spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer, Request, RootLock,
+    RouteHandler, ServiceConfig, SessionService, StaleEpoch,
 };
 
 const CSS: &str = include_str!("../html/export.css");
