@@ -350,7 +350,13 @@ pub struct SessionCache<P: BlockStore, A = (), E: Entries<P>> {
 /// is the sequence.
 struct Slot<P, A> {
     transcript: Transcript,
-    state: Mutex<SlotState<P, A>>,     // resident + entry outcome + aux, guarded as a unit
+    state: Mutex<SlotState<P>>,   // resident + entry outcome, guarded as a unit
+    /// Aux keeps its OWN cell so a park/take never waits out a fold in progress —
+    /// preserving today's independence. Its concurrency model is neither of the read
+    /// paths': park-and-take is exclusive handoff by MOVE (one owner at any instant, the
+    /// map xor the adopter — "never stale-shared"), and `aux_with` runs a short closure
+    /// inside the guard. The mutex guards handoffs, not access to a shared value.
+    aux: Mutex<Option<A>>,
 }
 
 impl SessionCache {
