@@ -26,8 +26,16 @@ pub fn meta_path(dir: &Path) -> PathBuf {
 /// CRC32 of a transcript's first line — the stream's identity check, so a cache is never
 /// matched against a different file that happens to sit at the same path.
 pub fn anchor_of(src: &Path) -> std::io::Result<u32> {
-    let mut first = String::new();
-    BufReader::new(File::open(src)?).read_line(&mut first)?;
+    // #193: the identity read runs the primitive with elision OFF — a CRC over elided
+    // text would make cache identity a function of the elision constants — and gains the
+    // ceiling bound `.read_line` never had. UTF-8 is enforced as `read_line` enforced it,
+    // so the anchor of every existing cache is unchanged.
+    let mut out = Vec::new();
+    let mut r = BufReader::new(File::open(src)?);
+    use claude_replay_core::engine::{read_line_elided, Elision};
+    read_line_elided(&mut r, &mut out, 0, Elision::None)?;
+    let first = std::str::from_utf8(&out)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     Ok(crc32(first.trim_end().as_bytes()))
 }
 

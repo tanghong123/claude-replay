@@ -141,11 +141,10 @@ pub(crate) fn candidates_scoped_in(
 }
 
 fn first_user_snippet(path: &Path) -> String {
-    use std::io::{BufRead, BufReader};
-    let Ok(f) = std::fs::File::open(path) else {
-        return String::new();
-    };
-    for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
+    for line in
+        claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
+            .take(80)
+    {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };

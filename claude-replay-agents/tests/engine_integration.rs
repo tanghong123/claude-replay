@@ -1232,3 +1232,41 @@ fn metrics_fold_over_an_elided_line_matches_the_batch_parse() {
     assert_eq!(incremental, batch, "C1 ≡ A2 over an elided line");
     let _ = std::fs::remove_file(&path);
 }
+
+/// #193 step 2: discovery reads are bounded per line — and unchanged in result. A
+/// newline-less transcript (a truncated write, one giant line) used to be read WHOLE by
+/// `.lines().take(N)` (the count-not-size trap); through the bounded reader every sniff
+/// still answers identically.
+#[test]
+fn discovery_answers_identically_on_a_newline_less_file() {
+    let cwd_line = format!(
+        "{{\"type\":\"user\",\"sessionId\":\"abc-123\",\"cwd\":\"/repo/x\",\"message\":{{\"role\":\"user\",\"content\":\"{}\"}}}}",
+        "p".repeat(1024 * 1024)
+    );
+    let path = tmp("no-newline.jsonl", &cwd_line); // no trailing \n
+
+    assert_eq!(
+        claude_replay_core::discover::detect_agent(&path),
+        Agent::CLAUDE,
+        "detection unchanged"
+    );
+    assert_eq!(
+        claude_replay_engine::discover::first_cwd(&path).as_deref(),
+        Some(std::path::Path::new("/repo/x"))
+    );
+    assert_eq!(
+        claude_replay_engine::discover::latest_cwd(&path).as_deref(),
+        Some(std::path::Path::new("/repo/x"))
+    );
+    assert_eq!(
+        claude_replay_engine::discover::session_id(&path).as_deref(),
+        Some("abc-123")
+    );
+    let _ = std::fs::remove_file(&path);
+
+    // And pure garbage — no newline, no JSON — still answers, still the default.
+    let junk = tmp("junk.bin", &"Z".repeat(1024 * 1024));
+    assert_eq!(claude_replay_core::discover::detect_agent(&junk), Agent::CLAUDE);
+    assert_eq!(claude_replay_engine::discover::first_cwd(&junk), None);
+    let _ = std::fs::remove_file(&junk);
+}

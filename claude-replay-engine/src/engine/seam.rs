@@ -38,7 +38,7 @@ pub use crate::engine::elide::{
 };
 pub use crate::engine::message::{Message, QueueOpKind};
 pub use crate::engine::path::relativize;
-pub use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
+pub use crate::engine::reader::{bounded_lines, ElisionCounts, LineSource, TornTail};
 pub use crate::engine::replay::Shaping;
 // The frozen whole-file reference vocabulary the adapter crates' equivalence gates
 // drive. `#[doc(hidden)]` rather than cfg(test): a cfg(test) item is invisible to a

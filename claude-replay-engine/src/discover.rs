@@ -218,11 +218,7 @@ fn cwd_in_record(v: &Value) -> Option<PathBuf> {
 /// repository the session belongs to. (This is the old `session_cwd`, renamed — "cwd" means
 /// *current*, which this value is not.)
 pub fn first_cwd(path: &Path) -> Option<PathBuf> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    crate::engine::bounded_lines(path, crate::engine::Elision::None)
         .take(50)
         .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
         .find_map(|v| cwd_in_record(&v))
@@ -232,11 +228,8 @@ pub fn first_cwd(path: &Path) -> Option<PathBuf> {
 /// Pure, but scans the WHOLE transcript (the last cwd can be anywhere), unlike [`first_cwd`]'s
 /// head-only read. Accepts both Claude and Codex shapes. `None` when none is recorded.
 pub fn latest_cwd(path: &Path) -> Option<PathBuf> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    // Whole-file scan for a small field: the one discovery read that genuinely elides.
+    crate::engine::bounded_lines(path, crate::engine::Elision::Aggressive)
         .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
         .filter_map(|v| cwd_in_record(&v))
         .last()
@@ -342,13 +335,7 @@ fn decode_store_dir(path: &Path) -> Option<PathBuf> {
 /// Codex's `payload.id` of `session_meta`. `None` when absent (a caller then falls back to
 /// the file stem). Agent-neutral, mirroring [`first_cwd`].
 pub fn session_id(path: &Path) -> Option<String> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    for line in std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .take(50)
-    {
+    for line in crate::engine::bounded_lines(path, crate::engine::Elision::None).take(50) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };

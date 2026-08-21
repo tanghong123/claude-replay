@@ -477,3 +477,24 @@ mod line_source_tests {
         assert_eq!((at, line), (8, "{\"b\":2}"));
     }
 }
+
+/// Every discovery `.lines()` loop, replaced by the one bounded reader (#193): yields
+/// owned, newline-stripped, non-blank lines through the eliding primitive. `.lines()` grew
+/// a line without cap on a newline-less file — the trap the audit named: `take(N)` bounds
+/// the line COUNT, not the SIZE, and `detect_agent`'s five-line sniff runs on every
+/// candidate discovery sees. Sniffs pass [`Elision::None`] (ceiling-bounded, zero
+/// behavioral change — their point is the bound, not elision); a whole-file field scan
+/// passes [`Elision::Aggressive`]. An unopenable path yields nothing, exactly as the
+/// `.lines()` idiom's `ok()?` did.
+pub fn bounded_lines(path: &std::path::Path, policy: Elision) -> impl Iterator<Item = String> {
+    let mut src = std::fs::File::open(path)
+        .ok()
+        .map(|f| LineSource::new(std::io::BufReader::new(f), 0, TornTail::Yield, policy));
+    std::iter::from_fn(move || match src.as_mut()?.next() {
+        Ok(Some((_, line))) => Some(line.to_string()),
+        _ => {
+            src = None;
+            None
+        }
+    })
+}

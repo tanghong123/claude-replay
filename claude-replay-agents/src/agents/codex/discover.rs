@@ -4,8 +4,6 @@ use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -75,8 +73,10 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
 }
 
 fn session_from_path(path: &Path) -> Option<CodexSession> {
-    let file = File::open(path).ok()?;
-    for line in BufReader::new(file).lines().map_while(Result::ok).take(100) {
+    for line in
+        claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
+            .take(100)
+    {
         // Skip noise lines rather than abandoning the whole session on the first
         // non-JSON line (a leading blank/comment before `session_meta`).
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
@@ -126,8 +126,10 @@ fn relationship_from_path(path: &Path) -> Option<CodexRelationship> {
     #[cfg(test)]
     RELATIONSHIP_READS.set(RELATIONSHIP_READS.get() + 1);
 
-    let file = File::open(path).ok()?;
-    for line in BufReader::new(file).lines().map_while(Result::ok).take(100) {
+    for line in
+        claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
+            .take(100)
+    {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -262,11 +264,11 @@ fn normalized(path: &Path) -> PathBuf {
 }
 
 fn first_user_snippet(path: &Path) -> String {
-    let Ok(file) = File::open(path) else {
-        return String::new();
-    };
     let mut fallback = None;
-    for line in BufReader::new(file).lines().map_while(Result::ok).take(300) {
+    for line in
+        claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
+            .take(300)
+    {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -378,10 +380,9 @@ fn head_is_subagent(path: &Path) -> bool {
 /// from the main listing must be exactly the file this lineage listing surfaces, or a
 /// rollout falls between the two and its spend vanishes.
 fn head_subagent_lineage(path: &Path) -> Option<(String, Option<String>)> {
-    use std::io::{BufRead, BufReader};
-    let f = File::open(path).ok()?;
-    let mut line = String::new();
-    BufReader::new(f).read_line(&mut line).ok()?;
+    let line =
+        claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
+            .next()?;
     let v = serde_json::from_str::<Value>(&line).ok()?;
     subagent_snippet(&v)?;
     let payload = v.get("payload")?;
@@ -571,10 +572,12 @@ pub fn resolve(target: Option<&str>, latest: bool) -> Result<PathBuf> {
 /// Codex assigned. Scans newest-first and stops at the first match.
 pub fn session_id_with_marker(marker: &str) -> Option<String> {
     for s in sessions_in(&sessions_dir()) {
-        let Ok(file) = File::open(&s.path) else {
-            continue;
-        };
-        for line in BufReader::new(file).lines().map_while(Result::ok).take(300) {
+        for line in claude_replay_engine::seam::bounded_lines(
+            &s.path,
+            claude_replay_engine::seam::Elision::None,
+        )
+        .take(300)
+        {
             if line.contains(marker) {
                 return Some(s.id);
             }

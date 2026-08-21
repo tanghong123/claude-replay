@@ -60,7 +60,6 @@ pub fn detect_agent(path: &Path) -> Agent {
 /// either way.
 pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
     use crate::adapter::SniffClaim;
-    use std::io::BufRead;
     // Provenance beats content: inside an agent's own store, identity needs no marker —
     // and for store twins whose markers collide (Qoder/QoderWork), markers cannot decide.
     for a in crate::adapter::adapters() {
@@ -68,15 +67,8 @@ pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
             return (a.agent(), true);
         }
     }
-    let Ok(file) = std::fs::File::open(path) else {
-        return (Agent::CLAUDE, false);
-    };
     let mut can_parse: Option<Agent> = None;
-    for line in std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .take(5)
-    {
+    for line in crate::engine::bounded_lines(path, crate::engine::Elision::None).take(5) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
