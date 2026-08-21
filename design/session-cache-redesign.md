@@ -366,7 +366,11 @@ struct Slot<P, A> {
     /// FORBIDDEN: live block-ordinal-derived state. Anything derived from block
     /// identity/order lives behind the pull protocol in its consumer, where the delta
     /// contract (`changed_from` / `provisional_gen` / `epoch`) is the change notification
-    /// — pulled, not pushed. A fold-side "aux update callback" would invert the layering
+    /// — pulled, not pushed. Known gap, owner-named (2026-08-21): position is the only
+    /// key the delta offers, which cannot give a consumer STRONG consistency across a
+    /// tail reshape — the remedy is block provenance ANCHORS (BACKLOG: stable
+    /// per-block identity = first-source-line offset + emit ordinal), not a fold-side
+    /// callback. A fold-side "aux update callback" would invert the layering
     /// (the fold calling presentation) and put rendering work under the driver mutex;
     /// this cell's independence is CORRECT precisely because nothing in it may need
     /// fold-lockstep maintenance.

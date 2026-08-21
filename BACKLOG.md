@@ -43,6 +43,19 @@
   QoderWork now records the relation (candidate: `sub_chats.ext`). Softened by the rail's
   title-clustering (#153).
 
+## Needs an owner decision (design sketched, unscheduled)
+
+- **Block provenance anchors** — surfaced in the #167 review (2026-08-21): the fold has no
+  stable block identity, so per-block presentation state is position-keyed (the TUI's
+  `user_folds` overlay — a gesture can land on the wrong block across an equal-count tail
+  reshape), which is tolerable for gestures and insufficient for any presentation layer
+  needing strong consistency with `Vec<Bv>` changes. Sketch: `anchor = (first contributing
+  line's byte offset, emit-ordinal within the line)` — the `(at, index)` vocabulary
+  attachments already use; same anchor across re-emission, first-constituent's anchor on
+  coalesce, consumers join old-by-anchor vs new-by-anchor per delta. Cost: ~10 B/block
+  persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
+  scope, or file as its own issue.
+
 ## Parked — explicit go-ahead needed
 
 - **Fleet relay (Phase 2)** — [design/fleet-pairing.md](design/fleet-pairing.md) §6:
