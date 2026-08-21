@@ -47,11 +47,12 @@ publishes binaries and bumps the Homebrew tap. Verify the commit really landed
 before tagging — a failed commit with the tag commands still running once
 shipped a tag pointing at the wrong commit.
 
-`origin` (GitHub) is the only remote: it is where the code is developed, where
-releases are cut, and where issues are filed. The internal mirror was removed —
-it had `issues_enabled: false`, so it could hold code but never the discussion
-about it, and a mirror that cannot take an issue is just a second place to
-forget to push.
+`origin` (GitHub) is where the code is developed, where releases are cut, and
+where issues are filed. `alibaba` (git@code.alibaba-inc.com:project-h/
+claude-replay.git) is a MIRROR the owner asked restored (2026-08-21): push
+`main` and tags to BOTH remotes — `git push origin main && git push alibaba
+main` (and the tag to both on releases). It holds code only; issues and
+releases stay on GitHub.
 
 ## Merging external PRs
 CI must run and pass BEFORE the merge — a fork PR from a first-time contributor

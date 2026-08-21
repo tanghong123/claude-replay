@@ -13,17 +13,13 @@
 
 ## Needs an owner decision
 
-- **#167 — the durable cache refactor ("one cache, three providers")** — waiting on the
-  owner's **final design review** (requested 2026-08-20) of
-  [design/session-cache-redesign.md](design/session-cache-redesign.md);
-  [design/cache-persistence-seam.md](design/cache-persistence-seam.md) preserves the
-  exploration. The rule being implemented: the session cache has no knowledge of
-  persistence — durability comes from `BlockStore` and the other provider interfaces,
-  so the durable directory leaves the main cache API. Build starts on sign-off.
-  Review in progress: **§1.1 added 2026-08-20** — the three states (transcript / durable
-  entry / resident), the fact that no background thread reconciles them, and why the
-  client's call order (resident ← durable first, then one transcript pass advancing both)
-  is the cheap one. Design unchanged; this documents an existing property the doc assumed.
+- **#167 — the durable cache refactor ("one cache, three providers")** — **SIGNED OFF
+  (owner, 2026-08-21) — in build.** Spec: [design/session-cache-redesign.md](design/session-cache-redesign.md)
+  (v: slot topology §4.2a, aux contract, anchors future-proofed, deny-only default at the
+  quiesce/peer boundary). Executing §8: 1 Note off the store trait → 2 cache::fs providers
+  behind old constructors → 2b slot-map collapse behind the admit() veneer (+ non_exhaustive
+  replies) → 3 constructor flip (monitor adopts SingleWriter) → 4 Transient / --no-cache
+  rewire + deletions. One commit per step, release at completion.
 
 ## Evidence-blocked
 
@@ -39,6 +35,28 @@
   (post-July-2026) QoderWork sessions. Needs a post-July fork in the store to see where
   QoderWork now records the relation (candidate: `sub_chats.ext`). Softened by the rail's
   title-clustering (#153).
+
+## Needs an owner decision (design sketched, unscheduled)
+
+- **Block provenance anchors** — surfaced in the #167 review (2026-08-21): the fold has no
+  stable block identity, so per-block presentation state is position-keyed (the TUI's
+  `user_folds` overlay — a gesture can land on the wrong block across an equal-count tail
+  reshape), which is tolerable for gestures and insufficient for any presentation layer
+  needing strong consistency with `Vec<Bv>` changes. Sketch: `anchor = (first contributing
+  line's byte offset, emit-ordinal within the line)` — the `(at, index)` vocabulary
+  attachments already use; same anchor across re-emission, first-constituent's anchor on
+  coalesce, consumers join old-by-anchor vs new-by-anchor per delta. Cost: ~10 B/block
+  persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
+  scope, or file as its own issue.
+
+## Queued (after #167's build)
+
+- **Architecture doc refresh** (owner, 2026-08-21): bring `docs/architecture.md` (+ the
+  `.html` twin) up to date on the two structural changes — the #193 bounded eliding
+  reader (one byte-toucher, `LineSource`, span-hinted locators; §7's rung note exists but
+  the read-path narrative predates it) and the #167 durable-cache interface (providers
+  behind `Entries`, the slot topology, `admit` as veneer, the aux contract). Do after the
+  #167 build lands so the doc describes what shipped, not the plan.
 
 ## Parked — explicit go-ahead needed
 

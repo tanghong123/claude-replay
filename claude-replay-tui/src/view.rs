@@ -2765,24 +2765,24 @@ mod tests {
         // 8), the last 2 provisional. The splice must land identically to the full scan.
         let committed_len = 11usize;
         let prev_committed = 8usize; // pretend 8 were already handed over
-        v2.apply_view(claude_replay_present::cache::ViewDelta {
-            reset: false,
-            committed_delta: b[prev_committed..committed_len]
+        v2.apply_view(claude_replay_present::cache::ViewDelta::assemble(
+            false,
+            b[prev_committed..committed_len]
                 .iter()
                 .cloned()
                 .map(std::sync::Arc::new)
                 .collect(),
             committed_len,
-            provisional: b[committed_len..]
+            b[committed_len..]
                 .iter()
                 .cloned()
                 .map(std::sync::Arc::new)
                 .collect(),
-            changed_from: d,
-            user_times: Vec::new(),
-            metrics: Metrics::default(),
-            tasks: Default::default(),
-        });
+            d,
+            Vec::new(),
+            Metrics::default(),
+            Default::default(),
+        ));
         v1.layout(80, 24);
         v2.layout(80, 24);
         assert_eq!(v1.total_lines(), v2.total_lines(), "same rendered lines");

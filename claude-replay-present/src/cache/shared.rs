@@ -47,6 +47,7 @@ use crate::Agent;
 /// [`pull_delta`](SharedSession::pull_delta)); `provisional` is the open turn (O(turn)); `meta` is
 /// the accumulator-**maintained** live header (never rescanned). So the returned object's size is
 /// O(tail delta), not O(session).
+#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
 pub struct PullDelta {
     pub epoch: u64,
     pub provisional_gen: u64,
@@ -71,6 +72,7 @@ pub struct PullDelta {
 /// One in-process tick's payload (#85): the splice-shaped delta an interactive view
 /// applies, plus the chrome state (times, metrics, tasks) — everything a frontend's tick
 /// needs from ONE call. Committed blocks are `Arc` clones of the cache-owned copy.
+#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
 pub struct ViewDelta {
     pub reset: bool,
     /// `committed[prev..]` as `Arc` clones — shared content, cheap to hand over.
@@ -86,6 +88,35 @@ pub struct ViewDelta {
     pub metrics: Metrics,
     /// The session's task op-log state (#15) — refreshed with the same tick.
     pub tasks: crate::engine::TaskList,
+}
+
+impl ViewDelta {
+    /// Assemble a delta by parts — the cross-crate constructor `#[non_exhaustive]` requires
+    /// (a struct literal no longer compiles outside this crate). Production deltas come from
+    /// [`SharedSession::poll_view`]; this exists for consumers building synthetic ticks
+    /// (splice-equivalence tests).
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        reset: bool,
+        committed_delta: Vec<std::sync::Arc<Block>>,
+        committed_len: usize,
+        provisional: Vec<std::sync::Arc<Block>>,
+        changed_from: usize,
+        user_times: Vec<Option<EpochSeconds>>,
+        metrics: Metrics,
+        tasks: crate::engine::TaskList,
+    ) -> Self {
+        ViewDelta {
+            reset,
+            committed_delta,
+            committed_len,
+            provisional,
+            changed_from,
+            user_times,
+            metrics,
+            tasks,
+        }
+    }
 }
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.
@@ -119,7 +150,7 @@ struct Inner<S: BlockStore> {
     /// under the same lock as the fold, so records are appended in the same critical section
     /// that produced them: content reaches disk before the meta describing it (I1's ordering),
     /// and there is no "remember to record after advancing" for a caller to get wrong.
-    meta: Option<super::stream::MetaWriter>,
+    meta: Option<super::fs::EntryWriter>,
     /// Set while this session is RESIDENT but no longer OWNED — [`quiesce`](SharedSession::quiesce)d
     /// so its blocks survive a release (#109). A frozen session must not fold, and the reason is
     /// not only the detached `meta`: `put` appends to the frontend's content backing too, so a
@@ -137,9 +168,9 @@ impl<S: BlockStore> Inner<S> {
     fn record(&mut self) {
         let Some(w) = self.meta.as_mut() else { return };
         for r in &self.follower.drain_meta() {
-            let _ = w.append(r);
+            let _ = w.meta.append(r);
         }
-        let _ = w.flush();
+        let _ = w.meta.flush();
     }
 }
 
@@ -455,7 +486,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// Records authored BEFORE this call are drained and written straight away, which matters on
     /// a cold start — the load itself folds the whole transcript, and those commits would
     /// otherwise never be recorded.
-    pub fn attach_writer(&self, w: super::stream::MetaWriter) {
+    pub fn attach_writer(&self, w: super::fs::EntryWriter) {
         let mut g = super::lock_recover(&self.inner);
         g.meta = Some(w);
         g.frozen = false;
@@ -530,13 +561,6 @@ impl<S: BlockStore> SharedSession<S> {
 /// no presentation state is persisted at all — a continuation is **derived** from the restored
 /// prefix instead, which cannot go stale against it.
 pub trait DurableStore: BlockStore + Sized {
-    /// What this frontend leaves in its lock for a peer that finds it held: a port for the
-    /// server, a pane for the TUI. **Typed, not opaque** — locks are per-presentation, so the
-    /// only reader is the same frontend that wrote it. Keeping it here rather than on
-    /// [`Holder`](super::Holder) is what stops a `port` field, meaningless to the TUI, from
-    /// leaking into a shared type.
-    type Note: serde::Serialize + serde::de::DeserializeOwned + Clone;
-
     /// Reload the committed `Bv`s **from byte `at` onward** — the ONE frontend-specific step in
     /// the load (§6.2). HTML scans its record log for locators; the TUI decodes serialized blocks.
     ///

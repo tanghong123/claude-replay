@@ -170,8 +170,6 @@ impl BlockStore for RecordStore {
 }
 
 impl DurableStore for RecordStore {
-    type Note = HtmlNote;
-
     /// Rebuild the committed locator table by walking the log's framing newlines, **from byte
     /// `from` onward** (#109 — see [`DurableStore::load_from`]). `from` is clamped to the log's
     /// length, so an offset past the end yields nothing rather than extending the file.

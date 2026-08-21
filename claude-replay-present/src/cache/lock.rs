@@ -125,6 +125,12 @@ pub fn release<N: Serialize + DeserializeOwned + Clone>(dir: &Path) {
 /// JSON, since only the pid decides whether the lock is ours. That is what lets a cache release
 /// its locks from `Drop`, which cannot carry the `DurableStore` bound the typed form needs, and
 /// `Drop` is what covers every error path that would otherwise leave a lock behind.
+/// Whether this process currently holds `dir`'s lock — the ownership test `publish` needs,
+/// answered by the lock file itself (#167: the `owned` map existed only to answer this).
+pub fn held_by_us(dir: &Path) -> bool {
+    read::<serde_json::Value>(dir).is_some_and(|h| h.pid == std::process::id())
+}
+
 pub fn release_any(dir: &Path) {
     release::<serde_json::Value>(dir)
 }
@@ -136,6 +142,30 @@ pub fn read<N: DeserializeOwned>(dir: &Path) -> Option<Holder<N>> {
 
 fn write<N: Serialize>(dir: &Path, h: &Holder<N>) -> std::io::Result<()> {
     std::fs::write(lock_path(dir), serde_json::to_string(h)?)
+}
+
+/// RAII ownership of one entry's `LOCK` (#167 §4.4): dropping the lease releases it. Owned by
+/// the [`EntryWriter`](super::fs::EntryWriter) inside the resident, so "we are writing" and
+/// "we hold the entry" are the same fact in one place — quiesce drops the writer, the writer
+/// drops the lease, the lock releases at exactly the moment writing stops. Every error path
+/// is covered for free; there is no "forgot to call release".
+pub struct Lease {
+    dir: std::path::PathBuf,
+}
+
+impl Lease {
+    /// Wrap a lock this process has ALREADY acquired on `dir` (via [`acquire`]).
+    pub(crate) fn held(dir: &Path) -> Self {
+        Lease {
+            dir: dir.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        release_any(&self.dir);
+    }
 }
 
 #[cfg(test)]

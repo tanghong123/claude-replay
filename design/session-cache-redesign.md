@@ -1,13 +1,20 @@
 # The session cache, redesigned: one cache, three providers
 
-> **Status:** the agreed target (task #167). Nothing is built yet; this is the spec to build
-> against. The exploration that led here — every dead end, bug post-mortem and rejected
+> **Status: SIGNED OFF (owner, 2026-08-21) — building per §8.** Twelve review questions
+> folded in, the §4.2a slot topology amended in, the aux contract stated, anchors
+> interface-future-proofed. This is the spec to build against. The exploration that led here — every dead end, bug post-mortem and rejected
 > alternative — is preserved in [`cache-persistence-seam.md`](cache-persistence-seam.md); read
 > that when you want to know *why not something else*. Read this when you want to know *what
 > we are building*.
 >
 > Written to be readable without knowing Rust or this codebase. Rust syntax is annotated where
 > it appears; a short glossary is at the end (§10).
+>
+> **Internals amended at owner review (2026-08-21), §4.2a:** the cache's internal topology is
+> one slot per session — get the slot, try to drive the tail, read — with **the first drive
+> being the admission**; there is no separate admission phase, no global gate, and no
+> three-way map split. `admit()` survives as a thin compatibility veneer, so §8's migration
+> steps and every call-site `match` are unchanged.
 
 ---
 
@@ -293,8 +300,14 @@ pub trait Entries<P: BlockStore> {
     type Note;
 
     /// Take exclusive ownership of session `id`'s entry — or say who has it.
-    /// `ours`: how many bytes OUR still-in-memory resident already wrote (None if none) —
-    ///          lets the provider prove nothing changed and skip all loading (a "retained" open).
+    /// `ours`: the byte length of the ENTRY'S BLOCK BACKING as our still-in-memory resident
+    ///          last wrote it (`BlockStore::backing_len` — the #109 witness; `None` when no
+    ///          resident survives). An ON-DISK-ARTIFACT length, never a transcript offset —
+    ///          the transcript's identity/position is owned by the versions+anchor checks and
+    ///          the resume machinery. It buys three outcomes with one stat: equal ⇒ nothing
+    ///          touched the entry since we let go — a "retained" open, zero loading; ours <
+    ///          on-disk ⇒ our blocks are a valid prefix, load only from `ours`; ours >
+    ///          on-disk ⇒ a peer cut below us, the prefix is no longer ours to trust.
     /// `make_store`: the caller still builds the store (only it knows this session's
     ///          working directory and fold options); the provider supplies the *place*.
     fn open(&self, id: &str, src: &Transcript, ours: Option<u64>,
@@ -318,23 +331,69 @@ pub enum Opened<P, N> {
 **…and the cache around it, after** — the part the user of the cache actually holds:
 
 ```rust
-// AFTER — the cache (proposed)
+// AFTER — the cache (as amended at owner review, 2026-08-21; see §4.2a)
 pub struct SessionCache<P: BlockStore, A = (), E: Entries<P>> {
-    registry:   Mutex<HashMap<String, Transcript>>,      // unchanged
-    residents:  Mutex<HashMap<String, (Instant, Arc<SharedSession<P>>)>>,  // unchanged
-    aux:        Mutex<HashMap<String, A>>,               // unchanged
-    admitting:  Mutex<()>,                               // unchanged — the thread gate stays HERE
-    entries:    E,                                       // ALWAYS present. No Option, no forked behavior.
+    /// ONE map: session key → the session's slot. Get-or-insert is cheap (the transcript
+    /// and empty state — no I/O under the map lock), so the map mutex is held for
+    /// microseconds and there is nothing else at this level to coordinate.
+    slots:   Mutex<HashMap<String, Arc<Slot<P, A>>>>,
+    entries: E,          // ALWAYS present. No Option, no forked behavior.
+}
+
+/// Everything the cache knows about one session, as one unit. The slot's mutex is the
+/// per-session single-flight: whoever holds it drives (and, cold, ADMITS — the first drive
+/// performs what admission used to: take the entry LOCK, read the meta stream, align, fold).
+/// A second thread waits on it or skips to read. There is no global admitting gate and no
+/// separate install step to interleave with — the #169 class is unrepresentable, not guarded:
+/// the old design needed a gate because peek-miss → slow open → install was a SEQUENCE across
+/// maps that per-map mutexes could not make atomic, and the entry LOCK cannot arbitrate
+/// threads (pid-based: our own pid reads as ours). Here the slot is the unit and its mutex
+/// is the sequence.
+struct Slot<P, A> {
+    transcript: Transcript,
+    state: Mutex<SlotState<P>>,   // resident + entry outcome, guarded as a unit
+    /// Aux keeps its OWN cell so a park/take never waits out a fold in progress —
+    /// preserving today's independence. Its concurrency model is neither of the read
+    /// paths': park-and-take is exclusive handoff by MOVE (one owner at any instant, the
+    /// map xor the adopter — "never stale-shared"), and `aux_with` runs a short closure
+    /// inside the guard. The mutex guards handoffs, not access to a shared value.
+    ///
+    /// **The aux CONTRACT (owner review, 2026-08-21).** Aux may hold exactly two shapes:
+    /// (a) a PARKED bundle — a consumer's whole derived state as checked luggage, carrying
+    /// its validity inputs (width, shape), revalidated by the ADOPTER on take (reject →
+    /// re-derive whole; never patched in place — `adopt_sidecar` returning false on a
+    /// shape mismatch is the model); (b) an ID-KEYED map immune to reshape (the HTML
+    /// server's titles/parents/diff baselines key by agent/tool ids, deliberately).
+    /// FORBIDDEN: live block-ordinal-derived state. Anything derived from block
+    /// identity/order lives behind the pull protocol in its consumer, where the delta
+    /// contract (`changed_from` / `provisional_gen` / `epoch`) is the change notification
+    /// — pulled, not pushed. Known gap, owner-named (2026-08-21): position is the only
+    /// key the delta offers, which cannot give a consumer STRONG consistency across a
+    /// tail reshape — the remedy is block provenance ANCHORS (BACKLOG: stable
+    /// per-block identity = first-source-line offset + emit ordinal), not a fold-side
+    /// callback. Interface-future-proofed rather than built (owner, 2026-08-21): the
+    /// build marks the reply types `#[non_exhaustive]` so `anchors` lands additively
+    /// when a real consumer arrives to validate the coalesce semantics. A fold-side "aux update callback" would invert the layering
+    /// (the fold calling presentation) and put rendering work under the driver mutex;
+    /// this cell's independence is CORRECT precisely because nothing in it may need
+    /// fold-lockstep maintenance.
+    aux: Mutex<Option<A>>,
 }
 
 impl SessionCache {
     pub fn new(entries: E) -> Self;                 // the ONLY constructor; no I/O side effects
+    /// The compatibility VENEER: get-or-insert the slot, drive once, translate the slot's
+    /// state into `Owned`/`Denied`. Call sites keep their existing `match` untouched.
     pub fn admit(&self, id: &str,
-        make_store: impl Fn(&Path) -> io::Result<P>) -> Admission<P>;  // the ONLY creator of residents
+        make_store: impl Fn(&Path) -> io::Result<P>) -> Admission<P>;
     pub fn publish(&self, id: &str, note: E::Note) -> bool;  // forwards to the provider (HTML port only)
-    pub fn quiesce(&self, id: &str);                // stop writing; the UNLOCK is automatic (§4.4)
-    // Everything else is unchanged: touch, shared_peek, poll_view, reap, reap_over_budget,
-    // register/register_new/is_registered/resolve, aux_put/aux_take/aux_with.
+    pub fn quiesce(&self, id: &str);                // stop writing; the entry's PROCESS-level
+                                                    // LOCK file releases automatically — the
+                                                    // writer's drop IS the unlock (§4.4; thread
+                                                    // locks are call-scoped and never held here)
+    // Everything else keeps its signature: touch, shared_peek, poll_view, reap,
+    // reap_over_budget, register/register_new/is_registered/resolve, aux_put/aux_take/aux_with
+    // — each now a slot access instead of a per-map access.
 }
 
 /// Owned by the resident while it writes. Dropping it releases the entry lock —
@@ -354,6 +413,57 @@ Two deliberate details:
 - `Origin` survives unchanged. "The cache didn't help, and here is which of five reasons" is a
   support answer; the rejection tests assert on it.
 
+### 4.2a The slot topology: the first drive IS the admission (owner review, 2026-08-21)
+
+The owner's review replaced the first cut's internals (three maps + a global `admitting`
+gate) with the model above. The consumer protocol is *try-drive-then-read*: get the slot's
+`Arc`, try the driver mutex — hold it: drive the tail (a COLD slot's first drive performs
+the whole of admission: claim the entry `LOCK`, read the meta stream, run the `ours` witness,
+align, fold); don't hold it: someone is driving, read what is committed. (Reads are
+snapshot-out under the resident's brief mutex — `Arc`-per-block, so a pull copies pointers,
+never bytes; the fold replaces provisional blocks rather than mutating them, and
+`provisional_gen`/`epoch` tell a client its snapshot aged. The reply's metadata —
+`SessionMeta`/`Metrics`/`TaskList` — ships as value clones under the same lock: small
+maintained scalars need no `Arc` and, having no cursor into them, no generations either.
+It is STORED one level down, in the fold's accumulator (`committed_meta` maintained per
+commit + the open turn derived on top at read time; the durable twin rides the meta
+stream's checkpoints) — the resident wrapper owns only the protocol counters. The copy
+SITE is the accessor itself: the handle's only field is the private `Mutex<Inner>`, so
+every public method must build an owned reply inside the guard — the borrow checker, not
+discipline, is what makes a reference into the shared state impossible to leak.
+`shared.rs` §9a, untouched by this redesign.) There is **no special one-off initialization** — initialization is tailing
+for the first time.
+
+Registration stays a separate, drive-free API: `register`/`register_new` get-or-insert an
+**un-driven** slot (transcript + empty state — a map op, no I/O, no `LOCK`), and
+`is_registered`/`resolve` read its transcript without touching the state mutex. This is what
+keeps the monitor's lazy-population rule structural: discovery registers every session it
+can see, and a durable entry is written by VISITING (the first drive), never by a sweep.
+
+Everything §4's earlier machinery does relocates without changing:
+
+- **The `ours` witness and `Retained`** run inside a drive that finds a lingering resident
+  after a quiesce — same one-stat check, same three outcomes (§4.2's `ours` note).
+- **`Denied(Held(note))` becomes slot state**: a drive that finds a live peer's `LOCK` parks
+  the note; readers get the redirect; each later drive retries the claim — the same retry
+  cadence re-admission had.
+- **RAII release, eviction, refcounts** are untouched: the resident in the slot holds the
+  `EntryWriter`; reap removes the slot from the map while in-flight `Arc`s finish.
+- **The provider seam is untouched** — `Entries::open` is called from the first drive
+  instead of from an admission phase. Persistence stays out of the cache either way.
+
+What the topology buys beyond tidiness: the admission convoy disappears (the global gate
+serialized admissions of *different* sessions — a 100 MB resume blocked a 2 KB one; the slot
+mutex scopes the wait to the session it belongs to), and the #169 bug class is structural
+rather than guarded (no gate exists to forget — the mutex that prevents the double-open is
+the same mutex that drives).
+
+> **Resolved at sign-off (2026-08-21) — today-faithful default:** `Denied` stays
+> deny-only (the note, nothing else); each frontend keeps its existing fallback — the HTML
+> server redirects to the peer's published port, the TUI falls back to a cache-less parse.
+> The retained blocks are NOT served alongside a denial. Revisit only if a genuine
+> serve-stale need appears; this default is zero behavior change.
+
 ### 4.3 The three providers
 
 ```rust
@@ -362,6 +472,10 @@ Two deliberate details:
 let cache = SessionCache::new(Transient::in_dir(run_dir));
 
 // (b) the viewer / HTML server: entry lock per <session, frontend>, resume, redirect notes.
+//     No construction-time claim — several processes on one root are LEGITIMATE here (each
+//     serving different sessions), so the redirect surfaces per ADMISSION instead:
+//     `Admission::Denied(Denial::Held(h))` at the admit call site, where the frontend sends
+//     the client to `h.note`'s port (serve.rs's existing match, kept compiling by design).
 let entries = PerSession::new(root, Namespace::Html)     // Presentation retreats into cache::fs
     .versions(Versions::current(Some(render_flavor(&fold))))  // fold stamp: stale entries rebuild
     .liveness(alive_rule);                                // pid + port probe — configured ONCE
@@ -386,7 +500,9 @@ What each one's `open` does:
 | metadata / resume | none — always cold; the cache resets the store first | yes | yes |
 | note (for redirects) | none | in the entry's lock | in the root lock |
 
-Rule of thumb that falls out: **the note lives wherever the lock lives.**
+Rule of thumb that falls out: **the note lives wherever the lock lives — and the redirect is
+handled wherever `Denied` can surface**: at construction for (c) (a second monitor never builds
+a cache), per admission for (b) (the request redirects to the entry's holder), nowhere for (a).
 
 The `Transient` row is what fixes `--no-cache` for good: no metadata stream means a
 re-materialized session always starts from a `store.reset()` (truncate) and refolds — so the
@@ -401,8 +517,8 @@ Two levels, three moments, and after the redesign each has exactly one owner:
 | moment | mechanism | level | owner |
 |---|---|---|---|
 | provider construction | `SingleWriter::claim`: root `LOCK` or redirect | process (whole cache) | provider |
-| admission | the `admitting` gate — a critical section, held only during `admit` | thread | cache |
-| admission | `PerSession`: the entry's `LOCK` file | process (one session) | provider |
+| admission = first drive | the slot's driver mutex — per-session single-flight (§4.2a) | thread | slot |
+| admission = first drive | `PerSession`: the entry's `LOCK` file | process (one session) | provider |
 | resident lifetime | shared-reference count; reaping spares a resident still in use | thread | cache |
 | serving | the resident's internal mutex; a fold holds it start to finish | thread | resident |
 | release | **automatic**: dropping the `EntryWriter` releases the lock | process | writer |
@@ -607,6 +723,10 @@ knowledge of lock liveness rules.
 2. Extract `cache::fs` with `PerSession` + `SingleWriter` implementing `Entries`; the old
    constructors keep their signatures and build providers internally. The `EntryWriter` lease
    lands here (touch the admission body once, not twice). Pure re-plumbing; all tests unchanged.
+2b. Collapse the internals to the slot map (§4.2a) behind the unchanged `admit()` veneer —
+   the global gate and the three maps go; every call-site `match` compiles untouched, and the
+   §7 invariants (single writer per entry, witness, RAII release) are re-asserted by the same
+   tests. The serve-stale-vs-redirect policy question must be answered before this step.
 3. Flip the constructors: clients build providers; `gc` moves to the client; the monitor adopts
    `SingleWriter` (deleting its per-entry locks and hand-rolled `claim_root`); the TUI's note
    moves to construction.
