@@ -356,6 +356,20 @@ struct Slot<P, A> {
     /// paths': park-and-take is exclusive handoff by MOVE (one owner at any instant, the
     /// map xor the adopter — "never stale-shared"), and `aux_with` runs a short closure
     /// inside the guard. The mutex guards handoffs, not access to a shared value.
+    ///
+    /// **The aux CONTRACT (owner review, 2026-08-21).** Aux may hold exactly two shapes:
+    /// (a) a PARKED bundle — a consumer's whole derived state as checked luggage, carrying
+    /// its validity inputs (width, shape), revalidated by the ADOPTER on take (reject →
+    /// re-derive whole; never patched in place — `adopt_sidecar` returning false on a
+    /// shape mismatch is the model); (b) an ID-KEYED map immune to reshape (the HTML
+    /// server's titles/parents/diff baselines key by agent/tool ids, deliberately).
+    /// FORBIDDEN: live block-ordinal-derived state. Anything derived from block
+    /// identity/order lives behind the pull protocol in its consumer, where the delta
+    /// contract (`changed_from` / `provisional_gen` / `epoch`) is the change notification
+    /// — pulled, not pushed. A fold-side "aux update callback" would invert the layering
+    /// (the fold calling presentation) and put rendering work under the driver mutex;
+    /// this cell's independence is CORRECT precisely because nothing in it may need
+    /// fold-lockstep maintenance.
     aux: Mutex<Option<A>>,
 }
 
