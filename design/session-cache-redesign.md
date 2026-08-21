@@ -395,6 +395,12 @@ the whole of admission: claim the entry `LOCK`, read the meta stream, run the `o
 align, fold); don't hold it: someone is driving, read what is committed. There is **no
 special one-off initialization** — initialization is tailing for the first time.
 
+Registration stays a separate, drive-free API: `register`/`register_new` get-or-insert an
+**un-driven** slot (transcript + empty state — a map op, no I/O, no `LOCK`), and
+`is_registered`/`resolve` read its transcript without touching the state mutex. This is what
+keeps the monitor's lazy-population rule structural: discovery registers every session it
+can see, and a durable entry is written by VISITING (the first drive), never by a sweep.
+
 Everything §4's earlier machinery does relocates without changing:
 
 - **The `ours` witness and `Retained`** run inside a drive that finds a lingering resident
