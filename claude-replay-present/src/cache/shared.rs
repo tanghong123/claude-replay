@@ -47,6 +47,7 @@ use crate::Agent;
 /// [`pull_delta`](SharedSession::pull_delta)); `provisional` is the open turn (O(turn)); `meta` is
 /// the accumulator-**maintained** live header (never rescanned). So the returned object's size is
 /// O(tail delta), not O(session).
+#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
 pub struct PullDelta {
     pub epoch: u64,
     pub provisional_gen: u64,
@@ -71,6 +72,7 @@ pub struct PullDelta {
 /// One in-process tick's payload (#85): the splice-shaped delta an interactive view
 /// applies, plus the chrome state (times, metrics, tasks) — everything a frontend's tick
 /// needs from ONE call. Committed blocks are `Arc` clones of the cache-owned copy.
+#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
 pub struct ViewDelta {
     pub reset: bool,
     /// `committed[prev..]` as `Arc` clones — shared content, cheap to hand over.
@@ -86,6 +88,35 @@ pub struct ViewDelta {
     pub metrics: Metrics,
     /// The session's task op-log state (#15) — refreshed with the same tick.
     pub tasks: crate::engine::TaskList,
+}
+
+impl ViewDelta {
+    /// Assemble a delta by parts — the cross-crate constructor `#[non_exhaustive]` requires
+    /// (a struct literal no longer compiles outside this crate). Production deltas come from
+    /// [`SharedSession::poll_view`]; this exists for consumers building synthetic ticks
+    /// (splice-equivalence tests).
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        reset: bool,
+        committed_delta: Vec<std::sync::Arc<Block>>,
+        committed_len: usize,
+        provisional: Vec<std::sync::Arc<Block>>,
+        changed_from: usize,
+        user_times: Vec<Option<EpochSeconds>>,
+        metrics: Metrics,
+        tasks: crate::engine::TaskList,
+    ) -> Self {
+        ViewDelta {
+            reset,
+            committed_delta,
+            committed_len,
+            provisional,
+            changed_from,
+            user_times,
+            metrics,
+            tasks,
+        }
+    }
 }
 
 /// The mutable state of one followed session, guarded as a unit by [`SharedSession`]'s `Mutex`.

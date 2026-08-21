@@ -65,48 +65,64 @@ use crate::Transcript;
 /// session domain — every followed session's single full presentation copy, held by its
 /// [`SharedSession`] — so consumers keep only presentation state.
 pub struct SessionCache<P: BlockStore = TierBStore, A = ()> {
-    /// Registered: every known session → its [`Transcript`] source handle.
-    registry: Mutex<HashMap<String, Transcript>>,
-    /// Resident: one [`SharedSession`] per id a consumer is following (`Arc` so any number
-    /// of request threads share it). A resident kind of its own
-    /// because it serves a different protocol (cursor pulls, borrow-to-tail) than the `poll`
-    /// followers, but under the same owner and the same [`reap`](Self::reap) policy.
-    pull_residents: Mutex<HashMap<String, PullResident<P>>>,
-    /// The per-session **presentation sidecar** slot (#75): derived, view-parameter-DEPENDENT
-    /// state a frontend associates with a session (e.g. the TUI's measured block heights +
-    /// fold/scroll state) — the cache-level home for what `BlockStore::put`'s put-once
-    /// contract forbids in `Bv`. Opaque to the cache; **the consumer owns validity** (the
-    /// cache can't know about resizes — a sidecar carries its own validity key and the
-    /// adopter discards on mismatch). Registry-lifetime: reaping a resident does NOT drop
-    /// its sidecar.
-    aux: Mutex<HashMap<String, A>>,
+    /// ONE map: session key → the session's [`Slot`] (#167 §4.2a). Get-or-insert is cheap
+    /// (no I/O under the map lock), so this mutex is held for microseconds and there is
+    /// nothing else at this level to coordinate — the old global `admitting` gate and the
+    /// three-way registry/residents/aux split are gone.
+    slots: Mutex<HashMap<String, std::sync::Arc<Slot<P, A>>>>,
     /// The entry provider (#96/#167), absent on an [`ephemeral`](Self::ephemeral) cache. No
     /// flag selects `None` any more — `--no-cache` builds a real cache at its own root (#165)
     /// — so in production this is always `Some`, and a cache without it can only deny.
-    /// (Becomes the always-present generic `E: Entries` at §8 step 2b.)
+    /// (Becomes the always-present generic `E: Entries` at §8 step 3/4.)
     entries: Option<fs::PerSession>,
-    /// **One admission at a time** (#169). [`admit`](Self::admit) is not atomic: between a
-    /// caller finding no resident and this cache installing one, every other caller finds no
-    /// resident too. They all open a store on the same backing, and `lock::acquire` grants every
-    /// one of them because none is a different process — so a session admitted by N concurrent
-    /// requests is folded and WRITTEN by N of them at once. A gate rather than per-id state
-    /// because an admission is short (open the backing, walk it) where a fold is long, and the
-    /// long part happens outside it.
-    admitting: Mutex<()>,
 }
 
-/// A pull-servable resident: its idle clock + the shared session. Tier-b-backed — the committed
-/// block content of a followed session lives in the store's on-disk backing, not RAM.
-type PullResident<P> = (Instant, std::sync::Arc<SharedSession<P>>);
+/// Everything the cache knows about one session, as one unit (#167 §4.2a).
+struct Slot<P: BlockStore, A> {
+    /// The tier-(c) source. Its own brief cell: `register` overwrites it, `resolve` reads
+    /// it, neither touches residency or the drive. `None` for a slot created by a sidecar
+    /// park before any registration.
+    transcript: Mutex<Option<Transcript>>,
+    /// The per-session single-flight (#169, §4.2a): whoever holds this drives, and a COLD
+    /// slot's first drive performs the whole of admission — there is no separate install
+    /// step to interleave with, so the old bug class is unrepresentable rather than gated.
+    /// Held across the provider's slow open; NEVER taken by `touch`/`shared_peek`, so reads
+    /// of a session mid-admission behave exactly as before — and admissions of DIFFERENT
+    /// sessions no longer convoy each other.
+    opening: Mutex<()>,
+    /// Residency — brief accesses only; the slow open above never holds this.
+    state: Mutex<SlotState<P>>,
+    /// The per-session **presentation sidecar** (#75), in its OWN cell so a park/take never
+    /// waits out a fold in progress. The aux CONTRACT (§4.2a): parked bundles (adopter
+    /// revalidates on take) or id-keyed maps — never live block-ordinal-derived state.
+    /// Registry-lifetime: reaping the resident does not drop it.
+    aux: Mutex<Option<A>>,
+}
+
+struct SlotState<P: BlockStore> {
+    last_seen: Instant,
+    resident: Option<std::sync::Arc<SharedSession<P>>>,
+}
+
+impl<P: BlockStore, A> Slot<P, A> {
+    fn empty() -> Self {
+        Slot {
+            transcript: Mutex::new(None),
+            opening: Mutex::new(()),
+            state: Mutex::new(SlotState {
+                last_seen: Instant::now(),
+                resident: None,
+            }),
+            aux: Mutex::new(None),
+        }
+    }
+}
 
 impl<P: BlockStore, A> Default for SessionCache<P, A> {
     fn default() -> Self {
         Self {
-            registry: Mutex::new(HashMap::new()),
-            pull_residents: Mutex::new(HashMap::new()),
-            aux: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
             entries: None,
-            admitting: Mutex::new(()),
         }
     }
 }
@@ -124,15 +140,29 @@ impl<P: BlockStore, A> SessionCache<P, A> {
         Self::default()
     }
 
-    /// Store `id`'s presentation sidecar (see the field docs — consumer-owned validity).
+    /// The slot for `id`, if one exists — a brief map lookup, the `Arc` cloned out.
+    fn slot(&self, id: &str) -> Option<std::sync::Arc<Slot<P, A>>> {
+        lock_recover(&self.slots).get(id).cloned()
+    }
+
+    /// The slot for `id`, created empty on first sight — a map op, no I/O, no lock beyond
+    /// the map's own (#167 §4.2a: registration is drive-free by design).
+    fn slot_or_insert(&self, id: &str) -> std::sync::Arc<Slot<P, A>> {
+        lock_recover(&self.slots)
+            .entry(id.to_string())
+            .or_insert_with(|| std::sync::Arc::new(Slot::empty()))
+            .clone()
+    }
+
+    /// Store `id`'s presentation sidecar (see the slot docs — consumer-owned validity).
     pub fn aux_put(&self, id: &str, a: A) {
-        lock_recover(&self.aux).insert(id.to_string(), a);
+        *lock_recover(&self.slot_or_insert(id).aux) = Some(a);
     }
 
     /// Take `id`'s presentation sidecar out (move semantics: the adopter re-installs on its
     /// next eviction, so a sidecar is never stale-shared).
     pub fn aux_take(&self, id: &str) -> Option<A> {
-        lock_recover(&self.aux).remove(id)
+        lock_recover(&self.slot(id)?.aux).take()
     }
 
     /// Read/mutate `id`'s sidecar in place (created default on first touch) — the shape for
@@ -142,30 +172,35 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     where
         A: Default,
     {
-        f(lock_recover(&self.aux).entry(id.to_string()).or_default())
+        let slot = self.slot_or_insert(id);
+        let mut g = lock_recover(&slot.aux);
+        f(g.get_or_insert_with(A::default))
     }
 
-    /// Register (or overwrite) a session's tier-(c) source.
+    /// Register (or overwrite) a session's tier-(c) source — an un-driven slot (#167 §4.2a).
     pub fn register(&self, id: &str, src: Transcript) {
-        lock_recover(&self.registry).insert(id.to_string(), src);
+        *lock_recover(&self.slot_or_insert(id).transcript) = Some(src);
     }
 
     /// Register a session only if not already known — preserves the first (richest,
     /// ancestry-bearing) descriptor against a later bare fallback.
     pub fn register_new(&self, id: &str, src: Transcript) {
-        lock_recover(&self.registry)
-            .entry(id.to_string())
-            .or_insert(src);
+        let slot = self.slot_or_insert(id);
+        let mut t = lock_recover(&slot.transcript);
+        if t.is_none() {
+            *t = Some(src);
+        }
     }
 
     /// Whether `id` has a tier-(c) source.
     pub fn is_registered(&self, id: &str) -> bool {
-        lock_recover(&self.registry).contains_key(id)
+        self.slot(id)
+            .is_some_and(|s| lock_recover(&s.transcript).is_some())
     }
 
     /// The tier-(c) source for `id`, if known.
     pub fn resolve(&self, id: &str) -> Option<Transcript> {
-        lock_recover(&self.registry).get(id).cloned()
+        lock_recover(&self.slot(id)?.transcript).clone()
     }
 
     /// Evict follower residents beyond `budget` — least-recently-touched first — never evicting
@@ -173,18 +208,26 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// The navigation-recency residency policy the TUI rides: evicted residents
     /// re-materialize from the registry on their next poll (a fresh whole-file fold).
     pub fn reap_over_budget(&self, budget: usize, pinned: &str) {
-        let mut residents = lock_recover(&self.pull_residents);
-        let mut others: Vec<(String, Instant)> = residents
+        let slots: Vec<(String, std::sync::Arc<Slot<P, A>>)> = lock_recover(&self.slots)
             .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
+        let mut others: Vec<(std::sync::Arc<Slot<P, A>>, Instant)> = slots
+            .into_iter()
             .filter(|(id, _)| id.as_str() != pinned)
-            .map(|(id, (last_seen, _))| (id.clone(), *last_seen))
+            .filter_map(|(_, slot)| {
+                let g = lock_recover(&slot.state);
+                let seen = g.resident.is_some().then_some(g.last_seen);
+                drop(g);
+                seen.map(|t| (slot, t))
+            })
             .collect();
         if others.len() <= budget {
             return;
         }
         others.sort_by_key(|(_, last_seen)| *last_seen); // oldest first
-        for (id, _) in &others[..others.len() - budget] {
-            residents.remove(id);
+        for (slot, _) in &others[..others.len() - budget] {
+            lock_recover(&slot.state).resident = None;
         }
     }
 
@@ -197,23 +240,19 @@ impl<P: BlockStore, A> SessionCache<P, A> {
         id: &str,
         open: impl FnOnce() -> SharedSession<P>,
     ) -> std::sync::Arc<SharedSession<P>> {
-        let mut m = lock_recover(&self.pull_residents);
-        let entry = m
-            .entry(id.to_string())
-            .or_insert_with(|| (Instant::now(), std::sync::Arc::new(open())));
-        entry.0 = Instant::now();
-        entry.1.clone()
+        let slot = self.slot_or_insert(id);
+        let mut g = lock_recover(&slot.state);
+        g.last_seen = Instant::now();
+        g.resident
+            .get_or_insert_with(|| std::sync::Arc::new(open()))
+            .clone()
     }
 
     /// Peek at an already-resident pull session **without** materializing or touching its idle
     /// clock — for a read that shouldn't keep the session alive (e.g. a child deriving its title
     /// from its parent's maintained meta iff the parent happens to be resident).
     pub fn shared_peek(&self, id: &str) -> Option<std::sync::Arc<SharedSession<P>>> {
-        self.pull_residents
-            .lock()
-            .unwrap()
-            .get(id)
-            .map(|(_, ss)| ss.clone())
+        lock_recover(&self.slot(id)?.state).resident.clone()
     }
 
     /// Evict every resident idle for longer than `ttl_ms` back down to tier (c). Their registry
@@ -236,18 +275,22 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// `shared_peek`, `shared_session`) is handed out under this same map lock, so no new
     /// reference can appear while the count is being read.
     pub fn reap(&self, ttl_ms: u128) -> Vec<(String, std::sync::Arc<SharedSession<P>>)> {
+        let slots: Vec<(String, std::sync::Arc<Slot<P, A>>)> = lock_recover(&self.slots)
+            .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
         let mut evicted = Vec::new();
-        self.pull_residents
-            .lock()
-            .unwrap()
-            .retain(|id, (last_seen, ss)| {
-                let in_use = std::sync::Arc::strong_count(ss) > 1;
-                let keep = in_use || last_seen.elapsed().as_millis() < ttl_ms;
-                if !keep {
-                    evicted.push((id.clone(), ss.clone()));
-                }
-                keep
-            });
+        for (id, slot) in slots {
+            let mut g = lock_recover(&slot.state);
+            let Some(ss) = &g.resident else { continue };
+            // `strong_count` is exact here: every clone of THIS resident is handed out
+            // under this same slot-state lock, so no new reference can appear while the
+            // count is being read.
+            let in_use = std::sync::Arc::strong_count(ss) > 1;
+            if !in_use && g.last_seen.elapsed().as_millis() >= ttl_ms {
+                evicted.push((id, g.resident.take().expect("just matched")));
+            }
+        }
         evicted
     }
 
@@ -260,16 +303,19 @@ impl<P: BlockStore, A> SessionCache<P, A> {
     /// The resident for `id`, bumping its idle clock — a read that keeps the session alive
     /// without being able to materialize one.
     pub fn touch(&self, id: &str) -> Option<std::sync::Arc<SharedSession<P>>> {
-        let mut m = lock_recover(&self.pull_residents);
-        let e = m.get_mut(id)?;
-        e.0 = Instant::now();
-        Some(e.1.clone())
+        let slot = self.slot(id)?;
+        let mut g = lock_recover(&slot.state);
+        let ss = g.resident.clone()?;
+        g.last_seen = Instant::now();
+        Some(ss)
     }
 
     /// Drop one pull resident immediately (regardless of idle time) — used when a resident turns
     /// out to be poisoned ([`SharedSession::poisoned`]) and must be replaced by a fresh session.
     pub fn remove_pull(&self, id: &str) {
-        lock_recover(&self.pull_residents).remove(id);
+        if let Some(slot) = self.slot(id) {
+            lock_recover(&slot.state).resident = None;
+        }
     }
 }
 
@@ -307,16 +353,35 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         make_store: impl FnOnce(&Path) -> std::io::Result<P>,
         alive: impl Fn(&Holder<N>) -> bool,
     ) -> Admission<P, N> {
-        // Admissions of ANY session are serialized, and the resident is re-checked once this
-        // caller is through the gate (#169). Without both halves, concurrent first-pulls of one
-        // session each open their own store on the same backing and each fold into it — every
-        // caller sees no resident because the winner has not installed one yet, and `acquire`
-        // denies none of them because none is a different process. The evidence is a record log
-        // whose lines carry up to six records, scrambled and duplicated: not two writers, N.
-        let _gate = lock_recover(&self.admitting);
+        // A live resident IS the admission — take it rather than opening a second one
+        // beside it. (Checked before the flight so the hot path is one slot lookup.)
         if let Some(session) = self.shared_peek(id).filter(|ss| !ss.frozen()) {
-            // Someone admitted it while we waited. A live resident IS the admission — take it
-            // rather than opening a second one beside it.
+            let committed = session.counters().2;
+            let _ = self.touch(id);
+            return Admission::Owned {
+                session,
+                origin: Origin::Retained { committed },
+            };
+        }
+        let Some(slot) = self.slot(id) else {
+            // No slot: nothing was ever registered here. The denial names the sharper of
+            // the two absences, exactly as before.
+            return Admission::Denied(Denial::Unavailable(if self.entries.is_some() {
+                Unavailable::UnknownSession
+            } else {
+                Unavailable::NoCacheFlag
+            }));
+        };
+        // The per-session single-flight (#169, §4.2a): concurrent first-admits of ONE
+        // session serialize here — the winner installs, the losers re-check below and take
+        // the winner's resident. Admissions of DIFFERENT sessions no longer convoy: the old
+        // global gate serialized a 2 KB open behind a 100 MB resume; this flight is scoped
+        // to the session it belongs to. `lock::acquire` cannot arbitrate threads (our own
+        // pid reads as ours), which is why this mutex — not the entry LOCK — is what makes
+        // N concurrent first-pulls produce ONE writer instead of N interleaved ones.
+        let _flight = lock_recover(&slot.opening);
+        if let Some(session) = self.shared_peek(id).filter(|ss| !ss.frozen()) {
+            // Someone admitted it while we waited on the flight.
             let committed = session.counters().2;
             let _ = self.touch(id);
             return Admission::Owned {
@@ -327,7 +392,7 @@ impl<P: DurableStore, A> SessionCache<P, A> {
         let Some(entries) = &self.entries else {
             return Admission::Denied(Denial::Unavailable(Unavailable::NoCacheFlag));
         };
-        let Some(src) = self.resolve(id) else {
+        let Some(src) = lock_recover(&slot.transcript).clone() else {
             return Admission::Denied(Denial::Unavailable(Unavailable::UnknownSession));
         };
         // A session this process RELEASED but kept resident (#109). `frozen` is the precise test:
@@ -396,8 +461,10 @@ impl<P: DurableStore, A> SessionCache<P, A> {
     /// Install a freshly built session as `id`'s resident, replacing whatever was there.
     fn install(&self, id: &str, session: SharedSession<P>) -> std::sync::Arc<SharedSession<P>> {
         let session = std::sync::Arc::new(session);
-        lock_recover(&self.pull_residents)
-            .insert(id.to_string(), (Instant::now(), session.clone()));
+        let slot = self.slot_or_insert(id);
+        let mut g = lock_recover(&slot.state);
+        g.last_seen = Instant::now();
+        g.resident = Some(session.clone());
         session
     }
 
@@ -447,7 +514,7 @@ impl<P: BlockStore, A> SessionCache<P, A> {
         // Quiesce every resident: each drop of an `EntryWriter` releases its own lock
         // (#167 §4.4) — there is no owned-locks map to walk any more, because the writer
         // IS the ownership.
-        let ids: Vec<String> = lock_recover(&self.pull_residents).keys().cloned().collect();
+        let ids: Vec<String> = lock_recover(&self.slots).keys().cloned().collect();
         for id in ids {
             self.release(&id);
         }
