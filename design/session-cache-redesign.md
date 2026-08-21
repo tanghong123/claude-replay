@@ -338,7 +338,10 @@ impl SessionCache {
     pub fn admit(&self, id: &str,
         make_store: impl Fn(&Path) -> io::Result<P>) -> Admission<P>;  // the ONLY creator of residents
     pub fn publish(&self, id: &str, note: E::Note) -> bool;  // forwards to the provider (HTML port only)
-    pub fn quiesce(&self, id: &str);                // stop writing; the UNLOCK is automatic (§4.4)
+    pub fn quiesce(&self, id: &str);                // stop writing; the entry's PROCESS-level
+                                                    // LOCK file releases automatically — the
+                                                    // writer's drop IS the unlock (§4.4; thread
+                                                    // locks are call-scoped and never held here)
     // Everything else is unchanged: touch, shared_peek, poll_view, reap, reap_over_budget,
     // register/register_new/is_registered/resolve, aux_put/aux_take/aux_with.
 }
