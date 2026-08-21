@@ -8,6 +8,12 @@
 >
 > Written to be readable without knowing Rust or this codebase. Rust syntax is annotated where
 > it appears; a short glossary is at the end (§10).
+>
+> **Internals amended at owner review (2026-08-21), §4.2a:** the cache's internal topology is
+> one slot per session — get the slot, try to drive the tail, read — with **the first drive
+> being the admission**; there is no separate admission phase, no global gate, and no
+> three-way map split. `admit()` survives as a thin compatibility veneer, so §8's migration
+> steps and every call-site `match` are unchanged.
 
 ---
 
@@ -324,32 +330,43 @@ pub enum Opened<P, N> {
 **…and the cache around it, after** — the part the user of the cache actually holds:
 
 ```rust
-// AFTER — the cache (proposed)
+// AFTER — the cache (as amended at owner review, 2026-08-21; see §4.2a)
 pub struct SessionCache<P: BlockStore, A = (), E: Entries<P>> {
-    registry:   Mutex<HashMap<String, Transcript>>,      // unchanged
-    residents:  Mutex<HashMap<String, (Instant, Arc<SharedSession<P>>)>>,  // unchanged
-    aux:        Mutex<HashMap<String, A>>,               // unchanged
-    admitting:  Mutex<()>,   // unchanged — the thread gate stays HERE. Not redundant with the
-                             // per-map mutexes: those protect each map's bytes, this makes the
-                             // admission SEQUENCE atomic (peek-miss → slow open → install).
-                             // The entry LOCK cannot arbitrate threads (pid-based: our own pid
-                             // reads as ours), and holding `residents` across the open would
-                             // starve every unrelated reader — see #169, where N concurrent
-                             // first-pulls each folded and wrote the same backing.
-    entries:    E,                                       // ALWAYS present. No Option, no forked behavior.
+    /// ONE map: session key → the session's slot. Get-or-insert is cheap (the transcript
+    /// and empty state — no I/O under the map lock), so the map mutex is held for
+    /// microseconds and there is nothing else at this level to coordinate.
+    slots:   Mutex<HashMap<String, Arc<Slot<P, A>>>>,
+    entries: E,          // ALWAYS present. No Option, no forked behavior.
+}
+
+/// Everything the cache knows about one session, as one unit. The slot's mutex is the
+/// per-session single-flight: whoever holds it drives (and, cold, ADMITS — the first drive
+/// performs what admission used to: take the entry LOCK, read the meta stream, align, fold).
+/// A second thread waits on it or skips to read. There is no global admitting gate and no
+/// separate install step to interleave with — the #169 class is unrepresentable, not guarded:
+/// the old design needed a gate because peek-miss → slow open → install was a SEQUENCE across
+/// maps that per-map mutexes could not make atomic, and the entry LOCK cannot arbitrate
+/// threads (pid-based: our own pid reads as ours). Here the slot is the unit and its mutex
+/// is the sequence.
+struct Slot<P, A> {
+    transcript: Transcript,
+    state: Mutex<SlotState<P, A>>,     // resident + entry outcome + aux, guarded as a unit
 }
 
 impl SessionCache {
     pub fn new(entries: E) -> Self;                 // the ONLY constructor; no I/O side effects
+    /// The compatibility VENEER: get-or-insert the slot, drive once, translate the slot's
+    /// state into `Owned`/`Denied`. Call sites keep their existing `match` untouched.
     pub fn admit(&self, id: &str,
-        make_store: impl Fn(&Path) -> io::Result<P>) -> Admission<P>;  // the ONLY creator of residents
+        make_store: impl Fn(&Path) -> io::Result<P>) -> Admission<P>;
     pub fn publish(&self, id: &str, note: E::Note) -> bool;  // forwards to the provider (HTML port only)
     pub fn quiesce(&self, id: &str);                // stop writing; the entry's PROCESS-level
                                                     // LOCK file releases automatically — the
                                                     // writer's drop IS the unlock (§4.4; thread
                                                     // locks are call-scoped and never held here)
-    // Everything else is unchanged: touch, shared_peek, poll_view, reap, reap_over_budget,
-    // register/register_new/is_registered/resolve, aux_put/aux_take/aux_with.
+    // Everything else keeps its signature: touch, shared_peek, poll_view, reap,
+    // reap_over_budget, register/register_new/is_registered/resolve, aux_put/aux_take/aux_with
+    // — each now a slot access instead of a per-map access.
 }
 
 /// Owned by the resident while it writes. Dropping it releases the entry lock —
@@ -368,6 +385,39 @@ Two deliberate details:
   "has anything changed?" check and passes one integer across the seam.
 - `Origin` survives unchanged. "The cache didn't help, and here is which of five reasons" is a
   support answer; the rejection tests assert on it.
+
+### 4.2a The slot topology: the first drive IS the admission (owner review, 2026-08-21)
+
+The owner's review replaced the first cut's internals (three maps + a global `admitting`
+gate) with the model above. The consumer protocol is *try-drive-then-read*: get the slot's
+`Arc`, try the driver mutex — hold it: drive the tail (a COLD slot's first drive performs
+the whole of admission: claim the entry `LOCK`, read the meta stream, run the `ours` witness,
+align, fold); don't hold it: someone is driving, read what is committed. There is **no
+special one-off initialization** — initialization is tailing for the first time.
+
+Everything §4's earlier machinery does relocates without changing:
+
+- **The `ours` witness and `Retained`** run inside a drive that finds a lingering resident
+  after a quiesce — same one-stat check, same three outcomes (§4.2's `ours` note).
+- **`Denied(Held(note))` becomes slot state**: a drive that finds a live peer's `LOCK` parks
+  the note; readers get the redirect; each later drive retries the claim — the same retry
+  cadence re-admission had.
+- **RAII release, eviction, refcounts** are untouched: the resident in the slot holds the
+  `EntryWriter`; reap removes the slot from the map while in-flight `Arc`s finish.
+- **The provider seam is untouched** — `Entries::open` is called from the first drive
+  instead of from an admission phase. Persistence stays out of the cache either way.
+
+What the topology buys beyond tidiness: the admission convoy disappears (the global gate
+serialized admissions of *different* sessions — a 100 MB resume blocked a 2 KB one; the slot
+mutex scopes the wait to the session it belongs to), and the #169 bug class is structural
+rather than guarded (no gate exists to forget — the mutex that prevents the double-open is
+the same mutex that drives).
+
+> **OPEN — owner call, before build:** after a `quiesce`, if a *peer process* takes the entry
+> before our next drive, the slot holds readable (stale) blocks AND a `Denied(note)`.
+> Frontend policy: serve the retained blocks read-only, or redirect to the peer? (The
+> question exists in the current design too — re-admission after quiesce can be denied the
+> same way — the slot shape just makes it visible enough to need an answer in writing.)
 
 ### 4.3 The three providers
 
@@ -422,8 +472,8 @@ Two levels, three moments, and after the redesign each has exactly one owner:
 | moment | mechanism | level | owner |
 |---|---|---|---|
 | provider construction | `SingleWriter::claim`: root `LOCK` or redirect | process (whole cache) | provider |
-| admission | the `admitting` gate — a critical section, held only during `admit` | thread | cache |
-| admission | `PerSession`: the entry's `LOCK` file | process (one session) | provider |
+| admission = first drive | the slot's driver mutex — per-session single-flight (§4.2a) | thread | slot |
+| admission = first drive | `PerSession`: the entry's `LOCK` file | process (one session) | provider |
 | resident lifetime | shared-reference count; reaping spares a resident still in use | thread | cache |
 | serving | the resident's internal mutex; a fold holds it start to finish | thread | resident |
 | release | **automatic**: dropping the `EntryWriter` releases the lock | process | writer |
@@ -628,6 +678,10 @@ knowledge of lock liveness rules.
 2. Extract `cache::fs` with `PerSession` + `SingleWriter` implementing `Entries`; the old
    constructors keep their signatures and build providers internally. The `EntryWriter` lease
    lands here (touch the admission body once, not twice). Pure re-plumbing; all tests unchanged.
+2b. Collapse the internals to the slot map (§4.2a) behind the unchanged `admit()` veneer —
+   the global gate and the three maps go; every call-site `match` compiles untouched, and the
+   §7 invariants (single writer per entry, witness, RAII release) are re-asserted by the same
+   tests. The serve-stale-vs-redirect policy question must be answered before this step.
 3. Flip the constructors: clients build providers; `gc` moves to the client; the monitor adopts
    `SingleWriter` (deleting its per-entry locks and hand-rolled `claim_root`); the TUI's note
    moves to construction.

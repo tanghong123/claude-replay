@@ -20,10 +20,13 @@
   exploration. The rule being implemented: the session cache has no knowledge of
   persistence — durability comes from `BlockStore` and the other provider interfaces,
   so the durable directory leaves the main cache API. Build starts on sign-off.
-  Review in progress: **§1.1 added 2026-08-20** — the three states (transcript / durable
-  entry / resident), the fact that no background thread reconciles them, and why the
-  client's call order (resident ← durable first, then one transcript pass advancing both)
-  is the cheap one. Design unchanged; this documents an existing property the doc assumed.
+  Review in progress — the spec sharpened four times on 2026-08-20/21 (`ours` named as the
+  entry-backing witness; quiesce's UNLOCK leveled; redirect placement per provider; the
+  admitting gate's why) and **amended once**: §4.2a (owner, 2026-08-21) replaces the
+  three-maps + global-gate internals with one slot per session, the first drive being the
+  admission, `admit()` kept as the compatibility veneer (migration step 2b). **One flagged
+  question for the owner before build**: post-quiesce peer takeover — serve the retained
+  blocks read-only, or redirect (§4.2a's OPEN box).
 
 ## Evidence-blocked
 
