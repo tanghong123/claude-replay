@@ -370,7 +370,9 @@ struct Slot<P, A> {
     /// key the delta offers, which cannot give a consumer STRONG consistency across a
     /// tail reshape — the remedy is block provenance ANCHORS (BACKLOG: stable
     /// per-block identity = first-source-line offset + emit ordinal), not a fold-side
-    /// callback. A fold-side "aux update callback" would invert the layering
+    /// callback. Interface-future-proofed rather than built (owner, 2026-08-21): the
+    /// build marks the reply types `#[non_exhaustive]` so `anchors` lands additively
+    /// when a real consumer arrives to validate the coalesce semantics. A fold-side "aux update callback" would invert the layering
     /// (the fold calling presentation) and put rendering work under the driver mutex;
     /// this cell's independence is CORRECT precisely because nothing in it may need
     /// fold-lockstep maintenance.
