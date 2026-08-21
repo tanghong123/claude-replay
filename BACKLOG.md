@@ -38,10 +38,9 @@
 ## Evidence-blocked
 
 - **#29 — Codex `update_goal` collapses goal states** (blocked→completed,
-  unknown→pending). Scanned 2026-08-20: the local 9-session Codex corpus never calls
-  `update_goal`/`update_plan` (only exec/wait/rowt/parity fired), so the real vocabulary
-  is still unobserved — and the fix wants a rendering call (should `blocked` stay
-  distinct from `completed`?) along with it.
+  unknown→pending). A Codex 0.147 transcript supplied on 2026-08-20 contains 17 real
+  `update_plan` calls, but `update_goal` remains unobserved — and the fix still wants a
+  rendering call (should `blocked` stay distinct from `completed`?) along with it.
 - **#30 — Qoder credits: absent `billable` defaults to billable.** Scanned 2026-08-20:
   zero `credits` lines across all 52 local QoderWork sessions — the credits path belongs
   to Qoder-the-IDE, which the owner does not use. Stays open awaiting a Qoder corpus.

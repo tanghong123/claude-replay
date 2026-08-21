@@ -426,6 +426,14 @@ fn quote_bare_js_keys(input: &str) -> String {
     let mut key_position = true;
     while i < bytes.len() {
         let byte = bytes[i];
+        if !byte.is_ascii() {
+            let Some(ch) = input.get(i..).and_then(|rest| rest.chars().next()) else {
+                break;
+            };
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
         if let Some(q) = quote {
             out.push(byte as char);
             if escaped {
@@ -2120,6 +2128,26 @@ mod tests {
                     && todos[1].text == "fix"
                     && todos[1].status == "in_progress"
         )));
+    }
+
+    /// Modern Codex wraps plan calls in JavaScript and may leave object keys unquoted. The
+    /// normalizer must quote those ASCII keys without reinterpreting UTF-8 string bytes.
+    #[test]
+    fn orchestrated_update_plan_preserves_utf8_text() {
+        let input = js_tool_object(
+            r#"const r = await tools.update_plan({plan:[{step:"冻结并验证真实 E2E",status:"in_progress"}]}); text(r);"#,
+            "update_plan",
+        )
+        .expect("plan object");
+        let op = codex_task_op("update_plan", &input).expect("task snapshot");
+
+        assert!(matches!(
+            op,
+            TaskOp::Snapshot { todos }
+                if todos.len() == 1
+                    && todos[0].text == "冻结并验证真实 E2E"
+                    && todos[0].status == "in_progress"
+        ));
     }
 
     /// Codex 0.147's `functions.exec` transport is not a shell command. Its paired
