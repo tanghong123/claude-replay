@@ -86,6 +86,13 @@ pub struct Args {
     /// that stem; `--dump -` prints plain text to stdout (for pipes / tests).
     #[cfg_attr(feature = "cli", arg(long, num_args(0..=1), value_name = "STEM"))]
     pub dump: Option<Option<String>>,
+    /// With `--dump`: emit the **structured block stream** instead of rendered text (#34)
+    /// — JSON Lines, one object per block: `kind` from the shared block classification,
+    /// per-TURN timestamps (`turn`, `turn_ts` — the model holds no per-block times), and
+    /// tool execution facts (`status`/`exit`/`ms`) where the source recorded them.
+    /// `--dump - --json` streams to stdout; with a stem, writes `<stem>.json`.
+    #[cfg_attr(feature = "cli", arg(long, requires = "dump"))]
+    pub json: bool,
     /// Width for `--dump` (columns). Defaults to the terminal width, else 100.
     #[cfg_attr(feature = "cli", arg(long, value_name = "N"))]
     pub width: Option<usize>,

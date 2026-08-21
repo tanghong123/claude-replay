@@ -31,6 +31,9 @@ drift.
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or
   `--width N`; bare `--dump` deduces the stem.) `--dump` renders through the View
   pipeline and applies the TUI's default fold policy (add `--full` to expand all).
+  `--dump - --json` instead emits the structured block stream (#34): JSON Lines, `kind`
+  from the shared classification, per-TURN timestamps, tool `status`/`exit`/`ms` — the
+  content half of the shell-out vocabulary (`--paths --all` is the discovery half).
 
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the

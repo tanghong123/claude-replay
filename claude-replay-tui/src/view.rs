@@ -4218,6 +4218,7 @@ mod tests {
             agent: None,
             latest: false,
             follow: false,
+            json: false,
             no_thinking: false,
             reads: false,
             results: false,

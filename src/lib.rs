@@ -92,10 +92,46 @@ pub fn run_viewer() -> Result<()> {
     } else if args.dump_html.is_some() {
         html_export::dump_html(&args, &path)
     } else if args.dump.is_some() {
-        tui::app::dump(&args, &path)
+        if args.json {
+            dump_json(&args, &path)
+        } else {
+            tui::app::dump(&args, &path)
+        }
     } else {
         tui::app::run(&args, &path)
     }
+}
+
+/// `--dump --json` (#34): emit the structured block stream and exit — the CONTENT half of
+/// the shell-out vocabulary (`--paths --all` is the discovery half). One JSON object per
+/// block from the same normalized stream the text dump renders; the emission itself lives
+/// in [`claude_replay_core::block_json`] beside the vocabulary it projects. `--dump -`
+/// streams to stdout; with a stem (given or deduced), writes `<stem>.json` and prints the
+/// stem last for scripting, mirroring the text dump's contract.
+fn dump_json(args: &Args, path: &std::path::Path) -> Result<()> {
+    let agent = claude_replay_core::discover::detect_agent(path);
+    // The flat parse: top-level blocks are identical to the enriched one's — a `SubAgent`
+    // emits spawn facts and its `agent_id`, and the child transcript is its own session
+    // (discoverable via `--paths --all`), not an inline sub-stream.
+    let session = claude_replay_core::parse_session_as(agent, path)?;
+    match args.dump.as_ref().and_then(|o| o.as_deref()) {
+        Some("-") => {
+            let out = std::io::stdout();
+            claude_replay_core::block_json::write_block_stream(&session, &mut out.lock())?;
+        }
+        stem => {
+            let stem = match stem {
+                Some(s) => s.to_string(),
+                None => claude_replay_present::sys::deduce_stem(path, None),
+            };
+            let mut f = std::io::BufWriter::new(std::fs::File::create(format!("{stem}.json"))?);
+            claude_replay_core::block_json::write_block_stream(&session, &mut f)?;
+            std::io::Write::flush(&mut f)?;
+            eprintln!("wrote {stem}.json ({} blocks)", session.blocks().len());
+            println!("{stem}"); // last stdout line = the stem, for scripting
+        }
+    }
+    Ok(())
 }
 
 /// `--paths`: emit the session's directory facts as one JSON object and exit. The stable

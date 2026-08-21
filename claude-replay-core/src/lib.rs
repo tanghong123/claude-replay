@@ -13,6 +13,7 @@
 //! "core is presentation-agnostic".
 
 mod adapter;
+pub mod block_json; // #34: the structured block stream (`--dump --json`)
 pub mod discover;
 pub mod liveness; // transcript-tree liveness signals (moved from jdi, #98 §10)
 mod session_entry;

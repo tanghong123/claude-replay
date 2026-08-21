@@ -2148,6 +2148,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         agent: None,
         latest: false,
         follow: true,
+        json: false,
         no_cache: false,
         no_thinking: false,
         reads: false,
