@@ -64,7 +64,7 @@
 
 ## Queued
 
-- **`--dump --json`: the structured block stream** (owner, 2026-08-21; the second half of
+- **#34 — `--dump --json`: the structured block stream** (2026-08-21; the second half of
   the shell-out vocabulary `--paths --all` opened): emit `Session::blocks()` as JSON —
   `{i, turn, ts, kind, text | name/target/exit/ms/output}` — with `kind` from the existing
   `fold_key` classification so the JSON never invents a vocabulary the renderers don't
@@ -73,9 +73,9 @@
   hold. Why: the engine already folds all four agents into one `Block` vocabulary — a
   consumer that can't link the crate (whid, the cross-repo progress collector) otherwise
   writes one transcript slicer per agent, and only ever gets around to writing Claude's.
-  Its contract, and the ownership split behind it, is written up in
-  `~/code/whid/design/agent-seams.md` §"Seam 3". Gate: the text `--dump` output must stay
-  byte-identical (the JSON is a second emission, not a re-render).
+  The full contract — field shapes, the per-TURN timestamp constraint, and the ownership
+  split behind it — is in issue #34. Gate: the text `--dump` output must stay byte-identical
+  (the JSON is a second emission, not a re-render).
 
 - **Architecture doc refresh** (owner, 2026-08-21; unblocked — #167 shipped v1.98.0):
   bring `docs/architecture.md` (+ the `.html` twin) up to date on the two structural
