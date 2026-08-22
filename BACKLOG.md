@@ -11,6 +11,18 @@
 > its entry (the commit and the design doc's status header are the record; this file lists
 > only live work). Any agent picking up work in this repo reads this file first.
 
+## Needs an owner decision
+
+- **Rename runtime binaries to `agent-replay`/`agent-monitor`/`agent-monitor-fleet`** —
+  Aone MR 29453310 (云辙, 2026-08-22). The motive is sound (the tool outgrew the
+  `claude-` prefix), but it is a product-naming call with a coordinated-migration cost:
+  Homebrew tap needs old formulas aliased/deprecated (tap-repo side), `cargo binstall`
+  metadata must follow the asset rename, agent-metrics reads the monitor's state path
+  by its old name (cross-repo pin), README/docs/repo name stay un-renamed in this MR,
+  and the branch as-is fails to compile (`CARGO_BIN_EXE_claude-replay` in 7 test sites)
+  plus inverts the legacy-scratch sweep. Full review on the MR. Decide: adopt (with a
+  staged migration plan) or decline; nothing lands until then.
+
 ## Bugs / regressions
 
 - **HTML view: near-bottom viewport creeps on tail growth** (owner, 2026-08-20): with the
