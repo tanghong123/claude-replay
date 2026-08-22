@@ -1,8 +1,9 @@
 # agent-replay — Developer Guide
 
-> A standalone, visual render of this guide lives at
-> [`docs/developer-guide.html`](developer-guide.html); the architecture companion at
-> [`docs/architecture.html`](architecture.html).
+> A standalone, visual render of this guide is published at
+> [tanghong123.github.io/claude-replay/developer-guide.html](https://tanghong123.github.io/claude-replay/developer-guide.html);
+> the architecture companion at
+> […/architecture.html](https://tanghong123.github.io/claude-replay/architecture.html).
 
 Practical guidance for working on — and building on — the `agent-replay` workspace (crate
 names keep the historical `claude-replay-*` prefix; the binaries are `agent-replay`,

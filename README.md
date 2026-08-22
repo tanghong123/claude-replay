@@ -298,6 +298,10 @@ cargo test --test tmux_smoke -- --ignored   # opt-in end-to-end via private tmux
 
 ### Developer docs
 
+> **Hosted:** [architecture](https://tanghong123.github.io/claude-replay/architecture.html) ·
+> [developer guide](https://tanghong123.github.io/claude-replay/developer-guide.html) ·
+> [API reference](https://tanghong123.github.io/claude-replay/) — rebuilt on every push.
+
 - **[docs/architecture.md](docs/architecture.md)** — the system design: the three-layer
   engine (decode → fold → present), the two-crate boundary, the data model, and the
   per-agent `TranscriptAdapter` seam. (Also as a standalone graphics-rich page:

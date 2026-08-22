@@ -1,9 +1,11 @@
 name: API docs
 
 # Build the rustdoc API reference (every object, internal + external) and publish it to
-# GitHub Pages on every push to main. The reference is generated from source, never committed,
-# so it stays in sync with the code. RUSTDOCFLAGS denies warnings, so a broken doc link fails
-# the build (the reference can't silently rot).
+# GitHub Pages on every push to main — together with the two standalone documentation
+# pages (docs/architecture.html, docs/developer-guide.html) and a small landing hub that
+# links all three. The reference is generated from source, never committed, so it stays in
+# sync with the code. RUSTDOCFLAGS denies warnings, so a broken doc link fails the build
+# (the reference can't silently rot).
 #
 # One-time setup: repo Settings → Pages → Build and deployment → Source = "GitHub Actions".
 
@@ -36,12 +38,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the reference (both crates, incl. internal items)
         run: cargo doc --workspace --no-deps --document-private-items
-      - name: Landing redirect → the engine crate
+      - name: Add the documentation pages and the landing hub
         run: |
-          echo '<!doctype html><meta charset="utf-8">' \
-               '<meta http-equiv="refresh" content="0; url=claude_replay_core/index.html">' \
-               '<a href="claude_replay_core/index.html">claude-replay API reference</a>' \
-               > target/doc/index.html
+          cp docs/architecture.html docs/developer-guide.html target/doc/
+          cat > target/doc/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>agent-replay — documentation</title>
+          <style>
+            :root{--paper:#f2f3f5;--surface:#fff;--ink:#191c22;--muted:#5c6675;--line:#e2e5ea;--accent:#b9741f}
+            @media (prefers-color-scheme:dark){:root{--paper:#0e1116;--surface:#151a21;--ink:#dfe4ec;--muted:#98a2b1;--line:#242b35;--accent:#e3a659}}
+            body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+            .wrap{max-width:680px;margin:0 auto;padding:56px 20px}
+            h1{font-size:28px;margin:0 0 6px}.sub{color:var(--muted);margin:0 0 32px}
+            a.card{display:block;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+                   padding:18px 20px;margin:14px 0;text-decoration:none;color:inherit}
+            a.card:hover{border-color:var(--accent)}
+            a.card b{color:var(--accent)}
+            a.card span{display:block;color:var(--muted);font-size:14px;margin-top:4px}
+          </style>
+          </head>
+          <body><div class="wrap">
+          <h1>⏺ agent-replay</h1>
+          <p class="sub">Read-only replay of AI coding-agent sessions — Claude Code, Codex, Qoder, QoderWork.</p>
+          <a class="card" href="architecture.html"><b>Architecture</b><span>How it works under the hood: the pipeline, the per-agent seam, the sans-io fold, the bounded eliding reader, the unified session cache, the sync protocols.</span></a>
+          <a class="card" href="developer-guide.html"><b>Developer Guide</b><span>Build &amp; test, which crate for which job, worked examples for every reuse level, adding an agent, building your own frontend.</span></a>
+          <a class="card" href="claude_replay_core/index.html"><b>API Reference</b><span>The exhaustive per-object rustdoc, internals included — regenerated from source on every push.</span></a>
+          <p class="sub" style="margin-top:32px"><a href="https://github.com/tanghong123/claude-replay" style="color:var(--muted)">github.com/tanghong123/claude-replay</a></p>
+          </div></body>
+          </html>
+          EOF
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,10 +1,11 @@
 # agent-replay — Architecture
 
 > This Markdown is the maintained source of the architecture narrative (it renders inline on
-> GitHub). A **standalone, graphics-rich HTML render** of the same material lives at
-> [`docs/architecture.html`](architecture.html) (and the guide at
-> [`docs/developer-guide.html`](developer-guide.html)) — open locally or host; regenerate when
-> the architecture changes. For the exhaustive per-object API, generate the reference with
+> GitHub). A **standalone, graphics-rich HTML render** of the same material is published at
+> [tanghong123.github.io/claude-replay/architecture.html](https://tanghong123.github.io/claude-replay/architecture.html)
+> (the guide at
+> […/developer-guide.html](https://tanghong123.github.io/claude-replay/developer-guide.html));
+> the sources live beside this file — regenerate them when the architecture changes. For the exhaustive per-object API, generate the reference with
 > `cargo apidoc` (see the
 > [Developer Guide](developer-guide.md#the-api-reference-auto-generated-always-in-sync)).
 
