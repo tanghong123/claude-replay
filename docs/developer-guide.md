@@ -1,12 +1,14 @@
-# claude-replay — Developer Guide
+# agent-replay — Developer Guide
 
 > A standalone, visual render of this guide lives at
 > [`docs/developer-guide.html`](developer-guide.html); the architecture companion at
 > [`docs/architecture.html`](architecture.html).
 
-Practical guidance for working on — and building on — the `claude-replay` workspace: how to
-build and test it, which crate to depend on for which job, how to add an agent, and how to
-build a new presentation on the shared layers. For the system design behind all of this, see
+Practical guidance for working on — and building on — the `agent-replay` workspace (crate
+names keep the historical `claude-replay-*` prefix; the binaries are `agent-replay`,
+`agent-monitor`, `agent-monitor-fleet`, `agent-jdi`): how to build and test it, which crate
+to depend on for which job, how to add an agent, and how to build a new presentation on the
+shared layers. For the system design behind all of this, see
 [Architecture](architecture.md).
 
 ---
@@ -23,7 +25,7 @@ cargo test  --workspace       # deterministic; every crate; no terminal needed
 ```sh
 cargo fmt --check
 cargo clippy --all-targets    # no new warnings
-cargo test                    # workspace default-members = all seven crates
+cargo test                    # workspace default-members = every crate
 scripts/gate/gate.sh          # byte-identical frozen-fixture diff → must print PASS
 RUSTDOCFLAGS="--deny warnings" cargo doc --workspace --no-deps --document-private-items
 ```
@@ -59,8 +61,10 @@ terminal". Three levels:
 2. **End-to-end.** `tests/tmux_smoke.rs` runs the real binary inside a private `tmux -L`
    server with no controlling TTY, driving it via `send-keys`/`capture-pane`. It's
    `#[ignore]`d; run `cargo test --test tmux_smoke -- --ignored`.
-3. **Quick plain check.** `claude-replay <path|--latest> --dump -` renders the transcript to
-   stdout with no TUI — good for eyeballing parsing/markdown/diffs in a pipe.
+3. **Quick plain check.** `agent-replay <path|--latest> --dump -` renders the transcript to
+   stdout with no TUI — good for eyeballing parsing/markdown/diffs in a pipe. Add `--json`
+   for the structured block stream instead (one JSON object per block — `kind`, per-turn
+   timestamps, tool `status`/`exit`/`ms`), the shell-out form for non-Rust consumers.
 
 ## 3. The crates and their responsibilities
 
@@ -142,7 +146,9 @@ no session assembly.
 
 ### Bring your own I/O — the sans-io accumulator
 
-That follower is just `LineReader + SessionAccumulator`. When the lines come from somewhere
+That follower is just `LineSource + SessionAccumulator` — the bounded eliding line reader
+(oversized string values become exact-substitution markers; offsets always index raw bytes)
+feeding the fold. When the lines come from somewhere
 the library shouldn't dictate — a socket, an mmap, a test vector — drive the
 **sans-io [`SessionAccumulator`]** yourself, and *read it while it runs*
 ([Architecture §5](architecture.md#5-the-sans-io-accumulator--one-fold-every-acquisition-mode)
@@ -183,8 +189,12 @@ the I/O around it differs. Two performance levers worth knowing:
 ### Attachments load lazily
 
 Embedded files and images never balloon a resident `Session`: an `Attachment` block holds a
-**locator**, never the bytes. `session.index.attachments` lists them (`kind · name · at`);
-load one on demand through the source handle, use it, drop it:
+**locator**, never the bytes. The locator is `AttachmentContent::Deferred { at, index, span }`
+— the raw line's byte offset, the ordinal among that line's loadable attachments, and (when
+the bounded reader elided the value during the parse) an optional **span hint** pointing
+straight at the bytes, so loading seeks directly instead of re-scanning the line.
+`session.index.attachments` lists them (`kind · name · at`); load one on demand through the
+source handle, use it, drop it:
 
 ```rust
 use claude_replay_core::{Block, LoadedAttachment, Transcript, model::AttachmentContent};
@@ -192,8 +202,8 @@ use claude_replay_core::{Block, LoadedAttachment, Transcript, model::AttachmentC
 let transcript = Transcript::detect(&path);      // the same handle that parsed it
 let entry = &session.index.attachments[i];       // picked from the rollup
 if let Block::Attachment(a) = &session.blocks()[entry.at] {
-    if let AttachmentContent::Deferred { at, index } = a.content {
-        match transcript.load_attachment(at, index)? {  // re-reads ONE transcript line
+    if let AttachmentContent::Deferred { .. } = a.content {
+        match transcript.load_attachment(&a.content)? { // seeks the span, or re-reads ONE line
             Some(LoadedAttachment::Text(body)) => save(&a.name, &body),
             Some(LoadedAttachment::Base64 { mime, b64 }) => embed(&mime, &b64),
             None => {}                              // stale locator — nothing loadable
@@ -230,8 +240,8 @@ summaries. What it hands you, and where our own frontends use exactly the same t
 
 | entity | what it does for you | real consumer in this repo |
 |---|---|---|
-| [`SessionCache<P, A>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a)): keyed residency + your choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol, #85), the sidecar type `A`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcLog, ViewSidecar>` · HTML server: `SessionCache<RecordStore, ServeAux>` — same type, both frontends |
-| `SessionCache::durable` + [`DurableStore`] | **the cross-run cache** ([Architecture §7](architecture.md#across-runs-the-durable-session-cache)): a later process resumes the fold instead of re-reading the transcript — `admit` does the locking, validation, alignment and resume-or-rebuild decision behind one call | both frontends; `--no-cache` selects `ephemeral()` |
+| [`SessionCache<P, A, E>`] | **the unified data layer** ([Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a-e)): keyed residency + your three choices — the live store `P` (ONE resident kind serves both the in-process view and the wire protocol), the sidecar type `A`, the durable entry provider `E`; 30 s TTL reaps idle residents | TUI: `SessionCache<ArcLog, ViewSidecar, TuiEntries>` · HTML server: `SessionCache<RecordStore, ServeAux, HtmlEntries>` — same type, both frontends |
+| the entry providers ([`Entries`]: `PerSession` / `SingleWriter` / `Transient`) + [`DurableStore`] | **the cross-run cache** ([Architecture §7](architecture.md#across-runs-the-durable-session-cache)): a later process resumes the fold instead of re-reading the transcript — `admit` does the locking, validation, alignment and resume-or-rebuild decision behind one call; the provider (built by YOU, once, at startup) owns everything filesystem-shaped | both frontends; `--no-cache` selects `Transient` — still a real cache, nothing durable |
 | `SharedSession` | a pull-servable live session: server-side patched committed/provisional zones + epoch/gen, and (when durable) the record writer that runs under the same lock as the fold | `serve.rs` builds one per followed session |
 | `Cursor`/`pull`/[`PullClient`] | the incremental wire protocol, both halves in Rust | the `/pull` route serves it; the embedded JS mirrors `PullClient` transition-for-transition |
 | `fold` (core) + `Args` | which block types start collapsed; the shared options type (clap only behind the `cli` feature) | both frontends call `args.fold_policy()` |
@@ -247,14 +257,17 @@ retains the ONE authoritative copy of the blocks while your view holds `Arc` ref
 (a tick costs O(delta) refcount bumps; a resync-from-zero is served from memory):
 
 ```rust
-type MyCache = SessionCache<ArcStore, MySidecar>;
-let cache = MyCache::ephemeral();                 // ::durable(…) to persist — see below
+type MyCache = SessionCache<ArcLog, MySidecar, Transient>;
+let cache = MyCache::new(Transient::in_dir(run_dir));   // or a durable provider — see below
 cache.register(&id, Transcript::open(agent, path));
+// `admit` is the ONE way a resident comes into being — it takes ownership of the durable
+// entry (under `Transient`, trivially) and builds the store via your closure, once.
+let Admission::Owned { session, .. } = cache.admit(&id, |_| Ok(ArcLog::memory())) else {
+    unreachable!("a transient admission cannot be denied");
+};
 loop {
     if no_input_for_250ms() {
-        // `open` builds the store on first use; a durable cache never calls it, because
-        // `admit` is the only path that takes the lock.
-        if let Some(Ok(d)) = cache.poll_view(&id, || ArcStore) {
+        if let Some(Ok(d)) = cache.poll_view(&id) {
             // splice: keep [0..frontier), append Arc clones of d.committed_delta +
             // d.provisional, re-derive from d.changed_from — see View::apply_view
             view.splice(d);
@@ -267,7 +280,7 @@ loop {
 (Prefer whole-`Session` values instead? Use the core's own follower —
 `FollowParser::poll`/`poll_delta` — or batch `parse_session`; the cache's job is live
 residency, and its two protocols share one resident. See the protocol table in
-[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a).)
+[Architecture §7](architecture.md#the-unified-data-layer-sessioncachep-a-e).)
 
 **The decoupled shape** (a worker thread, a subprocess, or a network hop away): serve
 `PullReply`s from a `SharedSession` on one side, hold a [`PullClient`] on the other. The
@@ -352,9 +365,10 @@ Two optional capabilities refine what your store can feed:
   identity, serde bytes). Everything that rebuilds block streams — `snapshot()`, `poll()`,
   `committed_tail`, `SharedSession::pull` — bounds on it, so the compiler tells you exactly
   which consumers a one-way projection store can't feed (and keeps them off it).
-- **[`DurableStore`]** (present) — `load_from` + `backing_len` + `adopt`, plus the `Note` your
-  lock carries. It is what makes your cache survive the process; the next section is the whole
-  of it.
+- **[`DurableStore`]** (present) — `load_from` + `backing_len` + `adopt`. It is what makes
+  your cache survive the process; the next section is the whole of it. (What a lock-holder
+  *publishes* about itself — a port, a pane — is not the store's concern: that note is typed
+  on the entry provider, [`Entries::Note`].)
 
 Three in-repo stores calibrate the design space: `InMemoryStore` (identity — `BV = Block`),
 `ArcLog` (`BV = Arc<Block>` — the cache retains the one authoritative copy and readers hold
@@ -370,18 +384,17 @@ then keeps every committed consumer on the pointer path. See the
 [architecture showcase](architecture.md#showcase-sessionbv-in-the-live-html-server) for the
 serving-CPU consequence.
 
-### Making your cache durable — the `DurableStore` seam
+### Making your cache durable — the `DurableStore` seam and the entry providers
 
 Three more methods on your store, and your frontend stops re-reading transcripts it has
 already read. The design is in
 [Architecture §7](architecture.md#across-runs-the-durable-session-cache); this is the API.
+Two seams share the work: **`DurableStore`** (on your store) says how committed bytes load
+and adopt; an **entry provider** (built by you, once, at startup) says how the on-disk entry
+is guarded — locked per session, covered by one root claim, or not at all.
 
 ```rust
 impl DurableStore for MyStore {
-    /// What a peer that finds your lock held gets told — a port for a server, a pane for a
-    /// TUI. Typed, not opaque: locks are per-presentation, so the only reader is you.
-    type Note = MyNote;
-
     /// Reload the committed `Bv`s from byte `at` onward — the ONE frontend-specific step in
     /// a load, and the only one that costs O(session). Drop a torn trailing record AND cut
     /// the file, or the next append splices onto half a record and every locator past it
@@ -403,60 +416,69 @@ impl DurableStore for MyStore {
 }
 ```
 
-Then build the cache durable and admit each session. `admit` does the locking, the version
-and identity checks, the alignment and the resume-or-rebuild decision — what you write is a
-`match`:
+Then build the **provider** and hand it to the cache. `PerSession` is the shared-root
+discipline (one lock file per `<presentation, session>` entry — several processes may
+legitimately share the root, each owning different sessions); its liveness rule and the
+note it publishes for peers are configured **once**, here, not per call:
 
 ```rust
-type MyCache = SessionCache<MyStore, MySidecar>;   // the alias from the in-process
-                                                   //   example, with YOUR store in P
+type MyCache = SessionCache<MyStore, MySidecar, PerSession<MyNote>>;
 
 // `default_root()` is $XDG_CACHE_HOME/claude-replay/sessions — None when neither it nor
 // $HOME resolves, which is a host with nowhere to be durable, not an error.
 let cache = match (no_cache, cache::admit::default_root()) {
-    (false, Some(root)) => MyCache::durable(Presentation::Tui, root, Versions::current(None)),
-    _                   => MyCache::ephemeral(),
+    (false, Some(root)) => {
+        let entries = PerSession::<MyNote>::new(root, Presentation::Tui, Versions::current(None))
+            .liveness(|h| lock::pid_alive(h.pid))   // a server ANDs in a port probe
+            .note(MyNote::here());                  // known at startup? published on acquire
+        entries.gc();                               // sweep stale entries — explicit, client-owned
+        MyCache::new(entries)
+    }
+    // --no-cache (or nowhere durable): a REAL cache that serves every admission —
+    // no locks, no metadata, no resume; a RAM store under it writes nothing at all.
+    _ => SessionCache::new(Transient::in_dir(run_dir)),
 };
 cache.register(&id, Transcript::open(agent, path));
 
-match cache.admit(
-    &id,
-    // `make_store` — opens the backing once the lock is ours. MUST NOT truncate.
-    |dir| MyStore::open_append(&dir.join("blocks.jsonl")),
-    // `alive` — your liveness signal; a server ANDs in a probe of the holder's port.
-    |h| lock::pid_alive(h.pid),
-) {
+// `admit` does the locking, the version and identity checks, the alignment and the
+// resume-or-rebuild decision — what you write is a `match` with TWO outcomes:
+match cache.admit(&id, |dir| MyStore::open_append(&dir.join("blocks.jsonl"))) {
     Admission::Owned { session, origin } => run(session, origin),
-    Admission::Denied(Denial::Held(h))   => refuse_or_redirect(h.note),
-    Admission::Denied(_)                 => run(cache.open_uncached(&id, MyStore::memory())),
+    Admission::Denied(Denial::Held(h))   => refuse_or_redirect(h.note), // typed: YOUR note
+    Admission::Denied(Denial::Unavailable(why)) => explain(why),        // machine problems
 }
-cache.publish(&id, MyNote { … });   // after you know what to say (a server has no port
-                                    //   until it binds) — separate from `admit` for that
+let _ = cache.publish(&id, MyNote { port });  // only for a fact that arrives LATE (a server
+                                              //   has no port until it binds); a note known
+                                              //   at startup went on the provider above
 ```
 
-(`open_append` and `memory` are constructors you write — the durable one and the
-nothing-written one a denial falls back to. `claude-replay-tui`'s `ArcLog`
-(`claude-replay-tui/src/store.rs`) is a small worked example of both.)
+(`open_append` is a constructor you write — it must open **without truncating**.
+`claude-replay-tui`'s `ArcLog` is a small worked example; the two other providers are
+`SingleWriter` — for a host that claimed its whole root once at startup, so entries take no
+locks at all — and `Transient` above.)
 
-Four rules the API enforces or expects, and the reasons they exist:
+Rules the API enforces or expects, and the reasons they exist:
 
 - **Your `make_store` must not truncate.** `admit` has to read what is there before it can
   decide whether to keep it; it resets the store itself when the answer is no. A truncating
   constructor destroys the evidence the decision rests on.
 - **A denial opens nothing.** There is no third "shared" outcome, so a frontend cannot
-  accidentally serve an entry another process owns. `open_uncached` is the explicit
-  fallback, and it is the *same* call for every reason a denial can have.
+  accidentally serve an entry another process owns. What a denial *carries* is the holder's
+  typed note — enough to refuse with directions (the TUI names the holder's tmux pane) or to
+  redirect (the HTML server sends the browser to the holder's port).
+- **The writer is the ownership.** Inside an owned resident, the metadata stream handle and
+  the entry lock lease are one object; dropping it releases the lock — on every path.
+  `release(id)` quiesces the session (flush, drop the writer, stop folding) and leaves it
+  resident and readable; re-admit it and it thaws, retaining its blocks when the entry is
+  untouched. Call `release_all()` before any `process::exit(0)` — destructors don't run
+  there; everything else is covered by `Drop`.
 - **`Versions::current(flavor)` is what the fold is.** Bump `FOLD_VERSION` whenever block
   output changes — the byte gate re-baseline is the moment to do it — or a resume splices
   blocks built by two different folds with no visible seam. `flavor` is for a presentation
   whose *render* has parameters (the HTML server hashes its fold policy); `None` otherwise.
-- **Release on every exit path.** `release_all()` at each `process::exit(0)`, which skips
-  destructors; everything else is covered by `Drop`. A lock outliving its process denies the
-  session until its pid dies, which for a recycled pid is never.
-- **A released session is frozen, not merely unlocked.** `release` quiesces: the writer
-  detaches and the fold stops, so the session stays readable but touches neither stream. Keep
-  polling it if you like — it answers idle. Re-admit it and it thaws, retaining its blocks when
-  the entry is untouched.
+- **`admit` is the only lifecycle.** A resident only comes into being through it —
+  `poll_view`/`touch` on a never-admitted id are idle, not silent tailers — so "who owns
+  this entry" always has exactly one answer.
 
 ## 6. Level 3 — embed the finished presenters
 
@@ -483,8 +505,8 @@ let args = Args { width: Some(100), full: true, ..Args::default() };
 claude_replay_html::dump_all_html(&args, &transcript_path)?;  // dir bundle: index.html + assets/
 ```
 
-The root `claude-replay` crate is itself just this: ~60 lines of CLI dispatch over the two
-frontends (`src/lib.rs::run_viewer`).
+The root crate is itself just this: a thin CLI dispatch over the two frontends (plus the
+`--paths`/`--dump --json` shell-out emitters) behind the `agent-replay` binary.
 
 ## 7. Adding an agent
 
@@ -524,8 +546,11 @@ The only place that knows Gemini's raw line format. Provide:
   `agents_import_only_the_seam` test (#87).
 
 > Everything else about parsing — the fold, back-patching, turn grouping, the queue
-> lifecycle, streaming, the live follower — is shared and already done. You are writing a
-> *decoder*, not a parser.
+> lifecycle, streaming, the bounded eliding reader, the live follower — is shared and
+> already done. You are writing a *decoder*, not a parser. If Gemini embeds large base64
+> values (files, images), also override `elision()` with a key-suffix allowlist so those
+> values elide to markers during the read instead of occupying RAM — attachment locators
+> then carry span hints for free.
 
 ### Step 3 — metrics (`agents/gemini/metrics.rs`)
 
@@ -585,6 +610,8 @@ agent up with no further changes.
 [`FollowParser`]: ../claude-replay-engine/src/follow.rs
 [`Metrics`]: ../claude-replay-engine/src/metrics.rs
 [`SessionCache`]: ../claude-replay-present/src/cache/mod.rs
-[`SessionCache<P, A>`]: ../claude-replay-present/src/cache/mod.rs
+[`SessionCache<P, A, E>`]: ../claude-replay-present/src/cache/mod.rs
+[`Entries`]: ../claude-replay-present/src/cache/fs.rs
+[`Entries::Note`]: ../claude-replay-present/src/cache/fs.rs
 [`PullClient`]: ../claude-replay-present/src/pull.rs
 [`DurableStore`]: ../claude-replay-present/src/cache/shared.rs
