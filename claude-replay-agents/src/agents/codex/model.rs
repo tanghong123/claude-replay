@@ -874,7 +874,9 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
 /// output is skipped for Edit/Write. Shim it into `Shaping::apply`'s `(&mut Block, &str,
 /// &Value)` signature (the `Value` is always Null for Codex).
-fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value) {
+fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value, _is_error: Option<bool>) {
+    // Codex's status/exit/duration come from its own `custom_tool_call_output` records;
+    // the seam's tri-state adds nothing here (and is `None` for this format anyway).
     apply_output(block, text.to_string());
 }
 fn codex_keep_orphan(text: &str) -> bool {

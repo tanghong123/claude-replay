@@ -631,13 +631,14 @@ fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<
 
 /// Fill a `tool_use` block's result fields (output / diff line numbers / read
 /// count) from its matching `tool_result`'s `toolUseResult` metadata + text.
-fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
+fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool>) {
     match block {
         Block::ToolUse {
             name,
             output,
             patch,
             read_lines,
+            execution,
             ..
         } => {
             *output = tool_output(name, Some(tur), txt);
@@ -646,6 +647,23 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value) {
                 .pointer("/file/numLines")
                 .and_then(|n| n.as_u64())
                 .map(|n| n as usize);
+            // #36: the format's failure fact — `is_error: true` on the result content item —
+            // becomes a structural `ToolExecution` status. FAILURES ONLY: this format's
+            // success is the key's absence, not a recorded word (see the decoder's #26
+            // note), and a success badge on every tool would be noise the presenters
+            // deliberately drop. Exit code and duration genuinely are not in this format
+            // and stay `None` rather than be invented. Guarded: a status a richer record
+            // already set is never stomped.
+            if is_error == Some(true) {
+                let e = execution.get_or_insert(ToolExecution {
+                    status: None,
+                    exit_code: None,
+                    duration: None,
+                });
+                if e.status.is_none() {
+                    e.status = Some(ToolStatus::Failed);
+                }
+            }
         }
         // An `Agent`/`Task` spawn's result: `toolUseResult` carries the agent id, the
         // launch status, and (sync) the inline result or (async) the output-file path.
@@ -1266,7 +1284,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
                                 if let Some(&idx) = tool_slot.get(tid) {
                                     // Its tool_use is already emitted — back-patch in place.
-                                    apply_result(&mut out[idx], &txt, &tur);
+                                    // (#26 decode rule, mirrored: an absent key is an explicit
+                                    // success in this format.)
+                                    let is_error = Some(
+                                        blk.get("is_error")
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or(false),
+                                    );
+                                    apply_result(&mut out[idx], &txt, &tur, is_error);
                                 } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
                                     // No tool_use seen yet — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
@@ -1870,6 +1895,58 @@ mod tests {
 
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {
         blocks.iter().map(fold_key).collect()
+    }
+
+    /// #36: the format's failure fact reaches the BLOCK — `is_error: true` on a result
+    /// becomes `ToolExecution { status: Failed }` on its `ToolUse` (exit/duration stay
+    /// `None`: this format does not record them, and inventing them would be worse than
+    /// omitting). A successful result leaves `execution` absent entirely — success is
+    /// the key's absence here, not a recorded word, and a badge on every tool is noise.
+    /// QoderWork/Qoder parse through this same shaping, so the mapping covers them too.
+    #[test]
+    fn is_error_lands_on_the_tool_block_as_failed() {
+        let jsonl = concat!(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"ok","name":"Bash","input":{"command":"true"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ok","content":"fine"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"bad","name":"Bash","input":{"command":"false"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bad","content":"boom","is_error":true}]}}"#,
+            "\n",
+        );
+        let blocks = replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING);
+        // Consecutive activity calls coalesce into one span — harvest tools from both
+        // the top level and inside spans.
+        let execs: Vec<Option<ToolExecution>> = blocks
+            .iter()
+            .flat_map(|b| match b {
+                Block::ToolUse { execution, .. } => vec![Some(*execution)],
+                Block::Thinking { tools, .. } => tools
+                    .iter()
+                    .filter_map(|t| match t {
+                        Block::ToolUse { execution, .. } => Some(Some(*execution)),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .flatten()
+            .collect();
+        assert_eq!(execs.len(), 2, "both calls present: {blocks:?}");
+        assert_eq!(
+            execs[0], None,
+            "success records NO execution fact — absence is this format's success"
+        );
+        assert_eq!(
+            execs[1],
+            Some(ToolExecution {
+                status: Some(ToolStatus::Failed),
+                exit_code: None,
+                duration: None,
+            }),
+            "the recorded failure is a structural fact"
+        );
     }
 
     /// #23/#26: the decoder carries the content item's `is_error`. For CLAUDE it is never

@@ -55,9 +55,12 @@ pub struct Shaping {
     /// lives in Layer 2, not the tokenizer.
     pub build_tool: fn(&str, &str, &Value, &str) -> Block,
     /// Join a tool result onto its `ToolUse` block (Claude reads `toolUseResult` for
-    /// diffs/read-count; Codex just sets the output text). Named to avoid colliding with
-    /// [`Replayer::apply`], which folds a whole message batch.
-    pub join_result: fn(&mut Block, &str, &Value),
+    /// diffs/read-count; Codex just sets the output text). The last parameter is the
+    /// decoder's `is_error` tri-state (#36): `Some(true)` = the source recorded a failure,
+    /// `Some(false)` = an explicit success, `None` = the format says nothing either way —
+    /// the shaping decides whether it becomes a [`crate::model::ToolExecution`] fact. Named to avoid colliding with [`Replayer::apply`], which folds a whole
+    /// message batch.
+    pub join_result: fn(&mut Block, &str, &Value, Option<bool>),
     /// Keep a resultless orphan result (already non-empty)? Claude drops boilerplate; Codex
     /// keeps every non-empty output.
     pub keep_orphan: fn(&str) -> bool,
@@ -239,10 +242,10 @@ impl<'a> Replayer<'a> {
                     tool_use_id,
                     text,
                     tur,
-                    is_error: _,
+                    is_error,
                 } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
-                        join_result(&mut self.out[rel], text, tur);
+                        join_result(&mut self.out[rel], text, tur, *is_error);
                         note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         // The result may have filled the spawn's `agent_id`; refresh the map so a
                         // later `AgentDone` resolves the real id (not just the `tool_use_id`).
