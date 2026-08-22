@@ -104,15 +104,16 @@ impl Fleet {
     }
 }
 
-/// Where the fleet config lives: `$CLAUDE_MONITOR_FLEET_CONFIG` (absolute only), else
-/// `$XDG_CONFIG_HOME/claude-monitor/fleet.json`, else `~/.config/claude-monitor/fleet.json`.
+/// Where the fleet config lives: `$AGENT_MONITOR_FLEET_CONFIG` (absolute only), else
+/// `$XDG_CONFIG_HOME/agent-monitor/fleet.json`, else `~/.config/agent-monitor/fleet.json`.
 ///
 /// Config, not cache: this is a thing a person edits and keeps, so it does not belong under the
-/// monitor's cache root — which the monitor is free to wipe, and which `--port`/`$CLAUDE_MONITOR_CACHE`
+/// monitor's cache root — which the monitor is free to wipe, and which `--port`/`$AGENT_MONITOR_CACHE`
 /// can move out from under it. The env var comes first so a test, or a second fleet, can have
 /// its own file without touching the user's.
 pub fn path() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_FLEET_CONFIG")
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_FLEET_CONFIG")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_FLEET_CONFIG"))
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -123,7 +124,14 @@ pub fn path() -> Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .ok_or_else(|| anyhow::anyhow!("no $HOME — nowhere to keep the fleet config"))?;
-    Ok(base.join("claude-monitor").join("fleet.json"))
+    let new_path = base.join("agent-monitor").join("fleet.json");
+    let old_path = base.join("claude-monitor").join("fleet.json");
+    // Prefer new path; fall back to old if it exists and new does not.
+    if new_path.exists() || !old_path.exists() {
+        Ok(new_path)
+    } else {
+        Ok(old_path)
+    }
 }
 
 /// Read the fleet. **A missing file is an empty fleet, not an error**: the first run of any

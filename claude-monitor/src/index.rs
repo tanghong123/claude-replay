@@ -1140,10 +1140,11 @@ pub(crate) fn percent_decode(s: &str) -> String {
 
 /// The monitor's STATE directory — where the hide list belongs (#197): it is user INTENT
 /// that cannot be recomputed, and `~/.cache` is XDG-deletable at any time. `$XDG_STATE_HOME`
-/// (else `~/.local/state`), overridable by `$CLAUDE_MONITOR_STATE` (mirroring
-/// `$CLAUDE_MONITOR_CACHE`, for tests and for `agent-metrics`' matching lookup).
+/// (else `~/.local/state`), overridable by `$AGENT_MONITOR_STATE` (mirroring
+/// `$AGENT_MONITOR_CACHE`, for tests and for `agent-metrics`' matching lookup).
 pub fn state_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_STATE")
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -1154,7 +1155,9 @@ pub fn state_dir() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
         .unwrap_or_else(|| PathBuf::from(".").join(".local").join("state"));
-    base.join("claude-monitor")
+    let new_path = base.join("agent-monitor");
+    let old_path = base.join("claude-monitor");
+    if new_path.exists() || !old_path.exists() { new_path } else { old_path }
 }
 
 /// The hide list's home (#197): `<state_dir>/ignored.json` — STATE, not cache. A plain JSON
@@ -1349,7 +1352,9 @@ fn is_uuid(t: &str) -> bool {
 
 /// Environment variable holding extra agent-recognition patterns, comma-separated. Each entry
 /// is `basename:<name>`, `argv:<substring>`, or a bare `<name>` (same as `basename:`).
-const AGENT_PATTERNS_ENV: &str = "CLAUDE_MONITOR_AGENT_PATTERNS";
+const AGENT_PATTERNS_ENV: &str = "AGENT_MONITOR_AGENT_PATTERNS";
+/// Legacy name — checked when the primary is unset.
+const AGENT_PATTERNS_ENV_LEGACY: &str = "CLAUDE_MONITOR_AGENT_PATTERNS";
 
 /// What an extra recognition pattern is matched against.
 ///
@@ -1398,6 +1403,7 @@ fn extra_agent_patterns() -> &'static [AgentPattern] {
     static PATTERNS: std::sync::OnceLock<Vec<AgentPattern>> = std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| {
         std::env::var(AGENT_PATTERNS_ENV)
+            .or_else(|_| std::env::var(AGENT_PATTERNS_ENV_LEGACY))
             .map(|spec| AgentPattern::parse(&spec))
             .unwrap_or_default()
     })
