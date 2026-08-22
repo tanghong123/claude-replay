@@ -97,7 +97,7 @@ impl Fleet {
         anyhow::ensure!(
             fleet.version <= VERSION,
             "fleet config is version {} but this build understands at most {VERSION} — upgrade \
-             agent-monitor-fleet",
+             claude-monitor-fleet",
             fleet.version
         );
         Ok(fleet)

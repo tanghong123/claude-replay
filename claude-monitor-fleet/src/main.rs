@@ -1,6 +1,6 @@
-//! `agent-monitor-fleet` — several machines' monitors behind one loopback page.
+//! `claude-monitor-fleet` — several machines' monitors behind one loopback page.
 //!
-//! `agent-monitor` answers "what is happening on THIS machine" and is documented as
+//! `claude-monitor` answers "what is happening on THIS machine" and is documented as
 //! single-machine on purpose (`design/claude-monitor.md`: "Not multi-machine. Everything assumes
 //! one filesystem and one process table."). That is a good boundary and this crate does not move
 //! it: the monitor gains no flag, no remote mode and no extension point. This is a separate
@@ -32,14 +32,14 @@ use tunnel::Tunnel;
 const FLEET_TEMPLATE: &str = include_str!("fleet.html");
 
 const HELP: &str = "\
-agent-monitor-fleet — one page over several machines' agent-monitor instances
+claude-monitor-fleet — one page over several machines' claude-monitor instances
 
 USAGE:
-  agent-monitor-fleet up [--port N] [--no-open] [--discover]
-  agent-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
-  agent-monitor-fleet list | status
-  agent-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
-  agent-monitor-fleet remove NAME
+  claude-monitor-fleet up [--port N] [--no-open] [--discover]
+  claude-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
+  claude-monitor-fleet list | status
+  claude-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
+  claude-monitor-fleet remove NAME
 
   up          Open one SSH tunnel per configured environment and serve the switcher.
               --discover uses what discovery finds instead of the config, without saving it.
@@ -53,7 +53,7 @@ $XDG_CONFIG_HOME/claude-monitor/fleet.json, else ~/.config/claude-monitor/fleet.
 It ships empty — every host in it is one you or discovery put there.
 
 A monitor's port is READ from its own lock (<cache root>/LOCK), never assumed, so a monitor on
-a non-default --port, or a second one under its own $AGENT_MONITOR_CACHE, is found as it is.
+a non-default --port, or a second one under its own $CLAUDE_MONITOR_CACHE, is found as it is.
 Local tunnel ports are allocated by the kernel, so nothing collides with what you already run.
 
 Discovery uses ssh BatchMode: a host that needs a passphrase typed is skipped rather than left
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if args[0] == "--version" || args[0] == "-V" {
-        println!("agent-monitor-fleet {}", env!("CARGO_PKG_VERSION"));
+        println!("claude-monitor-fleet {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let cmd = args.remove(0);
@@ -162,8 +162,8 @@ fn up(args: &[String]) -> Result<()> {
         anyhow::ensure!(
             !fleet.environments.is_empty(),
             "no environments configured in {}\n  \
-             run `agent-monitor-fleet discover --add` to find the ones you have, or \
-             `agent-monitor-fleet up --discover` to use them once without saving",
+             run `claude-monitor-fleet discover --add` to find the ones you have, or \
+             `claude-monitor-fleet up --discover` to use them once without saving",
             at.display()
         );
         fleet.environments
@@ -650,7 +650,7 @@ fn list() -> Result<()> {
     let fleet = config::load(&at)?;
     if fleet.environments.is_empty() {
         println!("no environments in {}", at.display());
-        println!("  `agent-monitor-fleet discover --add` looks through your own SSH config");
+        println!("  `claude-monitor-fleet discover --add` looks through your own SSH config");
         return Ok(());
     }
     for e in &fleet.environments {

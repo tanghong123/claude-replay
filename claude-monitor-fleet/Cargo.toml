@@ -6,10 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "agent-monitor-fleet"
-path = "src/main.rs"
-
 [dependencies]
 claude-replay-html = { path = "../claude-replay-html" }
 anyhow = "1"

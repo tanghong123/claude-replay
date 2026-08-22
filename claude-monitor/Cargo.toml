@@ -6,10 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "agent-monitor"
-path = "src/main.rs"
-
 [dependencies]
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-present = { path = "../claude-replay-present" }

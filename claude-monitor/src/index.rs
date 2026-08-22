@@ -1683,13 +1683,10 @@ fn human_age(mtime: Option<SystemTime>, now: SystemTime) -> String {
     }
 }
 
-/// Resolve the monitor's cache root (R5): `$AGENT_MONITOR_CACHE` (or legacy
-/// `$CLAUDE_MONITOR_CACHE`), else `$XDG_CACHE_HOME/agent-monitor`, else
-/// `~/.cache/agent-monitor`. Falls back to the old `claude-monitor` path if it exists and the
-/// new one does not (migration).
+/// Resolve the monitor's cache root (R5): `$CLAUDE_MONITOR_CACHE`, else
+/// `$XDG_CACHE_HOME/claude-monitor`, else `~/.cache/claude-monitor`.
 pub fn default_root() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("AGENT_MONITOR_CACHE")
-        .or_else(|| std::env::var_os("CLAUDE_MONITOR_CACHE"))
+    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_CACHE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -1700,12 +1697,7 @@ pub fn default_root() -> Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .ok_or_else(|| anyhow::anyhow!("no $HOME — nowhere to keep the monitor's cache"))?;
-    let new_path = base.join("agent-monitor");
-    let old_path = base.join("claude-monitor");
-    if !new_path.exists() && old_path.exists() {
-        return Ok(old_path);
-    }
-    Ok(new_path)
+    Ok(base.join("claude-monitor"))
 }
 
 #[cfg(test)]
