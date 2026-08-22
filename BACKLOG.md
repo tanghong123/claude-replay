@@ -62,15 +62,6 @@
   persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
   scope, or file as its own issue.
 
-## Queued
-
-- **Architecture doc refresh** (owner, 2026-08-21; unblocked — #167 shipped v1.98.0):
-  bring `docs/architecture.md` (+ the `.html` twin) up to date on the two structural
-  changes — the #193 bounded eliding reader (one byte-toucher, `LineSource`, span-hinted
-  locators; §7's rung note exists but the read-path narrative predates it) and the #167
-  durable-cache interface (providers behind `Entries`, the three providers incl.
-  `Transient`, the slot topology, `admit` as veneer, the aux contract).
-
 ## Parked — explicit go-ahead needed
 
 - **Sunset the `claude-*` compat symlinks + tap rename mapping** (v1.101.0 shipped the
