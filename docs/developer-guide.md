@@ -106,9 +106,13 @@ the only difference. `session.tasks` (the task-queue op-log behind the tasks pan
 
 ### Finding sessions — discovery as a library
 
-A real application rarely starts with a path in hand. The facade's `discover` module scans
-every registered agent's transcript store and returns ranked `Candidate`s — the exact list
-behind the interactive picker:
+A real application rarely starts with a path in hand. The facade's `discover` module is the
+one implementation of "which sessions exist, whose are they, and how do they group" — the
+store layouts, the repo-root walk, the session keying. Three worked shapes, each a real
+production consumer of these APIs:
+
+**A picker or launcher** — cwd-scoped, ranked, exactly the list behind the interactive
+picker:
 
 ```rust
 use claude_replay_core::discover::{candidates_all, resolve_any};
@@ -120,6 +124,58 @@ for c in candidates_all(None) {              // or Some(Agent::CODEX) to filter 
 }
 let latest = resolve_any(None, None, true)?;  // what --latest does; or pass a target
 ```
+
+**A usage-metrics dashboard** — machine-wide token/cost reporting across every agent.
+`store_all` enumerates **every transcript on the machine** from each adapter's own store
+(provenance comes free — the entry's `agent` is the store that held the file, so identical
+in-band formats are still told apart); the metrics-only fold prices each one without
+building blocks; sub-agent transcripts roll their spend onto the root session; and
+`session_key` gives the stable per-repo grouping a report aggregates by:
+
+```rust
+use claude_replay_core::{adapter, discover, Agent};
+
+let cutoff = now - 7 * 86_400.0;
+for e in discover::store_all(None) {                  // every agent, newest first
+    if e.mtime < cutoff { break; }                    // mtime is the cheap window key
+    let mut r = std::io::BufReader::new(std::fs::File::open(&e.path)?);
+    let metrics = adapter(e.agent).parse_reader(&mut r);   // tokens/cost only — no blocks
+    let key = discover::session_key(e.agent, &e.path);     // "p:<repo>" or "a:<label>" —
+    report.entry(key.key).or_default().add(metrics);       //   stable across sessions
+}
+// Sub-agent spend is NOT inside the parent transcript for modern stores — list the spawn
+// files with their lineage and bank each onto its root session's account:
+for a in claude_replay_core::adapters() {
+    for (path, _own_id, parent_id) in a.store_subagent_transcripts() {
+        /* price `path` the same way; credit `parent_id`'s root */
+    }
+}
+```
+
+(`SessionKey` also carries `hidden_by`, so a dashboard and the session monitor can honor
+the same user hide-list; `discover::repo_root`/`project_path` are the shared repo-root
+walk when you need the path facts individually; `subagent_source(s)` resolves a spawn's
+child transcript when you hold ids rather than sweeping.)
+
+**A cross-repo progress collector that cannot link Rust** — the same two halves as CLI
+JSON (the shell-out vocabulary). Discovery windows by mtime *before* any transcript is
+opened; content is the structured block stream:
+
+```sh
+# which sessions were touched this day, across every agent's store:
+agent-replay --paths --all --since 24h        # → JSON: path · agent · mtime · repo facts · session_key
+
+# what happened in one of them — one JSON object per block:
+agent-replay <path> --dump - --json |
+  python3 -c 'import sys, json
+for line in sys.stdin:
+    b = json.loads(line)
+    if b.get("status") == "failed":           # tool failures, structurally
+        print(b["turn_ts"], b["name"], b["target"])'
+```
+
+Both read the transcripts directly — no cache, no locks, nothing written — so a collector
+can sweep while live viewers hold their sessions.
 
 ### Tailing a live session
 
@@ -186,6 +242,65 @@ the I/O around it differs. Two performance levers worth knowing:
   of the store on demand (it bounds on `BlockRead`) — the scroll-back complement to the
   `stream_read` delta above, and the reason a spilled store costs no resident RAM to
   re-read.
+
+### The bounded line read — `LineSource` and the elision policies
+
+Real transcript lines run to megabytes (base64 attachment bodies), and every read path in
+the workspace goes through one bounded primitive rather than `BufRead::read_line`. When
+your I/O source is a file, use it too — it is what keeps the fold's resident memory flat
+and what stamps the byte offsets everything downstream depends on:
+
+```rust
+use claude_replay_core::engine::{Elision, LineSource, TornTail};
+use std::io::BufReader;
+
+let file = std::fs::File::open(&path)?;
+let mut src = LineSource::new(
+    BufReader::new(file),
+    0,                       // the absolute file offset of the reader's next byte
+    TornTail::Yield,         // one-shot read: the last line is all there is
+    adapter.elision(),       // the agent's policy — or pick your own from the menu below
+);
+while let Some((offset, line)) = src.next()? {
+    acc.advance_at(offset, &line);       // offsets always index RAW file bytes,
+}                                        //   elided or not — locators/cursors depend on it
+println!("elided values on {} lines, {} bytes skipped", src.elided.elided_lines, src.elided.elided_bytes);
+```
+
+The pieces, and what each is for:
+
+- **`Elision` — the policy.** `None` elides nothing (identity-sensitive reads — CRC,
+  dedup — verbatim output, bounded only by the 64 MB ceiling). `Aggressive` elides *any*
+  string value over the 64 KB threshold (provably metric-neutral — the metrics folds'
+  policy). `Keys(&[&["file", "base64"], …])` elides only values whose enclosing
+  object-key chain ends in one of the given suffixes — the block-building policy, so
+  content that renders is never silently truncated; only known attachment-bearing paths
+  elide. Unmatched shapes fail safe toward keeping bytes.
+- **The marker.** An elided value reads `{prefix}<elided:{offset},{len}>{postfix}` — the
+  first/last 64 bytes stay (the prefix keeps content sniffing working), and
+  `offset`/`len` address the elided bytes in the raw file: splice them back over the
+  marker and the original line returns byte for byte. The line stays valid JSON of the
+  same shape, so `serde_json`, your decoder, and the fold all run unmodified. Elision is
+  invisible to the fold (`fold ∘ elide ≡ fold`): an elided attachment decodes to the same
+  locator, plus a span hint that `Transcript::load_attachment` uses to seek directly.
+- **`TornTail` — the live-file question.** A file mid-append may end without a newline.
+  `Stop` leaves the cursor on the last *complete* line (what a durable cursor — the
+  follower's, the metrics fold's — requires; check `last_was_torn()` and come back).
+  `Yield` hands the final unterminated line out as-is (the one-shot whole-file reads).
+- **`src.elided: ElisionCounts`** — the gauges (values elided, bytes skipped),
+  accumulated across the source's lifetime, for consumers that report coverage.
+
+For a quick scan that doesn't need offsets, there is a one-liner:
+
+```rust
+for line in claude_replay_core::engine::bounded_lines(&path, Elision::Aggressive) {
+    /* each String is already bounded */
+}
+```
+
+(Adapter authors: the seam re-exports the same items — `claude_replay_engine::seam::{
+LineSource, Elision, …}` — and your `TranscriptAdapter::elision()` is where your format's
+`Keys` policy lives; see [Adding an agent](#7-adding-an-agent).)
 
 ### Attachments load lazily
 
@@ -548,10 +663,22 @@ The only place that knows Gemini's raw line format. Provide:
 
 > Everything else about parsing — the fold, back-patching, turn grouping, the queue
 > lifecycle, streaming, the bounded eliding reader, the live follower — is shared and
-> already done. You are writing a *decoder*, not a parser. If Gemini embeds large base64
-> values (files, images), also override `elision()` with a key-suffix allowlist so those
-> values elide to markers during the read instead of occupying RAM — attachment locators
-> then carry span hints for free.
+> already done. You are writing a *decoder*, not a parser.
+
+If Gemini embeds large base64 values (files, images), also override `elision()` so those
+values elide to markers during the read instead of occupying RAM — attachment locators
+then carry span hints for free. The policy is a key-suffix allowlist: only string values
+whose enclosing object-key chain ends in one of the listed suffixes elide, so rendered
+content can never be silently truncated (see
+[the bounded line read](#the-bounded-line-read--linesource-and-the-elision-policies)):
+
+```rust
+fn elision(&self) -> Elision {
+    // the paths that carry attachment BODIES in Gemini's format, nothing else
+    const GEMINI_ELISION: Elision = Elision::Keys(&[&["inline_data", "data"]]);
+    GEMINI_ELISION
+}
+```
 
 ### Step 3 — metrics (`agents/gemini/metrics.rs`)
 

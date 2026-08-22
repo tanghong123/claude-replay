@@ -325,8 +325,11 @@ println!(<span class="c">"{} blocks · {} turns · {}"</span>,
 
     <h3>Finding sessions — discovery as a library</h3>
     <p>A real application rarely starts with a path in hand. The facade's
-      <code>discover</code> module scans every registered agent's transcript store and returns
-      ranked <code>Candidate</code>s — the exact list behind the interactive picker:</p>
+      <code>discover</code> module is the one implementation of "which sessions exist, whose
+      are they, and how do they group" — the store layouts, the repo-root walk, the session
+      keying. Three worked shapes, each a real production consumer of these APIs:</p>
+    <p><b>A picker or launcher</b> — cwd-scoped, ranked, exactly the list behind the
+      interactive picker:</p>
 <pre><span class="k">use</span> claude_replay_core::discover::{candidates_all, resolve_any};
 
 <span class="k">for</span> c <span class="k">in</span> candidates_all(<span class="k">None</span>) {              <span class="c">// or Some(Agent::CODEX) to filter one store</span>
@@ -335,6 +338,50 @@ println!(<span class="c">"{} blocks · {} turns · {}"</span>,
     <span class="c">// c.cwd_affinity (true = a session of the directory you launched from)</span>
 }
 <span class="k">let</span> latest = resolve_any(<span class="k">None</span>, <span class="k">None</span>, <span class="k">true</span>)?;  <span class="c">// what --latest does; or pass a target</span></pre>
+    <p style="margin-top:16px"><b>A usage-metrics dashboard</b> — machine-wide token/cost
+      reporting across every agent. <code>store_all</code> enumerates <b>every transcript on
+      the machine</b> from each adapter's own store (provenance comes free — the entry's
+      <code>agent</code> is the store that held the file, so identical in-band formats are
+      still told apart); the metrics-only fold prices each one without building blocks;
+      sub-agent transcripts roll their spend onto the root session; and
+      <code>session_key</code> gives the stable per-repo grouping a report aggregates by:</p>
+<pre><span class="k">use</span> claude_replay_core::{adapter, discover, Agent};
+
+<span class="k">let</span> cutoff = now - 7 * 86_400.0;
+<span class="k">for</span> e <span class="k">in</span> discover::store_all(<span class="k">None</span>) {                  <span class="c">// every agent, newest first</span>
+    <span class="k">if</span> e.mtime &lt; cutoff { <span class="k">break</span>; }                    <span class="c">// mtime is the cheap window key</span>
+    <span class="k">let mut</span> r = std::io::BufReader::new(std::fs::File::open(&e.path)?);
+    <span class="k">let</span> metrics = adapter(e.agent).parse_reader(&<span class="k">mut</span> r);   <span class="c">// tokens/cost only — no blocks</span>
+    <span class="k">let</span> key = discover::session_key(e.agent, &e.path);     <span class="c">// "p:&lt;repo&gt;" or "a:&lt;label&gt;" —</span>
+    report.entry(key.key).or_default().add(metrics);       <span class="c">//   stable across sessions</span>
+}
+<span class="c">// Sub-agent spend is NOT inside the parent transcript for modern stores — list the</span>
+<span class="c">// spawn files with their lineage and bank each onto its root session's account:</span>
+<span class="k">for</span> a <span class="k">in</span> claude_replay_core::adapters() {
+    <span class="k">for</span> (path, _own_id, parent_id) <span class="k">in</span> a.store_subagent_transcripts() {
+        <span class="c">/* price `path` the same way; credit `parent_id`'s root */</span>
+    }
+}</pre>
+    <p>(<code>SessionKey</code> also carries <code>hidden_by</code>, so a dashboard and the
+      session monitor can honor the same user hide-list;
+      <code>discover::repo_root</code>/<code>project_path</code> are the shared repo-root walk
+      when you need the path facts individually; <code>subagent_source(s)</code> resolves a
+      spawn's child transcript when you hold ids rather than sweeping.)</p>
+    <p><b>A cross-repo progress collector that cannot link Rust</b> — the same two halves as
+      CLI JSON (the shell-out vocabulary). Discovery windows by mtime <em>before</em> any
+      transcript is opened; content is the structured block stream:</p>
+<pre><span class="c"># which sessions were touched this day, across every agent's store:</span>
+agent-replay --paths --all --since 24h        <span class="c"># → JSON: path · agent · mtime · repo facts · session_key</span>
+
+<span class="c"># what happened in one of them — one JSON object per block:</span>
+agent-replay &lt;path&gt; --dump - --json |
+  python3 -c <span class="s">'import sys, json
+for line in sys.stdin:
+    b = json.loads(line)
+    if b.get("status") == "failed":           # tool failures, structurally
+        print(b["turn_ts"], b["name"], b["target"])'</span></pre>
+    <p>Both read the transcripts directly — no cache, no locks, nothing written — so a
+      collector can sweep while live viewers hold their sessions.</p>
 
     <h3>Tailing a live session</h3>
     <p>The follower a real viewer runs on: <code>FollowParser</code> bundles a byte-offset tail
@@ -393,6 +440,64 @@ println!(<span class="c">"{} blocks · {} turns · {}"</span>,
         the scroll-back complement to the <code>stream_read</code> delta above, and the reason a
         spilled store costs no resident RAM to re-read.</li>
     </ul>
+
+    <h3>The bounded line read — <code>LineSource</code> and the elision policies</h3>
+    <p>Real transcript lines run to megabytes (base64 attachment bodies), and every read path
+      in the workspace goes through one bounded primitive rather than
+      <code>BufRead::read_line</code>. When your I/O source is a file, use it too — it is what
+      keeps the fold's resident memory flat and what stamps the byte offsets everything
+      downstream depends on:</p>
+<pre><span class="k">use</span> claude_replay_core::engine::{Elision, LineSource, TornTail};
+<span class="k">use</span> std::io::BufReader;
+
+<span class="k">let</span> file = std::fs::File::open(&path)?;
+<span class="k">let mut</span> src = LineSource::new(
+    BufReader::new(file),
+    0,                       <span class="c">// the absolute file offset of the reader's next byte</span>
+    TornTail::Yield,         <span class="c">// one-shot read: the last line is all there is</span>
+    adapter.elision(),       <span class="c">// the agent's policy — or pick from the menu below</span>
+);
+<span class="k">while let</span> Some((offset, line)) = src.next()? {
+    acc.advance_at(offset, &line);       <span class="c">// offsets always index RAW file bytes,</span>
+}                                        <span class="c">//   elided or not — locators/cursors depend on it</span>
+println!(<span class="s">"elided values on {} lines, {} bytes skipped"</span>, src.elided.elided_lines, src.elided.elided_bytes);</pre>
+    <p>The pieces, and what each is for:</p>
+    <ul class="clean">
+      <li><b><code>Elision</code> — the policy.</b> <code>None</code> elides nothing
+        (identity-sensitive reads — CRC, dedup — verbatim output, bounded only by the
+        64&nbsp;MB ceiling). <code>Aggressive</code> elides <em>any</em> string value over the
+        64&nbsp;KB threshold (provably metric-neutral — the metrics folds' policy).
+        <code>Keys(&amp;[&amp;["file", "base64"], …])</code> elides only values whose
+        enclosing object-key chain ends in one of the given suffixes — the block-building
+        policy, so content that renders is never silently truncated; only known
+        attachment-bearing paths elide. Unmatched shapes fail safe toward keeping bytes.</li>
+      <li><b>The marker.</b> An elided value reads
+        <code>{prefix}&lt;elided:{offset},{len}&gt;{postfix}</code> — the first/last 64 bytes
+        stay (the prefix keeps content sniffing working), and
+        <code>offset</code>/<code>len</code> address the elided bytes in the raw file: splice
+        them back over the marker and the original line returns byte for byte. The line stays
+        valid JSON of the same shape, so <code>serde_json</code>, your decoder, and the fold
+        all run unmodified. Elision is invisible to the fold
+        (<code>fold ∘ elide ≡ fold</code>): an elided attachment decodes to the same locator,
+        plus a span hint that <code>Transcript::load_attachment</code> uses to seek
+        directly.</li>
+      <li><b><code>TornTail</code> — the live-file question.</b> A file mid-append may end
+        without a newline. <code>Stop</code> leaves the cursor on the last <em>complete</em>
+        line (what a durable cursor — the follower's, the metrics fold's — requires; check
+        <code>last_was_torn()</code> and come back). <code>Yield</code> hands the final
+        unterminated line out as-is (the one-shot whole-file reads).</li>
+      <li><b><code>src.elided: ElisionCounts</code></b> — the gauges (values elided, bytes
+        skipped), accumulated across the source's lifetime, for consumers that report
+        coverage.</li>
+    </ul>
+    <p>For a quick scan that doesn't need offsets, there is a one-liner:</p>
+<pre><span class="k">for</span> line <span class="k">in</span> claude_replay_core::engine::bounded_lines(&path, Elision::Aggressive) {
+    <span class="c">/* each String is already bounded */</span>
+}</pre>
+    <p>(Adapter authors: the seam re-exports the same items —
+      <code>claude_replay_engine::seam::{LineSource, Elision, …}</code> — and your
+      <code>TranscriptAdapter::elision()</code> is where your format's <code>Keys</code>
+      policy lives; see <a href="#agent">Adding an agent</a>.)</p>
 
     <h3>Attachments load lazily</h3>
     <p>Embedded files and images never balloon a resident <code>Session</code>: an
@@ -730,7 +835,13 @@ claude_replay_html::dump_all_html(&args, &transcript_path)?;  <span class="c">//
         audited adapter contract, enforced by <code>agents_import_only_the_seam</code> (#87).
         Everything else about parsing — the fold, back-patching, turn grouping, the queue
         lifecycle, streaming, the live follower — is shared and already done. You are writing a
-        <em>decoder</em>, not a parser.</span></li>
+        <em>decoder</em>, not a parser. If Gemini embeds large base64 values, also override
+        <code>elision()</code> — a key-suffix allowlist naming the paths that carry
+        attachment BODIES, e.g.
+        <code>Elision::Keys(&amp;[&amp;["inline_data", "data"]])</code> — so those values
+        elide to markers during the read instead of occupying RAM, and attachment locators
+        carry span hints for free (see
+        <a href="#level1">the bounded line read</a>).</span></li>
       <li><b>meter</b> <span class="d">— (<code>agents/gemini/metrics.rs</code>) a small
         <code>MetricsAccumulator</code> impl: push a line's token usage, <code>finish()</code>
         into <code>Metrics</code>. See <code>agents/codex/metrics.rs</code>.</span></li>
