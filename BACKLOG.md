@@ -73,6 +73,15 @@
 
 ## Parked — explicit go-ahead needed
 
+- **#35 — cursor'd resume for `--dump --json`** (owner, 2026-08-22): kill the daily
+  sweep's active-file read amplification (measured 30–70× on >130 MB live sessions;
+  full sweep 12.3 s / windowed daily 6.3 s at v1.100.0). Opt-in cursor
+  (`MetricsCursor` pattern; likely a `Json` presentation in the #167 cache — the
+  committed-only record contract already solves the reshaping tail); the default dump
+  stays read-only/lock-free. **Watch trigger**: active sessions ~2–3× bigger, or the
+  collector's sweep showing up in real profiles. Until then whid passes `--since 24h`
+  at discovery (shipped v1.99.0). Numbers + design in the issue.
+
 - **Fleet relay (Phase 2)** — [design/fleet-pairing.md](design/fleet-pairing.md) §6:
   reach the fleet page away from the LAN via a small relay (shaped; Cloudflare Worker is
   the evidenced candidate). Phase 1 (token pairing, same-user gate) shipped v1.78–v1.79.
