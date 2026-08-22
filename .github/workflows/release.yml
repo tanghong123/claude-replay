@@ -316,10 +316,13 @@ jobs:
           cd tap
           git config user.name "Hong Tang"
           git config user.email "hong.tang@gmail.com"
-          if [ -z "$(git status --porcelain -- Formula/claude-replay.rb Formula/agent-jdi.rb)" ]; then
+          # Stage EVERYTHING the step wrote or removed — a hardcoded file list is how the
+          # v1.101.0 rename shipped a tap with the old formulas deleted and the new ones
+          # sitting unstaged in the clone (repaired by hand; this line is the fix).
+          git add -A Formula formula_renames.json
+          if git diff --cached --quiet; then
             echo "formulas already at ${ver}; nothing to do"
           else
-            git add Formula/claude-replay.rb Formula/agent-jdi.rb Formula/claude-monitor.rb Formula/claude-monitor-fleet.rb
-            git commit -m "claude-replay + agent-jdi + claude-monitor + claude-monitor-fleet ${ver}"
+            git commit -m "agent-replay + agent-jdi + agent-monitor + agent-monitor-fleet ${ver}"
             git push
           fi

@@ -19,7 +19,7 @@ pub fn parse_agent(s: &str) -> std::result::Result<Agent, String> {
 #[cfg_attr(
     feature = "cli",
     command(
-        name = "claude-replay",
+        name = "agent-replay",
         version,
         about = "Read an AI agent session transcript like a screen (read-only)."
     )
