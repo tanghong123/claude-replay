@@ -48,8 +48,8 @@ USAGE:
   status      Probe the configured environments and report, without opening anything.
   add         Add or update one environment. No --ssh means this machine.
 
-The config is a JSON file you can edit: $AGENT_MONITOR_FLEET_CONFIG, else
-$XDG_CONFIG_HOME/agent-monitor/fleet.json, else ~/.config/agent-monitor/fleet.json.
+The config is a JSON file you can edit: $CLAUDE_MONITOR_FLEET_CONFIG, else
+$XDG_CONFIG_HOME/claude-monitor/fleet.json, else ~/.config/claude-monitor/fleet.json.
 It ships empty — every host in it is one you or discovery put there.
 
 A monitor's port is READ from its own lock (<cache root>/LOCK), never assumed, so a monitor on

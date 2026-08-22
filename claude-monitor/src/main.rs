@@ -537,7 +537,7 @@ fn main() -> Result<()> {
                      Cache root: $AGENT_MONITOR_CACHE, else ~/.cache/agent-monitor —\n\
                      never the viewer's (R5).\n\n\
                      Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
-                     Extend with $AGENT_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
+                     Extend with $CLAUDE_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
                      argv:<substring>, or a bare <name> (a basename). Wrapper launches need argv:,\n\
                      e.g. \"argv:npx codex,argv:node_modules/.bin/codex,basename:my-agent\"."
                 );
@@ -852,7 +852,7 @@ mod tests {
         let cache = std::env::temp_dir().join(format!("cm-tok-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
-        std::env::set_var("AGENT_MONITOR_STATE", &state);
+        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
 
         let a = ensure_token(&cache).unwrap();
         assert_eq!(a.len(), 64, "32 bytes as hex");
@@ -875,7 +875,7 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "owner-only");
         }
-        std::env::remove_var("AGENT_MONITOR_STATE");
+        std::env::remove_var("CLAUDE_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
     }
@@ -892,7 +892,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("auth-token"), "legacy-token-xyz").unwrap();
-        std::env::set_var("AGENT_MONITOR_STATE", &state);
+        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
 
         assert_eq!(
             read_token(&cache).as_deref(),
@@ -914,7 +914,7 @@ mod tests {
             "cache copy left for a downgrade"
         );
 
-        std::env::remove_var("AGENT_MONITOR_STATE");
+        std::env::remove_var("CLAUDE_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
     }
