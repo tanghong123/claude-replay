@@ -131,7 +131,7 @@ fn resume_and_fold(root: &Path, src: &Path) -> (Vec<claude_replay::model::Block>
 /// Kill the viewer at `kill_after` while it is following a growing transcript, then prove the
 /// durable entry it left behind resumes to exactly what a cold parse yields.
 fn kill_at(kill_after: Duration, label: &str) {
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!(
         "cr-kill-{}-{label}-{}",
         std::process::id(),
@@ -244,7 +244,7 @@ fn a_killed_holders_lock_is_reclaimed_by_the_next_run() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("cr-kill-lock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

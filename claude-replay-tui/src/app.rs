@@ -129,7 +129,7 @@ impl HeldElsewhere {
     /// launch advice; mid-session, the viewer you are in IS the session you keep.
     fn flash(&self) -> String {
         format!(
-            "in use by another claude-replay (pid {}){}",
+            "in use by another agent-replay (pid {}){}",
             self.pid,
             self.pane
                 .as_deref()

@@ -46,12 +46,12 @@ jobs:
       - uses: actions/checkout@v5
       # taiki-e/upload-rust-binary-action is the de-facto standard for this: it
       # installs the target (using `cross` for aarch64-musl), builds --release,
-      # tars the binary as `claude-replay-<target>.tar.gz`, emits a .sha256, and
+      # tars the binary as `agent-replay-<target>.tar.gz`, emits a .sha256, and
       # uploads both to the release. `dry-run` builds+archives without uploading,
       # so branch pushes verify the cross-builds without needing a release.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: claude-replay
+          bin: agent-replay
           target: ${{ matrix.target }}
           archive: $bin-$target
           checksum: sha256
@@ -67,11 +67,11 @@ jobs:
           checksum: sha256
           dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
           token: ${{ secrets.GITHUB_TOKEN }}
-      # claude-monitor (#98): the machine-wide session index, its own crate and binary,
+      # agent-monitor (#98): the machine-wide session index, its own crate and binary,
       # released beside the viewer it embeds.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: claude-monitor
+          bin: agent-monitor
           manifest-path: claude-monitor/Cargo.toml
           # The QoderWork title reader (#119) is compiled in by `cfg(target_os = "macos")`
           # now, not a feature flag — apple-darwin binaries get it, Linux never compiles
@@ -81,11 +81,11 @@ jobs:
           checksum: sha256
           dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
           token: ${{ secrets.GITHUB_TOKEN }}
-      # claude-monitor-fleet (#17): several machines' monitors behind one loopback
+      # agent-monitor-fleet (#17): several machines' monitors behind one loopback
       # page, its own crate and binary, released beside the monitor it aggregates.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: claude-monitor-fleet
+          bin: agent-monitor-fleet
           manifest-path: claude-monitor-fleet/Cargo.toml
           target: ${{ matrix.target }}
           archive: $bin-$target
@@ -117,26 +117,26 @@ jobs:
           base="https://github.com/tanghong123/claude-replay/releases/download/${tag}"
 
           sha() { curl -fsSL "${base}/$1-$2.tar.gz" | sha256sum | awk '{print $1}'; }
-          mac_arm=$(sha claude-replay aarch64-apple-darwin)
-          mac_x86=$(sha claude-replay x86_64-apple-darwin)
-          lin_arm=$(sha claude-replay aarch64-unknown-linux-musl)
-          lin_x86=$(sha claude-replay x86_64-unknown-linux-musl)
+          mac_arm=$(sha agent-replay aarch64-apple-darwin)
+          mac_x86=$(sha agent-replay x86_64-apple-darwin)
+          lin_arm=$(sha agent-replay aarch64-unknown-linux-musl)
+          lin_x86=$(sha agent-replay x86_64-unknown-linux-musl)
           jdi_mac_arm=$(sha agent-jdi aarch64-apple-darwin)
           jdi_mac_x86=$(sha agent-jdi x86_64-apple-darwin)
           jdi_lin_arm=$(sha agent-jdi aarch64-unknown-linux-musl)
           jdi_lin_x86=$(sha agent-jdi x86_64-unknown-linux-musl)
-          mon_mac_arm=$(sha claude-monitor aarch64-apple-darwin)
-          mon_mac_x86=$(sha claude-monitor x86_64-apple-darwin)
-          mon_lin_arm=$(sha claude-monitor aarch64-unknown-linux-musl)
-          mon_lin_x86=$(sha claude-monitor x86_64-unknown-linux-musl)
-          flt_mac_arm=$(sha claude-monitor-fleet aarch64-apple-darwin)
-          flt_mac_x86=$(sha claude-monitor-fleet x86_64-apple-darwin)
-          flt_lin_arm=$(sha claude-monitor-fleet aarch64-unknown-linux-musl)
-          flt_lin_x86=$(sha claude-monitor-fleet x86_64-unknown-linux-musl)
+          mon_mac_arm=$(sha agent-monitor aarch64-apple-darwin)
+          mon_mac_x86=$(sha agent-monitor x86_64-apple-darwin)
+          mon_lin_arm=$(sha agent-monitor aarch64-unknown-linux-musl)
+          mon_lin_x86=$(sha agent-monitor x86_64-unknown-linux-musl)
+          flt_mac_arm=$(sha agent-monitor-fleet aarch64-apple-darwin)
+          flt_mac_x86=$(sha agent-monitor-fleet x86_64-apple-darwin)
+          flt_lin_arm=$(sha agent-monitor-fleet aarch64-unknown-linux-musl)
+          flt_lin_x86=$(sha agent-monitor-fleet x86_64-unknown-linux-musl)
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/tanghong123/homebrew-tap.git" tap
-          cat > tap/Formula/claude-replay.rb <<EOF
-          class ClaudeReplay < Formula
+          cat > tap/Formula/agent-replay.rb <<EOF
+          class AgentReplay < Formula
             desc "Interactive, read-only viewer for Claude Code session transcripts"
             homepage "https://github.com/tanghong123/claude-replay"
             version "${ver}"
@@ -145,32 +145,34 @@ jobs:
 
             on_macos do
               on_arm do
-                url "${base}/claude-replay-aarch64-apple-darwin.tar.gz"
+                url "${base}/agent-replay-aarch64-apple-darwin.tar.gz"
                 sha256 "${mac_arm}"
               end
               on_intel do
-                url "${base}/claude-replay-x86_64-apple-darwin.tar.gz"
+                url "${base}/agent-replay-x86_64-apple-darwin.tar.gz"
                 sha256 "${mac_x86}"
               end
             end
 
             on_linux do
               on_arm do
-                url "${base}/claude-replay-aarch64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-replay-aarch64-unknown-linux-musl.tar.gz"
                 sha256 "${lin_arm}"
               end
               on_intel do
-                url "${base}/claude-replay-x86_64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-replay-x86_64-unknown-linux-musl.tar.gz"
                 sha256 "${lin_x86}"
               end
             end
 
             def install
-              bin.install "claude-replay"
+              bin.install "agent-replay"
+              # Rename transition (v1.101.0): the old name keeps working as a symlink.
+              bin.install_symlink bin/"agent-replay" => "claude-replay"
             end
 
             test do
-              assert_match "claude-replay #{version}", shell_output("#{bin}/claude-replay --version")
+              assert_match "agent-replay #{version}", shell_output("#{bin}/agent-replay --version")
             end
           end
           EOF
@@ -182,7 +184,7 @@ jobs:
             version "${ver}"
             license "MIT"
             head "https://github.com/tanghong123/claude-replay.git", branch: "main"
-            depends_on "tanghong123/tap/claude-replay"
+            depends_on "tanghong123/tap/agent-replay"
 
             on_macos do
               on_arm do
@@ -216,8 +218,8 @@ jobs:
           end
           EOF
 
-          cat > tap/Formula/claude-monitor.rb <<EOF
-          class ClaudeMonitor < Formula
+          cat > tap/Formula/agent-monitor.rb <<EOF
+          class AgentMonitor < Formula
             desc "Every AI-agent session on this machine, one page, over loopback HTTP"
             homepage "https://github.com/tanghong123/claude-replay"
             version "${ver}"
@@ -226,39 +228,40 @@ jobs:
 
             on_macos do
               on_arm do
-                url "${base}/claude-monitor-aarch64-apple-darwin.tar.gz"
+                url "${base}/agent-monitor-aarch64-apple-darwin.tar.gz"
                 sha256 "${mon_mac_arm}"
               end
               on_intel do
-                url "${base}/claude-monitor-x86_64-apple-darwin.tar.gz"
+                url "${base}/agent-monitor-x86_64-apple-darwin.tar.gz"
                 sha256 "${mon_mac_x86}"
               end
             end
 
             on_linux do
               on_arm do
-                url "${base}/claude-monitor-aarch64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-monitor-aarch64-unknown-linux-musl.tar.gz"
                 sha256 "${mon_lin_arm}"
               end
               on_intel do
-                url "${base}/claude-monitor-x86_64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-monitor-x86_64-unknown-linux-musl.tar.gz"
                 sha256 "${mon_lin_x86}"
               end
             end
 
             def install
-              bin.install "claude-monitor"
+              bin.install "agent-monitor"
+              bin.install_symlink bin/"agent-monitor" => "claude-monitor"
             end
 
             test do
-              assert_match "claude-monitor", shell_output("#{bin}/claude-monitor --help")
+              assert_match "agent-monitor", shell_output("#{bin}/agent-monitor --help")
             end
           end
           EOF
 
-          cat > tap/Formula/claude-monitor-fleet.rb <<EOF
-          class ClaudeMonitorFleet < Formula
-            desc "Several machines' claude-monitor pages behind one loopback page"
+          cat > tap/Formula/agent-monitor-fleet.rb <<EOF
+          class AgentMonitorFleet < Formula
+            desc "Several machines' agent-monitor pages behind one loopback page"
             homepage "https://github.com/tanghong123/claude-replay"
             version "${ver}"
             license "MIT"
@@ -266,35 +269,49 @@ jobs:
 
             on_macos do
               on_arm do
-                url "${base}/claude-monitor-fleet-aarch64-apple-darwin.tar.gz"
+                url "${base}/agent-monitor-fleet-aarch64-apple-darwin.tar.gz"
                 sha256 "${flt_mac_arm}"
               end
               on_intel do
-                url "${base}/claude-monitor-fleet-x86_64-apple-darwin.tar.gz"
+                url "${base}/agent-monitor-fleet-x86_64-apple-darwin.tar.gz"
                 sha256 "${flt_mac_x86}"
               end
             end
 
             on_linux do
               on_arm do
-                url "${base}/claude-monitor-fleet-aarch64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-monitor-fleet-aarch64-unknown-linux-musl.tar.gz"
                 sha256 "${flt_lin_arm}"
               end
               on_intel do
-                url "${base}/claude-monitor-fleet-x86_64-unknown-linux-musl.tar.gz"
+                url "${base}/agent-monitor-fleet-x86_64-unknown-linux-musl.tar.gz"
                 sha256 "${flt_lin_x86}"
               end
             end
 
             def install
-              bin.install "claude-monitor-fleet"
+              bin.install "agent-monitor-fleet"
+              bin.install_symlink bin/"agent-monitor-fleet" => "claude-monitor-fleet"
             end
 
             test do
-              assert_match "claude-monitor-fleet #{version}", shell_output("#{bin}/claude-monitor-fleet --version")
+              assert_match "agent-monitor-fleet #{version}", shell_output("#{bin}/agent-monitor-fleet --version")
             end
           end
           EOF
+
+          # The Homebrew rename protocol: `formula_renames.json` maps the old names, and
+          # the old formula FILES must be gone — brew errors when a renames entry and the
+          # old formula coexist. Existing `brew upgrade claude-replay` installs then
+          # transparently continue as agent-replay.
+          cat > tap/formula_renames.json <<EOF
+          {
+            "claude-replay": "agent-replay",
+            "claude-monitor": "agent-monitor",
+            "claude-monitor-fleet": "agent-monitor-fleet"
+          }
+          EOF
+          rm -f tap/Formula/claude-replay.rb tap/Formula/claude-monitor.rb tap/Formula/claude-monitor-fleet.rb
 
           cd tap
           git config user.name "Hong Tang"

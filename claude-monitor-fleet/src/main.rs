@@ -1,6 +1,6 @@
-//! `claude-monitor-fleet` — several machines' monitors behind one loopback page.
+//! `agent-monitor-fleet` — several machines' monitors behind one loopback page.
 //!
-//! `claude-monitor` answers "what is happening on THIS machine" and is documented as
+//! `agent-monitor` answers "what is happening on THIS machine" and is documented as
 //! single-machine on purpose (`design/claude-monitor.md`: "Not multi-machine. Everything assumes
 //! one filesystem and one process table."). That is a good boundary and this crate does not move
 //! it: the monitor gains no flag, no remote mode and no extension point. This is a separate
@@ -32,14 +32,14 @@ use tunnel::Tunnel;
 const FLEET_TEMPLATE: &str = include_str!("fleet.html");
 
 const HELP: &str = "\
-claude-monitor-fleet — one page over several machines' claude-monitor instances
+agent-monitor-fleet — one page over several machines' agent-monitor instances
 
 USAGE:
-  claude-monitor-fleet up [--port N] [--no-open] [--discover]
-  claude-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
-  claude-monitor-fleet list | status
-  claude-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
-  claude-monitor-fleet remove NAME
+  agent-monitor-fleet up [--port N] [--no-open] [--discover]
+  agent-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
+  agent-monitor-fleet list | status
+  agent-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
+  agent-monitor-fleet remove NAME
 
   up          Open one SSH tunnel per configured environment and serve the switcher.
               --discover uses what discovery finds instead of the config, without saving it.
@@ -49,7 +49,7 @@ USAGE:
   add         Add or update one environment. No --ssh means this machine.
 
 The config is a JSON file you can edit: $CLAUDE_MONITOR_FLEET_CONFIG, else
-$XDG_CONFIG_HOME/claude-monitor/fleet.json, else ~/.config/claude-monitor/fleet.json.
+$XDG_CONFIG_HOME/agent-monitor/fleet.json, else ~/.config/agent-monitor/fleet.json.
 It ships empty — every host in it is one you or discovery put there.
 
 A monitor's port is READ from its own lock (<cache root>/LOCK), never assumed, so a monitor on
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if args[0] == "--version" || args[0] == "-V" {
-        println!("claude-monitor-fleet {}", env!("CARGO_PKG_VERSION"));
+        println!("agent-monitor-fleet {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let cmd = args.remove(0);
@@ -162,8 +162,8 @@ fn up(args: &[String]) -> Result<()> {
         anyhow::ensure!(
             !fleet.environments.is_empty(),
             "no environments configured in {}\n  \
-             run `claude-monitor-fleet discover --add` to find the ones you have, or \
-             `claude-monitor-fleet up --discover` to use them once without saving",
+             run `agent-monitor-fleet discover --add` to find the ones you have, or \
+             `agent-monitor-fleet up --discover` to use them once without saving",
             at.display()
         );
         fleet.environments
@@ -650,7 +650,7 @@ fn list() -> Result<()> {
     let fleet = config::load(&at)?;
     if fleet.environments.is_empty() {
         println!("no environments in {}", at.display());
-        println!("  `claude-monitor-fleet discover --add` looks through your own SSH config");
+        println!("  `agent-monitor-fleet discover --add` looks through your own SSH config");
         return Ok(());
     }
     for e in &fleet.environments {

@@ -2953,7 +2953,7 @@ mod tests {
             build_shell(&title, &id, true, true),
             "no chrome ⇒ exactly the page --html serves"
         );
-        assert!(plain.contains("claude-replay <span class=\"brand-sub\""));
+        assert!(plain.contains("agent-replay <span class=\"brand-sub\""));
         assert!(!plain.contains("data-theme\",\""), "no stamp by default");
 
         let embedded = live

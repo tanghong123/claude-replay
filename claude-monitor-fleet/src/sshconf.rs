@@ -12,12 +12,16 @@
 
 use std::path::{Path, PathBuf};
 
-/// The SSH config to enumerate: `$CLAUDE_MONITOR_FLEET_SSH_CONFIG`, else `~/.ssh/config`.
+/// The SSH config to enumerate: `$AGENT_MONITOR_FLEET_SSH_CONFIG` (legacy
+/// `$CLAUDE_MONITOR_FLEET_SSH_CONFIG` honored), else `~/.ssh/config`.
 ///
 /// The override is not a nicety — it is how the tests enumerate a config with no relation to the
 /// machine they run on, which is the only way to prove nothing is seeded.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_FLEET_SSH_CONFIG").map(PathBuf::from) {
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_FLEET_SSH_CONFIG")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_FLEET_SSH_CONFIG"))
+        .map(PathBuf::from)
+    {
         return Some(p);
     }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".ssh").join("config"))

@@ -1,6 +1,8 @@
 # CLAUDE.md — claude-replay
 
-A Rust + ratatui terminal UI viewer. It is **fully testable headless (no TTY)** —
+A Rust + ratatui terminal UI viewer (**binaries: `agent-replay` / `agent-monitor` /
+`agent-monitor-fleet` since v1.101.0** — crate and repo names keep the `claude-` prefix;
+brew installs symlink the old command names). It is **fully testable headless (no TTY)** —
 never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Work tracking
@@ -26,7 +28,7 @@ drift.
   and native scroll anchoring, which only a real engine has. `#[ignore]`d (needs a local
   Chrome); run `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
   Scroll/viewport changes to `export.js` must extend this harness.
-- **Quick plain check:** `claude-replay <path|--latest> --dump -` renders to stdout
+- **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or
   `--width N`; bare `--dump` deduces the stem.) `--dump` renders through the View

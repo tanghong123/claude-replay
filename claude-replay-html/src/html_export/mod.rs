@@ -994,7 +994,7 @@ fn build_page(
         format!(r#"    <div class="brand" id="embed-title" title="{t}">{t}</div>"#)
     } else {
         format!(
-            r#"    <div class="brand">claude-replay <span class="brand-sub">v{}</span></div>"#,
+            r#"    <div class="brand">agent-replay <span class="brand-sub">v{}</span></div>"#,
             env!("CARGO_PKG_VERSION")
         )
     };

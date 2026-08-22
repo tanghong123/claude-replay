@@ -1,4 +1,4 @@
-# claude-replay
+# agent-replay
 
 An interactive, **read-only** viewer for AI coding-agent session transcripts —
 *like `claude --resume`, but you can only read*: scroll, fold, search, and
@@ -17,57 +17,59 @@ continuing or mutating the session.
 **Homebrew** (macOS / Linux) — recommended:
 
 ```bash
-brew install tanghong123/tap/claude-replay
+brew install tanghong123/tap/agent-replay
 ```
 
-This taps `tanghong123/tap` and puts the `claude-replay` command on your `PATH`, so
+This taps `tanghong123/tap` and puts the `agent-replay` command on your `PATH`
+(with `claude-replay` kept as a symlink through the rename transition), so
 you can run it from anywhere:
 
 ```bash
-claude-replay --latest      # open your most recent session
-claude-replay --version
+agent-replay --latest      # open your most recent session
+agent-replay --version
 ```
 
 On macOS and Linux (x86_64 and arm64) this downloads a prebuilt binary — no Rust
-toolchain, no compile. Later, `brew upgrade claude-replay` updates it and
-`brew uninstall claude-replay` removes it. (Equivalent two-step: `brew tap
-tanghong123/tap` then `brew install claude-replay`.)
+toolchain, no compile. Later, `brew upgrade agent-replay` updates it and
+`brew uninstall agent-replay` removes it — existing installs under the old
+`claude-replay` name upgrade transparently (the tap records the rename).
+(Equivalent two-step: `brew tap tanghong123/tap` then `brew install agent-replay`.)
 
 **Prebuilt binary** (no Homebrew, no Rust) — `cargo-binstall` grabs the release
 tarball for your platform:
 
 ```bash
-cargo binstall claude-replay
+cargo binstall claude-replay      # crate name unchanged; installs the agent-replay binary
 ```
 
-Or download a `claude-replay-<target>.tar.gz` from the
+Or download an `agent-replay-<target>.tar.gz` from the
 [releases page](https://github.com/tanghong123/claude-replay/releases) directly
 (static musl builds for Linux; run on any distro).
 
 **From source** (needs a Rust toolchain):
 
 ```bash
-cargo install --path .          # → ~/.cargo/bin/claude-replay
+cargo install --path .          # → ~/.cargo/bin/agent-replay
 # or
-cargo build --release           # → target/release/claude-replay
+cargo build --release           # → target/release/agent-replay
 ```
 
 ## Usage
 
 ```
-claude-replay                                 pick from this dir's sessions (Claude + Codex)
-claude-replay <session-id | path/to.jsonl>   render that transcript (agent auto-detected)
-claude-replay --latest                        newest session for THIS dir or an ancestor (not the global newest)
-claude-replay --agent codex                   only show Codex sessions (or --agent claude)
-claude-replay <id|--latest> --dump -          plain text to stdout (no TUI) — for pipes/tests
-claude-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
-claude-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
-claude-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
-claude-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
-claude-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
-claude-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, follows
+agent-replay                                 pick from this dir's sessions (Claude + Codex)
+agent-replay <session-id | path/to.jsonl>   render that transcript (agent auto-detected)
+agent-replay --latest                        newest session for THIS dir or an ancestor (not the global newest)
+agent-replay --agent codex                   only show Codex sessions (or --agent claude)
+agent-replay <id|--latest> --dump -          plain text to stdout (no TUI) — for pipes/tests
+agent-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
+agent-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
+agent-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
+agent-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
+agent-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
+agent-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, follows
                                                the session live, Ctrl-C to stop
-claude-replay <id> --no-cache                  skip the durable cache (fold from scratch; also allows
+agent-replay <id> --no-cache                  skip the durable cache (fold from scratch; also allows
                                                a second LIVE view of a session another instance follows)
 ```
 
@@ -220,17 +222,17 @@ Codex integration is validated against CLI 0.145.0: authentication uses
 interactive takeover uses `codex resume`, and fresh-run identity is read from the
 JSON `thread.started.thread_id` event (with rollout-marker discovery as a fallback).
 
-## `claude-monitor-fleet` — several machines' monitors on one page
+## `agent-monitor-fleet` — several machines' monitors on one page
 
-The workspace also builds **`claude-monitor`**: one loopback page showing every agent
+The workspace also builds **`agent-monitor`**: one loopback page showing every agent
 session on *this* machine. It is single-machine on purpose and stays that way —
-**`claude-monitor-fleet`** is a separate binary that opens one SSH tunnel per machine
+**`agent-monitor-fleet`** is a separate binary that opens one SSH tunnel per machine
 and serves a switcher whose tabs are those monitors' own pages, unmodified, in iframes.
 
 ```bash
-cargo install --path claude-monitor-fleet   # → ~/.cargo/bin/claude-monitor-fleet
-claude-monitor-fleet discover --add         # find the monitors you have, and keep them
-claude-monitor-fleet up                     # tunnels + the page, opened in your browser
+cargo install --path claude-monitor-fleet   # → ~/.cargo/bin/agent-monitor-fleet
+agent-monitor-fleet discover --add         # find the monitors you have, and keep them
+agent-monitor-fleet up                     # tunnels + the page, opened in your browser
 ```
 
 That is the whole first run. `discover` without `--add` probes and writes nothing, and
@@ -238,17 +240,18 @@ That is the whole first run. `discover` without `--add` probes and writes nothin
 anything lands in the config.
 
 ```bash
-claude-monitor-fleet up [--port N] [--no-open] [--discover]
-claude-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
-claude-monitor-fleet status     # probe the configured environments; open nothing
-claude-monitor-fleet list       # what is in the config
-claude-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
-claude-monitor-fleet remove NAME
+agent-monitor-fleet up [--port N] [--no-open] [--discover]
+agent-monitor-fleet discover [--add] [--host DEST]... [--ssh-config PATH]
+agent-monitor-fleet status     # probe the configured environments; open nothing
+agent-monitor-fleet list       # what is in the config
+agent-monitor-fleet add NAME [--ssh DEST] [--ssh-option ARG]... [--cache-root PATH] [--port N]
+agent-monitor-fleet remove NAME
 ```
 
 **Nothing about your machines is assumed.** The config — `$CLAUDE_MONITOR_FLEET_CONFIG`,
-else `$XDG_CONFIG_HOME/claude-monitor/fleet.json`, else
-`~/.config/claude-monitor/fleet.json` — is a JSON file you can edit, and it **ships
+else `fleet.json` under `$XDG_CONFIG_HOME`/`~/.config` in `claude-monitor/` when that
+directory already exists (pre-rename installs) or `agent-monitor/` otherwise — is a
+JSON file you can edit, and it **ships
 empty**: every host in it is one you or discovery put there. Each monitor's port is
 **read from that monitor's own lock** (`<cache root>/LOCK`), so one on a non-default
 `--port`, or a second one under its own `$CLAUDE_MONITOR_CACHE`, is found as it is; local

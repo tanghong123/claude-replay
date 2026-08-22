@@ -23,13 +23,13 @@ for f in frozen_self frozen_claude_sa frozen_codex; do
   if [ ! -f "$GATE_DIR/$f.jsonl" ]; then
     echo "NO INPUT at $GATE_DIR/$f.jsonl — the frozen fixture is gone."
     echo "  re-freeze + regenerate BASE from a known-good binary:"
-    echo "  scripts/gate/rebaseline.sh \"\$(command -v claude-replay)\" <a-transcript.jsonl>"
+    echo "  scripts/gate/rebaseline.sh \"\$(command -v agent-replay)\" <a-transcript.jsonl>"
     echo "BYTE-IDENTICAL: FAIL"
     exit 1
   fi
 done
 cargo build --release 2>&1 | tail -1
-BIN=./target/release/claude-replay
+BIN=./target/release/agent-replay
 OUT="$GATE_DIR/NOW"; rm -rf "$OUT"; mkdir -p "$OUT"
 "$SCRIPT_DIR/verify.sh" "$BIN" "$OUT"
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$OUT/self.dump.txt" 2>/dev/null

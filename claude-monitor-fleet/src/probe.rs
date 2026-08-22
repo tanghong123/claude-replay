@@ -1,7 +1,7 @@
 //! Finding a monitor without being told where it is.
 //!
-//! A monitor's port is **not** a constant. `claude-monitor` defaults to 2727 but takes `--port`,
-//! and a second monitor on the same machine needs a second port and its own `$CLAUDE_MONITOR_CACHE`
+//! A monitor's port is **not** a constant. `agent-monitor` defaults to 2727 but takes `--port`,
+//! and a second monitor on the same machine needs a second port and its own `$AGENT_MONITOR_CACHE`
 //! (one monitor per cache root, #160/#166). So a fleet that forwards to 2727 forwards to whichever
 //! monitor happens to hold that port — or to nothing.
 //!
@@ -39,13 +39,14 @@ pub struct Found {
 
 /// Resolve monitor cache roots and print one line per lock found, preceded by who this machine is.
 ///
-/// Roots considered, in order: `$1` (an explicit root the user configured), `$CLAUDE_MONITOR_CACHE`,
-/// then every `claude-monitor*` directory under `$XDG_CACHE_HOME` or `~/.cache`. That last glob is
-/// what finds a second monitor without being told its name — `claude-monitor-next`, `-staging`,
-/// whatever the user called it — and it is a heuristic about THIS TOOL's own directory naming, not
-/// about the user's machines. A root somewhere else entirely is reachable with `--cache-root`.
+/// Roots considered, in order: `$1` (an explicit root the user configured), `$AGENT_MONITOR_CACHE`,
+/// `$CLAUDE_MONITOR_CACHE` (legacy), then every `agent-monitor*` or `claude-monitor*` directory
+/// under `$XDG_CACHE_HOME` or `~/.cache` — a remote machine may run either generation of the
+/// binary during the rename transition, so BOTH names stay probed. The glob is a heuristic about
+/// THIS TOOL's own directory naming, not about the user's machines; a root somewhere else
+/// entirely is reachable with `--cache-root`.
 ///
-/// A non-interactive `ssh host sh` does not read `.zshrc`/`.bashrc`, so `$CLAUDE_MONITOR_CACHE`
+/// A non-interactive `ssh host sh` does not read `.zshrc`/`.bashrc`, so `$AGENT_MONITOR_CACHE`
 /// will usually be unset remotely even when the user's shell sets it. The glob covers the common
 /// case; `--cache-root` covers the rest. Printing to stdout with a fixed prefix keeps MOTD banners
 /// and shell noise from being parsed as results.
@@ -58,9 +59,11 @@ id=$(cat /etc/machine-id 2>/dev/null | head -n1)
 [ -n "$id" ] || id=$(hostname 2>/dev/null | head -n1)
 printf 'ID\t%s\n' "${id:-}"
 roots=$explicit
+if [ -n "${AGENT_MONITOR_CACHE:-}" ]; then roots="$roots
+$AGENT_MONITOR_CACHE"; fi
 if [ -n "${CLAUDE_MONITOR_CACHE:-}" ]; then roots="$roots
 $CLAUDE_MONITOR_CACHE"; fi
-for d in "$base"/claude-monitor*; do
+for d in "$base"/agent-monitor* "$base"/claude-monitor*; do
   if [ -d "$d" ]; then roots="$roots
 $d"; fi
 done

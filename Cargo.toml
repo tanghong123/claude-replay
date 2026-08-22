@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-default-run = "claude-replay"
+default-run = "agent-replay"
 description = "Interactive, read-only viewer for Claude Code session transcripts (like `claude --resume`, but you can't type)."
 homepage = "https://github.com/tanghong123/claude-replay"
 readme = "README.md"
@@ -48,7 +48,7 @@ name = "claude_replay"
 path = "src/lib.rs"
 
 [[bin]]
-name = "claude-replay"
+name = "agent-replay"
 path = "src/main.rs"
 
 [[bin]]
@@ -56,10 +56,12 @@ name = "agent-jdi"
 path = "src/bin/agent-jdi.rs"
 
 # `cargo binstall claude-replay` pulls the matching prebuilt tarball from the
-# GitHub release instead of compiling. Assets are named `claude-replay-<target>.tar.gz`
-# with the binary at the archive root (see .github/workflows/release.yml).
+# GitHub release instead of compiling. The CRATE keeps its name; the BINARY renamed to
+# `agent-replay` (v1.101.0), so the asset name is spelled literally rather than
+# templated from `{ name }` — that is what keeps `cargo binstall claude-replay`
+# resolving. Assets carry the binary at the archive root (see release.yml).
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+pkg-url = "{ repo }/releases/download/v{ version }/agent-replay-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 

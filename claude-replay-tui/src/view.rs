@@ -2274,7 +2274,7 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
         .borders(Borders::ALL)
         .border_style(theme::table_border())
         .title(concat!(
-            " claude-replay v",
+            " agent-replay v",
             env!("CARGO_PKG_VERSION"),
             " — ? or Esc to close "
         ));
@@ -2932,11 +2932,11 @@ mod tests {
             false,
             FoldPolicy::default(),
         );
-        v.set_flash("in use by another claude-replay (pid 42)");
+        v.set_flash("in use by another agent-replay (pid 42)");
         let buf = draw(&mut v, 60, 6);
         let status = row(&buf, buf.area.height - 1);
         assert!(
-            status.contains("in use by another claude-replay (pid 42)"),
+            status.contains("in use by another agent-replay (pid 42)"),
             "flash owns the status row: {status:?}"
         );
 
@@ -3448,7 +3448,7 @@ mod tests {
         );
         // The overlay title identifies WHICH build is running (#55).
         assert!(
-            t1.contains(concat!("claude-replay v", env!("CARGO_PKG_VERSION"))),
+            t1.contains(concat!("agent-replay v", env!("CARGO_PKG_VERSION"))),
             "help title names the version:\n{t1}"
         );
         v.toggle_help();

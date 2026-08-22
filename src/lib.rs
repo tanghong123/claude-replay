@@ -1,4 +1,4 @@
-//! claude-replay library — the thin assembly crate for the `claude-replay` viewer and the
+//! agent-replay library — the thin assembly crate for the `agent-replay` viewer and the
 //! `agent-jdi` supervisor binaries.
 //!
 //! The layers live in sibling crates (#71): `claude-replay-core` (parser/replay engine),
@@ -21,7 +21,7 @@ pub use claude_replay_present::{cache, highlight, present, sys, Args, SessionCac
 use anyhow::Result;
 use clap::Parser;
 
-/// Entry point for the `claude-replay` viewer binary.
+/// Entry point for the `agent-replay` viewer binary.
 pub fn run_viewer() -> Result<()> {
     let args = Args::parse();
     // Take back what dead runs left behind (#165), on EVERY invocation — the frontends each do

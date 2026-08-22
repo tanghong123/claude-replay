@@ -97,22 +97,25 @@ impl Fleet {
         anyhow::ensure!(
             fleet.version <= VERSION,
             "fleet config is version {} but this build understands at most {VERSION} — upgrade \
-             claude-monitor-fleet",
+             agent-monitor-fleet",
             fleet.version
         );
         Ok(fleet)
     }
 }
 
-/// Where the fleet config lives: `$CLAUDE_MONITOR_FLEET_CONFIG` (absolute only), else
-/// `$XDG_CONFIG_HOME/claude-monitor/fleet.json`, else `~/.config/claude-monitor/fleet.json`.
+/// Where the fleet config lives: `$AGENT_MONITOR_FLEET_CONFIG` (absolute only; legacy
+/// `$CLAUDE_MONITOR_FLEET_CONFIG` honored), else `fleet.json` under the config base's
+/// migration-ruled dir: an existing `claude-monitor` keeps being used, fresh installs
+/// create `agent-monitor`, both existing warns once.
 ///
 /// Config, not cache: this is a thing a person edits and keeps, so it does not belong under the
-/// monitor's cache root — which the monitor is free to wipe, and which `--port`/`$CLAUDE_MONITOR_CACHE`
+/// monitor's cache root — which the monitor is free to wipe, and which `--port`/`$AGENT_MONITOR_CACHE`
 /// can move out from under it. The env var comes first so a test, or a second fleet, can have
 /// its own file without touching the user's.
 pub fn path() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_FLEET_CONFIG")
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_FLEET_CONFIG")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_FLEET_CONFIG"))
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -123,7 +126,29 @@ pub fn path() -> Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .ok_or_else(|| anyhow::anyhow!("no $HOME — nowhere to keep the fleet config"))?;
-    Ok(base.join("claude-monitor").join("fleet.json"))
+    Ok(renamed_dir(&base, "claude-monitor", "agent-monitor").join("fleet.json"))
+}
+
+/// The binary-rename migration rule (owner, 2026-08-22), the fleet's copy of the
+/// monitor's: an existing OLD-named directory keeps being used; otherwise the NEW name
+/// is chosen; both existing warns once, old still wins (its data predates the rename).
+fn renamed_dir(base: &Path, old: &str, new: &str) -> PathBuf {
+    let (old_p, new_p) = (base.join(old), base.join(new));
+    if !old_p.exists() {
+        return new_p;
+    }
+    if new_p.exists() {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: both {} and {} exist — using the former; \
+                 consolidate into one (the newer name) to silence this",
+                old_p.display(),
+                new_p.display()
+            );
+        });
+    }
+    old_p
 }
 
 /// Read the fleet. **A missing file is an empty fleet, not an error**: the first run of any

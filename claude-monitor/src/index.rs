@@ -1140,10 +1140,14 @@ pub(crate) fn percent_decode(s: &str) -> String {
 
 /// The monitor's STATE directory — where the hide list belongs (#197): it is user INTENT
 /// that cannot be recomputed, and `~/.cache` is XDG-deletable at any time. `$XDG_STATE_HOME`
-/// (else `~/.local/state`), overridable by `$CLAUDE_MONITOR_STATE` (mirroring
-/// `$CLAUDE_MONITOR_CACHE`, for tests and for `agent-metrics`' matching lookup).
+/// (else `~/.local/state`), overridable by `$AGENT_MONITOR_STATE` (legacy
+/// `$CLAUDE_MONITOR_STATE` honored — mirroring the cache var, for tests and for
+/// `agent-metrics`' matching lookup). The directory name follows [`renamed_dir`]'s
+/// migration rule: an existing `claude-monitor` keeps being used; fresh installs
+/// create `agent-monitor`.
 pub fn state_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_STATE")
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -1154,7 +1158,32 @@ pub fn state_dir() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
         .unwrap_or_else(|| PathBuf::from(".").join(".local").join("state"));
-    base.join("claude-monitor")
+    renamed_dir(&base, "claude-monitor", "agent-monitor")
+}
+
+/// The binary-rename migration rule for an on-disk directory (owner, 2026-08-22): an
+/// existing OLD-named directory keeps being used — real state lives there and nothing
+/// moves it — otherwise the NEW name is chosen (created by whoever writes first). When
+/// BOTH exist the old one still wins (its data predates the rename; a stray new dir is
+/// most likely an intermediate run's empty leftover) and a once-per-process warning
+/// names both paths so the user can consolidate.
+pub(crate) fn renamed_dir(base: &std::path::Path, old: &str, new: &str) -> PathBuf {
+    let (old_p, new_p) = (base.join(old), base.join(new));
+    if !old_p.exists() {
+        return new_p;
+    }
+    if new_p.exists() {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: both {} and {} exist — using the former; \
+                 consolidate into one (the newer name) to silence this",
+                old_p.display(),
+                new_p.display()
+            );
+        });
+    }
+    old_p
 }
 
 /// The hide list's home (#197): `<state_dir>/ignored.json` — STATE, not cache. A plain JSON
@@ -1349,7 +1378,8 @@ fn is_uuid(t: &str) -> bool {
 
 /// Environment variable holding extra agent-recognition patterns, comma-separated. Each entry
 /// is `basename:<name>`, `argv:<substring>`, or a bare `<name>` (same as `basename:`).
-const AGENT_PATTERNS_ENV: &str = "CLAUDE_MONITOR_AGENT_PATTERNS";
+const AGENT_PATTERNS_ENV: &str = "AGENT_MONITOR_AGENT_PATTERNS";
+const AGENT_PATTERNS_ENV_LEGACY: &str = "CLAUDE_MONITOR_AGENT_PATTERNS";
 
 /// What an extra recognition pattern is matched against.
 ///
@@ -1398,6 +1428,7 @@ fn extra_agent_patterns() -> &'static [AgentPattern] {
     static PATTERNS: std::sync::OnceLock<Vec<AgentPattern>> = std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| {
         std::env::var(AGENT_PATTERNS_ENV)
+            .or_else(|_| std::env::var(AGENT_PATTERNS_ENV_LEGACY))
             .map(|spec| AgentPattern::parse(&spec))
             .unwrap_or_default()
     })
@@ -1683,10 +1714,13 @@ fn human_age(mtime: Option<SystemTime>, now: SystemTime) -> String {
     }
 }
 
-/// Resolve the monitor's cache root (R5): `$CLAUDE_MONITOR_CACHE`, else
-/// `$XDG_CACHE_HOME/claude-monitor`, else `~/.cache/claude-monitor`.
+/// Resolve the monitor's cache root (R5): `$AGENT_MONITOR_CACHE` (legacy
+/// `$CLAUDE_MONITOR_CACHE` honored), else [`renamed_dir`]'s migration rule under
+/// `$XDG_CACHE_HOME`/`~/.cache`: an existing `claude-monitor` keeps being used;
+/// fresh installs create `agent-monitor`; both existing warns once.
 pub fn default_root() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("CLAUDE_MONITOR_CACHE")
+    if let Some(p) = std::env::var_os("AGENT_MONITOR_CACHE")
+        .or_else(|| std::env::var_os("CLAUDE_MONITOR_CACHE"))
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     {
@@ -1697,12 +1731,41 @@ pub fn default_root() -> Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .ok_or_else(|| anyhow::anyhow!("no $HOME — nowhere to keep the monitor's cache"))?;
-    Ok(base.join("claude-monitor"))
+    Ok(renamed_dir(&base, "claude-monitor", "agent-monitor"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rename migration rule (owner, 2026-08-22): an existing `claude-monitor` dir
+    /// keeps being used — even when `agent-monitor` also exists (old data predates the
+    /// rename; the warn covers the ambiguity) — and only a fresh install gets the new name.
+    #[test]
+    fn renamed_dir_prefers_existing_old_else_new() {
+        let base = std::env::temp_dir().join(format!("cr-renamed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Neither exists: the NEW name (fresh install).
+        assert_eq!(
+            renamed_dir(&base, "claude-monitor", "agent-monitor"),
+            base.join("agent-monitor")
+        );
+        // Old exists: keep using it.
+        std::fs::create_dir_all(base.join("claude-monitor")).unwrap();
+        assert_eq!(
+            renamed_dir(&base, "claude-monitor", "agent-monitor"),
+            base.join("claude-monitor")
+        );
+        // Both exist: old still wins (plus a once-per-process warning).
+        std::fs::create_dir_all(base.join("agent-monitor")).unwrap();
+        assert_eq!(
+            renamed_dir(&base, "claude-monitor", "agent-monitor"),
+            base.join("claude-monitor")
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// #133 send liveness (the owner's constraints, pure): a finished session in a quiet
     /// project is sendable; a session with its OWN live process is refused (use tmux); a

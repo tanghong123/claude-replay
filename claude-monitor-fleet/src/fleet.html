@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  The fleet page. Composition at the document level, the same doctrine as claude-monitor's own
+  The fleet page. Composition at the document level, the same doctrine as agent-monitor's own
   rail (#98 §6.3): this file renders a switcher and nothing else, and each environment is the
   UNMODIFIED monitor page from that machine inside an <iframe>. No route of theirs is proxied,
   no markup of theirs is reinterpreted, so a monitor that changes shape keeps working here.
@@ -68,8 +68,8 @@ const wasUp = [];
 function render() {
   if (!ENVS.length) {
     frames.innerHTML = '<div class="empty"><p>No environments are configured.</p>' +
-      '<p>Run <code>claude-monitor-fleet discover --add</code> to look through your own SSH ' +
-      'config for machines running a monitor, then <code>claude-monitor-fleet up</code>.</p></div>';
+      '<p>Run <code>agent-monitor-fleet discover --add</code> to look through your own SSH ' +
+      'config for machines running a monitor, then <code>agent-monitor-fleet up</code>.</p></div>';
     return;
   }
   ENVS.forEach((env, i) => {

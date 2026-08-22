@@ -1,4 +1,4 @@
-// claude-replay HTML export — renderer + behavior. No dependencies, no network
+// agent-replay HTML export — renderer + behavior. No dependencies, no network
 // beyond an optional same-directory companion file.
 //
 // The page is a fixed shell; all content arrives as an append-only JSONL stream

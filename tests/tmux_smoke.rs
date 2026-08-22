@@ -49,7 +49,7 @@ fn drives_real_binary_in_headless_tmux() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let transcript = dir.join("s.jsonl");
@@ -109,7 +109,7 @@ fn esc_returns_from_viewer_to_session_list() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-switch-{}", std::process::id()));
     // Two sessions for a shared work dir; launch the picker there so strict cwd
     // scoping surfaces them (canonicalize — the process resolves /var → /private/var).
@@ -218,7 +218,7 @@ fn s_opens_session_switcher_on_latest() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-slatest-{}", std::process::id()));
     // Sessions for a work dir INSIDE the fixture home (#69: discovery only probes strictly
     // inside $HOME); canonicalize — the process resolves /var → /private/var.
@@ -328,7 +328,7 @@ fn picker_merges_claude_and_codex_sessions() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-multi-{}", std::process::id()));
 
     // Both sessions record the SAME cwd (a shared work dir), and we launch the picker
@@ -426,7 +426,7 @@ fn switching_to_a_held_session_flashes_and_stays() {
         eprintln!("skipping: tmux not installed");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_claude-replay");
+    let bin = env!("CARGO_BIN_EXE_agent-replay");
     let dir = std::env::temp_dir().join(format!("peekv2-held-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // Same fixture shape as `s_opens_session_switcher_on_latest` (#69 home-scoped discovery).

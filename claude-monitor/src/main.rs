@@ -1,4 +1,4 @@
-//! `claude-monitor` — every agent session on this machine, one page, over loopback HTTP
+//! `agent-monitor` — every agent session on this machine, one page, over loopback HTTP
 //! (#98). The page is the RAIL (this crate's own markup) beside the existing claude-replay
 //! session view in an `<iframe src="/session?id=…">` — composition at the document level
 //! (§6.3), never a fork of the renderer (R10).
@@ -71,7 +71,7 @@ fn claim_root(root: &std::path::Path) -> Result<Claimed> {
     match note_port(holder.note.as_ref()) {
         Some(port) => Ok(Claimed::Served(format!("http://127.0.0.1:{port}/"))),
         None => anyhow::bail!(
-            "claude-monitor is starting up in another process (pid {}) — it holds this cache \
+            "agent-monitor is starting up in another process (pid {}) — it holds this cache \
              root but has not published a port yet. Try again in a moment, or stop it first.",
             holder.pid
         ),
@@ -389,7 +389,7 @@ fn tmux_cmd(sock: Option<&str>, args: &[&str], what: &str) -> Result<()> {
 fn tmux_send(target: &index::TmuxTarget, prompt: &str) -> Result<()> {
     let sock = target.sock.as_deref();
     let pane = target.pane.as_str();
-    const BUF: &str = "claude-monitor-send";
+    const BUF: &str = "agent-monitor-send";
 
     // 1) prompt → a named tmux buffer, via stdin (never argv).
     {
@@ -430,7 +430,7 @@ fn tmux_send(target: &index::TmuxTarget, prompt: &str) -> Result<()> {
             "display-message",
             "-t",
             pane,
-            "claude-monitor: a prompt was sent from the rail",
+            "agent-monitor: a prompt was sent from the rail",
         ],
         "display-message",
     );
@@ -526,18 +526,19 @@ fn main() -> Result<()> {
             "--no-open" => open_browser = false,
             "--help" | "-h" => {
                 println!(
-                    "claude-monitor — every agent session on this machine, over loopback HTTP\n\n\
-                     USAGE: claude-monitor [--pair] [--set-passcode] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
+                    "agent-monitor — every agent session on this machine, over loopback HTTP\n\n\
+                     USAGE: agent-monitor [--pair] [--set-passcode] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
                      Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
                      --pair: require a token (a 0600 secret) — run it once on a SHARED machine\n\
                      so only you can reach your monitor; it prints a URL to open. Thereafter a\n\
-                     plain `claude-monitor` keeps requiring the token.\n\
+                     plain `agent-monitor` keeps requiring the token.\n\
                      --set-passcode: set (or clear) a passcode required to GRANT injection into\n\
                      a live session (#133) — a speed bump for an unlocked, unattended machine.\n\
-                     Cache root: $CLAUDE_MONITOR_CACHE, else ~/.cache/claude-monitor —\n\
-                     never the viewer's (R5).\n\n\
+                     Cache root: $AGENT_MONITOR_CACHE (legacy $CLAUDE_MONITOR_CACHE honored);\n\
+                     an existing ~/.cache/claude-monitor keeps being used, fresh installs\n\
+                     create ~/.cache/agent-monitor — never the viewer's root (R5).\n\n\
                      Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
-                     Extend with $CLAUDE_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
+                     Extend with $AGENT_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
                      argv:<substring>, or a bare <name> (a basename). Wrapper launches need argv:,\n\
                      e.g. \"argv:npx codex,argv:node_modules/.bin/codex,basename:my-agent\"."
                 );
@@ -560,7 +561,7 @@ fn main() -> Result<()> {
     // URL carries the token too: the second invocation is the same user, who can read the file.
     if let Claimed::Served(url) = claim_root(&root)? {
         let url = with_token(&url);
-        eprintln!("claude-monitor is already running — opening {url}");
+        eprintln!("agent-monitor is already running — opening {url}");
         if open_browser {
             open_url(&url);
         }
@@ -747,16 +748,16 @@ fn main() -> Result<()> {
     let base = format!("http://127.0.0.1:{bound}/");
     let url = with_token(&base);
     if token.is_some() {
-        eprintln!("claude-monitor serving {url} (paired — token required · Ctrl-C to stop)");
+        eprintln!("agent-monitor serving {url} (paired — token required · Ctrl-C to stop)");
     } else {
-        eprintln!("claude-monitor serving {url} (loopback only — Ctrl-C to stop)");
+        eprintln!("agent-monitor serving {url} (loopback only — Ctrl-C to stop)");
         // The silent-hole warning (§4.2): unpaired + a platform that cannot verify a TCP
         // peer's uid = every local user can reach this monitor (and `/__reveal` pops Finder
         // on the server). Harmless on a personal Mac; a hole on a shared one.
         if cfg!(not(target_os = "linux")) {
             eprintln!(
                 "  note: loopback peers can't be verified on this platform — if this machine \
-                 is SHARED, run `claude-monitor --pair` to require a token."
+                 is SHARED, run `agent-monitor --pair` to require a token."
             );
         }
     }
