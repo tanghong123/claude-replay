@@ -121,6 +121,153 @@ fn md_html_user(src: &str) -> String {
     md_html_inner(src, true)
 }
 
+// ── Pasted terminal art inside a user turn ────────────────────────────────────────────
+//
+// A user turn is a markdown document (people write prose, `code`, lists) — but it is also
+// where pasted TERMINAL OUTPUT lands, and markdown destroys that: HTML collapses runs of
+// spaces, the paragraph parse strips leading indentation, and a proportional font gives
+// `│` and letters different widths. A box drawn in a terminal arrives here as
+// `│ │` — the alignment gone and unrecoverable.
+//
+// So the markdown default stays, and runs that are unmistakably art are lifted OUT of it
+// into a verbatim part. The detector is deliberately TIGHT: a missed paste renders exactly
+// as it does today (no loss), while a false positive would set someone's prose in a
+// monospace box. It therefore needs an ANCHOR of certainty and corroborating BULK —
+// one stray glyph in a paragraph is never enough:
+//
+//   * `strong` — the line carries box-drawing/block characters (U+2500–U+259F).
+//   * `good`   — strong, OR interior padding (2+ spaces between text), OR a leading indent.
+//   * a run of consecutive `good` lines qualifies iff it holds >= 3 non-blank lines,
+//     >= 2 of them strong, and the strong ones are at least HALF of it.
+//
+// Two exclusions carry their weight (both were false positives on a real 3,630-message
+// corpus before they went in): inline code spans are stripped before the test, because
+// prose ABOUT box characters ("emit a `├─┼─┤` rule between rows") is authored markdown
+// and renders correctly already; and fenced blocks are skipped entirely, markdown having
+// handled them properly all along. Measured on that corpus the rule fires on 0.11% of
+// user turns and every hit is real terminal art.
+
+/// A line with its inline code spans removed — an unterminated backtick swallows the rest,
+/// which biases toward NOT detecting (the tight direction).
+fn without_code_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_code = false;
+    for c in line.chars() {
+        if c == '`' {
+            in_code = !in_code;
+        } else if !in_code {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The ANCHOR: box-drawing or block-element characters outside any code span.
+fn is_box_art(line: &str) -> bool {
+    without_code_spans(line)
+        .chars()
+        .any(|c| ('\u{2500}'..='\u{259F}').contains(&c))
+}
+
+/// A run of 2+ spaces BETWEEN text — column padding, not sentence spacing at the margins.
+fn has_interior_padding(line: &str) -> bool {
+    let (mut seen_text, mut run) = (false, 0usize);
+    for c in line.trim_end().chars() {
+        if c == ' ' {
+            if seen_text {
+                run += 1;
+            }
+        } else {
+            if seen_text && run >= 2 {
+                return true;
+            }
+            run = 0;
+            seen_text = true;
+        }
+    }
+    false
+}
+
+fn has_leading_indent(line: &str) -> bool {
+    !line.trim().is_empty() && line.chars().take_while(|c| *c == ' ' || *c == '\t').count() >= 2
+}
+
+/// Corroborating evidence — necessary for every line of a run, sufficient for none.
+fn looks_preformatted(line: &str) -> bool {
+    is_box_art(line) || has_interior_padding(line) || has_leading_indent(line)
+}
+
+/// The `[start, end)` line ranges of `lines` that are pasted terminal art (see the note above).
+fn preformatted_runs(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut fenced = false;
+    for (i, line) in lines.iter().enumerate() {
+        let is_fence = line.trim_start().starts_with("```");
+        if is_fence {
+            fenced = !fenced;
+        }
+        // A fenced block is markdown's business and already renders verbatim.
+        let member = if fenced || is_fence {
+            false
+        } else if looks_preformatted(line) {
+            true
+        } else {
+            // A blank line stays inside a run only when art resumes right after it (a box's
+            // empty row); otherwise it ends the run.
+            line.trim().is_empty()
+                && start.is_some()
+                && lines.get(i + 1).is_some_and(|n| looks_preformatted(n))
+        };
+        match (member, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                spans.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, lines.len()));
+    }
+    spans.retain(|&(s, e)| {
+        let body = lines[s..e].iter().filter(|l| !l.trim().is_empty());
+        let (total, anchored) = body.fold((0usize, 0usize), |(t, a), l| {
+            (t + 1, a + usize::from(is_box_art(l)))
+        });
+        total >= 3 && anchored >= 2 && anchored * 2 >= total
+    });
+    spans
+}
+
+/// A user turn's body parts: markdown for prose, a verbatim `raw` part for pasted art.
+/// A turn with no detected art emits exactly one `md` part — byte-identical to before.
+fn user_body_parts(text: &str) -> Vec<Value> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let runs = preformatted_runs(&lines);
+    if runs.is_empty() {
+        return vec![json!({ "p": "md", "h": md_html_user(text) })];
+    }
+    let mut parts = Vec::new();
+    let mut prose_from = 0usize;
+    let flush = |from: usize, to: usize, parts: &mut Vec<Value>| {
+        if from < to {
+            let prose = lines[from..to].join("\n");
+            if !prose.trim().is_empty() {
+                parts.push(json!({ "p": "md", "h": md_html_user(&prose) }));
+            }
+        }
+    };
+    for (s, e) in runs {
+        flush(prose_from, s, &mut parts);
+        parts.push(json!({ "p": "raw", "x": lines[s..e].join("\n") }));
+        prose_from = e;
+    }
+    flush(prose_from, lines.len(), &mut parts);
+    parts
+}
+
 fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut out = String::new();
@@ -450,7 +597,7 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
-                body.push(json!({ "p": "md", "h": md_html_user(text) }));
+                body.extend(user_body_parts(text));
             }
             // A sub-agent spawn (kind "agent") — a fold whose header names the agent
             // and whose body carries the prompt, agent id, and result. Full drill-down
@@ -1637,6 +1784,88 @@ impl AssetSink {
 
 #[cfg(test)]
 mod tests {
+    use super::{preformatted_runs, user_body_parts};
+
+    /// Helper: the `p` tag of each body part a user turn emits.
+    fn shape(text: &str) -> Vec<String> {
+        user_body_parts(text)
+            .iter()
+            .map(|v| v["p"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    /// A pasted terminal box is lifted out of the markdown into a VERBATIM part, and comes
+    /// back byte-for-byte. Through markdown it arrived as `│ │`: HTML collapses the padding
+    /// runs, so the right-hand edge — the thing that makes it a rectangle — was gone and
+    /// unrecoverable. The prose around it stays markdown.
+    #[test]
+    fn a_pasted_box_is_lifted_out_verbatim() {
+        let text = "It printed this:\n\n\
+                    ╭──────────────────╮\n\
+                    │  code: GVRC-XGRD │\n\
+                    │                  │\n\
+                    ╰──────────────────╯\n\n\
+                    then it hung.";
+        assert_eq!(shape(text), vec!["md", "raw", "md"]);
+        let parts = user_body_parts(text);
+        let raw = parts[1]["x"].as_str().expect("raw part carries text");
+        assert!(raw.starts_with('╭') && raw.ends_with('╯'));
+        // Every drawn row is the same width — the property markdown destroyed.
+        let widths: std::collections::BTreeSet<usize> =
+            raw.lines().map(|l| l.chars().count()).collect();
+        assert_eq!(widths.len(), 1, "the box is still rectangular: {raw}");
+    }
+
+    /// Prose that TALKS ABOUT box characters is not art. Every glyph here sits inside a
+    /// code span — the author's own "this is literal" marker, which markdown already
+    /// renders correctly — so stripping code spans before the test keeps this prose.
+    /// (A real corpus false positive before that exclusion existed.)
+    #[test]
+    fn prose_about_box_characters_stays_markdown() {
+        let text = "  Update `render_table` to emit a rule between rows:\n\
+                    \x20 top `┌─┬─┐`, header, `├─┼─┤`, row, bottom `└─┴─┘`.\n\
+                    \x20 Use the existing `table_border()` helper for each.";
+        assert_eq!(shape(text), vec!["md"]);
+    }
+
+    /// Indented prose has the corroborating signal but no ANCHOR — three indented lines
+    /// are a wrapped instruction, not a paste. (The other corpus false positive.)
+    #[test]
+    fn indented_prose_without_an_anchor_stays_markdown() {
+        let text = "  You are running unattended. The human is asleep.\n\
+                    \x20 Execute the tasks below to completion without stopping.\n\
+                    \x20 Skip anything already done; do not create duplicates.";
+        assert_eq!(shape(text), vec!["md"]);
+        assert!(preformatted_runs(&text.split('\n').collect::<Vec<_>>()).is_empty());
+    }
+
+    /// One glyph is an anchor without bulk: a lone rule in a paragraph is typography, and
+    /// two art lines are still under the three-line floor. Both stay prose — the tight
+    /// direction, where a miss costs only today's rendering.
+    #[test]
+    fn an_anchor_without_bulk_stays_markdown() {
+        assert_eq!(shape("Section one\n────────────\nSection two"), vec!["md"]);
+        assert_eq!(shape("┌────┐\n└────┘"), vec!["md"]);
+    }
+
+    /// A fenced block is markdown's own verbatim construct — already correct, with
+    /// highlighting — so the detector never reaches inside one.
+    #[test]
+    fn fenced_art_is_left_to_markdown() {
+        let text = "look:\n\n```\n╭────╮\n│ hi │\n╰────╯\n```\n\ndone";
+        assert_eq!(shape(text), vec!["md"]);
+    }
+
+    /// The overwhelming majority of turns hold no art at all, and those must emit exactly
+    /// what they always did: ONE markdown part, byte-identical.
+    #[test]
+    fn ordinary_prose_emits_one_markdown_part_unchanged() {
+        let text = "Please fix the **auth** bug in `src/lib.rs`:\n- check the token path";
+        let parts = user_body_parts(text);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["h"], super::md_html_user(text));
+    }
+
     use super::serve::{percent_decode, query_get};
     use super::*;
     use crate::model::Hunk;

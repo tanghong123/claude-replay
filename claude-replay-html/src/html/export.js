@@ -121,6 +121,13 @@
       into.appendChild(d);
       return;
     }
+    // Pasted terminal art lifted out of a user turn's markdown (Rust decides which runs;
+    // see `user_body_parts`). Verbatim and monospace — and NOT `pre`, whose `⎿` gutter
+    // means "tool result" in this page's vocabulary; a human's paste is not that.
+    if (p.p === "raw") {
+      into.appendChild(el("pre", "raw", p.x));   // textContent — never innerHTML
+      return;
+    }
     if (p.p === "note") {
       var note = el("div", "note");
       note.appendChild(el("span", null, "⎿"));

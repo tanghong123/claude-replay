@@ -114,7 +114,7 @@ fn reason(why: Unavailable) -> &'static str {
 fn render_flavor(fold: &FoldPolicy) -> u64 {
     use std::hash::{Hash, Hasher};
     /// Bump when the wire record's shape changes.
-    const RECORD_SCHEMA: u16 = 1;
+    const RECORD_SCHEMA: u16 = 2;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

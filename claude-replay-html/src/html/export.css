@@ -712,6 +712,15 @@ th, td { padding: 7px 12px; border: 1px solid var(--border); vertical-align: top
 th { background: var(--panel); font-weight: 600; }
 hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
+/* Pasted terminal art in a user turn: exact, monospace, and never wrapped — wrapping is
+   what breaks a drawn box, so it scrolls in its own gutter instead (the page body must
+   not scroll sideways). */
+.raw {
+  margin: 8px 0; padding: 8px 10px; font: 12.5px/1.5 var(--mono);
+  white-space: pre; overflow-x: auto; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--border);
+}
+
 .fence {
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
   overflow: hidden; margin: 8px 0;
