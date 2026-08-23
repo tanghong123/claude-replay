@@ -113,8 +113,12 @@ fn reason(why: Unavailable) -> &'static str {
 /// the transcript's identity is already pinned by the stream's anchor.
 fn render_flavor(fold: &FoldPolicy) -> u64 {
     use std::hash::{Hash, Hasher};
-    /// Bump when the wire record's shape changes.
-    const RECORD_SCHEMA: u16 = 2;
+    /// Bump when ANY of the rendered output changes — not only the record's field shape
+    /// but which parts a block emits, or what goes in them. A durable entry replays its
+    /// stored records verbatim, so an un-bumped renderer change serves the OLD page from
+    /// cache forever (v1.102.1 widened the pasted-art detector without bumping this, and
+    /// every already-visited session kept rendering the previous build's markup).
+    const RECORD_SCHEMA: u16 = 3;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
