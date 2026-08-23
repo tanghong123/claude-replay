@@ -17,11 +17,19 @@
   var MS_KEY = "claude-replay-export-ms";
   var WRAP_KEY = "claude-replay-export-wrap";
   var WIDE_KEY = "claude-replay-export-wide";
+  var RAW_KEY = "claude-replay-export-rawuser";
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
   var ms = parseFloat(lsGet(MS_KEY)) || 12.5;
   var wrap = lsGet(WRAP_KEY) !== "0"; // wrap by default
   var wide = lsGet(WIDE_KEY) === "1";
+  // "Show user turns as raw": markdown rendering is lossy (padding collapses, indentation
+  // is stripped), and the Rust-side detector only lifts pasted art it is SURE about. This
+  // is the reader's escape hatch for the rest — global as a durable preference, and
+  // per-turn as an override keyed by block id (never by position, which a tail reshape
+  // would invalidate).
+  var rawUser = lsGet(RAW_KEY) === "1";
+  var rawOne = {};
   var root = document.documentElement;
   var stream = document.getElementById("stream");
   var turnlist = document.getElementById("turnlist");
@@ -176,6 +184,21 @@
     if (p.p === "blocks") {
       p.items.forEach(function (b) { into.appendChild(renderBlock(b)); });
     }
+  }
+
+  // Global preference unless this turn carries its own override.
+  function rawFor(b) {
+    var one = rawOne[b.id];
+    return one === undefined ? rawUser : one;
+  }
+
+  // Per-turn override: flip THIS turn, leaving the global preference alone.
+  function rawToggle(b) {
+    var on = rawFor(b);
+    var t = el("button", "rawbtn" + (on ? " on" : ""), "{}");
+    t.title = on ? "Show this turn rendered" : "Show this turn as raw text";
+    t.dataset.raw = b.id;
+    return t;
   }
 
   function anchor(id) {
@@ -561,10 +584,15 @@
       card.appendChild(el("span", "caret", "❯"));
       var ub = el("div", "uturn-body");
       var md = el("div", "uturn-md");
-      body.forEach(function (p) { renderPart(p, md); });
+      if (rawFor(b) && typeof b.src === "string") {
+        md.appendChild(el("pre", "raw", b.src));   // textContent — exactly what was typed
+      } else {
+        body.forEach(function (p) { renderPart(p, md); });
+      }
       ub.appendChild(md);
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
+      if (typeof b.src === "string") card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
     }
@@ -1743,7 +1771,7 @@
       sessionStorage.setItem(VS_KEY, JSON.stringify({
         v: 1, following: following, anchor: a && a.id, dy: a ? Math.round(a.top) : 0,
         y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
-        folds: userFolds, seen: records.length
+        folds: userFolds, raws: rawOne, seen: records.length
       }));
     } catch (e) { /* private mode or quota: the view just starts fresh */ }
   }
@@ -1765,6 +1793,7 @@
     var vs0 = loadView();
     if (vs0) {
       if (vs0.folds) userFolds = vs0.folds;
+      if (vs0.raws) rawOne = vs0.raws;
       pendingRestore = vs0;
     }
   }
@@ -2311,6 +2340,16 @@
   }
 
   document.addEventListener("click", function (e) {
+    // ── per-turn "show as raw" override ──
+    var rb = e.target.closest(".rawbtn");
+    if (rb) {
+      var id = rb.dataset.raw;
+      // Flip away from whatever this turn shows NOW, so the button always does what it says
+      // even when the global preference is on.
+      rawOne[id] = !(rawOne[id] === undefined ? rawUser : rawOne[id]);
+      refreshWindow();
+      return;
+    }
     // ── type/tool filter controls ──
     var tw = e.target.closest(".tool-tw");
     if (tw) {
@@ -2495,6 +2534,25 @@
     try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* ignore */ }
     applyTheme(next);
   });
+  // Global "show user turns as raw". Turning it on clears per-turn overrides, so the
+  // control is never fighting a stale exception the reader has forgotten about.
+  function setRawUser(on) {
+    rawUser = on;
+    rawOne = {};
+    lsSet(RAW_KEY, on ? "1" : "0");
+    var b = $("btn-raw");
+    if (b) {
+      b.style.color = on ? "var(--tool)" : "";
+      b.style.borderColor = on ? "var(--tool)" : "";
+      b.title = on ? "Show user turns rendered" : "Show user turns as raw text — exactly as typed, whitespace intact";
+    }
+    refreshWindow();
+  }
+  var rawBtn = $("btn-raw");
+  if (rawBtn) {
+    rawBtn.addEventListener("click", function () { setRawUser(!rawUser); });
+    if (rawUser) setRawUser(true);   // reflect the stored preference in the button
+  }
   $("btn-exp").addEventListener("click", function () { allFolds(true); });
   $("btn-col").addEventListener("click", function () { allFolds(false); });
   var wideBtn = $("btn-wide");

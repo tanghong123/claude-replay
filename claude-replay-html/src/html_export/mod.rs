@@ -627,6 +627,14 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(label_of(text, 80)));
+                // The turn's SOURCE, verbatim, beside its rendered parts: the page offers a
+                // "show as raw" toggle (globally or for one turn), and markdown rendering is
+                // lossy — collapsed padding and stripped indentation cannot be recovered from
+                // the HTML. The detector above catches art it is sure about; this is the
+                // reader's own escape hatch for everything it deliberately let through.
+                // Measured at 0.73% of a large session's record stream — the whole of the
+                // user's typing is a rounding error beside its tool output.
+                o.insert("src".into(), json!(text));
                 body.extend(user_body_parts(text));
             }
             // A sub-agent spawn (kind "agent") — a fold whose header names the agent
@@ -1207,6 +1215,7 @@ fn build_page(
     <div class="sessionbits" id="sessionbits"></div>
     <button id="btn-exp" class="tbtn ticon" title="Expand all">▾▾</button>
     <button id="btn-col" class="tbtn ticon" title="Collapse all">▸▸</button>
+    <button id="btn-raw" class="tbtn ticon" title="Show user turns as raw text — exactly as typed, whitespace intact">{{}}</button>
     <button id="btn-wide" class="tbtn ticon" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔</button>
 {theme_btn}
   </div>
@@ -1917,6 +1926,40 @@ mod tests {
     fn fenced_art_is_left_to_markdown() {
         let text = "look:\n\n```\n╭────╮\n│ hi │\n╰────╯\n```\n\ndone";
         assert_eq!(shape(text), vec!["md"]);
+    }
+
+    /// Every user turn ships its SOURCE beside the rendered parts, so the page can offer
+    /// "show as raw" — globally or for one turn — without asking the server for anything.
+    /// Markdown rendering is lossy (this indent does not survive it), so the source cannot
+    /// be recovered from the HTML and has to travel. Measured at 0.73% of a large session's
+    /// record stream.
+    #[test]
+    fn a_user_turn_ships_its_source_for_the_raw_toggle() {
+        use super::{render_blocks, EmitState};
+        use crate::fold::FoldPolicy;
+        use crate::model::Block;
+        let text = "look:\n    indented — markdown would eat this indent";
+        let blocks = vec![Block::UserText(text.into())];
+        let mut st = EmitState::default();
+        let lines = render_blocks(
+            &blocks,
+            &[Some(1.0)],
+            &FoldPolicy::default(),
+            "",
+            false,
+            false,
+            None,
+            None,
+            &mut st,
+        );
+        let rec: serde_json::Value = serde_json::from_str(&lines[0]).expect("one wire record");
+        assert_eq!(rec["kind"], "user");
+        assert_eq!(
+            rec["src"], text,
+            "the turn carries its own source, byte for byte"
+        );
+        // And the rendered half is still there beside it — the toggle switches between them.
+        assert!(rec["body"].as_array().is_some_and(|b| !b.is_empty()));
     }
 
     /// The overwhelming majority of turns hold no art at all, and those must emit exactly

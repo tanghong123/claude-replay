@@ -715,6 +715,16 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 /* Pasted terminal art in a user turn: exact, monospace, and never wrapped — wrapping is
    what breaks a drawn box, so it scrolls in its own gutter instead (the page body must
    not scroll sideways). */
+/* Per-turn "show as raw" control: as quiet as the anchor beside it, and only offered
+   once the pointer is on the turn. Tinted when that turn is showing raw. */
+.rawbtn {
+  flex: none; margin-top: 2px; padding: 0 4px; border: 0; background: none; cursor: pointer;
+  font: 11px var(--mono); color: var(--faint); opacity: 0; transition: opacity .12s;
+}
+.uturn:hover .rawbtn, .rawbtn.on { opacity: 1; }
+.rawbtn.on { color: var(--tool); }
+.rawbtn:hover { color: var(--ink); }
+
 .raw {
   margin: 8px 0; padding: 8px 10px; font: 12.5px/1.5 var(--mono);
   white-space: pre; overflow-x: auto; border-radius: 6px;
