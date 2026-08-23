@@ -10,7 +10,9 @@
 //! 2. a user scroll away from the bottom UNPINS (the "jump to bottom" pill appears);
 //! 3. an unpinned viewport is STABLE: applies — plain appends and provisional tail
 //!    reshapes (an open tool call whose result then lands) — must not move `scrollY`;
-//! 4. arrivals while unpinned surface in the pill as a count.
+//! 4. arrivals while unpinned surface in the pill as a count;
+//! 5. jump-to-bottom still LANDS after the viewport is resized — the case a resize
+//!    breaks, because every height measured at the old width becomes a guess.
 //!
 //! `#[ignore]`d like the tmux e2e: it needs a Chrome/Chromium on the machine. Run with
 //! `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
@@ -21,8 +23,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-fn base() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("cr-browser-follow-{}", std::process::id()));
+/// Each test gets its OWN scratch: cargo runs them on parallel threads, and a shared
+/// directory that every test wipes on entry means whichever starts second deletes the
+/// other's fixture mid-run.
+fn base(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("cr-browser-follow-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -137,7 +142,7 @@ fn user_scroll_by(tab: &headless_chrome::Tab, dy: i64) {
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn live_viewport_follows_pinned_and_holds_unpinned() {
-    let base = base();
+    let base = base("follow");
     // The run's cache home — never the developer's real one (the suite-wide isolation rule).
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
     let src = base.join("live.jsonl");
@@ -391,6 +396,129 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
     assert!(
         s4["badgeOn"] == true && badge.contains("new message"),
         "arrivals while unpinned surface in the pill (got {s4})"
+    );
+
+    drop(tab);
+    drop(browser);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// **Jump-to-bottom must land after a resize.** Reported from the session monitor, whose
+/// rail opens and closes over an `<iframe>`: closing it widens the frame, so every height
+/// the virtualizer measured at the old width is suddenly wrong. The page then keeps GROWING
+/// as those blocks are re-measured on the way down, and a jump that corrected itself only
+/// once landed thousands of pixels short — leaving the page "following" but nowhere near
+/// the end, with the pill apparently doing nothing. (Measured on the reported session:
+/// stranded 7,543 px from the bottom, and nothing retried once the size stopped changing.)
+///
+/// The fix is convergence rather than a single correction, and this pins it: after a real
+/// window resize, from far up the session, one jump ends at the bottom.
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn jump_to_bottom_lands_after_a_viewport_resize() {
+    let base = base("resize");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("resize.jsonl");
+    {
+        // Long enough that most of it is never materialized at once — that is what makes
+        // the stale heights matter.
+        let mut s = String::new();
+        for i in 0..160u32 {
+            s.push_str(&user(
+                &format!(
+                    "question {i}: {}",
+                    "lorem ipsum dolor sit amet consectetur. ".repeat(4)
+                ),
+                i % 60,
+            ));
+            s.push_str(&assistant(
+                &format!(
+                    "answer {i}: {}",
+                    "sed do eiusmod tempor incididunt ut labore. ".repeat(9)
+                ),
+                i % 60,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .window_size(Some((1400, 900)))
+            .args(vec![
+                std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+            ])
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    // Land pinned at the tail, with the visible heights measured at THIS width.
+    wait_for(
+        &tab,
+        "initial render, pinned at bottom",
+        Duration::from_secs(20),
+        |s| {
+            s["blocks"].as_i64().unwrap_or(-1) > 5
+                && s["following"] == true
+                && s["gap"].as_i64().unwrap_or(9999) <= 80
+        },
+    );
+
+    // The resize: every measured height was taken at the old width and is now a guess.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: None,
+        top: None,
+        width: Some(1000.0),
+        height: Some(900.0),
+    })
+    .expect("resize");
+    std::thread::sleep(Duration::from_millis(800));
+
+    // Walk far up under real user intent, so the page genuinely unpins.
+    for _ in 0..12 {
+        user_scroll_by(&tab, -4000);
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let up = wait_for(
+        &tab,
+        "unpinned, far from the tail",
+        Duration::from_secs(8),
+        |s| s["gap"].as_i64().unwrap_or(0) > 5_000,
+    );
+    assert!(
+        up["gap"].as_i64().unwrap() > 5_000,
+        "the walk must end far from the bottom: {up}"
+    );
+
+    // One jump — the pill's action — has to reach the end and stay there.
+    eval(
+        &tab,
+        "(function () { window.scrollTo({top: document.body.scrollHeight}); return true; })()",
+        false,
+    );
+    let landed = wait_for(
+        &tab,
+        "jump-to-bottom to land",
+        Duration::from_secs(10),
+        |s| s["gap"].as_i64().unwrap_or(9999) <= 80,
+    );
+    assert!(
+        landed["gap"].as_i64().unwrap() <= 80,
+        "after a resize, the jump still lands at the bottom: {landed}"
     );
 
     drop(tab);

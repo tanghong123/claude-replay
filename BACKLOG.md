@@ -11,30 +11,6 @@
 > its entry (the commit and the design doc's status header are the record; this file lists
 > only live work). Any agent picking up work in this repo reads this file first.
 
-## Bugs / regressions
-
-- **HTML view: near-bottom viewport creeps on tail growth** (owner, 2026-08-20): with the
-  "jump to the bottom" affordance showing (follow OFF, scrolled near but not at the
-  bottom), arriving blocks keep scrolling the view down; expected a stable viewport, and
-  it used to be. **Investigated 2026-08-21** with the new browser harness
-  (`claude-replay-html/tests/browser_follow.rs`, headless Chrome, `--ignored`): the
-  claude-shaped legs all HOLD — pinned-follow, unpin-on-scroll, appends, open-tool +
-  result reshapes, growing open turn, viewport inside a tall open turn (ids observed
-  append-only; zero churn). The report's tell — the pill stuck on "Jump to bottom" while
-  blocks arrive — means `added ≤ 0` applies. Un-exercised legs, in suspicion order:
-  (1) a **Codex** live session — 57f4090 maps exploration into coalescing activity
-  spans, the one shape that rewrites rendered ids; (2) an uninterrupted
-  thinking+activity span (no prose between calls) growing live; (3) the monitor's
-  iframe context. **Concrete next step — real-codex tail-replay**: copy a local Codex
-  transcript (the #28–31 corpus), truncate to ~80%, serve the copy, append the
-  original's remaining lines chunk-by-chunk while the harness browser watches
-  `__ids` churn and `scrollY` — real coalescing shapes, no synthetic-fixture risk of
-  authoring another span-breaking artifact. Mechanism to check when it reproduces:
-  provisional `b{n}` anchors are positional, so a coalesce makes `restoreAnchor`
-  hold the WRONG element (id names shifted content) — fix sketch: capture a content
-  signature beside the id and hold absolute `scrollY` when it mismatches. Ask the
-  owner which session they were watching (claude / codex / via the monitor rail).
-
 ## Evidence-blocked
 
 - **#29 — Codex `update_goal` collapses goal states** (blocked→completed,

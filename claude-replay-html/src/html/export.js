@@ -1661,12 +1661,24 @@
     }, { passive: true, capture: true });
   });
   function toBottom() {
-    // Two-step: the jump materializes the tail window (real heights replace
-    // estimates, pads shift), so re-read the height and correct. A smooth scroll
-    // is not survivable here — any DOM mutation under it cancels the animation.
+    // CONVERGE, don't correct once. Each jump materializes a different tail whose real
+    // heights replace estimates, which moves the true bottom again — so the fixed point
+    // has to be iterated to. A single correction was enough while every measured height
+    // matched the current width; it is not after a RESIZE, when hundreds of heights were
+    // measured at a width that no longer applies (the monitor's rail opening or closing
+    // resizes the session frame). There the page keeps growing as those blocks are
+    // re-measured, one pass lands thousands of pixels short, and nothing retries once the
+    // size stops changing — the page then sits "following" but nowhere near the end, and
+    // the jump-to-bottom pill appears not to work.
+    //
+    // A smooth scroll is not survivable here — any DOM mutation under it cancels the
+    // animation — and the loop is capped so a pathological reflow cannot spin.
+    for (var i = 0; i < 8; i++) {
+      window.scrollTo({ top: document.body.scrollHeight });
+      updateView();
+      if (atBottom()) return;
+    }
     window.scrollTo({ top: document.body.scrollHeight });
-    updateView();
-    if (!atBottom()) window.scrollTo({ top: document.body.scrollHeight });
   }
   // Displacement is a HEIGHT signal, not a scroll signal (#89): late reflows —
   // fonts arriving, images sizing, estimate-vs-real pad shifts — grow the page
