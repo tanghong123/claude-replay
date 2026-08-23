@@ -2316,7 +2316,55 @@
     // #103: acquisition needs the true end here too — landing NEAR the tail must
     // not pin (the same silent-pin trap as a near-bottom scroll).
     setFollowing(following ? atBottom() : atEnd());
+    // …and keep holding it while the page settles. The loop above is synchronous, so it
+    // only sees the heights that exist NOW; anything that resizes afterwards moves the
+    // target out from under a landing that was correct when it finished.
+    holdLanding(id);
     spy();
+  }
+
+  // Hold a just-landed target at GOTO_Y while late reflow settles.
+  //
+  // The synchronous re-land converges against the heights that exist at that instant.
+  // Images decoding, fonts swapping and estimates giving way to measured heights all
+  // land AFTER it — and a turn full of images moves the page by thousands of pixels,
+  // which is how clicking a turn could leave the reader several turns away from it. (The
+  // second click then worked, because the first had measured the region.)
+  //
+  // This watches the TARGET's position rather than the page's size, because in a
+  // virtualized list size is the one thing that does NOT change: a block growing inside
+  // the window is absorbed by the spacer pads, so `document.body` keeps its height and a
+  // ResizeObserver on it — the signal the follow heal uses — never fires. Only the
+  // target's own rect tells the truth.
+  //
+  // It runs for the whole settle window rather than stopping at the first still frame:
+  // an image decode lands hundreds of milliseconds after the click, long after the page
+  // has briefly looked settled, and an early exit is exactly how the correction gets
+  // skipped. A frame that finds nothing moved costs one rect read. The reader always
+  // wins — any input abandons the hold — and it expires regardless.
+  // A 16 ms timer, not requestAnimationFrame — the same choice the drag-scroll loop makes
+  // and for the same reason: rAF freezes in hidden or occluded tabs, which both drops the
+  // correction exactly when a background tab finishes decoding its images and makes the
+  // behaviour untestable headless (this repo's browser tests drive the page in a
+  // background tab, where rAF never ticks at all).
+  function holdLanding(id) {
+    var started = performance.now();
+    var HOLD_MS = 2000;
+    var tick = function () {
+      // `lastUserInput` was stamped by this very navigation BEFORE `started`, so only a
+      // NEW gesture reads as the reader taking over.
+      if (lastUserInput > started || performance.now() - started > HOLD_MS) return;
+      var t = document.getElementById(id);
+      if (t) {
+        var d = t.getBoundingClientRect().top - GOTO_Y;
+        if (Math.abs(d) > 2) {
+          window.scrollBy(0, d);
+          updateView();
+        }
+      }
+      setTimeout(tick, 16);
+    };
+    setTimeout(tick, 16);
   }
 
   // §8.5 One clipboard helper for all call sites. Exports normally open from

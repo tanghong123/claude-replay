@@ -12,7 +12,9 @@
 //!    reshapes (an open tool call whose result then lands) — must not move `scrollY`;
 //! 4. arrivals while unpinned surface in the pill as a count;
 //! 5. jump-to-bottom still LANDS after the viewport is resized — the case a resize
-//!    breaks, because every height measured at the old width becomes a guess.
+//!    breaks, because every height measured at the old width becomes a guess;
+//! 6. a turn landing HOLDS through a late reflow — the case images breaking, since they
+//!    resize the page after the jump has already finished.
 //!
 //! `#[ignore]`d like the tmux e2e: it needs a Chrome/Chromium on the machine. Run with
 //! `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
@@ -519,6 +521,114 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
     assert!(
         landed["gap"].as_i64().unwrap() <= 80,
         "after a resize, the jump still lands at the bottom: {landed}"
+    );
+
+    drop(tab);
+    drop(browser);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// **A turn landing must survive late reflow.** Reported from the monitor: clicking a turn
+/// in the sidebar landed several turns away, on a stretch full of images, and only a
+/// SECOND click worked — because the first had finally measured the region.
+///
+/// The landing loop converges against the heights that exist the instant it runs. Images
+/// decode afterwards, and a screenful of them moves the page by thousands of pixels, so a
+/// landing that was correct when it finished is wrong a moment later. The fix holds the
+/// target at its landing offset while the page settles; this pins that, by growing a block
+/// ABOVE the target after the jump — exactly what an image finishing decode does.
+///
+/// Note the hold ticks on a 16 ms timer rather than `requestAnimationFrame`, which is what
+/// makes this testable: this harness drives the page in a background tab, where rAF never
+/// ticks at all (verified — an rAF version of the hold recorded zero ticks here).
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn a_turn_landing_holds_through_late_reflow() {
+    let base = base("landing");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("landing.jsonl");
+    {
+        let mut s = String::new();
+        for i in 0..80u32 {
+            s.push_str(&user(&format!("question {i}"), i % 60));
+            s.push_str(&assistant(
+                &format!(
+                    "answer {i}: {}",
+                    "sed do eiusmod tempor incididunt ut labore. ".repeat(8)
+                ),
+                i % 60,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .args(vec![
+                std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+            ])
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    wait_for(&tab, "initial render", Duration::from_secs(15), |s| {
+        s["blocks"].as_i64().unwrap_or(-1) > 5
+    });
+
+    // Land on a turn well up the session, the way the sidebar does.
+    let landed = eval(
+        &tab,
+        r##"(function () {
+            var items = Array.prototype.slice.call(document.querySelectorAll("#turnlist .side-item"));
+            var it = items[Math.floor(items.length / 2)];
+            it.click();
+            var id = it.dataset.t;
+            var t = document.getElementById(id);
+            return {id: id, delta: t ? Math.round(t.getBoundingClientRect().top - 120) : null};
+        })()"##,
+        false,
+    );
+    let id = landed["id"].as_str().expect("a turn id").to_string();
+    assert!(
+        landed["delta"].as_i64().map(i64::abs).unwrap_or(9999) <= 2,
+        "the click lands on the turn to begin with: {landed}"
+    );
+
+    // Now the late reflow: a block ABOVE the target grows, as a decoded image would.
+    let held = eval(
+        &tab,
+        &format!(
+            r##"(async function () {{
+                var above = Array.prototype.slice.call(document.querySelectorAll("#stream > *"))
+                    .filter(function (e) {{ return e.getBoundingClientRect().top < 0; }}).pop();
+                if (!above) return {{grew: false}};
+                above.style.paddingTop = "2500px";
+                await new Promise(function (r) {{ setTimeout(r, 700); }});
+                var t = document.getElementById("{id}");
+                var d = t ? Math.round(t.getBoundingClientRect().top - 120) : null;
+                above.style.paddingTop = "";
+                return {{grew: true, delta: d}};
+            }})()"##
+        ),
+        true,
+    );
+    assert_eq!(held["grew"], true, "the fixture must actually reflow");
+    assert!(
+        held["delta"].as_i64().map(i64::abs).unwrap_or(9999) <= 2,
+        "the target is still at its landing offset after the reflow: {held}"
     );
 
     drop(tab);
