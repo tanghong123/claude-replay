@@ -712,9 +712,13 @@ th, td { padding: 7px 12px; border: 1px solid var(--border); vertical-align: top
 th { background: var(--panel); font-weight: 600; }
 hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
-/* Pasted terminal art in a user turn: exact, monospace, and never wrapped — wrapping is
-   what breaks a drawn box, so it scrolls in its own gutter instead (the page body must
-   not scroll sideways). */
+/* Verbatim text in a user turn — pasted art the detector lifted, or the whole turn when
+   the reader asks for raw. It sits in the turn's OWN card, so it gets no second box:
+   just monospace, with the whitespace exact. Long lines follow the page's wrap control
+   (`w`, and the per-pane ⤶/↔ button) exactly as code panes do: wrapping by default,
+   scrolling in its own gutter when the reader turns wrapping off. The size follows the
+   same `--ms` the code controls (`−`/`+`) drive, so art a touch too wide to fit can be
+   made to fit rather than wrapped or scrolled. */
 /* Per-turn "show as raw" control: as quiet as the anchor beside it, and only offered
    once the pointer is on the turn. Tinted when that turn is showing raw. */
 .rawbtn {
@@ -726,9 +730,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .rawbtn:hover { color: var(--ink); }
 
 .raw {
-  margin: 8px 0; padding: 8px 10px; font: 12.5px/1.5 var(--mono);
-  white-space: pre; overflow-x: auto; border-radius: 6px;
-  background: var(--panel); border: 1px solid var(--border);
+  margin: 6px 0; font: var(--ms)/1.5 var(--mono);
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto;
 }
 
 .fence {

@@ -2194,6 +2194,12 @@
       c.style.whiteSpace = on ? "pre-wrap" : "pre";
       c.style.wordBreak = on ? "break-word" : "normal";
     });
+    // Verbatim user-turn text obeys the same control: a long pasted line wraps rather than
+    // hiding in a side-scroll, and turning wrapping off keeps drawn art intact.
+    all(".raw").forEach(function (c) {
+      c.style.whiteSpace = on ? "pre-wrap" : "pre";
+      c.style.overflowWrap = on ? "anywhere" : "normal";
+    });
   }
   // The per-element form of setWrap's styling, for freshly materialized blocks (#50).
   function applyWrapIn(root_) {
@@ -2204,6 +2210,10 @@
     Array.prototype.slice.call(root_.querySelectorAll(".numbered .code, .diff .code")).forEach(function (c) {
       c.style.whiteSpace = wrap ? "pre-wrap" : "pre";
       c.style.wordBreak = wrap ? "break-word" : "normal";
+    });
+    Array.prototype.slice.call(root_.querySelectorAll(".raw")).forEach(function (c) {
+      c.style.whiteSpace = wrap ? "pre-wrap" : "pre";
+      c.style.overflowWrap = wrap ? "anywhere" : "normal";
     });
     Array.prototype.slice.call(root_.querySelectorAll(".ms-wrap")).forEach(function (b) {
       b.textContent = wrap ? "⤶" : "↔";
