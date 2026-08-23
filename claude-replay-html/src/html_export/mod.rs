@@ -135,7 +135,9 @@ fn md_html_user(src: &str) -> String {
 // monospace box. It therefore needs an ANCHOR of certainty and corroborating BULK —
 // one stray glyph in a paragraph is never enough:
 //
-//   * `strong` — the line carries box-drawing/block characters (U+2500–U+259F).
+//   * `strong` — the line is unmistakably machine-shaped: box-drawing/block characters
+//     (U+2500–U+259F), a line that is nothing but structure (`{`, `},`, `]`), a JSON
+//     member (`"key": …`), or a structural terminator (ends in `{`, `[`, `;`, `}`, `]`).
 //   * `good`   — strong, OR interior padding (2+ spaces between text), OR a leading indent.
 //   * a run of consecutive `good` lines qualifies iff it holds >= 3 non-blank lines,
 //     >= 2 of them strong, and the strong ones are at least HALF of it.
@@ -162,11 +164,39 @@ fn without_code_spans(line: &str) -> String {
     out
 }
 
-/// The ANCHOR: box-drawing or block-element characters outside any code span.
-fn is_box_art(line: &str) -> bool {
-    without_code_spans(line)
-        .chars()
-        .any(|c| ('\u{2500}'..='\u{259F}').contains(&c))
+/// A JSON member — `"key": value` — the shape that makes a pasted config unmistakable.
+fn is_json_member(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix('"') else {
+        return false;
+    };
+    let Some(close) = rest.find('"') else {
+        return false;
+    };
+    rest[close + 1..].trim_start().starts_with(':')
+}
+
+/// Ends the way structure ends, not the way a sentence does. A trailing comma is stripped
+/// first (`},` `],`); `:` is deliberately NOT here — prose ends with a colon all the time.
+fn ends_structurally(t: &str) -> bool {
+    let t = t.trim_end();
+    let t = t.strip_suffix(',').unwrap_or(t);
+    matches!(t.chars().last(), Some('{' | '[' | ';' | '}' | ']'))
+}
+
+/// The ANCHOR: this line could not plausibly be prose. Code spans are stripped first, so a
+/// sentence *about* structure ("emit a `├─┼─┤` rule") is not mistaken for the thing itself.
+fn is_anchor(line: &str) -> bool {
+    let bare = without_code_spans(line);
+    let t = bare.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // Terminal art.
+    t.chars().any(|c| ('\u{2500}'..='\u{259F}').contains(&c))
+        // Nothing but structure: `{`, `},`, `]`, `);`.
+        || t.chars().all(|c| "{}[]()<>,;:".contains(c))
+        || is_json_member(t)
+        || ends_structurally(t)
 }
 
 /// A run of 2+ spaces BETWEEN text — column padding, not sentence spacing at the margins.
@@ -194,7 +224,7 @@ fn has_leading_indent(line: &str) -> bool {
 
 /// Corroborating evidence — necessary for every line of a run, sufficient for none.
 fn looks_preformatted(line: &str) -> bool {
-    is_box_art(line) || has_interior_padding(line) || has_leading_indent(line)
+    is_anchor(line) || has_interior_padding(line) || has_leading_indent(line)
 }
 
 /// The `[start, end)` line ranges of `lines` that are pasted terminal art (see the note above).
@@ -234,7 +264,7 @@ fn preformatted_runs(lines: &[&str]) -> Vec<(usize, usize)> {
     spans.retain(|&(s, e)| {
         let body = lines[s..e].iter().filter(|l| !l.trim().is_empty());
         let (total, anchored) = body.fold((0usize, 0usize), |(t, a), l| {
-            (t + 1, a + usize::from(is_box_art(l)))
+            (t + 1, a + usize::from(is_anchor(l)))
         });
         total >= 3 && anchored >= 2 && anchored * 2 >= total
     });
@@ -1846,6 +1876,39 @@ mod tests {
     fn an_anchor_without_bulk_stays_markdown() {
         assert_eq!(shape("Section one\n────────────\nSection two"), vec!["md"]);
         assert_eq!(shape("┌────┐\n└────┘"), vec!["md"]);
+    }
+
+    /// Pasted JSON is the common case — no box art anywhere, just structure and nesting.
+    /// Markdown strips the leading indentation of every continuation line, so the blob
+    /// arrived flat and unreadable; the structural anchors catch it and it comes back
+    /// exactly as pasted.
+    #[test]
+    fn pasted_json_keeps_its_indentation() {
+        let text = "it failed with:\n\
+                    {\n\
+                    \x20 \"error\": {\n\
+                    \x20   \"category\": \"auth\",\n\
+                    \x20   \"code\": 2\n\
+                    \x20 }\n\
+                    }";
+        assert_eq!(shape(text), vec!["md", "raw"]);
+        let parts = user_body_parts(text);
+        let raw = parts[1]["x"].as_str().expect("raw part");
+        assert!(
+            raw.contains("\n    \"category\": \"auth\","),
+            "nesting survives verbatim: {raw}"
+        );
+    }
+
+    /// The anchors must not fire on prose that merely ends in punctuation. A colon is
+    /// deliberately not structural — English sentences end with one constantly.
+    #[test]
+    fn prose_ending_in_a_colon_is_not_structure() {
+        let text = "  Here is what I want:\n\
+                    \x20 first, read the file;\n\
+                    \x20 then summarize it for me.";
+        // `first, read the file;` ends structurally, but one anchor cannot carry a run.
+        assert_eq!(shape(text), vec!["md"]);
     }
 
     /// A fenced block is markdown's own verbatim construct — already correct, with
