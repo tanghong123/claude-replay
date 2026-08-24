@@ -666,11 +666,20 @@ fn roster_from_journal(journal: &std::path::Path) -> Vec<SubAgent> {
                 });
             }
             Some("result") => {
-                let result = v.get("result").and_then(|x| x.as_str());
+                // A member given a schema returns a structured VALUE, not prose — that is a
+                // first-class way to run one, so a result that is not a string is a result all
+                // the same. Keep it verbatim as compact JSON; only prose yields a title, so a
+                // structured member keeps its launch position rather than being titled with a
+                // brace.
+                let (result, title) = match v.get("result") {
+                    None | Some(Value::Null) => (None, None),
+                    Some(Value::String(t)) => (Some(t.clone()), result_title(t)),
+                    Some(other) => (Some(other.to_string()), None),
+                };
                 if let Some(m) = members.iter_mut().find(|m| m.agent_id == id) {
                     m.status = AgentStatus::Completed;
-                    m.result = result.map(str::to_string);
-                    if let Some(title) = result.and_then(result_title) {
+                    m.result = result;
+                    if let Some(title) = title {
                         m.description = title;
                     }
                 }

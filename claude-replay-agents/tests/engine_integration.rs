@@ -1843,6 +1843,50 @@ fn a_workflow_member_resolves_to_its_transcript() {
     );
 }
 
+/// A member run with a schema returns a structured value rather than prose. That is a normal
+/// way to run one, so its result must survive — kept verbatim as JSON — while the title stays
+/// its launch position, because a brace is not a title.
+#[test]
+fn a_structured_member_result_is_kept_verbatim() {
+    let t = workflow_session("wf-struct.jsonl", "wf_run4", &[("ajson", None)]);
+    let run = t
+        .parent()
+        .unwrap()
+        .join(t.file_stem().unwrap())
+        .join("subagents")
+        .join("workflows")
+        .join("wf_run4");
+    std::fs::write(
+        run.join("journal.jsonl"),
+        concat!(
+            r#"{"type":"started","key":"v2:k","agentId":"ajson"}"#,
+            "\n",
+            r#"{"type":"result","key":"v2:k","agentId":"ajson","result":{"scores":[{"design":"A"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
+    let blocks = s.blocks();
+    let sa = blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::SubAgent(sa) => Some(sa),
+            _ => None,
+        })
+        .expect("the member is present");
+    assert_eq!(sa.status, AgentStatus::Completed, "a value IS a result");
+    assert_eq!(
+        sa.result.as_deref(),
+        Some(r#"{"scores":[{"design":"A"}]}"#),
+        "kept verbatim rather than dropped for not being a string"
+    );
+    assert_eq!(
+        sa.description, "agent 1",
+        "and titled by position, not by a brace"
+    );
+}
+
 /// A session that ran no workflow is untouched, and asks the filesystem for nothing.
 #[test]
 fn a_session_without_workflows_is_unchanged() {
