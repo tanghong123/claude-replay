@@ -18,10 +18,9 @@ serde_json = "1"
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).
 claude-replay-present = { path = "../claude-replay-present", features = ["cli"] }
 clap = { version = "4", features = ["derive"] }
-# The browser-level viewport harness (tests/browser_follow.rs, #[ignore]d): the behaviors
-# under test — renderer-fired scroll events, layout clamping, native scroll anchoring —
-# only exist in a real engine, so the test drives headless Chrome over CDP.
-headless_chrome = "1.0.22"
+# The browser-level viewport harness that drives headless Chrome lives in its own crate,
+# `claude-replay-browser-tests` — outside `default-members`, so an ordinary `cargo test` no longer
+# builds a ~250 MB dependency for a suite it does not run.
 
 # The QoderWork title tripwire builds its fixture SQLite store directly; macOS-only,
 # matching the reader it pins (see the agents crate's rusqlite note).

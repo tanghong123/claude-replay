@@ -22,12 +22,15 @@ drift.
   `tmux -L` server with no controlling TTY and drives it via `send-keys` /
   `capture-pane` (`tmux new-session -d` works without a TTY). `#[ignore]`d; run
   `cargo test --test tmux_smoke -- --ignored`.
-- **Browser (HTML live page):** `claude-replay-html/tests/browser_follow.rs` drives the
-  real `--html` server in headless Chrome over CDP (`headless_chrome` dev-dep) — the
-  follow/anchor viewport contract lives in renderer-fired scroll events, layout clamping
-  and native scroll anchoring, which only a real engine has. `#[ignore]`d (needs a local
-  Chrome); run `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
-  Scroll/viewport changes to `export.js` must extend this harness.
+- **Browser (HTML live page):** `claude-replay-browser-tests/tests/browser_follow.rs` drives
+  the real `--html` server in headless Chrome over CDP — the follow/anchor viewport contract
+  lives in renderer-fired scroll events, layout clamping and native scroll anchoring, which
+  only a real engine has. `#[ignore]`d (needs a local Chrome); run
+  `cargo test -p claude-replay-browser-tests --test browser_follow -- --ignored`.
+  Scroll/viewport changes to `export.js` must extend this harness — and because this crate
+  sits OUTSIDE `default-members` (its `headless_chrome` dep is the heaviest thing the
+  workspace compiles, and the root gates never resolve it), the root `cargo clippy
+  --all-targets` does not compile-check it. Build it explicitly when you touch it.
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or
@@ -40,9 +43,9 @@ drift.
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
 crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,
-so all of it stays inside the repo and `cargo clean` clears it (#164). It used to
-land in macOS's opaque `/var/folders/…`, which nothing sweeps: 8,014 directories
-and 267 MB had accumulated there. A full run leaves ~3.4 MB.
+so all of it stays inside the repo and `cargo clean` (or `scripts/sweep.sh`) clears it
+(#164). It used to land in macOS's opaque `/var/folders/…`, which nothing sweeps: 8,014
+directories and 267 MB had accumulated there. A full run leaves ~3.4 MB.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
 `GIT_CEILING_DIRECTORIES=target` — a fixture that shells out to `git` sees no
 repository, exactly as it did in the system temp. A test that spawns a `tmux`
@@ -57,6 +60,15 @@ Cargo.lock, commit, annotated signed tag (`git tag -a vX.Y.Z -m "..."`), push
 publishes binaries and bumps the Homebrew tap. Verify the commit really landed
 before tagging — a failed commit with the tag commands still running once
 shipped a tag pointing at the wrong commit.
+
+**Then sweep: `scripts/sweep.sh`.** A version bump changes the metadata hash of every
+crate and every test/example/bin target, so it mints a COMPLETE new set of artifacts and
+orphans the previous one — and cargo never garbage-collects `target/`. Releasing per task
+without sweeping is what grew `target/` to 64 GB (241 hash-variants of the engine rlib,
+345 of the root test binary) against ~200 MB of live artifacts. The script asks cargo which
+artifacts the real gates need (`--message-format=json`, dev `--all-targets` + release) and
+deletes only what is in neither set, so it costs no rebuild — run it right after the build
+and the next one is still warm. `--dry-run` first if in doubt.
 
 `origin` (GitHub) is where the code is developed, where releases are cut, and
 where issues are filed. `alibaba` (git@code.alibaba-inc.com:project-h/
@@ -86,8 +98,10 @@ agent transcript through the same binary/options, compare their semantics under 
 `--full`, and keep all agent-specific normalization inside the adapter.
 
 ## Layout
-A Cargo **workspace** with eight crates, layered for multi-level reuse (#71, #87):
-engine → agents → core (facade) → present → {tui, html} → the root binary crate, plus
+A Cargo **workspace** with eight library/binary crates, layered for multi-level reuse
+(#71, #87): engine → agents → core (facade) → present → {tui, html} → the root binary
+crate — plus `claude-replay-browser-tests/`, a member deliberately kept OUT of
+`default-members` so its headless-Chrome dep never reaches an ordinary build — plus
 **`claude-monitor/`** — the machine-wide session index (#98): a loopback web service whose
 page is a session-list rail beside the html crate's session view in an iframe; scan/state/
 cards in `src/index.rs`, the rail in `src/rail.html`; lazy population — a session's durable

@@ -21,6 +21,9 @@ members = [
     "claude-replay-agents",
     "claude-monitor",
     "claude-monitor-fleet",
+    # In `members` but NOT in `default-members` below — that omission is the gate that keeps its
+    # headless-Chrome dependency out of every ordinary build. See its Cargo.toml.
+    "claude-replay-browser-tests",
 ]
 # `cargo test` from the repo root must run EVERY crate (#63) — without this it
 # silently tested only the root crate, skipping the library suites.
@@ -38,7 +41,7 @@ default-members = [
 
 # One version for the whole workspace, bumped in ONE place per release (#71).
 [workspace.package]
-version = "1.104.1"
+version = "1.105.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tanghong123/claude-replay"

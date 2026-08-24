@@ -1,0 +1,30 @@
+[package]
+name = "claude-replay-browser-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The browser-level viewport harness for the HTML frontend — a crate of its own so its headless-Chrome dependency is never built by an ordinary `cargo test`."
+
+# A crate that exists only to hold `tests/`. It is a workspace MEMBER but deliberately NOT a
+# default-member, which is the whole gate: `cargo build`/`cargo test`/`cargo clippy` at the repo
+# root operate on default-members and so never resolve `headless_chrome` — by far the heaviest
+# thing this workspace compiles (~124 MB rlib + ~70 MB rmeta + a 48 MB test binary, EVERY build
+# generation, and cargo keeps every generation forever). It used to be a plain dev-dependency of
+# `claude-replay-html`, where an ordinary `cargo test` paid for it in full and then ran none of it,
+# the suite being `#[ignore]`d.
+#
+# The cost of the gate: the root's `cargo clippy --all-targets` no longer compile-checks this
+# harness, so a change to `export.js`'s scroll contract must build it explicitly —
+# `cargo test -p claude-replay-browser-tests --test browser_follow -- --ignored`, which needs a
+# local Chrome. See CLAUDE.md.
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+claude-replay-html = { path = "../claude-replay-html" }
+claude-replay-present = { path = "../claude-replay-present", features = ["cli"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+headless_chrome = "1.0.22"

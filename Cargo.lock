@@ -263,7 +263,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-monitor"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "claude-replay-core",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-fleet"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "claude-replay-html",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-agents"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "claude-replay-core",
@@ -309,8 +309,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-replay-browser-tests"
+version = "1.105.0"
+dependencies = [
+ "clap",
+ "claude-replay-html",
+ "claude-replay-present",
+ "headless_chrome",
+ "serde_json",
+]
+
+[[package]]
 name = "claude-replay-core"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -321,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-engine"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -332,13 +343,12 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-html"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "clap",
  "claude-replay-core",
  "claude-replay-present",
- "headless_chrome",
  "pulldown-cmark",
  "rusqlite",
  "serde",
@@ -347,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-present"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -360,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-tui"
-version = "1.104.1"
+version = "1.105.0"
 dependencies = [
  "anyhow",
  "arboard",
