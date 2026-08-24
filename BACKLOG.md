@@ -27,6 +27,20 @@
 
 ## Needs an owner decision (design sketched, unscheduled)
 
+- **#38 — dynamic workflows are invisible in the viewer.** One `Workflow` tool call spawns N
+  agents into `<session>/subagents/workflows/<runId>/`, with `journal.jsonl` as the roster and
+  the run's `transcriptDir`/`runId` in the tool result. The fold makes a `SubAgent` only for
+  `Agent`/`Task`, so the call folds to a plain `ToolUse`: no children in `SessionMeta`, no links,
+  and discovery excludes `/subagents/` by design — the agents are unreachable by every route.
+  #37's `SpawnLink` does not extend to it: that adopts an id into an existing anonymous spawn,
+  whereas this needs N blocks synthesized from an out-of-band roster that GROWS while the run is
+  live (1:N, not 1:1). Sketch: a spawn MANIFEST — the I/O-aware layer (batch parse + follower,
+  the #37 seam) reads the journal and hands the builder a roster; the builder expands the one
+  call into a spawn group of real per-agent blocks, after which the existing header/link/
+  drill-down paths work unchanged. Decide: build the manifest mechanism, or ship only the two
+  partials (label the block from `workflowName`/`summary`; teach `subagent_source` the extra
+  `workflows/<runId>/` level) — which are prerequisites and make no agent appear.
+
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
   the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
   while the source knows better in two places (`toolUseResult.agentType` on the result, `agentType`
