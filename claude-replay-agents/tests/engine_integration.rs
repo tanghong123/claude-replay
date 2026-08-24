@@ -1618,3 +1618,57 @@ fn claude_reads_no_sidecars() {
         .collect();
     assert_eq!(ids, vec![""], "still anonymous — Claude asked for nothing");
 }
+
+/// The first poll folds the WHOLE file, and a committed block is never revisited — so the spawn
+/// table has to be in hand before that fold, not after it. A child still running while its turn
+/// closed (the user asked something else meanwhile — the normal shape for a long-running child)
+/// would otherwise commit anonymous and stay that way for the life of the follower, which is the
+/// reported bug returning on the next monitor restart.
+#[test]
+fn a_spawn_in_a_closed_turn_is_named_on_the_first_poll() {
+    let body = concat!(
+        r#"{"type":"runtime-config","sessionId":"qw3","model":"m","timestamp":1780315233809}"#,
+        "\n",
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"explore"}]},"timestamp":"2026-08-22T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Agent","input":{"description":"d","name":"n","prompt":"p"}}]},"timestamp":"2026-08-22T10:00:01Z"}"#,
+        "\n",
+        // A later user turn closes the spawn's turn while the child is still running.
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"meanwhile"}]},"timestamp":"2026-08-22T10:05:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"sure"}]},"timestamp":"2026-08-22T10:05:01Z"}"#,
+        "\n",
+    );
+    let t = qoderwork_session(
+        "qw-closed-turn.jsonl",
+        body,
+        &[(
+            "task-ageneral-cls.json",
+            r#"{"parentToolUseId":"call_a","agentId":"ageneral-cls","agentType":"general-purpose"}"#,
+        )],
+    );
+    let adapter = claude_replay_core::adapter(Agent::QODERWORK);
+    let mut f = FollowParser::open(adapter, &t);
+    let (blocks, _, _) = f.poll().unwrap().expect("the first poll folds the file");
+    let ids: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) => Some(sa.agent_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["ageneral-cls"],
+        "named even though its turn closed"
+    );
+    assert_eq!(
+        f.session_meta()
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ageneral-cls"],
+        "and the header the server registers children from names it too"
+    );
+}

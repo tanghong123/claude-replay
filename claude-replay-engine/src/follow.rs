@@ -85,11 +85,16 @@ impl<S: BlockStore> FollowParser<S> {
         path: &Path,
         store: S,
     ) -> Self {
+        let mut builder = SessionAccumulator::with_store(adapter, store);
+        // BEFORE the first poll, which folds the whole current file: a committed block is never
+        // revisited, so a spawn whose turn had already closed would stay anonymous for the life
+        // of this follower. Free for an agent that names its children in-band.
+        builder.set_spawn_links(adapter.spawn_links(path));
         Self {
             agent: adapter.agent(),
             adapter,
             path: path.to_path_buf(),
-            builder: SessionAccumulator::with_store(adapter, store),
+            builder,
             cursor: 0,
             src: None,
             banked: ElisionCounts::default(),
@@ -116,11 +121,15 @@ impl<S: BlockStore> FollowParser<S> {
         resume: &crate::engine::meta_stream::Resume,
     ) -> Self {
         let prev_committed = committed.len();
+        let mut builder = SessionAccumulator::restore(adapter, store, committed, mm, resume);
+        // Same reason as `with_store`: the replay from `replay_from` is this follower's first
+        // fold, and whatever it commits it commits once.
+        builder.set_spawn_links(adapter.spawn_links(path));
         Self {
             agent: adapter.agent(),
             adapter,
             path: path.to_path_buf(),
-            builder: SessionAccumulator::restore(adapter, store, committed, mm, resume),
+            builder,
             cursor: resume.replay_from,
             src: None,
             banked: ElisionCounts::default(),
