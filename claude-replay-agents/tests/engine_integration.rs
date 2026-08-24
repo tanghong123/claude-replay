@@ -1469,3 +1469,152 @@ fn follower_matches_batch_over_elided_lines_and_torn_appends() {
     assert_eq!(metrics, batch.metrics, "metrics agree, gauges included");
     let _ = std::fs::remove_file(&path);
 }
+
+// ── Out-of-band spawn identity (#37) ────────────────────────────────────────────────
+
+/// Build a QoderWork-shaped session: a transcript that spawns `Agent` calls, plus the
+/// `subagents/` sidecars that name the children the transcript itself does not.
+fn qoderwork_session(name: &str, body: &str, sidecars: &[(&str, &str)]) -> PathBuf {
+    let t = tmp(name, body);
+    let sa = t
+        .parent()
+        .unwrap()
+        .join(t.file_stem().unwrap())
+        .join("subagents");
+    std::fs::create_dir_all(&sa).unwrap();
+    for (file, content) in sidecars {
+        std::fs::write(sa.join(file), content).unwrap();
+    }
+    t
+}
+
+/// A QoderWork spawn has no id in the transcript until it FINISHES, so a running child was
+/// invisible: an inert chip with nothing behind it. Its id is in a sidecar from the start, and
+/// both the batch parse and the LIVE follower adopt it — the follower's maintained header
+/// included, because the live server registers children from THAT, not from a block scan. A
+/// link the page shows but the server cannot resolve is not a link.
+#[test]
+fn a_running_qoderwork_spawn_is_named_by_its_sidecar() {
+    let body = concat!(
+        r#"{"type":"runtime-config","sessionId":"qw1","model":"m","timestamp":1780315233809}"#,
+        "\n",
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"explore"}]},"timestamp":"2026-08-22T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Agent","input":{"description":"探索例会文件夹","name":"explore-例会","prompt":"go"}}]},"timestamp":"2026-08-22T10:00:01Z"}"#,
+        "\n",
+    );
+    let t = qoderwork_session(
+        "qw-running.jsonl",
+        body,
+        &[(
+            "task-ageneral-7bd.json",
+            r#"{"parentToolUseId":"call_a","agentId":"ageneral-7bd","agentType":"general-purpose"}"#,
+        )],
+    );
+
+    let named = |blocks: &[Block]| -> Vec<(String, String, String)> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::SubAgent(sa) => Some((
+                    sa.agent_id.clone(),
+                    sa.agent_type.clone(),
+                    sa.description.clone(),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    // Identity is all adoption fills in: the type stays the fold's own word ("agent", from the
+    // tool name — QoderWork's spawn input names no subagent type), so a spawn reads the same
+    // while it runs as it will once its result folds.
+    let want = vec![(
+        "ageneral-7bd".to_string(),
+        "agent".to_string(),
+        "探索例会文件夹".to_string(),
+    )];
+
+    let s = parse_session_as(Agent::QODERWORK, &t).unwrap();
+    let blocks = s.blocks();
+    assert_eq!(named(&blocks), want, "the batch parse adopts the id");
+
+    let adapter = claude_replay_core::adapter(Agent::QODERWORK);
+    let mut f = FollowParser::open(adapter, &t);
+    let (blocks, _, _) = f.poll().unwrap().expect("the first poll folds the file");
+    assert_eq!(named(&blocks), want, "so does the live follower");
+    assert_eq!(
+        f.session_meta()
+            .children
+            .iter()
+            .map(|c| (c.id.clone(), c.running))
+            .collect::<Vec<_>>(),
+        vec![("ageneral-7bd".to_string(), true)],
+        "and the header the server registers children from names it, still running"
+    );
+}
+
+/// An id the transcript itself recorded is the source's own word and always wins — adoption
+/// only fills a gap. A finished QoderWork spawn carries `toolUseResult.agentId`, and a sidecar
+/// disagreeing with it (a stale file, a recycled id) must not move the child.
+#[test]
+fn an_in_band_spawn_id_is_never_overwritten() {
+    let body = concat!(
+        r#"{"type":"runtime-config","sessionId":"qw2","model":"m","timestamp":1780315233809}"#,
+        "\n",
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-22T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Agent","input":{"description":"d","name":"n","prompt":"p"}}]},"timestamp":"2026-08-22T10:00:01Z"}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_a","content":"done"}]},"toolUseResult":{"kind":"agent-result","agentId":"aTruth-1","agentType":"Explore","content":"done"},"timestamp":"2026-08-22T10:00:09Z"}"#,
+        "\n",
+    );
+    let t = qoderwork_session(
+        "qw-finished.jsonl",
+        body,
+        &[(
+            "task-aStale-9.json",
+            r#"{"parentToolUseId":"call_a","agentId":"aStale-9","agentType":"wrong"}"#,
+        )],
+    );
+    let s = parse_session_as(Agent::QODERWORK, &t).unwrap();
+    let blocks = s.blocks();
+    let ids: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) => Some(sa.agent_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec!["aTruth-1"], "the transcript's id stands");
+}
+
+/// Adoption is opt-in per agent: Claude names its children in-band, so its adapter reads no
+/// sidecars and a running Claude spawn stays anonymous exactly as before — the same directory
+/// layout must not start naming children behind Claude's back.
+#[test]
+fn claude_reads_no_sidecars() {
+    let body = concat!(
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-22T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Task","input":{"subagent_type":"gp","description":"d","prompt":"p"}}]},"timestamp":"2026-08-22T10:00:01Z"}"#,
+        "\n",
+    );
+    let t = qoderwork_session(
+        "cc-running.jsonl",
+        body,
+        &[(
+            "task-aSide-1.json",
+            r#"{"parentToolUseId":"call_a","agentId":"aSide-1","agentType":"gp"}"#,
+        )],
+    );
+    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
+    let blocks = s.blocks();
+    let ids: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) => Some(sa.agent_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![""], "still anonymous — Claude asked for nothing");
+}

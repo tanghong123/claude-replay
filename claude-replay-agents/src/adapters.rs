@@ -353,8 +353,16 @@ impl TranscriptAdapter for QoderWorkAdapter {
     fn store_contains(&self, path: &Path) -> bool {
         path.starts_with(agents::qoderwork::discover::projects_dir())
     }
+    /// The one place QoderWork cannot simply delegate: it keeps the spawn→child relation in
+    /// SIDECARS rather than inline in the transcript, so the ids are adopted from those
+    /// first — after which the shared Claude pass (which resolves children by exactly those
+    /// ids) does the rest against an identical `subagents/` layout.
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         agents::claude::model::enrich_tree(path, blocks)
+    }
+    // A running spawn is nameless in the transcript; its id sits in a sidecar (#37).
+    fn spawn_links(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnLink> {
+        agents::qoderwork::discover::spawn_links(path)
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING

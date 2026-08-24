@@ -6,7 +6,7 @@
 //! (see the `QoderWorkAdapter` in `adapter.rs`); the one format difference is the
 //! `runtime-config` head line, which drives detection.
 
-use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard};
+use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard, SpawnLink};
 use std::path::{Path, PathBuf};
 
 /// Root under which QoderWork writes per-project transcript dirs.
@@ -314,6 +314,103 @@ fn db_title(path: &Path) -> Option<(String, i64)> {
 #[cfg(not(target_os = "macos"))]
 fn db_title(_path: &Path) -> Option<(String, i64)> {
     None
+}
+
+// ── The spawn → child relation, which QoderWork keeps OUT OF BAND ─────────────────────
+//
+// Claude Code names a child in the parent transcript — `toolUseResult.agentId` — and the shared
+// enrichment resolves `subagents/agent-<agentId>.jsonl` from it. QoderWork writes that same key,
+// but ONLY on the result: a spawn that is still running has no id anywhere in the transcript, so
+// its `SubAgent` folds anonymous and the viewer shows an inert chip with no child behind it —
+// exactly when watching the child is most useful. (Verified on a live session: five running
+// `Agent` spawns, zero occurrences of `agentId`; and on 402 finished spawns elsewhere in the
+// same store, every one of them carrying it.)
+//
+// The id is on disk from the start all the same, beside the child it names:
+//
+//   <session>/subagents/task-<agent>.json        { parentToolUseId, agentId, agentType, … }
+//   <session>/subagents/agent-<agent>.meta.json  { toolUseId, agentType, … }  ← id in the name
+//
+// Both key on the parent's `tool_use` id, which every spawn carries in-band from its first line.
+// The id they yield is the SAME one the eventual result carries, so a child keeps one identity
+// for its whole life: adopting it early only makes the link exist sooner, and when the result
+// finally lands it confirms what the viewer already showed.
+
+/// `<transcript-dir>/<session-id>/subagents`, when it exists.
+fn subagents_dir(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_str()?;
+    let dir = path.parent()?.join(stem).join("subagents");
+    dir.is_dir().then_some(dir)
+}
+
+/// This session's out-of-band spawn identity, read from the sidecars beside its children.
+///
+/// The `is_dir` probe short-circuits every session that spawned nothing — one `stat`, which is
+/// what a live follower pays per poll for asking.
+///
+/// `task-*.json` is preferred because it names the agent id outright; `*.meta.json` is the
+/// fallback, where the id is the file's own stem. A sidecar that parses but does not name the
+/// parent is skipped rather than guessed at.
+pub(crate) fn spawn_links(path: &Path) -> Vec<SpawnLink> {
+    let Some(dir) = subagents_dir(path) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<SpawnLink> = Vec::new();
+    let mut metas: Vec<PathBuf> = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("task-") && name.ends_with(".json") {
+            if let Some(link) = task_link(&path) {
+                out.push(link);
+            }
+        } else if name.starts_with("agent-") && name.ends_with(".meta.json") {
+            metas.push(path);
+        }
+    }
+    // Only for spawns no task file claimed — the meta file's id comes from its name.
+    for path in metas {
+        let Some(link) = meta_link(&path) else {
+            continue;
+        };
+        if !out.iter().any(|l| l.tool_use_id == link.tool_use_id) {
+            out.push(link);
+        }
+    }
+    out
+}
+
+fn read_json(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// A `task-*.json`: the parent's tool-use id and the child's id, both named outright.
+fn task_link(path: &Path) -> Option<SpawnLink> {
+    let v = read_json(path)?;
+    Some(SpawnLink {
+        tool_use_id: v.get("parentToolUseId")?.as_str()?.to_string(),
+        agent_id: v.get("agentId")?.as_str()?.to_string(),
+    })
+}
+
+/// An `agent-<id>.meta.json`: the parent's tool-use id inside, the child's id in the file name.
+fn meta_link(path: &Path) -> Option<SpawnLink> {
+    let v = read_json(path)?;
+    let agent_id = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".meta.json"))
+        .and_then(|n| n.strip_prefix("agent-"))?
+        .to_string();
+    Some(SpawnLink {
+        tool_use_id: v.get("toolUseId")?.as_str()?.to_string(),
+        agent_id,
+    })
 }
 
 #[cfg(test)]
@@ -668,5 +765,64 @@ mod tests {
             other => panic!("expected the transcript half, got {other:?}"),
         }
         std::env::remove_var("QODERWORK_DB");
+    }
+
+    /// The out-of-band spawn table: `task-*.json` names the child outright; a `*.meta.json`
+    /// covers a spawn no task file claimed, taking the id from its own file name. A session
+    /// that spawned nothing answers with an empty table and one `stat`.
+    #[test]
+    fn sidecars_name_the_children_a_running_transcript_cannot() {
+        let d = std::env::temp_dir().join(format!("qw-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let sa = d.join("s1").join("subagents");
+        std::fs::create_dir_all(&sa).unwrap();
+        let t = d.join("s1.jsonl");
+        std::fs::write(&t, b"{}\n").unwrap();
+
+        assert!(
+            spawn_links(&d.join("nosuch.jsonl")).is_empty(),
+            "a session with no subagents dir has no links"
+        );
+
+        std::fs::write(
+            sa.join("task-aExplore-11.json"),
+            br#"{"parentToolUseId":"call_a","agentId":"aExplore-11","agentType":"Explore"}"#,
+        )
+        .unwrap();
+        // Only a meta file for this one — the id has to come from the file name.
+        std::fs::write(
+            sa.join("agent-ageneral-22.meta.json"),
+            br#"{"toolUseId":"call_b","agentType":"general-purpose"}"#,
+        )
+        .unwrap();
+        // Both forms for a third: the task file claims it, the meta file is ignored.
+        std::fs::write(
+            sa.join("task-aExplore-33.json"),
+            br#"{"parentToolUseId":"call_c","agentId":"aExplore-33","agentType":"Explore"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sa.join("agent-aExplore-33.meta.json"),
+            br#"{"toolUseId":"call_c","agentType":"stale"}"#,
+        )
+        .unwrap();
+        // Neither names a parent — skipped, never guessed at.
+        std::fs::write(sa.join("task-orphan.json"), br#"{"agentId":"aOrphan"}"#).unwrap();
+
+        let mut links = spawn_links(&t);
+        links.sort_by(|a, b| a.tool_use_id.cmp(&b.tool_use_id));
+        let seen: Vec<(String, String)> = links
+            .into_iter()
+            .map(|l| (l.tool_use_id, l.agent_id))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("call_a".into(), "aExplore-11".into()),
+                ("call_b".into(), "ageneral-22".into()),
+                ("call_c".into(), "aExplore-33".into()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

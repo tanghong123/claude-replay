@@ -77,6 +77,9 @@ impl Transcript {
         // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
         // one file read.
         let mut b = crate::SessionAccumulator::new(crate::adapter::adapter(self.agent));
+        // Out-of-band spawn identity, if this agent keeps any beside the transcript: read once,
+        // before the fold, so a child is named in the blocks AND in the derived index.
+        b.set_spawn_links(crate::adapter::adapter(self.agent).spawn_links(&self.path));
         let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
         let mut s = b.into_session();

@@ -199,6 +199,14 @@ impl<S: BlockStore> FollowParser<S> {
         if !reset && !advanced {
             return Ok(Tick::idle()); // nothing new this tick
         }
+        // Refresh the out-of-band spawn table on every advancing poll, AFTER the fold: a spawn's
+        // sidecar is written a beat after the line that spawned it, so a table read before the
+        // fold could miss the very child that poll just revealed. The open turn — where a fresh
+        // spawn lives until its turn closes — adopts at read time, so this poll's blocks are
+        // already covered. Costs nothing for an agent that names children in-band: its adapter
+        // returns an empty table without touching the filesystem.
+        self.builder
+            .set_spawn_links(self.adapter.spawn_links(&self.path));
         Ok(Tick {
             advanced: true,
             reset,

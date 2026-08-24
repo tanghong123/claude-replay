@@ -129,6 +129,64 @@ pub trait MetricsAccumulator: Send {
     }
 }
 
+/// A spawn's identity, recorded BESIDE the transcript rather than in it.
+///
+/// An agent that names a child only when the child FINISHES leaves every running spawn
+/// anonymous: no id, so nothing for a viewer to link to — precisely when watching the child
+/// is most useful. Where the id is nonetheless on disk from the start (QoderWork writes it to
+/// a sidecar next to the session), the adapter surfaces it here and the machinery adopts it.
+///
+/// The adopted id must be the one the eventual result will carry, so a child keeps ONE
+/// identity for its whole life and the link never churns from under a reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnLink {
+    /// The parent's `tool_use` id — in-band from the spawn's first line, so it is the join key.
+    pub tool_use_id: String,
+    /// The child's agent id.
+    pub agent_id: String,
+}
+
+/// Adopt `links` into `blocks`, and report whether anything changed.
+///
+/// Only ANONYMOUS spawns are touched, and only their `agent_id`: an id already folded from the
+/// transcript is the source's own word and always wins, so adoption can never contradict it.
+/// Identity is ALL this fills in — a spawn renders exactly as it did, now with a child behind
+/// it. Adopting the sidecar's agent TYPE as well would read better while a child ran and then
+/// flip back the moment its result folded, which is worse than a plain label.
+pub fn apply_spawn_links(blocks: &mut [Block], links: &[SpawnLink]) -> bool {
+    if links.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for b in blocks.iter_mut() {
+        let Block::SubAgent(sa) = b else { continue };
+        if !sa.agent_id.is_empty() {
+            continue;
+        }
+        let Some(link) = links.iter().find(|l| l.tool_use_id == sa.tool_use_id) else {
+            continue;
+        };
+        sa.agent_id.clone_from(&link.agent_id);
+        changed = true;
+    }
+    changed
+}
+
+/// Is any spawn in `blocks` still anonymous? The gate on asking an adapter for
+/// [`SpawnLink`]s at all — nothing to adopt means nothing to read.
+pub fn has_anonymous_spawn(blocks: &[Block]) -> bool {
+    blocks
+        .iter()
+        .any(|b| matches!(b, Block::SubAgent(sa) if sa.agent_id.is_empty()))
+}
+
+/// The batch half of spawn adoption: ask `adapter` for the session's [`SpawnLink`]s only if
+/// some spawn is anonymous, then apply them. The live half caches the links across polls
+/// instead (see `FollowParser`), so this stays a single read per parse.
+pub fn adopt_spawn_ids(adapter: &dyn TranscriptAdapter, path: &Path, blocks: &mut [Block]) -> bool {
+    has_anonymous_spawn(blocks) && apply_spawn_links(blocks, &adapter.spawn_links(path))
+}
+
 /// The single agent-specific interface. A new agent implements this once; the engine calls
 /// it via the facade's `adapter()`. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
 /// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
@@ -165,6 +223,12 @@ pub trait TranscriptAdapter: Sync {
     /// adapters whose source has no resolvable sub-agent tree. Backs the facade's
     /// `parse_session_enriched`.
     fn enrich(&self, _path: &Path, _blocks: &mut [Block]) {}
+    /// Out-of-band spawn identity for the session at `path` — see [`SpawnLink`]. The default
+    /// is none, and it reads nothing: an agent that names its children in-band (Claude,
+    /// Codex) has already given the fold every id it needs.
+    fn spawn_links(&self, _path: &Path) -> Vec<SpawnLink> {
+        Vec::new()
+    }
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {

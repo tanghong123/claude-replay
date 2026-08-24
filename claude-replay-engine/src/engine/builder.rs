@@ -63,6 +63,10 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     emitted: Boundary,
     /// Meta records authored but not yet drained by the persistence layer.
     meta_out: Vec<crate::engine::meta_stream::MetaRecord>,
+    /// Out-of-band spawn identity (see [`SpawnLink`](crate::adapter::SpawnLink)), handed down by
+    /// the I/O layer that knows the transcript's path — the fold itself reads no files. Empty for
+    /// every agent that names its children in-band, and then adoption costs a length check.
+    links: Vec<crate::adapter::SpawnLink>,
     /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
     /// map also holds open-window spawns, which a checkpoint must not claim.
     committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
@@ -176,7 +180,16 @@ impl<S: BlockStore> SessionAccumulator<S> {
             meta_out: Vec::new(),
             committed_agents: Default::default(),
             since_checkpoint: 0,
+            links: Vec::new(),
         }
+    }
+
+    /// Hand down the session's out-of-band spawn identity — see
+    /// [`SpawnLink`](crate::adapter::SpawnLink). The fold stays sans-io: whoever opened the
+    /// transcript reads the links and pushes them here, and re-pushing a refreshed table is how a
+    /// live follower keeps up with children spawned mid-session.
+    pub fn set_spawn_links(&mut self, links: Vec<crate::adapter::SpawnLink>) {
+        self.links = links;
     }
 
     /// Rebuild an accumulator from a persisted cache (#96 §6.3) — the inverse of the record
@@ -390,8 +403,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // replayer drops them, keeping its content O(turn); we own the committed prefix. Fold each
         // finalized committed block into the maintained header **once**, before it's stored, so a
         // live poll reads the header without rescanning the committed prefix.
-        let drained: Vec<Block> = self.replayer.drain_committed();
+        let mut drained: Vec<Block> = self.replayer.drain_committed();
         if !drained.is_empty() {
+            // Adopt before the block is counted, stored, or folded into the header — a committed
+            // block is never revisited, so this is its one chance to learn who its child is.
+            crate::adapter::apply_spawn_links(&mut drained, &self.links);
             let turns0 = self.committed_meta.turns;
             let mut rec = crate::engine::meta_stream::MetaRecord::default();
             for b in &drained {
@@ -598,10 +614,22 @@ impl<S: BlockStore> SessionAccumulator<S> {
             .collect()
     }
 
+    /// The finalized open turn, with out-of-band spawn identity adopted — the ONE place the open
+    /// window is read, so blocks and the header derived from it can never disagree about who a
+    /// child is. Adoption sits here rather than at the consumer's edge because
+    /// [`session_meta`](Self::session_meta) is built from these blocks and the live server
+    /// registers children from THAT: an id that reached only the blocks would render a link the
+    /// server could not resolve.
+    fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
+        let (mut open, times) = self.replayer.open_snapshot();
+        crate::adapter::apply_spawn_links(&mut open, &self.links);
+        (open, times)
+    }
+
     /// The finalized open turn's block count — the provisional zone length a live consumer's cursor
     /// addresses. O(turn) (finalizes the open window).
     pub fn provisional_len(&self) -> usize {
-        self.replayer.open_snapshot().0.len()
+        self.open_snapshot().0.len()
     }
 
     /// The finalized open turn (the provisional zone) + the WHOLE session's per-turn timestamps —
@@ -609,7 +637,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// [`committed_tail`](Self::committed_tail): a consumer serving the two zones separately reads
     /// `committed_tail(from)` for the settled prefix and this for the open tail.
     pub fn open_finalized(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
-        self.replayer.open_snapshot()
+        self.open_snapshot()
     }
 
     /// The live header for the current tail: the maintained **committed** meta with the finalized
@@ -617,7 +645,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// (a poll's header) without rescanning the committed prefix. O(turn).
     pub fn session_meta(&self) -> SessionMeta {
         let mut m = self.committed_meta.clone();
-        for b in &self.replayer.open_snapshot().0 {
+        for b in &self.open_snapshot().0 {
             m.push(b);
         }
         m
@@ -640,7 +668,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// Store-agnostic (no [`BlockRead`] bound), so a projection-store session (#74) reads its open
     /// zone through this while serving committed from its own representation.
     pub fn open_read(&self) -> StreamRead {
-        let (provisional, user_times) = self.replayer.open_snapshot();
+        let (provisional, user_times) = self.open_snapshot();
         let mut meta = self.committed_meta.clone();
         for b in &provisional {
             meta.push(b);
@@ -663,7 +691,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     where
         S: BlockRead,
     {
-        let (open, times) = self.replayer.open_snapshot();
+        let (open, times) = self.open_snapshot();
         // Reconstruct the block stream: committed (read back from the store) ++ the open tail.
         let mut blocks: Vec<Block> = self
             .committed
@@ -696,7 +724,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
     where
         S: BlockRead,
     {
-        let (open, user_times) = self.replayer.open_snapshot();
+        let (open, user_times) = self.open_snapshot();
         // Borrowed view of committed ++ open for the derived passes (`Cow: Borrow<Block>`
         // — identity for RAM/Arc stores, a one-time decode for on-disk backings).
         let mut view: Vec<std::borrow::Cow<Block>> =

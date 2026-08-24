@@ -27,6 +27,14 @@
 
 ## Needs an owner decision (design sketched, unscheduled)
 
+- **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
+  the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
+  while the source knows better in two places (`toolUseResult.agentType` on the result, `agentType`
+  in the `subagents/` sidecar, both usually `general-purpose`). #37 deliberately left the label
+  alone: adopting the sidecar's type for RUNNING spawns only would have flipped the label back the
+  moment the result folded. Fixing it properly means a QoderWork-local `join_result` that lifts the
+  type in-band as well — a rendering change, so it rides a byte-gate re-baseline.
+
 - **Block provenance anchors** — surfaced in the #167 review (2026-08-21): the fold has no
   stable block identity, so per-block presentation state is position-keyed (the TUI's
   `user_folds` overlay — a gesture can land on the wrong block across an equal-count tail
