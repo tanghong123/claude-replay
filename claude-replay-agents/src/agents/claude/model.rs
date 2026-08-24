@@ -567,17 +567,159 @@ fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+// ── Workflow runs: one call, a fleet of agents (#38) ──────────────────────────────────
+//
+// A dynamic workflow launches N agents from a single `Workflow` tool call, and the transcript
+// names none of them. What it does record — in the result text the block already keeps — is
+// where the run lives:
+//
+//   Workflow launched in background. Task ID: …
+//   Transcript dir: <session>/subagents/workflows/<runId>
+//
+// and under that directory:
+//
+//   agent-<id>.jsonl        each member's transcript — ordinary Claude transcripts
+//   agent-<id>.meta.json    {"agentType":"workflow-subagent","spawnDepth":1}
+//   journal.jsonl           {"type":"started"|"result","agentId":…,"result":…}
+//
+// The journal is the roster, and it is append-only while the run proceeds. It carries no label
+// for a member — only ids and, once an agent returns, its result — so a member is titled from
+// the first line of that result and, until then, by its position in the run.
+
+/// The run id a `Workflow` call launched, read from the result text the block already carries.
+/// The trailing component of the recorded `Transcript dir:` — matching on the id rather than the
+/// whole path so a session directory that has been moved or copied still resolves.
+pub(crate) fn workflow_run(b: &Block) -> Option<String> {
+    let Block::ToolUse { name, output, .. } = b else {
+        return None;
+    };
+    if name != "Workflow" {
+        return None;
+    }
+    let dir = output.as_deref()?.lines().find_map(|l| {
+        l.strip_prefix("Transcript dir:")
+            .map(|rest| rest.trim().to_string())
+    })?;
+    let run = std::path::Path::new(&dir).file_name()?.to_str()?;
+    (!run.is_empty()).then(|| run.to_string())
+}
+
+/// Every workflow run under this session, each with the members its journal records.
+///
+/// Read by directory, so it needs no prior knowledge of which runs the transcript mentions; the
+/// `is_dir` probe short-circuits every session that ran no workflow, which is nearly all of them.
+pub(crate) fn workflow_rosters(session_path: &std::path::Path) -> Vec<SpawnRoster> {
+    let Some(runs) = subagents_dir(session_path).map(|d| d.join("workflows")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&runs) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let dir = e.path();
+        let Some(run) = dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let members = roster_from_journal(&dir.join("journal.jsonl"));
+        if !members.is_empty() {
+            out.push(SpawnRoster {
+                run: run.to_string(),
+                members,
+            });
+        }
+    }
+    out
+}
+
+/// One run's members, in the order the journal started them. A `result` record completes the
+/// member it names and titles it; a member with no result yet is still running, and carries its
+/// launch position as a title until its own words arrive.
+fn roster_from_journal(journal: &std::path::Path) -> Vec<SubAgent> {
+    let Ok(text) = std::fs::read_to_string(journal) else {
+        return Vec::new();
+    };
+    let mut members: Vec<SubAgent> = Vec::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(id) = v.get("agentId").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        match v.get("type").and_then(|x| x.as_str()) {
+            Some("started") => {
+                if members.iter().any(|m| m.agent_id == id) {
+                    continue;
+                }
+                members.push(SubAgent {
+                    agent_id: id.to_string(),
+                    tool_use_id: String::new(),
+                    agent_type: "workflow".into(),
+                    description: format!("agent {}", members.len() + 1),
+                    prompt: String::new(),
+                    status: AgentStatus::Running,
+                    result: None,
+                    output_file: None,
+                    blocks: Vec::new(),
+                    subtree_cost: None,
+                });
+            }
+            Some("result") => {
+                let result = v.get("result").and_then(|x| x.as_str());
+                if let Some(m) = members.iter_mut().find(|m| m.agent_id == id) {
+                    m.status = AgentStatus::Completed;
+                    m.result = result.map(str::to_string);
+                    if let Some(title) = result.and_then(result_title) {
+                        m.description = title;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    members
+}
+
+/// A member's title: the first non-blank line of what it returned, undecorated of markdown
+/// heading marks and clipped to a chip's worth. `None` when the result opens with nothing
+/// usable, leaving the launch-position title in place rather than an empty one.
+fn result_title(result: &str) -> Option<String> {
+    let line = result.lines().find(|l| !l.trim().is_empty())?;
+    let t = line.trim().trim_start_matches('#').trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(match t.char_indices().nth(60) {
+        Some((i, _)) => format!("{}…", &t[..i]),
+        None => t.to_string(),
+    })
+}
+
 /// The on-disk transcript for `agent_id` under the root session at `session_path`
 /// (`<session>/subagents/agent-<id>.jsonl`), if it exists — the file a descended child is
 /// live-tailed from. All of a session's agents (any depth) share this one flat dir.
 pub fn subagent_file(session_path: &std::path::Path, agent_id: &str) -> Option<std::path::PathBuf> {
     let stem = session_path.file_stem()?.to_str()?;
-    let f = session_path
-        .parent()?
-        .join(stem)
-        .join("subagents")
-        .join(format!("agent-{agent_id}.jsonl"));
-    f.is_file().then_some(f)
+    let sadir = session_path.parent()?.join(stem).join("subagents");
+    child_file(&sadir, agent_id)
+}
+
+/// `agent_id`'s transcript under a `subagents/` dir. The flat dir first — where every ordinary
+/// agent of a session lives, whatever its depth — then each `workflows/<runId>/` beneath it,
+/// which is where a workflow run keeps its own members (#38). Checked in that order because the
+/// flat dir is the common case and a run dir is a scan.
+fn child_file(sadir: &std::path::Path, agent_id: &str) -> Option<std::path::PathBuf> {
+    let leaf = format!("agent-{agent_id}.jsonl");
+    let flat = sadir.join(&leaf);
+    if flat.is_file() {
+        return Some(flat);
+    }
+    std::fs::read_dir(sadir.join("workflows"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(&leaf))
+        .find(|f| f.is_file())
 }
 
 /// Fill each `SubAgent` block's `blocks` (child transcript) + `subtree_cost` by parsing
@@ -590,7 +732,9 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
             if sa.agent_id.is_empty() {
                 continue;
             }
-            let child = sadir.join(format!("agent-{}.jsonl", sa.agent_id));
+            let Some(child) = child_file(sadir, &sa.agent_id) else {
+                continue;
+            };
             let Ok(mut cb) = parse_file(&child) else {
                 continue;
             };
@@ -635,12 +779,21 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
     match block {
         Block::ToolUse {
             name,
+            target,
             output,
             patch,
             read_lines,
             execution,
             ..
         } => {
+            // A `Workflow` call's input is the script, so it builds with nothing to show for
+            // itself and renders as a bare `Workflow()`. Its result names the run (#38) — take
+            // that as the label, so the launched fleet below it has a heading.
+            if name == "Workflow" && target.is_empty() {
+                if let Some(n) = tur.get("workflowName").and_then(|v| v.as_str()) {
+                    *target = n.to_string();
+                }
+            }
             *output = tool_output(name, Some(tur), txt);
             *patch = parse_patch(tur);
             *read_lines = tur

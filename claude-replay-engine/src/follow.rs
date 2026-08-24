@@ -90,6 +90,7 @@ impl<S: BlockStore> FollowParser<S> {
         // revisited, so a spawn whose turn had already closed would stay anonymous for the life
         // of this follower. Free for an agent that names its children in-band.
         builder.set_spawn_links(adapter.spawn_links(path));
+        builder.set_spawn_rosters(adapter.spawn_rosters(path));
         Self {
             agent: adapter.agent(),
             adapter,
@@ -125,6 +126,7 @@ impl<S: BlockStore> FollowParser<S> {
         // Same reason as `with_store`: the replay from `replay_from` is this follower's first
         // fold, and whatever it commits it commits once.
         builder.set_spawn_links(adapter.spawn_links(path));
+        builder.set_spawn_rosters(adapter.spawn_rosters(path));
         Self {
             agent: adapter.agent(),
             adapter,
@@ -216,6 +218,8 @@ impl<S: BlockStore> FollowParser<S> {
         // returns an empty table without touching the filesystem.
         self.builder
             .set_spawn_links(self.adapter.spawn_links(&self.path));
+        self.builder
+            .set_spawn_rosters(self.adapter.spawn_rosters(&self.path));
         Ok(Tick {
             advanced: true,
             reset,

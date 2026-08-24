@@ -187,6 +187,61 @@ pub fn adopt_spawn_ids(adapter: &dyn TranscriptAdapter, path: &Path, blocks: &mu
     has_anonymous_spawn(blocks) && apply_spawn_links(blocks, &adapter.spawn_links(path))
 }
 
+/// The agents ONE tool call spawned, when the call names none of them (#38).
+///
+/// [`SpawnLink`] is the 1:1 case: a spawn block exists and only wants its id. A **workflow** is
+/// 1:N — a single call launches a fleet whose roster lives out of band and GROWS while the run
+/// does. There is nothing to adopt an id into, so the machinery inserts the members instead:
+/// ordinary [`Block::SubAgent`]s, indistinguishable downstream from any other spawn, which is
+/// what makes the whole existing apparatus (the maintained header, child links, drill-down,
+/// cost rollup) work for them without knowing what a workflow is.
+///
+/// `run` is the key the launching block carries in its own recorded output — for Claude the
+/// run's transcript directory, which its result prints verbatim. Keying on something the block
+/// already says is what lets the roster be read by directory, once per poll, and matched back
+/// to its call without a second in-band field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnRoster {
+    /// The run this roster belongs to — see [`TranscriptAdapter::spawn_run`].
+    pub run: String,
+    /// Its member agents, in launch order.
+    pub members: Vec<crate::model::SubAgent>,
+}
+
+/// Insert each roster's members after the block that launched it.
+///
+/// The launching block stays: a workflow call is a real tool call and reads as one. Its members
+/// follow it, so the stream reads top-down as "this fleet was launched, and here it is".
+///
+/// Members already present are NOT duplicated — the pass is idempotent, because the open window
+/// is re-finalized on every read and a growing roster must converge rather than accumulate.
+pub fn expand_spawn_rosters(
+    adapter: &dyn TranscriptAdapter,
+    blocks: Vec<Block>,
+    rosters: &[SpawnRoster],
+) -> Vec<Block> {
+    if rosters.is_empty() {
+        return blocks;
+    }
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let roster = adapter
+            .spawn_run(&b)
+            .and_then(|run| rosters.iter().find(|r| r.run == run));
+        out.push(b);
+        let Some(roster) = roster else { continue };
+        for m in &roster.members {
+            if !out
+                .iter()
+                .any(|b| matches!(b, Block::SubAgent(sa) if sa.agent_id == m.agent_id))
+            {
+                out.push(Block::SubAgent(m.clone()));
+            }
+        }
+    }
+    out
+}
+
 /// The single agent-specific interface. A new agent implements this once; the engine calls
 /// it via the facade's `adapter()`. The three per-agent hooks (`sniff`/`decode_line`/`metrics_acc` + the
 /// `shaping` const) drive the shared [`SessionAccumulator`](crate::engine::builder::SessionAccumulator),
@@ -227,6 +282,17 @@ pub trait TranscriptAdapter: Sync {
     /// is none, and it reads nothing: an agent that names its children in-band (Claude,
     /// Codex) has already given the fold every id it needs.
     fn spawn_links(&self, _path: &Path) -> Vec<SpawnLink> {
+        Vec::new()
+    }
+    /// Does `b` launch a fleet of agents this transcript does not name, and under what key?
+    /// See [`SpawnRoster`]. The default is "no agent does" — this costs a discriminant check.
+    fn spawn_run(&self, _b: &Block) -> Option<String> {
+        None
+    }
+    /// The rosters for every run launched from the session at `path` — see [`SpawnRoster`].
+    /// Read by directory, so it needs no prior knowledge of which runs the blocks mention, which
+    /// is what keeps it a once-per-poll read rather than a per-block one. Default: none, no I/O.
+    fn spawn_rosters(&self, _path: &Path) -> Vec<SpawnRoster> {
         Vec::new()
     }
     /// Metrics only, from a reader. A provided method: fold every line through a fresh

@@ -67,6 +67,10 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// the I/O layer that knows the transcript's path — the fold itself reads no files. Empty for
     /// every agent that names its children in-band, and then adoption costs a length check.
     links: Vec<crate::adapter::SpawnLink>,
+    /// Out-of-band spawn ROSTERS (#38) — the members of a fleet one call launched, handed down
+    /// by the same I/O layer as `links` and applied at the same two points. Empty for every
+    /// agent that has no such mode.
+    rosters: Vec<crate::adapter::SpawnRoster>,
     /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
     /// map also holds open-window spawns, which a checkpoint must not claim.
     committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
@@ -181,6 +185,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             committed_agents: Default::default(),
             since_checkpoint: 0,
             links: Vec::new(),
+            rosters: Vec::new(),
         }
     }
 
@@ -190,6 +195,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// live follower keeps up with children spawned mid-session.
     pub fn set_spawn_links(&mut self, links: Vec<crate::adapter::SpawnLink>) {
         self.links = links;
+    }
+
+    /// Hand down the session's out-of-band spawn rosters — see
+    /// [`SpawnRoster`](crate::adapter::SpawnRoster). Same contract as
+    /// [`set_spawn_links`](Self::set_spawn_links): the fold reads no files, and re-pushing a
+    /// refreshed roster is how a live follower tracks a fleet that is still growing.
+    pub fn set_spawn_rosters(&mut self, rosters: Vec<crate::adapter::SpawnRoster>) {
+        self.rosters = rosters;
     }
 
     /// Rebuild an accumulator from a persisted cache (#96 §6.3) — the inverse of the record
@@ -408,6 +421,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
             // Adopt before the block is counted, stored, or folded into the header — a committed
             // block is never revisited, so this is its one chance to learn who its child is.
             crate::adapter::apply_spawn_links(&mut drained, &self.links);
+            // Same for a fleet's members (#38): they are inserted here so they are counted,
+            // stored and folded into the header exactly like the spawns they are.
+            drained = crate::adapter::expand_spawn_rosters(self.adapter, drained, &self.rosters);
             let turns0 = self.committed_meta.turns;
             let mut rec = crate::engine::meta_stream::MetaRecord::default();
             for b in &drained {
@@ -623,6 +639,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
     fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let (mut open, times) = self.replayer.open_snapshot();
         crate::adapter::apply_spawn_links(&mut open, &self.links);
+        // A fleet launched in the OPEN turn re-expands on every read, so a roster that is still
+        // growing shows its new members as they appear rather than at the next session open.
+        let open = crate::adapter::expand_spawn_rosters(self.adapter, open, &self.rosters);
         (open, times)
     }
 

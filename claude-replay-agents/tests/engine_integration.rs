@@ -1672,3 +1672,186 @@ fn a_spawn_in_a_closed_turn_is_named_on_the_first_poll() {
         "and the header the server registers children from names it too"
     );
 }
+
+// ── Workflow runs: one call, a fleet of agents (#38) ─────────────────────────────────
+
+/// Build a session whose `Workflow` call launched `members`, with the run directory and journal
+/// the real thing writes.
+fn workflow_session(name: &str, run: &str, members: &[(&str, Option<&str>)]) -> PathBuf {
+    let t = tmp(
+        name,
+        concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-24T10:00:00Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_W","name":"Workflow","input":{"script":"x"}}]},"timestamp":"2026-08-24T10:00:01Z"}"#,
+            "\n",
+        ),
+    );
+    let rundir = t
+        .parent()
+        .unwrap()
+        .join(t.file_stem().unwrap())
+        .join("subagents")
+        .join("workflows")
+        .join(run);
+    std::fs::create_dir_all(&rundir).unwrap();
+    // The result record, which is what carries the run's location in-band.
+    let result_line = format!(
+        concat!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_W","content":"#,
+            r#""Workflow launched in background. Task ID: wm1\nSummary: s\nTranscript dir: {}\n"}}]}},"#,
+            r#""toolUseResult":{{"status":"async_launched","workflowName":"demo-flow","runId":"{}"}},"#,
+            r#""timestamp":"2026-08-24T10:00:09Z"}}"#,
+            "\n"
+        ),
+        rundir.display().to_string().replace('\\', "\\\\"),
+        run
+    );
+    let mut body = std::fs::read_to_string(&t).unwrap();
+    body.push_str(&result_line);
+    std::fs::write(&t, &body).unwrap();
+
+    let mut journal = String::new();
+    for (id, _) in members {
+        journal.push_str(&format!(
+            "{{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"{id}\"}}\n"
+        ));
+    }
+    for (id, result) in members {
+        if let Some(r) = result {
+            journal.push_str(&format!(
+                "{{\"type\":\"result\",\"key\":\"v2:k\",\"agentId\":\"{id}\",\"result\":{}}}\n",
+                serde_json::to_string(r).unwrap()
+            ));
+        }
+        // Each member's own transcript, so the child resolves and enrich can read it.
+        std::fs::write(
+            rundir.join(format!("agent-{id}.jsonl")),
+            concat!(
+                r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"work"}]},"timestamp":"2026-08-24T10:00:02Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(rundir.join("journal.jsonl"), journal).unwrap();
+    t
+}
+
+fn spawns(blocks: &[Block]) -> Vec<(String, String, AgentStatus)> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::SubAgent(sa) => Some((sa.agent_id.clone(), sa.description.clone(), sa.status)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One `Workflow` call names none of the agents it launched — the roster is a journal in the
+/// run's own directory. The machinery inserts them as ordinary spawn blocks, so the whole
+/// existing apparatus works for them: a finished member is titled by the first line of what it
+/// returned, a running one by its launch position, and both are addressable by id.
+#[test]
+fn a_workflow_call_expands_into_its_fleet() {
+    let t = workflow_session(
+        "wf-basic.jsonl",
+        "wf_run1",
+        &[("aone", Some("# R1: Prior art\n\nbody")), ("atwo", None)],
+    );
+
+    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
+    let blocks = s.blocks();
+    assert_eq!(
+        spawns(&blocks),
+        vec![
+            (
+                "aone".into(),
+                "R1: Prior art".into(),
+                AgentStatus::Completed
+            ),
+            ("atwo".into(), "agent 2".into(), AgentStatus::Running),
+        ],
+        "both members present, titled from their results where they have one"
+    );
+    // The members follow the call that launched them, not the other way round.
+    let call = blocks
+        .iter()
+        .position(|b| matches!(b, Block::ToolUse { name, .. } if name == "Workflow"))
+        .expect("the Workflow call is still a tool call in its own right");
+    let first = blocks
+        .iter()
+        .position(|b| matches!(b, Block::SubAgent(_)))
+        .unwrap();
+    assert!(call < first, "the fleet reads below its launch");
+    // …and the call is labelled from the run, instead of rendering as a bare `Workflow()`.
+    assert!(
+        matches!(&blocks[call], Block::ToolUse { target, .. } if target == "demo-flow"),
+        "the workflow's name is its label"
+    );
+
+    // The live path: same members, and the header the server registers children from names them.
+    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
+    let mut f = FollowParser::open(adapter, &t);
+    let (live, _, _) = f.poll().unwrap().expect("first poll folds the file");
+    assert_eq!(spawns(&live), spawns(&blocks), "live agrees with batch");
+    assert_eq!(
+        f.session_meta()
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aone", "atwo"],
+        "the maintained header carries the fleet"
+    );
+}
+
+/// The open window is re-finalized on every read, and a live run's journal grows under it. The
+/// expansion must therefore CONVERGE, not accumulate: reading twice may not double the fleet.
+#[test]
+fn expanding_a_roster_twice_does_not_duplicate_it() {
+    let t = workflow_session(
+        "wf-idem.jsonl",
+        "wf_run2",
+        &[("aone", None), ("atwo", None)],
+    );
+    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
+    let mut f = FollowParser::open(adapter, &t);
+    let (first, _, _) = f.poll().unwrap().expect("first poll");
+    // Every subsequent read re-runs the same expansion over the same window.
+    let (again, _) = f.open_finalized();
+    assert_eq!(spawns(&first).len(), 2, "two members");
+    assert_eq!(spawns(&again), spawns(&first), "and still two, not four");
+}
+
+/// A member's transcript lives one directory deeper than every other agent's. Resolving it is
+/// what makes the link real rather than a dead affordance.
+#[test]
+fn a_workflow_member_resolves_to_its_transcript() {
+    let t = workflow_session("wf-resolve.jsonl", "wf_run3", &[("adeep", None)]);
+    let found = claude_replay_core::discover::subagent_source(Agent::CLAUDE, &t, "adeep")
+        .expect("the member resolves under workflows/<runId>/");
+    assert!(
+        found.ends_with("wf_run3/agent-adeep.jsonl"),
+        "resolved to the run's own dir: {}",
+        found.display()
+    );
+    assert_eq!(
+        claude_replay_core::discover::subagent_source(Agent::CLAUDE, &t, "nosuch"),
+        None,
+        "and an unknown id still resolves to nothing"
+    );
+}
+
+/// A session that ran no workflow is untouched, and asks the filesystem for nothing.
+#[test]
+fn a_session_without_workflows_is_unchanged() {
+    let t = tmp1(concat!(
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-24T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-08-24T10:00:01Z"}"#,
+        "\n",
+    ));
+    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
+    assert!(spawns(&s.blocks()).is_empty(), "no spawns invented");
+}

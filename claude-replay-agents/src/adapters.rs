@@ -148,6 +148,13 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn resolve_id(&self, id: &str) -> Option<PathBuf> {
         agents::claude::discover::transcript_by_id(id)
     }
+    // One `Workflow` call launches a fleet the transcript never names (#38).
+    fn spawn_run(&self, b: &claude_replay_engine::model::Block) -> Option<String> {
+        agents::claude::model::workflow_run(b)
+    }
+    fn spawn_rosters(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnRoster> {
+        agents::claude::model::workflow_rosters(path)
+    }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         agents::claude::model::subagent_file(root, child_id)
     }
