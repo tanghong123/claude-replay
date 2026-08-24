@@ -2260,13 +2260,26 @@
   // `instant` skips the smooth animation — a long-distance jump in the virtual list
   // would otherwise re-window on every animation frame (and lose the landing
   // element's transient state to churn); short local moves stay smooth.
-  function goTo(target, instant) {
+  // Is this element already comfortably readable where it sits — clear of the fixed
+  // chrome at the top and of the bottom edge? Used by navigation that should move the
+  // SELECTION rather than the page when the reader can already see the target.
+  function inComfortableView(el) {
+    var r = el.getBoundingClientRect();
+    var bar = $("topbar");
+    var top = (bar ? bar.getBoundingClientRect().bottom : 0) + 8;
+    return r.top >= top && r.bottom <= window.innerHeight - 8;
+  }
+  /// `keepIfVisible`: leave the viewport alone when the target is already on screen.
+  function goTo(target, instant, keepIfVisible) {
     if (!target) return;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
-    var top = target.getBoundingClientRect().top + window.scrollY - GOTO_Y;
-    window.scrollTo({ top: top, behavior: instant ? "auto" : "smooth" });
+    // Folds opened above may have moved it, so the visibility test comes after them.
+    if (!(keepIfVisible && inComfortableView(target))) {
+      var top = target.getBoundingClientRect().top + window.scrollY - GOTO_Y;
+      window.scrollTo({ top: top, behavior: instant ? "auto" : "smooth" });
+    }
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
   }
@@ -2999,9 +3012,14 @@
     if (m) {
       m.classList.add("cur");
       revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
-      goTo(m, true);
+      // Stepping moves the SELECTION; it only moves the PAGE when it must. Scrolling down
+      // a little from a hit at the top of the screen brings earlier matches into view, and
+      // stepping back through those used to yank each one up to the same fixed offset —
+      // discarding the position the reader chose to read from. A match already on screen
+      // is simply highlighted where it is; one off screen is brought in as before.
+      goTo(m, true, true);
     } else if (el) {
-      goTo(el, true); // mark-less hit record: land on it, never skip it
+      goTo(el, true, true); // mark-less hit record: land on it, never skip it
     }
     // Settle the pin SYNCHRONOUSLY, position deciding — the async classifiers race:
     // the jump's own materialization resizes the body, and the ResizeObserver heal

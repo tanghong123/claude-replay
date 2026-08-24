@@ -14,7 +14,9 @@
 //! 5. jump-to-bottom still LANDS after the viewport is resized — the case a resize
 //!    breaks, because every height measured at the old width becomes a guess;
 //! 6. a turn landing HOLDS through a late reflow — the case images breaking, since they
-//!    resize the page after the jump has already finished.
+//!    resize the page after the jump has already finished;
+//! 7. stepping through search hits moves the SELECTION, not the page, while the target
+//!    is already on screen.
 //!
 //! `#[ignore]`d like the tmux e2e: it needs a Chrome/Chromium on the machine. Run with
 //! `cargo test -p claude-replay-html --test browser_follow -- --ignored`.
@@ -629,6 +631,145 @@ fn a_turn_landing_holds_through_late_reflow() {
     assert!(
         held["delta"].as_i64().map(i64::abs).unwrap_or(9999) <= 2,
         "the target is still at its landing offset after the reflow: {held}"
+    );
+
+    drop(tab);
+    drop(browser);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// **Search stepping must not throw away the reader's position.** With a hit at the top of
+/// the screen, scrolling down a little brings EARLIER matches into view; stepping back
+/// through those used to yank each one up to the same fixed offset, scrolling the page away
+/// from what the reader had deliberately positioned. A match already on screen is now just
+/// highlighted where it is — and one that is not is still brought in, which the second half
+/// of this test pins so the fix cannot become "never scroll".
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
+    let base = base("search");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("search.jsonl");
+    {
+        let mut s = String::new();
+        for i in 0..60u32 {
+            s.push_str(&user(&format!("question {i} about the widget"), i % 60));
+            s.push_str(&assistant(
+                &format!(
+                    "answer {i}: {}",
+                    "the widget handles the request the same way. ".repeat(6)
+                ),
+                i % 60,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            // A real reading viewport: with a short window the "previous" match lands under
+            // the top chrome, where scrolling to it is the CORRECT behaviour and the test
+            // would be measuring the wrong thing.
+            .window_size(Some((1200, 900)))
+            .args(vec![
+                std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+            ])
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    wait_for(&tab, "initial render", Duration::from_secs(15), |s| {
+        s["blocks"].as_i64().unwrap_or(-1) > 5
+    });
+
+    // Search, then step back onto a hit.
+    eval(
+        &tab,
+        r##"(function () {
+            var q = document.getElementById("q");
+            q.focus(); q.value = "widget";
+            q.dispatchEvent(new Event("input", {bubbles: true}));
+            return true;
+        })()"##,
+        false,
+    );
+    std::thread::sleep(Duration::from_millis(900));
+    eval(
+        &tab,
+        r##"(function () { document.getElementById("qprev").click(); return true; })()"##,
+        false,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+
+    // The reader nudges the view back a little; earlier matches are now on screen above
+    // the current one — the exact position stepping used to discard.
+    let held = eval(
+        &tab,
+        r##"(async function () {
+            // Toward the START of the session: that is what puts EARLIER matches on
+            // screen above the current one, which is the case at issue.
+            window.dispatchEvent(new WheelEvent("wheel", {deltaY: -120}));
+            window.scrollBy(0, -150);
+            await new Promise(function (r) { setTimeout(r, 400); });
+            var before = Math.round(window.scrollY);
+            var countBefore = document.getElementById("qcount").textContent;
+            document.getElementById("qprev").click();
+            await new Promise(function (r) { setTimeout(r, 500); });
+            var cur = document.querySelector("#stream mark.hl.cur");
+            return {
+                before: before,
+                after: Math.round(window.scrollY),
+                countChanged: document.getElementById("qcount").textContent !== countBefore,
+                markTop: cur ? Math.round(cur.getBoundingClientRect().top) : null,
+                viewportH: window.innerHeight
+            };
+        })()"##,
+        true,
+    );
+    assert_eq!(
+        held["before"], held["after"],
+        "a visible match is highlighted where it is, not scrolled to: {held}"
+    );
+    assert_eq!(
+        held["countChanged"], true,
+        "the selection still advanced: {held}"
+    );
+    let top = held["markTop"].as_i64().expect("a current mark");
+    assert!(
+        top > 0 && top < held["viewportH"].as_i64().unwrap(),
+        "and it really was on screen: {held}"
+    );
+
+    // Keep stepping: once the match would sit under the top chrome, the page must move.
+    let scrolled = eval(
+        &tab,
+        r##"(async function () {
+            var start = Math.round(window.scrollY);
+            for (var i = 0; i < 40; i++) {
+                document.getElementById("qprev").click();
+                await new Promise(function (r) { setTimeout(r, 60); });
+                if (Math.round(window.scrollY) !== start) return {moved: true, from: start, to: Math.round(window.scrollY)};
+            }
+            return {moved: false, from: start, to: Math.round(window.scrollY)};
+        })()"##,
+        true,
+    );
+    assert_eq!(
+        scrolled["moved"], true,
+        "stepping past the top of the screen still brings the match into view: {scrolled}"
     );
 
     drop(tab);
