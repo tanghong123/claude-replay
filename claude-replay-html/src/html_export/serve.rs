@@ -118,7 +118,13 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     /// stored records verbatim, so an un-bumped renderer change serves the OLD page from
     /// cache forever (v1.102.1 widened the pasted-art detector without bumping this, and
     /// every already-visited session kept rendering the previous build's markup).
-    const RECORD_SCHEMA: u16 = 6;
+    ///
+    /// **The change does not have to be in this crate.** v1.106.1 fixed a reader two crates
+    /// away so a spawn kept its structured result, and the SubAgent arm emits `result` — so
+    /// the markup changed, the schema did not, and the session that motivated the fix went on
+    /// serving the version without it. If a change alters what any block CARRIES, it lands
+    /// here too.
+    const RECORD_SCHEMA: u16 = 7;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

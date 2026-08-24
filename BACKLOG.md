@@ -27,6 +27,17 @@
 
 ## Needs an owner decision (design sketched, unscheduled)
 
+- **#38 follow-up — a member that starts AFTER its call commits stays invisible.** Roster
+  expansion runs at the committed drain and at every open-window read, so a fleet gains members
+  live only while its `Workflow` turn is still open. Once the user sends another message the turn
+  commits, and a committed block is never revisited — so members that start later (normal in a
+  30-minute run) do not appear, and a durable cache entry then replays those records verbatim
+  across refreshes and restarts until something invalidates it. Shipped that way knowingly: the
+  session that motivated #38 had all ten members before any fold. The general fix is the same
+  one #37 wants — a way to re-open a committed block's spawn set, or to signal a patch floor from
+  out-of-band state that changed without the transcript changing. Decide whether that mechanism is
+  worth building for both.
+
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
   the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
   while the source knows better in two places (`toolUseResult.agentType` on the result, `agentType`
