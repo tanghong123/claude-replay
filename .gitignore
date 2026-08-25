@@ -5,6 +5,16 @@
 /golden/
 *.jsonl
 
+# …and the same hazard from the other direction: `--dump` writes its render beside you as
+# <stem>.txt + <stem>.ansi, `--dump --json` writes <stem>.json, `--dump-html` writes
+# <stem>.html. Run any of them from the repo root — which is exactly where you run the
+# binary while working on it — and a transcript's CONTENT lands here as an untracked file
+# that `git add -A` will happily commit. One did.
+/*.txt
+/*.ansi
+/*.json
+/*.html
+
 # Scratch / internal artifacts (analysis notes, autonomous-run briefs, comparison
 # tooling) — not part of the tracked source; may embed real session paths/ids.
 /claude-tasks-*.md
