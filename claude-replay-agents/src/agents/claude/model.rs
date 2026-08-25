@@ -803,7 +803,12 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                     *target = n.to_string();
                 }
             }
-            *output = tool_output(name, Some(tur), txt);
+            // A `StructuredOutput` block already carries the answer, taken from the call's own
+            // input; its result is the fixed stub, so overwriting here would replace the whole
+            // payload with "Structured output provided successfully".
+            if name != "StructuredOutput" {
+                *output = tool_output(name, Some(tur), txt);
+            }
             *patch = parse_patch(tur);
             *read_lines = tur
                 .pointer("/file/numLines")
@@ -1159,17 +1164,51 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             subtree_cost: None,
         })
     } else {
+        // `StructuredOutput` is how an agent given a schema returns its answer (#38): the whole
+        // payload is the tool's INPUT, and the result is a fixed stub ("Structured output
+        // provided successfully"). A block that keeps only the result therefore showed an empty
+        // call where the agent's entire work was — so carry the payload itself.
+        let structured = name == "StructuredOutput";
         Block::ToolUse {
             name: name.to_string(),
-            target: tool_target(input, cwd),
+            target: if structured {
+                structured_fields(input)
+            } else {
+                tool_target(input, cwd)
+            },
             diffs: extract_diffs(name, input),
-            output: None,
+            output: if structured {
+                structured_body(input)
+            } else {
+                None
+            },
             patch: None,
             read_lines: None,
             cwd: cwd.to_string(),
             execution: None,
         }
     }
+}
+
+/// A `StructuredOutput` call's label: the payload's top-level field names, which say what the
+/// agent was asked to return (`findings`, `scores`, …) without unfolding any of it.
+fn structured_fields(input: &Value) -> String {
+    let Some(o) = input.as_object() else {
+        return String::new();
+    };
+    let all: Vec<&str> = o.keys().map(String::as_str).collect();
+    match all.len() {
+        0 => String::new(),
+        1..=3 => all.join(", "),
+        n => format!("{}, +{} more", all[..2].join(", "), n - 2),
+    }
+}
+
+/// The payload itself, pretty-printed so it reads as the answer it is rather than one long line.
+fn structured_body(input: &Value) -> Option<String> {
+    serde_json::to_string_pretty(input)
+        .ok()
+        .filter(|s| !s.trim().is_empty() && s != "null" && s != "{}")
 }
 
 /// Claude's shaping — the historical `parse_main` behavior.
@@ -2053,6 +2092,59 @@ pub const CLAUDE_ELISION: claude_replay_engine::seam::Elision =
 
 #[cfg(test)]
 mod tests {
+
+    /// An agent given a schema returns through `StructuredOutput`, whose whole payload is the
+    /// call's INPUT — its result is a fixed stub. Keeping only the result showed an empty call
+    /// where the agent's entire answer was, so the payload is carried and the stub must not
+    /// overwrite it.
+    #[test]
+    fn structured_output_carries_the_payload_not_the_stub() {
+        let input = serde_json::json!({
+            "findings": [{"title": "a bug", "severity": "high"}]
+        });
+        let mut b = claude_build_tool("toolu_S", "StructuredOutput", &input, "/r");
+        match &b {
+            Block::ToolUse { target, output, .. } => {
+                assert_eq!(target, "findings", "labelled by what it returned");
+                let out = output.as_deref().expect("the payload is the content");
+                assert!(out.contains("\"title\""), "pretty-printed payload: {out}");
+                assert!(out.contains("a bug"));
+            }
+            other => panic!("expected a tool block, got {other:?}"),
+        }
+        // The result record then arrives; its text is the stub, which must change nothing.
+        apply_result(
+            &mut b,
+            "Structured output provided successfully",
+            &Value::Null,
+            None,
+        );
+        match &b {
+            Block::ToolUse { output, .. } => assert!(
+                output.as_deref().unwrap_or("").contains("a bug"),
+                "the stub did not replace the answer"
+            ),
+            other => panic!("expected a tool block, got {other:?}"),
+        }
+    }
+
+    /// The label names the fields without unfolding them, and stays short when a payload has
+    /// many.
+    #[test]
+    fn a_structured_payloads_label_names_its_fields() {
+        let f = |v: Value| structured_fields(&v);
+        assert_eq!(f(serde_json::json!({"findings": []})), "findings");
+        assert_eq!(f(serde_json::json!({"a": 1, "b": 2, "c": 3})), "a, b, c");
+        assert_eq!(
+            f(serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4})),
+            "a, b, +2 more"
+        );
+        assert_eq!(
+            f(serde_json::json!([1, 2])),
+            "",
+            "a non-object has no fields"
+        );
+    }
     use super::*;
 
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {

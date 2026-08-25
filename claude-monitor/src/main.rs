@@ -488,6 +488,50 @@ fn reclaim_legacy_scratch() {
     let _ = std::fs::remove_dir(&legacy);
 }
 
+/// `--help`. Two columns for the flags, one paragraph per topic, and every line inside 80
+/// so it reads in a default terminal instead of wrapping into a wall — the shape
+/// `agent-monitor-fleet` already uses. The literal is flush-left on purpose: indenting it to
+/// match the code would put that indentation in the output.
+fn help_text() -> String {
+    format!(
+        "\
+agent-monitor — every agent session on this machine, one page over loopback HTTP
+
+USAGE:
+  agent-monitor [--pair] [--port N] [--agents claude,codex] [--no-open]
+  agent-monitor --set-passcode
+
+  --pair            Require a token to reach the monitor — a 0600 secret, minted
+                    once. Run it on a SHARED machine; it prints the URL to open,
+                    and a plain `agent-monitor` then keeps requiring that token.
+  --port N          Serve on N instead of {DEFAULT_PORT}.
+  --agents LIST     Only these agents: claude, codex, qoderwork.
+  --no-open         Print the URL instead of opening a browser.
+  --set-passcode    Set (or clear) the passcode that granting injection into a
+                    live session requires — a speed bump for an unlocked,
+                    unattended machine. Terminal-only on purpose, so an open
+                    browser cannot lift the gate meant to stop it.
+
+Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only, read-only.
+
+CACHE ROOT:
+  $AGENT_MONITOR_CACHE, else $CLAUDE_MONITOR_CACHE (legacy, still honored). With
+  neither set, an existing ~/.cache/claude-monitor keeps being used and a fresh
+  install creates ~/.cache/agent-monitor. Never the viewer's own root.
+
+PROCESS RECOGNITION:
+  Built-in basenames: claude, codex, qoderwork, qoder. Extend that set with
+  $AGENT_MONITOR_AGENT_PATTERNS, comma-separated:
+
+    basename:<name>     match the executable's own name
+    argv:<substring>    match anywhere in the command line (wrapper launches)
+    <name>              bare, the same as basename:<name>
+
+  e.g. AGENT_MONITOR_AGENT_PATTERNS=\"argv:npx codex,basename:my-agent\"
+"
+    )
+}
+
 fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
     let mut only: Vec<Agent> = Vec::new();
@@ -525,23 +569,7 @@ fn main() -> Result<()> {
             }
             "--no-open" => open_browser = false,
             "--help" | "-h" => {
-                println!(
-                    "agent-monitor — every agent session on this machine, over loopback HTTP\n\n\
-                     USAGE: agent-monitor [--pair] [--set-passcode] [--port N] [--agents claude,codex,qoderwork] [--no-open]\n\n\
-                     Serves http://127.0.0.1:{DEFAULT_PORT} (loopback only, read-only).\n\
-                     --pair: require a token (a 0600 secret) — run it once on a SHARED machine\n\
-                     so only you can reach your monitor; it prints a URL to open. Thereafter a\n\
-                     plain `agent-monitor` keeps requiring the token.\n\
-                     --set-passcode: set (or clear) a passcode required to GRANT injection into\n\
-                     a live session (#133) — a speed bump for an unlocked, unattended machine.\n\
-                     Cache root: $AGENT_MONITOR_CACHE (legacy $CLAUDE_MONITOR_CACHE honored);\n\
-                     an existing ~/.cache/claude-monitor keeps being used, fresh installs\n\
-                     create ~/.cache/agent-monitor — never the viewer's root (R5).\n\n\
-                     Process recognition: built-in basenames are claude, codex, qoderwork, qoder.\n\
-                     Extend with $AGENT_MONITOR_AGENT_PATTERNS — comma-separated basename:<name>,\n\
-                     argv:<substring>, or a bare <name> (a basename). Wrapper launches need argv:,\n\
-                     e.g. \"argv:npx codex,argv:node_modules/.bin/codex,basename:my-agent\"."
-                );
+                print!("{}", help_text());
                 return Ok(());
             }
             other => anyhow::bail!("unknown flag {other:?} (try --help)"),
@@ -772,6 +800,44 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `--help` has to READ in a default terminal. It used to be one 103-column USAGE line and
+    /// four prose paragraphs of flag descriptions, which wrapped into a wall; the shape is now
+    /// two columns and one paragraph per topic. Keeping every line inside 80 is the part a
+    /// change can silently undo, so it is the part asserted.
+    #[test]
+    fn the_help_screen_fits_a_terminal() {
+        let help = super::help_text();
+        for (n, line) in help.lines().enumerate() {
+            assert!(
+                line.chars().count() <= 80,
+                "help line {} is {} columns:\n{line}",
+                n + 1,
+                line.chars().count()
+            );
+            assert_eq!(
+                line.trim_end(),
+                line,
+                "help line {} has trailing space",
+                n + 1
+            );
+        }
+        // Every flag the argument loop accepts is documented — the drift that makes a help
+        // screen wrong rather than merely ugly.
+        for flag in [
+            "--pair",
+            "--port",
+            "--agents",
+            "--no-open",
+            "--set-passcode",
+        ] {
+            assert!(help.contains(flag), "{flag} is undocumented");
+        }
+        assert!(
+            help.contains(&super::DEFAULT_PORT.to_string()),
+            "the default port is stated, and comes from the constant"
+        );
+    }
     use super::*;
     use claude_replay_present::cache::lock;
 
