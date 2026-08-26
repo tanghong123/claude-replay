@@ -55,6 +55,14 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     src: Option<LineSource<BufReader<std::fs::File>>>,
     /// Gauges already banked into the metrics accumulator; each poll banks the delta.
     banked: ElisionCounts,
+    /// The rosters as of the last refresh — the follower's own copy, kept so a poll can tell a
+    /// fleet that GREW from one that merely got re-read (#38).
+    rosters: Vec<crate::adapter::SpawnRoster>,
+    /// A restored fold whose cached records predate members that exist now (#38): the roster is
+    /// read fresh from disk, so it would match itself on every poll and never look stale. Set at
+    /// `resume` by comparing it against the header the cache actually recorded; consumed by the
+    /// first advance, which re-folds.
+    stale_resume: bool,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
     /// `poll_delta`.
@@ -90,7 +98,8 @@ impl<S: BlockStore> FollowParser<S> {
         // revisited, so a spawn whose turn had already closed would stay anonymous for the life
         // of this follower. Free for an agent that names its children in-band.
         builder.set_spawn_links(adapter.spawn_links(path));
-        builder.set_spawn_rosters(adapter.spawn_rosters(path));
+        let seeded = adapter.spawn_rosters(path);
+        builder.set_spawn_rosters(seeded.clone());
         Self {
             agent: adapter.agent(),
             adapter,
@@ -101,6 +110,8 @@ impl<S: BlockStore> FollowParser<S> {
             banked: ElisionCounts::default(),
             prev_committed: 0,
             prev_provisional: Vec::new(),
+            rosters: seeded,
+            stale_resume: false,
         }
     }
 
@@ -122,11 +133,22 @@ impl<S: BlockStore> FollowParser<S> {
         resume: &crate::engine::meta_stream::Resume,
     ) -> Self {
         let prev_committed = committed.len();
+        // Did this fleet grow while nobody was folding it? The cached header lists the children
+        // the records were written with; a roster member missing from it is one those records
+        // cannot show, and no later roster comparison would ever notice — the roster is read
+        // from disk and matches itself. So the staleness is decided here, once, against what the
+        // cache actually recorded.
+        let stale_resume = adapter.spawn_rosters(path).iter().any(|r| {
+            r.members
+                .iter()
+                .any(|m| !mm.session_meta.children.iter().any(|c| c.id == m.agent_id))
+        });
         let mut builder = SessionAccumulator::restore(adapter, store, committed, mm, resume);
         // Same reason as `with_store`: the replay from `replay_from` is this follower's first
         // fold, and whatever it commits it commits once.
         builder.set_spawn_links(adapter.spawn_links(path));
-        builder.set_spawn_rosters(adapter.spawn_rosters(path));
+        let seeded = adapter.spawn_rosters(path);
+        builder.set_spawn_rosters(seeded.clone());
         Self {
             agent: adapter.agent(),
             adapter,
@@ -137,6 +159,8 @@ impl<S: BlockStore> FollowParser<S> {
             banked: ElisionCounts::default(),
             prev_committed,
             prev_provisional: Vec::new(),
+            rosters: seeded,
+            stale_resume,
         }
     }
 
@@ -146,12 +170,17 @@ impl<S: BlockStore> FollowParser<S> {
     /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
     /// O(delta) except on a rewrite.
     fn advance_from_source(&mut self) -> std::io::Result<Tick> {
+        // A fleet whose roster grew (#38). Refreshing FIRST is what makes the comparison
+        // meaningful: the transcript may not have moved at all — a workflow's members start
+        // minutes apart while the parent sits idle — so this is the only signal that the
+        // session's content changed.
+        let regrown = self.refresh_rosters() || std::mem::take(&mut self.stale_resume);
         // Truncation / compaction: the file shrank below the cursor — the kept prefix
         // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
         // restarts with it) and re-fold the whole new file.
         let len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         let cursor = self.src.as_ref().map(|s| s.offset()).unwrap_or(self.cursor);
-        let reset = len < cursor;
+        let reset = len < cursor || regrown;
         if reset {
             self.builder.reset();
             self.src = None;
@@ -210,21 +239,47 @@ impl<S: BlockStore> FollowParser<S> {
         if !reset && !advanced {
             return Ok(Tick::idle()); // nothing new this tick
         }
-        // Refresh the out-of-band spawn table on every advancing poll, AFTER the fold: a spawn's
-        // sidecar is written a beat after the line that spawned it, so a table read before the
-        // fold could miss the very child that poll just revealed. The open turn — where a fresh
-        // spawn lives until its turn closes — adopts at read time, so this poll's blocks are
-        // already covered. Costs nothing for an agent that names children in-band: its adapter
-        // returns an empty table without touching the filesystem.
+        // The spawn-id table (#37) is refreshed per advancing poll: a sidecar is written a beat
+        // after the line that spawned it, so a read from before the fold can miss the very child
+        // this poll revealed — the next poll picks it up, and the open turn adopts at read time
+        // meanwhile. Free for an agent that names its children in-band.
         self.builder
             .set_spawn_links(self.adapter.spawn_links(&self.path));
-        self.builder
-            .set_spawn_rosters(self.adapter.spawn_rosters(&self.path));
         Ok(Tick {
             advanced: true,
             reset,
             patch_floor,
         })
+    }
+
+    /// Re-read this session's spawn rosters, hand them to the fold, and report whether any run
+    /// whose launching block is ALREADY COMMITTED gained members (#38).
+    ///
+    /// That question is the whole point. A fleet in the still-open turn re-expands on every read,
+    /// so a member starting there costs nothing to pick up. Once the turn commits, the block is
+    /// settled — committed blocks are never revisited — and a member starting after that has
+    /// nowhere to land. Re-folding is how it lands: the same path a truncation takes, which every
+    /// consumer already understands as "everything changed", rather than a new protocol for a
+    /// case that happens a handful of times per run.
+    ///
+    /// So the re-fold is deliberately NOT triggered by a roster changing per se — only by one
+    /// changing where it can no longer be applied in place.
+    fn refresh_rosters(&mut self) -> bool {
+        let fresh = self.adapter.spawn_rosters(&self.path);
+        if fresh == self.rosters {
+            return false;
+        }
+        let regrown = fresh.iter().any(|r| {
+            !self.builder.open_has_run(&r.run)
+                && self
+                    .rosters
+                    .iter()
+                    .find(|old| old.run == r.run)
+                    .is_none_or(|old| old.members != r.members)
+        });
+        self.rosters.clone_from(&fresh);
+        self.builder.set_spawn_rosters(fresh);
+        regrown
     }
 
     /// Poll: fold any newly-appended lines and return the current blocks + per-turn times +

@@ -500,6 +500,7 @@ agent-monitor — every agent session on this machine, one page over loopback HT
 USAGE:
   agent-monitor [--pair] [--port N] [--agents claude,codex] [--no-open]
   agent-monitor --set-passcode
+  agent-monitor --version
 
   --pair            Require a token to reach the monitor — a 0600 secret, minted
                     once. Run it on a SHARED machine; it prints the URL to open,
@@ -570,6 +571,12 @@ fn main() -> Result<()> {
             "--no-open" => open_browser = false,
             "--help" | "-h" => {
                 print!("{}", help_text());
+                return Ok(());
+            }
+            // Same shape as `agent-monitor-fleet`'s. Missing until now, which made the two
+            // siblings disagree about something every CLI is expected to answer.
+            "--version" | "-V" => {
+                println!("agent-monitor {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             other => anyhow::bail!("unknown flag {other:?} (try --help)"),
@@ -830,6 +837,7 @@ mod tests {
             "--agents",
             "--no-open",
             "--set-passcode",
+            "--version",
         ] {
             assert!(help.contains(flag), "{flag} is undocumented");
         }

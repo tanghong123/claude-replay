@@ -1899,3 +1899,157 @@ fn a_session_without_workflows_is_unchanged() {
     let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
     assert!(spawns(&s.blocks()).is_empty(), "no spawns invented");
 }
+
+/// The #38 follow-up: a member that starts AFTER its call has committed.
+///
+/// While the Workflow turn is open the fleet re-expands on every read, so members appear as they
+/// start. Once the user sends another message the turn commits — and a committed block is never
+/// revisited, so a member starting later has nowhere to land. That is the normal shape of a long
+/// run: the person keeps working while ten agents grind. The follower notices the roster grew
+/// under a committed launch and re-folds, which is the same path a truncation takes and which
+/// every consumer already reads as "everything changed".
+#[test]
+fn a_fleet_that_grows_after_its_turn_commits_is_still_picked_up() {
+    let t = workflow_session("wf-late.jsonl", "wf_late", &[("aone", None)]);
+    // A later user turn, so the Workflow call's turn closes and commits.
+    let mut body = std::fs::read_to_string(&t).unwrap();
+    body.push_str(concat!(
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"meanwhile"}]},"timestamp":"2026-08-26T10:05:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"sure"}]},"timestamp":"2026-08-26T10:05:01Z"}"#,
+        "\n",
+    ));
+    std::fs::write(&t, &body).unwrap();
+
+    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
+    let mut f = FollowParser::open(adapter, &t);
+    let (first, _, _) = f.poll().unwrap().expect("the first poll folds the file");
+    assert_eq!(
+        spawns(&first).len(),
+        1,
+        "one member so far, and its launch has committed"
+    );
+    assert!(
+        f.committed_len() > 0,
+        "the Workflow turn is settled — this is the case the fix is for"
+    );
+
+    // Nothing appends to the transcript: the run's journal grows on its own.
+    let run = t
+        .parent()
+        .unwrap()
+        .join(t.file_stem().unwrap())
+        .join("subagents")
+        .join("workflows")
+        .join("wf_late");
+    let mut journal = std::fs::read_to_string(run.join("journal.jsonl")).unwrap();
+    journal.push_str("{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"atwo\"}\n");
+    std::fs::write(run.join("journal.jsonl"), journal).unwrap();
+    std::fs::write(
+        run.join("agent-atwo.jsonl"),
+        concat!(
+            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"work"}]},"timestamp":"2026-08-26T10:06:00Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let (after, _, _) = f
+        .poll()
+        .unwrap()
+        .expect("a roster that grew under a committed launch is a change, though the file is not");
+    assert_eq!(
+        spawns(&after)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>(),
+        vec!["aone".to_string(), "atwo".to_string()],
+        "the late member landed"
+    );
+    assert_eq!(
+        f.session_meta()
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aone", "atwo"],
+        "and the header the server registers children from has it too"
+    );
+
+    // Idle again: nothing changed, so nothing is reported — a re-fold per poll would be a
+    // pathology, not a feature.
+    assert!(
+        f.poll().unwrap().is_none(),
+        "an unchanged roster is an idle tick"
+    );
+}
+
+/// The resume half of the same problem: the fleet grew while nothing was folding it — the page
+/// was closed, the monitor restarted. The roster is read fresh from disk, so it matches itself on
+/// every later poll and no comparison would ever call it stale; the only thing that knows what
+/// the cached records were written with is the restored header. Staleness is decided against
+/// that, once, and the first advance re-folds.
+///
+/// Built the way it really happens: fold the session cold with ONE member, keep what the cache
+/// would have kept, let the run gain a member, then resume from those exact bytes.
+#[test]
+fn a_resume_whose_cached_header_predates_a_member_re_folds() {
+    use claude_replay_engine::engine::meta_stream::MaterializedMeta;
+
+    let t = workflow_session("wf-resume.jsonl", "wf_res", &[("aone", None)]);
+    // A later user turn, so the Workflow call's turn closes and its blocks commit.
+    let mut body = std::fs::read_to_string(&t).unwrap();
+    body.push_str(concat!(
+        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"meanwhile"}]},"timestamp":"2026-08-26T10:05:00Z"}"#,
+        "\n",
+    ));
+    std::fs::write(&t, &body).unwrap();
+
+    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
+    let (committed, mm, resume) = {
+        let mut cold = FollowParser::open(adapter, &t);
+        cold.poll().unwrap().expect("cold fold");
+        let mut mm = MaterializedMeta::default();
+        let mut last = None;
+        for r in cold.drain_meta() {
+            mm.push(&r);
+            if let Some(res) = r.resume.clone() {
+                last = Some(res);
+            }
+        }
+        let resume = last.expect("the fold offered a resume point");
+        (cold.committed().to_vec(), mm, resume)
+    };
+    assert!(
+        !committed.is_empty() && mm.session_meta.children.iter().any(|c| c.id == "aone"),
+        "the cache we are simulating really did commit the launch and record one child"
+    );
+    assert!(
+        !mm.session_meta.children.iter().any(|c| c.id == "atwo"),
+        "and knows nothing of the member that has not started yet"
+    );
+
+    // The run gains a member while nothing is folding it.
+    let run = t
+        .parent()
+        .unwrap()
+        .join(t.file_stem().unwrap())
+        .join("subagents")
+        .join("workflows")
+        .join("wf_res");
+    let mut journal = std::fs::read_to_string(run.join("journal.jsonl")).unwrap();
+    journal.push_str("{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"atwo\"}\n");
+    std::fs::write(run.join("journal.jsonl"), journal).unwrap();
+
+    let mut f: FollowParser =
+        FollowParser::resume(adapter, &t, Default::default(), committed, mm, &resume);
+    let (blocks, _, _) = f.poll().unwrap().expect("the stale resume re-folds");
+    assert_eq!(
+        spawns(&blocks)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>(),
+        vec!["aone".to_string(), "atwo".to_string()],
+        "the member the cached header never saw is present"
+    );
+}

@@ -71,6 +71,7 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// by the same I/O layer as `links` and applied at the same two points. Empty for every
     /// agent that has no such mode.
     rosters: Vec<crate::adapter::SpawnRoster>,
+
     /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
     /// map also holds open-window spawns, which a checkpoint must not claim.
     committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
@@ -203,6 +204,21 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// refreshed roster is how a live follower tracks a fleet that is still growing.
     pub fn set_spawn_rosters(&mut self, rosters: Vec<crate::adapter::SpawnRoster>) {
         self.rosters = rosters;
+    }
+
+    /// Is `run`'s launching block still in the OPEN window (#38)?
+    ///
+    /// The question the follower needs, asked the way that survives a resume: a restored fold
+    /// drained nothing, so bookkeeping kept at the drain would call every run "not committed"
+    /// and re-fold on every roster change. The open window is the authority instead — if the
+    /// launch is in it, the fleet still grows in place on each read; if it is not, the block is
+    /// settled and only a re-fold can reach it. O(turn), and asked only for a run that changed.
+    pub fn open_has_run(&self, run: &str) -> bool {
+        self.replayer
+            .open_snapshot()
+            .0
+            .iter()
+            .any(|b| self.adapter.spawn_run(b).as_deref() == Some(run))
     }
 
     /// Rebuild an accumulator from a persisted cache (#96 §6.3) — the inverse of the record
