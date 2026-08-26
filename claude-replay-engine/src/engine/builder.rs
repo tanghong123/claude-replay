@@ -67,10 +67,6 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// the I/O layer that knows the transcript's path — the fold itself reads no files. Empty for
     /// every agent that names its children in-band, and then adoption costs a length check.
     links: Vec<crate::adapter::SpawnLink>,
-    /// Out-of-band spawn ROSTERS (#38) — the members of a fleet one call launched, handed down
-    /// by the same I/O layer as `links` and applied at the same two points. Empty for every
-    /// agent that has no such mode.
-    rosters: Vec<crate::adapter::SpawnRoster>,
 
     /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
     /// map also holds open-window spawns, which a checkpoint must not claim.
@@ -186,7 +182,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
             committed_agents: Default::default(),
             since_checkpoint: 0,
             links: Vec::new(),
-            rosters: Vec::new(),
         }
     }
 
@@ -196,29 +191,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// live follower keeps up with children spawned mid-session.
     pub fn set_spawn_links(&mut self, links: Vec<crate::adapter::SpawnLink>) {
         self.links = links;
-    }
-
-    /// Hand down the session's out-of-band spawn rosters — see
-    /// [`SpawnRoster`](crate::adapter::SpawnRoster). Same contract as
-    /// [`set_spawn_links`](Self::set_spawn_links): the fold reads no files, and re-pushing a
-    /// refreshed roster is how a live follower tracks a fleet that is still growing.
-    pub fn set_spawn_rosters(&mut self, rosters: Vec<crate::adapter::SpawnRoster>) {
-        self.rosters = rosters;
-    }
-
-    /// Is `run`'s launching block still in the OPEN window (#38)?
-    ///
-    /// The question the follower needs, asked the way that survives a resume: a restored fold
-    /// drained nothing, so bookkeeping kept at the drain would call every run "not committed"
-    /// and re-fold on every roster change. The open window is the authority instead — if the
-    /// launch is in it, the fleet still grows in place on each read; if it is not, the block is
-    /// settled and only a re-fold can reach it. O(turn), and asked only for a run that changed.
-    pub fn open_has_run(&self, run: &str) -> bool {
-        self.replayer
-            .open_snapshot()
-            .0
-            .iter()
-            .any(|b| self.adapter.spawn_run(b).as_deref() == Some(run))
     }
 
     /// Rebuild an accumulator from a persisted cache (#96 §6.3) — the inverse of the record
@@ -437,9 +409,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
             // Adopt before the block is counted, stored, or folded into the header — a committed
             // block is never revisited, so this is its one chance to learn who its child is.
             crate::adapter::apply_spawn_links(&mut drained, &self.links);
-            // Same for a fleet's members (#38): they are inserted here so they are counted,
-            // stored and folded into the header exactly like the spawns they are.
-            drained = crate::adapter::expand_spawn_rosters(self.adapter, drained, &self.rosters);
             let turns0 = self.committed_meta.turns;
             let mut rec = crate::engine::meta_stream::MetaRecord::default();
             for b in &drained {
@@ -655,9 +624,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
     fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let (mut open, times) = self.replayer.open_snapshot();
         crate::adapter::apply_spawn_links(&mut open, &self.links);
-        // A fleet launched in the OPEN turn re-expands on every read, so a roster that is still
-        // growing shows its new members as they appear rather than at the next session open.
-        let open = crate::adapter::expand_spawn_rosters(self.adapter, open, &self.rosters);
         (open, times)
     }
 
@@ -748,6 +714,39 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// The current task op-log state (#15) — cheap (no session assembly).
     pub fn tasks(&self) -> &crate::engine::tasks::TaskList {
         self.task_fold.snapshot()
+    }
+
+    /// [`into_session`](Self::into_session) with a fleet's members merged in — the READ-side
+    /// reconcile (#38).
+    ///
+    /// **Batch only, and deliberately so.** A whole-file parse is one shot: no cursor, no record
+    /// log, no cache, nothing addressed by block index afterwards — so merging runtime state into
+    /// the view here costs nothing, and every block-shaped consumer (the TUI, `--dump`,
+    /// `--dump --json`, the offline bundle) keeps working with no second vocabulary to learn.
+    ///
+    /// The LIVE path must never do this. There the committed prefix is append-only, addressed by
+    /// index, and already written to a durable record log, so a member arriving late cannot be
+    /// inserted into it — the roster rides the META instead, recomputed on every poll, exactly as
+    /// live task files already do. Which is why this takes the roster as an argument rather than
+    /// the fold holding one: the fold stays a function of the transcript.
+    pub fn into_session_with_runs(
+        self,
+        adapter: &'static dyn TranscriptAdapter,
+        rosters: &[crate::adapter::SpawnRoster],
+    ) -> Session<Block>
+    where
+        S: BlockStore<Bv = Block> + BlockRead,
+    {
+        let mut s = self.into_session();
+        if rosters.is_empty() {
+            return s;
+        }
+        s.committed = crate::adapter::expand_spawn_rosters(adapter, s.committed, rosters);
+        s.provisional = crate::adapter::expand_spawn_rosters(adapter, s.provisional, rosters);
+        let view: Vec<&Block> = s.committed.iter().chain(s.provisional.iter()).collect();
+        s.index = SessionIndex::build(&view, &s.user_times);
+        s.sub_agents = crate::engine::session::build_sub_agents(&view);
+        s
     }
 
     /// Finish the fold and take the [`Session`] BY MOVE — the one-shot ending every batch

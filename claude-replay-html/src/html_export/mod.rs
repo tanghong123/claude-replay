@@ -847,6 +847,16 @@ impl Emitter<'_> {
                 // client-side "filter by tool use" dropdown — one `data-tool` per
                 // tool fold, counted and grouped in the browser.
                 o.insert("tool".into(), json!(display_name(name)));
+                // The run a workflow call launched (#38). A STATIC fact of the call — its id
+                // never changes — so it is safe in a cached record; the run's MEMBERS are not,
+                // and ride the meta instead. This is what lets the page attach a live fleet to
+                // the block that started it without the block itself ever going stale.
+                if let Some(run) = self
+                    .transcript
+                    .and_then(|t| crate::adapter(t.agent()).spawn_run(b))
+                {
+                    o.insert("run".into(), json!(run));
+                }
                 head.insert("name".into(), json!(display_name(name)));
                 head.insert("target".into(), json!(target));
                 head.insert(

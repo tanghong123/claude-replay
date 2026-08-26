@@ -776,3 +776,120 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
     drop(browser);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A workflow's fleet is NOT part of the block record — the roster keeps changing after the
+/// call that launched it is settled, so it rides the meta and the page hangs it under the
+/// launching block on every poll (#38). Only a real engine can say whether that attachment
+/// actually lands in the DOM, which is what this asserts.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn a_workflow_fleet_renders_under_its_launching_block() {
+    let base = base("fleet");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("wf.jsonl");
+    let run = "wf_browser1";
+    let rundir = base
+        .join("wf")
+        .join("subagents")
+        .join("workflows")
+        .join(run);
+    std::fs::create_dir_all(&rundir).unwrap();
+    let dir = rundir.display().to_string();
+    std::fs::write(
+        &src,
+        format!(
+            concat!(
+                r#"{{"type":"user","cwd":"/r","message":{{"role":"user","content":[{{"type":"text","text":"go"}}]}},"timestamp":"2026-08-26T10:00:00Z"}}"#,
+                "\n",
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_W","name":"Workflow","input":{{"script":"x"}}}}]}},"timestamp":"2026-08-26T10:00:01Z"}}"#,
+                "\n",
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_W","content":"Workflow launched in background.\nTranscript dir: {dir}\n"}}]}},"toolUseResult":{{"status":"async_launched","workflowName":"demo","runId":"{run}"}},"timestamp":"2026-08-26T10:00:09Z"}}"#,
+                "\n",
+            ),
+            dir = dir.replace('\\', "\\\\"),
+            run = run
+        ),
+    )
+    .unwrap();
+    for id in ["abrowser1", "abrowser2"] {
+        std::fs::write(
+            rundir.join(format!("agent-{id}.jsonl")),
+            concat!(
+                r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"work"}]},"timestamp":"2026-08-26T10:00:02Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rundir.join("journal.jsonl"),
+        "{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"abrowser1\"}\n\
+         {\"type\":\"result\",\"key\":\"v2:k\",\"agentId\":\"abrowser1\",\"result\":\"# Found it\\n\"}\n\
+         {\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"abrowser2\"}\n",
+    )
+    .unwrap();
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    let probe = r#"(function () {
+      var host = document.querySelector('#stream [data-run]');
+      var rows = document.querySelectorAll('.fleet-row');
+      var names = [];
+      rows.forEach(function (r) {
+        var a = r.querySelector('.fleet-name');
+        names.push((a ? a.textContent : '') + '|' + (a ? a.getAttribute('href') : ''));
+      });
+      return JSON.stringify({ host: !!host, run: host ? host.dataset.run : null, names: names });
+    })()"#;
+    let mut seen = String::new();
+    for _ in 0..60 {
+        seen = tab
+            .evaluate(probe, true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        if seen.contains("abrowser2") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let v: serde_json::Value = serde_json::from_str(&seen).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        v["host"], true,
+        "the launching block is tagged with its run: {seen}"
+    );
+    assert_eq!(v["run"], run, "and it is the right run: {seen}");
+    let names = v["names"].as_array().cloned().unwrap_or_default();
+    assert_eq!(names.len(), 2, "both members rendered: {seen}");
+    // A finished member is titled by what it returned; a running one by its launch position.
+    assert!(
+        names[0]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("Found it|?session=abrowser1"),
+        "finished member titled and linked: {seen}"
+    );
+    assert!(
+        names[1]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("agent 2|?session=abrowser2"),
+        "running member titled by position and linked: {seen}"
+    );
+}

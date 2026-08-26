@@ -1748,82 +1748,6 @@ fn spawns(blocks: &[Block]) -> Vec<(String, String, AgentStatus)> {
         .collect()
 }
 
-/// One `Workflow` call names none of the agents it launched — the roster is a journal in the
-/// run's own directory. The machinery inserts them as ordinary spawn blocks, so the whole
-/// existing apparatus works for them: a finished member is titled by the first line of what it
-/// returned, a running one by its launch position, and both are addressable by id.
-#[test]
-fn a_workflow_call_expands_into_its_fleet() {
-    let t = workflow_session(
-        "wf-basic.jsonl",
-        "wf_run1",
-        &[("aone", Some("# R1: Prior art\n\nbody")), ("atwo", None)],
-    );
-
-    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
-    let blocks = s.blocks();
-    assert_eq!(
-        spawns(&blocks),
-        vec![
-            (
-                "aone".into(),
-                "R1: Prior art".into(),
-                AgentStatus::Completed
-            ),
-            ("atwo".into(), "agent 2".into(), AgentStatus::Running),
-        ],
-        "both members present, titled from their results where they have one"
-    );
-    // The members follow the call that launched them, not the other way round.
-    let call = blocks
-        .iter()
-        .position(|b| matches!(b, Block::ToolUse { name, .. } if name == "Workflow"))
-        .expect("the Workflow call is still a tool call in its own right");
-    let first = blocks
-        .iter()
-        .position(|b| matches!(b, Block::SubAgent(_)))
-        .unwrap();
-    assert!(call < first, "the fleet reads below its launch");
-    // …and the call is labelled from the run, instead of rendering as a bare `Workflow()`.
-    assert!(
-        matches!(&blocks[call], Block::ToolUse { target, .. } if target == "demo-flow"),
-        "the workflow's name is its label"
-    );
-
-    // The live path: same members, and the header the server registers children from names them.
-    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
-    let mut f = FollowParser::open(adapter, &t);
-    let (live, _, _) = f.poll().unwrap().expect("first poll folds the file");
-    assert_eq!(spawns(&live), spawns(&blocks), "live agrees with batch");
-    assert_eq!(
-        f.session_meta()
-            .children
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["aone", "atwo"],
-        "the maintained header carries the fleet"
-    );
-}
-
-/// The open window is re-finalized on every read, and a live run's journal grows under it. The
-/// expansion must therefore CONVERGE, not accumulate: reading twice may not double the fleet.
-#[test]
-fn expanding_a_roster_twice_does_not_duplicate_it() {
-    let t = workflow_session(
-        "wf-idem.jsonl",
-        "wf_run2",
-        &[("aone", None), ("atwo", None)],
-    );
-    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
-    let mut f = FollowParser::open(adapter, &t);
-    let (first, _, _) = f.poll().unwrap().expect("first poll");
-    // Every subsequent read re-runs the same expansion over the same window.
-    let (again, _) = f.open_finalized();
-    assert_eq!(spawns(&first).len(), 2, "two members");
-    assert_eq!(spawns(&again), spawns(&first), "and still two, not four");
-}
-
 /// A member's transcript lives one directory deeper than every other agent's. Resolving it is
 /// what makes the link real rather than a dead affordance.
 #[test]
@@ -1900,18 +1824,79 @@ fn a_session_without_workflows_is_unchanged() {
     assert!(spawns(&s.blocks()).is_empty(), "no spawns invented");
 }
 
-/// The #38 follow-up: a member that starts AFTER its call has committed.
-///
-/// While the Workflow turn is open the fleet re-expands on every read, so members appear as they
-/// start. Once the user sends another message the turn commits — and a committed block is never
-/// revisited, so a member starting later has nowhere to land. That is the normal shape of a long
-/// run: the person keeps working while ten agents grind. The follower notices the roster grew
-/// under a committed launch and re-folds, which is the same path a truncation takes and which
-/// every consumer already reads as "everything changed".
+/// A batch parse is one shot — no cursor, no record log, nothing addressed by block index
+/// afterwards — so a fleet's members are merged into the view the reader hands back, and every
+/// block-shaped consumer (the TUI, `--dump`, the offline bundle) sees them with no second
+/// vocabulary. They follow the call that launched them, and the call is labelled by its run.
 #[test]
-fn a_fleet_that_grows_after_its_turn_commits_is_still_picked_up() {
+fn the_batch_view_carries_the_fleet() {
+    let t = workflow_session(
+        "wf-batch.jsonl",
+        "wf_batch",
+        &[("aone", Some("# R1: Prior art\n\nbody")), ("atwo", None)],
+    );
+    let s = parse_session_as(Agent::CLAUDE, &t).unwrap();
+    let blocks = s.blocks();
+    assert_eq!(
+        spawns(&blocks),
+        vec![
+            (
+                "aone".into(),
+                "R1: Prior art".into(),
+                AgentStatus::Completed
+            ),
+            ("atwo".into(), "agent 2".into(), AgentStatus::Running),
+        ],
+        "both members, titled from their results where they have one"
+    );
+    let call = blocks
+        .iter()
+        .position(|b| matches!(b, Block::ToolUse { name, .. } if name == "Workflow"))
+        .expect("the Workflow call is a tool call in its own right");
+    let first = blocks
+        .iter()
+        .position(|b| matches!(b, Block::SubAgent(_)))
+        .unwrap();
+    assert!(call < first, "the fleet reads below its launch");
+    assert!(
+        matches!(&blocks[call], Block::ToolUse { target, .. } if target == "demo-flow"),
+        "and the call is labelled by the run it started"
+    );
+}
+
+/// The LIVE fold must not carry the fleet at all (#38). Its committed prefix is append-only and
+/// addressed by index, so a member arriving after a block settles could never be inserted — and
+/// a fold that tried would stop being a function of the transcript. The roster is served state
+/// instead, merged where the header is assembled, which is what `merged_children` does.
+#[test]
+fn the_live_fold_leaves_the_fleet_out_of_the_blocks() {
+    let t = workflow_session(
+        "wf-live.jsonl",
+        "wf_live",
+        &[("aone", None), ("atwo", None)],
+    );
+    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
+    let mut f = FollowParser::open(adapter, &t);
+    let (blocks, _, _) = f.poll().unwrap().expect("the first poll folds the file");
+    assert!(
+        spawns(&blocks).is_empty(),
+        "the fold invents no blocks from out-of-band state"
+    );
+    let runs = claude_replay_core::discover::session_runs(Agent::CLAUDE, &t);
+    let children = claude_replay_engine::engine::session::merged_children(&f.session_meta(), &runs);
+    assert_eq!(
+        children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        vec!["aone", "atwo"],
+        "and the served header names the whole fleet"
+    );
+}
+
+/// The case that started this: a member that starts AFTER its call has committed. With the
+/// roster served rather than folded, it needs no re-fold, no reset and no cache invalidation —
+/// the next poll's header simply has it, and the fold reports the idle tick it truthfully is.
+#[test]
+fn a_fleet_that_grows_after_its_turn_commits_is_still_served() {
     let t = workflow_session("wf-late.jsonl", "wf_late", &[("aone", None)]);
-    // A later user turn, so the Workflow call's turn closes and commits.
     let mut body = std::fs::read_to_string(&t).unwrap();
     body.push_str(concat!(
         r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"meanwhile"}]},"timestamp":"2026-08-26T10:05:00Z"}"#,
@@ -1923,18 +1908,10 @@ fn a_fleet_that_grows_after_its_turn_commits_is_still_picked_up() {
 
     let adapter = claude_replay_core::adapter(Agent::CLAUDE);
     let mut f = FollowParser::open(adapter, &t);
-    let (first, _, _) = f.poll().unwrap().expect("the first poll folds the file");
-    assert_eq!(
-        spawns(&first).len(),
-        1,
-        "one member so far, and its launch has committed"
-    );
-    assert!(
-        f.committed_len() > 0,
-        "the Workflow turn is settled — this is the case the fix is for"
-    );
+    f.poll().unwrap().expect("the first poll folds the file");
+    assert!(f.committed_len() > 0, "the launch is settled");
 
-    // Nothing appends to the transcript: the run's journal grows on its own.
+    // The run gains a member; the transcript does not move.
     let run = t
         .parent()
         .unwrap()
@@ -1945,111 +1922,16 @@ fn a_fleet_that_grows_after_its_turn_commits_is_still_picked_up() {
     let mut journal = std::fs::read_to_string(run.join("journal.jsonl")).unwrap();
     journal.push_str("{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"atwo\"}\n");
     std::fs::write(run.join("journal.jsonl"), journal).unwrap();
-    std::fs::write(
-        run.join("agent-atwo.jsonl"),
-        concat!(
-            r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"work"}]},"timestamp":"2026-08-26T10:06:00Z"}"#,
-            "\n",
-        ),
-    )
-    .unwrap();
 
-    let (after, _, _) = f
-        .poll()
-        .unwrap()
-        .expect("a roster that grew under a committed launch is a change, though the file is not");
-    assert_eq!(
-        spawns(&after)
-            .into_iter()
-            .map(|(id, _, _)| id)
-            .collect::<Vec<_>>(),
-        vec!["aone".to_string(), "atwo".to_string()],
-        "the late member landed"
-    );
-    assert_eq!(
-        f.session_meta()
-            .children
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["aone", "atwo"],
-        "and the header the server registers children from has it too"
-    );
-
-    // Idle again: nothing changed, so nothing is reported — a re-fold per poll would be a
-    // pathology, not a feature.
     assert!(
         f.poll().unwrap().is_none(),
-        "an unchanged roster is an idle tick"
+        "the transcript is unchanged, so the fold has nothing to say — no re-fold, no reset"
     );
-}
-
-/// The resume half of the same problem: the fleet grew while nothing was folding it — the page
-/// was closed, the monitor restarted. The roster is read fresh from disk, so it matches itself on
-/// every later poll and no comparison would ever call it stale; the only thing that knows what
-/// the cached records were written with is the restored header. Staleness is decided against
-/// that, once, and the first advance re-folds.
-///
-/// Built the way it really happens: fold the session cold with ONE member, keep what the cache
-/// would have kept, let the run gain a member, then resume from those exact bytes.
-#[test]
-fn a_resume_whose_cached_header_predates_a_member_re_folds() {
-    use claude_replay_engine::engine::meta_stream::MaterializedMeta;
-
-    let t = workflow_session("wf-resume.jsonl", "wf_res", &[("aone", None)]);
-    // A later user turn, so the Workflow call's turn closes and its blocks commit.
-    let mut body = std::fs::read_to_string(&t).unwrap();
-    body.push_str(concat!(
-        r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"meanwhile"}]},"timestamp":"2026-08-26T10:05:00Z"}"#,
-        "\n",
-    ));
-    std::fs::write(&t, &body).unwrap();
-
-    let adapter = claude_replay_core::adapter(Agent::CLAUDE);
-    let (committed, mm, resume) = {
-        let mut cold = FollowParser::open(adapter, &t);
-        cold.poll().unwrap().expect("cold fold");
-        let mut mm = MaterializedMeta::default();
-        let mut last = None;
-        for r in cold.drain_meta() {
-            mm.push(&r);
-            if let Some(res) = r.resume.clone() {
-                last = Some(res);
-            }
-        }
-        let resume = last.expect("the fold offered a resume point");
-        (cold.committed().to_vec(), mm, resume)
-    };
-    assert!(
-        !committed.is_empty() && mm.session_meta.children.iter().any(|c| c.id == "aone"),
-        "the cache we are simulating really did commit the launch and record one child"
-    );
-    assert!(
-        !mm.session_meta.children.iter().any(|c| c.id == "atwo"),
-        "and knows nothing of the member that has not started yet"
-    );
-
-    // The run gains a member while nothing is folding it.
-    let run = t
-        .parent()
-        .unwrap()
-        .join(t.file_stem().unwrap())
-        .join("subagents")
-        .join("workflows")
-        .join("wf_res");
-    let mut journal = std::fs::read_to_string(run.join("journal.jsonl")).unwrap();
-    journal.push_str("{\"type\":\"started\",\"key\":\"v2:k\",\"agentId\":\"atwo\"}\n");
-    std::fs::write(run.join("journal.jsonl"), journal).unwrap();
-
-    let mut f: FollowParser =
-        FollowParser::resume(adapter, &t, Default::default(), committed, mm, &resume);
-    let (blocks, _, _) = f.poll().unwrap().expect("the stale resume re-folds");
+    let runs = claude_replay_core::discover::session_runs(Agent::CLAUDE, &t);
+    let children = claude_replay_engine::engine::session::merged_children(&f.session_meta(), &runs);
     assert_eq!(
-        spawns(&blocks)
-            .into_iter()
-            .map(|(id, _, _)| id)
-            .collect::<Vec<_>>(),
-        vec!["aone".to_string(), "atwo".to_string()],
-        "the member the cached header never saw is present"
+        children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        vec!["aone", "atwo"],
+        "yet the very next header carries the late member"
     );
 }

@@ -124,7 +124,7 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     /// the markup changed, the schema did not, and the session that motivated the fix went on
     /// serving the version without it. If a change alters what any block CARRIES, it lands
     /// here too.
-    const RECORD_SCHEMA: u16 = 8;
+    const RECORD_SCHEMA: u16 = 9;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -761,8 +761,30 @@ impl SessionService {
             &d.tasks,
             crate::discover::session_tasks(agent, src.path()),
         );
-        let meta = assemble_meta(agent, &cwd, &info, &d.meta, &d.metrics, &tasks);
-        self.register_child_sources(id, &d.meta.children);
+        // A fleet's roster is runtime state, not transcript content (#38): its members keep
+        // starting long after the lines that launched them are settled, so it is read fresh here
+        // — the same shape as the task overlay above — instead of being folded into the block
+        // stream, where a committed block could never gain one.
+        let runs = crate::discover::session_runs(agent, src.path());
+        let mut header = d.meta.clone();
+        header.children = crate::engine::session::merged_children(&d.meta, &runs);
+        let mut meta = assemble_meta(agent, &cwd, &info, &header, &d.metrics, &tasks);
+        // …and the same roster GROUPED by run, so the page can hang each fleet under the call
+        // that launched it. `children` is the flat menu; this is the inline attachment.
+        if !runs.is_empty() {
+            meta["runs"] = serde_json::json!(runs
+                .iter()
+                .map(|r| serde_json::json!({
+                    "run": r.run,
+                    "members": r.members.iter().map(|m| serde_json::json!({
+                        "id": m.agent_id,
+                        "title": if m.description.is_empty() { &m.agent_type } else { &m.description },
+                        "running": !m.status.is_terminal(),
+                    })).collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>());
+        }
+        self.register_child_sources(id, &header.children);
         let provisional_records: Vec<&str> = provisional_lines[pf.min(provisional_lines.len())..]
             .iter()
             .map(String::as_str)

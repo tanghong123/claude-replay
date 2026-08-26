@@ -265,6 +265,36 @@ pub struct SessionMeta {
     pub children: Vec<ChildMeta>,
 }
 
+/// A session's children: the fold's own, plus the live members of any fleet it launched (#38).
+///
+/// The runtime reconcile. A workflow's roster is not transcript content — it is state that keeps
+/// changing after the lines that started it are settled — so it is merged HERE, where the header
+/// is served, instead of being folded into the block stream. Recomputed per poll from the run's
+/// journal, exactly as live task files are overlaid on the fold's task op-log.
+///
+/// The fold's own children win on id: a member the transcript itself named is the source's word.
+pub fn merged_children(
+    meta: &SessionMeta,
+    rosters: &[crate::adapter::SpawnRoster],
+) -> Vec<ChildMeta> {
+    if rosters.is_empty() {
+        return meta.children.clone();
+    }
+    let mut out = meta.children.clone();
+    for m in rosters.iter().flat_map(|r| &r.members) {
+        if out.iter().any(|c| c.id == m.agent_id) {
+            continue;
+        }
+        out.push(ChildMeta {
+            id: m.agent_id.clone(),
+            description: m.description.clone(),
+            agent_type: m.agent_type.clone(),
+            running: !m.status.is_terminal(),
+        });
+    }
+    out
+}
+
 /// One spawned sub-agent in a [`SessionMeta`] — the header/menu view of a child.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChildMeta {

@@ -6,7 +6,8 @@
 
 use crate::Agent;
 pub use claude_replay_engine::adapter::{
-    LinePreprocessor, MetricsAccumulator, PreprocessedLine, SniffClaim, TranscriptAdapter,
+    LinePreprocessor, MetricsAccumulator, PreprocessedLine, SniffClaim, SpawnRoster,
+    TranscriptAdapter,
 };
 pub use claude_replay_engine::metrics_fold::{
     CursorReject, FoldStart, MetricsCursor, MetricsEvent, MetricsFold,

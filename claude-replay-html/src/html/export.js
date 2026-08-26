@@ -292,6 +292,7 @@
   function postMat(e) {
     buildStripsIn(e);
     applyWrapIn(e);
+    if (e.dataset.run) fillFleet(e, e.dataset.run);
     reapplySmallMore(e);
     if (searchNeedle && searchInScope(+e.dataset.idx)) {
       markHits(e, searchNeedle, searchNeedle.length, !!(searchScope && searchScope.w));
@@ -701,6 +702,10 @@
     f.id = b.id;
     f.dataset.kind = b.kind;
     if (b.tool) f.dataset.tool = b.tool; // drives the tool-use filter
+    // A workflow call: the run id is a static fact of the block, and the fleet it launched
+    // arrives with the META (it keeps growing long after this block settled), so the members
+    // are attached here by `renderFleets` on every poll rather than baked into the record.
+    if (b.run) f.dataset.run = b.run;
     f.dataset.open = b.open ? "1" : "0";
     if (b.turn != null) {
       f.dataset.turn = b.turn;
@@ -1011,7 +1016,48 @@
     // is always shown — grayed on a childless leaf. A standalone session hides it entirely.
     var inTree = (m.children && m.children.length) || (m.ancestors && m.ancestors.length);
     renderAgentMenu(m.children, inTree);
+    renderFleets(m.runs);
   }
+
+  // A workflow call launches N agents whose roster lives outside the transcript and keeps
+  // changing after the call itself is settled — so it can never be part of the block record.
+  // The server ships it in the meta on every poll; this hangs each run's members under the
+  // block that launched it, replacing whatever was there before (the list only grows, but
+  // titles and running flags change as agents return).
+  var fleetRuns = {};   // run id -> its members, as of the last meta
+  function renderFleets(runs) {
+    if (runs) {
+      runs.forEach(function (r) { fleetRuns[r.run] = r.members || []; });
+    }
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#stream [data-run]"),
+      function (host) { fillFleet(host, host.dataset.run); }
+    );
+  }
+
+  // Fill ONE launch block's fleet. Called both when a meta arrives (the roster changed) and
+  // when the virtualizer materializes the block (it may not have existed when the meta did) —
+  // so it is idempotent and rebuilds the list rather than appending to it.
+  function fillFleet(host, run) {
+    var members = fleetRuns[run];
+    if (!members || !members.length) return;
+    var box = host.querySelector(":scope > .fleet");
+    if (!box) {
+      box = el("div", "fleet");
+      host.appendChild(box);
+    }
+    box.textContent = "";
+    members.forEach(function (m) {
+      var row = el("div", "fleet-row");
+      row.appendChild(el("span", "fleet-dot" + (m.running ? " on" : ""), m.running ? "◍" : "◉"));
+      var a = el("a", "fleet-name", m.title || m.id);
+      a.href = "?session=" + encodeURIComponent(m.id);
+      row.appendChild(a);
+      row.appendChild(el("span", "fleet-id", m.id));
+      box.appendChild(row);
+    });
+  }
+
 
   // The session's task/todo panel (#15, a topbar dropdown since #70 — the sidebar
   // slot was too small to read): fed by the meta record (op-log state merged with

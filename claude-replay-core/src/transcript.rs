@@ -80,10 +80,13 @@ impl Transcript {
         // Out-of-band spawn identity, if this agent keeps any beside the transcript: read once,
         // before the fold, so a child is named in the blocks AND in the derived index.
         b.set_spawn_links(crate::adapter::adapter(self.agent).spawn_links(&self.path));
-        b.set_spawn_rosters(crate::adapter::adapter(self.agent).spawn_rosters(&self.path));
+
         let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
-        let mut s = b.into_session();
+                                        // The read-side reconcile (#38): a fleet's members are runtime state, merged into the
+                                        // view a batch consumer gets rather than folded into the block stream.
+        let adapter = crate::adapter::adapter(self.agent);
+        let mut s = b.into_session_with_runs(adapter, &adapter.spawn_rosters(&self.path));
         s.cwd = crate::discover::first_cwd(&self.path); // the builder leaves cwd None; fill it
                                                         // The builder can't resolve child transcript paths (it has no file path); now that we
                                                         // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.

@@ -786,3 +786,13 @@ mark.hl.cur { background: #f59e0b; box-shadow: 0 0 0 2px #f59e0b; }
   padding: 3px 10px; opacity: 0; pointer-events: none; transition: opacity 0.15s;
 }
 body.following #livechip { opacity: 0.85; }
+
+/* A workflow call's fleet (#38) — attached to the launching block from the meta, never part
+   of the block record, because the roster keeps changing after the block settles. */
+.fleet { margin: 4px 0 2px 18px; display: flex; flex-direction: column; gap: 2px; }
+.fleet-row { display: flex; align-items: baseline; gap: 6px; font-size: var(--ms); }
+.fleet-dot { color: var(--dim); }
+.fleet-dot.on { color: var(--accent, currentColor); }
+.fleet-name { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; }
+.fleet-name:hover { border-bottom-color: currentColor; }
+.fleet-id { color: var(--dim); font: var(--ms)/1.4 var(--mono); }

@@ -190,6 +190,15 @@ pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::
     crate::adapter::adapter(agent).load_tasks(path)
 }
 
+/// The fleets launched from the session at `path`, with their current members (#38).
+///
+/// Discovery-side, like [`session_tasks`]: it reads files beside the transcript and is never part
+/// of a fold. A workflow's roster keeps changing after the lines that launched it are settled, so
+/// it is read fresh where the answer is served rather than baked into the block stream.
+pub fn session_runs(agent: Agent, path: &Path) -> Vec<crate::SpawnRoster> {
+    crate::adapter::adapter(agent).spawn_rosters(path)
+}
+
 /// What `agent` calls the session at `path` — its name and its most recent prompt (see
 /// [`SessionCard`]). `None` for an agent that names nothing, or a
 /// session not yet named.
