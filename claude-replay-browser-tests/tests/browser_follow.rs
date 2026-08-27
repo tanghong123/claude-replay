@@ -37,6 +37,19 @@ fn base(name: &str) -> PathBuf {
     d
 }
 
+/// Serialize the suite.
+///
+/// Every test here points the run at its own cache root with `std::env::set_var`, and that is
+/// PROCESS-global — so two tests in parallel overwrite each other's root and one of them ends up
+/// serving from a directory the other is tearing down. `base(name)` gave each test its own
+/// directory; it could not give them their own environment. The tests are each tens of seconds
+/// of real browser work, so serializing costs little and removes a flake that reads like a
+/// viewport regression.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn user(t: &str, s: u32) -> String {
     format!(
         "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
@@ -146,6 +159,7 @@ fn user_scroll_by(tab: &headless_chrome::Tab, dy: i64) {
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn live_viewport_follows_pinned_and_holds_unpinned() {
+    let _serial = serial();
     let base = base("follow");
     // The run's cache home — never the developer's real one (the suite-wide isolation rule).
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
@@ -420,6 +434,7 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn jump_to_bottom_lands_after_a_viewport_resize() {
+    let _serial = serial();
     let base = base("resize");
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
     let src = base.join("resize.jsonl");
@@ -546,6 +561,7 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn a_turn_landing_holds_through_late_reflow() {
+    let _serial = serial();
     let base = base("landing");
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
     let src = base.join("landing.jsonl");
@@ -647,6 +663,7 @@ fn a_turn_landing_holds_through_late_reflow() {
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
+    let _serial = serial();
     let base = base("search");
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
     let src = base.join("search.jsonl");
@@ -784,6 +801,7 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
 #[test]
 #[ignore = "needs a local Chrome"]
 fn a_workflow_fleet_renders_under_its_launching_block() {
+    let _serial = serial();
     let base = base("fleet");
     std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
     let src = base.join("wf.jsonl");
@@ -904,6 +922,7 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_v2_shell_keeps_the_document_scroller() {
+    let _serial = serial();
     let base = base("v2shell");
     let src = base.join("v2.jsonl");
     {

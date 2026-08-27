@@ -66,8 +66,16 @@
 .v2age { flex: none; font: 10.5px var(--mono); color: var(--faint); }
 #v2empty { padding: 40px 16px; color: var(--faint); font: 12px var(--sans); text-align: center; }
 
-#topbar { left: var(--v2-rail-w) !important; }
-#stream, #sidebar { margin-left: var(--v2-rail-w); }
+/* Make room for the rail. The session page centres its own two-column layout
+   (`.layout { max-width: 1160px; margin: 0 auto }`), so offsetting its CHILDREN fights that
+   centring and lands them wrong — the inset belongs on the document. Padding the body moves
+   everything in normal flow at once and lets `.layout` re-centre inside what is left.
+   Position-fixed elements are the exception: they anchor to the VIEWPORT, so the ones anchored
+   left need the offset applied by hand. The right-anchored ones (#taskpanel, #livechip) and the
+   full-screen .lightbox are already correct. */
+body { padding-left: var(--v2-rail-w); }
+#topbar { left: var(--v2-rail-w); }
+#newbadge { left: calc(50% + var(--v2-rail-w) / 2); }
 </style>
 <aside id="v2rail">
   <div id="v2head">
