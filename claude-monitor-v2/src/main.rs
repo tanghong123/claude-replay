@@ -16,12 +16,14 @@
 //! Read-only and loopback-only, exactly like v1.
 
 use anyhow::{Context, Result};
+use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
 use claude_replay_core::{discover, Agent};
 use claude_replay_html::{
     query_get, service_routes, HttpResponse, PageChrome, RootLock, ServiceConfig, SessionService,
 };
-use claude_replay_present::cache::Presentation;
+use claude_replay_present::cache::{admit, MetaReader, Presentation};
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// v2's own port. v1 keeps 2727 — both must be runnable at once, or v2 could not be
@@ -68,6 +70,107 @@ fn human_age(secs: f64) -> String {
     }
 }
 
+/// The id everything here is keyed by: the transcript's FILE STEM.
+///
+/// Not `discover::session_id`, which reads the id the agent recorded INSIDE the file. The two
+/// agree for Claude, whose transcript is named for its session, and diverge for Codex, whose
+/// rollout is `rollout-<timestamp>-<uuid>.jsonl`. The serving layer keys its roots and its
+/// durable entries by the stem, so a rail that offered the in-band id handed out links the
+/// service had never heard of: every Codex session 404'd on open and showed no counters.
+/// One id, chosen to be the one the backend already uses.
+fn stem_of(path: &std::path::Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+}
+
+/// What a row shows beside its name, read from this monitor's OWN durable entry (#98 R5).
+///
+/// The entry is written by VISITING a session, so a session never opened here has none — the
+/// row still renders, it simply has no counters yet. That is v1's behaviour too, and the reason
+/// its cost figure additionally rides a ledger: gating cost on visits under-reported a project
+/// twentyfold. v2 reports what the meta stream knows and does not guess at the rest.
+struct Counters {
+    turns: usize,
+    tools: usize,
+    subs: usize,
+    cost: Option<f64>,
+}
+
+fn counters(cache_root: &std::path::Path, sid: &str) -> Option<Counters> {
+    let dir = admit::entry_dir(cache_root, Presentation::Html, sid);
+    let (header, reader) = MetaReader::open(&dir).ok()??;
+    // A fold-behaviour change invalidates the numbers, exactly as it invalidates the records.
+    if header.versions.fold != FOLD_VERSION {
+        return None;
+    }
+    let mut mm = MaterializedMeta::default();
+    for r in reader {
+        mm.push(&r);
+    }
+    Some(Counters {
+        turns: mm.session_meta.turns,
+        tools: mm.session_meta.tools,
+        subs: mm.session_meta.children.len(),
+        cost: claude_replay_core::metrics::total_cost(&mm.tokens).0,
+    })
+}
+
+/// Session ids named in a live agent process's argv — `--resume <uuid>` and friends.
+///
+/// EXACT where it fires, and silent where it does not: an agent launched without a session id
+/// on its command line (the common case for a fresh session) is invisible here. v1 goes further
+/// — it also matches a transcript held open, and falls back to a cwd heuristic scoped to the
+/// newest session of that directory — but that machinery is private to it. So this proves what
+/// it can and the mtime bands below cover the rest, which is stated in the row: `proven` is the
+/// difference between "this process is that session" and "this file changed recently".
+fn live_by_argv() -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(ps) = std::process::Command::new("ps")
+        .args(["-axo", "args="])
+        .output()
+    else {
+        return out;
+    };
+    for line in String::from_utf8_lossy(&ps.stdout).lines() {
+        let first = line.split_whitespace().next().unwrap_or("");
+        let base = first.rsplit('/').next().unwrap_or("");
+        if !matches!(base, "claude" | "codex" | "qoderwork" | "qoder") {
+            continue;
+        }
+        // A uuid-shaped argument is the session it was resumed with.
+        for tok in line.split_whitespace() {
+            let t = tok.trim_matches('"');
+            if t.len() >= 32 && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+                out.insert(t.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The hide list (#113 in v1): keys this monitor should not show. v2 keeps its own, at its own
+/// root, because it is UI state and not something to share with another app's.
+fn hidden_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("hidden.json")
+}
+
+fn hidden_read(root: &std::path::Path) -> HashSet<String> {
+    std::fs::read_to_string(hidden_path(root))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn hidden_write(root: &std::path::Path, keys: &HashSet<String>) {
+    let mut v: Vec<&String> = keys.iter().collect();
+    v.sort();
+    if let Ok(t) = serde_json::to_string(&v) {
+        let _ = std::fs::write(hidden_path(root), t);
+    }
+}
+
 /// One project's worth of rows in the rail, while the list is being assembled.
 struct Group {
     /// The project path — the grouping key AND the row's secondary line.
@@ -85,14 +188,21 @@ struct Group {
 /// facade (`store_all` + `project_path` + `session_card` + `session_id`), which is the same API
 /// the developer guide documents for third parties. No access to v1's private index is needed
 /// or taken.
-fn sessions_json(service: &SessionService, only: Option<Agent>, limit: usize) -> String {
+fn sessions_json(
+    service: &SessionService,
+    cache_root: &std::path::Path,
+    only: Option<Agent>,
+    limit: usize,
+) -> String {
+    let live = live_by_argv();
+    let hidden = hidden_read(cache_root);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or_default();
     let mut groups: Vec<Group> = Vec::new();
     for e in discover::store_all(only).into_iter().take(limit) {
-        let Some(id) = discover::session_id(&e.path) else {
+        let Some(id) = stem_of(&e.path) else {
             continue;
         };
         // Registering here is what makes `?session=<id>` resolvable: the shell renders by id,
@@ -114,19 +224,30 @@ fn sessions_json(service: &SessionService, only: Option<Agent>, limit: usize) ->
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| e.agent.label().to_string());
         let age = now - e.mtime;
-        let state = if age < GROWING_SECS {
+        let proven = live.contains(&id);
+        let state = if proven || age < GROWING_SECS {
             "growing"
         } else if age < IDLE_SECS {
             "idle"
         } else {
             "finished"
         };
+        let c = counters(cache_root, &id);
         let row = json!({
             "id": id,
             "name": name,
             "agent": e.agent.label(),
             "state": state,
+            // Did a live process NAME this session, or is this only "the file moved lately"?
+            // The rail shows the difference rather than flattening it into one dot.
+            "proven": proven,
             "activity": human_age(age),
+            "turns": c.as_ref().map(|c| c.turns),
+            "tools": c.as_ref().map(|c| c.tools),
+            "subs": c.as_ref().map(|c| c.subs),
+            "cost": c.as_ref().and_then(|c| c.cost),
+            "fork": discover::fork_origin(e.agent, &e.path),
+            "hidden": hidden.contains(&format!("s:{id}")),
         });
         match groups.iter_mut().find(|g| g.key == key) {
             Some(g) => {
@@ -216,6 +337,7 @@ fn main() -> Result<()> {
         let service = service.clone();
         let shell = shell.clone();
         let scratch = scratch.clone();
+        let root_for_api = root.clone();
         Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
             let (name, query) = (req.name, req.query);
             match name {
@@ -236,7 +358,7 @@ fn main() -> Result<()> {
                     let page = service.page(id, Some(&chrome)).or_else(|| {
                         let e = discover::store_all(only)
                             .into_iter()
-                            .find(|e| discover::session_id(&e.path).as_deref() == Some(id))?;
+                            .find(|e| stem_of(&e.path).as_deref() == Some(id))?;
                         service.register_root(&e.path);
                         service.page(id, Some(&chrome))
                     });
@@ -245,7 +367,24 @@ fn main() -> Result<()> {
                         None => HttpResponse::html(empty_shell(&shell)),
                     }
                 }
-                "api/sessions" => HttpResponse::json(sessions_json(&service, only, 400)),
+                "api/sessions" => {
+                    HttpResponse::json(sessions_json(&service, &root_for_api, only, 400))
+                }
+                // Hide/restore a session or a project (v1's #113, kept local to v2's own root).
+                "api/hide" => {
+                    let mut keys = hidden_read(&root_for_api);
+                    match (query_get(query, "add"), query_get(query, "remove")) {
+                        (Some(k), _) => {
+                            keys.insert(k.to_string());
+                        }
+                        (_, Some(k)) => {
+                            keys.remove(k);
+                        }
+                        _ => {}
+                    }
+                    hidden_write(&root_for_api, &keys);
+                    HttpResponse::json(json!({"ok": true, "hidden": keys.len()}).to_string())
+                }
                 // Everything else — /pull, /records, /session, /__reveal, assets — is the
                 // shared backend, unchanged.
                 _ => service_routes(Some(&service), &scratch, name, query),

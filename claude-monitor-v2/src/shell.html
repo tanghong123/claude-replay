@@ -63,7 +63,26 @@
 .v2badge.a-qoderwork { background: var(--tool); }
 .v2badge.a-other { background: var(--gut); }
 .v2r2 { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; padding-left: 18px; }
+.v2counters { min-width: 0; font: 10.5px var(--mono); color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2counters.unvisited { opacity: .55; font-style: italic; }
 .v2age { flex: none; font: 10.5px var(--mono); color: var(--faint); }
+/* A dot that a live process NAMED is solid; one inferred from file recency is hollow, so the
+   rail never implies proof it does not have. */
+.v2dot.growing.unproven { background: transparent; border: 2px solid var(--tool); }
+.v2fork { flex: none; font: 9px var(--mono); color: var(--kw); border: 1px solid var(--kw);
+  border-radius: 4px; padding: 0 5px; opacity: .75; }
+.v2x { flex: none; font: 13px/1 var(--sans); color: var(--faint); border: none; background: none;
+  cursor: pointer; padding: 1px 5px; border-radius: 5px; opacity: 0; }
+.v2row:hover .v2x, .v2ghead:hover .v2x { opacity: .6; }
+.v2x:hover { opacity: 1; background: var(--hover); color: var(--fg); }
+.v2row.hid { opacity: .45; }
+.v2row.hid .v2x { opacity: .7; }
+#v2hidden { margin: 6px 12px; font: 10.5px var(--sans); color: var(--link); cursor: pointer; }
+#v2hidden:hover { text-decoration: underline; }
+/* Drag the rail's edge to resize; persisted, like v1's #114. */
+#v2grip { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 61; }
+#v2rail { position: fixed; }
 #v2empty { padding: 40px 16px; color: var(--faint); font: 12px var(--sans); text-align: center; }
 
 /* Make room for the rail. The session page centres its own two-column layout
@@ -96,6 +115,7 @@ body { padding-left: var(--v2-rail-w); }
   var countEl = document.getElementById("v2count");
   var current = new URLSearchParams(location.search).get("session") || "";
   var groups = [];
+  var showHidden = false;
   var collapsed = {};
   try { collapsed = JSON.parse(localStorage.getItem("v2col") || "{}"); } catch (e) {}
 
@@ -115,6 +135,7 @@ body { padding-left: var(--v2-rail-w); }
     var shown = 0, total = 0;
     groups.forEach(function (g) {
       var rows = g.rows.filter(function (r) {
+        if (r.hidden && !showHidden) return false;
         return !f || (r.name + " " + r.agent + " " + g.label).toLowerCase().indexOf(f) >= 0;
       });
       total += g.rows.length;
@@ -138,14 +159,25 @@ body { padding-left: var(--v2-rail-w); }
       box.appendChild(head);
       if (!collapsed[g.label]) {
         rows.forEach(function (r) {
-          var a = el("a", "v2row" + (r.state === "growing" ? " grow" : ""));
+          var a = el("a", "v2row" + (r.state === "growing" ? " grow" : "") + (r.hidden ? " hid" : ""));
           a.href = "/?session=" + encodeURIComponent(r.id);
           if (r.id === current) a.setAttribute("aria-current", "true");
           var r1 = el("div", "v2r1");
-          r1.appendChild(el("span", "v2dot " + r.state));
+          r1.appendChild(el("span", "v2dot " + r.state + (r.state === "growing" && !r.proven ? " unproven" : "")));
           r1.appendChild(el("span", "v2name", r.name));
+          if (r.fork) r1.appendChild(el("span", "v2fork", "fork"));
           r1.appendChild(el("span", badgeClass(r.agent), r.agent.slice(0, 2).toUpperCase()));
+          var x = el("button", "v2x", r.hidden ? "↺" : "✕");
+          x.title = r.hidden ? "Restore" : "Hide this session";
+          x.onclick = function (ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            var p = r.hidden ? "remove" : "add";
+            fetch("/api/hide?" + p + "=" + encodeURIComponent("s:" + r.id)).then(load);
+          };
+          r1.appendChild(x);
           var r2 = el("div", "v2r2");
+          r2.appendChild(el("span", "v2counters" + (r.turns == null ? " unvisited" : ""),
+            r.turns == null ? "not yet opened" : counterText(r)));
           r2.appendChild(el("span", "v2age", r.activity + " ago"));
           a.appendChild(r1); a.appendChild(r2);
           box.appendChild(a);
@@ -154,6 +186,14 @@ body { padding-left: var(--v2-rail-w); }
       listEl.appendChild(box);
     });
     countEl.textContent = shown + (f ? "/" + total : "") + " sessions";
+    var nhid = 0;
+    groups.forEach(function (g) { g.rows.forEach(function (r) { if (r.hidden) nhid++; }); });
+    if (nhid) {
+      var t = el("div", null, (showHidden ? "Hide" : "Show") + " hidden (" + nhid + ")");
+      t.id = "v2hidden";
+      t.onclick = function () { showHidden = !showHidden; render(q.value); };
+      listEl.appendChild(t);
+    }
     if (!shown) {
       var e = el("div", null, groups.length ? "No session matches." : "Scanning…");
       e.id = "v2empty";
@@ -179,6 +219,36 @@ body { padding-left: var(--v2-rail-w); }
       e.preventDefault(); q.focus();
     }
   }, true);
+
+  // "792 turns · 10.2k calls · 17 sub · ~$4,626" — the same facts v1 shows, from this
+  // monitor's own durable entry. A session it has never opened has none, and says so.
+  function counterText(r) {
+    var out = [r.turns + (r.turns === 1 ? " turn" : " turns")];
+    if (r.tools) out.push(compact(r.tools) + " calls");
+    if (r.subs) out.push(r.subs + " sub");
+    if (r.cost) out.push("~$" + (r.cost >= 100 ? Math.round(r.cost).toLocaleString() : r.cost.toFixed(2)));
+    return out.join(" · ");
+  }
+  function compact(n) { return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n); }
+
+  // Rail width, dragged from its edge and remembered (v1 #114).
+  var grip = el("div", null); grip.id = "v2grip";
+  document.getElementById("v2rail").appendChild(grip);
+  try {
+    var w = localStorage.getItem("v2railw");
+    if (w) document.documentElement.style.setProperty("--v2-rail-w", w + "px");
+  } catch (e) {}
+  grip.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    function move(ev) {
+      var w = Math.max(220, Math.min(560, ev.clientX));
+      document.documentElement.style.setProperty("--v2-rail-w", w + "px");
+      try { localStorage.setItem("v2railw", String(w)); } catch (x) {}
+    }
+    function up() { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); }
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
 
   function load() {
     fetch("/api/sessions")
