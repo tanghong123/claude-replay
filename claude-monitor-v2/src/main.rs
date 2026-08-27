@@ -45,38 +45,122 @@ fn splice(page: &str, shell: &str) -> String {
     }
 }
 
-/// The rail's session list: every transcript on this machine, newest first, labelled by what
-/// its agent calls it. Built on the discovery facade alone (`store_all` + `session_card` +
-/// `session_id`), which is the documented way for a third party to do exactly this — so v2
-/// needs no access to v1's private index.
+/// How recent a transcript's last write has to be for the rail to call it live.
+///
+/// v1 PROVES liveness by scanning processes and matching an agent to a session; that machinery
+/// is private to it, and this app must not reach into it. Recency is the honest approximation
+/// available from the public surface, so v2 says "growing/idle/finished" from mtime and does not
+/// claim a proven process. Replacing this with a real liveness probe is its own piece of work.
+const GROWING_SECS: f64 = 90.0;
+const IDLE_SECS: f64 = 30.0 * 60.0;
+
+/// "3m" / "2h" / "4d" — the compact age the rail shows beside a row.
+fn human_age(secs: f64) -> String {
+    let s = secs.max(0.0);
+    if s < 90.0 {
+        format!("{}s", s as u64)
+    } else if s < 90.0 * 60.0 {
+        format!("{}m", (s / 60.0).round() as u64)
+    } else if s < 36.0 * 3600.0 {
+        format!("{}h", (s / 3600.0).round() as u64)
+    } else {
+        format!("{}d", (s / 86400.0).round() as u64)
+    }
+}
+
+/// One project's worth of rows in the rail, while the list is being assembled.
+struct Group {
+    /// The project path — the grouping key AND the row's secondary line.
+    key: String,
+    label: String,
+    secondary: String,
+    rows: Vec<serde_json::Value>,
+    /// Newest activity in the group; the sort key, so the project you touched last is on top.
+    latest: f64,
+    growing: usize,
+    idle: usize,
+}
+
+/// The rail's session list, grouped by project — v1's shape, built entirely on the discovery
+/// facade (`store_all` + `project_path` + `session_card` + `session_id`), which is the same API
+/// the developer guide documents for third parties. No access to v1's private index is needed
+/// or taken.
 fn sessions_json(service: &SessionService, only: Option<Agent>, limit: usize) -> String {
-    let mut out = Vec::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or_default();
+    let mut groups: Vec<Group> = Vec::new();
     for e in discover::store_all(only).into_iter().take(limit) {
         let Some(id) = discover::session_id(&e.path) else {
             continue;
         };
-        // Registering here is what makes `?session=<id>` resolvable at all — the shell route
-        // renders by id, and the service only knows the ids it has been shown. Idempotent and
-        // cheap for one it already holds. (v1 does the same from its own list route.)
+        // Registering here is what makes `?session=<id>` resolvable: the shell renders by id,
+        // and the service only knows the ids it has been shown. Idempotent for a known one.
         service.register_root(&e.path);
         let card = discover::session_card(e.agent, &e.path);
-        let title = card
+        let name = card
             .as_ref()
             .and_then(|c| c.title.clone())
             .or_else(|| card.as_ref().and_then(|c| c.last_prompt.clone()))
             .unwrap_or_else(|| id.clone());
-        let project = discover::first_cwd(&e.path)
+        let proj = discover::project_path(&e.path);
+        let key = proj
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| e.agent.label().to_string());
+        let label = proj
+            .as_ref()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_default();
-        out.push(json!({
+            .unwrap_or_else(|| e.agent.label().to_string());
+        let age = now - e.mtime;
+        let state = if age < GROWING_SECS {
+            "growing"
+        } else if age < IDLE_SECS {
+            "idle"
+        } else {
+            "finished"
+        };
+        let row = json!({
             "id": id,
-            "title": title,
-            "project": project,
+            "name": name,
             "agent": e.agent.label(),
-            "mtime": e.mtime,
-        }));
+            "state": state,
+            "activity": human_age(age),
+        });
+        match groups.iter_mut().find(|g| g.key == key) {
+            Some(g) => {
+                g.rows.push(row);
+                g.latest = g.latest.max(e.mtime);
+                g.growing += usize::from(state == "growing");
+                g.idle += usize::from(state == "idle");
+            }
+            None => groups.push(Group {
+                key: key.clone(),
+                label,
+                secondary: key,
+                rows: vec![row],
+                latest: e.mtime,
+                growing: usize::from(state == "growing"),
+                idle: usize::from(state == "idle"),
+            }),
+        }
     }
-    json!({ "sessions": out }).to_string()
+    groups.sort_by(|a, b| b.latest.total_cmp(&a.latest));
+    let out: Vec<serde_json::Value> = groups
+        .into_iter()
+        .map(|g| {
+            json!({
+                "label": g.label,
+                "secondary": g.secondary,
+                "total": g.rows.len(),
+                "growing": g.growing,
+                "idle": g.idle,
+                "rows": g.rows,
+            })
+        })
+        .collect();
+    json!({ "groups": out }).to_string()
 }
 
 fn main() -> Result<()> {

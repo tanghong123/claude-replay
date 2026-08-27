@@ -1,55 +1,81 @@
 <style>
 /* ── monitor v2 shell ────────────────────────────────────────────────────────────────
-   Injected INTO the session document, not wrapped around it in a frame. The rail is
+   Injected INTO the session document rather than wrapping it in a frame. The rail is
    `position: fixed`, so the transcript keeps the DOCUMENT scroller — which is what lets
    every `window.scrollY` in export.js (the follow/pin/landing/search contract, ~27 sites)
-   keep working untouched. That is the whole reason this composition was chosen over
-   nesting the stream in an overflow container. */
-:root { --v2-rail-w: 300px; }
+   keep working untouched, and is the whole reason this shape was chosen over nesting the
+   stream in an overflow container.
+
+   Living inside that document also means the viewer's theme tokens are already in scope, so
+   the rail is themed by whatever the page is — v1 had to carry its own copy. Only the two the
+   viewer does not define are declared here. */
+:root { --v2-rail-w: 326px; --amber: #b8860b; --accent: #6d4fa1; }
 #v2rail {
   position: fixed; left: 0; top: 0; bottom: 0; width: var(--v2-rail-w); z-index: 60;
   display: flex; flex-direction: column; background: var(--bg);
   border-right: 1px solid var(--border); font-family: var(--sans);
 }
-#v2head { flex: none; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-#v2mark { font: 600 12.5px var(--sans); color: var(--fg); letter-spacing: .01em; }
-#v2mark span { color: var(--faint); font: 10px var(--mono); }
-/* ONE box. It filters the session list, and — when a session is open — drives that
-   session's own search too, so there is never a second place to type. */
-#v2find {
-  margin-top: 9px; display: flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--panel);
-}
-#v2find span { color: var(--faint); font-size: 12px; }
-#v2q {
-  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
-  font: 13px var(--sans); color: var(--fg); height: 28px;
-}
-#v2hits { font: 10px var(--mono); color: var(--faint); white-space: nowrap; }
+#v2head { flex: none; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+#v2titlebar { display: flex; align-items: center; gap: 9px; height: 30px; }
+#v2mark { flex: none; font: 600 13px var(--sans); color: var(--fg); letter-spacing: -.01em; }
+#v2mark i { font-style: normal; color: var(--faint); font: 9.5px var(--mono); }
+#v2scan { margin-left: auto; font: 9.5px var(--mono); color: var(--faint); display: inline-flex; align-items: center; gap: 5px; }
+#v2scan i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--tool); animation: v2pulse 2.4s infinite; }
+@keyframes v2pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+#v2find { margin-top: 7px; display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--panel); }
+#v2find:focus-within { border-color: var(--accent); }
+#v2find > span { color: var(--faint); font-size: 12px; }
+#v2q { flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font: 13px var(--sans); color: var(--fg); height: 28px; }
+#v2hits { font: 9.5px var(--mono); color: var(--faint); white-space: nowrap; }
 #v2list { flex: 1; overflow-y: auto; padding: 4px 0 16px; }
-.v2row {
-  display: block; padding: 7px 12px; cursor: pointer; border-left: 2px solid transparent;
-  text-decoration: none; color: inherit;
-}
-.v2row:hover { background: var(--panel); }
-.v2row[aria-current="true"] { border-left-color: var(--tool); background: var(--panel); }
-.v2title {
-  font: 12px var(--sans); color: var(--fg); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
-.v2meta {
-  margin-top: 2px; font: 10px var(--mono); color: var(--faint); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
+
+.v2group { margin-top: 6px; }
+.v2ghead { display: flex; align-items: center; gap: 8px; padding: 6px 12px 3px; cursor: pointer; }
+.v2chev { flex: none; color: var(--faint); font-size: 9px; transition: transform .12s; }
+.v2group.col .v2chev { transform: rotate(-90deg); }
+.v2glabels { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.v2glabel { font: 700 13.5px var(--sans); color: var(--fg); letter-spacing: -.01em; }
+.v2gsec { font: 9.5px var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2gmeta { flex: none; font: 9.5px var(--mono); color: var(--muted); background: var(--card);
+  border: 1px solid var(--border); border-radius: 99px; padding: 2px 8px; margin-left: auto; }
+.v2gdot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.v2gdot.growing { background: var(--tool); }
+.v2gdot.idle { background: var(--amber); }
+.v2gdot.finished { background: var(--gut); }
+
+.v2row { display: block; margin: 3px 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  border: 1px solid transparent; outline: none; text-decoration: none; color: inherit; }
+.v2row:hover { background: var(--hover); }
+.v2row[aria-current="true"] { background: var(--hover); border-color: var(--accent); }
+.v2row.grow { background: rgba(46,125,85,.08); border-color: rgba(46,125,85,.32); }
+.v2r1 { display: flex; align-items: center; gap: 9px; }
+.v2dot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.v2dot.growing { background: var(--tool); animation: v2pulse 2.2s infinite; }
+.v2dot.idle { background: var(--amber); }
+.v2dot.finished { background: var(--gut); }
+.v2name { flex: 1; min-width: 0; font: 12px var(--sans); color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2badge { flex: none; font: 8.5px/1 var(--mono); font-weight: 600; border-radius: 3px; padding: 2px 3px; color: #fff; }
+.v2badge.a-claude { background: var(--kw); }
+.v2badge.a-codex { background: var(--link); }
+.v2badge.a-qoderwork { background: var(--tool); }
+.v2badge.a-other { background: var(--gut); }
+.v2r2 { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; padding-left: 18px; }
+.v2age { flex: none; font: 10.5px var(--mono); color: var(--faint); }
 #v2empty { padding: 40px 16px; color: var(--faint); font: 12px var(--sans); text-align: center; }
-/* Make room for the rail in everything the view pins to the viewport. */
+
 #topbar { left: var(--v2-rail-w) !important; }
 #stream, #sidebar { margin-left: var(--v2-rail-w); }
 </style>
 <aside id="v2rail">
   <div id="v2head">
-    <div id="v2mark">agent-monitor <span>v2 · {{VERSION}}</span></div>
-    <div id="v2find"><span>⌕</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span></div>
+    <div id="v2titlebar">
+      <div id="v2mark">agent-monitor <i>v2 · {{VERSION}}</i></div>
+      <div id="v2scan"><i></i><span id="v2count"></span></div>
+    </div>
+    <div id="v2find"><span>&#9906;</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span></div>
   </div>
   <div id="v2list"></div>
 </aside>
@@ -59,40 +85,74 @@
   var listEl = document.getElementById("v2list");
   var q = document.getElementById("v2q");
   var hits = document.getElementById("v2hits");
+  var countEl = document.getElementById("v2count");
   var current = new URLSearchParams(location.search).get("session") || "";
-  var rows = [];
+  var groups = [];
+  var collapsed = {};
+  try { collapsed = JSON.parse(localStorage.getItem("v2col") || "{}"); } catch (e) {}
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function badgeClass(a) {
+    return "v2badge a-" + (/^(claude|codex|qoderwork)$/.test(a) ? a : "other");
+  }
 
   function render(filter) {
     var f = (filter || "").toLowerCase();
     listEl.textContent = "";
-    var shown = 0;
-    rows.forEach(function (s) {
-      var hay = (s.title + " " + s.project + " " + s.agent).toLowerCase();
-      if (f && hay.indexOf(f) < 0) return;
-      shown++;
-      var a = document.createElement("a");
-      a.className = "v2row";
-      a.href = "/?session=" + encodeURIComponent(s.id);
-      if (s.id === current) a.setAttribute("aria-current", "true");
-      var t = document.createElement("div");
-      t.className = "v2title";
-      t.textContent = s.title || s.id;
-      var m = document.createElement("div");
-      m.className = "v2meta";
-      m.textContent = s.agent + " · " + s.project;
-      a.appendChild(t); a.appendChild(m);
-      listEl.appendChild(a);
+    var shown = 0, total = 0;
+    groups.forEach(function (g) {
+      var rows = g.rows.filter(function (r) {
+        return !f || (r.name + " " + r.agent + " " + g.label).toLowerCase().indexOf(f) >= 0;
+      });
+      total += g.rows.length;
+      if (!rows.length) return;
+      shown += rows.length;
+      var box = el("div", "v2group" + (collapsed[g.label] ? " col" : ""));
+      var head = el("div", "v2ghead");
+      head.appendChild(el("span", "v2chev", "▾"));
+      var dotk = g.growing ? "growing" : (g.idle ? "idle" : "finished");
+      head.appendChild(el("span", "v2gdot " + dotk));
+      var labels = el("div", "v2glabels");
+      labels.appendChild(el("div", "v2glabel", g.label));
+      labels.appendChild(el("div", "v2gsec", g.secondary));
+      head.appendChild(labels);
+      head.appendChild(el("span", "v2gmeta", rows.length + (g.growing ? " · " + g.growing + " live" : "")));
+      head.onclick = function () {
+        collapsed[g.label] = !collapsed[g.label];
+        try { localStorage.setItem("v2col", JSON.stringify(collapsed)); } catch (e) {}
+        render(q.value);
+      };
+      box.appendChild(head);
+      if (!collapsed[g.label]) {
+        rows.forEach(function (r) {
+          var a = el("a", "v2row" + (r.state === "growing" ? " grow" : ""));
+          a.href = "/?session=" + encodeURIComponent(r.id);
+          if (r.id === current) a.setAttribute("aria-current", "true");
+          var r1 = el("div", "v2r1");
+          r1.appendChild(el("span", "v2dot " + r.state));
+          r1.appendChild(el("span", "v2name", r.name));
+          r1.appendChild(el("span", badgeClass(r.agent), r.agent.slice(0, 2).toUpperCase()));
+          var r2 = el("div", "v2r2");
+          r2.appendChild(el("span", "v2age", r.activity + " ago"));
+          a.appendChild(r1); a.appendChild(r2);
+          box.appendChild(a);
+        });
+      }
+      listEl.appendChild(box);
     });
+    countEl.textContent = shown + (f ? "/" + total : "") + " sessions";
     if (!shown) {
-      var e = document.createElement("div");
+      var e = el("div", null, groups.length ? "No session matches." : "Scanning…");
       e.id = "v2empty";
-      e.textContent = rows.length ? "No session matches." : "Scanning…";
       listEl.appendChild(e);
     }
   }
 
-  // The single box: filter the rail, and mirror the query into the open session's own
-  // search so one input covers both panes (goal 2 — there is no second box to focus).
   function onQuery() {
     var v = q.value;
     render(v);
@@ -101,19 +161,24 @@
       inner.value = v;
       inner.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    var count = document.getElementById("qcount");
-    hits.textContent = v && count ? count.textContent : "";
+    var c = document.getElementById("qcount");
+    hits.textContent = v && c ? c.textContent : "";
   }
   q.addEventListener("input", onQuery);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "/" && document.activeElement !== q && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+    if (e.key === "/" && document.activeElement !== q &&
+        !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
       e.preventDefault(); q.focus();
     }
   }, true);
 
-  fetch("/api/sessions")
-    .then(function (r) { return r.json(); })
-    .then(function (d) { rows = d.sessions || []; render(q.value); })
-    .catch(function () { rows = []; render(""); });
+  function load() {
+    fetch("/api/sessions")
+      .then(function (r) { return r.json(); })
+      .then(function (d) { groups = d.groups || []; render(q.value); })
+      .catch(function () { groups = []; render(""); });
+  }
+  load();
+  setInterval(load, 5000);
 })();
 </script>
