@@ -893,3 +893,133 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
         "running member titled by position and linked: {seen}"
     );
 }
+
+/// **Monitor v2's composition.** The rail is injected into the session document instead of
+/// wrapping it in an `<iframe>`, and lays itself out `position: fixed` — so the transcript keeps
+/// the DOCUMENT scroller, which is the entire reason this shape was chosen: every
+/// `window.scrollY` in `export.js` (follow, pin, jump-to-bottom, turn landing, search stepping)
+/// keeps working untouched. Only a real engine can say whether that is true, so this asserts the
+/// three things the composition could plausibly have broken: the rail does not scroll away, the
+/// document is what scrolls, and the view still lands pinned at the tail.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_v2_shell_keeps_the_document_scroller() {
+    let base = base("v2shell");
+    let src = base.join("v2.jsonl");
+    {
+        let mut s = String::new();
+        for i in 0..40u32 {
+            s.push_str(&user(
+                &format!("question {i}: {}", "lorem ipsum ".repeat(8)),
+                i,
+            ));
+            s.push_str(&assistant(
+                &format!("answer {i}: {}", "dolor sit amet ".repeat(12)),
+                i,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+    // v2 lists sessions from the real store, so point it at this fixture by deep link: the
+    // shell route registers an unknown id on demand. It needs the transcript inside a store
+    // it scans, so this test drives the id the server reports for the file it was given.
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let mut child = std::process::Command::new(&bin)
+        .args(["--port", "2831"])
+        .env("XDG_CACHE_HOME", &base)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    // Any session the machine has will do — the assertion is about LAYOUT, not content.
+    tab.navigate_to("http://127.0.0.1:2831/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let listing = tab
+        .evaluate("document.body.innerText", true)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let id = serde_json::from_str::<serde_json::Value>(&listing)
+        .ok()
+        .and_then(|v| v["sessions"][0]["id"].as_str().map(str::to_string));
+    let Some(id) = id else {
+        let _ = child.kill();
+        eprintln!("skip: no sessions on this machine to compose");
+        return;
+    };
+    tab.navigate_to(&format!("http://127.0.0.1:2831/?session={id}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    // A cold cache renders the whole session before there is anything to scroll — wait for
+    // the page to exceed the viewport rather than guessing at a sleep.
+    for _ in 0..80 {
+        let tall = tab
+            .evaluate(
+                "document.body.scrollHeight > window.innerHeight + 200",
+                true,
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if tall {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    let probe = r#"(function () {
+      var rail = document.getElementById('v2rail');
+      var stream = document.getElementById('stream');
+      if (!rail || !stream) return JSON.stringify({ ok: false });
+      var before = rail.getBoundingClientRect().top;
+      window.scrollTo({ top: 400 });
+      var scrolled = window.scrollY;
+      var after = rail.getBoundingClientRect().top;
+      return JSON.stringify({
+        ok: true,
+        docScrolls: scrolled > 0,                       // the DOCUMENT is the scroller
+        railFixed: Math.abs(after - before) < 1,        // …and the rail does not move with it
+        streamOffset: stream.getBoundingClientRect().left >= rail.getBoundingClientRect().right - 1,
+        noFrame: document.querySelectorAll('iframe').length === 0
+      });
+    })()"#;
+    let seen = tab
+        .evaluate(probe, true)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let _ = child.kill();
+    let v: serde_json::Value = serde_json::from_str(&seen).unwrap_or(serde_json::Value::Null);
+    assert_eq!(v["ok"], true, "the shell composed both panes: {seen}");
+    assert_eq!(v["docScrolls"], true, "the document scrolls: {seen}");
+    assert_eq!(
+        v["railFixed"], true,
+        "the rail stays put while it does: {seen}"
+    );
+    assert_eq!(
+        v["streamOffset"], true,
+        "the transcript clears the rail: {seen}"
+    );
+    assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
+}

@@ -1,0 +1,24 @@
+[package]
+name = "claude-monitor-v2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The v2 monitor: one app-shell over every agent session on this machine — no iframe, one search box, artifacts served over HTTP."
+
+# A SEPARATE app on purpose. v1 (`agent-monitor`) is untouched and keeps its port, its cache
+# root and its rail; this crate is where the new UX is built, on the SAME public backend —
+# `SessionService`/`service_routes` from the html crate and the discovery facade from core.
+# Nothing here reaches into v1: the two can run side by side, which is what makes v2 safe to
+# develop against real sessions.
+[[bin]]
+name = "agent-monitor-v2"
+path = "src/main.rs"
+
+[dependencies]
+claude-replay-core = { path = "../claude-replay-core" }
+claude-replay-html = { path = "../claude-replay-html" }
+claude-replay-present = { path = "../claude-replay-present" }
+anyhow = "1"
+serde_json = "1"

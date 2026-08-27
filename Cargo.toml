@@ -21,6 +21,7 @@ members = [
     "claude-replay-agents",
     "claude-monitor",
     "claude-monitor-fleet",
+    "claude-monitor-v2",
     # In `members` but NOT in `default-members` below — that omission is the gate that keeps its
     # headless-Chrome dependency out of every ordinary build. See its Cargo.toml.
     "claude-replay-browser-tests",
@@ -37,6 +38,7 @@ default-members = [
     "claude-replay-agents",
     "claude-monitor",
     "claude-monitor-fleet",
+    "claude-monitor-v2",
 ]
 
 # One version for the whole workspace, bumped in ONE place per release (#71).

@@ -60,9 +60,23 @@
     mostly UX design, little architecture. `rail.html` already notes the two boxes were aligned
     to read as one.
 
-  Decide: whether goal 1 buys an `init`/`destroy` refactor of `export.js`, or v2 ships the
-  fixed-rail composition first (iframe gone, viewport code untouched, session switch still a
-  reload) and takes the lifecycle work only if the reload flash proves unacceptable.
+  **Decided (2026-08-27): reload first.** Native teardown for `export.js` is deferred until the
+  reload proves too coarse.
+
+  **Slice 1 landed** — `claude-monitor-v2/` (`agent-monitor-v2`, port 2828, its own cache root).
+  A separate app on purpose: v1 is untouched and both run at once. It composes by fetching the
+  session page from the SAME public backend (`SessionService::page`) and splicing its own shell
+  in before `</body>`; every other route delegates to `service_routes` verbatim, and the rail's
+  session list is built on the discovery facade (`store_all` + `session_card` + `session_id`),
+  so nothing reaches into v1's private index. A browser test pins the property the whole shape
+  was chosen for: the DOCUMENT still scrolls, the rail stays fixed while it does, the transcript
+  clears it, and there is no iframe — so `export.js`'s ~27 `window.scrollY` sites are untouched.
+  Not in the release matrix, so it ships to nobody until deliberately added.
+
+  Still to do: goal 3 (serve artifacts over HTTP — reuse `remap_reveal`'s hosted-roots guard,
+  and security-review the file-read endpoint); the new UX itself beyond the placeholder rail;
+  parity items v1 has that v2 does not (hide list, compose/send, cost counters, pairing);
+  and whether the reload on session switch is in fact too coarse.
 
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
   the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
