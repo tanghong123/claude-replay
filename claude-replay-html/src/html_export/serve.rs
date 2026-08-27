@@ -461,6 +461,62 @@ impl SessionService {
         None
     }
 
+    /// Positive containment for the artifact route (`/file`): resolve `want` to a real file
+    /// this server is ENTITLED to hand out, or `None`.
+    ///
+    /// `/__reveal` is not a precedent to copy. Revealing asks the OS file manager to open a
+    /// window; it moves no bytes across the wire, so its hit branch is `exists()` alone.
+    /// `/file` returns CONTENT, so the question changes from "does this path exist" to "does
+    /// a session this server hosts explain it" — and the answer must be an allowlist, not the
+    /// absence of a traversal pattern. Three prefixes per hosted root explain a path:
+    ///
+    /// * the session's recorded `cwd` — where its edits and reads happened;
+    /// * its `project_path` — the same tree after a move (`first_cwd` is dead, this is live);
+    /// * the transcript's own directory — where `subagents/`, workflow journals and the
+    ///   agent's other sidecars for this project live.
+    ///
+    /// Everything is canonicalized BEFORE the prefix test, on both sides. A textual prefix
+    /// test is defeated by a symlink inside a contained tree pointing anywhere on the disk;
+    /// `canonicalize` resolves symlinks and `..` for real, and its failure on a nonexistent
+    /// path is the 404. A path whose recorded root has MOVED is re-rooted through
+    /// [`remap_reveal`](Self::remap_reveal) first, then held to the same test — relocation
+    /// finds the file, containment still decides.
+    fn contained(&self, want: &Path) -> Option<PathBuf> {
+        if !want.is_absolute() {
+            return None;
+        }
+        let real = want
+            .canonicalize()
+            .ok()
+            .or_else(|| self.remap_reveal(want)?.canonicalize().ok())?;
+        // Copy out (cwd, transcript) and drop the lock: `project_path` and `canonicalize`
+        // both touch the disk, and the roots list is on the pull path.
+        let roots: Vec<(String, PathBuf)> = {
+            let g = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            g.iter().map(|r| (r.cwd.clone(), r.path.clone())).collect()
+        };
+        for (cwd, transcript) in &roots {
+            let mut allow: Vec<PathBuf> = Vec::new();
+            if !cwd.is_empty() {
+                allow.push(PathBuf::from(cwd));
+            }
+            if let Some(proj) = discover::project_path(transcript) {
+                allow.push(proj);
+            }
+            if let Some(dir) = transcript.parent() {
+                allow.push(dir.to_path_buf());
+            }
+            for a in allow {
+                if a.canonicalize()
+                    .is_ok_and(|a| real.strip_prefix(&a).is_ok())
+                {
+                    return Some(real);
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve `id` to its source + title. Tier-(c) lookup first (the cache registry, populated
     /// from spawn events); else resolve the source directly — every agent shares the flat
     /// `subagents/` dir, so a valid id resolves even if its parent was never navigated (deep links)
@@ -830,6 +886,7 @@ impl SessionService {
                     body: json!({"t": "error", "message": why})
                         .to_string()
                         .into_bytes(),
+                    headers: Vec::new(),
                 }
             }
         }
@@ -1081,6 +1138,11 @@ pub struct HttpResponse {
     pub code: &'static str,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// Extra response header lines (`"Name: value"`, no CRLF) written after the standard
+    /// ones. Empty for every reply that needs none — the artifact route (`/file`) is what
+    /// wanted them: local bytes served on the monitor's own origin must carry `nosniff` and
+    /// a sandbox policy, which a fixed head cannot express.
+    pub headers: Vec<String>,
 }
 
 impl HttpResponse {
@@ -1089,6 +1151,7 @@ impl HttpResponse {
             code: "200 OK",
             content_type,
             body,
+            headers: Vec::new(),
         }
     }
     pub fn html(body: String) -> Self {
@@ -1102,6 +1165,7 @@ impl HttpResponse {
             code: "404 Not Found",
             content_type: "text/plain",
             body: msg.as_bytes().to_vec(),
+            headers: Vec::new(),
         }
     }
     pub fn unauthorized(msg: &'static str) -> Self {
@@ -1109,6 +1173,7 @@ impl HttpResponse {
             code: "401 Unauthorized",
             content_type: "text/plain",
             body: msg.as_bytes().to_vec(),
+            headers: Vec::new(),
         }
     }
     pub fn forbidden(msg: &'static str) -> Self {
@@ -1116,6 +1181,7 @@ impl HttpResponse {
             code: "403 Forbidden",
             content_type: "text/plain",
             body: msg.as_bytes().to_vec(),
+            headers: Vec::new(),
         }
     }
     pub fn method_not_allowed(msg: &'static str) -> Self {
@@ -1123,6 +1189,7 @@ impl HttpResponse {
             code: "405 Method Not Allowed",
             content_type: "text/plain",
             body: msg.as_bytes().to_vec(),
+            headers: Vec::new(),
         }
     }
 }
@@ -1484,6 +1551,45 @@ const COOKIE_MAX_AGE_SECS: u64 = 400 * 24 * 3600;
 /// The largest POST body the server will read (#133): a prompt, not a payload.
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+/// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
+/// the agent touched; anything bigger is a download, and the page falls back to revealing it
+/// in the file manager rather than pulling 200 MB through a viewer.
+const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The raster image types `/file` will serve as images. Deliberately no `image/svg+xml`: an
+/// SVG is a script host, and this page's origin holds the monitor's cookie.
+fn raster_type(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => return None,
+    })
+}
+
+/// Hardening headers for every `/file` reply: never let the browser re-sniff the type we
+/// chose, and run the response under an empty sandbox origin even if one slipped through.
+fn artifact_headers() -> Vec<String> {
+    vec![
+        "X-Content-Type-Options: nosniff".to_string(),
+        "Content-Security-Policy: sandbox".to_string(),
+    ]
+}
+
+/// A refusal the PAGE can act on: the status tells it whether to offer "reveal in Finder"
+/// instead, and the body is the reason to show.
+fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
+    HttpResponse {
+        code,
+        content_type: "text/plain",
+        body: why.as_bytes().to_vec(),
+        headers: artifact_headers(),
+    }
+}
+
 fn serve_connection(
     mut stream: std::net::TcpStream,
     handler: &(dyn Fn(&Request) -> HttpResponse + Send + Sync),
@@ -1597,8 +1703,9 @@ fn serve_connection(
              Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         )
     } else {
+        let extra: String = r.headers.iter().map(|h| format!("{h}\r\n")).collect();
         format!(
-            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}\
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}{extra}\
              Cache-Control: no-store\r\nConnection: close\r\n\r\n",
             r.code,
             r.content_type,
@@ -1671,8 +1778,12 @@ pub fn service_routes(
         let chrome = PageChrome {
             embed: query_get(query, "chrome") == Some("embed"),
             theme: query_get(query, "theme").map(str::to_string),
+            artifacts: query_get(query, "artifacts") == Some("1"),
+            host_search: query_get(query, "hostsearch") == Some("1"),
         };
-        let chrome = (chrome.embed || chrome.theme.is_some()).then_some(chrome);
+        let chrome =
+            (chrome.embed || chrome.theme.is_some() || chrome.artifacts || chrome.host_search)
+                .then_some(chrome);
         return match live.page(id, chrome.as_ref()) {
             Some(page) => HttpResponse::html(page),
             None => HttpResponse::not_found("no such session"),
@@ -1714,8 +1825,63 @@ pub fn service_routes(
                 code: "409 Conflict",
                 content_type: "text/plain",
                 body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
             },
         };
+    }
+    // `/file?path=<url-encoded abs path>` — the artifact route: hand the file's BYTES to the
+    // page instead of opening a Finder window on the server. Guarded three ways, because this
+    // is the one route that reads arbitrary disk paths:
+    //
+    //  1. containment — `contained` above: some hosted session must explain the path;
+    //  2. a size cap — a viewer, not a file server (over it, the page reveals instead);
+    //  3. a content-type allowlist — text and raster images ONLY.
+    //
+    // (3) is the subtle one. The page is served from the monitor's own origin, which holds the
+    // `cmauth` cookie, so serving a repo's `.html` (or an `.svg`, which is script-bearing) as
+    // itself would run that repo's markup with the monitor's credentials — a stored XSS whose
+    // payload is any file the agent ever touched. Text is served as `text/plain`, images by
+    // their raster type, everything else is refused with 415 and revealed instead.
+    // `nosniff` stops a browser from second-guessing the type it was given, and the sandbox
+    // policy is the belt to that braces.
+    if name == "file" {
+        let Some(live) = live else {
+            return HttpResponse::not_found("no live server");
+        };
+        let Some(raw) = query_get(query, "path") else {
+            return HttpResponse::not_found("no such path");
+        };
+        let decoded = percent_decode(raw);
+        let Some(path) = live.contained(Path::new(&decoded)) else {
+            return HttpResponse::not_found("no such path");
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return HttpResponse::not_found("no such path");
+        };
+        if !meta.is_file() {
+            return artifact_refused("415 Unsupported Media Type", "not a file");
+        }
+        if meta.len() > MAX_ARTIFACT_BYTES {
+            return artifact_refused("413 Content Too Large", "too large");
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return HttpResponse::not_found("no such path");
+        };
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let ct = match raster_type(&ext) {
+            Some(ct) => ct,
+            // Not an image: serve it only if it really is text. `from_utf8` on the whole body
+            // is the check — an extension is a claim, the bytes are the evidence.
+            None if std::str::from_utf8(&bytes).is_ok() => "text/plain; charset=utf-8",
+            None => return artifact_refused("415 Unsupported Media Type", "not text or image"),
+        };
+        let mut r = HttpResponse::ok(ct, bytes);
+        r.headers = artifact_headers();
+        return r;
     }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
     // served page can't follow a `file://` link: browsers block http→file navigation).
@@ -1751,6 +1917,7 @@ pub fn service_routes(
             code: "403 Forbidden",
             content_type: "text/plain",
             body: b"forbidden".to_vec(),
+            headers: Vec::new(),
         };
     }
     match std::fs::read(static_dir.join(name)) {
@@ -2953,6 +3120,108 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// The artifact route's containment rule. `/file` is the only route that reads an
+    /// arbitrary disk path, so what it REFUSES is the test worth writing: a path no hosted
+    /// session explains, a symlink out of a contained tree (the case a textual prefix check
+    /// loses), a directory, and anything past the size cap. And what it serves, it serves
+    /// defused — a repo's `.html` comes back as `text/plain` with `nosniff`, because the page
+    /// asking for it holds the monitor's cookie on the monitor's own origin.
+    #[test]
+    fn the_artifact_route_serves_only_what_a_hosted_session_explains() {
+        let dir = std::env::temp_dir().join(format!("cr-file-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(repo.join("a.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repo.join("page.html"), "<script>alert(1)</script>").unwrap();
+        std::fs::write(repo.join("bin.dat"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        std::fs::write(outside.join("secret"), "ssh key\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("secret"), repo.join("escape")).unwrap();
+
+        // The transcript lives in its own store dir, NOT above `repo`/`outside`: its parent is
+        // one of the three allowed prefixes (that is where `subagents/` and workflow journals
+        // live), so a shared parent would contain everything and prove nothing.
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let sess = store.join("s.jsonl");
+        std::fs::write(
+            &sess,
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}},\"timestamp\":\"2026-07-26T10:00:00Z\"}}\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        let live = SessionService::new(ServiceConfig {
+            cache_root: None,
+            presentation: Presentation::Html,
+            fold: FoldPolicy::default(),
+            scratch: dir.join("scratch"),
+            root_lock: RootLock::PerSession,
+        })
+        .unwrap();
+        live.register_root(&sess);
+        let get = |p: &std::path::Path| {
+            service_routes(
+                Some(&live),
+                &dir,
+                "file",
+                &format!("path={}", p.display().to_string().replace(' ', "%20")),
+            )
+        };
+
+        // Inside the session's cwd: served, as text, hardened.
+        let r = get(&repo.join("a.rs"));
+        assert_eq!(r.code, "200 OK");
+        assert_eq!(r.body, b"fn main() {}\n");
+        assert!(r
+            .headers
+            .iter()
+            .any(|h| h == "X-Content-Type-Options: nosniff"));
+        assert!(r
+            .headers
+            .iter()
+            .any(|h| h.starts_with("Content-Security-Policy:")));
+
+        // Markup from the agent's own repo must never come back as markup: it would run on
+        // the monitor's origin, which is where the pairing cookie lives.
+        let r = get(&repo.join("page.html"));
+        assert_eq!(r.code, "200 OK");
+        assert_eq!(r.content_type, "text/plain; charset=utf-8");
+
+        // Outside every hosted root — refused, and refused as "no such path" so the reply
+        // does not tell a caller which paths exist.
+        assert_eq!(get(&outside.join("secret")).code, "404 Not Found");
+        // …including by the route a textual prefix test would admit: a symlink that IS under
+        // the contained tree but resolves out of it.
+        #[cfg(unix)]
+        assert_eq!(get(&repo.join("escape")).code, "404 Not Found");
+        // …and by traversal, which canonicalization flattens before the prefix test.
+        assert_eq!(get(&repo.join("../outside/secret")).code, "404 Not Found");
+
+        // A directory and a binary are refusals the PAGE acts on: it reveals them instead.
+        assert_eq!(get(&repo).code, "415 Unsupported Media Type");
+        assert_eq!(
+            get(&repo.join("bin.dat")).code,
+            "415 Unsupported Media Type"
+        );
+
+        // Over the cap: a viewer, not a file server.
+        let big = repo.join("big.txt");
+        std::fs::write(&big, vec![b'x'; MAX_ARTIFACT_BYTES as usize + 1]).unwrap();
+        assert_eq!(get(&big).code, "413 Content Too Large");
+
+        // No live server (a static bundle): the route has no roots to reason about.
+        assert_eq!(
+            service_routes(None, &dir, "file", "path=/etc/hosts").code,
+            "404 Not Found"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The `/session?id=` page (#98 §6.3): with no chrome it is byte-identical to the shell
     /// `--html` writes; `chrome=embed` swaps the brand for the session title and hides the
     /// theme toggle; `theme=` appends the post-boot stamp. The no-chrome equality is the
@@ -2994,6 +3263,8 @@ mod tests {
                 Some(&PageChrome {
                     embed: true,
                     theme: Some("light".into()),
+                    artifacts: false,
+                    host_search: false,
                 }),
             )
             .unwrap();
@@ -3016,6 +3287,39 @@ mod tests {
                 "<script>document.documentElement.setAttribute(\"data-theme\",\"light\");</script>\n</body>\n</html>\n"
             ),
             "the stamp runs AFTER the page's own boot"
+        );
+
+        // `host_search`/`artifacts` are page MODES a host asks for, not a second renderer:
+        // one hides the page's own search field (the host supplies one), the other stamps the
+        // opt-in `<body>` attribute the artifact click path reads. Both leave everything else
+        // exactly where it was.
+        let hosted = live
+            .page(
+                &id,
+                Some(&PageChrome {
+                    embed: false,
+                    theme: None,
+                    artifacts: true,
+                    host_search: true,
+                }),
+            )
+            .unwrap();
+        assert!(
+            hosted.contains("<div class=\"searchbox\" style=\"display:none\">"),
+            "the page's own search box is hidden, not removed — it is still what runs the search"
+        );
+        assert!(
+            hosted.contains("id=\"q\""),
+            "…and its input is still there to drive"
+        );
+        assert!(
+            hosted.contains(" data-artifacts=\"1\""),
+            "the artifact opt-in reaches the page"
+        );
+        assert!(
+            !plain.contains(" data-artifacts=\"1\"")
+                && !plain.contains("class=\"searchbox\" style="),
+            "and neither mode touches a page that asked for no chrome"
         );
 
         // The route itself: unknown ids 404; a valid id serves the page.

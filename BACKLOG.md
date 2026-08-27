@@ -73,10 +73,29 @@
   clears it, and there is no iframe — so `export.js`'s ~27 `window.scrollY` sites are untouched.
   Not in the release matrix, so it ships to nobody until deliberately added.
 
-  Still to do: goal 3 (serve artifacts over HTTP — reuse `remap_reveal`'s hosted-roots guard,
-  and security-review the file-read endpoint); the new UX itself beyond the placeholder rail;
-  parity items v1 has that v2 does not (hide list, compose/send, cost counters, pairing);
-  and whether the reload on session switch is in fact too coarse.
+  **Goal 3 landed** — `/file?path=` serves a clicked path's BYTES to the page (an overlay: the
+  text, or the image) instead of opening Finder on the server; refusals (uncontained, a
+  directory, a binary, over 8 MB) fall back to `/__reveal`, which is what those cases want.
+  The scout's "reuse `remap_reveal`'s hosted-roots guard" described a guard that does not
+  exist — `/__reveal`'s hit branch is `exists()` alone, which is fine for opening a Finder
+  window and not for moving bytes. The route got POSITIVE containment instead: canonicalize
+  both sides (a symlink out of a contained tree is what a textual prefix test loses), then
+  require a hosted session's `cwd`, `project_path`, or transcript dir to explain the path.
+  Content-typing is an allowlist — text as `text/plain`, raster images as themselves, nothing
+  else — because the page holds the monitor's cookie on the monitor's origin, so serving a
+  repo's `.html` or `.svg` as itself is stored XSS with the agent's whole file history as the
+  payload surface. `nosniff` + `Content-Security-Policy: sandbox` on every reply.
+
+  **Goal 2 landed** — one visible search box. The rail's box filters the session list AND
+  drives the transcript search by writing into the page's own `#q`, so scoping, highlighting
+  and hit stepping run unforked; ⏎/⇧⏎ and the rail's ▲▼ click the page's own stepper. The
+  page renders its own field hidden via `PageChrome::host_search` — the renderer hiding its
+  own control, the way `embed` already hides the theme toggle, rather than the host reaching
+  in with a selector.
+
+  Still to do: the new UX itself beyond the parity rail; compose/send and pairing (writes into
+  live sessions, with a consent model behind them — deliberately deferred, not dropped); and
+  whether the reload on session switch is in fact too coarse.
 
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
   the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
@@ -96,6 +115,18 @@
   coalesce, consumers join old-by-anchor vs new-by-anchor per delta. Cost: ~10 B/block
   persisted ⇒ one FOLD_VERSION bump — ride it with #167's build. Decide: adopt into #167's
   scope, or file as its own issue.
+
+## Queued — approved, not started
+
+- **Presentation-layer host slot (`PageChrome.host`)** — approved 2026-08-27. v2 positions
+  itself with the RENDERER's internal selectors: it pads `body`, offsets `#topbar`, and nudges
+  `#newbadge`, having learned from `export.css` that `.layout` centres itself. That knowledge
+  lives outside the crate that owns the layout, so an `export.css` restructure misaligns v2
+  silently — the one place a fork of the presentation layer could start by accident. Fix:
+  an opaque host slot on `PageChrome` (an inset the host asks for, plus a `data-shell`
+  attribute), with the offsets living in `export.css` beside the layout they offset. Purely
+  additive and inert for v1 (existing callers pass no chrome ⇒ byte-identical dumps), and it
+  moves the coupling inside the crate that owns it.
 
 ## Parked — explicit go-ahead needed
 

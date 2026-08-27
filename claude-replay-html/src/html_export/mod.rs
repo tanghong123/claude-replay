@@ -1121,6 +1121,17 @@ pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) ->
 pub struct PageChrome {
     pub embed: bool,
     pub theme: Option<String>,
+    /// Serve clicked file paths as CONTENT (the `/file` route) instead of revealing them in
+    /// the OS file manager. Off by default and off for every dump: a page written to disk has
+    /// no server behind it, and a host that has not opted in keeps today's reveal behaviour
+    /// byte-for-byte. `agent-monitor-v2` sets it — browser-served artifacts are its goal 3.
+    pub artifacts: bool,
+    /// The HOST owns the search input: render the page's own box hidden, the way `embed`
+    /// hides the theme toggle. A host that composes the page into its own chrome (v2 puts a
+    /// rail beside it) wants ONE search field, not two — but the search itself, its scope
+    /// menu and its hit stepping stay exactly where they are, driven by writing into `#q`.
+    /// The page keeps every search behaviour; only the duplicate field goes.
+    pub host_search: bool,
 }
 
 /// [`build_shell`] with host chrome — the `/session?id=…&chrome=embed&theme=…` page.
@@ -1183,6 +1194,13 @@ fn build_page(
     // session title, hide the theme toggle, and stamp a host-picked theme AFTER the page's
     // own boot. Every no-chrome caller emits today's exact bytes — `brand`/`theme_btn`
     // reproduce the original lines verbatim and `chrome_stamp` is empty.
+    // The artifact opt-in rides `<body>`'s attributes beside `data-multi`/`data-poll`, so
+    // export.js reads it exactly where it reads the rest of its page mode.
+    let live_attrs = if chrome.is_some_and(|c| c.artifacts) {
+        format!("{live_attrs} data-artifacts=\"1\"")
+    } else {
+        live_attrs
+    };
     let embed = chrome.is_some_and(|c| c.embed);
     let brand = if embed {
         let t = esc(title);
@@ -1197,6 +1215,13 @@ fn build_page(
         r#"    <button id="btn-theme" class="tbtn" style="display:none">◐ Dark</button>"#
     } else {
         r#"    <button id="btn-theme" class="tbtn">◐ Dark</button>"#
+    };
+    // A host-owned search field hides the page's own box the same way — hidden, not removed:
+    // `#q` is still the search's one entry point, and the host types into it.
+    let searchbox = if chrome.is_some_and(|c| c.host_search) {
+        r#"<div class="searchbox" style="display:none">"#
+    } else {
+        r#"<div class="searchbox">"#
     };
     let chrome_stamp = match chrome.and_then(|c| c.theme.as_deref()) {
         // After the main script on purpose: export.js has applied the localStorage theme by
@@ -1249,7 +1274,7 @@ fn build_page(
         <div id="agentitems"></div>
       </div>
     </div>
-    <div class="searchbox">
+    {searchbox}
       <span class="mag">⌕</span>
       <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · uatobrew: prefix scopes by type; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>

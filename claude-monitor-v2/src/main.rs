@@ -348,9 +348,15 @@ fn main() -> Result<()> {
                     if id.is_empty() {
                         return HttpResponse::html(empty_shell(&shell));
                     }
+                    // `artifacts`: v2 serves clicked file paths through the browser
+                    // (goal 3) rather than opening Finder on the server.
                     let chrome = PageChrome {
                         embed: true,
                         theme: None,
+                        artifacts: true,
+                        // `host_search`: the rail's box is the only one (goal 2). It drives
+                        // the page's search by writing into `#q`, which stays where it is.
+                        host_search: true,
                     };
                     // A deep link can arrive before any list fetch, and the service only
                     // knows ids it has been shown — so on a miss, look the id up on disk and

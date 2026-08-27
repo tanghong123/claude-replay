@@ -628,8 +628,11 @@
             };
         } else if (path != null) {
             an.classList.add("adl");
-            an.title = "reveal in file manager";
-            an.onclick = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
+            an.title = ARTIFACTS ? "open" : "reveal in file manager";
+            an.onclick = function () {
+                var reveal = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
+                if (ARTIFACTS) openArtifact(path, reveal); else reveal();
+            };
         }
         ac.appendChild(an);
         // #16: a PLAN's body renders inline, expandable — served pages embed the text
@@ -760,7 +763,7 @@
           a.target = "_blank";
           a.rel = "noopener";
           a.dataset.path = head.path;
-          a.title = "Reveal " + head.path;
+          a.title = (ARTIFACTS ? "Open " : "Reveal ") + head.path;
           h.appendChild(a);
         } else {
           h.appendChild(el("span", "tool-target", head.target));
@@ -846,6 +849,68 @@
     box.addEventListener("click", function (ev) { if (ev.target !== img) close(); });
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(box);
+  }
+
+  // ── browser-served artifacts ────────────────────────────────────────────────────
+  // A host that sets `data-artifacts` (agent-monitor-v2's goal 3) wants a clicked file to be
+  // SHOWN, not opened in a Finder window on the server. Off everywhere else: a dumped page
+  // has no server behind it, and a host that has not opted in keeps the reveal behaviour.
+  var ARTIFACTS = document.body.dataset.artifacts === "1";
+
+  // Show one file over the page: an image, or its text. Built on demand and torn down on
+  // close, like `lightbox` — and the Blob URL an image rides on is revoked with it, so
+  // browsing a hundred screenshots leaks neither DOM nor object URLs.
+  function fileview(path, imgUrl, text) {
+    var box = el("div", "lightbox");
+    var panel;
+    if (imgUrl != null) {
+      panel = el("img");
+      panel.src = imgUrl;
+      panel.alt = path;
+    } else {
+      panel = el("pre", "lb-text");
+      panel.textContent = text;
+    }
+    box.appendChild(panel);
+    var cap = el("div", "lb-cap");
+    cap.appendChild(el("span", null, path));
+    var rev = el("button", "lb-act", "Reveal in file manager");
+    rev.onclick = function (ev) {
+      ev.stopPropagation();
+      fetch("__reveal?path=" + encodeURIComponent(path)).then(function (r) {
+        rev.textContent = r.ok ? "revealed ✓" : "not found";
+      });
+    };
+    cap.appendChild(rev);
+    box.appendChild(cap);
+    function close() {
+      box.remove();
+      document.removeEventListener("keydown", onKey, true);
+      if (imgUrl != null) setTimeout(function () { URL.revokeObjectURL(imgUrl); }, 0);
+    }
+    function onKey(ev) {
+      if (ev.key === "Escape") { ev.stopPropagation(); close(); }
+    }
+    // Anywhere outside the content closes; the content and its caption are safe to click.
+    box.addEventListener("click", function (ev) {
+      if (!panel.contains(ev.target) && ev.target !== panel && !cap.contains(ev.target)) close();
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(box);
+  }
+
+  // Ask the server for a path's bytes. `fallback(status)` runs when it declines — a
+  // directory, a binary, something too big, or a path no hosted session explains — and the
+  // callers use it to reveal in the file manager instead, which is what those cases want.
+  function openArtifact(path, fallback) {
+    fetch("file?path=" + encodeURIComponent(path)).then(function (r) {
+      if (!r.ok) { fallback(r.status); return null; }
+      var ct = r.headers.get("content-type") || "";
+      if (ct.indexOf("image/") === 0) {
+        return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null); });
+      }
+      return r.text().then(function (t) { fileview(path, null, t); });
+    }).catch(function () { fallback(0); });
   }
 
   // Total messages — what a reader means by the word: the top-level user and assistant
@@ -2631,18 +2696,23 @@
       });
       return;
     }
-    // A file path in a tool header reveals the file, and never folds the block.
+    // A file path in a tool header opens the file, and never folds the block. On a host that
+    // serves artifacts the file is SHOWN in the page; everywhere else (and whenever the server
+    // declines to serve those bytes) it is revealed in the file manager.
     var tp = e.target.closest(".tool-path");
     if (tp) {
       if (location.protocol === "file:") return; // native file:// link works standalone
       e.preventDefault(); // served page: http→file:// is blocked, so ask the server
       var orig = tp.textContent;
-      fetch("__reveal?path=" + encodeURIComponent(tp.dataset.path))
-        .then(function (r) {
-          tp.textContent = r.ok ? "revealed ✓" : "not found";
-          setTimeout(function () { tp.textContent = orig; }, 1000);
-        })
-        .catch(function () { /* server gone */ });
+      var reveal = function () {
+        fetch("__reveal?path=" + encodeURIComponent(tp.dataset.path))
+          .then(function (r) {
+            tp.textContent = r.ok ? "revealed ✓" : "not found";
+            setTimeout(function () { tp.textContent = orig; }, 1000);
+          })
+          .catch(function () { /* server gone */ });
+      };
+      if (ARTIFACTS) openArtifact(tp.dataset.path, reveal); else reveal();
       return;
     }
     // The agent-transcript link navigates (full page load to `?session=<id>`); let the

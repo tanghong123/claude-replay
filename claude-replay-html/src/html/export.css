@@ -524,7 +524,26 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   max-width: 100%; max-height: calc(100% - 28px); object-fit: contain;
   cursor: default; border-radius: 4px; background: #fff;
 }
-.lb-cap { font: 11.5px var(--mono); color: #e8e4dc; }
+/* A text artifact (the `/file` route): the same modal as an image, with the bytes in a
+   scrollable pane instead of an <img>. White-space preserved, no wrapping games — this is a
+   file view, not a render. */
+.lightbox .lb-text {
+  max-width: 100%; max-height: calc(100% - 28px); overflow: auto; cursor: text;
+  margin: 0; padding: 14px 16px; border-radius: 4px; background: var(--bg); color: var(--fg);
+  font: 12.5px/1.55 var(--mono); white-space: pre; tab-size: 4;
+}
+.lb-cap {
+  font: 11.5px var(--mono); color: #e8e4dc; display: flex; align-items: center; gap: 10px;
+  max-width: 100%;
+}
+/* A deep path is longer than any viewport; keep the tail (the file name) and clip the head. */
+.lb-cap > span { min-width: 0; overflow: hidden; white-space: nowrap; direction: rtl; text-align: left; }
+.lb-act {
+  font: 11px var(--mono); color: #e8e4dc; background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.24); border-radius: 5px; padding: 2px 8px;
+  cursor: pointer;
+}
+.lb-act:hover { background: rgba(255, 255, 255, 0.22); }
 .ts { flex: none; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
 .alink { flex: none; color: var(--faint); opacity: 0.45; font: 12px var(--mono); }
 .uturn:not(.fold) > .alink { margin-top: 3px; }

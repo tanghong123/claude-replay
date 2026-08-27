@@ -139,6 +139,27 @@ fn wait_for(
     panic!("timed out waiting for {what}; last state: {last}");
 }
 
+/// [`wait_for`] against a caller-supplied probe. `view_state` carries the viewport contract
+/// and should stay that; state that belongs to one test (the artifact overlay's) rides here.
+fn wait_probe(
+    tab: &headless_chrome::Tab,
+    what: &str,
+    timeout: Duration,
+    expr: &str,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let t0 = Instant::now();
+    let mut last = serde_json::Value::Null;
+    while t0.elapsed() < timeout {
+        last = eval(tab, expr, false);
+        if pred(&last) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!("timed out waiting for {what}; last state: {last}");
+}
+
 /// The user's gesture, as the page classifies one: wheel events mark intent, and the
 /// renderer fires the real scroll events for the movement (headless "new" renders, so
 /// no synthetic scroll dispatch is needed — that is the point of this harness).
@@ -1041,4 +1062,127 @@ fn the_v2_shell_keeps_the_document_scroller() {
         "the transcript clears the rail: {seen}"
     );
     assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
+}
+
+/// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
+/// `data-artifacts` on `<body>`), clicking a file path in a tool header SHOWS the file's
+/// bytes over the page instead of asking the server to open a Finder window.
+///
+/// A real engine is the only place this is provable end to end: the click rides the same
+/// delegated handler that folds blocks (so the fold must NOT toggle), the reply's
+/// `content-type` decides between an `<img>` and a text pane, and the bytes come from the
+/// `/file` route's containment guard — which is the point of serving them at all. The Rust
+/// side proves what the route refuses; this proves what the page does with what it gets.
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn a_clicked_file_path_opens_its_content_in_the_page() {
+    let _serial = serial();
+    let base = base("artifacts");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    // The file the session "read" — inside the session's own cwd, which is what makes it
+    // servable at all.
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let target = repo.join("hello.txt");
+    std::fs::write(&target, "artifact body line one\nline two\n").unwrap();
+
+    let src = base.join("art.jsonl");
+    let abs = target.display().to_string();
+    let cwd = repo.display().to_string();
+    let mut s = String::new();
+    s.push_str(&format!(
+        "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"read it\"}}]}},\"timestamp\":\"2026-08-21T10:00:00Z\"}}\n"
+    ));
+    s.push_str(&format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{abs}\"}}}}]}},\"timestamp\":\"2026-08-21T10:00:01Z\"}}\n"
+    ));
+    s.push_str(&format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"artifact body line one\\nline two\\n\"}}]}},\"timestamp\":\"2026-08-21T10:00:02Z\"}}\n"
+    ));
+    std::fs::write(&src, s).unwrap();
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    // `/session?id=…&artifacts=1` is the same page `--html` serves, with the host's opt-in —
+    // the flag is a page mode, not a separate renderer.
+    let url = server
+        .url_for_root(0)
+        .expect("hosted")
+        .replace("/index.html?session=", "/session?id=")
+        + "&artifacts=1";
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    // Everything this test asserts, in one page-side probe.
+    const PROBE: &str = r#"{
+        paths: document.querySelectorAll('.tool-path').length,
+        artifacts: document.body.dataset.artifacts === "1",
+        text: (document.querySelector('.lightbox .lb-text') || {}).textContent || null,
+        boxes: document.querySelectorAll('.lightbox').length,
+        open: (function () {
+            var tp = document.querySelector('.tool-path');
+            var f = tp && tp.closest('.fold');
+            return f ? String(f.dataset.open) : "none";
+        })()
+    }"#;
+
+    let ready = wait_probe(
+        &tab,
+        "the tool header with its file path rendered",
+        Duration::from_secs(15),
+        PROBE,
+        |s| s["paths"].as_i64().unwrap_or(0) == 1,
+    );
+    assert_eq!(
+        ready["artifacts"], true,
+        "the host's opt-in reached the page"
+    );
+    let fold_before = ready["open"].clone();
+
+    // Click it exactly as a reader would, then wait for the overlay to hold the FILE's
+    // bytes — not the tool result's rendering of them.
+    eval(
+        &tab,
+        r#"(function () { document.querySelector('.tool-path').click(); return 1; })()"#,
+        false,
+    );
+    let shown = wait_probe(
+        &tab,
+        "the file's content over the page",
+        Duration::from_secs(10),
+        PROBE,
+        |s| s["text"].as_str().is_some_and(|t| t.contains("line two")),
+    );
+    assert_eq!(
+        shown["text"].as_str().unwrap(),
+        "artifact body line one\nline two\n",
+        "the overlay shows the file, whole"
+    );
+    assert_eq!(
+        shown["open"], fold_before,
+        "and the click did not also toggle the fold it sits in"
+    );
+
+    // Escape tears it down — the modal owns the key while it is up.
+    tab.press_key("Escape").unwrap();
+    let gone = wait_probe(
+        &tab,
+        "the overlay closes",
+        Duration::from_secs(5),
+        PROBE,
+        |s| s["boxes"].as_i64().unwrap_or(1) == 0,
+    );
+    assert_eq!(gone["boxes"], 0, "closed");
 }

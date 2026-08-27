@@ -29,6 +29,10 @@
 #v2q { flex: 1; min-width: 0; border: none; outline: none; background: transparent;
   font: 13px var(--sans); color: var(--fg); height: 28px; }
 #v2hits { font: 9.5px var(--mono); color: var(--faint); white-space: nowrap; }
+/* Hit stepping, beside the count. The page's own ▲▼ live in the box this one replaces, so
+   these click THOSE — one search, one set of handlers, two ways in. */
+.v2nav { flex: none; font: 9px var(--mono); color: var(--faint); cursor: pointer; padding: 0 2px; }
+.v2nav:hover { color: var(--fg); }
 #v2list { flex: 1; overflow-y: auto; padding: 4px 0 16px; }
 
 .v2group { margin-top: 6px; }
@@ -102,7 +106,7 @@ body { padding-left: var(--v2-rail-w); }
       <div id="v2mark">agent-monitor <i>v2 · {{VERSION}}</i></div>
       <div id="v2scan"><i></i><span id="v2count"></span></div>
     </div>
-    <div id="v2find"><span>&#9906;</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span></div>
+    <div id="v2find"><span>&#9906;</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span><span class="v2nav" id="v2prev" title="Previous match (⇧⏎)">&#9650;</span><span class="v2nav" id="v2next" title="Next match (⏎)">&#9660;</span></div>
   </div>
   <div id="v2list"></div>
 </aside>
@@ -195,10 +199,22 @@ body { padding-left: var(--v2-rail-w); }
       listEl.appendChild(t);
     }
     if (!shown) {
-      var e = el("div", null, groups.length ? "No session matches." : "Scanning…");
+      var e = el("div", null, groups.length ? emptyText() : "Scanning…");
       e.id = "v2empty";
       listEl.appendChild(e);
     }
+  }
+
+  // ONE search box (goal 2). It filters the session list AND drives the transcript search —
+  // by writing into the page's own `#q` and firing its `input`, so every search behaviour the
+  // viewer has (scoping, highlighting, hit stepping) runs unchanged and unforked. The page
+  // renders its own field hidden for us (`host_search` chrome), so the two boxes read as one.
+  // The list's empty state, when one box serves two kinds of result: a query that names no
+  // session is not a dead end if it is finding things in the transcript — say which.
+  function emptyText() {
+    return q.value && hits.textContent
+      ? "No session matches — searching this transcript instead."
+      : "No session matches.";
   }
 
   function onQuery() {
@@ -209,14 +225,42 @@ body { padding-left: var(--v2-rail-w); }
       inner.value = v;
       inner.dispatchEvent(new Event("input", { bubbles: true }));
     }
+    syncHits();
+  }
+  // The page counts its hits asynchronously, so read the count when it CHANGES rather than
+  // straight after typing — and say, where the empty list would otherwise read as a dead end,
+  // that the same query is still searching the transcript.
+  function syncHits() {
     var c = document.getElementById("qcount");
-    hits.textContent = v && c ? c.textContent : "";
+    hits.textContent = q.value && c ? c.textContent : "";
+    var empty = document.getElementById("v2empty");
+    if (empty) empty.textContent = emptyText();
+  }
+  var qcount = document.getElementById("qcount");
+  if (qcount) {
+    new MutationObserver(syncHits).observe(qcount, {
+      childList: true, characterData: true, subtree: true
+    });
   }
   q.addEventListener("input", onQuery);
+  // Step the transcript's hits by clicking the page's own ▲▼ — the handlers are already
+  // there, and reaching for them beats re-deriving `stepHit` on this side.
+  function step(id) {
+    var b = document.getElementById(id);
+    if (b) b.click();
+    syncHits();
+  }
+  document.getElementById("v2prev").addEventListener("click", function () { step("qprev"); });
+  document.getElementById("v2next").addEventListener("click", function () { step("qnext"); });
+  q.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); step(e.shiftKey ? "qprev" : "qnext"); }
+    if (e.key === "Escape") q.blur();
+  });
   document.addEventListener("keydown", function (e) {
     if (e.key === "/" && document.activeElement !== q &&
         !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
-      e.preventDefault(); q.focus();
+      // Stop it here: the page binds `/` too, and would move focus to the field we hid.
+      e.preventDefault(); e.stopPropagation(); q.focus();
     }
   }, true);
 
