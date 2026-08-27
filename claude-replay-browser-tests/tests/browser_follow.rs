@@ -1003,6 +1003,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
         .and_then(|v| v["sessions"][0]["id"].as_str().map(str::to_string));
     let Some(id) = id else {
         let _ = child.kill();
+        let _ = child.wait(); // reap it: a killed child left unwaited is a zombie for the run
         eprintln!("skip: no sessions on this machine to compose");
         return;
     };
@@ -1050,6 +1051,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
     let _ = child.kill();
+    let _ = child.wait(); // reap it: a killed child left unwaited is a zombie for the run
     let v: serde_json::Value = serde_json::from_str(&seen).unwrap_or(serde_json::Value::Null);
     assert_eq!(v["ok"], true, "the shell composed both panes: {seen}");
     assert_eq!(v["docScrolls"], true, "the document scrolls: {seen}");
@@ -1096,9 +1098,9 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     s.push_str(&format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{abs}\"}}}}]}},\"timestamp\":\"2026-08-21T10:00:01Z\"}}\n"
     ));
-    s.push_str(&format!(
-        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"artifact body line one\\nline two\\n\"}}]}},\"timestamp\":\"2026-08-21T10:00:02Z\"}}\n"
-    ));
+    s.push_str(
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"artifact body line one\\nline two\\n\"}]},\"timestamp\":\"2026-08-21T10:00:02Z\"}\n",
+    );
     std::fs::write(&src, s).unwrap();
 
     let args = Args {

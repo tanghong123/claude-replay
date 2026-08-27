@@ -481,6 +481,14 @@ impl SessionService {
     /// path is the 404. A path whose recorded root has MOVED is re-rooted through
     /// [`remap_reveal`](Self::remap_reveal) first, then held to the same test — relocation
     /// finds the file, containment still decides.
+    ///
+    /// What this DOES admit, deliberately: a session started in a wide directory makes that
+    /// whole tree servable — one recorded in `$HOME` opens the home tree. That is the session's
+    /// own cwd, the tree its edits and reads already name in the transcript this server hands
+    /// out, and the listener's gate (same-user, or the pairing token) already limits every route
+    /// to someone who can read those files anyway. Containment is the SECOND layer, not the
+    /// first; narrowing it further (to the repo root, say) would break the ordinary case of a
+    /// session that reads a sibling checkout.
     fn contained(&self, want: &Path) -> Option<PathBuf> {
         if !want.is_absolute() {
             return None;
