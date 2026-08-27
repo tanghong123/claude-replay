@@ -27,6 +27,43 @@
 
 ## Needs an owner decision (design sketched, unscheduled)
 
+- **Monitor v2 — single app-shell, no iframe** (owner, 2026-08-27; feasibility scouted, not
+  designed). Goals: one shell instead of rail + `<iframe>`; one search box instead of two;
+  every clickable artifact served through the browser rather than today's split (embedded
+  bytes → Blob/`data:`, path-only → `/__reveal` into Finder); feature parity with the
+  claude-replay one-page view, sharing its backend.
+
+  What the scout found:
+  - **Backend sharing is already done.** `service_routes(live, static_dir, name, query)` is the
+    shared surface the monitor already calls, and `/session?id=…&chrome=embed&theme=…` already
+    renders the view for embedding. v2 keeps this; nothing to build.
+  - **The iframe is a LIFECYCLE boundary, not just layout.** `export.js` is one IIFE with ~78
+    module-level state vars and listeners on `document`/`window`, and no teardown. Session
+    switching is `view.src = …` — a full reload, which is what currently disposes of all that
+    state for free. Removing the iframe means an explicit `init(container)`/`destroy()`
+    contract, or a shell reload per switch (which forfeits the app-shell feel). This is the
+    real cost of goal 1 and the thing that decides v2's shape.
+  - **Viewport coupling is avoidable.** 27 sites in `export.js` use `window.scrollY` /
+    `innerHeight` / `document.body.scrollHeight` / `scrollTo` — the follow/pin, jump-to-bottom,
+    turn-landing and search-stepping contract that `claude-replay-browser-tests` exists to
+    protect. Re-deriving it against an overflow container is the expensive path. It is NOT
+    forced: today `html,body{height:100%}` keeps the monitor document unscrolled and the iframe
+    scrolls internally, so a shell that lets the DOCUMENT scroll and makes the rail
+    `position: fixed` removes the iframe while leaving every one of those sites untouched.
+  - **Browser-served artifacts have a containment rule to reuse.** `/__reveal`'s `remap_reveal`
+    already refuses any path no hosted root explains; a `/file?path=` endpoint can reuse that
+    guard plus the existing token gate. Note it becomes a local-file read endpoint — the
+    security review belongs in the design, and "reveal in Finder" probably stays as a secondary
+    action for directories and binaries.
+  - **One search box is federation, not a merge.** The rail searches the session INDEX; the view
+    searches the record stream (`searchNeedle`/`searchScope`). One input over two result kinds;
+    mostly UX design, little architecture. `rail.html` already notes the two boxes were aligned
+    to read as one.
+
+  Decide: whether goal 1 buys an `init`/`destroy` refactor of `export.js`, or v2 ships the
+  fixed-rail composition first (iframe gone, viewport code untouched, session switch still a
+  reload) and takes the lifecycle work only if the reload flash proves unacceptable.
+
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so
   the fold falls back to the tool name and every QoderWork child renders with the type `agent` —
   while the source knows better in two places (`toolUseResult.agentType` on the result, `agentType`
