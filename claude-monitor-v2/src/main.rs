@@ -82,10 +82,14 @@ fn main() -> Result<()> {
             }
             "--agents" => {
                 let v = args.next().context("--agents needs an agent")?;
+                // `qoder` is Qoder CLI and `qoderwork` is QoderWork — two agents with two
+                // stores, as `Agent::from_str` has always had it. Aliasing `qoder` onto
+                // QODERWORK here silently selected the wrong store.
                 only = Some(match v.trim().to_ascii_lowercase().as_str() {
                     "claude" => Agent::CLAUDE,
                     "codex" => Agent::CODEX,
-                    "qoderwork" | "qoder" => Agent::QODERWORK,
+                    "qoder" => Agent::QODER,
+                    "qoderwork" => Agent::QODERWORK,
                     other => anyhow::bail!("unknown agent {other:?}"),
                 });
             }
@@ -263,7 +267,7 @@ fn help_text() -> String {
 agent-monitor-v2 — every agent session on this machine, in one app-shell
 
 USAGE:
-  agent-monitor-v2 [--pair] [--port N] [--agents claude|codex|qoderwork]
+  agent-monitor-v2 [--pair] [--port N] [--agents claude|codex|qoder|qoderwork]
   agent-monitor-v2 --set-passcode
   agent-monitor-v2 --version
 
