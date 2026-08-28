@@ -1117,7 +1117,7 @@ impl Index {
 
 /// Decode a `%XX`-percent-encoded query value (hide keys arrive via `encodeURIComponent` —
 /// a `p:<cwd>` key carries `/`, `:` and spaces). Unknown/short escapes pass through literally.
-pub(crate) fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -1167,7 +1167,7 @@ pub fn state_dir() -> PathBuf {
 /// BOTH exist the old one still wins (its data predates the rename; a stray new dir is
 /// most likely an intermediate run's empty leftover) and a once-per-process warning
 /// names both paths so the user can consolidate.
-pub(crate) fn renamed_dir(base: &std::path::Path, old: &str, new: &str) -> PathBuf {
+pub fn renamed_dir(base: &std::path::Path, old: &str, new: &str) -> PathBuf {
     let (old_p, new_p) = (base.join(old), base.join(new));
     if !old_p.exists() {
         return new_p;
@@ -1886,7 +1886,7 @@ mod tests {
             agent: Agent::CLAUDE,
             cwd: None,
         };
-        let (prog, args) = crate::resume_command(&claude, "do the thing").unwrap();
+        let (prog, args) = crate::control::resume_command(&claude, "do the thing").unwrap();
         assert_eq!(prog, "claude");
         assert!(args.windows(2).any(|w| w == ["--resume", "sid-x"]));
         assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
@@ -1895,7 +1895,7 @@ mod tests {
             agent: Agent::CODEX,
             ..claude
         };
-        let (prog, args) = crate::resume_command(&codex, "go").unwrap();
+        let (prog, args) = crate::control::resume_command(&codex, "go").unwrap();
         assert_eq!(prog, "codex");
         assert!(args.iter().any(|a| a == "resume") && args.contains(&"sid-x".to_string()));
     }

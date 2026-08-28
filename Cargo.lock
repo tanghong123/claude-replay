@@ -288,6 +288,7 @@ name = "claude-monitor-v2"
 version = "1.110.0"
 dependencies = [
  "anyhow",
+ "claude-monitor",
  "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",

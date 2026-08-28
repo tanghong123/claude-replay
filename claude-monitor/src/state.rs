@@ -60,7 +60,7 @@ pub(crate) struct RowFacts {
 const INTEREST_QUIET_SECS: u64 = 3600;
 
 /// Rotate `events.jsonl` past this size, keeping one previous generation.
-const EVENTS_ROTATE_BYTES: u64 = 4 * 1024 * 1024;
+pub const EVENTS_ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// A recent child of the agent process = a tool actually executing. "Recent" is judged
 /// against the session's quiet time plus this slack, so a long-lived MCP server child

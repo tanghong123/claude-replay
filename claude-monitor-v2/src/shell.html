@@ -76,6 +76,35 @@
 .v2dot.growing.unproven { background: transparent; border: 2px solid var(--tool); }
 .v2fork { flex: none; font: 9px var(--mono); color: var(--kw); border: 1px solid var(--kw);
   border-radius: 4px; padding: 0 5px; opacity: .75; }
+/* #133 compose. `inject` marks a live pane that still needs consent, `armed` one already
+   granted — the same three-state vocabulary v1's rail uses, so the two read alike. */
+.v2send { flex: none; font: 12px/1 var(--sans); color: var(--faint); border: none; background: none;
+  cursor: pointer; padding: 1px 4px; border-radius: 5px; opacity: 0; }
+.v2row:hover .v2send { opacity: .75; }
+.v2send:hover { opacity: 1; background: var(--hover); color: var(--fg); }
+.v2send.inject, .v2send.armed { opacity: .85; color: var(--kw); }
+.v2send.armed { color: var(--tool); }
+/* The bar is FIXED and outside the list on purpose: the list re-renders every few seconds,
+   and a compose box inside it would lose whatever was half-typed. */
+#v2compose { position: fixed; left: 12px; bottom: 12px; width: min(420px, calc(100vw - 24px));
+  z-index: 70; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 11px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+#v2chead { display: flex; align-items: center; gap: 8px; font: 12px var(--sans); color: var(--muted); margin-bottom: 6px; }
+#v2cto { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#v2crevoke { flex: none; font: 11px var(--sans); color: var(--link); cursor: pointer; text-decoration: underline; }
+#v2cx { border: none; background: transparent; color: var(--faint); cursor: pointer; font-size: 15px; line-height: 1; }
+#v2ctext, #v2cpass { width: 100%; box-sizing: border-box; font: 13px var(--sans); padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--fg); }
+#v2ctext { resize: vertical; }
+#v2cpass { margin-top: 6px; }
+#v2ctext:focus, #v2cpass:focus { outline: none; border-color: var(--accent); }
+#v2cfoot { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+#v2cmsg { flex: 1; min-width: 0; font: 11px var(--sans); color: var(--faint); }
+#v2cmsg.err { color: var(--delfg); }
+#v2cmsg.ok { color: var(--tool); }
+#v2csend { font: 12px var(--sans); padding: 5px 12px; border: 1px solid var(--accent); border-radius: 7px;
+  background: transparent; color: var(--fg); cursor: pointer; }
+#v2csend:disabled { opacity: .5; cursor: default; }
 .v2x { flex: none; font: 13px/1 var(--sans); color: var(--faint); border: none; background: none;
   cursor: pointer; padding: 1px 5px; border-radius: 5px; opacity: 0; }
 .v2row:hover .v2x, .v2ghead:hover .v2x { opacity: .6; }
@@ -110,6 +139,12 @@ body { padding-left: var(--v2-rail-w); }
   </div>
   <div id="v2list"></div>
 </aside>
+<div id="v2compose" hidden>
+  <div id="v2chead"><span id="v2cto"></span><span id="v2crevoke" hidden>revoke consent</span><button id="v2cx" title="Cancel (Esc)">&times;</button></div>
+  <textarea id="v2ctext" rows="3"></textarea>
+  <input id="v2cpass" type="password" autocomplete="off" placeholder="passcode" hidden>
+  <div id="v2cfoot"><span id="v2cmsg"></span><button id="v2csend">Send prompt</button></div>
+</div>
 <script>
 (function () {
   "use strict";
@@ -118,6 +153,21 @@ body { padding-left: var(--v2-rail-w); }
   var hits = document.getElementById("v2hits");
   var countEl = document.getElementById("v2count");
   var current = new URLSearchParams(location.search).get("session") || "";
+  // #133: the write routes need a token, so the compose affordance exists only when paired —
+  // offering it unpaired would offer a dead end. The server substitutes the flag.
+  var PAIRED = {{PAIRED}};
+  // Two transports, and the row says which one it is:
+  //  • resume — a FINISHED claude/codex session; /api/send resumes it.
+  //  • inject — a LIVE, PROVEN tmux pane; the index marks it `injectable`, and /api/send
+  //    injects only with standing consent.
+  // Constraint 2: a session whose PROJECT has another live session offers neither — with two
+  // live sessions in one cwd we cannot tell which drives it, so we refuse rather than pick.
+  function canResume(r) {
+    return PAIRED && r.state === "finished" && !r.projActive &&
+      (r.agent === "claude" || r.agent === "codex");
+  }
+  function canInject(r) { return PAIRED && !!r.injectable; }
+  function canCompose(r) { return canResume(r) || canInject(r); }
   var groups = [];
   var showHidden = false;
   var collapsed = {};
@@ -167,16 +217,30 @@ body { padding-left: var(--v2-rail-w); }
           a.href = "/?session=" + encodeURIComponent(r.id);
           if (r.id === current) a.setAttribute("aria-current", "true");
           var r1 = el("div", "v2r1");
-          r1.appendChild(el("span", "v2dot " + r.state + (r.state === "growing" && !r.proven ? " unproven" : "")));
+          // `conf` is the index's own word for how the process↔session link was made:
+          // "unconfirmed" is the cwd heuristic, and the dot stays hollow for it rather than
+          // implying a proof the data does not have.
+          r1.appendChild(el("span", "v2dot " + r.state + (r.conf === "unconfirmed" ? " unproven" : "")));
           r1.appendChild(el("span", "v2name", r.name));
-          if (r.fork) r1.appendChild(el("span", "v2fork", "fork"));
+          if (r.isFork) r1.appendChild(el("span", "v2fork", "fork"));
           r1.appendChild(el("span", badgeClass(r.agent), r.agent.slice(0, 2).toUpperCase()));
+          if (canCompose(r)) {
+            var send = el("button", "v2send" + (canInject(r) ? (r.consented ? " armed" : " inject") : ""), "✎");
+            send.title = canInject(r)
+              ? "Send a prompt into this live tmux pane" + (r.consented ? " (consent granted)" : " (asks consent first)")
+              : "Send a prompt — resumes this finished session";
+            send.onclick = function (ev) {
+              ev.preventDefault(); ev.stopPropagation();
+              openCompose(r.id, r.name, canInject(r) ? "tmux" : "resume", !!r.consented);
+            };
+            r1.appendChild(send);
+          }
           var x = el("button", "v2x", r.hidden ? "↺" : "✕");
           x.title = r.hidden ? "Restore" : "Hide this session";
           x.onclick = function (ev) {
             ev.preventDefault(); ev.stopPropagation();
             var p = r.hidden ? "remove" : "add";
-            fetch("/api/hide?" + p + "=" + encodeURIComponent("s:" + r.id)).then(load);
+            fetch("/api/ignore?" + p + "=" + encodeURIComponent(r.ignoreKey || ("s:" + r.id))).then(load);
           };
           r1.appendChild(x);
           var r2 = el("div", "v2r2");
@@ -293,6 +357,122 @@ body { padding-left: var(--v2-rail-w); }
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   });
+
+  // ── #133 compose ────────────────────────────────────────────────────────────────
+  // Two transports; the backend picks by liveness and the UI sets expectations:
+  //  • resume — a FINISHED session; /api/send resumes it (permissions skipped).
+  //  • tmux   — a LIVE pane; /api/send injects, but ONLY with standing CONSENT. An
+  //    unconsented pane makes the button read "Grant & send": one click grants
+  //    (/api/consent) then sends. The grant step is deliberate — it is where the RISK is
+  //    stated, because injected text is input to a live agent running with its permissions.
+  // Same-origin POSTs carry the cmauth cookie and Origin automatically, so `deny_write`
+  // passes on a paired monitor and refuses everywhere else.
+  var compose = (function () {
+    var bar = document.getElementById("v2compose");
+    var to = document.getElementById("v2cto");
+    var text = document.getElementById("v2ctext");
+    var pass = document.getElementById("v2cpass");
+    var msg = document.getElementById("v2cmsg");
+    var sendBtn = document.getElementById("v2csend");
+    var revoke = document.getElementById("v2crevoke");
+    var target = null, mode = "resume", consented = false;
+
+    function updateButton() {
+      sendBtn.textContent = mode === "tmux" ? (consented ? "Send to pane" : "Grant & send") : "Send prompt";
+    }
+    function updateRevoke() { revoke.hidden = !(mode === "tmux" && consented); }
+    function revealPass() { pass.hidden = false; pass.focus(); }
+    function hidePass() { pass.hidden = true; pass.value = ""; }
+    function close() { bar.hidden = true; target = null; hidePass(); }
+    function asJson(r) { return r.json().catch(function () { return { ok: false, error: "HTTP " + r.status }; }); }
+    function postSend(prompt) {
+      return fetch("/api/send?target=" + encodeURIComponent(target),
+        { method: "POST", body: prompt, cache: "no-store" }).then(asJson);
+    }
+    // The passcode rides the BODY, never the query string — a query can be logged.
+    function postGrant(passcode) {
+      return fetch("/api/consent?target=" + encodeURIComponent(target),
+        { method: "POST", body: passcode || "", cache: "no-store" }).then(asJson);
+    }
+    function doSend(prompt) {
+      sendBtn.disabled = true; msg.className = ""; msg.textContent = "sending…";
+      postSend(prompt).then(function (d) {
+        sendBtn.disabled = false;
+        if (d && d.ok) {
+          msg.className = "ok";
+          msg.textContent = mode === "tmux" ? "sent into the pane" : "sent — the session is resuming";
+          setTimeout(close, 900); load();
+        } else if (d && d.code === "no-consent") {
+          // The grant lapsed between opening and sending (the pid changed) — re-offer it.
+          consented = false; updateButton(); updateRevoke();
+          msg.className = "err"; msg.textContent = "this pane needs consent — press “Grant & send”";
+        } else {
+          msg.className = "err"; msg.textContent = (d && d.error) || "could not send";
+        }
+      }).catch(function () {
+        sendBtn.disabled = false; msg.className = "err"; msg.textContent = "could not reach the monitor";
+      });
+    }
+    function send() {
+      var prompt = text.value.trim();
+      if (!prompt || !target) return;
+      if (mode !== "tmux" || consented) { doSend(prompt); return; }
+      sendBtn.disabled = true; msg.className = "";
+      msg.textContent = pass.hidden ? "granting…" : "authorising…";
+      postGrant(pass.value.trim()).then(function (g) {
+        sendBtn.disabled = false;
+        if (g && g.code === "passcode-required") {
+          revealPass(); msg.className = ""; msg.textContent = "Enter your passcode to authorise this pane."; return;
+        }
+        if (g && g.code === "bad-passcode") {
+          revealPass(); msg.className = "err"; msg.textContent = "Incorrect passcode."; pass.select(); return;
+        }
+        if (g && g.code === "locked") {
+          msg.className = "err"; msg.textContent = g.error || "too many attempts — wait a moment."; return;
+        }
+        if (!g || !g.ok) { msg.className = "err"; msg.textContent = (g && g.error) || "could not grant consent"; return; }
+        consented = true; hidePass(); updateButton(); updateRevoke();
+        doSend(prompt);
+      }).catch(function () {
+        sendBtn.disabled = false; msg.className = "err"; msg.textContent = "could not reach the monitor";
+      });
+    }
+    revoke.addEventListener("click", function () {
+      if (!target) return;
+      fetch("/api/consent?op=revoke&target=" + encodeURIComponent(target), { method: "POST", cache: "no-store" })
+        .then(asJson).then(function (d) {
+          consented = false; updateButton(); updateRevoke();
+          msg.className = ""; msg.textContent = (d && d.ok) ? "consent revoked" : "could not revoke";
+          load();
+        });
+    });
+    sendBtn.addEventListener("click", send);
+    document.getElementById("v2cx").addEventListener("click", close);
+    // Enter sends (chat convention); Shift+Enter — or ⌘/Ctrl+Enter — makes a newline. The
+    // handler stops propagation so the transcript page's own keybindings never see it.
+    function onKey(e) {
+      if (e.key === "Escape") { close(); return; }
+      if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) { e.preventDefault(); send(); }
+      e.stopPropagation();
+    }
+    text.addEventListener("keydown", onKey);
+    pass.addEventListener("keydown", onKey);
+
+    return function (id, name, m, isConsented) {
+      target = id; mode = (m === "tmux" ? "tmux" : "resume"); consented = !!isConsented;
+      to.textContent = (mode === "tmux" ? "Inject into: " : "Send to: ") + (name || id);
+      text.placeholder = mode === "tmux"
+        ? "Type a prompt — it is pasted into the live tmux pane and submitted"
+        : "Send a prompt — the session resumes and runs it (permissions skipped)";
+      msg.className = "";
+      msg.textContent = (mode === "tmux" && !consented)
+        ? "Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts."
+        : "";
+      hidePass(); updateButton(); updateRevoke();
+      bar.hidden = false; text.value = ""; text.focus();
+    };
+  })();
+  function openCompose(id, name, mode, consented) { compose(id, name, mode, consented); }
 
   function load() {
     fetch("/api/sessions")

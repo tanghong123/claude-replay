@@ -19,6 +19,9 @@ path = "src/main.rs"
 [dependencies]
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-html = { path = "../claude-replay-html" }
+# The session index and the control plane (#98/#133), from v1's library half. v2 is a second
+# FRONT-END, not a second implementation: one `Index`, one consent store, one pairing token.
+claude-monitor = { path = "../claude-monitor" }
 claude-replay-present = { path = "../claude-replay-present" }
 anyhow = "1"
 serde_json = "1"

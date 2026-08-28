@@ -7,23 +7,29 @@
 //! full navigation per switch (the reload-first decision); a native `init`/`destroy` for the
 //! view's module state is deferred until the reload proves too coarse.
 //!
-//! **Nothing here modifies v1 or the renderer.** The session page is fetched from the same
-//! public backend (`SessionService::page`) and this crate's shell is spliced into it; every
-//! other route is delegated to `service_routes` verbatim. The two monitors run side by side
-//! on different ports and different cache roots, so v2 can be built against real sessions
-//! without touching a working tool.
+//! **This is a front-end, not a second implementation.** The session page comes from the same
+//! public backend (`SessionService::page`) with this crate's shell spliced in, and every other
+//! route is delegated to `service_routes` verbatim. The session INDEX and the whole control
+//! plane come from `claude_monitor`'s library half — the same `Index`, the same proven
+//! session→pane attribution, the same consent store, the same pairing token. A security
+//! surface with two implementations has two behaviours, and "may this prompt be injected into
+//! that pane" is the last question in this repo that should be answered twice.
 //!
-//! Read-only and loopback-only, exactly like v1.
+//! The two monitors run side by side on different ports and different cache roots, so v2 can
+//! be built against real sessions without touching a working tool. Loopback-only, exactly like
+//! v1; the write routes need pairing, exactly like v1.
 
 use anyhow::{Context, Result};
-use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
+use claude_monitor::control::{
+    ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
+};
+use claude_monitor::{control, index};
 use claude_replay_core::{discover, Agent};
 use claude_replay_html::{
-    query_get, service_routes, HttpResponse, PageChrome, RootLock, ServiceConfig, SessionService,
+    query_get, service_routes, AuthGate, HttpResponse, PageChrome, RootLock, ServiceConfig,
+    SessionService,
 };
-use claude_replay_present::cache::{admit, MetaReader, Presentation};
-use serde_json::json;
-use std::collections::HashSet;
+use claude_replay_present::cache::Presentation;
 use std::sync::Arc;
 
 /// v2's own port. v1 keeps 2727 — both must be runnable at once, or v2 could not be
@@ -47,29 +53,6 @@ fn splice(page: &str, shell: &str) -> String {
     }
 }
 
-/// How recent a transcript's last write has to be for the rail to call it live.
-///
-/// v1 PROVES liveness by scanning processes and matching an agent to a session; that machinery
-/// is private to it, and this app must not reach into it. Recency is the honest approximation
-/// available from the public surface, so v2 says "growing/idle/finished" from mtime and does not
-/// claim a proven process. Replacing this with a real liveness probe is its own piece of work.
-const GROWING_SECS: f64 = 90.0;
-const IDLE_SECS: f64 = 30.0 * 60.0;
-
-/// "3m" / "2h" / "4d" — the compact age the rail shows beside a row.
-fn human_age(secs: f64) -> String {
-    let s = secs.max(0.0);
-    if s < 90.0 {
-        format!("{}s", s as u64)
-    } else if s < 90.0 * 60.0 {
-        format!("{}m", (s / 60.0).round() as u64)
-    } else if s < 36.0 * 3600.0 {
-        format!("{}h", (s / 3600.0).round() as u64)
-    } else {
-        format!("{}d", (s / 86400.0).round() as u64)
-    }
-}
-
 /// The id everything here is keyed by: the transcript's FILE STEM.
 ///
 /// Not `discover::session_id`, which reads the id the agent recorded INSIDE the file. The two
@@ -84,209 +67,10 @@ fn stem_of(path: &std::path::Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// What a row shows beside its name, read from this monitor's OWN durable entry (#98 R5).
-///
-/// The entry is written by VISITING a session, so a session never opened here has none — the
-/// row still renders, it simply has no counters yet. That is v1's behaviour too, and the reason
-/// its cost figure additionally rides a ledger: gating cost on visits under-reported a project
-/// twentyfold. v2 reports what the meta stream knows and does not guess at the rest.
-struct Counters {
-    turns: usize,
-    tools: usize,
-    subs: usize,
-    cost: Option<f64>,
-}
-
-fn counters(cache_root: &std::path::Path, sid: &str) -> Option<Counters> {
-    let dir = admit::entry_dir(cache_root, Presentation::Html, sid);
-    let (header, reader) = MetaReader::open(&dir).ok()??;
-    // A fold-behaviour change invalidates the numbers, exactly as it invalidates the records.
-    if header.versions.fold != FOLD_VERSION {
-        return None;
-    }
-    let mut mm = MaterializedMeta::default();
-    for r in reader {
-        mm.push(&r);
-    }
-    Some(Counters {
-        turns: mm.session_meta.turns,
-        tools: mm.session_meta.tools,
-        subs: mm.session_meta.children.len(),
-        cost: claude_replay_core::metrics::total_cost(&mm.tokens).0,
-    })
-}
-
-/// Session ids named in a live agent process's argv — `--resume <uuid>` and friends.
-///
-/// EXACT where it fires, and silent where it does not: an agent launched without a session id
-/// on its command line (the common case for a fresh session) is invisible here. v1 goes further
-/// — it also matches a transcript held open, and falls back to a cwd heuristic scoped to the
-/// newest session of that directory — but that machinery is private to it. So this proves what
-/// it can and the mtime bands below cover the rest, which is stated in the row: `proven` is the
-/// difference between "this process is that session" and "this file changed recently".
-fn live_by_argv() -> HashSet<String> {
-    let mut out = HashSet::new();
-    let Ok(ps) = std::process::Command::new("ps")
-        .args(["-axo", "args="])
-        .output()
-    else {
-        return out;
-    };
-    for line in String::from_utf8_lossy(&ps.stdout).lines() {
-        let first = line.split_whitespace().next().unwrap_or("");
-        let base = first.rsplit('/').next().unwrap_or("");
-        if !matches!(base, "claude" | "codex" | "qoderwork" | "qoder") {
-            continue;
-        }
-        // A uuid-shaped argument is the session it was resumed with.
-        for tok in line.split_whitespace() {
-            let t = tok.trim_matches('"');
-            if t.len() >= 32 && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-                out.insert(t.to_string());
-            }
-        }
-    }
-    out
-}
-
-/// The hide list (#113 in v1): keys this monitor should not show. v2 keeps its own, at its own
-/// root, because it is UI state and not something to share with another app's.
-fn hidden_path(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("hidden.json")
-}
-
-fn hidden_read(root: &std::path::Path) -> HashSet<String> {
-    std::fs::read_to_string(hidden_path(root))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
-        .map(|v| v.into_iter().collect())
-        .unwrap_or_default()
-}
-
-fn hidden_write(root: &std::path::Path, keys: &HashSet<String>) {
-    let mut v: Vec<&String> = keys.iter().collect();
-    v.sort();
-    if let Ok(t) = serde_json::to_string(&v) {
-        let _ = std::fs::write(hidden_path(root), t);
-    }
-}
-
-/// One project's worth of rows in the rail, while the list is being assembled.
-struct Group {
-    /// The project path — the grouping key AND the row's secondary line.
-    key: String,
-    label: String,
-    secondary: String,
-    rows: Vec<serde_json::Value>,
-    /// Newest activity in the group; the sort key, so the project you touched last is on top.
-    latest: f64,
-    growing: usize,
-    idle: usize,
-}
-
-/// The rail's session list, grouped by project — v1's shape, built entirely on the discovery
-/// facade (`store_all` + `project_path` + `session_card` + `session_id`), which is the same API
-/// the developer guide documents for third parties. No access to v1's private index is needed
-/// or taken.
-fn sessions_json(
-    service: &SessionService,
-    cache_root: &std::path::Path,
-    only: Option<Agent>,
-    limit: usize,
-) -> String {
-    let live = live_by_argv();
-    let hidden = hidden_read(cache_root);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or_default();
-    let mut groups: Vec<Group> = Vec::new();
-    for e in discover::store_all(only).into_iter().take(limit) {
-        let Some(id) = stem_of(&e.path) else {
-            continue;
-        };
-        // Registering here is what makes `?session=<id>` resolvable: the shell renders by id,
-        // and the service only knows the ids it has been shown. Idempotent for a known one.
-        service.register_root(&e.path);
-        let card = discover::session_card(e.agent, &e.path);
-        let name = card
-            .as_ref()
-            .and_then(|c| c.title.clone())
-            .or_else(|| card.as_ref().and_then(|c| c.last_prompt.clone()))
-            .unwrap_or_else(|| id.clone());
-        let proj = discover::project_path(&e.path);
-        let key = proj
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| e.agent.label().to_string());
-        let label = proj
-            .as_ref()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| e.agent.label().to_string());
-        let age = now - e.mtime;
-        let proven = live.contains(&id);
-        let state = if proven || age < GROWING_SECS {
-            "growing"
-        } else if age < IDLE_SECS {
-            "idle"
-        } else {
-            "finished"
-        };
-        let c = counters(cache_root, &id);
-        let row = json!({
-            "id": id,
-            "name": name,
-            "agent": e.agent.label(),
-            "state": state,
-            // Did a live process NAME this session, or is this only "the file moved lately"?
-            // The rail shows the difference rather than flattening it into one dot.
-            "proven": proven,
-            "activity": human_age(age),
-            "turns": c.as_ref().map(|c| c.turns),
-            "tools": c.as_ref().map(|c| c.tools),
-            "subs": c.as_ref().map(|c| c.subs),
-            "cost": c.as_ref().and_then(|c| c.cost),
-            "fork": discover::fork_origin(e.agent, &e.path),
-            "hidden": hidden.contains(&format!("s:{id}")),
-        });
-        match groups.iter_mut().find(|g| g.key == key) {
-            Some(g) => {
-                g.rows.push(row);
-                g.latest = g.latest.max(e.mtime);
-                g.growing += usize::from(state == "growing");
-                g.idle += usize::from(state == "idle");
-            }
-            None => groups.push(Group {
-                key: key.clone(),
-                label,
-                secondary: key,
-                rows: vec![row],
-                latest: e.mtime,
-                growing: usize::from(state == "growing"),
-                idle: usize::from(state == "idle"),
-            }),
-        }
-    }
-    groups.sort_by(|a, b| b.latest.total_cmp(&a.latest));
-    let out: Vec<serde_json::Value> = groups
-        .into_iter()
-        .map(|g| {
-            json!({
-                "label": g.label,
-                "secondary": g.secondary,
-                "total": g.rows.len(),
-                "growing": g.growing,
-                "idle": g.idle,
-                "rows": g.rows,
-            })
-        })
-        .collect();
-    json!({ "groups": out }).to_string()
-}
-
 fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
     let mut only: Option<Agent> = None;
+    let mut do_pair = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -305,6 +89,14 @@ fn main() -> Result<()> {
                     other => anyhow::bail!("unknown agent {other:?}"),
                 });
             }
+            // Pairing, shared with v1 (#196 §4.2): the SAME 0600 token file, because the
+            // `cmauth` cookie is scoped to `127.0.0.1` and not to a port — two tokens would
+            // mean whichever page loaded last clobbers the other's cookie, and the other's
+            // writes start 401ing. One token, one consent store, one passcode: one machine.
+            "--pair" | "pair" => do_pair = true,
+            // Terminal-only, like v1's: setting the grant passcode needs shell access, so an
+            // open browser cannot reset the gate that exists to stop it.
+            "--set-passcode" | "set-passcode" => return set_passcode_interactive(),
             "--help" | "-h" => {
                 print!("{}", help_text());
                 return Ok(());
@@ -331,13 +123,33 @@ fn main() -> Result<()> {
         scratch: scratch.clone(),
         root_lock: RootLock::SingleWriter,
     })?);
+    // THE index — v1's, from its library half. Its own cache root (so the two monitors keep
+    // separate durable entries and separate hide lists), but the same scan, the same proven
+    // session→process attribution and the same send decisions. This is what makes v2's compose
+    // affordance mean exactly what v1's means.
+    let idx = Arc::new(index::Index::new(
+        root.clone(),
+        only.into_iter().collect::<Vec<_>>(),
+    ));
 
-    let shell = SHELL.replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
+    // `--pair` mints the shared token; a plain run READS it, so pairing v1 pairs v2 and the
+    // write routes light up in both.
+    if do_pair {
+        ensure_token(&root)?;
+    }
+    let token = read_token(&root);
+    let shell = SHELL
+        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        // The compose affordance exists only when paired: unpaired, every write route 401s,
+        // so offering the button would be offering a dead end (v1's `{{PAIRED}}` rule).
+        .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
+    // The passcode lockout counter, owned by the handler — one per process, one user.
+    let attempts = std::sync::Mutex::new(Attempts::default());
     let handler = {
         let service = service.clone();
+        let idx = idx.clone();
         let shell = shell.clone();
         let scratch = scratch.clone();
-        let root_for_api = root.clone();
         Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
             let (name, query) = (req.name, req.query);
             match name {
@@ -373,24 +185,32 @@ fn main() -> Result<()> {
                         None => HttpResponse::html(empty_shell(&shell)),
                     }
                 }
+                // The session list — the shared index's, so a row's liveness, its counters,
+                // its family and its `injectable`/`consented` facts are ONE derivation. The
+                // register callback is what makes `?session=<id>` resolvable: the shell renders
+                // by id, and the service only knows the ids it has been shown.
                 "api/sessions" => {
-                    HttpResponse::json(sessions_json(&service, &root_for_api, only, 400))
+                    let service = &service;
+                    HttpResponse::json(idx.sessions_json(|path| {
+                        service.register_root(path);
+                    }))
                 }
-                // Hide/restore a session or a project (v1's #113, kept local to v2's own root).
-                "api/hide" => {
-                    let mut keys = hidden_read(&root_for_api);
-                    match (query_get(query, "add"), query_get(query, "remove")) {
-                        (Some(k), _) => {
-                            keys.insert(k.to_string());
-                        }
-                        (_, Some(k)) => {
-                            keys.remove(k);
-                        }
-                        _ => {}
-                    }
-                    hidden_write(&root_for_api, &keys);
-                    HttpResponse::json(json!({"ok": true, "hidden": keys.len()}).to_string())
+                // Hide/restore a session or a project (#113). A local UI preference at this
+                // monitor's own root — not agent control, so it stays a GET like v1's.
+                "api/ignore" => {
+                    let resp = match (query_get(query, "add"), query_get(query, "remove")) {
+                        (Some(k), _) => idx.set_ignore(&index::percent_decode(k), true),
+                        (_, Some(k)) => idx.set_ignore(&index::percent_decode(k), false),
+                        _ => r#"{"ok":false}"#.to_string(),
+                    };
+                    HttpResponse::json(resp)
                 }
+                // The two WRITE routes (#133), verbatim from the shared control plane: send a
+                // prompt into a session (resume it if finished, inject into its tmux pane if
+                // live and proven and consented), and grant/revoke that consent. Both are
+                // `deny_write`-gated inside — POST, same-origin, and a token.
+                "api/send" => control::send_route(&idx, req),
+                "api/consent" => control::consent_route(&idx, req, &attempts),
                 // Everything else — /pull, /records, /session, /__reveal, assets — is the
                 // shared backend, unchanged.
                 _ => service_routes(Some(&service), &scratch, req),
@@ -398,9 +218,15 @@ fn main() -> Result<()> {
         })
     };
 
-    let bound = claude_replay_html::spawn_listener(port, handler)
+    // Paired, the listener enforces the token; unpaired it is D3b (same-user on Linux,
+    // same-machine on macOS) — v1's rule exactly, from the same gate.
+    let gate = match token.as_deref() {
+        Some(t) => AuthGate::with_token(t),
+        None => AuthGate::same_user(),
+    };
+    let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
-    let url = format!("http://127.0.0.1:{bound}/");
+    let url = tokened_url(&format!("http://127.0.0.1:{bound}/"), token.as_deref());
     eprintln!("agent-monitor-v2 serving {url} (loopback only · Ctrl-C to stop)");
     println!("{url}");
     // The listener runs on its own thread; park this one so the process stays up.
@@ -437,16 +263,25 @@ fn help_text() -> String {
 agent-monitor-v2 — every agent session on this machine, in one app-shell
 
 USAGE:
-  agent-monitor-v2 [--port N] [--agents claude|codex|qoderwork]
+  agent-monitor-v2 [--pair] [--port N] [--agents claude|codex|qoderwork]
+  agent-monitor-v2 --set-passcode
   agent-monitor-v2 --version
 
+  --pair            Require a token to reach the monitor, and turn on the write
+                    routes (send a prompt, grant a pane). The SAME 0600 secret
+                    agent-monitor uses — pairing either pairs both.
   --port N          Serve on N instead of {DEFAULT_PORT}.
   --agents AGENT    Only this agent's sessions.
+  --set-passcode    Set (or clear) the passcode that granting injection into a
+                    live session requires. Terminal-only, so an open browser
+                    cannot lift the gate meant to stop it.
 
-Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only, read-only.
+Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only. Reads are open to the
+same user; writing (and reading a local FILE through the page) needs pairing.
 
 v1 (`agent-monitor`, port 2727) is untouched and can run at the same time: this app has its
-own port and its own cache root (~/.cache/agent-monitor-v2), and shares only the backend.
+own port and its own cache root (~/.cache/agent-monitor-v2). It shares v1's backend, its
+session index, and its control plane — the same token, passcode and consent grants.
 "
     )
 }

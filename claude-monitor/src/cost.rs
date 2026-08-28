@@ -62,7 +62,7 @@ struct Entry {
     cursor: Option<MetricsCursor>,
 }
 
-pub(crate) struct CostLedger {
+pub struct CostLedger {
     /// `<cache_root>/costs` — the monitor's own root (R5), beside `html/` and
     /// `ignored.json`.
     dir: PathBuf,

@@ -102,8 +102,26 @@
   own control, the way `embed` already hides the theme toggle, rather than the host reaching
   in with a selector.
 
-  Still to do: the new UX itself beyond the parity rail; compose/send and pairing (writes into
-  live sessions, with a consent model behind them — deliberately deferred, not dropped); and
+  **Compose/send + pairing landed (2026-08-27)** — by SHARING, not porting. `claude-monitor`
+  grew a library half (`[lib]` + `src/lib.rs`), and v2 depends on it: the same `Index` (so a
+  row's liveness, counters, family and `injectable`/`consented` facts are one derivation), the
+  same `ConsentStore`/`Passcode`, the same `send_route`/`consent_route`, the same transports.
+  "May this prompt be injected into that pane" is answered once. v2's `sessions_json`,
+  `live_by_argv`, `counters` and hide list are gone — ~200 lines of second implementation
+  deleted, and `main.rs` in v1 fell from 1056 to 489 lines with nothing but moves.
+
+  **One token for the machine, not one per app.** The `cmauth` cookie is scoped to
+  `127.0.0.1` and NOT to a port, so two tokens would mean whichever page loaded last clobbers
+  the other's cookie and the other's writes start 401ing. `agent-monitor-v2 --pair` mints and
+  reads the same 0600 secret as v1, and one consent store covers the machine. Cache roots stay
+  separate (durable entries, hide list, scan state).
+
+  Known and correct: v2's growth-proof bank (#146) starts EMPTY, since a proof is earned by
+  watching a session grow and a freshly started monitor has watched nothing. So v2 briefly
+  marks fewer rows injectable than a long-running v1 — unproven means no compose, which is the
+  rule working. v1 does the same after a restart.
+
+  Still to do: the new UX itself beyond the parity rail (HELD at the owner's request), and
   whether the reload on session switch is in fact too coarse.
 
 - **QoderWork spawn chips read `Agent(agent: …)`.** Its spawn input names no `subagent_type`, so

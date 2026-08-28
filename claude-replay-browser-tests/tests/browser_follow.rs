@@ -1210,3 +1210,93 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     );
     assert_eq!(gone["boxes"], 0, "closed");
 }
+
+/// Pairing is the MASTER SWITCH for v2's write capability (#133 §7.1), and the rail must say
+/// so with its affordances: unpaired, no row offers a compose button, because every write
+/// route 401s and offering one would offer a dead end; paired, the same rows grow one.
+///
+/// Worth a browser test rather than a unit test because the rule lives in three places that
+/// have to agree — the server's `{{PAIRED}}` substitution, the rail's `canCompose`, and the
+/// route's own `deny_write` — and only a real page exercises the first two together. The run
+/// is isolated by `AGENT_MONITOR_STATE`, so it neither reads nor writes the developer's own
+/// pairing token.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_compose_affordance_appears_only_once_paired() {
+    let _serial = serial();
+    let base = base("v2pair");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+
+    // `paired` says whether to pass `--pair`; both runs share an isolated state dir, so the
+    // second one finds the token the first never minted.
+    let probe = |paired: bool, port: &str| -> (bool, i64) {
+        let mut cmd = std::process::Command::new(&bin);
+        cmd.args(["--port", port])
+            .env("XDG_CACHE_HOME", &base)
+            .env("AGENT_MONITOR_STATE", base.join("state"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if paired {
+            cmd.arg("--pair");
+        }
+        let mut child = cmd.spawn().expect("v2 starts");
+        std::thread::sleep(std::time::Duration::from_millis(1800));
+        let tab = browser.new_tab().unwrap();
+        // Paired, the bare URL 401s — the token file is the one the run just minted, and it
+        // rides the URL exactly as the printed one does.
+        let token = std::fs::read_to_string(base.join("state").join("auth-token"))
+            .map(|t| format!("?token={}", t.trim()))
+            .unwrap_or_default();
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/{token}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        // `PAIRED` is a closure-local var in the shell's IIFE, so the AFFORDANCE is what gets
+        // counted — which is the thing the rule is actually about anyway.
+        let buttons = tab
+            .evaluate("document.querySelectorAll('.v2send').length", true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        let rows = tab
+            .evaluate("document.querySelectorAll('.v2row').length", true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let _ = tab.close(true);
+        let _ = child.kill();
+        let _ = child.wait();
+        (rows > 0, buttons)
+    };
+
+    let (had_rows, unpaired_buttons) = probe(false, "2841");
+    if !had_rows {
+        eprintln!("skip: no sessions on this machine to compose with");
+        return;
+    }
+    assert_eq!(
+        unpaired_buttons, 0,
+        "unpaired: every write route 401s, so no row offers to send"
+    );
+    let (_, paired_buttons) = probe(true, "2842");
+    assert!(
+        paired_buttons > 0,
+        "paired: the sessions that can be resumed or injected offer it ({paired_buttons})"
+    );
+}
