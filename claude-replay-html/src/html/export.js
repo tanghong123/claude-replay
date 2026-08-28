@@ -899,13 +899,33 @@
     document.body.appendChild(box);
   }
 
-  // Ask the server for a path's bytes. `fallback(status)` runs when it declines — a
-  // directory, a binary, something too big, or a path no hosted session explains — and the
-  // callers use it to reveal in the file manager instead, which is what those cases want.
+  // Save bytes the page will not render. The server marks them `attachment` precisely so no
+  // browser renders them either; here that becomes an ordinary download.
+  function saveBlob(path, blob) {
+    var url = URL.createObjectURL(blob);
+    var a = el("a");
+    a.href = url;
+    a.download = path.split("/").pop() || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // Ask the server for a path's bytes. Three outcomes, all of them the file: text and images
+  // are SHOWN, anything else is DOWNLOADED (the server sends it as an attachment, so it is
+  // never rendered as whatever type it claims), and a refusal runs `fallback(status)` — a
+  // directory, something over the cap, a path no hosted session explains, or an unpaired
+  // monitor, where reading local files is not offered at all. The callers reveal in the file
+  // manager instead, which is what those cases want.
   function openArtifact(path, fallback) {
     fetch("file?path=" + encodeURIComponent(path)).then(function (r) {
       if (!r.ok) { fallback(r.status); return null; }
       var ct = r.headers.get("content-type") || "";
+      var cd = r.headers.get("content-disposition") || "";
+      if (cd.indexOf("attachment") >= 0) {
+        return r.blob().then(function (b) { saveBlob(path, b); });
+      }
       if (ct.indexOf("image/") === 0) {
         return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null); });
       }

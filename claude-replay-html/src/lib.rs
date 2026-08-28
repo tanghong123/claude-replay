@@ -8,8 +8,8 @@
 pub mod html_export;
 
 pub use html_export::{
-    display_title, dump_all_html, dump_html, existing_server, handoff_url, mint_token, query_get,
-    serve, service_routes, spawn_listener, spawn_listener_gated, start_server, AuthGate,
+    display_title, dump_all_html, dump_html, existing_server, get_request, handoff_url, mint_token,
+    query_get, serve, service_routes, spawn_listener, spawn_listener_gated, start_server, AuthGate,
     HttpResponse, LiveServer, PageChrome, Request, RootLock, RouteHandler, ServiceConfig,
     SessionService, StaleEpoch,
 };

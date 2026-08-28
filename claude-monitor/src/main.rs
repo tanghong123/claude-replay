@@ -759,11 +759,15 @@ fn main() -> Result<()> {
                     } else {
                         format!("{query}&chrome=embed")
                     };
-                    service_routes(Some(&service), &scratch, name, &q)
+                    service_routes(
+                        Some(&service),
+                        &scratch,
+                        &claude_replay_html::Request { query: &q, ..*req },
+                    )
                 }
                 // Everything else is the session service's own wire surface —
                 // /session, /pull, /records, /__reveal, static assets (§6.3).
-                _ => service_routes(Some(&service), &scratch, name, query),
+                _ => service_routes(Some(&service), &scratch, req),
             }
         })
     };

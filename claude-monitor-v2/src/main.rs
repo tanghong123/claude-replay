@@ -393,7 +393,7 @@ fn main() -> Result<()> {
                 }
                 // Everything else — /pull, /records, /session, /__reveal, assets — is the
                 // shared backend, unchanged.
-                _ => service_routes(Some(&service), &scratch, name, query),
+                _ => service_routes(Some(&service), &scratch, req),
             }
         })
     };

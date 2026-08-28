@@ -81,10 +81,19 @@
   window and not for moving bytes. The route got POSITIVE containment instead: canonicalize
   both sides (a symlink out of a contained tree is what a textual prefix test loses), then
   require a hosted session's `cwd`, `project_path`, or transcript dir to explain the path.
-  Content-typing is an allowlist — text as `text/plain`, raster images as themselves, nothing
-  else — because the page holds the monitor's cookie on the monitor's origin, so serving a
-  repo's `.html` or `.svg` as itself is stored XSS with the agent's whole file history as the
-  payload surface. `nosniff` + `Content-Security-Policy: sandbox` on every reply.
+  Nothing is ever served as ACTIVE content: anything that decodes as UTF-8 comes back as
+  `text/plain` (markup included — you get to READ the file), raster images as themselves, and
+  everything else as an `attachment` the browser SAVES rather than renders (owner, 2026-08-27:
+  "for anything that cannot be safely rendered, offer them as downloads"). Serving a repo's
+  `.html` or `.svg` as itself would be stored XSS with the agent's whole file history as the
+  payload surface, since the page holds the monitor's cookie on the monitor's origin.
+  `nosniff` + `Content-Security-Policy: sandbox` on every reply.
+
+  **Reading local files requires PAIRING** (owner, 2026-08-27). The route needs a valid token
+  and a same-origin request, so unpaired it is absent rather than narrowed — which is exactly
+  where the connection gate is weakest: an unpaired loopback listener on macOS admits every
+  local user. Unpaired pages keep today's reveal-in-Finder behaviour; `service_routes` now
+  takes the whole `Request` so a route can see that verdict.
 
   **Goal 2 landed** — one visible search box. The rail's box filters the session list AND
   drives the transcript search by writing into the page's own `#q`, so scoping, highlighting

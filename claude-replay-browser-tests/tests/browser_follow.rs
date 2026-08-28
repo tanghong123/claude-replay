@@ -1103,18 +1103,40 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     );
     std::fs::write(&src, s).unwrap();
 
-    let args = Args {
-        no_cache: true,
-        ..Default::default()
+    // A PAIRED server, stood up from the public API — `/file` is offered only to a client
+    // holding the token (owner, 2026-08-27), so an unpaired `--html` server is the wrong
+    // subject: it would exercise the fallback, not the feature. This is the same composition
+    // `agent-monitor-v2` uses: one `SessionService`, `service_routes` for everything, and the
+    // gate carrying the token.
+    let service = std::sync::Arc::new(
+        claude_replay_html::SessionService::new(claude_replay_html::ServiceConfig {
+            cache_root: Some(base.join("cache")),
+            presentation: claude_replay_present::cache::Presentation::Html,
+            fold: Default::default(),
+            scratch: base.join("scratch"),
+            root_lock: claude_replay_html::RootLock::PerSession,
+        })
+        .expect("service"),
+    );
+    let id = service.register_root(&src);
+    let dir = base.join("scratch");
+    let handler = {
+        let service = service.clone();
+        std::sync::Arc::new(move |req: &claude_replay_html::Request| {
+            claude_replay_html::service_routes(Some(&service), &dir, req)
+        })
     };
-    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let token = "browser-test-token";
+    let port = claude_replay_html::spawn_listener_gated(
+        0,
+        handler,
+        claude_replay_html::AuthGate::with_token(token),
+    )
+    .expect("listener binds");
     // `/session?id=…&artifacts=1` is the same page `--html` serves, with the host's opt-in —
-    // the flag is a page mode, not a separate renderer.
-    let url = server
-        .url_for_root(0)
-        .expect("hosted")
-        .replace("/index.html?session=", "/session?id=")
-        + "&artifacts=1";
+    // the flag is a page mode, not a separate renderer. The token rides the first URL and
+    // comes back as the cookie every later fetch carries.
+    let url = format!("http://127.0.0.1:{port}/session?id={id}&artifacts=1&token={token}");
 
     let browser = headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()

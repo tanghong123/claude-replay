@@ -1128,9 +1128,7 @@ fn spawn_http_server(
 ) -> Result<u16> {
     spawn_listener(
         0,
-        std::sync::Arc::new(move |req: &Request| {
-            service_routes(live.as_deref(), &root, req.name, req.query)
-        }),
+        std::sync::Arc::new(move |req: &Request| service_routes(live.as_deref(), &root, req)),
     )
 }
 
@@ -1199,6 +1197,20 @@ impl HttpResponse {
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
         }
+    }
+}
+
+/// A plain GET [`Request`] for `name`/`query` — the shape most routes see. `authenticated`
+/// says whether the caller presented a valid token (the paired case), which is what `/file`
+/// turns on; everything else ignores it.
+pub fn get_request<'a>(name: &'a str, query: &'a str, authenticated: bool) -> Request<'a> {
+    Request {
+        method: "GET",
+        name,
+        query,
+        body: &[],
+        authenticated,
+        origin_ok: true,
     }
 }
 
@@ -1578,6 +1590,26 @@ fn raster_type(ext: &str) -> Option<&'static str> {
     })
 }
 
+/// A `Content-Disposition` filename that cannot break out of the header: the basename, with
+/// quotes, backslashes and control characters (CR/LF above all) dropped. A downloaded file is
+/// named by a path the SESSION recorded, not by anything the server chose, so the sanitizing
+/// belongs here rather than in a caller's assumption.
+fn download_name(path: &Path) -> String {
+    let base = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    if cleaned.is_empty() {
+        "download".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// Hardening headers for every `/file` reply: never let the browser re-sniff the type we
 /// chose, and run the response under an empty sandbox origin even if one slipped through.
 fn artifact_headers() -> Vec<String> {
@@ -1757,15 +1789,19 @@ fn extract_token(query: &str, headers: &str) -> (Option<String>, bool) {
 }
 
 /// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/session`, `/pull`,
-/// `/records`, `/__reveal`, then static files out of `static_dir`. Returns a plain
+/// `/records`, `/__reveal`, `/file`, then static files out of `static_dir`. Returns a plain
 /// [`HttpResponse`], so a host chains its own routes in front and falls back to this —
 /// `--html`'s listener is exactly that with zero routes of its own.
+///
+/// Takes the whole [`Request`], not just `name`/`query`: `/file` reads the local filesystem,
+/// and deciding that needs the request's auth verdicts (`authenticated`, `origin_ok`), which
+/// only the connection layer can compute.
 pub fn service_routes(
     live: Option<&SessionService>,
     static_dir: &Path,
-    name: &str,
-    query: &str,
+    req: &Request,
 ) -> HttpResponse {
+    let (name, query) = (req.name, req.query);
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
     // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
     if name == "session" {
@@ -1838,24 +1874,39 @@ pub fn service_routes(
         };
     }
     // `/file?path=<url-encoded abs path>` — the artifact route: hand the file's BYTES to the
-    // page instead of opening a Finder window on the server. Guarded three ways, because this
-    // is the one route that reads arbitrary disk paths:
+    // page instead of opening a Finder window on the server. This is the one route that reads
+    // an arbitrary disk path, so it is guarded four ways:
     //
-    //  1. containment — `contained` above: some hosted session must explain the path;
-    //  2. a size cap — a viewer, not a file server (over it, the page reveals instead);
-    //  3. a content-type allowlist — text and raster images ONLY.
+    //  1. PAIRING — a valid token, plus a same-origin request. Reading the local filesystem
+    //     over HTTP is a capability the owner opts into (owner, 2026-08-27); unpaired, the
+    //     route is not merely limited, it is absent. This matters most where the connection
+    //     gate is weakest: on macOS an unpaired loopback listener admits every local user
+    //     (§4.2's D3b), and the token is exactly what closes that.
+    //  2. containment — `contained` above: some hosted session must explain the path;
+    //  3. a size cap — a viewer, not a file server (over it, the page reveals instead);
+    //  4. a rendering decision, never a sniff: bytes the browser can show SAFELY are shown,
+    //     and everything else is handed over as a DOWNLOAD.
     //
-    // (3) is the subtle one. The page is served from the monitor's own origin, which holds the
+    // (4) is the subtle one. The page is served from the monitor's own origin, which holds the
     // `cmauth` cookie, so serving a repo's `.html` (or an `.svg`, which is script-bearing) as
-    // itself would run that repo's markup with the monitor's credentials — a stored XSS whose
-    // payload is any file the agent ever touched. Text is served as `text/plain`, images by
-    // their raster type, everything else is refused with 415 and revealed instead.
-    // `nosniff` stops a browser from second-guessing the type it was given, and the sandbox
-    // policy is the belt to that braces.
+    // ITSELF would run that repo's markup with the monitor's credentials — a stored XSS whose
+    // payload is any file the agent ever touched. So nothing is ever served as active content:
+    // anything that decodes as UTF-8 goes back as `text/plain` (markup included — you get to
+    // READ the file, which is the point), raster images by their own type, and everything else
+    // as an `attachment` the browser saves rather than renders. `nosniff` stops the browser
+    // second-guessing the type it was given; the sandbox policy is the belt to that braces.
     if name == "file" {
         let Some(live) = live else {
             return HttpResponse::not_found("no live server");
         };
+        if !req.authenticated || !req.origin_ok {
+            // A distinct code, so the page can fall back to revealing in the file manager
+            // rather than reading this as a missing file.
+            return artifact_refused(
+                "401 Unauthorized",
+                "reading local files requires pairing — run `agent-monitor --pair`",
+            );
+        }
         let Some(raw) = query_get(query, "path") else {
             return HttpResponse::not_found("no such path");
         };
@@ -1867,6 +1918,7 @@ pub fn service_routes(
             return HttpResponse::not_found("no such path");
         };
         if !meta.is_file() {
+            // A directory has no bytes to hand over; revealing it is what the click meant.
             return artifact_refused("415 Unsupported Media Type", "not a file");
         }
         if meta.len() > MAX_ARTIFACT_BYTES {
@@ -1880,15 +1932,26 @@ pub fn service_routes(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let ct = match raster_type(&ext) {
-            Some(ct) => ct,
-            // Not an image: serve it only if it really is text. `from_utf8` on the whole body
-            // is the check — an extension is a claim, the bytes are the evidence.
-            None if std::str::from_utf8(&bytes).is_ok() => "text/plain; charset=utf-8",
-            None => return artifact_refused("415 Unsupported Media Type", "not text or image"),
+        let mut r = match raster_type(&ext) {
+            Some(ct) => HttpResponse::ok(ct, bytes),
+            // Not an image: show it as text only if it really IS text. `from_utf8` over the
+            // whole body is the check — an extension is a claim, the bytes are the evidence.
+            None if std::str::from_utf8(&bytes).is_ok() => {
+                HttpResponse::ok("text/plain; charset=utf-8", bytes)
+            }
+            // Bytes this page cannot show safely are still the user's file: hand them over as
+            // a download instead of refusing. `attachment` means the browser saves it and
+            // never renders it, so the type it would have claimed stops mattering.
+            None => {
+                let mut r = HttpResponse::ok("application/octet-stream", bytes);
+                r.headers.push(format!(
+                    "Content-Disposition: attachment; filename=\"{}\"",
+                    download_name(&path)
+                ));
+                r
+            }
         };
-        let mut r = HttpResponse::ok(ct, bytes);
-        r.headers = artifact_headers();
+        r.headers.extend(artifact_headers());
         return r;
     }
     // `/__reveal?path=<url-encoded abs path>` — reveal a file in the OS file manager (the
@@ -3173,12 +3236,8 @@ mod tests {
         .unwrap();
         live.register_root(&sess);
         let get = |p: &std::path::Path| {
-            service_routes(
-                Some(&live),
-                &dir,
-                "file",
-                &format!("path={}", p.display().to_string().replace(' ', "%20")),
-            )
+            let q = format!("path={}", p.display().to_string().replace(' ', "%20"));
+            service_routes(Some(&live), &dir, &get_request("file", &q, true))
         };
 
         // Inside the session's cwd: served, as text, hardened.
@@ -3210,11 +3269,19 @@ mod tests {
         // …and by traversal, which canonicalization flattens before the prefix test.
         assert_eq!(get(&repo.join("../outside/secret")).code, "404 Not Found");
 
-        // A directory and a binary are refusals the PAGE acts on: it reveals them instead.
+        // A directory has no bytes to hand over — a refusal the PAGE acts on by revealing it.
         assert_eq!(get(&repo).code, "415 Unsupported Media Type");
-        assert_eq!(
-            get(&repo.join("bin.dat")).code,
-            "415 Unsupported Media Type"
+        // Bytes that cannot be SHOWN safely are still the user's file: they come back as a
+        // download, never as a refusal and never as a type a browser would execute.
+        let r = get(&repo.join("bin.dat"));
+        assert_eq!(r.code, "200 OK");
+        assert_eq!(r.content_type, "application/octet-stream");
+        assert!(
+            r.headers
+                .iter()
+                .any(|h| h == "Content-Disposition: attachment; filename=\"bin.dat\""),
+            "handed over as a download: {:?}",
+            r.headers
         );
 
         // Over the cap: a viewer, not a file server.
@@ -3222,9 +3289,26 @@ mod tests {
         std::fs::write(&big, vec![b'x'; MAX_ARTIFACT_BYTES as usize + 1]).unwrap();
         assert_eq!(get(&big).code, "413 Content Too Large");
 
+        // Unpaired, the route is ABSENT, not merely narrowed (owner, 2026-08-27): reading the
+        // local filesystem over HTTP is a capability the owner opts into with `--pair`, and an
+        // unpaired loopback listener on macOS admits every local user. Same for a request whose
+        // Origin is not ours — a foreign page must not drive it with the ambient cookie.
+        let a_rs = format!("path={}", repo.join("a.rs").display());
+        let unpaired = service_routes(Some(&live), &dir, &get_request("file", &a_rs, false));
+        assert_eq!(unpaired.code, "401 Unauthorized");
+        let cross_site = service_routes(
+            Some(&live),
+            &dir,
+            &Request {
+                origin_ok: false,
+                ..get_request("file", &a_rs, true)
+            },
+        );
+        assert_eq!(cross_site.code, "401 Unauthorized");
+
         // No live server (a static bundle): the route has no roots to reason about.
         assert_eq!(
-            service_routes(None, &dir, "file", "path=/etc/hosts").code,
+            service_routes(None, &dir, &get_request("file", "path=/etc/hosts", true)).code,
             "404 Not Found"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3331,19 +3415,16 @@ mod tests {
         );
 
         // The route itself: unknown ids 404; a valid id serves the page.
-        let r = service_routes(
-            Some(&live),
-            &dir,
-            "session",
-            &format!("id={id}&chrome=embed"),
-        );
+        let q = format!("id={id}&chrome=embed");
+        let r = service_routes(Some(&live), &dir, &get_request("session", &q, false));
         assert_eq!(r.code, "200 OK");
-        let r = service_routes(Some(&live), &dir, "session", "id=nope");
+        let r = service_routes(Some(&live), &dir, &get_request("session", "id=nope", false));
         assert_eq!(r.code, "404 Not Found");
         // `session=` is accepted as an alias for `id` (#120): the embedded view navigates
         // sub-agents with a relative `?session=<child>` href, so the drill-down URL becomes
         // `/session?session=<child>` — reading only `id` 404'd every drill-down.
-        let r = service_routes(Some(&live), &dir, "session", &format!("session={id}"));
+        let q2 = format!("session={id}");
+        let r = service_routes(Some(&live), &dir, &get_request("session", &q2, false));
         assert_eq!(r.code, "200 OK", "session= is an alias for id=");
         let _ = std::fs::remove_dir_all(&dir);
     }
