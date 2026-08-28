@@ -2651,6 +2651,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 
@@ -2868,6 +2869,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let a = vec![
             Block::UserText("go".into()),
@@ -2976,6 +2978,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::AssistantText("done with a fairly long line that wraps at ten".into()),
         ];
@@ -3028,6 +3031,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::AssistantText("done".into()),
             Block::ToolUse {
@@ -3039,6 +3043,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -3168,6 +3173,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // A Bash header whose "target" is a command, not a path.
         let bash = Block::ToolUse {
@@ -3179,6 +3185,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // (block, a column that lands inside its `(path)` span). Header layout is
         // `⏺ <DisplayName>(` — Write=7, Update=8, Read=6 cols before the path.
@@ -3233,6 +3240,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
         v.set_cwd(Some(dead));
@@ -3281,6 +3289,7 @@ mod tests {
                 read_lines: None,
                 cwd,
                 execution: None,
+                published: None,
             }]
         };
 
@@ -3340,6 +3349,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // A trailing assistant block gives a distinct neighbour tag to compare with.
         let mut v = View::new(
@@ -3406,6 +3416,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3579,6 +3590,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let mut v = View::new(vec![bash], "t", false, FoldPolicy::none());
         let buf = draw(&mut v, w, 12);
@@ -3640,6 +3652,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3761,6 +3774,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let blocks = vec![Block::UserText("root".into()), sa, bash];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -4250,6 +4264,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::ToolResult("a\nb\nc".into()),
             Block::ToolUse {
@@ -4261,6 +4276,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::ToolUse {
                 name: "Write".into(),
@@ -4271,6 +4287,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
         ]
     }
@@ -4326,6 +4343,7 @@ mod tests {
             read_lines: Some(3),
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // 0: assistant (not foldable), 1: Bash, 2: Read — both fold by default.
         let blocks = vec![Block::AssistantText("hi".into()), mk("Bash"), mk("Read")];
@@ -4377,6 +4395,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let result = Block::ToolResult("some output line".into());
         let blocks = vec![Block::AssistantText("hi".into()), edit, result];
@@ -4624,6 +4643,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             });
         }
         let n = blocks.len();
@@ -4917,6 +4937,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         bs[11] = Block::ToolUse {
             name: "Read".into(),
@@ -4927,6 +4948,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
         // absorbed tool, so only `b:`/`o:` reach it. `t:` owns the thinking prose, not
@@ -4943,6 +4965,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             }],
         };
         bs[5] = Block::ToolUse {
@@ -4954,6 +4977,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
         draw(&mut v, 60, 14);
@@ -5073,6 +5097,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             }],
         };
         let mut v = View::new(vec![act], "t", false, FoldPolicy::none());

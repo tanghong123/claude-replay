@@ -840,6 +840,7 @@ impl Emitter<'_> {
                 read_lines,
                 cwd,
                 execution,
+                published,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -876,6 +877,22 @@ impl Emitter<'_> {
                     if let Some(abs) = resolve_abs(base, target) {
                         head.insert("path".into(), json!(abs));
                     }
+                }
+                // An artifact this call published (its URL, name and description). Two jobs:
+                // the header's label becomes a real link, and the page can group every
+                // republish back into the handful of artifacts they address — twenty calls
+                // for two decks, in the session that motivated this. A STATIC fact of the
+                // call, so it is safe in a cached record.
+                if let Some(p) = published.as_deref() {
+                    head.insert(
+                        "artifact".into(),
+                        json!({
+                            "url": p.url,
+                            "name": p.name,
+                            "icon": p.icon,
+                            "desc": p.description,
+                        }),
+                    );
                 }
                 let token = highlight::token_for_target(target);
                 match kind {
@@ -1272,6 +1289,13 @@ fn build_page(
       <div id="agentmenu">
         <div class="menu-head">Sub-agents of this session</div>
         <div id="agentitems"></div>
+      </div>
+    </div>
+    <div class="toolfilter" id="artifactnav" style="display:none">
+      <button id="btn-artifacts" class="tbtn"><span class="tf-label">Artifacts ▾</span></button>
+      <div id="artifactmenu">
+        <div class="menu-head">Artifacts published from this session</div>
+        <div id="artifactitems"></div>
       </div>
     </div>
     {searchbox}
@@ -2088,6 +2112,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -2180,6 +2205,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -2280,6 +2306,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 
@@ -2839,6 +2866,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 
@@ -2927,6 +2955,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 
@@ -3292,6 +3321,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -3406,6 +3436,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -3520,6 +3551,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             bash("ls -la", "out"),
         ];
@@ -3541,6 +3573,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.

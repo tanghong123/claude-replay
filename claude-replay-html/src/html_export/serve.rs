@@ -124,7 +124,7 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     /// the markup changed, the schema did not, and the session that motivated the fix went on
     /// serving the version without it. If a change alters what any block CARRIES, it lands
     /// here too.
-    const RECORD_SCHEMA: u16 = 9;
+    const RECORD_SCHEMA: u16 = 10;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

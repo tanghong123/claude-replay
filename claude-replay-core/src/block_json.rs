@@ -285,6 +285,7 @@ mod tests {
                     nanos: 530_000_000,
                 }),
             }),
+            published: None,
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);

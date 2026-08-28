@@ -793,6 +793,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             patch,
             read_lines,
             execution,
+            published,
             ..
         } => {
             // A `Workflow` call's input is the script, so it builds with nothing to show for
@@ -829,6 +830,21 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                 });
                 if e.status.is_none() {
                     e.status = Some(ToolStatus::Failed);
+                }
+            }
+            // An `Artifact` publish: the URL arrives only now, in the result's prose. With it
+            // the block becomes a link to a real thing and the output is dropped — the rest of
+            // that result is instructions to the AGENT (how to republish, that artifacts are
+            // private), not information about the artifact, and the `{}` raw toggle still has
+            // the original. Without a URL the call published nothing, so the fact goes away and
+            // an ordinary tool block is what is left.
+            if let Some(p) = published.as_deref_mut() {
+                match artifact_url(txt) {
+                    Some(url) => {
+                        p.url = url;
+                        *output = None;
+                    }
+                    None => *published = None,
                 }
             }
         }
@@ -1169,12 +1185,17 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
         // provided successfully"). A block that keeps only the result therefore showed an empty
         // call where the agent's entire work was — so carry the payload itself.
         let structured = name == "StructuredOutput";
+        let publish = artifact_publish(name, input);
         Block::ToolUse {
             name: name.to_string(),
-            target: if structured {
-                structured_fields(input)
-            } else {
-                tool_target(input, cwd)
+            // An artifact publish is labelled by the ARTIFACT — `🧭 rowt-deck`, the name a
+            // reader uses for it — not by the local file that happened to hold its markup.
+            // Setting it here rather than in each presenter means every header path (collapsed,
+            // expanded, TUI, HTML, the block-stream vocabulary) agrees for free.
+            target: match (&publish, structured) {
+                (Some(p), _) => p.label(),
+                (None, true) => structured_fields(input),
+                (None, false) => tool_target(input, cwd),
             },
             diffs: extract_diffs(name, input),
             output: if structured {
@@ -1186,8 +1207,71 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             read_lines: None,
             cwd: cwd.to_string(),
             execution: None,
+            published: publish.map(Box::new),
         }
     }
+}
+
+/// The half of an `Artifact` publish that the CALL knows: what to call it, what it is, and the
+/// emoji it chose. The other half — the URL, which is the artifact's only stable handle —
+/// exists nowhere in the input; [`artifact_url`] lifts it out of the result's prose once that
+/// arrives, and a call whose result yields no URL drops this again (it was not a publish).
+///
+/// Only a publish qualifies: the tool also lists, reads, watches and comments, and none of
+/// those produce a thing to open. `action` absent means publish (the tool's own default).
+fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
+    if name != "Artifact" {
+        return None;
+    }
+    let action = input
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("publish");
+    if action != "publish" {
+        return None;
+    }
+    let file = input.get("file_path").and_then(|v| v.as_str())?;
+    // The name the reader will see. A `title` was given for it; otherwise the file's stem,
+    // which is what the terminal shows and what an owner calls it ("rowt-deck").
+    let name = input
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            std::path::Path::new(file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(file)
+                .to_string()
+        });
+    Some(Published {
+        name,
+        url: String::new(), // filled from the result
+        description: input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        icon: input
+            .get("favicon")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
+/// The URL an `Artifact` result announces — `Published <path> at <url>`, followed by several
+/// paragraphs of instructions to the agent. Matched on the URL SHAPE rather than the sentence,
+/// so a reworded result keeps working; anything else yields `None` and the block stays an
+/// ordinary tool call.
+fn artifact_url(txt: &str) -> Option<String> {
+    let at = txt.find("https://")?;
+    let url: String = txt[at..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '<' && *c != ')')
+        .collect();
+    (url.len() > "https://".len()).then_some(url)
 }
 
 /// A `StructuredOutput` call's label: the payload's top-level field names, which say what the
@@ -1383,6 +1467,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     read_lines: None,
                                     cwd: cwd.clone(),
                                     execution: None,
+                                    published: None,
                                 });
                             }
                             let idx = out.len() - 1;
@@ -2744,6 +2829,80 @@ mod tests {
             kinds(&blocks),
             vec!["user", "edit", "thinking"],
             "{blocks:?}"
+        );
+    }
+
+    /// An `Artifact` publish is lifted out of prose into a fact: the block is labelled by
+    /// the ARTIFACT (`🧭 rowt-deck`, not the local `.html` that held its markup), carries the
+    /// URL that only the RESULT knew, and drops that result — the rest of it is instructions to
+    /// the agent, and the raw toggle still has them.
+    ///
+    /// The two negatives are the ones that keep this honest: a non-publish action (the tool also
+    /// lists, reads and comments) is an ordinary tool call, and so is a publish whose result
+    /// announced no URL — it published nothing, so there is nothing to link.
+    #[test]
+    fn an_artifact_publish_becomes_a_linkable_fact() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-08-28T10:00:00.000Z","message":{"content":"publish it"}}
+{"type":"assistant","timestamp":"2026-08-28T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"a1","name":"Artifact","input":{"file_path":"/w/deck/rowt-deck.html","description":"A 24-slide tour.","favicon":"🧭"}}]}}
+{"type":"user","timestamp":"2026-08-28T10:00:03.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"Published /w/deck/rowt-deck.html at https://claude.ai/code/artifact/f37a45eb-a40c\n\nTo update: republish the same file path."}]}}
+{"type":"assistant","timestamp":"2026-08-28T10:00:04.000Z","message":{"content":[{"type":"tool_use","id":"a2","name":"Artifact","input":{"action":"list","limit":5}}]}}
+{"type":"user","timestamp":"2026-08-28T10:00:05.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a2","content":"1. rowt-deck — https://claude.ai/code/artifact/f37a45eb-a40c"}]}}
+{"type":"assistant","timestamp":"2026-08-28T10:00:06.000Z","message":{"content":[{"type":"tool_use","id":"a3","name":"Artifact","input":{"file_path":"/w/deck/other.html","description":"nope","favicon":"📄"}}]}}
+{"type":"user","timestamp":"2026-08-28T10:00:07.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a3","content":"Refused: publishing is not enabled for this account."}]}}
+"#;
+        let blocks = parse(jsonl);
+        let tools: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ToolUse { name, .. } if name == "Artifact"))
+            .collect();
+        assert_eq!(tools.len(), 3, "{blocks:?}");
+
+        let Block::ToolUse {
+            target,
+            output,
+            published,
+            ..
+        } = tools[0]
+        else {
+            unreachable!()
+        };
+        let p = published
+            .as_deref()
+            .expect("a publish carries its artifact");
+        assert_eq!(
+            target, "🧭 rowt-deck",
+            "labelled by the artifact, not the file"
+        );
+        assert_eq!(p.name, "rowt-deck");
+        assert_eq!(p.url, "https://claude.ai/code/artifact/f37a45eb-a40c");
+        assert_eq!(p.description, "A 24-slide tour.");
+        assert_eq!(p.icon, "🧭");
+        assert_eq!(p.label(), "🧭 rowt-deck");
+        assert!(
+            output.is_none(),
+            "the result was instructions to the agent, not information: {output:?}"
+        );
+
+        // `action: list` names no file and publishes nothing — an ordinary tool call, even
+        // though its OUTPUT happens to contain an artifact URL.
+        let Block::ToolUse { published, .. } = tools[1] else {
+            unreachable!()
+        };
+        assert!(published.is_none(), "a listing published nothing");
+
+        // A publish whose result announced no URL: the fact is dropped rather than left
+        // half-built, so nothing renders a link to nowhere.
+        let Block::ToolUse {
+            published, output, ..
+        } = tools[2]
+        else {
+            unreachable!()
+        };
+        assert!(published.is_none(), "no URL ⇒ nothing was published");
+        assert!(
+            output.as_deref().is_some_and(|o| o.contains("Refused")),
+            "and its result is kept, being a real one: {output:?}"
         );
     }
 

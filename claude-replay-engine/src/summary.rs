@@ -255,6 +255,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 

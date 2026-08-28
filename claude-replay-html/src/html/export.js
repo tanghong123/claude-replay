@@ -753,7 +753,17 @@
       if (head.dot) h.appendChild(el("span", "tool-dot"));
       if (head.name) h.appendChild(el("span", "tool-name", head.name));
       if (head.target) {
-        if (head.path) {
+        if (head.artifact && head.artifact.url) {
+          // An artifact publish is labelled by the artifact; make the label the LINK. This
+          // is the one tool header that points somewhere a reader can go, and the URL is
+          // the only durable handle the call leaves behind.
+          var art = el("a", "artifact-link", head.target);
+          art.href = head.artifact.url;
+          art.target = "_blank";
+          art.rel = "noopener";
+          art.title = head.artifact.desc || head.artifact.url;
+          h.appendChild(art);
+        } else if (head.path) {
           // A file-acting tool: clicking the path reveals the file. On a served
           // (live) page the click hits the local /__reveal endpoint (browsers
           // block http→file:// navigation); a standalone file:// page follows the
@@ -1290,6 +1300,62 @@
   // session it shows even before any agent exists (#70): a spawn can arrive at any moment,
   // and a control materializing out of nowhere is more surprising than a grayed one.
   // Each item navigates to that agent's stream (click = this tab; the ⧉ icon = a new tab).
+  // The "Artifacts ▾" menu: what this session PUBLISHED, one row per artifact.
+  //
+  // Derived client-side from the records the page already holds, deliberately — the same
+  // trade-off `messageCount()` documents. A `SessionMeta` roster would have to survive a
+  // durable resume, which means a fold-version bump and a machine-wide cache rebuild; this
+  // needs neither, and the facts are all in the blocks already.
+  //
+  // Grouped by URL and never by file path: the URL is the artifact's stable identity, so a
+  // deck republished twelve times is ONE row (the session that motivated this made twenty
+  // calls that address two decks). The latest publish wins for the description — that is the
+  // one the artifact currently has.
+  function collectArtifacts() {
+    var by = {}, order = [];
+    function scan(b) {
+      var a = b.head && b.head.artifact;
+      if (a && a.url) {
+        if (!by[a.url]) { by[a.url] = { url: a.url, n: 0 }; order.push(a.url); }
+        var e = by[a.url];
+        e.n++;
+        e.name = a.name || e.name;
+        e.icon = a.icon || e.icon;
+        e.desc = a.desc || e.desc;
+      }
+      (b.body || []).forEach(function (p) {
+        if (p.p === "blocks") p.items.forEach(scan);
+      });
+    }
+    records.forEach(scan);
+    return order.map(function (u) { return by[u]; });
+  }
+
+  function renderArtifactMenu() {
+    var wrap = $("artifactnav"), items = $("artifactitems"), btn = $("btn-artifacts");
+    if (!wrap || !items || !btn) return;
+    var list = collectArtifacts();
+    // Unlike the Agents box, this one is HIDDEN when empty: most sessions publish nothing,
+    // and a permanently grayed control for a capability they never used is noise.
+    wrap.style.display = list.length ? "" : "none";
+    if (!list.length) { artifactMenu(false); items.textContent = ""; return; }
+    var label = btn.querySelector(".tf-label");
+    if (label) label.textContent = "Artifacts (" + list.length + ") ▾";
+    items.textContent = "";
+    list.forEach(function (a) {
+      var row = el("a", "artifact-item");
+      row.href = a.url;
+      row.target = "_blank";
+      row.rel = "noopener";
+      row.title = a.desc || a.url;
+      if (a.icon) row.appendChild(el("span", "artifact-icon", a.icon));
+      row.appendChild(el("span", "artifact-name", a.name || a.url));
+      if (a.desc) row.appendChild(el("span", "artifact-desc", a.desc));
+      if (a.n > 1) row.appendChild(el("span", "artifact-count", "\u00d7" + a.n));
+      items.appendChild(row);
+    });
+  }
+
   function renderAgentMenu(children, inTree) {
     var wrap = $("agentnav"), items = $("agentitems"), btn = $("btn-agents");
     if (!wrap || !items || !btn) return;
@@ -1375,6 +1441,7 @@
   // the filter's hit map, and re-window (new tail records materialize if in range).
   function postRender() {
     refreshMessageRow();
+    renderArtifactMenu();
     buildToolMenu();
     if (filter) computeFilterHits();
     prefix = null;
@@ -1543,6 +1610,7 @@
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
   function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }
+  function artifactMenu(open) { $("artifactmenu").classList.toggle("on", open); }
   function taskPanel(open) {
     var m = $("taskpanel");
     if (!m) return;
@@ -2604,6 +2672,11 @@
     var ant = e.target.closest(".agent-newtab");
     if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank"); return; }
     if (e.target.closest(".agent-item")) return;
+    if (e.target.closest("#btn-artifacts")) {
+      artifactMenu(!$("artifactmenu").classList.contains("on"));
+      toolMenu(false); agentMenu(false);
+      return;
+    }
     if (e.target.closest("#btn-agents")) {
       if (!$("btn-agents").classList.contains("disabled")) agentMenu(!$("agentmenu").classList.contains("on"));
       return;
@@ -2630,6 +2703,7 @@
     // Any other click closes an open dropdown.
     if (!e.target.closest("#toolmenu")) toolMenu(false);
     if (!e.target.closest("#agentmenu")) agentMenu(false);
+    if (!e.target.closest("#artifactmenu") && !e.target.closest("#btn-artifacts")) artifactMenu(false);
     if (!e.target.closest(".qscopewrap")) scopeMenu(false);
 
     // #139: an inline image opens full size.
@@ -2736,8 +2810,9 @@
       return;
     }
     // The agent-transcript link navigates (full page load to `?session=<id>`); let the
-    // <a> do its thing instead of toggling the fold it sits in.
-    if (e.target.closest(".agent-open")) return;
+    // <a> do its thing instead of toggling the fold it sits in. An artifact link is the
+    // same case — it opens claude.ai in a new tab and must not also fold the block.
+    if (e.target.closest(".agent-open") || e.target.closest(".artifact-link")) return;
     var h = e.target.closest(".fold-h");
     if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
     var trow = e.target.closest(".task-row");
@@ -3247,6 +3322,7 @@
     if (e.key === "Escape") {
       toolMenu(false);
       agentMenu(false);
+      artifactMenu(false);
       scopeMenu(false);
       taskPanel(false);
       if (filter) { setFilter(null); return; }

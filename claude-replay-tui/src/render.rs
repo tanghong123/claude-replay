@@ -564,8 +564,29 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             patch,
             output,
             execution,
+            published,
             ..
         } => {
+            // An artifact publish reads as the THING it published. The header already names it
+            // (the adapter labels the call by the artifact); what expanding adds is the URL —
+            // the only part a reader can act on — and the description. There is no output: the
+            // result was instructions to the agent, dropped at fold time, and the `{}` raw
+            // toggle still has it.
+            if let Some(p) = published.as_deref() {
+                out.push(with_execution(
+                    tool_header(name, target, None),
+                    execution.as_ref(),
+                    None,
+                ));
+                out.push(Line::styled(
+                    format!("  ⎿ \u{a0}{}", p.url),
+                    theme::result(),
+                ));
+                if !p.description.is_empty() {
+                    out.push(Line::styled(format!("    {}", p.description), theme::dim()));
+                }
+                return out;
+            }
             let token = highlight::token_for_target(target);
             let write_like = matches!(name.as_str(), "Write" | "NotebookEdit");
             // A Write OVER AN EXISTING FILE carries the harness's structuredPatch
@@ -1282,6 +1303,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1373,6 +1395,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1419,6 +1442,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1454,6 +1478,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1543,6 +1568,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1592,6 +1618,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1640,6 +1667,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         }
     }
 
@@ -1667,6 +1695,7 @@ mod tests {
             read_lines: Some(42),
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -2019,6 +2048,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -2029,6 +2059,7 @@ mod tests {
                 read_lines: None,
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
         ];
         let turn = Block::Thinking {
@@ -2068,6 +2099,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

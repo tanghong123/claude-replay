@@ -1300,3 +1300,101 @@ fn the_compose_affordance_appears_only_once_paired() {
         "paired: the sessions that can be resumed or injected offer it ({paired_buttons})"
     );
 }
+
+/// The "Artifacts ▾" roster groups REPUBLISHES back into artifacts.
+///
+/// A page that listed every publish would be useless for the case that motivated this: one
+/// real session made 20 `Artifact` calls addressing 2 decks. The roster keys on the URL — the
+/// artifact's stable identity — so those become two rows carrying a count, and the LATEST
+/// publish supplies the description, that being the one the artifact currently has.
+///
+/// A browser test because the roster is derived CLIENT-side from the records the page holds
+/// (deliberately: a `SessionMeta` roster would cost a fold-version bump and a machine-wide
+/// cache rebuild), so the grouping exists nowhere else to test.
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn the_artifact_roster_groups_republishes_by_url() {
+    let _serial = serial();
+    let base = base("artroster");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("decks.jsonl");
+    const DECK: &str = "https://claude.ai/code/artifact/f37a45eb-a40c-48b9-9cc0-81f27c9811f5";
+    const ZH: &str = "https://claude.ai/code/artifact/e4eb4b14-da62-4571-87bd-cc2966bfdaac";
+    let publish = |i: u32, stem: &str, url: &str, desc: &str| {
+        format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"2026-08-28T10:{i:02}:00Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"a{i}\",\"name\":\"Artifact\",\"input\":{{\"file_path\":\"/w/{stem}.html\",\"description\":\"{desc}\",\"favicon\":\"🧭\"}}}}]}}}}\n\
+             {{\"type\":\"user\",\"timestamp\":\"2026-08-28T10:{i:02}:03Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"a{i}\",\"content\":\"Published /w/{stem}.html at {url}\\n\\nTo update: republish the same path.\"}}]}}}}\n"
+        )
+    };
+    let mut s = String::from(
+        "{\"type\":\"user\",\"cwd\":\"/w\",\"timestamp\":\"2026-08-28T10:00:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"build the deck\"}]}}\n",
+    );
+    // Three publishes of the deck, one of the translation, then a fourth deck publish whose
+    // description differs — the roster must show the LAST one.
+    for i in 1..=3 {
+        s.push_str(&publish(i, "rowt-deck", DECK, "A 24-slide tour."));
+    }
+    s.push_str(&publish(4, "rowt-deck-zh", ZH, "The Chinese edition."));
+    s.push_str(&publish(5, "rowt-deck", DECK, "A 25-slide tour, final."));
+    std::fs::write(&src, s).unwrap();
+
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches (install Chrome/Chromium to run this harness)");
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    const PROBE: &str = r#"{
+        label: (document.querySelector('#btn-artifacts .tf-label') || {}).textContent || "",
+        shown: !!document.getElementById('artifactnav') &&
+               getComputedStyle(document.getElementById('artifactnav')).display !== 'none',
+        links: document.querySelectorAll('.artifact-link').length,
+        rows: [].map.call(document.querySelectorAll('.artifact-item'), function (a) {
+            return {
+                name: (a.querySelector('.artifact-name') || {}).textContent || "",
+                desc: (a.querySelector('.artifact-desc') || {}).textContent || "",
+                count: (a.querySelector('.artifact-count') || {}).textContent || "",
+                href: a.getAttribute('href')
+            };
+        })
+    }"#;
+    let seen = wait_probe(
+        &tab,
+        "the artifact roster",
+        Duration::from_secs(15),
+        PROBE,
+        |s| s["rows"].as_array().is_some_and(|r| r.len() == 2),
+    );
+    assert_eq!(
+        seen["shown"], true,
+        "the control appears once something was published"
+    );
+    assert_eq!(seen["label"], "Artifacts (2) ▾", "{seen}");
+    assert_eq!(
+        seen["links"], 5,
+        "every publish still links to its artifact"
+    );
+
+    let rows = seen["rows"].as_array().unwrap();
+    assert_eq!(rows[0]["name"], "rowt-deck");
+    assert_eq!(rows[0]["href"], DECK, "grouped by URL");
+    assert_eq!(rows[0]["count"], "×4", "four publishes, one row");
+    assert_eq!(
+        rows[0]["desc"], "A 25-slide tour, final.",
+        "the latest publish describes the artifact"
+    );
+    assert_eq!(rows[1]["name"], "rowt-deck-zh");
+    assert_eq!(rows[1]["count"], "", "a single publish needs no count");
+}

@@ -1000,6 +1000,7 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         read_lines: None,
         cwd: cwd.to_string(),
         execution,
+        published: None,
     }
 }
 
@@ -1677,6 +1678,7 @@ fn parse_lines<S: AsRef<str>>(
                             read_lines: None,
                             cwd: cwd.clone(),
                             execution: None,
+                            published: None,
                         });
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
@@ -1961,6 +1963,7 @@ fn apply_output(block: &mut Block, output: String) {
                     // A description, not a path — never revealed, so no cwd anchor.
                     cwd: String::new(),
                     execution: None,
+                    published: None,
                 };
             }
         }

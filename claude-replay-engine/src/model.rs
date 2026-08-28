@@ -37,6 +37,41 @@ pub struct ToolExecution {
     pub duration: Option<ToolDuration>,
 }
 
+/// A tool call that PUBLISHED something — a durable, addressable thing the reader may want to
+/// open, rather than an effect confined to the machine. Today that is Claude's `Artifact`
+/// tool, whose identity (the URL) exists only in the result's prose; an adapter lifts it here
+/// so both frontends can link it instead of leaving a bare string in the output.
+///
+/// Deliberately a fact ABOUT a tool call, not a block of its own: an artifact publish is a
+/// tool use — it has a status, a duration, and a place in the turn — and the readable summary
+/// of a session's artifacts is a *roster* (one entry per URL, however many republishes), which
+/// belongs to a client that can group, not to the per-call block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Published {
+    /// What to call it: the `title` the tool was given, else the file's stem.
+    pub name: String,
+    /// The published URL — the STABLE identity. Republishing the same artifact keeps it, so a
+    /// roster groups on this and never on the source path (a republish may come from another
+    /// file, or from another conversation via the `url` parameter).
+    pub url: String,
+    /// The one-line description the call supplied, if any.
+    pub description: String,
+    /// The emoji the call chose as a favicon, if any — shown as the roster's bullet.
+    pub icon: String,
+}
+
+impl Published {
+    /// How the artifact reads in a tool header: `🧭 rowt-deck`, or just the name when the
+    /// call chose no emoji.
+    pub fn label(&self) -> String {
+        if self.icon.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} {}", self.icon, self.name)
+        }
+    }
+}
+
 /// The role an assistant prose message played in its turn. Some agents persist this distinction
 /// (Codex calls them `commentary` and `final_answer`); agents without it keep using unphased
 /// [`Block::AssistantText`].
@@ -147,6 +182,10 @@ pub enum Block {
         /// cache records and from formats that carry no trustworthy execution metadata.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution: Option<ToolExecution>,
+        /// What this call published, when it published something addressable (see
+        /// [`Published`]). `None` for every ordinary tool — which is all of them but one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        published: Option<Box<Published>>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -718,6 +757,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let blocks = vec![
             Block::Thinking {
@@ -774,6 +814,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -808,6 +849,7 @@ mod tests {
             read_lines: None,
             cwd: String::new(),
             execution: None,
+            published: None,
         };
         let bare = Block::Thinking {
             text: "x".into(),

@@ -274,6 +274,7 @@ mod tests {
                     read_lines: None,
                     cwd: String::new(),
                     execution: None,
+                    published: None,
                 }],
             },
             Block::ToolUse {
@@ -285,6 +286,7 @@ mod tests {
                 read_lines: Some(42),
                 cwd: String::new(),
                 execution: None,
+                published: None,
             },
             Block::SubAgent(SubAgent {
                 agent_id: "aXYZ".into(),
