@@ -143,7 +143,7 @@ fn help_text() -> String {
 agent-monitor — every agent session on this machine, one page over loopback HTTP
 
 USAGE:
-  agent-monitor [--pair] [--port N] [--agents claude,codex] [--no-open]
+  agent-monitor [--pair] [--port N] [--agents LIST] [--no-open]
   agent-monitor --set-passcode
   agent-monitor --version
 
@@ -151,7 +151,7 @@ USAGE:
                     once. Run it on a SHARED machine; it prints the URL to open,
                     and a plain `agent-monitor` then keeps requiring that token.
   --port N          Serve on N instead of {DEFAULT_PORT}.
-  --agents LIST     Only these agents: claude, codex, qoderwork.
+  --agents LIST     Only these agents: claude, codex, qoder, qoderwork.
   --no-open         Print the URL instead of opening a browser.
   --set-passcode    Set (or clear) the passcode that granting injection into a
                     live session requires — a speed bump for an unlocked,
@@ -176,6 +176,16 @@ PROCESS RECOGNITION:
   e.g. AGENT_MONITOR_AGENT_PATTERNS=\"argv:npx codex,basename:my-agent\"
 "
     )
+}
+
+fn parse_agent_name(name: &str) -> Result<Agent> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "claude" => Ok(Agent::CLAUDE),
+        "codex" => Ok(Agent::CODEX),
+        "qoder" => Ok(Agent::QODER),
+        "qoderwork" => Ok(Agent::QODERWORK),
+        other => anyhow::bail!("unknown agent {other:?}"),
+    }
 }
 
 fn main() -> Result<()> {
@@ -205,12 +215,7 @@ fn main() -> Result<()> {
                 // R1's narrowing axis: e.g. `--agents claude,codex`.
                 let v = args.next().context("--agents needs a list")?;
                 for name in v.split(',') {
-                    only.push(match name.trim().to_ascii_lowercase().as_str() {
-                        "claude" => Agent::CLAUDE,
-                        "codex" => Agent::CODEX,
-                        "qoderwork" | "qoder" => Agent::QODERWORK,
-                        other => anyhow::bail!("unknown agent {other:?}"),
-                    });
+                    only.push(parse_agent_name(name)?);
                 }
             }
             "--no-open" => open_browser = false,
@@ -385,6 +390,16 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn qoder_and_qoderwork_are_distinct_agent_filters() {
+        assert_eq!(super::parse_agent_name("qoder").unwrap(), Agent::QODER);
+        assert_eq!(
+            super::parse_agent_name("qoderwork").unwrap(),
+            Agent::QODERWORK
+        );
+        assert_ne!(Agent::QODER, Agent::QODERWORK);
+    }
 
     /// `--help` has to READ in a default terminal. It used to be one 103-column USAGE line and
     /// four prose paragraphs of flag descriptions, which wrapped into a wall; the shape is now

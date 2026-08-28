@@ -3,7 +3,9 @@
 //! into a running [`MetricsAcc`]; the agent-neutral [`Metrics`] value, pricing, and footer
 //! formatting live in [`claude_replay_engine::seam`].
 
-use claude_replay_engine::seam::{parse_ts, total_cost, Metrics, TimeSpan, TokenCounts};
+use claude_replay_engine::seam::{
+    credits_cost, parse_ts, total_cost, Metrics, TimeSpan, TokenCounts,
+};
 use serde_json::Value;
 
 /// Claude's per-line token/cost accumulator, folded through the shared
@@ -133,7 +135,8 @@ impl MetricsAcc {
             // Qoder bills in `credits` with zeroed token counts and an opaque model alias,
             // so credits are the only honest cost figure. Folded as micro-credits into the
             // reserved `credits_micro` extra key the shared footer reads. Real Claude usage
-            // has no such field, so Claude/QoderWork folds stay byte-identical.
+            // has no such field; current QoderWork usage does, and intentionally shares this
+            // path with Qoder CLI.
             // `billable:false` lines are skipped — the published rule is that failed calls
             // deduct nothing — and `credits` (the actual deduction) is read over
             // `original_credits` (the pre-adjustment figure).
@@ -226,6 +229,15 @@ impl MetricsAcc {
         // Cost is the SUM over models (#104) — pricing the whole session at one model's rate
         // is wrong whenever it switched, and 4.7% of measured sessions did.
         let (cost_usd, cost_partial) = total_cost(&self.per_model);
+        // A credit-billed agent (Qoder) already MEASURED what it charged, so its own figure
+        // beats an estimate priced off the token counts it zeroed — converted at the published
+        // plan rate (design/qoder-credits-usd.md). `.or(…)` and not a sum: two currencies for
+        // one session's money would double-count (INV-3). Claude never writes the key, so it
+        // and historical QoderWork sessions without credits stay bit-for-bit what
+        // they were (INV-2); current QoderWork sessions with credits intentionally take this
+        // path too. `cost_partial` is untouched — zero tokens report no omission, and a mixed
+        // session keeps its honest `≥` marker.
+        let cost_usd = credits_cost(&self.extra).or(cost_usd);
         // The flat totals keep their meaning: the sum across models. Every existing consumer
         // reads these unchanged.
         let mut tot = TokenCounts::default();
@@ -484,8 +496,10 @@ mod tests {
         assert!(!m.footer().contains("compacted"), "footer: {}", m.footer());
     }
 
-    /// Qoder's per-line `usage.credits` sums into the reserved `credits_micro` key and
-    /// surfaces in the footer; a line without the field changes nothing.
+    /// Qoder's per-line `usage.credits` sums into the reserved `credits_micro` key, surfaces
+    /// in the footer, and — since design/qoder-credits-usd.md — converts to the `cost_usd`
+    /// every money surface reads (the monitor's ledger banked `None` for these before, so a
+    /// machine's Qoder half was worth $0). A line without the field changes nothing.
     #[test]
     fn credits_sum_into_the_extra_bag() {
         let jsonl = r#"
@@ -503,14 +517,31 @@ mod tests {
             "footer: {}",
             m.footer()
         );
-        assert_eq!(m.cost_usd, None, "the cmodel alias is honestly unpriced");
-        // A Claude session (no credits field) keeps an empty bag — the delegation
-        // equivalence QoderWork's suite pins stays byte-identical.
+        // The `cmodel` alias is unpriced and the token counts are zero, so the token estimate
+        // has nothing to say — the money comes from the credits, at $0.01 each.
+        assert!(
+            (m.cost_usd.expect("priced from credits") - 0.12664262).abs() < 1e-9,
+            "cost: {:?}",
+            m.cost_usd
+        );
+        assert!(!m.cost_partial, "zero tokens omit no model");
+        assert!(
+            m.footer().contains("~$0.13") && m.footer().contains("~12.66 credits"),
+            "footer: {}",
+            m.footer()
+        );
+        // A Claude session (no credits field) keeps an empty bag and the token-priced cost —
+        // the delegation equivalence QoderWork's suite pins stays byte-identical.
         let claude = parse_reader(
             r#"{"type":"assistant","timestamp":"2026-08-13T10:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":5}}}"#,
         );
         assert!(claude.extra.is_empty());
         assert!(!claude.footer().contains("credits"));
+        assert_eq!(
+            claude.cost_usd,
+            estimate_cost("claude-opus-4-8", 10, 0, 0, 5),
+            "a token-billed session is untouched by the credits path"
+        );
     }
 
     #[test]

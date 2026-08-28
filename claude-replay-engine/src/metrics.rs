@@ -159,6 +159,30 @@ pub fn total_cost(per_model: &BTreeMap<String, TokenCounts>) -> (Option<UsdCost>
     (total, partial)
 }
 
+/// USD per Qoder **credit** — the published subscription rate, checked 2026-08-27 against
+/// <https://docs.qoder.com/account/pricing>: Pro $20/2,000 · Pro+ $60/6,000 · Ultra
+/// $200/20,000. Three plans, one rate, so this is an anchor rather than a guess.
+///
+/// Prepaid Credit Packs ($20/1,500 ≈ $0.0133) are deliberately NOT modelled: a transcript
+/// records no purchase provenance, so which credits a line drew on is unknowable from disk
+/// (design/qoder-credits-usd.md NG-1). Same argument as `price()` for why the number lives
+/// in code with a dated citation and a pinning test, not in configuration.
+pub const USD_PER_CREDIT: f64 = 0.01;
+
+/// The USD a credit-billed agent's own figure implies, or `None` when it reported none.
+///
+/// The complement to [`total_cost`]: that one *estimates* from tokens at list price, this one
+/// *converts* what the agent says it actually deducted. A credit-billed agent zeroes its token
+/// counts and names an opaque model alias, so the token estimate is `None` for exactly the
+/// sessions this covers — the two never both answer for real data, and where they could, the
+/// measured figure wins (design/qoder-credits-usd.md INV-3).
+pub fn credits_cost(extra: &BTreeMap<String, u64>) -> Option<UsdCost> {
+    match extra.get("credits_micro") {
+        Some(&micro) if micro > 0 => Some(micro as f64 / 1e6 * USD_PER_CREDIT),
+        _ => None,
+    }
+}
+
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
 /// (integer — sub-second precision is dropped, matching the old byte-offset parser).
 /// Shares the one epoch-seconds converter with the parse layer (`engine::time`).
@@ -457,7 +481,10 @@ impl Metrics {
     /// (micro-credits, so the u64 bag can carry a fractional figure exactly enough).
     /// `None` for an agent that bills in tokens/USD instead — the footer then keeps
     /// its existing shape. Qoder's accumulator is the first writer: its usage carries
-    /// `credits` while its token counts are zero, so credits ARE the cost figure.
+    /// `credits` while its token counts are zero, so credits are the NATIVE cost figure
+    /// — [`cost_usd`](Self::cost_usd) is derived from them at [`USD_PER_CREDIT`], and the
+    /// footer shows both (`~$0.02 · ~2.00 credits`) rather than asking a reader to trust
+    /// the conversion blind.
     pub fn credits(&self) -> Option<f64> {
         self.extra.get("credits_micro").map(|&c| c as f64 / 1e6)
     }
@@ -626,6 +653,48 @@ mod credits_tests {
             .footer_segments()
             .iter()
             .any(|(s, p)| s == "~12.16 credits" && *p == 7));
+    }
+
+    /// The credit rate against the published plan table (checked 2026-08-27,
+    /// <https://docs.qoder.com/account/pricing>). Every subscription tier divides to the same
+    /// $0.01, which is why one constant is honest; the Credit Pack does NOT (NG-1), and is
+    /// pinned here too so a future edit that "corrects" the rate to the pack's has to argue
+    /// with the table rather than with a bare number.
+    #[test]
+    fn the_credit_rate_matches_the_published_plans() {
+        for (usd, credits) in [(20.0, 2_000.0), (60.0, 6_000.0), (200.0, 20_000.0)] {
+            assert!(
+                (usd / credits - USD_PER_CREDIT).abs() < 1e-12,
+                "${usd}/{credits} credits"
+            );
+        }
+        assert!(
+            (20.0 / 1_500.0_f64 - USD_PER_CREDIT).abs() > 1e-3,
+            "the prepaid pack rate is deliberately not the modelled one"
+        );
+    }
+
+    /// Credits convert to the USD figure every money surface reads, and an agent that reports
+    /// none is untouched — the property that keeps Claude/Codex footers byte-identical.
+    #[test]
+    fn credits_convert_to_usd() {
+        let mut extra = BTreeMap::new();
+        assert_eq!(credits_cost(&extra), None, "no key ⇒ no cost");
+        extra.insert("credits_micro".into(), 0);
+        assert_eq!(credits_cost(&extra), None, "zero credits ⇒ no cost");
+
+        extra.insert("credits_micro".into(), 12_164_261);
+        let usd = credits_cost(&extra).expect("priced");
+        assert!((usd - 0.12164261).abs() < 1e-12, "usd: {usd}");
+
+        let mut m = Metrics::default();
+        m.extra = extra;
+        m.cost_usd = credits_cost(&m.extra);
+        assert!(
+            m.footer().contains("~$0.12") && m.footer().contains("~12.16 credits"),
+            "both figures, native beside derived: {}",
+            m.footer()
+        );
     }
 }
 

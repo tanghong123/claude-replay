@@ -34,8 +34,13 @@ use std::time::SystemTime;
 /// appends are a few KiB and never feel the cap.
 pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The ledger's own JSON-shape version — bumped when the entry's fields change.
-const LEDGER_SHAPE: u32 = 1;
+/// The ledger's own JSON-shape version — bumped when the entry's fields change, and equally
+/// when the same fold starts producing a DIFFERENT `cost` for the same bytes. v2: credit-billed
+/// sessions (Qoder) are now priced from `usage.credits` at the published plan rate
+/// (design/qoder-credits-usd.md), where v1 banked `None` for every one of them. Without the bump
+/// the len/mtime fast path would serve that cached `None` forever for any transcript already
+/// scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
+const LEDGER_SHAPE: u32 = 2;
 
 /// The persisted entry's full version: the shape crossed with the engine's
 /// `FOLD_VERSION`, so a FOLD-BEHAVIOR bump invalidates priced state exactly like it
@@ -212,6 +217,36 @@ mod tests {
         format!(
             "{{\"timestamp\":\"2026-08-12T01:00:00Z\",\"type\":\"turn_context\",\"payload\":{{\"model\":\"{model}\"}}}}\n"
         )
+    }
+
+    fn credits(credits: f64) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"model\":\"qmodel\",\"content\":[],\"usage\":{{\"input_tokens\":0,\"output_tokens\":0,\"credits\":{credits}}}}},\"timestamp\":\"2026-08-27T01:00:00Z\"}}\n"
+        )
+    }
+
+    /// The monitor prices both stores through their own adapter. This pins the rail-facing
+    /// ledger seam, not just the adapters' full-session folds: two credits are $0.02 at the
+    /// shared subscription-plan conversion rate.
+    #[test]
+    fn prices_qoder_and_qoderwork_credits() {
+        let d = scratch("qoder-family");
+        let cases = [
+            (Agent::QODER, "qoder-credit-session.jsonl"),
+            (Agent::QODERWORK, "qoderwork-credit-session.jsonl"),
+        ];
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        for (agent, name) in cases {
+            let transcript = d.join(name);
+            std::fs::write(&transcript, credits(2.0)).unwrap();
+            let mut budget = COST_BUDGET_BYTES;
+            let (cost, partial) = ledger
+                .cost(agent, &transcript, &mut budget)
+                .expect("credits are priced");
+            assert!((cost - 0.02).abs() < 1e-12, "{agent:?}: {cost}");
+            assert!(!partial);
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Priced without any visit (no durable entry anywhere near this test), resumed

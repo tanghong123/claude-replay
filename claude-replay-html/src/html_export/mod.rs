@@ -1629,9 +1629,11 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     if let Some(label) = m.compaction_label() {
         u["compacted"] = json!(label);
     }
-    // Credits-billed agents (Qoder) report zero tokens and no USD cost — credits are the
-    // only real cost figure, so the panel gets them. Key omitted when absent, same as
-    // `compacted`, so token-billed sessions' wire records are unchanged.
+    // Credits-billed agents (Qoder) report zero tokens, so credits are their NATIVE cost
+    // figure — `cost` above carries the same money converted at the published plan rate
+    // (design/qoder-credits-usd.md), and the panel shows both rather than asking a reader to
+    // trust the conversion blind. Key omitted when absent, same as `compacted`, so
+    // token-billed sessions' wire records are unchanged.
     if let Some(c) = m.credits() {
         u["credits"] = json!(format!("~{c:.2}"));
     }

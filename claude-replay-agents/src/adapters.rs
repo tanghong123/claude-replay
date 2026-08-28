@@ -326,8 +326,9 @@ impl TranscriptAdapter for QoderAdapter {
 /// head line. Everything format-level DELEGATES to the Claude implementations (tokenizer,
 /// shaping, metrics, enrichment, attachments, sub-agent layout — the transcripts are
 /// Claude-shaped, and the foreign `runtime-config`/unknown lines fall through the Claude
-/// decoder as no-ops); only detection and the store root differ. Note: QoderWork records no
-/// per-line token usage, so metrics honestly fold to zero tokens/cost.
+/// decoder as no-ops); only detection and the store root differ. Historical QoderWork sessions
+/// may carry no usage at all; current sessions can report zeroed token counts plus
+/// `usage.credits`, which the shared metrics fold converts to cost just like Qoder CLI.
 pub struct QoderWorkAdapter;
 impl TranscriptAdapter for QoderWorkAdapter {
     fn fork_origin(&self, path: &Path) -> Option<String> {

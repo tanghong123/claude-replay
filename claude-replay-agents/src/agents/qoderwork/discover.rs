@@ -529,6 +529,48 @@ mod tests {
         let _ = std::fs::remove_file(&f);
     }
 
+    /// Current QoderWork transcripts can carry the same credit-billed usage shape as Qoder
+    /// CLI. Store provenance must preserve the QoderWork identity while the shared Claude
+    /// metrics fold exposes both native credits and their subscription-rate USD conversion.
+    /// Historical QoderWork sessions without usage remain unpriced; this test pins the newer
+    /// on-disk shape observed on 2026-08-27.
+    #[test]
+    fn current_qoderwork_credits_are_priced_through_the_shared_fold() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-credits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let slug = root.join("-Users-dev--qoderwork-workspace-current");
+        std::fs::create_dir_all(&slug).unwrap();
+        let p = slug.join("qw-credits.jsonl");
+        std::fs::write(
+            &p,
+            concat!(
+                r#"{"type":"runtime-config","sessionId":"qw-credits","model":"qwork-ultimate","reasoningEffort":null,"contextWindow":null,"timestamp":1787792414000}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"qwork-ultimate","content":[{"type":"text","text":"one"}],"usage":{"input_tokens":0,"output_tokens":0,"credits":2.5,"original_credits":2.5,"billable":true,"request_id":"r1"}},"timestamp":"2026-08-27T01:00:00Z"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"id":"m2","role":"assistant","model":"qwork-ultimate","content":[{"type":"text","text":"two"}],"usage":{"input_tokens":0,"output_tokens":0,"credits":0.75,"original_credits":0.75,"billable":true,"request_id":"r2"}},"timestamp":"2026-08-27T01:01:00Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        std::env::set_var("QODERWORK_PROJECTS_DIR", &root);
+        let session = claude_replay_core::parse_session(&p).unwrap();
+        std::env::remove_var("QODERWORK_PROJECTS_DIR");
+
+        assert_eq!(session.agent, Agent::QODERWORK, "store provenance wins");
+        assert_eq!(session.metrics.extra.get("credits_micro"), Some(&3_250_000));
+        assert!((session.metrics.cost_usd.expect("priced from credits") - 0.0325).abs() < 1e-12);
+        assert!(
+            session.metrics.footer().contains("~$0.03")
+                && session.metrics.footer().contains("~3.25 credits"),
+            "footer: {}",
+            session.metrics.footer()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// #143: the title comes from `<sid>-session.json` beside the transcript — no database,
     /// no feature flag, no platform assumption. A blank or absent sidecar yields nothing so
     /// the DB fallback still gets its turn.
