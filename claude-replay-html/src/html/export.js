@@ -1335,11 +1335,21 @@
     var wrap = $("artifactnav"), items = $("artifactitems"), btn = $("btn-artifacts");
     if (!wrap || !items || !btn) return;
     var list = collectArtifacts();
-    // Unlike the Agents box, this one is HIDDEN when empty: most sessions publish nothing,
-    // and a permanently grayed control for a capability they never used is noise.
-    wrap.style.display = list.length ? "" : "none";
-    if (!list.length) { artifactMenu(false); items.textContent = ""; return; }
+    // ALWAYS present, grayed when the session published nothing — the same rule the Agents
+    // box follows, and for the same reason: a control that appears and disappears between
+    // views cannot be found, and its absence is indistinguishable from a bug. (It was hidden
+    // when empty at first, on the theory that a control for an unused capability is noise.
+    // The first person to look for it on a session without artifacts could not tell whether
+    // the feature was missing or merely inapplicable, which settled the trade-off.)
+    wrap.style.display = "";
     var label = btn.querySelector(".tf-label");
+    btn.classList.toggle("disabled", list.length === 0);
+    if (!list.length) {
+      if (label) label.textContent = "Artifacts ▾";
+      artifactMenu(false);
+      items.textContent = "";
+      return;
+    }
     if (label) label.textContent = "Artifacts (" + list.length + ") ▾";
     items.textContent = "";
     list.forEach(function (a) {
@@ -2673,7 +2683,9 @@
     if (ant) { e.preventDefault(); e.stopPropagation(); window.open(ant.dataset.href, "_blank"); return; }
     if (e.target.closest(".agent-item")) return;
     if (e.target.closest("#btn-artifacts")) {
-      artifactMenu(!$("artifactmenu").classList.contains("on"));
+      if (!$("btn-artifacts").classList.contains("disabled")) {
+        artifactMenu(!$("artifactmenu").classList.contains("on"));
+      }
       toolMenu(false); agentMenu(false);
       return;
     }

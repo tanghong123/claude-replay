@@ -1360,6 +1360,7 @@ fn the_artifact_roster_groups_republishes_by_url() {
         label: (document.querySelector('#btn-artifacts .tf-label') || {}).textContent || "",
         shown: !!document.getElementById('artifactnav') &&
                getComputedStyle(document.getElementById('artifactnav')).display !== 'none',
+        disabled: !!document.querySelector('#btn-artifacts.disabled'),
         links: document.querySelectorAll('.artifact-link').length,
         rows: [].map.call(document.querySelectorAll('.artifact-item'), function (a) {
             return {
@@ -1377,9 +1378,10 @@ fn the_artifact_roster_groups_republishes_by_url() {
         PROBE,
         |s| s["rows"].as_array().is_some_and(|r| r.len() == 2),
     );
+    assert_eq!(seen["shown"], true, "the control is present");
     assert_eq!(
-        seen["shown"], true,
-        "the control appears once something was published"
+        seen["disabled"], false,
+        "and live, this session having published"
     );
     assert_eq!(seen["label"], "Artifacts (2) ▾", "{seen}");
     assert_eq!(
@@ -1397,4 +1399,30 @@ fn the_artifact_roster_groups_republishes_by_url() {
     );
     assert_eq!(rows[1]["name"], "rowt-deck-zh");
     assert_eq!(rows[1]["count"], "", "a single publish needs no count");
+
+    // A session that published NOTHING keeps the control, grayed — the rule that makes "I
+    // don't see it" mean something. Hidden-when-empty made an inapplicable control and a
+    // broken one look identical, which is how this assertion came to exist.
+    let plain = base.join("plain.jsonl");
+    std::fs::write(
+        &plain,
+        user("nothing to publish here", 0) + &assistant("Right.", 1),
+    )
+    .unwrap();
+    let server2 = start_server(&args, std::slice::from_ref(&plain)).expect("server starts");
+    let tab2 = browser.new_tab().unwrap();
+    tab2.navigate_to(&server2.url_for_root(0).expect("hosted"))
+        .unwrap();
+    tab2.wait_until_navigated().unwrap();
+    let bare = wait_probe(
+        &tab2,
+        "the grayed control on a session with no artifacts",
+        Duration::from_secs(15),
+        PROBE,
+        |s| s["shown"] == true,
+    );
+    assert_eq!(bare["disabled"], true, "grayed, not gone: {bare}");
+    assert_eq!(bare["label"], "Artifacts ▾", "and uncounted: {bare}");
+    assert_eq!(bare["rows"].as_array().map(|r| r.len()), Some(0));
+    let _ = tab2.close(true);
 }

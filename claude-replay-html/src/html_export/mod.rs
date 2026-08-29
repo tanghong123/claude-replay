@@ -1292,7 +1292,7 @@ fn build_page(
       </div>
     </div>
     <div class="toolfilter" id="artifactnav" style="display:none">
-      <button id="btn-artifacts" class="tbtn"><span class="tf-label">Artifacts ▾</span></button>
+      <button id="btn-artifacts" class="tbtn disabled"><span class="tf-label">Artifacts ▾</span></button>
       <div id="artifactmenu">
         <div class="menu-head">Artifacts published from this session</div>
         <div id="artifactitems"></div>
