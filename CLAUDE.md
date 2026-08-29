@@ -63,6 +63,30 @@ publishes binaries and bumps the Homebrew tap. Verify the commit really landed
 before tagging — a failed commit with the tag commands still running once
 shipped a tag pointing at the wrong commit.
 
+**Publish to BOTH taps** (owner, 2026-08-29). The tag push bumps the public Homebrew tap
+(`tanghong123/tap`) on its own; the corp tap is a separate, manual step and does not happen
+by itself:
+
+1. Download the release's `agent-replay` / `agent-monitor` / `agent-monitor-fleet` tarballs
+   for all four targets and **verify each against its published `.sha256`** before
+   republishing anything.
+2. Copy them into a clone of `alibrew/artifacts` at `<tool>/<version>-<os>-<arch>/`, keeping
+   the release's own filename. **Exactly two levels** — brew writes a single-line cone
+   sparse-checkout pattern and cone mode materializes NOTHING deeper. Never LFS-track that
+   repo. Push to `master` and take the commit sha.
+3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) with the new version
+   and that sha as `revision:` — a git url takes no `sha256` and no `using: :git`. Verify with
+   `ruby -c`, `brew style --except-cops=FormulaAudit/Urls`, then `brew audit --strict
+   alibrew/core/<name>` (audit takes a NAME, not a path).
+
+Both corp repos **reject a commit authored from a non-corporate email** — set the owner's
+corporate address repo-locally in those clones only. Do not guess it: `a1 staff list --query
+hongtang` reports it, and the existing commits in `alibrew/homebrew-core` carry the same
+identity. It must never appear in THIS repo — not in a commit and not in a file, which
+`.githooks/pre-push` enforces on the diff as well as the metadata (it caught this very
+paragraph naming it outright). The two rules point opposite ways on purpose: one history is
+public and the other is not.
+
 **Then sweep: `scripts/sweep.sh`.** A version bump changes the metadata hash of every
 crate and every test/example/bin target, so it mints a COMPLETE new set of artifacts and
 orphans the previous one — and cargo never garbage-collects `target/`. Releasing per task
