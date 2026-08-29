@@ -1195,6 +1195,14 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             target: match (&publish, structured) {
                 (Some(p), _) => p.label(),
                 (None, true) => structured_fields(input),
+                // A non-publish `Artifact` call (`list`, `read`, `comments`, …) names no file
+                // and no command, so the generic target is EMPTY and it renders as a bare
+                // `Artifact()`. Its action is the only thing it is about — say that instead.
+                (None, false) if name == "Artifact" => input
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| tool_target(input, cwd)),
                 (None, false) => tool_target(input, cwd),
             },
             diffs: extract_diffs(name, input),
@@ -1237,7 +1245,7 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
         .get("title")
         .and_then(|v| v.as_str())
         .filter(|t| !t.trim().is_empty())
-        .map(str::to_string)
+        .map(decode_entities)
         .unwrap_or_else(|| {
             std::path::Path::new(file)
                 .file_stem()
@@ -1248,17 +1256,88 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
     Some(Published {
         name,
         url: String::new(), // filled from the result
-        description: input
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
+        description: decode_entities(
+            input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+        ),
         icon: input
             .get("favicon")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
     })
+}
+
+/// Undo ONE level of HTML escaping in an artifact's title or description.
+///
+/// These fields are prose the CALLER supplied, and a caller that lifted the text out of the
+/// page's own `<title>` hands it over still escaped — observed: a real title arrived as
+/// `crux-web · Service &amp; Module Contracts`. Nothing downstream will undo it: the value
+/// travels as JSON and is written with `textContent`, so the entity would be shown literally
+/// wherever the artifact is named.
+///
+/// One level, and only the entities markup actually needs. The cost is that a title genuinely
+/// containing the seven characters `&amp;` now reads as `&` — accepted deliberately (owner,
+/// 2026-08-28): a title about HTML escaping is a great deal rarer than a title with an
+/// ampersand in it.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string(); // the overwhelmingly common case, untouched
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        // `&…;` within a short window — beyond that it is an ampersand in prose, not an entity.
+        let end = tail[1..].find(';').map(|j| j + 1).filter(|&j| j <= 10);
+        let decoded: Option<std::borrow::Cow<'static, str>> = end.and_then(|j| {
+            let body = &tail[1..j];
+            // Numeric first — `&#183;`/`&#xB7;` is general, and covers every character a
+            // named table would have to enumerate one by one.
+            if let Some(digits) = body.strip_prefix('#') {
+                let cp = match digits.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => digits.parse::<u32>().ok(),
+                }?;
+                return char::from_u32(cp).map(|c| c.to_string().into());
+            }
+            // …then the named ones prose actually carries. An entity outside this set is
+            // LEFT ALONE rather than guessed at: showing `&thinsp;` is a smaller wrong than
+            // inventing a character.
+            Some(std::borrow::Cow::Borrowed(match body {
+                "amp" => "&",
+                "lt" => "<",
+                "gt" => ">",
+                "quot" => "\"",
+                "apos" => "'",
+                "nbsp" => "\u{a0}",
+                "middot" => "·",
+                "ndash" => "–",
+                "mdash" => "—",
+                "hellip" => "…",
+                "lsquo" => "\u{2018}",
+                "rsquo" => "\u{2019}",
+                "ldquo" => "\u{201c}",
+                "rdquo" => "\u{201d}",
+                _ => return None,
+            }))
+        });
+        match (decoded, end) {
+            (Some(text), Some(j)) => {
+                out.push_str(&text);
+                rest = &tail[j + 1..];
+            }
+            _ => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The URL an `Artifact` result announces — `Published <path> at <url>`, followed by several
@@ -2886,10 +2965,17 @@ mod tests {
 
         // `action: list` names no file and publishes nothing — an ordinary tool call, even
         // though its OUTPUT happens to contain an artifact URL.
-        let Block::ToolUse { published, .. } = tools[1] else {
+        let Block::ToolUse {
+            published, target, ..
+        } = tools[1]
+        else {
             unreachable!()
         };
         assert!(published.is_none(), "a listing published nothing");
+        assert_eq!(
+            target, "list",
+            "…and is labelled by its action, having no file to name (it read as `Artifact()`)"
+        );
 
         // A publish whose result announced no URL: the fact is dropped rather than left
         // half-built, so nothing renders a link to nowhere.
@@ -2904,6 +2990,47 @@ mod tests {
             output.as_deref().is_some_and(|o| o.contains("Refused")),
             "and its result is kept, being a real one: {output:?}"
         );
+    }
+
+    /// A title lifted out of a page's own `<title>` arrives still HTML-escaped (observed:
+    /// `crux-web · Service &amp; Module Contracts`), and nothing downstream would undo it —
+    /// the value travels as JSON and is written with `textContent`. One level, decoded here.
+    #[test]
+    fn an_artifact_title_arrives_html_escaped_and_is_decoded() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-08-28T10:00:00.000Z","message":{"content":"publish"}}
+{"type":"assistant","timestamp":"2026-08-28T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"a1","name":"Artifact","input":{"file_path":"/w/x.html","title":"crux-web &middot; Service &amp; Module Contracts","description":"Seams &lt;between&gt; modules &amp; their owners","favicon":"📐"}}]}}
+{"type":"user","timestamp":"2026-08-28T10:00:03.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"Published /w/x.html at https://claude.ai/code/artifact/abc"}]}}
+"#;
+        let blocks = parse(jsonl);
+        let Some(Block::ToolUse {
+            target, published, ..
+        }) = blocks
+            .iter()
+            .find(|b| matches!(b, Block::ToolUse { name, .. } if name == "Artifact"))
+        else {
+            panic!("{blocks:?}")
+        };
+        let p = published.as_deref().expect("published");
+        assert_eq!(p.name, "crux-web · Service & Module Contracts");
+        assert_eq!(p.description, "Seams <between> modules & their owners");
+        assert_eq!(target, "📐 crux-web · Service & Module Contracts");
+        // Numeric forms too, decimal and hex — general, so a named table need not enumerate
+        // every character. An entity outside the set is left ALONE rather than guessed at.
+        assert_eq!(decode_entities("a&#183;b &#x2014; c"), "a·b — c");
+        assert_eq!(
+            decode_entities("keep &thinsp; and &#xZZ;"),
+            "keep &thinsp; and &#xZZ;",
+            "an unknown entity is shown, not invented"
+        );
+
+        // Prose that merely CONTAINS an ampersand is untouched — no `;` nearby, nothing to
+        // decode, and the fast path returns it whole.
+        let plain = decode_entities("Tom & Jerry, R&D, a&b");
+        assert_eq!(plain, "Tom & Jerry, R&D, a&b");
+        // …and a lone trailing ampersand does not run off the end.
+        assert_eq!(decode_entities("ends with &"), "ends with &");
+        assert_eq!(decode_entities("&amp;amp;"), "&amp;", "exactly one level");
     }
 
     /// The #57 span rule end-to-end (`design/cc-activity-coalescing.md`): ALL
