@@ -54,6 +54,33 @@ fn ledger_version() -> u64 {
         | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION)
 }
 
+/// Whether to defer this fold to a later cycle, PURE over the two numbers — split out because
+/// its edge case cost a real session its price for good.
+///
+/// The budget exists so a burst of cold folds cannot stall `/api/sessions` for seconds. Two
+/// escapes keep it from becoming a wall:
+///
+/// * a **small overshoot** — anything under an eighth of the budget folds even when the
+///   allowance is short, so a cycle's tail end is not a barrier to little files;
+/// * a file **larger than the WHOLE budget** folds whenever any allowance remains, because no
+///   cycle could ever afford it and deferring it is deferring it forever. It then spends the
+///   rest of that cycle (`saturating_sub`), so it monopolizes exactly ONE cycle — the thing
+///   the budget was protecting against — and is cached from then on.
+///
+/// Without that second escape a 319 MB transcript went permanently unpriced the moment a
+/// `LEDGER_SHAPE` bump discarded its entry: every cycle recomputed `fresh` as the whole file,
+/// compared it against a 256 MB allowance, and deferred. The rail showed no dollar amount for
+/// it and never would have again.
+fn defer_fold(fresh: u64, budget: u64) -> bool {
+    if budget == 0 {
+        return true; // nothing left this cycle, whatever the file
+    }
+    if fresh > COST_BUDGET_BYTES {
+        return false; // unaffordable in ANY cycle — fold it now or never
+    }
+    fresh > budget && fresh > COST_BUDGET_BYTES / 8
+}
+
 /// One transcript's priced state: what the fold said last time, and where it stopped.
 #[derive(Clone)]
 struct Entry {
@@ -116,10 +143,8 @@ impl CostLedger {
                 .and_then(|e| e.cursor.as_ref())
                 .map_or(0, |c| c.offset.min(len)),
         );
-        if *budget == 0 || (fresh > *budget && fresh > COST_BUDGET_BYTES / 8) {
-            // Out of allowance this cycle — answer from the cache, fold later. (A small
-            // overshoot is allowed so one giant file cannot monopolize every cycle's
-            // budget without ever finishing.)
+        if defer_fold(fresh, *budget) {
+            // Out of allowance this cycle — answer from the cache, fold later.
             return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
         }
         *budget = budget.saturating_sub(fresh);
@@ -303,6 +328,29 @@ mod tests {
             "resume folds the delta, not the file: spent {spent}"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The deferral rule, and the edge that cost a real session its price: a transcript
+    /// LARGER than the whole cycle budget can never satisfy `fresh <= budget`, so the plain
+    /// rule deferred it every cycle, forever. Observed on a 319 MB session the moment a
+    /// `LEDGER_SHAPE` bump discarded its entry — the rail showed no dollar amount and never
+    /// would have again.
+    #[test]
+    fn a_file_bigger_than_the_budget_folds_instead_of_deferring_forever() {
+        const B: u64 = COST_BUDGET_BYTES;
+        // Nothing left this cycle: everything waits, whatever its size.
+        assert!(defer_fold(1, 0));
+        assert!(defer_fold(B * 2, 0));
+        // The ordinary case: it fits, so it folds.
+        assert!(!defer_fold(B / 2, B));
+        // Short on allowance and big enough to matter → wait for a fresh cycle.
+        assert!(defer_fold(B / 2, B / 4));
+        // …but a small file folds anyway, so a cycle's tail is not a barrier.
+        assert!(!defer_fold(B / 16, B / 32));
+        // The fix: unaffordable in ANY cycle ⇒ fold now, with whatever is left.
+        assert!(!defer_fold(B + 1, B));
+        assert!(!defer_fold(B * 4, 1), "even a nearly-spent cycle takes it");
+        assert!(defer_fold(B * 4, 0), "but a spent one still does not");
     }
 
     /// An exhausted budget defers the fold and answers from the cache — `None` before any
