@@ -225,6 +225,14 @@ impl MetricsFold {
         self.acc.finish()
     }
 
+    /// How far this fold has read, in bytes — free (no IO), unlike
+    /// [`cursor`](Self::cursor), which hashes a window. A caller folding under a byte budget
+    /// polls this between events to decide when to stop; the cursor it then takes is valid at
+    /// that point, so the next run continues from exactly there.
+    pub fn offset(&self) -> u64 {
+        self.src.offset()
+    }
+
     /// Where this fold stands, as a value the next run hands back to [`open`](Self::open).
     /// Always at a line boundary (see [`next_event`](Self::next_event) on torn tails).
     pub fn cursor(&self) -> std::io::Result<MetricsCursor> {

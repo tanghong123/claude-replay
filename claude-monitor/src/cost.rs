@@ -54,33 +54,6 @@ fn ledger_version() -> u64 {
         | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION)
 }
 
-/// Whether to defer this fold to a later cycle, PURE over the two numbers — split out because
-/// its edge case cost a real session its price for good.
-///
-/// The budget exists so a burst of cold folds cannot stall `/api/sessions` for seconds. Two
-/// escapes keep it from becoming a wall:
-///
-/// * a **small overshoot** — anything under an eighth of the budget folds even when the
-///   allowance is short, so a cycle's tail end is not a barrier to little files;
-/// * a file **larger than the WHOLE budget** folds whenever any allowance remains, because no
-///   cycle could ever afford it and deferring it is deferring it forever. It then spends the
-///   rest of that cycle (`saturating_sub`), so it monopolizes exactly ONE cycle — the thing
-///   the budget was protecting against — and is cached from then on.
-///
-/// Without that second escape a 319 MB transcript went permanently unpriced the moment a
-/// `LEDGER_SHAPE` bump discarded its entry: every cycle recomputed `fresh` as the whole file,
-/// compared it against a 256 MB allowance, and deferred. The rail showed no dollar amount for
-/// it and never would have again.
-fn defer_fold(fresh: u64, budget: u64) -> bool {
-    if budget == 0 {
-        return true; // nothing left this cycle, whatever the file
-    }
-    if fresh > COST_BUDGET_BYTES {
-        return false; // unaffordable in ANY cycle — fold it now or never
-    }
-    fresh > budget && fresh > COST_BUDGET_BYTES / 8
-}
-
 /// One transcript's priced state: what the fold said last time, and where it stopped.
 #[derive(Clone)]
 struct Entry {
@@ -138,25 +111,40 @@ impl CostLedger {
             }
         }
         let cached = self.entries.get(&stem);
-        let fresh = len.saturating_sub(
-            cached
-                .and_then(|e| e.cursor.as_ref())
-                .map_or(0, |c| c.offset.min(len)),
-        );
-        if defer_fold(fresh, *budget) {
-            // Out of allowance this cycle — answer from the cache, fold later.
+        if *budget == 0 {
+            // Nothing left this cycle — answer from the cache and continue next time.
             return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
         }
-        *budget = budget.saturating_sub(fresh);
 
         let cursor = cached.and_then(|e| e.cursor.clone());
         let Ok(mut fold) = MetricsFold::open(adapter(agent), path, cursor.as_ref()) else {
             return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
         };
-        while let Ok(Some(_)) = fold.next_event() {}
+        // Fold under the cycle's remaining allowance, then STOP at a line boundary and bank
+        // the cursor. `MetricsFold` is driven one event at a time and its cursor is valid
+        // wherever it stands, so a transcript far bigger than any single cycle's budget makes
+        // progress on EVERY cycle instead of being refused by it — which is what the cursor is
+        // for.
+        //
+        // The rule this replaces asked whether the whole remaining file fit in the allowance
+        // and answered "no" forever for a file bigger than the budget itself: a 319 MB session
+        // went permanently unpriced the moment a `LEDGER_SHAPE` bump discarded its entry.
+        let from = fold.offset();
+        let stop_at = from.saturating_add(*budget);
+        while let Ok(Some(_)) = fold.next_event() {
+            if fold.offset() >= stop_at {
+                break;
+            }
+        }
+        let read = fold.offset();
+        *budget = budget.saturating_sub(read.saturating_sub(from));
         let m = fold.metrics();
+        // `len` records HOW FAR THIS FILE IS FOLDED — the file's own length whenever the fold
+        // reached EOF, which is the complete case and was every case before chunking. A
+        // partial fold stores the offset it reached, so the no-op fast path (`e.len == len`)
+        // correctly misses next cycle and the remaining bytes are folded then.
         let entry = Entry {
-            len,
+            len: read.min(len),
             mtime,
             cost: m.cost_usd,
             partial: m.cost_partial,
@@ -330,27 +318,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The deferral rule, and the edge that cost a real session its price: a transcript
-    /// LARGER than the whole cycle budget can never satisfy `fresh <= budget`, so the plain
-    /// rule deferred it every cycle, forever. Observed on a 319 MB session the moment a
-    /// `LEDGER_SHAPE` bump discarded its entry — the rail showed no dollar amount and never
-    /// would have again.
+    /// A transcript far larger than one cycle's budget is folded ACROSS cycles, resuming from
+    /// its cursor, instead of being refused by the allowance forever.
+    ///
+    /// The rule this replaced asked whether the whole remaining file fit in the budget — which
+    /// a file bigger than the budget itself can never satisfy, so it was deferred every cycle.
+    /// Observed on a real 319 MB session the moment a `LEDGER_SHAPE` bump discarded its entry:
+    /// the rail showed no dollar amount, and never would have again. The budget is a parameter,
+    /// so the same shape is provable here with a tiny one rather than a 256 MB fixture.
     #[test]
-    fn a_file_bigger_than_the_budget_folds_instead_of_deferring_forever() {
-        const B: u64 = COST_BUDGET_BYTES;
-        // Nothing left this cycle: everything waits, whatever its size.
-        assert!(defer_fold(1, 0));
-        assert!(defer_fold(B * 2, 0));
-        // The ordinary case: it fits, so it folds.
-        assert!(!defer_fold(B / 2, B));
-        // Short on allowance and big enough to matter → wait for a fresh cycle.
-        assert!(defer_fold(B / 2, B / 4));
-        // …but a small file folds anyway, so a cycle's tail is not a barrier.
-        assert!(!defer_fold(B / 16, B / 32));
-        // The fix: unaffordable in ANY cycle ⇒ fold now, with whatever is left.
-        assert!(!defer_fold(B + 1, B));
-        assert!(!defer_fold(B * 4, 1), "even a nearly-spent cycle takes it");
-        assert!(defer_fold(B * 4, 0), "but a spent one still does not");
+    fn a_transcript_bigger_than_the_budget_is_folded_across_cycles() {
+        let d = scratch("chunked");
+        let t = d.join("rollout-2026-08-12T01-00-00-chunked.jsonl");
+        let mut body = turn_context("gpt-5.6-terra");
+        for i in 1..=40u64 {
+            body.push_str(&token_count(
+                &format!("2026-08-12T01:{i:02}:00Z"),
+                i * 1000,
+                0,
+                i * 100,
+            ));
+        }
+        std::fs::write(&t, &body).unwrap();
+        let full = std::fs::metadata(&t).unwrap().len();
+
+        // What one unbounded cycle would say — the value the chunked folds must converge to.
+        let mut whole = COST_BUDGET_BYTES;
+        let want = CostLedger::new(&d.join("cache-whole"))
+            .cost(Agent::CODEX, &t, &mut whole)
+            .expect("priced in one go");
+
+        // Now the same file under a budget a fraction of its size. Every cycle must ADVANCE
+        // (the fast path only answers once the whole file is folded), and the answer must land
+        // on the same number — never overshoot it by double-counting a resumed range.
+        let mut ledger = CostLedger::new(&d.join("cache-chunked"));
+        let chunk = (full / 6).max(1);
+        let mut cycles = 0;
+        let mut last = 0.0;
+        loop {
+            let mut budget = chunk;
+            let got = ledger.cost(Agent::CODEX, &t, &mut budget).expect("a price");
+            assert!(got.0 >= last, "cost went backwards: {last} → {}", got.0);
+            assert!(
+                got.0 <= want.0 + 1e-9,
+                "overshot the whole-file price — a resumed range was counted twice: {got:?} vs {want:?}"
+            );
+            last = got.0;
+            cycles += 1;
+            if (got.0 - want.0).abs() < 1e-9 {
+                break;
+            }
+            assert!(cycles < 50, "never converged: {got:?} vs {want:?}");
+        }
+        assert!(
+            cycles > 1,
+            "the fixture must not fit in one chunk, or this proves nothing"
+        );
+
+        // Folded through: the entry now records the file's own length, so the no-op fast path
+        // answers without touching the disk again.
+        let mut budget = 0; // …and does so even with NO allowance at all.
+        assert_eq!(ledger.cost(Agent::CODEX, &t, &mut budget), Some(want));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// An exhausted budget defers the fold and answers from the cache — `None` before any
