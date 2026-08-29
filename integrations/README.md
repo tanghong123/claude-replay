@@ -65,6 +65,24 @@ Managed command-file symlinks are replaced rather than followed, and the
 installer refuses installer-owned directories that are themselves symlinks so
 it cannot write outside the selected client roots.
 
+To remove it again:
+
+```sh
+agent-jdi uninstall-skill
+```
+
+It takes the same care in reverse, removing only what the installer still OWNS —
+a managed file whose content is still the bundled content, and the Claude symlink
+only while it still points at the shared Skill. A file you edited, replaced or
+re-pointed is left where it is and named in the output; the `jdi-handoff`
+directories go only once empty, never recursively, and the shared roots
+(`~/.agents/skills`, `~/.claude/skills`, `~/.claude/commands`) always stay, since
+they belong to every skill rather than to this one. A `SKILL.md.pre-shared-backup`
+that the install displaced is RESTORED — it was yours before the installer was
+there. Your own `.pre-install-backup` copies are left for you to keep or delete.
+There is no shell equivalent: the uninstaller ships only in the binary, which is
+where a Homebrew install has no checkout to fall back on.
+
 Open a new client session after installation. Then use:
 
 - Claude Code: `/jdi-handoff finish the refactor and commit`, or say "hand this

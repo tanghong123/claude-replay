@@ -106,6 +106,16 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         claude_dir: Option<PathBuf>,
     },
+    /// Remove the bundled jdi-handoff Skill — the mirror of `install-skill`. Removes only
+    /// what the installer still owns; anything you edited or re-pointed is kept and named.
+    UninstallSkill {
+        /// Agent Skills root (default: ~/.agents/skills)
+        #[arg(long, value_name = "PATH")]
+        agents_dir: Option<PathBuf>,
+        /// Claude configuration root (default: ~/.claude)
+        #[arg(long, value_name = "PATH")]
+        claude_dir: Option<PathBuf>,
+    },
     /// List tracked sessions.
     List,
     /// Queue follow-up work for a session's next drain (omit text to list the queue).
@@ -265,6 +275,10 @@ pub fn run() -> Result<()> {
             agents_dir,
             claude_dir,
         } => skill::cmd_install_skill(agents_dir, claude_dir),
+        Command::UninstallSkill {
+            agents_dir,
+            claude_dir,
+        } => skill::cmd_uninstall_skill(agents_dir, claude_dir),
         Command::List => cmd_list(&config),
         Command::Backlog { message, id, drain } => {
             cmd_backlog(&config, id.as_deref(), &message.join(" "), dry, drain)
