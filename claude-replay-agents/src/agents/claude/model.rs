@@ -297,7 +297,111 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
     }
 }
 
-/// Turn one plain-string `user` message into block(s) — a slash command becomes a
+/// The `taskq` audit-record sentinel (agentdev `docs/taskq-DESIGN.md` §9). A mutating
+/// `taskq` command prints one such line per mutation as the LAST line of its stdout, and the
+/// harness captures that into the transcript — so the queue's history is already in every
+/// transcript, in a form designed to be extracted. The sentinel carries no quotes,
+/// backslashes or non-ASCII precisely so it survives JSON string escaping verbatim.
+const TASKQ_SENTINEL: &str = "##taskq/v1";
+
+/// Task ops carried by a **Bash** tool result, from `taskq` records.
+///
+/// The queue this reads is not the harness's. `taskq` is a repo-rooted, cross-agent work queue
+/// (`tasks/*.json` at the git root) that exists because the native `TaskCreate`/`TaskUpdate`
+/// tools are harness-private and absent from some builds — the sessions using it therefore
+/// render an EMPTY task panel while doing all their work through a queue the transcript
+/// records in full. Measured on the session that motivated this: 47 creates, 36 claims, 45
+/// dones, 14 logs, and a panel showing nothing.
+///
+/// Every record becomes ONE op, and the mapping is deliberately onto the vocabulary the fold
+/// already has rather than a new one — the ops are the same ops:
+///
+/// * `create` → [`TaskOp::Create`] plus an immediate [`TaskOp::Resolve`]. taskq assigns the id
+///   inside the record, so unlike the native flow there is nothing to wait for. The synthetic
+///   `tool_use_id` is namespaced by the record's `rid` (unique by construction) so it can
+///   never collide with a real one.
+/// * `claim`/`done`/`cancel`/`release`/`update` → [`TaskOp::Update`], with the status taken
+///   from `changes.status.to` — the record states the transition rather than implying it.
+/// * `log` → a no-op here: a progress note changes no field the panel shows, and mapping it to
+///   an `Update` would be recording a change that did not happen.
+/// * `archive`/`delete`/`renumber` → left alone for now; they mean "leave the list", which the
+///   append-only fold cannot express (the same reason `Snapshot` exists for `TodoWrite`).
+///
+/// Re-seeing a record is HARMLESS and needs no dedupe state, which is what keeps this a
+/// per-line decode like every other: `taskq list --with-history` echoes other agents' records
+/// into this transcript and the journal's tail can be printed, so the same mutation
+/// legitimately appears more than once — but a repeated `create` lands under the same id and
+/// `join` already replaces rather than appends ("a re-created id replaces the older item"),
+/// and a repeated `Update` sets the same status twice. Both are idempotent by construction.
+/// The `rid` still namespaces the synthetic `tool_use_id`, so an echoed create pairs with its
+/// own resolve and never with a different one.
+fn taskq_ops(text: &str) -> Vec<TaskOp> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim_start().strip_prefix(TASKQ_SENTINEL) else {
+            continue;
+        };
+        let Ok(rec) = serde_json::from_str::<Value>(rest.trim()) else {
+            continue; // a mangled or truncated line is skipped, never guessed at
+        };
+        let str_of = |k: &str| rec.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        // The record id namespaces the synthetic `tool_use_id` below, so a create always
+        // pairs with its OWN resolve. A record without one is not trusted.
+        let rid = str_of("rid");
+        if rid.is_empty() {
+            continue;
+        }
+        let task = str_of("task");
+        if task.is_empty() {
+            continue; // nothing to address
+        }
+        let to = |field: &str| {
+            rec.pointer(&format!("/changes/{field}/to"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+        match str_of("op") {
+            "create" => {
+                let tuid = format!("taskq:{rid}");
+                out.push(TaskOp::Create {
+                    tool_use_id: tuid.clone(),
+                    subject: str_of("subject").to_string(),
+                    // The record truncates long text (~120 chars) by design — it is an audit
+                    // line, not a store. The subject is short and complete; a description
+                    // would be a lie at this width, so none is claimed.
+                    description: String::new(),
+                    active_form: String::new(),
+                    blocked_by: Vec::new(),
+                });
+                out.push(TaskOp::Resolve {
+                    tool_use_id: tuid,
+                    id: Some(task.to_string()),
+                });
+            }
+            // Every other state-moving op says where it moved to, so one arm reads them all.
+            "claim" | "done" | "cancel" | "release" | "update" => {
+                let status = to("status");
+                let subject = to("subject");
+                if status.is_none() && subject.is_none() {
+                    continue; // e.g. a description-only edit — nothing the panel renders
+                }
+                out.push(TaskOp::Update {
+                    task_id: task.to_string(),
+                    status,
+                    subject,
+                    description: None,
+                    active_form: None,
+                    add_blocks: Vec::new(),
+                    add_blocked_by: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Turn one plain-string `user` message into block(s) — a slash command becomes a/// Turn one plain-string `user` message into block(s) — a slash command becomes a
 /// `Command`, a task-notification collapses to its summary, caveat noise is dropped, and
 /// the rest is `UserText`. Used by the frozen reference parser [`parse_main`]; the streaming
 /// path uses [`classify_user_string`]. `queue`/`suppress` mirror the engine's #52 op-less
@@ -1046,6 +1150,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("");
                             let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
+                            // `taskq` records ride a Bash result's stdout (see `taskq_ops`).
+                            // Emitted BEFORE the ToolResult so a create's ops are in the same
+                            // order the fold would have seen them from native task tools.
+                            for op in taskq_ops(&txt) {
+                                msgs.push(Message::TaskOp(op));
+                            }
                             msgs.push(Message::ToolResult {
                                 tool_use_id: tid.to_string(),
                                 text: txt,
@@ -2908,6 +3018,145 @@ mod tests {
             kinds(&blocks),
             vec!["user", "edit", "thinking"],
             "{blocks:?}"
+        );
+    }
+
+    /// `taskq` records ride a Bash result's stdout and become the same task ops the native
+    /// tools produce — the queue exists precisely because those tools are absent from some
+    /// builds, so a session using it rendered an empty panel while doing all its work there.
+    ///
+    /// Pinned here: a create lands under the id the RECORD carries (no result to wait for),
+    /// state ops read their status from `changes.status.to`, a `log` note changes nothing,
+    /// and a mangled or rid-less line is skipped rather than guessed at.
+    #[test]
+    fn taskq_records_in_a_bash_result_become_task_ops() {
+        let rec = |rid: &str, op: &str, task: &str, subject: &str, changes: &str| {
+            format!(
+                "##taskq/v1 {{\"rid\":\"{rid}\",\"ts\":\"2026-08-29T23:20:35Z\",\"repo\":\"mdviewer\",\
+                 \"op\":\"{op}\",\"task\":\"{task}\",\"subject\":\"{subject}\",\
+                 \"by\":\"claude-code/hong@mac\",\"changes\":{changes}}}"
+            )
+        };
+        let text = [
+            "some ordinary command output first",
+            &rec(
+                "r1",
+                "create",
+                "1",
+                "Scaffold the monorepo",
+                r#"{"status":{"from":null,"to":"pending"}}"#,
+            ),
+            &rec(
+                "r2",
+                "create",
+                "2",
+                "Engine: inline diffs",
+                r#"{"status":{"from":null,"to":"pending"}}"#,
+            ),
+            &rec(
+                "r3",
+                "claim",
+                "1",
+                "Scaffold the monorepo",
+                r#"{"status":{"from":"pending","to":"in_progress"}}"#,
+            ),
+            &rec(
+                "r4",
+                "done",
+                "1",
+                "Scaffold the monorepo",
+                r#"{"status":{"from":"in_progress","to":"completed"}}"#,
+            ),
+            // A progress note moves nothing the panel shows.
+            &rec(
+                "r5",
+                "log",
+                "2",
+                "Engine: inline diffs",
+                r#"{"log":{"to":"a note"}}"#,
+            ),
+            // Not trusted: no rid to namespace the create's join, and unparsable JSON.
+            "##taskq/v1 {\"op\":\"create\",\"task\":\"9\",\"subject\":\"no rid\"}",
+            "##taskq/v1 {this is not json",
+        ]
+        .join("\n");
+
+        let ops = taskq_ops(&text);
+        // 2 creates (each with its resolve) + claim + done. The fold itself is the engine's,
+        // and `TaskFold` is deliberately NOT on the adapter seam — an adapter emits ops and
+        // never reduces them — so this asserts the ops, which is this layer's whole output.
+        assert_eq!(ops.len(), 6, "{ops:#?}");
+        let expect = |op: &TaskOp| -> String {
+            match op {
+                TaskOp::Create {
+                    tool_use_id,
+                    subject,
+                    ..
+                } => format!("create({tool_use_id}, {subject})"),
+                TaskOp::Resolve { tool_use_id, id } => {
+                    format!(
+                        "resolve({tool_use_id} -> {})",
+                        id.clone().unwrap_or_default()
+                    )
+                }
+                TaskOp::Update {
+                    task_id, status, ..
+                } => format!("update({task_id}, {})", status.clone().unwrap_or_default()),
+                _ => "other".into(),
+            }
+        };
+        let seen: Vec<String> = ops.iter().map(expect).collect();
+        assert_eq!(
+            seen,
+            vec![
+                // A create carries its id in the record, so its resolve rides along
+                // immediately — nothing to wait for, unlike the native flow.
+                "create(taskq:r1, Scaffold the monorepo)".to_string(),
+                "resolve(taskq:r1 -> 1)".to_string(),
+                "create(taskq:r2, Engine: inline diffs)".to_string(),
+                "resolve(taskq:r2 -> 2)".to_string(),
+                // State ops read the destination out of `changes.status.to`.
+                "update(1, in_progress)".to_string(),
+                "update(1, completed)".to_string(),
+            ],
+            "the log note, the rid-less record and the mangled line all contribute nothing"
+        );
+
+        // Re-seeing the same records — `list --with-history` echoes other agents' records into
+        // this transcript — yields the SAME ops, which the fold applies idempotently (a
+        // re-created id replaces rather than appends). That is what lets this decode stay
+        // per-line and stateless like every other.
+        let again: Vec<String> = taskq_ops(&text).iter().map(expect).collect();
+        assert_eq!(again, seen, "records re-read identically");
+    }
+
+    /// End to end through the decoder: a `Bash` tool result carrying records feeds the same
+    /// `Message::TaskOp` stream the native task tools do.
+    #[test]
+    fn taskq_ops_reach_the_message_stream_from_a_bash_result() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-08-29T23:20:00.000Z","message":{"content":"queue the work"}}
+{"type":"assistant","timestamp":"2026-08-29T23:20:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"taskq create --subject 'Scaffold'"}}]}}
+{"type":"user","timestamp":"2026-08-29T23:20:03.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"Task #1 created successfully: Scaffold\n##taskq/v1 {\"rid\":\"r1\",\"ts\":\"2026-08-29T23:20:03Z\",\"op\":\"create\",\"task\":\"1\",\"subject\":\"Scaffold\",\"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"}}}"}]}}
+"#;
+        let msgs = tokenize(jsonl.lines());
+        let ops: Vec<_> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                Message::TaskOp(op) => Some(op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 2, "create + its resolve: {ops:#?}");
+        assert!(
+            matches!(ops[0], TaskOp::Create { subject, .. } if subject == "Scaffold"),
+            "{:#?}",
+            ops[0]
+        );
+        assert!(
+            matches!(ops[1], TaskOp::Resolve { id: Some(id), .. } if id == "1"),
+            "{:#?}",
+            ops[1]
         );
     }
 
