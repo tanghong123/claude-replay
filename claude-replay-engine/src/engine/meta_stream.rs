@@ -106,7 +106,11 @@ pub const COMPACT_AFTER: usize = 256;
 /// motivating session: 1 task of 47, and a `done` for a create the stream never saw, so it
 /// rendered with no content at all). No suffix can recover the rest: the ops are in bytes
 /// the resumed fold will never re-read.
-pub const FOLD_VERSION: u16 = 17;
+///
+/// v18: a `taskq create`'s DESCRIPTION, read from the Bash command that issued it. The record
+/// a create prints carries `status`/`blockedBy` and nothing else, so a v17 stream holds every
+/// task with an empty description — "no recorded description" on every row.
+pub const FOLD_VERSION: u16 = 18;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

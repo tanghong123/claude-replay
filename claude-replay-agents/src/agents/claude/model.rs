@@ -304,6 +304,174 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
 /// backslashes or non-ASCII precisely so it survives JSON string escaping verbatim.
 const TASKQ_SENTINEL: &str = "##taskq/v1";
 
+/// Split a shell command into words, honouring the three quoting forms a `taskq` invocation
+/// actually uses: double quotes, single quotes, and backslash-escapes (including the
+/// line-continuation `\<newline>` these multi-line calls are written with).
+///
+/// Deliberately not a shell: no expansion, no substitution, no operator parsing. It exists to
+/// recover the literal text of a `--description` argument, and anything it cannot read
+/// literally it leaves alone — a wrong description is worse than none.
+fn shell_words(cmd: &str) -> Vec<String> {
+    let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
+    let mut chars = cmd.chars().peekable();
+    let (mut dq, mut sq) = (false, false);
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !sq => match chars.next() {
+                Some('\n') => {} // line continuation: joins, adds nothing
+                Some(n) => {
+                    cur.push(n);
+                    has = true;
+                }
+                None => {}
+            },
+            '"' if !sq => {
+                dq = !dq;
+                has = true;
+            }
+            '\'' if !dq => {
+                sq = !sq;
+                has = true;
+            }
+            c if c.is_whitespace() && !dq && !sq => {
+                if has {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has = true;
+            }
+        }
+    }
+    if has {
+        out.push(cur);
+    }
+    out
+}
+
+/// One `taskq` subcommand recovered from a Bash command line: its verb, the task id when the
+/// verb takes one, and the `--subject`/`--description`/`--active-form` values it was given.
+#[derive(Default)]
+struct TaskqCall {
+    verb: String,
+    task: String,
+    subject: String,
+    description: String,
+    active_form: String,
+}
+
+/// The `taskq` calls in one Bash command, in order — subject, description, active form.
+///
+/// The RECORDS a create prints carry no description (measured: their `changes` hold only
+/// `status` and `blockedBy`), because the record is an audit line, not a store. The text the
+/// panel wants is in the COMMAND, which is why this reads both halves. Pairing is by ORDINAL
+/// within the one Bash call: the k-th `create` in the command produced the k-th create record
+/// in its output. Verified across the motivating session — 31 batched calls, every one
+/// matching in count.
+///
+/// The `create` must be TASKQ's: it is counted only when the immediately preceding word is the
+/// taskq program itself. A shell block routinely mixes tools — the motivating session ran
+/// `a1 repo create`, `gh issue create` and `gh pr create` in blocks that also mention taskq —
+/// and a whole-command "does it say taskq" guard admitted all three, inventing three tasks and
+/// leaving one stuck in-progress by shifting every later ordinal. The program word is matched
+/// by BASENAME, so `taskq`, `$TQ`, `"$TQ"` and an absolute path to the script all count.
+fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
+    let words = shell_words(cmd);
+    let is_taskq = |w: &String| {
+        let base = w.rsplit('/').next().unwrap_or(w);
+        base == "taskq" || base == "$TQ" || base == "${TQ}"
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        // The verb must be TASKQ's — the word before it is the program itself.
+        if i == 0 || !is_taskq(&words[i - 1]) {
+            i += 1;
+            continue;
+        }
+        let verb = words[i].clone();
+        if !matches!(verb.as_str(), "create" | "update") {
+            i += 1;
+            continue;
+        }
+        let mut call = TaskqCall {
+            verb,
+            ..Default::default()
+        };
+        i += 1;
+        // `update` takes the id positionally, before its flags.
+        if call.verb == "update" && i < words.len() && !words[i].starts_with("--") {
+            call.task = words[i].clone();
+            i += 1;
+        }
+        while i + 1 < words.len() && words[i].starts_with("--") {
+            let value = words[i + 1].clone();
+            match words[i].as_str() {
+                "--subject" => call.subject = value,
+                "--description" => call.description = value,
+                "--active-form" => call.active_form = value,
+                _ => {}
+            }
+            i += 2;
+        }
+        out.push(call);
+    }
+    out
+}
+
+/// The `taskq create` calls in a Bash tool INPUT, as [`TaskOp::Create`]s awaiting their ids.
+///
+/// Mirrors the native flow exactly: the create is emitted from the call (only L1 sees inputs),
+/// and the id arrives in the result. The synthetic `tool_use_id` is the Bash call's own id plus
+/// the create's ordinal, which is what [`taskq_ops`] resolves against.
+fn taskq_create_ops(bash_id: &str, input: &Value) -> Vec<TaskOp> {
+    let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let mut out = Vec::new();
+    let mut nth_create = 0usize;
+    for call in taskq_calls(cmd) {
+        match call.verb.as_str() {
+            "create" => {
+                out.push(TaskOp::Create {
+                    tool_use_id: format!("taskq:{bash_id}#{nth_create}"),
+                    subject: call.subject,
+                    description: call.description,
+                    active_form: call.active_form,
+                    blocked_by: Vec::new(),
+                });
+                nth_create += 1;
+            }
+            // An `update --description` carries the FULL new text; the record it prints
+            // truncates it to ~120 chars with an ellipsis (design §9 — it is an audit line,
+            // not a store), so the command is the only place the real text exists. Applied
+            // here rather than from the record for exactly that reason.
+            "update" if !call.task.is_empty() => {
+                let field = |s: String| (!s.is_empty()).then_some(s);
+                let (description, subject, active_form) = (
+                    field(call.description),
+                    field(call.subject),
+                    field(call.active_form),
+                );
+                if description.is_none() && subject.is_none() && active_form.is_none() {
+                    continue; // a status-only update; the RECORD states that transition
+                }
+                out.push(TaskOp::Update {
+                    task_id: call.task,
+                    status: None, // the record owns status; the command owns the text
+                    subject,
+                    description,
+                    active_form,
+                    add_blocks: Vec::new(),
+                    add_blocked_by: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Task ops carried by a **Bash** tool result, from `taskq` records.
 ///
 /// The queue this reads is not the harness's. `taskq` is a repo-rooted, cross-agent work queue
@@ -316,10 +484,12 @@ const TASKQ_SENTINEL: &str = "##taskq/v1";
 /// Every record becomes ONE op, and the mapping is deliberately onto the vocabulary the fold
 /// already has rather than a new one — the ops are the same ops:
 ///
-/// * `create` → [`TaskOp::Create`] plus an immediate [`TaskOp::Resolve`]. taskq assigns the id
-///   inside the record, so unlike the native flow there is nothing to wait for. The synthetic
-///   `tool_use_id` is namespaced by the record's `rid` (unique by construction) so it can
-///   never collide with a real one.
+/// * `create` → a [`TaskOp::Resolve`] for the draft the COMMAND side emitted
+///   ([`taskq_create_ops`]), paired by ordinal within the same Bash call. The two halves are
+///   read because they carry different things: the record has the id, and only the command has
+///   the DESCRIPTION — a record's `changes` hold `status` and `blockedBy` and nothing else
+///   (measured across every create in the motivating session), the record being an audit line
+///   rather than a store.
 /// * `claim`/`done`/`cancel`/`release`/`update` → [`TaskOp::Update`], with the status taken
 ///   from `changes.status.to` — the record states the transition rather than implying it.
 /// * `log` → a no-op here: a progress note changes no field the panel shows, and mapping it to
@@ -330,13 +500,12 @@ const TASKQ_SENTINEL: &str = "##taskq/v1";
 /// Re-seeing a record is HARMLESS and needs no dedupe state, which is what keeps this a
 /// per-line decode like every other: `taskq list --with-history` echoes other agents' records
 /// into this transcript and the journal's tail can be printed, so the same mutation
-/// legitimately appears more than once — but a repeated `create` lands under the same id and
-/// `join` already replaces rather than appends ("a re-created id replaces the older item"),
-/// and a repeated `Update` sets the same status twice. Both are idempotent by construction.
-/// The `rid` still namespaces the synthetic `tool_use_id`, so an echoed create pairs with its
-/// own resolve and never with a different one.
-fn taskq_ops(text: &str) -> Vec<TaskOp> {
+/// legitimately appears more than once — but a repeated `Update` sets the same status twice,
+/// and an echoed `create` record resolves an ordinal its Bash call never created, which lands
+/// nothing at all (`join` returns on an unknown `tool_use_id`).
+fn taskq_ops(bash_id: &str, text: &str) -> Vec<TaskOp> {
     let mut out = Vec::new();
+    let mut nth_create = 0usize;
     for line in text.lines() {
         let Some(rest) = line.trim_start().strip_prefix(TASKQ_SENTINEL) else {
             continue;
@@ -363,21 +532,17 @@ fn taskq_ops(text: &str) -> Vec<TaskOp> {
         };
         match str_of("op") {
             "create" => {
-                let tuid = format!("taskq:{rid}");
-                out.push(TaskOp::Create {
-                    tool_use_id: tuid.clone(),
-                    subject: str_of("subject").to_string(),
-                    // The record truncates long text (~120 chars) by design — it is an audit
-                    // line, not a store. The subject is short and complete; a description
-                    // would be a lie at this width, so none is claimed.
-                    description: String::new(),
-                    active_form: String::new(),
-                    blocked_by: Vec::new(),
-                });
+                // Resolve the create the COMMAND emitted, by ordinal within this Bash call
+                // (`taskq_create_ops`) — that draft carries the description, which no record
+                // does. A create the command side did not produce (an echoed record, a
+                // `--with-history` tail) resolves nothing and is simply not in the list; its
+                // task still appears the moment any state op touches it, titled from the
+                // record.
                 out.push(TaskOp::Resolve {
-                    tool_use_id: tuid,
+                    tool_use_id: format!("taskq:{bash_id}#{nth_create}"),
                     id: Some(task.to_string()),
                 });
+                nth_create += 1;
             }
             // Every other state-moving op says where it moved to, so one arm reads them all.
             "claim" | "done" | "cancel" | "release" | "update" => {
@@ -1100,6 +1265,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         if let Some(op) = task_op(name, id, &input) {
                             msgs.push(Message::TaskOp(op));
                         }
+                        // A `taskq create` in a Bash command: the draft, awaiting the id its
+                        // result will announce. Only the command carries the description.
+                        if name == "Bash" {
+                            for op in taskq_create_ops(id, &input) {
+                                msgs.push(Message::TaskOp(op));
+                            }
+                        }
                         // Raw fields only — the block is shaped in L2 via `claude_build_tool`.
                         msgs.push(Message::ToolUse {
                             id: id.to_string(),
@@ -1162,7 +1334,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             // `taskq` records ride a Bash result's stdout (see `taskq_ops`).
                             // Emitted BEFORE the ToolResult so a create's ops are in the same
                             // order the fold would have seen them from native task tools.
-                            for op in taskq_ops(&txt) {
+                            for op in taskq_ops(tid, &txt) {
                                 msgs.push(Message::TaskOp(op));
                             }
                             msgs.push(Message::ToolResult {
@@ -3090,18 +3262,16 @@ mod tests {
         ]
         .join("\n");
 
-        let ops = taskq_ops(&text);
-        // 2 creates (each with its resolve) + claim + done. The fold itself is the engine's,
-        // and `TaskFold` is deliberately NOT on the adapter seam — an adapter emits ops and
-        // never reduces them — so this asserts the ops, which is this layer's whole output.
-        assert_eq!(ops.len(), 6, "{ops:#?}");
+        // The RESULT half yields only resolves — the drafts they land come from the command.
+        let ops = taskq_ops("b1", &text);
         let expect = |op: &TaskOp| -> String {
             match op {
                 TaskOp::Create {
                     tool_use_id,
                     subject,
+                    description,
                     ..
-                } => format!("create({tool_use_id}, {subject})"),
+                } => format!("create({tool_use_id}, {subject}, desc={description})"),
                 TaskOp::Resolve { tool_use_id, id } => {
                     format!(
                         "resolve({tool_use_id} -> {})",
@@ -3112,41 +3282,60 @@ mod tests {
                     task_id,
                     status,
                     subject,
+                    description,
                     ..
                 } => format!(
-                    "update({task_id}, {}, {})",
+                    "update({task_id}, {}, {}, desc={})",
                     status.clone().unwrap_or_default(),
-                    subject.clone().unwrap_or_default()
+                    subject.clone().unwrap_or_default(),
+                    description.clone().unwrap_or_default()
                 ),
                 _ => "other".into(),
             }
         };
-        let seen: Vec<String> = ops.iter().map(expect).collect();
         assert_eq!(
-            seen,
+            ops.iter().map(expect).collect::<Vec<_>>(),
             vec![
-                // A create carries its id in the record, so its resolve rides along
-                // immediately — nothing to wait for, unlike the native flow.
-                "create(taskq:r1, Scaffold the monorepo)".to_string(),
-                "resolve(taskq:r1 -> 1)".to_string(),
-                "create(taskq:r2, Engine: inline diffs)".to_string(),
-                "resolve(taskq:r2 -> 2)".to_string(),
-                // State ops read the destination out of `changes.status.to`.
-                // Every state op carries the subject from the record's top-level field, so a
-                // stub materialized for a task this transcript never saw created still has a
-                // title — the "one task, no content" the motivating session showed.
-                "update(1, in_progress, Scaffold the monorepo)".to_string(),
-                "update(1, completed, Scaffold the monorepo)".to_string(),
+                // Ordinal 0 and 1 within this Bash call — the ids the records announce.
+                "resolve(taskq:b1#0 -> 1)".to_string(),
+                "resolve(taskq:b1#1 -> 2)".to_string(),
+                // State ops read their destination from `changes.status.to`, and carry the
+                // subject from the record's TOP-LEVEL field so a stub is never blank.
+                "update(1, in_progress, Scaffold the monorepo, desc=)".to_string(),
+                "update(1, completed, Scaffold the monorepo, desc=)".to_string(),
             ],
-            "the log note, the rid-less record and the mangled line all contribute nothing"
+            "the log note, the rid-less record and the mangled line contribute nothing"
         );
 
-        // Re-seeing the same records — `list --with-history` echoes other agents' records into
-        // this transcript — yields the SAME ops, which the fold applies idempotently (a
-        // re-created id replaces rather than appends). That is what lets this decode stay
-        // per-line and stateless like every other.
-        let again: Vec<String> = taskq_ops(&text).iter().map(expect).collect();
-        assert_eq!(again, seen, "records re-read identically");
+        // The COMMAND half supplies what no record carries: the description, in full. The
+        // record truncates to ~120 chars by design, so the command is the only source.
+        let cmd = serde_json::json!({
+            "command": "TQ=/x/taskq\n\"$TQ\" create --subject \"Scaffold the monorepo\" \
+                        --active-form \"Scaffolding\" --description \"npm workspaces at root\"\n\
+                        \"$TQ\" create --subject \"Engine: inline diffs\" --description \"the engine\"\n\
+                        gh issue create --title \"not a task\"\n\
+                        \"$TQ\" update 1 --description \"a longer, edited brief\""
+        });
+        assert_eq!(
+            taskq_create_ops("b1", &cmd)
+                .iter()
+                .map(expect)
+                .collect::<Vec<_>>(),
+            vec![
+                "create(taskq:b1#0, Scaffold the monorepo, desc=npm workspaces at root)"
+                    .to_string(),
+                "create(taskq:b1#1, Engine: inline diffs, desc=the engine)".to_string(),
+                // An `update --description` carries the FULL text; the record's copy is
+                // truncated, so this is where an edited brief comes from.
+                "update(1, , , desc=a longer, edited brief)".to_string(),
+            ],
+            "`gh issue create` is another tool's verb and must not become a task"
+        );
+
+        // Re-seeing a result is harmless: an echoed create record resolves an ordinal this
+        // call never created, which lands nothing (`join` returns on an unknown id).
+        let again: Vec<String> = taskq_ops("b1", &text).iter().map(expect).collect();
+        assert_eq!(again.len(), 4, "records re-read identically");
     }
 
     /// The reported symptom, reproduced at the op level: a view that starts PART-WAY through a
@@ -3163,7 +3352,7 @@ mod tests {
                     \"task\":\"47\",\"subject\":\"Daemon: one server, many documents\",\
                     \"changes\":{\"status\":{\"from\":\"in_progress\",\"to\":\"completed\"},\
                     \"outcome\":{\"from\":null,\"to\":\"shipped\"}}}";
-        let ops = taskq_ops(done);
+        let ops = taskq_ops("b9", done);
         assert_eq!(ops.len(), 1, "{ops:#?}");
         let TaskOp::Update {
             task_id,
