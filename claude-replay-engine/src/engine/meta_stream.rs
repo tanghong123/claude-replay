@@ -99,7 +99,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// elision gauges (`elided_lines`/`elided_bytes`/`skipped_lines`). The elision constants and
 /// the adapters' key-suffix lists are part of this persisted-format contract: changing
 /// either changes which blocks carry hints, and is a bump by this same doctrine.
-pub const FOLD_VERSION: u16 = 16;
+///
+/// v17: `taskq` audit records (`##taskq/v1` lines in a Bash result) decode into task ops.
+/// A stream folded at v16 recorded NONE of them — the panel it replays is empty, or worse,
+/// holds only the tasks whose records happen to lie past the resume point (measured on the
+/// motivating session: 1 task of 47, and a `done` for a create the stream never saw, so it
+/// rendered with no content at all). No suffix can recover the rest: the ops are in bytes
+/// the resumed fold will never re-read.
+pub const FOLD_VERSION: u16 = 17;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

@@ -355,6 +355,7 @@ fn taskq_ops(text: &str) -> Vec<TaskOp> {
         if task.is_empty() {
             continue; // nothing to address
         }
+        // `changes.<field>.to` — where a record states the value a mutation moved a field TO.
         let to = |field: &str| {
             rec.pointer(&format!("/changes/{field}/to"))
                 .and_then(|v| v.as_str())
@@ -381,10 +382,18 @@ fn taskq_ops(text: &str) -> Vec<TaskOp> {
             // Every other state-moving op says where it moved to, so one arm reads them all.
             "claim" | "done" | "cancel" | "release" | "update" => {
                 let status = to("status");
-                let subject = to("subject");
-                if status.is_none() && subject.is_none() {
+                if status.is_none() {
                     continue; // e.g. a description-only edit — nothing the panel renders
                 }
+                // The subject comes from the record's TOP-LEVEL field, which every record
+                // carries, not from `changes.subject.to`, which appears only when the subject
+                // itself was edited. That distinction is load-bearing: an update for a task
+                // this transcript never saw created materializes a stub (#125), and for the
+                // native tools that stub is necessarily titleless — "Updated task #5 status"
+                // says nothing more. A taskq record DOES name its task, so passing the subject
+                // on every state op is what keeps a resumed or mid-session view from rendering
+                // a row with no content.
+                let subject = Some(str_of("subject").to_string()).filter(|s| !s.is_empty());
                 out.push(TaskOp::Update {
                     task_id: task.to_string(),
                     status,
@@ -3100,8 +3109,15 @@ mod tests {
                     )
                 }
                 TaskOp::Update {
-                    task_id, status, ..
-                } => format!("update({task_id}, {})", status.clone().unwrap_or_default()),
+                    task_id,
+                    status,
+                    subject,
+                    ..
+                } => format!(
+                    "update({task_id}, {}, {})",
+                    status.clone().unwrap_or_default(),
+                    subject.clone().unwrap_or_default()
+                ),
                 _ => "other".into(),
             }
         };
@@ -3116,8 +3132,11 @@ mod tests {
                 "create(taskq:r2, Engine: inline diffs)".to_string(),
                 "resolve(taskq:r2 -> 2)".to_string(),
                 // State ops read the destination out of `changes.status.to`.
-                "update(1, in_progress)".to_string(),
-                "update(1, completed)".to_string(),
+                // Every state op carries the subject from the record's top-level field, so a
+                // stub materialized for a task this transcript never saw created still has a
+                // title — the "one task, no content" the motivating session showed.
+                "update(1, in_progress, Scaffold the monorepo)".to_string(),
+                "update(1, completed, Scaffold the monorepo)".to_string(),
             ],
             "the log note, the rid-less record and the mangled line all contribute nothing"
         );
@@ -3128,6 +3147,40 @@ mod tests {
         // per-line and stateless like every other.
         let again: Vec<String> = taskq_ops(&text).iter().map(expect).collect();
         assert_eq!(again, seen, "records re-read identically");
+    }
+
+    /// The reported symptom, reproduced at the op level: a view that starts PART-WAY through a
+    /// session (a durable resume, or a client that joined late) sees a `done` whose `create`
+    /// lies in bytes it will never read. The fold materializes a stub for it (#125) — that is
+    /// correct and deliberate — and the stub must still carry a TITLE, because unlike the
+    /// native tools' "Updated task #5 status", a taskq record names its task on every op.
+    ///
+    /// Without the top-level subject this rendered exactly what the session showed: one task,
+    /// no content.
+    #[test]
+    fn a_state_op_alone_still_names_its_task() {
+        let done = "##taskq/v1 {\"rid\":\"r9\",\"ts\":\"2026-08-29T23:59:00Z\",\"op\":\"done\",\
+                    \"task\":\"47\",\"subject\":\"Daemon: one server, many documents\",\
+                    \"changes\":{\"status\":{\"from\":\"in_progress\",\"to\":\"completed\"},\
+                    \"outcome\":{\"from\":null,\"to\":\"shipped\"}}}";
+        let ops = taskq_ops(done);
+        assert_eq!(ops.len(), 1, "{ops:#?}");
+        let TaskOp::Update {
+            task_id,
+            status,
+            subject,
+            ..
+        } = &ops[0]
+        else {
+            panic!("{:#?}", ops[0])
+        };
+        assert_eq!(task_id, "47");
+        assert_eq!(status.as_deref(), Some("completed"));
+        assert_eq!(
+            subject.as_deref(),
+            Some("Daemon: one server, many documents"),
+            "a stub built from this op is not blank"
+        );
     }
 
     /// End to end through the decoder: a `Bash` tool result carrying records feeds the same
