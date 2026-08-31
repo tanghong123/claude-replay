@@ -15,9 +15,14 @@ before picking anything up, `taskq claim <id>` before working, and close the loo
 **Every mutation goes through the `taskq` CLI** (it ships with the `agentdev:taskq`
 skill) — the flock plus check-and-set is what makes concurrent agents safe, and the
 journal at `tasks/journal.ndjson` is what makes a decision readable afterwards. Editing
-`tasks/*.json` with file tools bypasses both. Reading them is fine. Commit `tasks/` in
-the same commit that changes an item's state (started, decided, shipped, parked) — the
-queue rides the repo, so don't leave it dirty at handoff.
+`tasks/*.json` with file tools bypasses both. Reading them is fine.
+
+**The queue is MACHINE-LOCAL and is never committed** (taskq rev 5, 2026-08-31; it
+untracked `tasks/` here in `fa5ea93` and self-ignores the directory). A committed queue is
+a broadcast channel with an execution side: every clone that pulls it turns its agents
+loose on the same backlog, while the flock stops at the checkout boundary. So the queue
+does not travel — a transcript read on another machine has no `tasks/` to fall back on,
+which is why the `##taskq/v1` records in the transcript are the portable copy.
 
 Design docs argue, issues discuss, the queue tracks; don't trust a `design/*.md` status
 header alone — the tracker exists because those drift.

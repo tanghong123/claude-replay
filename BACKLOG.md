@@ -36,8 +36,11 @@ Design docs under `design/` carry the **arguments**; GitHub issues carry the **d
 the queue carries the **state** — what is waiting, on whom, and why. Don't trust a
 `design/*.md` status header alone; those drift, which is what the tracker is for.
 
-**Update the queue in the same commit that changes an item's state** (started, decided,
-shipped, parked) — the same discipline this file asked for, and the reason `tasks/` is
-committed with the repo rather than kept aside. Parking is `--meta deferred=true --meta
-deferred_reason="…"`, which hides an item from `list` and from `--next` while leaving it
-explicitly claimable; that is the queue's equivalent of this file's old "Parked" section.
+Parking is `--meta deferred=true --meta deferred_reason="…"`, which hides an item from
+`list` and from `--next` while leaving it explicitly claimable — the queue's equivalent of
+this file's old "Parked" section.
+
+**The queue is machine-local** and is never committed (taskq rev 5, 2026-08-31), so unlike
+this file it does not travel with a clone. That is deliberate: a committed queue is a
+backlog every clone's agents would act on with nothing coordinating them. What does travel
+is the `##taskq/v1` record each mutation prints into the agent's transcript.

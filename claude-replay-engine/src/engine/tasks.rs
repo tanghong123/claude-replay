@@ -325,7 +325,33 @@ impl TaskFold {
             return; // the create failed — no id, no task
         };
         item.id = id.to_string();
-        // A re-created id replaces the older item (shouldn't happen; be idempotent).
+        // A re-created id replaces the older item (shouldn't happen; be idempotent) — but
+        // resolving must not ERASE what was already known about that id. A `taskq` create
+        // record stands its task up before its draft resolves (so a lost draft is still a
+        // titled row), and it now carries the description too; a draft whose command half
+        // the shell ate would otherwise blank both on the way in. So the draft wins field by
+        // field where it HAS something, and the standing row survives where it does not:
+        // the command is exact and unbounded, the record is the floor.
+        if let Some(prev) = self.list.items.iter().find(|t| t.id == item.id) {
+            for (into, from) in [
+                (&mut item.subject, &prev.subject),
+                (&mut item.description, &prev.description),
+                (&mut item.active_form, &prev.active_form),
+            ] {
+                if into.is_empty() {
+                    *into = from.clone();
+                }
+            }
+            if item.blocked_by.is_empty() {
+                item.blocked_by = prev.blocked_by.clone();
+            }
+            if item.blocks.is_empty() {
+                item.blocks = prev.blocks.clone();
+            }
+            // Status is the stub's: a create draft is always `Pending`, and the row may
+            // already have moved on (a `done` read before its create, on a resumed view).
+            item.status = prev.status;
+        }
         self.list.items.retain(|t| t.id != item.id);
         self.list.items.push(item);
         self.list.sort();

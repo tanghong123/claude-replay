@@ -324,6 +324,15 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
         };
         match str_of("op") {
             "create" => {
+                // rev 5 publishes the description (and active form) a create was given,
+                // bounded at 8 KB rather than the 120 chars everything else gets. That is
+                // the ONLY copy for text the shell ate before the transcript saw it — a
+                // `--description "$D"`, a heredoc, a `$(cat …)` — and, since rev 5 also made
+                // repo queues machine-local, the only copy at all when the transcript is read
+                // anywhere but the machine that owns the checkout.
+                //
+                // The COMMAND still wins when it produced text: it is unbounded and exact,
+                // while this is bounded. The record is the floor, not the authority.
                 // The record ALONE is enough to put the task on the list, correctly titled:
                 // it names its task, unlike a native "Created task #12". Emitted first so a
                 // draft that does exist replaces this stub wholesale (`join` retains the id
@@ -334,8 +343,8 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                     task_id: task.to_string(),
                     status: to("status"),
                     subject: Some(str_of("subject").to_string()).filter(|s| !s.is_empty()),
-                    description: None,
-                    active_form: None,
+                    description: to("description"),
+                    active_form: to("activeForm"),
                     add_blocks: Vec::new(),
                     add_blocked_by: Vec::new(),
                 });
@@ -367,8 +376,10 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                     task_id: task.to_string(),
                     status,
                     subject,
-                    description: None,
-                    active_form: None,
+                    // rev 5: an edit publishes its new text at 8 KB. Before it, the record
+                    // truncated to 120 and the command was the only full copy.
+                    description: to("description"),
+                    active_form: to("activeForm"),
                     add_blocks: Vec::new(),
                     add_blocked_by: Vec::new(),
                 });
@@ -733,6 +744,69 @@ mod tests {
             TaskOp::Create { subject, description, .. }
                 if subject.is_empty() && description == "real"
         ));
+    }
+
+    /// **rev 5: the record publishes the description, so a description the shell ate is
+    /// recoverable from the transcript alone.**
+    ///
+    /// taskq rev 5 (agentdev 2d74e99) puts `changes.description` on a create and an update,
+    /// bounded at 8 KB where everything else stays at 120 — and made repo queues
+    /// machine-local, so `queue_tasks` can no longer be the answer for a transcript read
+    /// anywhere but the machine that owns the checkout. The record is now the portable copy.
+    ///
+    /// The join rule: the COMMAND wins where it produced text (exact and unbounded), the
+    /// record is the floor. That works because a create record stands its task up BEFORE its
+    /// draft resolves, and resolving fills rather than erases.
+    #[test]
+    fn a_rev5_record_supplies_the_description_the_shell_ate() {
+        let rec = |desc: &str| {
+            format!(
+                "##taskq/v1 {{\"rid\":\"r1\",\"op\":\"create\",\"task\":\"1\",\"subject\":\"Ship it\",\
+                 \"changes\":{{\"status\":{{\"from\":null,\"to\":\"pending\"}},\
+                 \"description\":{{\"from\":null,\"to\":\"{desc}\"}},\
+                 \"activeForm\":{{\"from\":null,\"to\":\"Shipping\"}}}}}}"
+            )
+        };
+        let run = |cmd: &str, record: &str| {
+            let mut fold = crate::engine::tasks::TaskFold::default();
+            for op in taskq_create_ops("b1", cmd) {
+                fold.apply(&op);
+            }
+            for op in taskq_ops("b1", record) {
+                fold.apply(&op);
+            }
+            let t = fold.snapshot().items[0].clone();
+            (t.subject, t.description, t.active_form)
+        };
+
+        // The reported case: the shell ate the description, so the command carries none.
+        assert_eq!(
+            run(
+                "taskq create --subject \"Ship it\" --description \"$D\"",
+                &rec("from the record")
+            ),
+            (
+                "Ship it".to_string(),
+                "from the record".to_string(),
+                "Shipping".to_string()
+            ),
+            "the record is the floor when the command half is gone"
+        );
+        // When the command DID carry it, that text wins — it is exact and unbounded, while
+        // the record's copy is capped.
+        assert_eq!(
+            run(
+                "taskq create --subject \"Ship it\" --description 'the full brief, uncapped' \
+                 --active-form 'Shipping it'",
+                &rec("the capped copy")
+            ),
+            (
+                "Ship it".to_string(),
+                "the full brief, uncapped".to_string(),
+                "Shipping it".to_string()
+            ),
+            "the command is the authority where it has text"
+        );
     }
 
     /// **A record QUOTED in a document is not a mutation.** taskq prints its record, so a

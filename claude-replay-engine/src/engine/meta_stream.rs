@@ -132,7 +132,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// at column 0; an indented one is a quotation — a document's code block, a diff's context
 /// line. A v21 stream holds a task invented from `taskq-DESIGN.md`'s own sample record, which
 /// two sessions acquired by merely reading that file.
-pub const FOLD_VERSION: u16 = 22;
+///
+/// v23: `taskq` rev 5 publishes a task's DESCRIPTION in its create/update records (bounded at
+/// 8 KB, where every other field stays at 120), and resolving a create now fills a standing
+/// row rather than replacing it — so a description the shell ate before the transcript saw it
+/// is recoverable from the record. It has to be: rev 5 also made repo queues machine-local,
+/// so `queue_tasks` answers nothing for a transcript read anywhere but the owning machine.
+pub const FOLD_VERSION: u16 = 23;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
