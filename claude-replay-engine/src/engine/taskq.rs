@@ -287,7 +287,19 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
     let mut out = Vec::new();
     let mut nth_create = 0usize;
     for line in text.lines() {
-        let Some(rest) = line.trim_start().strip_prefix(TASKQ_SENTINEL) else {
+        // The sentinel must START the line, with no leading whitespace. taskq PRINTS its
+        // record (`print(SENTINEL + " " + json)`), so a real one always begins a line;
+        // anything indented is a QUOTATION — a doc's code block, a diff's context line, a
+        // pretty-printed log — and replaying a quotation as a mutation invents tasks.
+        //
+        // Measured across every local transcript carrying the sentinel (2026-08-31): 786
+        // occurrences at column 0 and 19 indented, and of the 377 distinct record ids seen,
+        // exactly ONE appears only indented — `m2k9x1-ab3f`, the sample record printed in
+        // `taskq-DESIGN.md` §9. Two unrelated sessions that had merely READ that document
+        // were showing its example ("Activity pane: humanize ETA") as a real task. Every
+        // indented occurrence of a genuine id also appears at column 0, so nothing real is
+        // lost. An earlier `trim_start()` here was leniency with no evidence behind it.
+        let Some(rest) = line.strip_prefix(TASKQ_SENTINEL) else {
             continue;
         };
         let Ok(rec) = serde_json::from_str::<Value>(rest.trim()) else {
@@ -721,6 +733,47 @@ mod tests {
             TaskOp::Create { subject, description, .. }
                 if subject.is_empty() && description == "real"
         ));
+    }
+
+    /// **A record QUOTED in a document is not a mutation.** taskq prints its record, so a
+    /// real one begins a line; an indented one is a quotation.
+    ///
+    /// This is not hypothetical: `taskq-DESIGN.md` §9 prints a sample record inside an
+    /// indented code block, and two unrelated sessions that had merely READ that file were
+    /// showing its example — "Activity pane: humanize ETA", a task belonging to nobody — as a
+    /// real row in their panel.
+    #[test]
+    fn a_record_quoted_in_a_document_is_not_a_mutation() {
+        // The real §9 sample, as the document indents it.
+        let doc = "Record format\n\n    ##taskq/v1 {\"rid\":\"m2k9x1-ab3f\",\"ts\":\
+                   \"2026-08-29T06:12:33Z\",\"repo\":\"crux-web\",\"op\":\"claim\",\"task\":\"12\",\
+                   \"subject\":\"Activity pane: humanize ETA\",\"changes\":{\"status\":{\"from\":\
+                   \"pending\",\"to\":\"in_progress\"}}}\n\nThe sentinel contains no quotes.\n";
+        assert!(
+            taskq_ops("b1", doc).is_empty(),
+            "an indented sample is a quotation, not something that happened"
+        );
+        // A diff of the journal quotes them too — with a marker column, which already fails
+        // the prefix test, and with a context space, which now does.
+        for quoted in [" ", "+", "-", "> ", "\t"] {
+            let line = format!(
+                "{quoted}##taskq/v1 {{\"rid\":\"r1\",\"op\":\"done\",\"task\":\"7\",\
+                 \"subject\":\"s\",\"changes\":{{\"status\":{{\"from\":null,\"to\":\"completed\"}}}}}}"
+            );
+            assert!(
+                taskq_ops("b1", &line).is_empty(),
+                "a record behind {quoted:?} was quoted by something"
+            );
+        }
+        // The same record, printed rather than quoted, still decodes.
+        let printed =
+            "##taskq/v1 {\"rid\":\"r1\",\"op\":\"done\",\"task\":\"7\",\"subject\":\"s\",\
+                       \"changes\":{\"status\":{\"from\":null,\"to\":\"completed\"}}}";
+        assert_eq!(
+            taskq_ops("b1", printed).len(),
+            1,
+            "column 0 is the CLI's own output"
+        );
     }
 
     /// **A command this tokenizer cannot read must produce NO drafts, not wrong ones.**

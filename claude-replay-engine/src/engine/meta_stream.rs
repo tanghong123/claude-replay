@@ -127,7 +127,12 @@ pub const COMPACT_AFTER: usize = 256;
 /// yields NO drafts, because a draft recovered from a mis-tokenized command lands under
 /// another task's id. A v20 stream holds a task wearing the next task's subject, and is
 /// missing the task after it.
-pub const FOLD_VERSION: u16 = 21;
+///
+/// v22: a `taskq` record must BEGIN its line. taskq prints its records, so a real one starts
+/// at column 0; an indented one is a quotation — a document's code block, a diff's context
+/// line. A v21 stream holds a task invented from `taskq-DESIGN.md`'s own sample record, which
+/// two sessions acquired by merely reading that file.
+pub const FOLD_VERSION: u16 = 22;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
