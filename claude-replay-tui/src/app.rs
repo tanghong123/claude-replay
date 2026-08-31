@@ -782,10 +782,7 @@ fn build_frame(
     view.set_reveal_root(discover::project_path(path));
     // The task panel's initial state (#15): the transcript's op-log merged with the
     // live task files (disk wins per id; the op-log backfills pruned files).
-    view.set_tasks(crate::engine::tasks::merged(
-        &oplog_tasks,
-        discover::session_tasks(agent, path),
-    ));
+    view.set_tasks(discover::session_task_view(agent, path, &oplog_tasks));
     // The blocks hold only attachment locators; give the view the transcript to load them from.
     view.set_source(Some(transcript));
     view.set_can_open_picker(args.latest);
@@ -969,10 +966,22 @@ fn event_loop<B: ratatui::backend::Backend>(
                 if let Some(Ok(d)) = cache.poll_view(id) {
                     // The tick carries the task op-log state (#15) — one call, no second
                     // cache lock; the on-disk side refreshes when the panel opens.
-                    view.set_tasks(crate::engine::tasks::merged(
-                        &d.tasks,
-                        discover::session_tasks(_agent, _path),
-                    ));
+                    //
+                    // Only the OPEN panel pays for the repo queue's text. The closed panel
+                    // shows counts and statuses, which the op-log and the session store
+                    // already have; `session_task_view` additionally walks to the git root
+                    // and reads `tasks/*.json`, which is not a per-tick cost worth paying to
+                    // fill a description nothing is displaying. Reading it while the panel IS
+                    // open is also what stops the next tick from overwriting the text under
+                    // the reader.
+                    view.set_tasks(if view.tasks_popup_open() {
+                        discover::session_task_view(_agent, _path, &d.tasks)
+                    } else {
+                        crate::engine::tasks::merged(
+                            &d.tasks,
+                            discover::session_tasks(_agent, _path),
+                        )
+                    });
                     view.apply_view(d);
                 }
             }
@@ -1073,10 +1082,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                             let oplog = cache
                                 .resident_tasks(id)
                                 .unwrap_or_else(|| view.tasks_snapshot());
-                            view.set_tasks(crate::engine::tasks::merged(
-                                &oplog,
-                                discover::session_tasks(_agent, _path),
-                            ));
+                            view.set_tasks(discover::session_task_view(_agent, _path, &oplog));
                         }
                         view.toggle_tasks_popup();
                     }

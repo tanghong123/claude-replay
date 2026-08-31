@@ -190,6 +190,43 @@ pub fn session_tasks(agent: Agent, path: &Path) -> Option<crate::engine::tasks::
     crate::adapter::adapter(agent).load_tasks(path)
 }
 
+/// The task panel's state for the session at `path`: the transcript's op-log, overlaid by the
+/// live task files, then gap-filled from the repo's `taskq` queue. The ONE call every
+/// frontend makes — the three sources have different authority and getting the order wrong is
+/// how a panel starts inventing rows.
+///
+/// 1. [`tasks::merged`](crate::engine::tasks::merged) — the agent's own SESSION-scoped store
+///    wins per id and may add rows the op-log lost to pruning.
+/// 2. [`tasks::enrich_from_queue`](crate::engine::tasks::enrich_from_queue) — the REPO-scoped
+///    `taskq` queue fills empty text only, and only where the subject agrees. It never adds a
+///    row: that queue belongs to the repository, not to this session.
+///
+/// Step 2 costs nothing when there is nothing to fill: the queue is not even looked for unless
+/// some task is missing text a queue could supply, which is the usual case for a session that
+/// never touched `taskq`.
+///
+/// The repository is located from [`project_path`], so a moved or renamed checkout still
+/// resolves. A session that `cd`s into a DIFFERENT repository mid-run is anchored to the one
+/// it started in — the same limit every `project_path` consumer has.
+pub fn session_task_view(
+    agent: Agent,
+    path: &Path,
+    oplog: &crate::engine::tasks::TaskList,
+) -> crate::engine::tasks::TaskList {
+    let mut tasks = crate::engine::tasks::merged(oplog, session_tasks(agent, path));
+    let wants_text = tasks
+        .items
+        .iter()
+        .any(|t| !t.subject.is_empty() && (t.description.is_empty() || t.active_form.is_empty()));
+    if wants_text {
+        if let Some(queue) = project_path(path).and_then(|d| crate::engine::taskq::queue_tasks(&d))
+        {
+            crate::engine::tasks::enrich_from_queue(&mut tasks, &queue);
+        }
+    }
+    tasks
+}
+
 /// The fleets launched from the session at `path`, with their current members (#38).
 ///
 /// Discovery-side, like [`session_tasks`]: it reads files beside the transcript and is never part

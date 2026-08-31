@@ -821,10 +821,7 @@ impl SessionService {
         // (`derive_title`) — this pull touches no other session's presentation state.
         // Meta tasks (#15): the fold's op-log overlaid by a fresh read of the live task
         // files (small dir; the pull is already a per-second file poll).
-        let tasks = crate::engine::tasks::merged(
-            &d.tasks,
-            crate::discover::session_tasks(agent, src.path()),
-        );
+        let tasks = crate::discover::session_task_view(agent, src.path(), &d.tasks);
         // A fleet's roster is runtime state, not transcript content (#38): its members keep
         // starting long after the lines that launched them are settled, so it is read fresh here
         // — the same shape as the task overlay above — instead of being folded into the block

@@ -2944,16 +2944,25 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(ops.len(), 2, "create + its resolve: {ops:#?}");
+        // Three, in this order: the command's draft, then the record standing the task up on
+        // its own (so a create whose draft was lost is still a titled row), then the resolve
+        // that lands the draft over that stub.
+        assert_eq!(ops.len(), 3, "draft + record stub + resolve: {ops:#?}");
         assert!(
             matches!(ops[0], TaskOp::Create { subject, .. } if subject == "Scaffold"),
             "{:#?}",
             ops[0]
         );
         assert!(
-            matches!(ops[1], TaskOp::Resolve { id: Some(id), .. } if id == "1"),
+            matches!(ops[1], TaskOp::Update { task_id, subject: Some(s), .. }
+                if task_id == "1" && s == "Scaffold"),
             "{:#?}",
             ops[1]
+        );
+        assert!(
+            matches!(ops[2], TaskOp::Resolve { id: Some(id), .. } if id == "1"),
+            "{:#?}",
+            ops[2]
         );
     }
 

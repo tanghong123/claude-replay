@@ -28,8 +28,9 @@
 //!
 //! Wired for Claude Code (and so QoderWork, which delegates to that family) and for Codex.
 
-use crate::engine::tasks::TaskOp;
+use crate::engine::tasks::{TaskItem, TaskList, TaskOp};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 /// The `taskq` audit-record sentinel (agentdev `docs/taskq-DESIGN.md` §9). A mutating
 /// `taskq` command prints one such line per mutation as the LAST line of its stdout, and the
@@ -45,7 +46,7 @@ pub const TASKQ_SENTINEL: &str = "##taskq/v1";
 /// Deliberately not a shell: no expansion, no substitution, no operator parsing. It exists to
 /// recover the literal text of a `--description` argument, and anything it cannot read
 /// literally it leaves alone — a wrong description is worse than none.
-fn shell_words(cmd: &str) -> Vec<String> {
+fn shell_words(cmd: &str) -> (Vec<String>, bool) {
     let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
     let mut chars = cmd.chars().peekable();
     let (mut dq, mut sq) = (false, false);
@@ -82,7 +83,7 @@ fn shell_words(cmd: &str) -> Vec<String> {
     if has {
         out.push(cur);
     }
-    out
+    (out, !dq && !sq)
 }
 
 /// One `taskq` subcommand recovered from a Bash command line: its verb, the task id when the
@@ -112,7 +113,17 @@ struct TaskqCall {
 /// leaving one stuck in-progress by shifting every later ordinal. The program word is matched
 /// by BASENAME, so `taskq`, `$TQ`, `"$TQ"` and an absolute path to the script all count.
 fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
-    let words = shell_words(cmd);
+    let (words, balanced) = shell_words(cmd);
+    // Unclosed quoting means the tokenization is WRONG, not merely incomplete, and a wrong
+    // draft is worse than none: it lands under another task's id and takes that task's row
+    // with it. Measured on the migration that filed this repo's queue — a heredoc body
+    // containing "It's" flipped the single-quote state, hiding the second `create` boundary,
+    // so one draft was recovered where two were written; it paired with the FIRST record and
+    // task #10 never appeared at all. Returning nothing costs a description, which the
+    // record's own stub and `queue_tasks` both cover.
+    if !balanced {
+        return Vec::new();
+    }
     let is_taskq = |w: &String| {
         let base = w.rsplit('/').next().unwrap_or(w);
         base == "taskq" || base == "$TQ" || base == "${TQ}"
@@ -301,12 +312,24 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
         };
         match str_of("op") {
             "create" => {
-                // Resolve the create the COMMAND emitted, by ordinal within this Bash call
+                // The record ALONE is enough to put the task on the list, correctly titled:
+                // it names its task, unlike a native "Created task #12". Emitted first so a
+                // draft that does exist replaces this stub wholesale (`join` retains the id
+                // out and pushes its own item), and so a create whose draft was lost — an
+                // echoed record, a `--with-history` tail, a command this decoder would not
+                // tokenize — still appears with its subject instead of vanishing.
+                out.push(TaskOp::Update {
+                    task_id: task.to_string(),
+                    status: to("status"),
+                    subject: Some(str_of("subject").to_string()).filter(|s| !s.is_empty()),
+                    description: None,
+                    active_form: None,
+                    add_blocks: Vec::new(),
+                    add_blocked_by: Vec::new(),
+                });
+                // Then resolve the draft the COMMAND emitted, by ordinal within this call
                 // (`taskq_create_ops`) — that draft carries the description, which no record
-                // does. A create the command side did not produce (an echoed record, a
-                // `--with-history` tail) resolves nothing and is simply not in the list; its
-                // task still appears the moment any state op touches it, titled from the
-                // record.
+                // does.
                 out.push(TaskOp::Resolve {
                     tool_use_id: format!("taskq:{call_id}#{nth_create}"),
                     id: Some(task.to_string()),
@@ -342,6 +365,88 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
         }
     }
     out
+}
+
+/// The `taskq` QUEUE on disk, for the repository `anchor` sits in — `tasks/*.json` at the git
+/// root, plus `tasks/archive/*.json` for tasks that have been archived out of the active set
+/// (taskq's own reader does the same, with an active file shadowing an archived one of the
+/// same id).
+///
+/// Discovery-side on purpose: this reads files beside the transcript and is never part of a
+/// fold, the same rule `session_tasks`/`session_runs` follow. The fold stays pure over the
+/// transcript; what a queue currently says is a fact about now, read where the answer is
+/// served.
+///
+/// The file schema is the one [`task_from_json`](crate::engine::tasks::task_from_json)
+/// already parses — `{id, subject, description, activeForm, status, blockedBy}` — because
+/// taskq writes the same shape Claude's own task files use.
+///
+/// `None` when there is no repository above `anchor`, no `tasks/` in it, or nothing parseable
+/// there. Never shells out to `git`: it looks for a `.git` ENTRY, which is a directory in a
+/// normal clone and a FILE in a worktree or submodule.
+pub fn queue_tasks(anchor: &Path) -> Option<TaskList> {
+    let root = git_root(anchor)?;
+    let dir = root.join("tasks");
+    let mut items: Vec<TaskItem> = Vec::new();
+    // Archive first, so an active file of the same id overwrites it below.
+    for (d, archived) in [(dir.join("archive"), true), (dir.clone(), false)] {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            if !archived {
+                return None; // no `tasks/` at all — not a queue
+            }
+            continue;
+        };
+        for e in entries.flatten() {
+            // taskq's own `TASKFILE_RE`: `<n>.json` and nothing else, so `journal.ndjson`
+            // and any stray file in the directory are skipped rather than guessed at.
+            let name = e.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
+                continue;
+            };
+            if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let Some(t) = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .as_ref()
+                .and_then(crate::engine::tasks::task_from_json)
+            else {
+                continue;
+            };
+            match items.iter_mut().find(|x| x.id == t.id) {
+                Some(slot) => *slot = t,
+                None => items.push(t),
+            }
+        }
+    }
+    (!items.is_empty()).then_some(TaskList { items })
+}
+
+/// The repository root at or above `dir` — the first ancestor holding a `.git` entry.
+///
+/// Bounded rather than unbounded: a pathological path cannot turn one lookup into an
+/// unbounded walk, and no real repository is 64 levels deep. Stops at the filesystem root,
+/// NOT at `$HOME` — a checkout under `/opt` or `/srv` is an ordinary case.
+///
+/// Honours `GIT_CEILING_DIRECTORIES` the way git's own discovery does: the walk stops when it
+/// reaches a listed directory, without examining it or anything above. That is not decoration
+/// — this workspace points `TMPDIR` at its own `target/` and sets a ceiling there precisely so
+/// a fixture under it is outside a repository, exactly as it was in the system temp. Without
+/// this, every scratch directory a test builds would sit inside claude-replay and inherit
+/// claude-replay's queue.
+fn git_root(dir: &Path) -> Option<PathBuf> {
+    let ceilings: Vec<PathBuf> = std::env::var("GIT_CEILING_DIRECTORIES")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|p| !p.is_empty() && Path::new(p).is_absolute())
+        .map(PathBuf::from)
+        .collect();
+    dir.ancestors()
+        .take(64)
+        .take_while(|d| !ceilings.iter().any(|c| c == *d))
+        .find(|d| d.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -442,8 +547,12 @@ mod tests {
         assert_eq!(
             ops.iter().map(expect).collect::<Vec<_>>(),
             vec![
-                // Ordinal 0 and 1 within this Bash call — the ids the records announce.
+                // Each create record first stands the task up on its own — titled, so a
+                // create whose draft never arrived is a row rather than a hole — then
+                // resolves the draft at ordinal 0 and 1 within this Bash call.
+                "update(1, pending, Scaffold the monorepo, desc=)".to_string(),
                 "resolve(taskq:b1#0 -> 1)".to_string(),
+                "update(2, pending, Engine: inline diffs, desc=)".to_string(),
                 "resolve(taskq:b1#1 -> 2)".to_string(),
                 // State ops read their destination from `changes.status.to`, and carry the
                 // subject from the record's TOP-LEVEL field so a stub is never blank.
@@ -479,7 +588,84 @@ mod tests {
         // Re-seeing a result is harmless: an echoed create record resolves an ordinal this
         // call never created, which lands nothing (`join` returns on an unknown id).
         let again: Vec<String> = taskq_ops("b1", &text).iter().map(expect).collect();
-        assert_eq!(again.len(), 4, "records re-read identically");
+        assert_eq!(again.len(), 6, "records re-read identically");
+    }
+
+    /// The queue read: `tasks/<n>.json` at the git root, ARCHIVE included, everything else in
+    /// the directory ignored.
+    ///
+    /// Archive matters more than it looks: taskq moves finished tasks there, and a finished
+    /// task with no recoverable description is exactly the population this exists to fill.
+    /// An active file shadows an archived one of the same id, matching taskq's own reader.
+    #[test]
+    fn the_queue_is_read_from_the_git_root_including_archive() {
+        let base = std::env::temp_dir().join(format!("tq-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("tasks/archive")).unwrap();
+        let write = |p: std::path::PathBuf, id: &str, subject: &str, desc: &str| {
+            std::fs::write(
+                p,
+                serde_json::json!({
+                    "id": id, "subject": subject, "description": desc,
+                    "activeForm": "Doing it", "status": "pending", "blockedBy": []
+                })
+                .to_string(),
+            )
+            .unwrap()
+        };
+        write(
+            root.join("tasks/1.json"),
+            "1",
+            "active one",
+            "from the active file",
+        );
+        write(
+            root.join("tasks/archive/2.json"),
+            "2",
+            "archived one",
+            "from the archive",
+        );
+        // Same id in both: the ACTIVE file is the answer.
+        write(
+            root.join("tasks/archive/1.json"),
+            "1",
+            "stale",
+            "stale copy",
+        );
+        // Neither of these is a task file.
+        std::fs::write(root.join("tasks/journal.ndjson"), "##taskq/v1 {}\n").unwrap();
+        std::fs::write(root.join("tasks/notes.json"), "{\"id\":\"99\"}").unwrap();
+
+        // Found from a SUBDIRECTORY — the walk goes up to the repository root.
+        let deep = root.join("crates/engine/src");
+        std::fs::create_dir_all(&deep).unwrap();
+        let q = queue_tasks(&deep).expect("a queue above this directory");
+        let mut rows: Vec<(String, String)> = q
+            .items
+            .iter()
+            .map(|t| (t.id.clone(), t.description.clone()))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                ("1".to_string(), "from the active file".to_string()),
+                ("2".to_string(), "from the archive".to_string()),
+            ],
+            "`notes.json` is not `<n>.json`, and the journal is not a task"
+        );
+
+        // A directory with no repository above it, and a repository with no queue.
+        assert!(queue_tasks(&base).is_none(), "no .git above `base`");
+        let bare = base.join("bare");
+        std::fs::create_dir_all(bare.join(".git")).unwrap();
+        assert!(
+            queue_tasks(&bare).is_none(),
+            "a repo with no tasks/ has no queue"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A description the caller built in a shell VARIABLE is not recoverable, and must not be
@@ -535,6 +721,61 @@ mod tests {
             TaskOp::Create { subject, description, .. }
                 if subject.is_empty() && description == "real"
         ));
+    }
+
+    /// **A command this tokenizer cannot read must produce NO drafts, not wrong ones.**
+    ///
+    /// [`shell_words`] is not a shell. An apostrophe inside a quoted heredoc — "It's" in a
+    /// task's own prose — flips its single-quote state and hides every boundary after it, so
+    /// a command that wrote two `create`s yields one. That draft then pairs with the FIRST
+    /// record by ordinal, which puts the second task's text under the first task's id and
+    /// drops the second task entirely. Measured on the migration that filed this repo's
+    /// queue: task #9 wore #10's subject and #10 was missing from the panel.
+    ///
+    /// Unclosed quoting at the end of tokenization is the signal, and it is exact: it means
+    /// the reader is still inside a string it never left.
+    #[test]
+    fn a_command_that_did_not_tokenize_yields_no_drafts() {
+        // One ODD apostrophe in a heredoc body is all it takes: `Cursor'd` opens a
+        // single-quote state that swallows the next `create` boundary whole.
+        let broken = "TQ=/x/taskq\nD=$(cat <<'EOF'\n\
+                      Parked: needs an explicit go-ahead.\n\
+                      EOF\n)\n\
+                      \"$TQ\" create --subject \"Sunset the compat symlinks\" --description \"$D\"\n\
+                      D=$(cat <<'EOF'\n\
+                      Cursor'd resume for --dump --json.\n\
+                      EOF\n)\n\
+                      \"$TQ\" create --subject \"Cursor resume\" --description \"$D\"";
+        assert!(
+            taskq_create_ops("b1", broken).is_empty(),
+            "one unbalanced quote makes every boundary after it a guess"
+        );
+        // The records still stand both tasks up, correctly titled — which is the whole point
+        // of refusing the drafts rather than trusting them.
+        let recs = [1, 2]
+            .map(|n| {
+                format!(
+                    "##taskq/v1 {{\"rid\":\"r{n}\",\"op\":\"create\",\"task\":\"{n}\",\
+                     \"subject\":\"task {n}\",\"changes\":{{\"status\":{{\"from\":null,\
+                     \"to\":\"pending\"}}}}}}"
+                )
+            })
+            .join("\n");
+        let mut fold = crate::engine::tasks::TaskFold::default();
+        for op in taskq_ops("b1", &recs) {
+            fold.apply(&op);
+        }
+        let rows: Vec<(&str, &str)> = fold
+            .snapshot()
+            .items
+            .iter()
+            .map(|t| (t.id.as_str(), t.subject.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("1", "task 1"), ("2", "task 2")],
+            "no draft, no hole: the record names its own task"
+        );
     }
 
     /// The reported symptom, reproduced at the op level: a view that starts PART-WAY through a

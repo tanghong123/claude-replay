@@ -30,7 +30,7 @@ fn build_stream(
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let blocks = s.blocks();
-    let tasks = crate::engine::tasks::merged(&s.tasks, crate::discover::session_tasks(agent, path));
+    let tasks = crate::discover::session_task_view(agent, path, &s.tasks);
     Ok(render_snapshot(
         agent,
         path,
@@ -98,10 +98,7 @@ fn agent_stream(
     let blocks = s.blocks();
     // The task panel's state (#15): op-log from the transcript, overlaid by the live
     // task files when they still exist — so an offline dump carries the task state.
-    let tasks = crate::engine::tasks::merged(
-        &s.tasks,
-        crate::discover::session_tasks(agent, &info.source),
-    );
+    let tasks = crate::discover::session_task_view(agent, &info.source, &s.tasks);
     let (jsonl, mut children) = render_agent_stream(
         agent,
         fold,

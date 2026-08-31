@@ -1,0 +1,10 @@
+{
+  "id": "16",
+  "subject": "A taskq record quoted in a document must not become a task",
+  "description": "The result-side decode runs on EVERY tool result, not just a shell one, because a\ntool_result carries only a tool_use_id and no tool name. So a session that READS a file\ncontaining an example record picks it up as a real mutation.\n\nMeasured 2026-08-31: taskq-DESIGN.md section 9 prints a sample record verbatim\n(op=claim, task=12, subject=\"Activity pane: humanize ETA\"). Two unrelated sessions that had\nread that doc both show a phantom task #12 in the panel. Reading this repos own\nclaude-replay-engine/src/engine/taskq.rs test fixtures does the same, and produced a\nfurther eight subject-less stubs in the session that wrote them.\n\nThe v21 change that lets a create record stand its task up on its own makes these MORE\nvisible, which is the right trade for real tasks but sharpens this one.\n\nFix: gate the result-side decode on provenance -- only decode records from the result of a\nshell call whose command actually invoked the taskq program. The call side already applies\nthat test (taskq_calls requires the word before the verb to be the program); the result\nside cannot today because it has no access to the call.\n\nThat needs the adapter to carry a little state: remember the tool_use_ids of shell calls\nwhose command mentioned taskq, and decode a result only for those. Claude decode_line\nalready threads a &mut String cwd, so it has somewhere to put it; Codex has a\nLinePreprocessor with real state. Both would need the set.\n\nCheaper partial: a record inside a Read result is far more suspicious than one in a Bash\nresult, but the tool name is not available at the result either, so this is the same\nproblem wearing a smaller hat.\n\nDefinition of done: reading taskq-DESIGN.md in a session creates no tasks; a session that\nactually runs taskq is unchanged; a fixture covering both.",
+  "activeForm": "Gating taskq records on call provenance",
+  "status": "pending",
+  "blockedBy": [],
+  "created_at": "2026-08-31T08:01:29Z",
+  "updated_at": "2026-08-31T08:01:29Z"
+}

@@ -374,6 +374,62 @@ pub fn merged(oplog: &TaskList, disk: Option<TaskList>) -> TaskList {
     out
 }
 
+/// Fill the gaps a `taskq` task's text left in the op-log, from the queue's own files
+/// ([`queue_tasks`](crate::engine::taskq::queue_tasks)) — **enrich only**: this never adds a
+/// task, never removes one, and never overwrites text the transcript already carried.
+///
+/// Why the transcript has gaps at all: a `taskq create`'s record carries no description, so
+/// the fold reads it from the COMMAND — and a description built in a shell variable, a
+/// heredoc or `$(cat …)` was consumed by the shell before taskq ran. There is nothing to
+/// recover from the transcript in that case; the queue's file has it.
+///
+/// Deliberately NOT [`merged`]'s "disk wins, and disk may add". That contract fits a
+/// SESSION-scoped store (`~/.claude/tasks/<session-id>/`), where every file belongs to the
+/// session being viewed. A taskq queue is REPO-scoped and shared across sessions and agents,
+/// so letting it add rows would show every session in a repo the whole team's queue, and
+/// letting it win would let one queue's text overwrite another's on a bare numeric-id
+/// collision.
+///
+/// The id is therefore not enough to match on, and the SUBJECT is the discriminator: a queue
+/// item enriches an op-log item only when their subjects agree. Records truncate a subject to
+/// ~120 chars with a trailing `…`, so a truncated op-log subject matches a disk subject it is
+/// a prefix of.
+///
+/// An op-log item with an EMPTY subject is never enriched, on purpose. That is the #125 stub
+/// — a task this transcript saw only a state op for — and it carries no evidence of WHICH
+/// task it is beyond a bare id. Filling it from whatever holds that id in the repo's queue
+/// would be inventing the identification, which is the same line [`merged`]'s doc draws.
+pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
+    for item in &mut list.items {
+        if item.subject.is_empty() || (!item.description.is_empty() && !item.active_form.is_empty())
+        {
+            continue;
+        }
+        let Some(disk) = queue
+            .items
+            .iter()
+            .find(|d| d.id == item.id && same_subject(&item.subject, &d.subject))
+        else {
+            continue;
+        };
+        if item.description.is_empty() {
+            item.description = disk.description.clone();
+        }
+        if item.active_form.is_empty() {
+            item.active_form = disk.active_form.clone();
+        }
+    }
+}
+
+/// Whether an op-log subject and a disk subject name the same task, allowing for the record's
+/// ~120-char truncation (`…` is one char, so `strip_suffix` is exact).
+fn same_subject(oplog: &str, disk: &str) -> bool {
+    oplog == disk
+        || oplog
+            .strip_suffix('…')
+            .is_some_and(|head| !head.is_empty() && disk.starts_with(head))
+}
+
 /// Parse ONE on-disk task file's JSON (Claude's `<n>.json` schema: `{id, subject,
 /// description, activeForm, status, blocks, blockedBy}`) into a [`TaskItem`]. Shared by
 /// the Claude adapter's `load_tasks`; agent-neutral in shape (an agent with a different
@@ -473,6 +529,96 @@ mod tests {
     }
 
     /// Disk wins per id; op-log items survive for pruned files; order holds.
+    /// The repo queue fills GAPS, and nothing else. A `taskq create` whose description was
+    /// built in a shell variable leaves the op-log with a subject and no text; the queue's
+    /// file has the text. Everything else about the row stays the transcript's.
+    ///
+    /// The subject is the discriminator, not the id: a taskq queue is REPO-scoped, so a bare
+    /// numeric id collides across queues and across a session's own native tasks. Each guard
+    /// below is a way that could go wrong.
+    #[test]
+    fn the_queue_fills_empty_text_and_never_more() {
+        let item = |id: &str, subject: &str, desc: &str, active: &str| TaskItem {
+            id: id.into(),
+            subject: subject.into(),
+            description: desc.into(),
+            active_form: active.into(),
+            ..Default::default()
+        };
+        let mut list = TaskList {
+            items: vec![
+                // The reported case: subject survived, description was eaten by the shell.
+                item("1", "Land the seam move", "", ""),
+                // Half a row: the description survived, the active form did not. Pins
+                // FILL rather than OVERWRITE — the queue supplies the missing half and
+                // leaves the half the transcript carried.
+                item("2", "Wire codex", "from the command line", ""),
+                // Same id, different task — another queue, or a native task. Not ours.
+                item("3", "Something else entirely", "", ""),
+                // A #125 stub: a state op with no create. No evidence of WHICH task —
+                // and the queue below holds a subjectless row at that id, so "both empty"
+                // must not read as "the same task".
+                item("4", "", "", ""),
+                // A subject the record truncated; disk has it in full.
+                item(
+                    "5",
+                    "A subject long enough that the record cut it o…",
+                    "",
+                    "",
+                ),
+            ],
+        };
+        let queue = TaskList {
+            items: vec![
+                item("1", "Land the seam move", "the brief, in full", "Moving"),
+                item("2", "Wire codex", "the queue's copy", "Queued form"),
+                item(
+                    "3",
+                    "A completely different task",
+                    "not this one's text",
+                    "No",
+                ),
+                item("4", "", "not attributable", "No"),
+                item(
+                    "5",
+                    "A subject long enough that the record cut it off here",
+                    "matched through the truncation",
+                    "",
+                ),
+                // Present in the queue, absent from the transcript: never added.
+                item("9", "Someone else's task", "not this session's", ""),
+            ],
+        };
+        enrich_from_queue(&mut list, &queue);
+        let seen: Vec<(&str, &str, &str)> = list
+            .items
+            .iter()
+            .map(|t| {
+                (
+                    t.id.as_str(),
+                    t.description.as_str(),
+                    t.active_form.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("1", "the brief, in full", "Moving"),
+                ("2", "from the command line", "Queued form"),
+                ("3", "", ""),
+                ("4", "", ""),
+                ("5", "matched through the truncation", ""),
+            ],
+            "gaps filled where the subject agrees; nothing overwritten, nothing added"
+        );
+        assert_eq!(
+            list.items.len(),
+            5,
+            "the queue's own task #9 is not this session's"
+        );
+    }
+
     #[test]
     fn merged_prefers_disk_and_backfills_from_oplog() {
         let mut f = TaskFold::default();

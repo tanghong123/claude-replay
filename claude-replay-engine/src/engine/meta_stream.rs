@@ -120,7 +120,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// shell, so an unexpanded reference came back verbatim and every task built that way showed
 /// its variable's NAME where its brief belongs (reported on two unrelated sessions). A v19
 /// stream holds those literals.
-pub const FOLD_VERSION: u16 = 20;
+///
+/// v21: two `taskq` corrections that change which tasks exist and what they are called.
+/// A `create` record now stands its task up on its own — so a create whose command half was
+/// lost is a titled row rather than a hole — and a command whose quoting does not close
+/// yields NO drafts, because a draft recovered from a mis-tokenized command lands under
+/// another task's id. A v20 stream holds a task wearing the next task's subject, and is
+/// missing the task after it.
+pub const FOLD_VERSION: u16 = 21;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

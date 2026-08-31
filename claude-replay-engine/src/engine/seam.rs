@@ -51,7 +51,7 @@ pub use crate::engine::build_sub_agents;
 pub use crate::engine::replay::{
     parse_path_timed_for, replay, stamp_user_turns, QueueItem, Replayer,
 };
-pub use crate::engine::taskq::{taskq_create_ops, taskq_ops, TASKQ_SENTINEL};
+pub use crate::engine::taskq::{queue_tasks, taskq_create_ops, taskq_ops, TASKQ_SENTINEL};
 pub use crate::engine::tasks::{task_from_json, TaskList, TaskOp, Todo};
 pub use crate::engine::time::epoch_secs;
 #[doc(hidden)]
