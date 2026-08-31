@@ -609,6 +609,7 @@
         ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
         var an = el("span", "aname", h.att_name || "attachment");
         var text = h.att_text, datauri = h.att_datauri, path = h.att_path, href = h.att_href;
+        var sig = h.att_sig;
         if (href != null) {
             // Offline bundle: the bytes live at assets/<file>; link straight to them.
             an = el("a", "aname adl", h.att_name || "attachment");
@@ -630,8 +631,11 @@
             an.classList.add("adl");
             an.title = ARTIFACTS ? "open" : "reveal in file manager";
             an.onclick = function () {
-                var reveal = function () { fetch("__reveal?path=" + encodeURIComponent(path)); };
-                if (ARTIFACTS) openArtifact(path, reveal); else reveal();
+                // `sig` is this server's stamp on a path it offered; both routes refuse a
+                // path without one, so it rides every request the click makes.
+                var q = "path=" + encodeURIComponent(path) + (sig ? "&sig=" + encodeURIComponent(sig) : "");
+                var reveal = function () { fetch("__reveal?" + q); };
+                if (ARTIFACTS) openArtifact(q, reveal); else reveal();
             };
         }
         ac.appendChild(an);
@@ -773,6 +777,7 @@
           a.target = "_blank";
           a.rel = "noopener";
           a.dataset.path = head.path;
+          if (head.sig) a.dataset.sig = head.sig;
           a.title = (ARTIFACTS ? "Open " : "Reveal ") + head.path;
           h.appendChild(a);
         } else {
@@ -928,8 +933,9 @@
   // directory, something over the cap, a path no hosted session explains, or an unpaired
   // monitor, where reading local files is not offered at all. The callers reveal in the file
   // manager instead, which is what those cases want.
-  function openArtifact(path, fallback) {
-    fetch("file?path=" + encodeURIComponent(path)).then(function (r) {
+  function openArtifact(q, fallback) {
+    var path = decodeURIComponent((/(?:^|&)path=([^&]*)/.exec(q) || [, ""])[1]);
+    fetch("file?" + q).then(function (r) {
       if (!r.ok) { fallback(r.status); return null; }
       var ct = r.headers.get("content-type") || "";
       var cd = r.headers.get("content-disposition") || "";
@@ -2810,15 +2816,17 @@
       if (location.protocol === "file:") return; // native file:// link works standalone
       e.preventDefault(); // served page: http→file:// is blocked, so ask the server
       var orig = tp.textContent;
+      var tq = "path=" + encodeURIComponent(tp.dataset.path)
+        + (tp.dataset.sig ? "&sig=" + encodeURIComponent(tp.dataset.sig) : "");
       var reveal = function () {
-        fetch("__reveal?path=" + encodeURIComponent(tp.dataset.path))
+        fetch("__reveal?" + tq)
           .then(function (r) {
             tp.textContent = r.ok ? "revealed ✓" : "not found";
             setTimeout(function () { tp.textContent = orig; }, 1000);
           })
           .catch(function () { /* server gone */ });
       };
-      if (ARTIFACTS) openArtifact(tp.dataset.path, reveal); else reveal();
+      if (ARTIFACTS) openArtifact(tq, reveal); else reveal();
       return;
     }
     // The agent-transcript link navigates (full page load to `?session=<id>`); let the

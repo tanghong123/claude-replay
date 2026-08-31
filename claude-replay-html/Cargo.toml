@@ -13,6 +13,9 @@ anyhow = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Already in this workspace's tree (claude-monitor), so the file-signature MAC adds no new
+# third-party code — see html_export/sig.rs.
+sha2 = "0.10"
 
 [dev-dependencies]
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).

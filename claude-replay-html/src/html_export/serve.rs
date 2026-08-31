@@ -124,10 +124,14 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     /// the markup changed, the schema did not, and the session that motivated the fix went on
     /// serving the version without it. If a change alters what any block CARRIES, it lands
     /// here too.
-    const RECORD_SCHEMA: u16 = 11;
+    const RECORD_SCHEMA: u16 = 12;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
+    // The path signatures are minted with a persisted key and CACHED alongside the
+    // records that carry them. Replacing the key must therefore re-render, or every
+    // link on a cached page would verify against nothing and silently do nothing.
+    super::sig::key_fingerprint().hash(&mut h);
     h.finish()
 }
 
@@ -1430,7 +1434,7 @@ impl AuthGate {
 
 /// Constant-time byte compare — no early exit, so a near-miss token cannot be timed out
 /// character by character over loopback.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -1954,6 +1958,15 @@ pub fn service_routes(
             return HttpResponse::not_found("no such path");
         };
         let decoded = percent_decode(raw);
+        // OFFERED, then contained. The signature says this server rendered a link to exactly
+        // this path; containment says a hosted session still explains it. Both, in that
+        // order — the cheap check that needs no disk first.
+        if !super::sig::verify(
+            &decoded,
+            query_get(query, "sig").map(percent_decode).as_deref(),
+        ) {
+            return HttpResponse::not_found("no such path");
+        }
         let Some(path) = live.contained(Path::new(&decoded)) else {
             return HttpResponse::not_found("no such path");
         };
@@ -2002,6 +2015,9 @@ pub fn service_routes(
     if name == "__reveal" {
         if let Some(v) = query_get(query, "path") {
             let p = percent_decode(v);
+            if !super::sig::verify(&p, query_get(query, "sig").map(percent_decode).as_deref()) {
+                return HttpResponse::not_found("no such path");
+            }
             let path = Path::new(&p);
             // CONTAINED, like `/file` — and for the same reason, which this route used to
             // duck: its test was `exists()` alone, so any caller that reached the loopback
@@ -3279,9 +3295,15 @@ mod tests {
         })
         .unwrap();
         live.register_root(&sess);
+        // Every request carries the server's own stamp, because a path it never offered is
+        // refused before anything else is considered (`sig`).
+        let signed = |p: &std::path::Path| {
+            let s = p.display().to_string();
+            let sig = crate::html_export::sig::sign(&s).unwrap_or_default();
+            format!("path={}&sig={sig}", s.replace(' ', "%20"))
+        };
         let get = |p: &std::path::Path| {
-            let q = format!("path={}", p.display().to_string().replace(' ', "%20"));
-            service_routes(Some(&live), &dir, &get_request("file", &q, true))
+            service_routes(Some(&live), &dir, &get_request("file", &signed(p), true))
         };
 
         // Inside the session's cwd: served, as text, hardened.
@@ -3312,6 +3334,40 @@ mod tests {
         assert_eq!(get(&repo.join("escape")).code, "404 Not Found");
         // …and by traversal, which canonicalization flattens before the prefix test.
         assert_eq!(get(&repo.join("../outside/secret")).code, "404 Not Found");
+
+        // **A path this server never offered is refused, however well it would otherwise
+        // pass.** `a.rs` is inside the session's own cwd and served above; the same request
+        // without the stamp, or with someone else's, is a 404. This is what stops a token
+        // holder naming a file the page never showed — `.env`, `.git/config`, a key — and
+        // reading it just because it happens to sit inside an indexed repo.
+        let unsigned = format!("path={}", repo.join("a.rs").display());
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("file", &unsigned, true)).code,
+            "404 Not Found",
+            "no stamp, no file"
+        );
+        let forged = format!("{unsigned}&sig={}", "0".repeat(64));
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("file", &forged, true)).code,
+            "404 Not Found",
+            "a made-up stamp is not a stamp"
+        );
+        // A stamp is bound to ITS path: one file's signature does not open another's.
+        let swapped = format!(
+            "path={}&sig={}",
+            repo.join("page.html").display(),
+            crate::html_export::sig::sign(&repo.join("a.rs").display().to_string()).unwrap()
+        );
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("file", &swapped, true)).code,
+            "404 Not Found",
+            "a stamp names one path"
+        );
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("__reveal", &unsigned, true)).code,
+            "404 Not Found",
+            "…and reveal answers to the same rule"
+        );
 
         // A directory is not contained at all (owner, 2026-08-31): it has no bytes to render,
         // so the only thing it could do is open a file-manager window, which is not worth the
@@ -3348,8 +3404,12 @@ mod tests {
         // caller reaching the loopback port could spawn a file-manager window on any path on
         // the machine — no bytes, but not a capability to leave open either.
         let reveal = |p: &std::path::Path| {
-            let q = format!("path={}", p.display().to_string().replace(' ', "%20"));
-            service_routes(Some(&live), &dir, &get_request("__reveal", &q, true)).code
+            service_routes(
+                Some(&live),
+                &dir,
+                &get_request("__reveal", &signed(p), true),
+            )
+            .code
         };
         assert_eq!(reveal(&outside.join("secret")), "404 Not Found");
         // A CONTAINED directory is revealable — the affordance the v1 monitor and

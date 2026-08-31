@@ -33,6 +33,7 @@ use std::path::Path;
 mod bundle;
 mod record_store;
 mod serve;
+pub(crate) mod sig; // capability signatures for the local-file routes
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::{
     existing_server, get_request, handoff_url, mint_token, query_get, serve, service_routes,
@@ -737,6 +738,11 @@ impl Emitter<'_> {
                 // attachment), embedded, and dropped — never held resident.
                 if self.reveal {
                     if let Some(p) = &a.path {
+                        // Signed like a tool header's path: the routes act only on what was
+                        // offered, and an attachment's path is offered the same way.
+                        if let Some(sig) = crate::html_export::sig::sign(p) {
+                            head.insert("att_sig".into(), json!(sig));
+                        }
                         head.insert("att_path".into(), json!(p));
                     }
                     match self.load_attachment(&a.content) {
@@ -875,6 +881,13 @@ impl Emitter<'_> {
                     // session cwd when the block carries none.
                     let base = if cwd.is_empty() { self.cwd } else { cwd };
                     if let Some(abs) = resolve_abs(base, target) {
+                        // Stamp it: the routes act only on paths this server OFFERED, so a
+                        // token holder cannot name a file the page never showed
+                        // (`html_export::sig`). Unsigned when there is no key — the link is
+                        // then inert, which is the safe direction to fail.
+                        if let Some(sig) = crate::html_export::sig::sign(&abs) {
+                            head.insert("sig".into(), json!(sig));
+                        }
                         head.insert("path".into(), json!(abs));
                     }
                 }
