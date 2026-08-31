@@ -141,7 +141,11 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             i += 1;
         }
         while i + 1 < words.len() && words[i].starts_with("--") {
-            let value = words[i + 1].clone();
+            let value = if unexpanded(&words[i + 1]) {
+                String::new()
+            } else {
+                words[i + 1].clone()
+            };
             match words[i].as_str() {
                 "--subject" => call.subject = value,
                 "--description" => call.description = value,
@@ -153,6 +157,33 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
         out.push(call);
     }
     out
+}
+
+/// Whether a recovered value is a bare shell EXPANSION rather than text — `$D`, `${DESC}`,
+/// `$1`, `$(cat …)`. [`shell_words`] is deliberately not a shell, so it hands back the
+/// reference verbatim; recording that puts the literal string `$D` in the panel where the
+/// description belongs (observed on two unrelated sessions, 2026-08-30, both from agents
+/// that built the text in a variable and passed `--description "$D"`).
+///
+/// Empty is the honest answer: the panel says "no recorded description", which is true,
+/// instead of showing a variable name that means nothing to a reader.
+///
+/// Only a WHOLE-value reference counts. A description that merely CONTAINS a `$` is left
+/// alone — "costs $5" is prose someone single-quoted, and dropping it would lose real text
+/// to catch a case that is already ambiguous.
+fn unexpanded(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix('$') else {
+        return false;
+    };
+    // `$(…)` — command substitution, whose output no transcript records.
+    if rest.starts_with('(') {
+        return value.ends_with(')');
+    }
+    let name = rest
+        .strip_prefix('{')
+        .and_then(|n| n.strip_suffix('}'))
+        .unwrap_or(rest);
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The `taskq create` calls in a shell command line, as [`TaskOp::Create`]s awaiting their ids.
@@ -449,6 +480,61 @@ mod tests {
         // call never created, which lands nothing (`join` returns on an unknown id).
         let again: Vec<String> = taskq_ops("b1", &text).iter().map(expect).collect();
         assert_eq!(again.len(), 4, "records re-read identically");
+    }
+
+    /// A description the caller built in a shell VARIABLE is not recoverable, and must not be
+    /// recorded as the variable's NAME. Reported twice on 2026-08-30 from unrelated sessions,
+    /// both of which had run `--description "$D"` after a heredoc: every task in the panel
+    /// showed its description as the literal `$D`.
+    ///
+    /// Empty is the honest answer — "no recorded description" is true, `$D` is noise. What
+    /// this must NOT do is get greedy: prose that merely mentions a dollar sign is text
+    /// someone quoted, and dropping it would lose real content.
+    #[test]
+    fn a_description_left_as_a_shell_variable_is_dropped_not_recorded() {
+        let desc = |cmd: &str| {
+            taskq_create_ops("b1", cmd)
+                .into_iter()
+                .find_map(|op| match op {
+                    TaskOp::Create { description, .. } => Some(description),
+                    _ => None,
+                })
+                .expect("a create")
+        };
+        for form in [
+            "\"$D\"",
+            "$D",
+            "\"${DESCRIPTION}\"",
+            "\"$1\"",
+            "\"$(cat brief.txt)\"",
+        ] {
+            assert_eq!(
+                desc(&format!("taskq create --subject S --description {form}")),
+                "",
+                "{form} is a reference, not text"
+            );
+        }
+        // …and the same guard leaves real prose alone, dollar sign and all — including
+        // prose that OPENS with one, which is the case a looser check would eat.
+        for prose in [
+            "'costs $5 a month, $ANNUAL yearly'",
+            "'$5 a month, billed yearly'",
+            "'${} is not a name'",
+        ] {
+            let text = prose.trim_matches('\'');
+            assert_eq!(
+                desc(&format!("taskq create --subject S --description {prose}")),
+                text,
+                "a description that merely contains a $ is still a description"
+            );
+        }
+        // The subject travels the same path, so it gets the same treatment.
+        let ops = taskq_create_ops("b1", "taskq create --subject \"$S\" --description real");
+        assert!(matches!(
+            &ops[0],
+            TaskOp::Create { subject, description, .. }
+                if subject.is_empty() && description == "real"
+        ));
     }
 
     /// The reported symptom, reproduced at the op level: a view that starts PART-WAY through a

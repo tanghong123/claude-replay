@@ -1,0 +1,10 @@
+{
+  "id": "15",
+  "subject": "Read the taskq queue from disk so the panel shows what the transcript cannot",
+  "description": "The task panel reconstructs taskq tasks from the transcript alone: the id from the record, the description from the command line. Both halves can be missing in practice. A description built in a shell variable is unrecoverable (v1.119.0 makes that honest by recording nothing rather than the literal dollar-D), a heredoc or command substitution is gone entirely, and a record read past a resume point has no create at all.\n\nBut the queue is a FILE STORE, and the truth is sitting on disk: tasks/*.json at the git root of the session cwd, with the full subject, description, status, owner and blockers.\n\nengine/tasks.rs already has the pattern -- see the merge doc comment: \"Merge the live on-disk state over the op-log reconstruction: disk wins per task id (it is the queue current truth and carries full detail); op-log items fill in for pruned/gc-d files.\" That is written for the harness own task sidecar. Point the same mechanism at the taskq store and every gap above closes at once.\n\nSketch: resolve the session cwd to a git root, read tasks/*.json there (task_from_json is already on the seam), merge over the op-log list with disk winning per id. Guard it: a session whose cwd no longer exists, a repo whose queue belongs to different work, and the cost of stat-ing a directory on every fold.\n\nNOTE for whoever picks this up: pass --description as a LITERAL, never as a shell variable. The viewer reads the command line, so \"$D\" records nothing. This very task was first filed that way, which is a fair demonstration of the bug it describes.\n\nDefinition of done: a session that ran taskq shows every task with its real description regardless of how the command was written; a session with no queue is unchanged; the byte-identical gate re-baselined for the panel rows that gain text.",
+  "activeForm": "Merging the taskq store into the task panel",
+  "status": "pending",
+  "blockedBy": [],
+  "created_at": "2026-08-31T07:15:14Z",
+  "updated_at": "2026-08-31T07:15:33Z"
+}

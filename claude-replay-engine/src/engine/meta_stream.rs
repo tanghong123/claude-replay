@@ -115,7 +115,12 @@ pub const COMPACT_AFTER: usize = 256;
 /// by delegation, to QoderWork); a Codex session that ran its work through the queue folded
 /// at v18 with an empty task panel, exactly as a Claude one did at v16. Codex-only, but the
 /// version is the fold's, not an agent's, so every stream re-folds.
-pub const FOLD_VERSION: u16 = 19;
+///
+/// v20: a `--description "$D"` no longer records the literal `$D`. `shell_words` is not a
+/// shell, so an unexpanded reference came back verbatim and every task built that way showed
+/// its variable's NAME where its brief belongs (reported on two unrelated sessions). A v19
+/// stream holds those literals.
+pub const FOLD_VERSION: u16 = 20;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
