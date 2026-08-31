@@ -497,6 +497,13 @@ impl SessionService {
             .canonicalize()
             .ok()
             .or_else(|| self.remap_reveal(want)?.canonicalize().ok())?;
+        // FILES only (owner, 2026-08-31). A directory has no bytes to render, so the only
+        // thing it could ever do is open a file-manager window — an affordance worth less
+        // than the surface it costs, now that `/file` shows the file in the page itself.
+        // Narrowing here rather than at each route means the two cannot drift apart.
+        if !real.is_file() {
+            return None;
+        }
         // Copy out (cwd, transcript) and drop the lock: `project_path` and `canonicalize`
         // both touch the disk, and the roots list is on the pull path.
         let roots: Vec<(String, PathBuf)> = {
@@ -516,7 +523,7 @@ impl SessionService {
             }
             for a in allow {
                 if a.canonicalize()
-                    .is_ok_and(|a| real.strip_prefix(&a).is_ok())
+                    .is_ok_and(|a| !too_broad(&a) && real.strip_prefix(&a).is_ok())
                 {
                     return Some(real);
                 }
@@ -1570,6 +1577,22 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
 /// the agent touched; anything bigger is a download, and the page falls back to revealing it
+/// Whether a candidate containment root is so broad that admitting it says nothing.
+///
+/// Containment is meant to answer "does a session shown on this page explain that path". It
+/// stops answering that the moment a root is `$HOME` or an ancestor of it, because then every
+/// file the user owns is "explained". That is not hypothetical: **20 of 139 sessions on the
+/// machine this was found on record `cwd == $HOME`** — QoderWork files its scheduled
+/// automation there — so `$HOME` was a hosted root and `~/.zshrc` passed containment.
+///
+/// A session whose cwd is `$HOME` still contributes its transcript directory, which is
+/// specific to it. It just no longer donates the home directory to every other session.
+fn too_broad(root: &Path) -> bool {
+    crate::discover::home_dir()
+        .and_then(|h| h.canonicalize().ok())
+        .is_some_and(|home| home.starts_with(root))
+}
+
 /// in the file manager rather than pulling 200 MB through a viewer.
 const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -1963,15 +1986,16 @@ pub fn service_routes(
         if let Some(v) = query_get(query, "path") {
             let p = percent_decode(v);
             let path = Path::new(&p);
-            if path.exists() {
-                crate::sys::reveal_in_file_manager(path);
-                return HttpResponse::ok("text/plain", b"revealed".to_vec());
-            }
-            // The baked path is anchored at the session's recorded `first_cwd`; if that repo
-            // moved, re-root it to where the repo lives now and reveal that.
+            // CONTAINED, like `/file` — and for the same reason, which this route used to
+            // duck: its test was `exists()` alone, so any caller that reached the loopback
+            // port could make the monitor open a file-manager window on any path on the
+            // machine. It hands over no bytes, which is why it was tolerable, but "spawn a
+            // GUI action on an arbitrary path" is not a capability to leave lying open.
+            // `contained` also re-roots a moved repo, so the `remap_reveal` retry below is
+            // now only reached when nothing explains the path at all.
             if let Some(live) = live {
-                if let Some(relocated) = live.remap_reveal(path) {
-                    crate::sys::reveal_in_file_manager(&relocated);
+                if let Some(real) = live.contained(path) {
+                    crate::sys::reveal_in_file_manager(&real);
                     return HttpResponse::ok("text/plain", b"revealed".to_vec());
                 }
             }
@@ -3272,8 +3296,46 @@ mod tests {
         // …and by traversal, which canonicalization flattens before the prefix test.
         assert_eq!(get(&repo.join("../outside/secret")).code, "404 Not Found");
 
-        // A directory has no bytes to hand over — a refusal the PAGE acts on by revealing it.
-        assert_eq!(get(&repo).code, "415 Unsupported Media Type");
+        // A directory is not contained at all (owner, 2026-08-31): it has no bytes to render,
+        // so the only thing it could do is open a file-manager window, which is not worth the
+        // surface now that `/file` shows the file in the page.
+        assert_eq!(get(&repo).code, "404 Not Found");
+
+        // **An over-broad root donates nothing.** A second session whose cwd is `$HOME` — 20
+        // of 139 sessions on the machine this was found on, QoderWork's scheduled automation
+        // — would otherwise make every file the user owns "explained", including the
+        // `outside/` tree below, which lives under `$HOME` like everything else in temp.
+        let home = crate::discover::home_dir().expect("HOME");
+        let sess2 = store.join("home-session.jsonl");
+        std::fs::write(
+            &sess2,
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}},\"timestamp\":\"2026-07-26T10:00:00Z\"}}\n",
+                home.display()
+            ),
+        )
+        .unwrap();
+        live.register_root(&sess2);
+        assert_eq!(
+            get(&outside.join("secret")).code,
+            "404 Not Found",
+            "a session rooted at $HOME must not hand the home directory to every other session"
+        );
+        assert_eq!(
+            get(&repo.join("a.rs")).code,
+            "200 OK",
+            "…while the session that really does explain a file still serves it"
+        );
+
+        // `/__reveal` answers to the same rule. It used to test `exists()` alone, so any
+        // caller reaching the loopback port could spawn a file-manager window on any path on
+        // the machine — no bytes, but not a capability to leave open either.
+        let reveal = |p: &std::path::Path| {
+            let q = format!("path={}", p.display().to_string().replace(' ', "%20"));
+            service_routes(Some(&live), &dir, &get_request("__reveal", &q, true)).code
+        };
+        assert_eq!(reveal(&outside.join("secret")), "404 Not Found");
+        assert_eq!(reveal(&repo), "404 Not Found", "a directory, like /file");
         // Bytes that cannot be SHOWN safely are still the user's file: they come back as a
         // download, never as a refusal and never as a type a browser would execute.
         let r = get(&repo.join("bin.dat"));
