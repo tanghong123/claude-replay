@@ -6,5 +6,12 @@
   "status": "pending",
   "blockedBy": [],
   "created_at": "2026-08-31T08:01:29Z",
-  "updated_at": "2026-08-31T08:01:29Z"
+  "updated_at": "2026-08-31T08:16:48Z",
+  "log": [
+    {
+      "ts": "2026-08-31T08:16:48Z",
+      "by": "claude-code/hong@aries-black",
+      "msg": "Correction to this task description: the eight subject-less stubs (#108-#125) are NOT from taskq fixtures. Measured: this transcript carries 51 TaskCreate and 127 TaskUpdate calls from the harness NATIVE task tools, whose ids run in the 100s; those rows are ordinary #125 stubs from update-without-create and have nothing to do with taskq. The verified phantom is task #12 alone, from taskq-DESIGN.md section 9 example record (op=claim, subject \"Activity pane: humanize ETA\"), seen in two unrelated sessions that read that doc. One further symptom is UNEXPLAINED and belongs here: in the session that wrote this decoder, taskq task #9 still renders with #10 subject after the v21 fix. Two create records exist for id 9 in that transcript where the queue has one; suspected self-reference (the transcript contains the decoder own test fixtures and probe output as text), not reproduced in a clean session. Trace it before assuming the v21 pairing is at fault."
+    }
+  ]
 }
