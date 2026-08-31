@@ -490,6 +490,24 @@ impl SessionService {
     /// first; narrowing it further (to the repo root, say) would break the ordinary case of a
     /// session that reads a sibling checkout.
     fn contained(&self, want: &Path) -> Option<PathBuf> {
+        self.contained_kind(want, false)
+    }
+
+    /// Containment for `/__reveal`, which may also open a DIRECTORY.
+    ///
+    /// `/file` stays files-only: a directory has no bytes, so serving one is meaningless.
+    /// Revealing one is not — "show me that folder" is a real thing to want, and it is the
+    /// primary affordance on the pages that do not render files inline (the v1 monitor and
+    /// `agent-replay --html`), where a click has nowhere else to go. Owner, 2026-08-31.
+    ///
+    /// The containment rule itself is identical. Only the file-type test differs, which is
+    /// the whole reason this shares `contained_kind` rather than growing a second copy of the
+    /// root walk.
+    fn contained_revealable(&self, want: &Path) -> Option<PathBuf> {
+        self.contained_kind(want, true)
+    }
+
+    fn contained_kind(&self, want: &Path, dirs_ok: bool) -> Option<PathBuf> {
         if !want.is_absolute() {
             return None;
         }
@@ -497,11 +515,10 @@ impl SessionService {
             .canonicalize()
             .ok()
             .or_else(|| self.remap_reveal(want)?.canonicalize().ok())?;
-        // FILES only (owner, 2026-08-31). A directory has no bytes to render, so the only
-        // thing it could ever do is open a file-manager window — an affordance worth less
-        // than the surface it costs, now that `/file` shows the file in the page itself.
-        // Narrowing here rather than at each route means the two cannot drift apart.
-        if !real.is_file() {
+        // A path that is neither is neither: a socket, a fifo, a device node has no business
+        // on either route. `/file` additionally refuses a directory (nothing to render);
+        // `/__reveal` accepts one, because opening a folder is exactly what that click means.
+        if !(real.is_file() || (dirs_ok && real.is_dir())) {
             return None;
         }
         // Copy out (cwd, transcript) and drop the lock: `project_path` and `canonicalize`
@@ -1994,7 +2011,7 @@ pub fn service_routes(
             // `contained` also re-roots a moved repo, so the `remap_reveal` retry below is
             // now only reached when nothing explains the path at all.
             if let Some(live) = live {
-                if let Some(real) = live.contained(path) {
+                if let Some(real) = live.contained_revealable(path) {
                     crate::sys::reveal_in_file_manager(&real);
                     return HttpResponse::ok("text/plain", b"revealed".to_vec());
                 }
@@ -3335,7 +3352,22 @@ mod tests {
             service_routes(Some(&live), &dir, &get_request("__reveal", &q, true)).code
         };
         assert_eq!(reveal(&outside.join("secret")), "404 Not Found");
-        assert_eq!(reveal(&repo), "404 Not Found", "a directory, like /file");
+        // A CONTAINED directory is revealable — the affordance the v1 monitor and
+        // `agent-replay --html` depend on, where a path click has nowhere else to go. Tested
+        // through `contained_revealable` rather than the route, because the route's hit
+        // branch spawns the file manager and a unit test must not open a window.
+        assert!(
+            live.contained_revealable(&repo).is_some(),
+            "a contained directory can be revealed"
+        );
+        assert!(
+            live.contained(&repo).is_none(),
+            "…but never SERVED: /file stays files-only"
+        );
+        assert!(
+            live.contained_revealable(&outside).is_none(),
+            "and containment still decides, for directories as for files"
+        );
         // Bytes that cannot be SHOWN safely are still the user's file: they come back as a
         // download, never as a refusal and never as a type a browser would execute.
         let r = get(&repo.join("bin.dat"));
