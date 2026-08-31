@@ -97,7 +97,7 @@ fn key() -> Option<&'static [u8; 32]> {
     #[cfg(test)]
     {
         static TEST_KEY: [u8; 32] = [7u8; 32];
-        return Some(&TEST_KEY);
+        Some(&TEST_KEY)
     }
     #[cfg(not(test))]
     {
