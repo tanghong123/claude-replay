@@ -7,8 +7,15 @@
   "blockedBy": [],
   "owner": "claude-code/hong@aries-black",
   "created_at": "2026-08-31T05:49:57Z",
-  "updated_at": "2026-08-31T06:12:03Z",
+  "updated_at": "2026-08-31T06:30:43Z",
   "claimed_at": "2026-08-31T05:52:24Z",
   "completed_at": "2026-08-31T06:12:03Z",
-  "outcome": "Moved shell_words/taskq_calls/taskq_create_ops/taskq_ops into claude-replay-engine/src/engine/taskq.rs and exported them on the seam; taskq_create_ops now takes the command LINE (&str) instead of Claude's tool input. Wired Codex at all three of its shell sites — the raw function_call/function_call_output pair and the 0.147 semantic CommandExecution item, which carries both halves at once. Verified per docs/adapter-rendering-validation.md: a Claude-shaped reference and a Codex transcript of the same actions build field-for-field identical task panels. FOLD_VERSION 18 -> 19. Ships in v1.118.0."
+  "outcome": "Moved shell_words/taskq_calls/taskq_create_ops/taskq_ops into claude-replay-engine/src/engine/taskq.rs and exported them on the seam; taskq_create_ops now takes the command LINE (&str) instead of Claude's tool input. Wired Codex at all three of its shell sites — the raw function_call/function_call_output pair and the 0.147 semantic CommandExecution item, which carries both halves at once. Verified per docs/adapter-rendering-validation.md: a Claude-shaped reference and a Codex transcript of the same actions build field-for-field identical task panels. FOLD_VERSION 18 -> 19. Ships in v1.118.0.",
+  "log": [
+    {
+      "ts": "2026-08-31T06:30:43Z",
+      "by": "claude-code/hong@aries-black",
+      "msg": "Correction to the commit message's 'all three shapes'. Two shapes are wired AND mutation-tested end to end: the raw function_call/function_call_output pair, and the 0.147 semantic CommandExecution item. The third — the JS literal inside an 'exec' custom_tool_call — is create-side only in practice, and its result half depends on the receipt's shape. Measured with two probes at cli_version 0.146.0 (so the JS call reaches decode_line rather than being dropped as transport): a receipt whose 'output' is a JSON STRING works end to end (output_text unwraps the nested {\"output\":…}, task lands with its description); a receipt in the array-of-input_text shape — which is what the real 0.147 fixture uses — yields NOTHING, because output_text's array branch joins the item texts without unwrapping, leaving the record escaped on one physical line where strip_prefix cannot see the sentinel. Not fixed, deliberately: the JS transport is 0.147's, and at 0.147 semantic_exec is on, so that call is dropped and the semantic item carries both halves. The affected population is therefore ~empty. Fixing it would mean teaching output_text's array branch to unwrap nested receipts, which moves rendering for existing Codex sessions and would ride a byte-gate re-baseline — out of scope here."
+    }
+  ]
 }
