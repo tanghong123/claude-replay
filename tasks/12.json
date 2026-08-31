@@ -1,0 +1,14 @@
+{
+  "id": "12",
+  "subject": "HTML export: generalize the Tools filter to a message-type filter",
+  "description": "PARKED, opportunistic.\n\nThe HTML export page has a \"Tools\" dropdown that filters by tool name. Generalize it to filter\nby BLOCK TYPE — agent spawns, thinking, attachments — keeping tool-name granularity as a\nsub-case rather than replacing it.\n\nCode: claude-replay-html/src/html/export.js (the filter menu) and the block classification it\nreads, `block_kind` in claude-replay-engine/src/model.rs.\n\nListed in DESIGN.md's backlog. No decision outstanding; it just has never been worth a slot.\n\nNote the harness rule: any scroll or viewport change in export.js must extend\nclaude-replay-browser-tests/tests/browser_follow.rs. A filter that hides rows changes document\nheight, so check whether the follow/anchor contract is affected.",
+  "activeForm": "Generalizing the HTML message-type filter",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "parked: opportunistic, no decision outstanding, never worth a slot yet"
+  },
+  "created_at": "2026-08-31T05:49:14Z",
+  "updated_at": "2026-08-31T05:49:14Z"
+}

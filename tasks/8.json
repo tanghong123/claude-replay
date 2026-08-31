@@ -1,0 +1,10 @@
+{
+  "id": "8",
+  "subject": "Presentation-layer host slot (PageChrome.host) so v2 stops reaching into export.css",
+  "description": "APPROVED by the owner 2026-08-27. Ready to start; no decision outstanding.\n\nProblem: `claude-monitor-v2` positions itself using the RENDERER's internal selectors — it\npads `body`, offsets `#topbar`, and nudges `#newbadge`, having learned from\nclaude-replay-html/src/html/export.css that `.layout` centres itself. That knowledge lives\noutside the crate that owns the layout, so an `export.css` restructure misaligns v2 SILENTLY.\nThis is the one place a fork of the presentation layer could start by accident.\n\nFix: add an opaque host slot to `PageChrome` (in claude-replay-html/src/html_export/mod.rs) —\nan inset the host asks for, plus a `data-shell` attribute on `<body>` — and move the offsets\ninto `export.css` beside the layout they offset. v2 (claude-monitor-v2/src/shell.html) then\nasks for the slot instead of reaching in.\n\nFollow the pattern `PageChrome::host_search` already set: the renderer hides or repositions\nits OWN control, rather than the host reaching in with a selector.\n\nPurely additive and inert for v1: existing callers pass no chrome, so `--dump-html` output\nmust stay byte-identical. That is the acceptance test, alongside the browser harness\n(claude-replay-browser-tests) still passing for v2's fixed-rail layout.",
+  "activeForm": "Adding the PageChrome host slot",
+  "status": "pending",
+  "blockedBy": [],
+  "created_at": "2026-08-31T05:48:32Z",
+  "updated_at": "2026-08-31T05:48:32Z"
+}

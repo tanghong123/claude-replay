@@ -1,0 +1,15 @@
+{
+  "id": "10",
+  "subject": "Cursor'd resume for --dump --json to kill the daily sweep read amplification",
+  "description": "PARKED, with a WATCH TRIGGER rather than a date.\n\nProblem: the daily sweep re-reads active transcripts from the top, measured at 30-70x read\namplification on live sessions over 130 MB. Full sweep 12.3 s, windowed daily sweep 6.3 s, at\nv1.100.0.\n\nProposed fix: an OPT-IN cursor for `--dump --json`, following the `MetricsCursor` pattern —\nlikely a `Json` presentation in the #167 cache, whose committed-only record contract already\nsolves the reshaping-tail problem. The DEFAULT dump must stay read-only and lock-free; that is\nthe constraint that makes this opt-in rather than automatic.\n\nInterim mitigation already shipped (v1.99.0): whid passes `--since 24h` at discovery, which is\nwhy this is not urgent.\n\nWATCH TRIGGER — start when either fires:\n  - active sessions grow roughly 2-3x bigger than today, or\n  - the collector's sweep starts showing up in real profiles.\n\nNumbers and the fuller design are in GitHub issue #35.",
+  "activeForm": "Adding a cursor to --dump --json",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "parked behind a watch trigger: sessions 2-3x bigger, or the sweep appearing in a real profile",
+    "issue": 35
+  },
+  "created_at": "2026-08-31T05:48:53Z",
+  "updated_at": "2026-08-31T05:48:53Z"
+}

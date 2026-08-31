@@ -1,0 +1,14 @@
+{
+  "id": "11",
+  "subject": "Fleet relay (Phase 2): reach the fleet page from outside the LAN",
+  "description": "PARKED: needs an explicit go-ahead.\n\nGoal: reach the fleet page away from the LAN, via a small relay. Shaped in\ndesign/fleet-pairing.md section 6; a Cloudflare Worker is the evidenced candidate.\n\nPhase 1 shipped in v1.78-v1.79: token pairing plus the same-user loopback gate. Phase 2 is the\nrelay itself.\n\nHard constraint from the design: corp assets must never make a single new outbound connection.\nWhatever the relay is, that property is the thing to preserve, and it is why this is not a\n\"just tunnel it\" task.",
+  "activeForm": "Building the fleet relay",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "parked: needs an explicit go-ahead"
+  },
+  "created_at": "2026-08-31T05:49:14Z",
+  "updated_at": "2026-08-31T05:49:14Z"
+}

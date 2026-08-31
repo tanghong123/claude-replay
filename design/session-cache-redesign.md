@@ -371,7 +371,7 @@ struct Slot<P, A> {
     /// contract (`changed_from` / `provisional_gen` / `epoch`) is the change notification
     /// — pulled, not pushed. Known gap, owner-named (2026-08-21): position is the only
     /// key the delta offers, which cannot give a consumer STRONG consistency across a
-    /// tail reshape — the remedy is block provenance ANCHORS (BACKLOG: stable
+    /// tail reshape — the remedy is block provenance ANCHORS (taskq #7: stable
     /// per-block identity = first-source-line offset + emit ordinal), not a fold-side
     /// callback. Interface-future-proofed rather than built (owner, 2026-08-21): the
     /// build marks the reply types `#[non_exhaustive]` so `anchors` lands additively

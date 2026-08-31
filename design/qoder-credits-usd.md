@@ -78,11 +78,11 @@ Metrics::credits() / credits_label()                                     [unchan
   and the transcript already reports the post-multiplier credits. Applying them would double-count
   the multiplier.
 - **NG-3**: **Backfilling historical QoderWork money.** Older transcripts in the measured corpus
-  carry no `usage` at all (BACKLOG #30: zero credits lines across 52 sessions), so nothing on disk
+  carry no `usage` at all (issue #30 / taskq #2: zero credits lines across 52 sessions), so nothing on disk
   can reconstruct their cost. Current QoderWork transcripts can carry zeroed token counts plus
   `usage.credits`; because QoderWork delegates to the same metrics fold, those sessions are priced
   by this change while historical sessions honestly remain at "no cost figure".
-- **NG-4**: **BACKLOG #30** (absent `billable` defaults to billable). Reason: adjacent and still
+- **NG-4**: **issue #30 / taskq #2** (absent `billable` defaults to billable). Reason: adjacent and still
   evidence-blocked; this change inherits the existing `billable`/`original_credits` rules untouched.
 - **NG-5**: Per-plan or user-configured rates. Reason: the same argument `price()`'s doc comment
   makes — user configuration adds a way for the number to be wrong that no test can see.

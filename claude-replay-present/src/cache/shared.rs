@@ -47,7 +47,7 @@ use crate::Agent;
 /// [`pull_delta`](SharedSession::pull_delta)); `provisional` is the open turn (O(turn)); `meta` is
 /// the accumulator-**maintained** live header (never rescanned). So the returned object's size is
 /// O(tail delta), not O(session).
-#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
+#[non_exhaustive] // #167: the anchors extension (taskq #7) must land additively
 pub struct PullDelta {
     pub epoch: u64,
     pub provisional_gen: u64,
@@ -72,7 +72,7 @@ pub struct PullDelta {
 /// One in-process tick's payload (#85): the splice-shaped delta an interactive view
 /// applies, plus the chrome state (times, metrics, tasks) — everything a frontend's tick
 /// needs from ONE call. Committed blocks are `Arc` clones of the cache-owned copy.
-#[non_exhaustive] // #167: the anchors extension (BACKLOG) must land additively
+#[non_exhaustive] // #167: the anchors extension (taskq #7) must land additively
 pub struct ViewDelta {
     pub reset: bool,
     /// `committed[prev..]` as `Arc` clones — shared content, cheap to hand over.

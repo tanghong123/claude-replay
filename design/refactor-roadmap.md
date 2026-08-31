@@ -3,7 +3,7 @@
 > **Status:** EXECUTED (historical). The batches shipped through the old task queue (drained
 > 2026-08-01) and the parser-engine refactor ([parser-engine.md](parser-engine.md), M1–M16 —
 > the status of record). Kept for the governing principle and the wiring contract, which
-> still apply to new work. Live pending work is tracked in [/BACKLOG.md](../BACKLOG.md).
+> still apply to new work. Live pending work is tracked in the `tasks/` queue (`taskq list`).
 
 ## Governing principle — incremental & resumable is first-class; one-shot is derived
 

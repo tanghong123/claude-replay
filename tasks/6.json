@@ -1,0 +1,14 @@
+{
+  "id": "6",
+  "subject": "QoderWork spawn chips read Agent(agent: ...) instead of the real subagent type",
+  "description": "Every QoderWork child spawn renders with the type `agent` — the chip reads \"Agent(agent: ...)\"\n— because QoderWork's spawn tool input names no `subagent_type` and the fold falls back to the\ntool name. The source knows better in TWO places, both usually `general-purpose`:\n`toolUseResult.agentType` on the RESULT, and `agentType` in the `subagents/` sidecar.\n\n#37 deliberately left the label alone: adopting the sidecar's type for RUNNING spawns only\nwould have flipped the label back the moment the result folded. So the fix must lift the type\nIN-BAND as well, via a QoderWork-local `join_result`.\n\nNEEDS AN OWNER DECISION before starting: this is a rendering change, so it rides a\nbyte-identical gate re-baseline. Confirm that is wanted for a cosmetic chip label.\n\nDefinition of done: QoderWork spawn chips name the real subagent type from both the running\nand folded paths, a fixture covering each, and the gate re-baselined line-by-line.",
+  "activeForm": "Fixing QoderWork spawn chip labels",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "needs an owner decision: a cosmetic label fix that forces a byte-gate re-baseline"
+  },
+  "created_at": "2026-08-31T05:48:17Z",
+  "updated_at": "2026-08-31T05:48:17Z"
+}

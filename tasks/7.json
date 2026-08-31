@@ -1,0 +1,14 @@
+{
+  "id": "7",
+  "subject": "Block provenance anchors: give the fold a stable per-block identity",
+  "description": "The fold has no stable block identity, so per-block presentation state is POSITION-keyed. The\nTUI's `user_folds` overlay is the live example: a fold gesture can land on the wrong block\nacross an equal-count tail reshape. Tolerable for gestures; insufficient for any presentation\nlayer that needs strong consistency with `Vec<Bv>` changes.\n\nSurfaced in the #167 review, 2026-08-21.\n\nSketch: anchor = (first contributing line's byte offset, emit-ordinal within that line) — the\nsame `(at, index)` vocabulary attachments already use. Same anchor across re-emission; on\ncoalesce, take the first constituent's anchor. Consumers join old-by-anchor against\nnew-by-anchor per delta.\n\nCost: roughly 10 bytes per block persisted, so ONE FOLD_VERSION bump — which is why it should\nride #167's build rather than land alone.\n\nNEEDS AN OWNER DECISION: adopt into #167's scope, or file as its own GitHub issue and schedule\nseparately. Do not start until that is answered.",
+  "activeForm": "Designing block provenance anchors",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "needs an owner decision: adopt into #167's scope or file as its own issue"
+  },
+  "created_at": "2026-08-31T05:48:17Z",
+  "updated_at": "2026-08-31T05:48:17Z"
+}

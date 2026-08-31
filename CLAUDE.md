@@ -6,11 +6,21 @@ brew installs symlink the old command names). It is **fully testable headless (n
 never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Work tracking
-**`BACKLOG.md` is the state of record for pending work** — read it before picking up
-a task, and update it in the same commit that changes an item's state (started,
-decided, shipped, parked). Design docs argue, issues discuss, BACKLOG.md tracks;
-don't trust a `design/*.md` status header alone — the tracker exists because those
-drift.
+**The `tasks/` taskq queue is the state of record for pending work** (owner, 2026-08-30;
+it replaced `BACKLOG.md`, now a pointer). Orient with `taskq list` / `taskq list --ready`
+before picking anything up, `taskq claim <id>` before working, and close the loop with
+`taskq done <id> --outcome "…"` — never leave a claim dangling. Park an item with
+`--meta deferred=true --meta deferred_reason="…"` rather than cancelling it.
+
+**Every mutation goes through the `taskq` CLI** (it ships with the `agentdev:taskq`
+skill) — the flock plus check-and-set is what makes concurrent agents safe, and the
+journal at `tasks/journal.ndjson` is what makes a decision readable afterwards. Editing
+`tasks/*.json` with file tools bypasses both. Reading them is fine. Commit `tasks/` in
+the same commit that changes an item's state (started, decided, shipped, parked) — the
+queue rides the repo, so don't leave it dirty at handoff.
+
+Design docs argue, issues discuss, the queue tracks; don't trust a `design/*.md` status
+header alone — the tracker exists because those drift.
 
 ## Test the TUI without a TTY
 - **Deterministic (preferred):** drive `view::View` under ratatui **`TestBackend`**

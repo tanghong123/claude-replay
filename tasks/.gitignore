@@ -1,0 +1,4 @@
+.lock
+.seq
+*.tmp*
+.DS_Store

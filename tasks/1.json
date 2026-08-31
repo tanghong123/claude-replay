@@ -1,0 +1,15 @@
+{
+  "id": "1",
+  "subject": "Codex update_goal collapses goal states (blocked->completed, unknown->pending)",
+  "description": "Codex `update_goal` maps goal states onto too few task statuses: `blocked` collapses to\n`completed` and `unknown` collapses to `pending`. Mapping lives in `codex_task_op` in\nclaude-replay-agents/src/agents/codex/model.rs.\n\nBLOCKED ON EVIDENCE: a Codex 0.147 transcript supplied 2026-08-20 contains 17 real\n`update_plan` calls but zero `update_goal` calls, so the real shape of the field is still\nunobserved. Do not guess the mapping from the enum name.\n\nThe fix also wants a rendering decision alongside it: should `blocked` stay visually\ndistinct from `completed` in the task panel, or is collapsing acceptable? Answer that with\nthe corpus in hand.\n\nDefinition of done: a real `update_goal` transcript in the fixtures, the mapping corrected\nagainst it, the rendering question answered, and the byte-identical gate re-baselined if the\npanel output moves. GitHub issue #29.",
+  "activeForm": "Fixing Codex update_goal state mapping",
+  "status": "pending",
+  "blockedBy": [],
+  "metadata": {
+    "deferred": true,
+    "deferred_reason": "no update_goal calls observed in any corpus yet; needs a Codex transcript that exercises it",
+    "issue": 29
+  },
+  "created_at": "2026-08-31T05:47:14Z",
+  "updated_at": "2026-08-31T05:47:14Z"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "13",
+  "subject": "QoderWork: filter UI-deleted sessions out of the rail",
+  "description": "Small and opportunistic; ready to do, no decision outstanding.\n\nQoderWork sessions deleted through its UI leave the transcript file on disk, so the rail shows\nrows for sessions the app no longer has. There is no file-level tell.\n\nThe test that works: transcript present, `sub_chats` row ABSENT. Cheap to implement now that\nthe DB reader is compiled into every macOS build (since v1.96.3).\n\nCode: the QoderWork discover family,\nclaude-replay-agents/src/agents/qoderwork/discover.rs.\nDesign: design/qoderwork-rail-noise.md, item 4.",
+  "activeForm": "Filtering deleted QoderWork sessions",
+  "status": "pending",
+  "blockedBy": [],
+  "created_at": "2026-08-31T05:49:14Z",
+  "updated_at": "2026-08-31T05:49:14Z"
+}
