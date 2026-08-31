@@ -8,6 +8,7 @@ use claude_replay_engine::seam::{
 use claude_replay_engine::seam::{
     replay, stamp_user_turns, BlockIndex, EpochSeconds, SessionAccumulator,
 };
+use claude_replay_engine::seam::{taskq_create_ops, taskq_ops};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -512,20 +513,30 @@ fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Messa
             let id = item.get("id").and_then(Value::as_str).unwrap_or("");
             let command = command_execution_text(item)?;
             let cwd = command_execution_cwd(item).unwrap_or_else(|| fallback_cwd.to_string());
+            let output = command_execution_output(item);
+            // Both halves of the `taskq` decode arrive on this ONE item — the command that
+            // ran and the records it printed — so the drafts and the ids they resolve are
+            // built together, before either branch shapes the command into blocks. Ordinals
+            // are namespaced by the item id, which both halves share.
+            let task_ops = taskq_create_ops(id, &command)
+                .into_iter()
+                .chain(taskq_ops(id, &output))
+                .map(Message::TaskOp);
             if let Some(mut exploration) = command_exploration_messages(item, id, &command, &cwd) {
-                exploration.insert(0, Message::LineStart(ts));
+                exploration.splice(
+                    0..0,
+                    std::iter::once(Message::LineStart(ts)).chain(task_ops),
+                );
                 return Some(exploration);
             }
-            let mut messages = vec![
-                Message::LineStart(ts),
-                Message::ToolUse {
-                    id: id.to_string(),
-                    name: "exec_command".to_string(),
-                    input: command_execution_input(serde_json::json!({ "cmd": command }), item),
-                    cwd,
-                },
-            ];
-            let output = command_execution_output(item);
+            let mut messages = vec![Message::LineStart(ts)];
+            messages.extend(task_ops);
+            messages.push(Message::ToolUse {
+                id: id.to_string(),
+                name: "exec_command".to_string(),
+                input: command_execution_input(serde_json::json!({ "cmd": command }), item),
+                cwd,
+            });
             if !output.trim().is_empty() {
                 messages.push(Message::ToolResult {
                     tool_use_id: id.to_string(),
@@ -777,7 +788,13 @@ fn extension_results_text(item: &Value) -> String {
 }
 
 fn command_execution_text(item: &Value) -> Option<String> {
-    match item.get("command")? {
+    command_script(item.get("command")?)
+}
+
+/// The literal script behind a command value: a plain string, or an argv array whose
+/// `-lc`/`-c` payload IS the script (`["/bin/zsh", "-lc", "cargo test"]`).
+fn command_script(command: &Value) -> Option<String> {
+    match command {
         Value::String(command) => Some(command.clone()),
         Value::Array(parts) => {
             let parts = parts.iter().filter_map(Value::as_str).collect::<Vec<_>>();
@@ -790,6 +807,37 @@ fn command_execution_text(item: &Value) -> Option<String> {
         _ => None,
     }
     .filter(|command| !command.trim().is_empty())
+}
+
+/// The shell script a tool CALL ran, if it ran one — the input half of the `taskq` decode
+/// (`seam::taskq_create_ops`), which needs the command line rather than a tool input because
+/// no two agents agree on where that line lives.
+///
+/// Codex writes it three ways, all of them here: `cmd` on a `function_call`'s parsed
+/// arguments, `command` as a string or an argv array, and — under the orchestration
+/// transport — a small JavaScript literal inside an `exec` call's code, which
+/// [`js_tool_object`] already knows how to unwrap for the task calls.
+fn codex_shell_script(raw_name: &str, input: &Value) -> Option<String> {
+    if !matches!(
+        raw_name,
+        "exec" | "exec_command" | "shell" | "shell_command" | "bash"
+    ) {
+        return None;
+    }
+    if let Some(code) = input.as_str() {
+        // `exec`'s input is JavaScript, not an object: `tools.exec_command({"cmd": "…"})`.
+        return js_tool_object(code, "exec_command")
+            .as_ref()
+            .and_then(shell_script_of_object);
+    }
+    shell_script_of_object(input)
+}
+
+fn shell_script_of_object(input: &Value) -> Option<String> {
+    ["cmd", "command"]
+        .iter()
+        .find_map(|key| input.get(key))
+        .and_then(command_script)
 }
 
 fn command_execution_cwd(item: &Value) -> Option<String> {
@@ -1142,10 +1190,21 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     if let Some(op) = codex_task_op(raw_name, &input) {
                         msgs.push(Message::TaskOp(op));
                     }
+                    // A `taskq create` in a shell command: the draft, awaiting the id its
+                    // output will announce. Only the command carries the description.
+                    if let Some(cmd) = codex_shell_script(raw_name, &input) {
+                        for op in taskq_create_ops(call_id, &cmd) {
+                            msgs.push(Message::TaskOp(op));
+                        }
+                    }
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
                     let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
                     let output = output_text(payload.get("output").unwrap_or(&Value::Null));
+                    // `taskq` records ride a shell result's stdout (see `seam::taskq_ops`).
+                    for op in taskq_ops(call_id, &output) {
+                        msgs.push(Message::TaskOp(op));
+                    }
                     msgs.push(Message::ToolResult {
                         tool_use_id: call_id.to_string(),
                         text: output,
@@ -2168,6 +2227,123 @@ mod tests {
                     && todos[0].text == "冻结并验证真实 E2E"
                     && todos[0].status == "in_progress"
         ));
+    }
+
+    /// A Codex session that runs its work through the shared `taskq` queue must build the
+    /// same task panel a Claude one does — the decode is the engine's (`seam::taskq_ops`),
+    /// and this pins that Codex actually FEEDS it, on both shapes a shell call takes here.
+    ///
+    /// The raw `function_call` path carries the script in `arguments.cmd`. The 0.147
+    /// orchestration path hides it twice over: the outer `exec` call is JavaScript and is
+    /// dropped as transport, and the real command arrives on an `item_completed`
+    /// `CommandExecution` as an argv array whose `-lc` payload is the script — with its
+    /// output on the SAME item, which is why that half pairs create to id within one item.
+    ///
+    /// Both halves matter and they carry different things: the record announces the id, and
+    /// only the command line carries the description.
+    #[test]
+    fn taskq_records_build_a_task_panel_from_either_codex_shell_shape() {
+        let record = |op: &str, task: &str, subject: &str, from: &str, to: &str| {
+            format!(
+                "##taskq/v1 {{\"rid\":\"r{task}{op}\",\"ts\":\"2026-08-30T09:00:00Z\",\
+                 \"op\":\"{op}\",\"task\":\"{task}\",\"subject\":\"{subject}\",\
+                 \"changes\":{{\"status\":{{\"from\":{from},\"to\":\"{to}\"}}}}}}"
+            )
+        };
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:00Z",
+                "type": "session_meta",
+                "payload": {"cwd": "/repo", "originator": "codex-tui", "cli_version": "0.147.0"}
+            }),
+            // Shape 1 — the raw call: the script is `arguments.cmd`, the records are the
+            // paired output. Two creates in ONE call, so the ordinal pairing is exercised.
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call", "name": "exec_command", "call_id": "call-1",
+                    "arguments": serde_json::json!({
+                        "cmd": "taskq create --subject 'Land the seam move' \
+                                --description 'move the decode into the engine'\n\
+                                taskq create --subject 'Wire codex' --description 'both shapes'\n\
+                                gh issue create --title 'not a task'"
+                    }).to_string()
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:02Z",
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "call-1", "output":
+                    format!("Task #1 created\n{}\nTask #2 created\n{}",
+                        record("create", "1", "Land the seam move", "null", "pending"),
+                        record("create", "2", "Wire codex", "null", "pending"))
+                }
+            }),
+            // Shape 2 — the orchestration transport. The outer JavaScript is dropped, and
+            // the semantic item carries the argv form plus the output together.
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "outer-1",
+                    "input": "const r = await tools.exec_command({\"cmd\":\"taskq done 1\"}); text(r);"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:04Z",
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "id": "exec-1",
+                    "command": ["/bin/zsh", "-lc", "taskq done 1"],
+                    "cwd": "file:///repo", "status": "completed", "exit_code": 0,
+                    "formatted_output": format!("{}\n",
+                        record("done", "1", "Land the seam move", "\"in_progress\"", "completed"))
+                }}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-08-30T09:00:05Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "call_id": "outer-1",
+                            "output": "Script completed"}
+            }),
+        ];
+        let jsonl = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = std::env::temp_dir().join(format!("codex-taskq-{}.jsonl", std::process::id()));
+        std::fs::write(&path, jsonl).unwrap();
+        let mut acc = SessionAccumulator::new(&crate::adapters::CodexAdapter);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+        acc.advance_reader(&mut reader).unwrap();
+        let tasks = acc.tasks().clone();
+        std::fs::remove_file(path).ok();
+
+        let rows = tasks
+            .items
+            .iter()
+            .map(|t| {
+                format!(
+                    "#{} {} [{}] {}",
+                    t.id,
+                    t.subject,
+                    format!("{:?}", t.status).to_lowercase(),
+                    t.description
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [
+                // The id came from the record, the description only from the command, and
+                // the `done` — which arrived by the OTHER shape entirely — still landed.
+                "#1 Land the seam move [completed] move the decode into the engine".to_string(),
+                "#2 Wire codex [pending] both shapes".to_string(),
+            ],
+            "`gh issue create` is another tool's verb and must not become a third task"
+        );
     }
 
     /// Codex 0.147's `functions.exec` transport is not a shell command. Its paired

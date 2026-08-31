@@ -110,7 +110,12 @@ pub const COMPACT_AFTER: usize = 256;
 /// v18: a `taskq create`'s DESCRIPTION, read from the Bash command that issued it. The record
 /// a create prints carries `status`/`blockedBy` and nothing else, so a v17 stream holds every
 /// task with an empty description — "no recorded description" on every row.
-pub const FOLD_VERSION: u16 = 18;
+///
+/// v19: the `taskq` decode reaches CODEX. v17/v18 taught it to Claude's family alone (and so,
+/// by delegation, to QoderWork); a Codex session that ran its work through the queue folded
+/// at v18 with an empty task panel, exactly as a Claude one did at v16. Codex-only, but the
+/// version is the fold's, not an agent's, so every stream re-folds.
+pub const FOLD_VERSION: u16 = 19;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

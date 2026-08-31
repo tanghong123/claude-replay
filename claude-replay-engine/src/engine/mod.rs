@@ -16,6 +16,7 @@ pub(crate) mod reader; // the follower's byte-offset line reader (tail + resume)
 pub(crate) mod replay; // Layer-2 fold engine (Replayer/Shaping)
 pub mod seam; // the audited adapter contract — everything `crate::agents` may use (#87)
 pub mod session;
+pub mod taskq; // decoding the shared `taskq` work queue's CLI traffic into task ops
 pub mod tasks; // the agent-neutral task/todo model + op-log fold (#15)
 pub mod tier_b;
 pub(crate) mod time; // epoch-seconds parsing — internal to the parsers/metrics

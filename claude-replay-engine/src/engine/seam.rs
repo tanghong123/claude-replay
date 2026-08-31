@@ -18,7 +18,9 @@
 //! - **Folding usage** — [`estimate_cost`], `parse_reader_for`, [`parse_ts`],
 //!   [`TimeSpan`].
 //! - **Discovering transcripts** — [`ancestors_below`], [`home_dir`], and the task
-//!   sidecar vocabulary [`TaskList`]/[`TaskOp`]/[`task_from_json`].
+//!   sidecar vocabulary [`TaskList`]/[`TaskOp`]/[`task_from_json`], plus
+//!   [`taskq_create_ops`]/[`taskq_ops`] — the agent-neutral `taskq` decode, here rather
+//!   than in a family because it reads that queue's contract and no agent's.
 //! - **Small shared utilities** — [`relativize`], [`epoch_secs`].
 //! - **Derived-agent reuse** (a Claude-format store rooted anywhere) now lives WITH
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
@@ -49,6 +51,7 @@ pub use crate::engine::build_sub_agents;
 pub use crate::engine::replay::{
     parse_path_timed_for, replay, stamp_user_turns, QueueItem, Replayer,
 };
+pub use crate::engine::taskq::{taskq_create_ops, taskq_ops, TASKQ_SENTINEL};
 pub use crate::engine::tasks::{task_from_json, TaskList, TaskOp, Todo};
 pub use crate::engine::time::epoch_secs;
 #[doc(hidden)]
