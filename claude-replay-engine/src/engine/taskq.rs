@@ -197,6 +197,28 @@ fn unexpanded(value: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// A `taskq` task's id as the PANEL must key it — `q` before a repo-tier number.
+///
+/// Two independent queues share the panel and both number from 1: the harness's own
+/// `TaskCreate`/`TaskUpdate` tools, and taskq. Keyed by the bare number they collide, and
+/// whichever resolved last owns the row outright. Measured on the session that reported this
+/// (115 native creates beside a 34-task taskq queue): 7 of taskq's 34 survived and 27 were
+/// wearing a native task's subject.
+///
+/// The prefix is taskq's own convention, not an invention: a user-tier task is `u12` on every
+/// surface taskq has, "so a record is self-describing without its command line" (design §9,
+/// rev 4). This extends that to the repo tier, which taskq leaves bare because within taskq
+/// there is nothing to disambiguate from. So the panel reads `#27` native, `#q27` taskq repo,
+/// `#u12` taskq user.
+///
+/// Already-prefixed ids pass through: a user-tier record arrives as `u12` and stays that way.
+fn queue_id(task: &str) -> String {
+    match task.as_bytes().first() {
+        Some(b) if b.is_ascii_digit() => format!("q{task}"),
+        _ => task.to_string(),
+    }
+}
+
 /// The `taskq create` calls in a shell command line, as [`TaskOp::Create`]s awaiting their ids.
 ///
 /// Mirrors the native flow exactly: the create is emitted from the CALL (only L1 sees a tool's
@@ -237,7 +259,7 @@ pub fn taskq_create_ops(call_id: &str, cmd: &str) -> Vec<TaskOp> {
                     continue; // a status-only update; the RECORD states that transition
                 }
                 out.push(TaskOp::Update {
-                    task_id: call.task,
+                    task_id: queue_id(&call.task),
                     status: None, // the record owns status; the command owns the text
                     subject,
                     description,
@@ -340,7 +362,7 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                 // echoed record, a `--with-history` tail, a command this decoder would not
                 // tokenize — still appears with its subject instead of vanishing.
                 out.push(TaskOp::Update {
-                    task_id: task.to_string(),
+                    task_id: queue_id(task),
                     status: to("status"),
                     subject: Some(str_of("subject").to_string()).filter(|s| !s.is_empty()),
                     description: to("description"),
@@ -353,7 +375,7 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                 // does.
                 out.push(TaskOp::Resolve {
                     tool_use_id: format!("taskq:{call_id}#{nth_create}"),
-                    id: Some(task.to_string()),
+                    id: Some(queue_id(task)),
                 });
                 nth_create += 1;
             }
@@ -373,7 +395,7 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                 // a row with no content.
                 let subject = Some(str_of("subject").to_string()).filter(|s| !s.is_empty());
                 out.push(TaskOp::Update {
-                    task_id: task.to_string(),
+                    task_id: queue_id(task),
                     status,
                     subject,
                     // rev 5: an edit publishes its new text at 8 KB. Before it, the record
@@ -429,7 +451,7 @@ pub fn queue_tasks(anchor: &Path) -> Option<TaskList> {
             if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_digit()) {
                 continue;
             }
-            let Some(t) = std::fs::read_to_string(e.path())
+            let Some(mut t) = std::fs::read_to_string(e.path())
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                 .as_ref()
@@ -437,6 +459,8 @@ pub fn queue_tasks(anchor: &Path) -> Option<TaskList> {
             else {
                 continue;
             };
+            // These files ARE the repo tier, so they key the same way the records do.
+            t.id = queue_id(&t.id);
             match items.iter_mut().find(|x| x.id == t.id) {
                 Some(slot) => *slot = t,
                 None => items.push(t),
@@ -573,14 +597,14 @@ mod tests {
                 // Each create record first stands the task up on its own — titled, so a
                 // create whose draft never arrived is a row rather than a hole — then
                 // resolves the draft at ordinal 0 and 1 within this Bash call.
-                "update(1, pending, Scaffold the monorepo, desc=)".to_string(),
-                "resolve(taskq:b1#0 -> 1)".to_string(),
-                "update(2, pending, Engine: inline diffs, desc=)".to_string(),
-                "resolve(taskq:b1#1 -> 2)".to_string(),
+                "update(q1, pending, Scaffold the monorepo, desc=)".to_string(),
+                "resolve(taskq:b1#0 -> q1)".to_string(),
+                "update(q2, pending, Engine: inline diffs, desc=)".to_string(),
+                "resolve(taskq:b1#1 -> q2)".to_string(),
                 // State ops read their destination from `changes.status.to`, and carry the
                 // subject from the record's TOP-LEVEL field so a stub is never blank.
-                "update(1, in_progress, Scaffold the monorepo, desc=)".to_string(),
-                "update(1, completed, Scaffold the monorepo, desc=)".to_string(),
+                "update(q1, in_progress, Scaffold the monorepo, desc=)".to_string(),
+                "update(q1, completed, Scaffold the monorepo, desc=)".to_string(),
             ],
             "the log note, the rid-less record and the mangled line contribute nothing"
         );
@@ -603,7 +627,7 @@ mod tests {
                 "create(taskq:b1#1, Engine: inline diffs, desc=the engine)".to_string(),
                 // An `update --description` carries the FULL text; the record's copy is
                 // truncated, so this is where an edited brief comes from.
-                "update(1, , , desc=a longer, edited brief)".to_string(),
+                "update(q1, , , desc=a longer, edited brief)".to_string(),
             ],
             "`gh issue create` is another tool's verb and must not become a task"
         );
@@ -674,8 +698,8 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("1".to_string(), "from the active file".to_string()),
-                ("2".to_string(), "from the archive".to_string()),
+                ("q1".to_string(), "from the active file".to_string()),
+                ("q2".to_string(), "from the archive".to_string()),
             ],
             "`notes.json` is not `<n>.json`, and the journal is not a task"
         );
@@ -744,6 +768,85 @@ mod tests {
             TaskOp::Create { subject, description, .. }
                 if subject.is_empty() && description == "real"
         ));
+    }
+
+    /// **Two queues, one panel: taskq ids may not collide with the harness's own.**
+    ///
+    /// The reported session ran 115 native `TaskCreate` calls beside a 34-task taskq queue.
+    /// Both number from 1, `TaskFold` keys on the id string, and `join` retains the id out
+    /// before pushing — so whichever resolved last owned the row. 7 of taskq's 34 survived;
+    /// 27 were wearing a native task's subject, including the two the owner asked about.
+    #[test]
+    fn a_taskq_task_cannot_shadow_a_native_one_of_the_same_number() {
+        let mut fold = crate::engine::tasks::TaskFold::default();
+        // The harness's own tools: a create, then the result that names its id.
+        fold.apply(&TaskOp::Create {
+            tool_use_id: "native-1".into(),
+            subject: "Weave plan() candidates into plain migrate".into(),
+            description: "the native one".into(),
+            active_form: String::new(),
+            blocked_by: Vec::new(),
+        });
+        fold.on_tool_result("native-1", "Created task #27: Weave plan()…");
+        // taskq's #27, arriving the way a record does.
+        for op in taskq_ops(
+            "b1",
+            "##taskq/v1 {\"rid\":\"r1\",\"op\":\"create\",\"task\":\"27\",\
+             \"subject\":\"Evolution plan: settle the remaining steps\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"}}}",
+        ) {
+            fold.apply(&op);
+        }
+        let rows: Vec<(&str, &str)> = fold
+            .snapshot()
+            .items
+            .iter()
+            .map(|t| (t.id.as_str(), t.subject.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("27", "Weave plan() candidates into plain migrate"),
+                ("q27", "Evolution plan: settle the remaining steps"),
+            ],
+            "both rows survive, and the bare number stays the harness's"
+        );
+        // taskq's own user tier already carries its prefix, so it passes through untouched
+        // rather than becoming `qu12`.
+        for op in taskq_ops(
+            "b2",
+            "##taskq/v1 {\"rid\":\"r2\",\"op\":\"done\",\"task\":\"u12\",\"subject\":\"a user task\",\
+             \"tier\":\"user\",\"changes\":{\"status\":{\"from\":null,\"to\":\"completed\"}}}",
+        ) {
+            fold.apply(&op);
+        }
+        assert!(
+            fold.snapshot().items.iter().any(|t| t.id == "u12"),
+            "a user-tier id is already namespaced by taskq itself"
+        );
+        // Ordering is by (prefix, NUMBER): `q10` must not file between `q1` and `q2`.
+        for n in [1u32, 2, 10] {
+            for op in taskq_ops(
+                "b3",
+                &format!(
+                    "##taskq/v1 {{\"rid\":\"r{n}x\",\"op\":\"create\",\"task\":\"{n}\",\
+                     \"subject\":\"t{n}\",\"changes\":{{\"status\":{{\"from\":null,\"to\":\"pending\"}}}}}}"
+                ),
+            ) {
+                fold.apply(&op);
+            }
+        }
+        let ids: Vec<&str> = fold
+            .snapshot()
+            .items
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["27", "q1", "q2", "q10", "q27", "u12"],
+            "numbers sort as numbers inside each queue's prefix"
+        );
     }
 
     /// **rev 5: the record publishes the description, so a description the shell ate is
@@ -900,7 +1003,7 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            [("1", "task 1"), ("2", "task 2")],
+            [("q1", "task 1"), ("q2", "task 2")],
             "no draft, no hole: the record names its own task"
         );
     }
@@ -930,7 +1033,7 @@ mod tests {
         else {
             panic!("{:#?}", ops[0])
         };
-        assert_eq!(task_id, "47");
+        assert_eq!(task_id, "q47");
         assert_eq!(status.as_deref(), Some("completed"));
         assert_eq!(
             subject.as_deref(),

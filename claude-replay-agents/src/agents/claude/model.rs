@@ -2955,12 +2955,12 @@ mod tests {
         );
         assert!(
             matches!(ops[1], TaskOp::Update { task_id, subject: Some(s), .. }
-                if task_id == "1" && s == "Scaffold"),
+                if task_id == "q1" && s == "Scaffold"),
             "{:#?}",
             ops[1]
         );
         assert!(
-            matches!(ops[2], TaskOp::Resolve { id: Some(id), .. } if id == "1"),
+            matches!(ops[2], TaskOp::Resolve { id: Some(id), .. } if id == "q1"),
             "{:#?}",
             ops[2]
         );

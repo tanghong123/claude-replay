@@ -62,13 +62,27 @@ impl TaskList {
         self.items.is_empty()
     }
     fn sort(&mut self) {
-        self.items
-            .sort_by(|a, b| match (a.id.parse::<u64>(), b.id.parse::<u64>()) {
-                (Ok(x), Ok(y)) => x.cmp(&y),
-                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-                (Err(_), Err(_)) => a.id.cmp(&b.id),
-            });
+        // An id may carry a queue prefix — `q27` for the taskq repo queue, `u12` for its
+        // user tier, bare for the harness's own tools — so split it and sort by (prefix,
+        // NUMBER). Sorting the whole string instead would file `q10` between `q1` and `q2`,
+        // which is the one thing a numbered list must not do.
+        fn key(id: &str) -> (&str, Option<u64>, &str) {
+            let at = id.find(|c: char| c.is_ascii_digit()).unwrap_or(id.len());
+            let (prefix, rest) = id.split_at(at);
+            (prefix, rest.parse::<u64>().ok(), id)
+        }
+        self.items.sort_by(|a, b| {
+            let (pa, na, sa) = key(&a.id);
+            let (pb, nb, sb) = key(&b.id);
+            pa.cmp(pb)
+                .then(match (na, nb) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then(sa.cmp(sb))
+        });
     }
 }
 

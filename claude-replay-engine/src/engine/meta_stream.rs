@@ -138,7 +138,12 @@ pub const COMPACT_AFTER: usize = 256;
 /// row rather than replacing it — so a description the shell ate before the transcript saw it
 /// is recoverable from the record. It has to be: rev 5 also made repo queues machine-local,
 /// so `queue_tasks` answers nothing for a transcript read anywhere but the owning machine.
-pub const FOLD_VERSION: u16 = 23;
+///
+/// v24: a `taskq` task keys as `q<n>`, so it can no longer shadow a harness task of the same
+/// number. Two queues share the panel and both number from 1; a v23 stream holds whichever
+/// resolved last and silently lost the other (measured on a session running 115 native
+/// creates beside a 34-task queue: 7 of the 34 survived).
+pub const FOLD_VERSION: u16 = 24;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

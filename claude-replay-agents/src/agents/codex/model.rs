@@ -2339,8 +2339,8 @@ mod tests {
             [
                 // The id came from the record, the description only from the command, and
                 // the `done` — which arrived by the OTHER shape entirely — still landed.
-                "#1 Land the seam move [completed] move the decode into the engine".to_string(),
-                "#2 Wire codex [pending] both shapes".to_string(),
+                "#q1 Land the seam move [completed] move the decode into the engine".to_string(),
+                "#q2 Wire codex [pending] both shapes".to_string(),
             ],
             "`gh issue create` is another tool's verb and must not become a third task"
         );
