@@ -1149,7 +1149,26 @@ pub struct PageChrome {
     /// menu and its hit stepping stay exactly where they are, driven by writing into `#q`.
     /// The page keeps every search behaviour; only the duplicate field goes.
     pub host_search: bool,
+    /// A LEFT inset, in CSS pixels, that the page makes for chrome the HOST draws beside it
+    /// (`agent-monitor-v2` puts a fixed rail there). The page applies it itself, in
+    /// `export.css`, beside the layout it offsets — the point of the slot.
+    ///
+    /// Before this, v2 positioned itself with the RENDERER's internal selectors: it padded
+    /// `body`, offset `#topbar`, and nudged `#newbadge`, having learned from `export.css`
+    /// that `.layout` centres itself and so the inset belongs on the document rather than on
+    /// its children. That knowledge lived outside the crate that owns the layout, so an
+    /// `export.css` restructure would misalign v2 silently — the one place a fork of the
+    /// presentation layer could start by accident.
+    ///
+    /// A NUMBER, not a CSS length, and deliberately: `PageChrome` is built from query
+    /// parameters (`/session?…&inset=326`), so a string here would be a CSS-injection surface
+    /// on a page that holds the monitor's cookie. The page formats it.
+    pub host_inset: Option<u32>,
 }
+
+/// The largest inset the page will make. Well past any real rail, and it exists so a
+/// nonsense query parameter cannot push the whole transcript off-screen.
+pub const MAX_HOST_INSET: u32 = 2000;
 
 /// [`build_shell`] with host chrome — the `/session?id=…&chrome=embed&theme=…` page.
 pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome) -> String {
@@ -1217,6 +1236,16 @@ fn build_page(
         format!("{live_attrs} data-artifacts=\"1\"")
     } else {
         live_attrs
+    };
+    // The host slot rides `<body>` too: `data-shell` is what `export.css` keys the inset
+    // rules on, and `--host-inset` is the length they read. Both come from one clamped
+    // integer, so the only thing a caller can vary is how much room the page makes.
+    let live_attrs = match chrome.and_then(|c| c.host_inset) {
+        Some(px) if px > 0 => format!(
+            "{live_attrs} data-shell=\"1\" style=\"--host-inset:{}px\"",
+            px.min(MAX_HOST_INSET)
+        ),
+        _ => live_attrs,
     };
     let embed = chrome.is_some_and(|c| c.embed);
     let brand = if embed {

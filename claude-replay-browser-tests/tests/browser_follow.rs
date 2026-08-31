@@ -971,9 +971,16 @@ fn the_v2_shell_keeps_the_document_scroller() {
         eprintln!("skip: build agent-monitor-v2 --release first");
         return;
     }
+    // Its OWN state dir, and `--pair` so it has a token: since pairing landed, every route
+    // 401s unpaired, and this test then found no sessions and skipped — silently taking the
+    // layout assertion below out of service. `CLAUDE_MONITOR_STATE` keeps the scratch token
+    // well away from the user's real one.
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
     let mut child = std::process::Command::new(&bin)
-        .args(["--port", "2831"])
+        .args(["--port", "2831", "--pair"])
         .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -988,6 +995,15 @@ fn the_v2_shell_keeps_the_document_scroller() {
     )
     .expect("chrome launches");
     let tab = browser.new_tab().unwrap();
+    // Bootstrap the cookie through `?token=` — the server 302s to bare `/` with a
+    // `Set-Cookie`, which is what every later fetch on this origin rides.
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2831/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
     // Any session the machine has will do — the assertion is about LAYOUT, not content.
     tab.navigate_to("http://127.0.0.1:2831/api/sessions")
         .unwrap();
@@ -998,9 +1014,20 @@ fn the_v2_shell_keeps_the_document_scroller() {
         .and_then(|r| r.value)
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
-    let id = serde_json::from_str::<serde_json::Value>(&listing)
+    // Parse FIRST and assert on it: an auth or route regression makes this unparsable, and
+    // folding that into the same "no sessions" skip below is how the whole assertion went
+    // quiet for a release. Only a genuinely empty store may skip.
+    let parsed = serde_json::from_str::<serde_json::Value>(&listing);
+    assert!(
+        parsed.is_ok(),
+        "/api/sessions did not answer with JSON — paired? got: {listing}"
+    );
+    // `{groups:[{rows:[{id}]}]}` — the shape v2 inherited when it started sharing v1's
+    // `Index` instead of its own `sessions_json`. Reading the old `sessions[0].id` found
+    // nothing and skipped, which is the second half of why this assertion went quiet.
+    let id = parsed
         .ok()
-        .and_then(|v| v["sessions"][0]["id"].as_str().map(str::to_string));
+        .and_then(|v| v["groups"][0]["rows"][0]["id"].as_str().map(str::to_string));
     let Some(id) = id else {
         let _ = child.kill();
         let _ = child.wait(); // reap it: a killed child left unwaited is a zombie for the run

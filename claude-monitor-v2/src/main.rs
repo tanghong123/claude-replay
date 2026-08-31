@@ -37,8 +37,14 @@ use std::sync::Arc;
 const DEFAULT_PORT: u16 = 2828;
 
 /// The shell fragment: this crate's markup, styles and script, injected INTO the session
-/// document. `{{VERSION}}` is the only substitution.
+/// document. `{{VERSION}}` and `{{RAIL_W}}` are the substitutions.
 const SHELL: &str = include_str!("shell.html");
+
+/// The rail's width, in CSS pixels — ONE number, used twice: it sizes `#v2rail` in the
+/// shell's own stylesheet, and it is the inset v2 asks the session page to make for it
+/// (`PageChrome::host_inset`). Keeping it here rather than in both stylesheets is the point:
+/// the page's offsets and the rail they clear can no longer drift apart.
+const RAIL_W: u32 = 326;
 
 /// Splice the shell into a rendered session page.
 ///
@@ -144,6 +150,7 @@ fn main() -> Result<()> {
     let token = read_token(&root);
     let shell = SHELL
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        .replace("{{RAIL_W}}", &RAIL_W.to_string())
         // The compose affordance exists only when paired: unpaired, every write route 401s,
         // so offering the button would be offering a dead end (v1's `{{PAIRED}}` rule).
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
@@ -173,6 +180,9 @@ fn main() -> Result<()> {
                         // `host_search`: the rail's box is the only one (goal 2). It drives
                         // the page's search by writing into `#q`, which stays where it is.
                         host_search: true,
+                        // The rail is `position: fixed` over the left edge; the page makes
+                        // room for it itself rather than this shell reaching into its CSS.
+                        host_inset: Some(RAIL_W),
                     };
                     // A deep link can arrive before any list fetch, and the service only
                     // knows ids it has been shown — so on a miss, look the id up on disk and

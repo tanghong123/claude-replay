@@ -9,7 +9,7 @@
    Living inside that document also means the viewer's theme tokens are already in scope, so
    the rail is themed by whatever the page is — v1 had to carry its own copy. Only the two the
    viewer does not define are declared here. */
-:root { --v2-rail-w: 326px; --amber: #b8860b; --accent: #6d4fa1; }
+:root { --v2-rail-w: {{RAIL_W}}px; --amber: #b8860b; --accent: #6d4fa1; }
 #v2rail {
   position: fixed; left: 0; top: 0; bottom: 0; width: var(--v2-rail-w); z-index: 60;
   display: flex; flex-direction: column; background: var(--bg);
@@ -118,16 +118,11 @@
 #v2rail { position: fixed; }
 #v2empty { padding: 40px 16px; color: var(--faint); font: 12px var(--sans); text-align: center; }
 
-/* Make room for the rail. The session page centres its own two-column layout
-   (`.layout { max-width: 1160px; margin: 0 auto }`), so offsetting its CHILDREN fights that
-   centring and lands them wrong — the inset belongs on the document. Padding the body moves
-   everything in normal flow at once and lets `.layout` re-centre inside what is left.
-   Position-fixed elements are the exception: they anchor to the VIEWPORT, so the ones anchored
-   left need the offset applied by hand. The right-anchored ones (#taskpanel, #livechip) and the
-   full-screen .lightbox are already correct. */
-body { padding-left: var(--v2-rail-w); }
-#topbar { left: var(--v2-rail-w); }
-#newbadge { left: calc(50% + var(--v2-rail-w) / 2); }
+/* Making room for the rail is the PAGE's job, not this file's: v2 asks for the inset with
+   `PageChrome::host_inset` and export.css applies it, beside the layout it offsets. What used
+   to be here — padding `body`, offsetting `#topbar`, nudging `#newbadge` — was this shell
+   reaching into the renderer's internal selectors on knowledge it had no right to (that
+   `.layout` centres itself), which an export.css restructure would have broken silently. */
 </style>
 <aside id="v2rail">
   <div id="v2head">

@@ -1824,10 +1824,16 @@ pub fn service_routes(
             theme: query_get(query, "theme").map(str::to_string),
             artifacts: query_get(query, "artifacts") == Some("1"),
             host_search: query_get(query, "hostsearch") == Some("1"),
+            // A number or nothing: anything unparsable is no inset, never a raw value
+            // reaching the page (`PageChrome::host_inset`).
+            host_inset: query_get(query, "inset").and_then(|v| v.parse::<u32>().ok()),
         };
-        let chrome =
-            (chrome.embed || chrome.theme.is_some() || chrome.artifacts || chrome.host_search)
-                .then_some(chrome);
+        let chrome = (chrome.embed
+            || chrome.theme.is_some()
+            || chrome.artifacts
+            || chrome.host_search
+            || chrome.host_inset.is_some())
+        .then_some(chrome);
         return match live.page(id, chrome.as_ref()) {
             Some(page) => HttpResponse::html(page),
             None => HttpResponse::not_found("no such session"),
@@ -3357,6 +3363,7 @@ mod tests {
                     theme: Some("light".into()),
                     artifacts: false,
                     host_search: false,
+                    host_inset: None,
                 }),
             )
             .unwrap();
@@ -3393,6 +3400,7 @@ mod tests {
                     theme: None,
                     artifacts: true,
                     host_search: true,
+                    host_inset: None,
                 }),
             )
             .unwrap();
@@ -3412,6 +3420,63 @@ mod tests {
             !plain.contains(" data-artifacts=\"1\"")
                 && !plain.contains("class=\"searchbox\" style="),
             "and neither mode touches a page that asked for no chrome"
+        );
+
+        // The HOST SLOT. A host that draws chrome beside the page asks for room with a
+        // number; the page stamps `data-shell` + `--host-inset` and applies the offsets in
+        // its OWN stylesheet. What is pinned here is that the page never receives a length
+        // it did not format — `PageChrome` is built from query parameters, so a raw CSS
+        // string would be an injection surface on a page holding the monitor's cookie.
+        let slot = |inset: Option<u32>| {
+            live.page(
+                &id,
+                Some(&PageChrome {
+                    embed: false,
+                    theme: None,
+                    artifacts: false,
+                    host_search: false,
+                    host_inset: inset,
+                }),
+            )
+            .unwrap()
+        };
+        // Note the `="1"`: the stylesheet below MENTIONS `data-shell` in its selectors, so
+        // only the attribute form distinguishes a page that asked for a slot.
+        assert!(
+            slot(Some(326)).contains(" data-shell=\"1\" style=\"--host-inset:326px\">"),
+            "the inset reaches <body> as a length the PAGE formatted"
+        );
+        assert!(
+            slot(Some(u32::MAX)).contains("--host-inset:2000px"),
+            "and is clamped — a nonsense parameter cannot push the transcript off-screen"
+        );
+        assert!(
+            !slot(Some(0)).contains("data-shell=\"1\"") && !slot(None).contains("data-shell=\"1\""),
+            "no inset asked for, no attribute — the rules key on it, so the page stays inert"
+        );
+        assert!(
+            !plain.contains("data-shell=\"1\""),
+            "and a page with no chrome at all is untouched"
+        );
+        // The offsets live in the crate that owns the layout, keyed on the attribute.
+        for rule in [
+            "body[data-shell] { padding-left: var(--host-inset, 0px); }",
+            "body[data-shell] #topbar { left: var(--host-inset, 0px); }",
+        ] {
+            assert!(plain.contains(rule), "export.css carries `{rule}`");
+        }
+
+        // The route parses it, and refuses anything that is not a number rather than
+        // passing it through.
+        let inset_body = |q: &str| {
+            let r = service_routes(Some(&live), &dir, &get_request("session", q, false));
+            assert_eq!(r.code, "200 OK");
+            String::from_utf8_lossy(&r.body).into_owned()
+        };
+        assert!(inset_body(&format!("id={id}&inset=326")).contains("--host-inset:326px"));
+        assert!(
+            !inset_body(&format!("id={id}&inset=12px")).contains("data-shell=\"1\""),
+            "a length is not a number: unparsable means no inset, never a raw value"
         );
 
         // The route itself: unknown ids 404; a valid id serves the page.

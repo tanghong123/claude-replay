@@ -337,6 +337,23 @@ a.crumb:hover { text-decoration: underline; }
 
 .layout { display: flex; padding-top: var(--topbar-h); max-width: 1160px; margin: 0 auto; }
 
+/* ── the host slot ────────────────────────────────────────────────────
+   A host that composes this page into its own chrome (agent-monitor-v2 draws a fixed rail
+   to the left) asks for room with `PageChrome::host_inset`, which stamps `data-shell` and
+   `--host-inset` on <body>. The offsets live HERE, beside the layout they offset, because
+   only this file knows that `.layout` centres itself: insetting its CHILDREN would fight
+   that centring and land them wrong, while padding the document moves everything in normal
+   flow at once and lets `.layout` re-centre inside what is left.
+
+   Position-fixed elements are the exception — they anchor to the VIEWPORT, so the ones
+   anchored left need the offset by hand. The right-anchored ones (#taskpanel, #livechip)
+   and the full-screen .lightbox are already correct.
+
+   Inert without the attribute: a page with no host chrome matches none of these. */
+body[data-shell] { padding-left: var(--host-inset, 0px); }
+body[data-shell] #topbar { left: var(--host-inset, 0px); }
+body[data-shell] #newbadge { left: calc(50% + var(--host-inset, 0px) / 2); }
+
 #sidebar {
   width: 240px; flex: none; position: sticky; top: var(--topbar-h); align-self: flex-start;
   height: calc(100vh - var(--topbar-h)); padding: 20px 8px 20px 16px;
