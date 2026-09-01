@@ -739,9 +739,18 @@ impl Emitter<'_> {
                 if self.reveal {
                     if let Some(p) = &a.path {
                         // Signed like a tool header's path: the routes act only on what was
-                        // offered, and an attachment's path is offered the same way.
-                        if let Some(sig) = crate::html_export::sig::sign(p) {
-                            head.insert("att_sig".into(), json!(sig));
+                        // offered, and an attachment's path is offered the same way. Two
+                        // stamps, because they permit different things — `att_sig` reveals it
+                        // in the file manager, `att_fsig` renders its bytes in the page, and
+                        // only the second answers to the render policy.
+                        use crate::html_export::sig;
+                        if let Some(s) = sig::sign(sig::Cap::Reveal, p) {
+                            head.insert("att_sig".into(), json!(s));
+                        }
+                        if sig::may_render(p) {
+                            if let Some(s) = sig::sign(sig::Cap::File, p) {
+                                head.insert("att_fsig".into(), json!(s));
+                            }
                         }
                         head.insert("att_path".into(), json!(p));
                     }
@@ -885,8 +894,20 @@ impl Emitter<'_> {
                         // token holder cannot name a file the page never showed
                         // (`html_export::sig`). Unsigned when there is no key — the link is
                         // then inert, which is the safe direction to fail.
-                        if let Some(sig) = crate::html_export::sig::sign(&abs) {
-                            head.insert("sig".into(), json!(sig));
+                        //
+                        // Two stamps for two capabilities. `sig` reveals the path in the file
+                        // manager and is always minted: it hands over no bytes, and on a page
+                        // that renders nothing inline it is the only thing a click can do.
+                        // `fsig` renders the bytes, and exists only for a path the render
+                        // policy allows — not stamping IS the restriction.
+                        use crate::html_export::sig;
+                        if let Some(s) = sig::sign(sig::Cap::Reveal, &abs) {
+                            head.insert("sig".into(), json!(s));
+                        }
+                        if sig::may_render(&abs) {
+                            if let Some(s) = sig::sign(sig::Cap::File, &abs) {
+                                head.insert("fsig".into(), json!(s));
+                            }
                         }
                         head.insert("path".into(), json!(abs));
                     }

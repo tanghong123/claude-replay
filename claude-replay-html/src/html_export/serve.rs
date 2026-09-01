@@ -132,6 +132,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // records that carry them. Replacing the key must therefore re-render, or every
     // link on a cached page would verify against nothing and silently do nothing.
     super::sig::key_fingerprint().hash(&mut h);
+    // …and so does the render POLICY, for the same reason: a tightened policy must not
+    // leave already-cached pages carrying the stamps it minted while it was loose.
+    super::sig::policy_fingerprint().hash(&mut h);
     h.finish()
 }
 
@@ -1962,6 +1965,7 @@ pub fn service_routes(
         // this path; containment says a hosted session still explains it. Both, in that
         // order — the cheap check that needs no disk first.
         if !super::sig::verify(
+            super::sig::Cap::File,
             &decoded,
             query_get(query, "sig").map(percent_decode).as_deref(),
         ) {
@@ -2015,7 +2019,11 @@ pub fn service_routes(
     if name == "__reveal" {
         if let Some(v) = query_get(query, "path") {
             let p = percent_decode(v);
-            if !super::sig::verify(&p, query_get(query, "sig").map(percent_decode).as_deref()) {
+            if !super::sig::verify(
+                super::sig::Cap::Reveal,
+                &p,
+                query_get(query, "sig").map(percent_decode).as_deref(),
+            ) {
                 return HttpResponse::not_found("no such path");
             }
             let path = Path::new(&p);
@@ -3297,11 +3305,12 @@ mod tests {
         live.register_root(&sess);
         // Every request carries the server's own stamp, because a path it never offered is
         // refused before anything else is considered (`sig`).
-        let signed = |p: &std::path::Path| {
+        let signed_for = |cap, p: &std::path::Path| {
             let s = p.display().to_string();
-            let sig = crate::html_export::sig::sign(&s).unwrap_or_default();
+            let sig = crate::html_export::sig::sign(cap, &s).unwrap_or_default();
             format!("path={}&sig={sig}", s.replace(' ', "%20"))
         };
+        let signed = |p: &std::path::Path| signed_for(crate::html_export::sig::Cap::File, p);
         let get = |p: &std::path::Path| {
             service_routes(Some(&live), &dir, &get_request("file", &signed(p), true))
         };
@@ -3356,7 +3365,11 @@ mod tests {
         let swapped = format!(
             "path={}&sig={}",
             repo.join("page.html").display(),
-            crate::html_export::sig::sign(&repo.join("a.rs").display().to_string()).unwrap()
+            crate::html_export::sig::sign(
+                crate::html_export::sig::Cap::File,
+                &repo.join("a.rs").display().to_string(),
+            )
+            .unwrap()
         );
         assert_eq!(
             service_routes(Some(&live), &dir, &get_request("file", &swapped, true)).code,
@@ -3367,6 +3380,15 @@ mod tests {
             service_routes(Some(&live), &dir, &get_request("__reveal", &unsigned, true)).code,
             "404 Not Found",
             "…and reveal answers to the same rule"
+        );
+        // **A stamp names its capability.** A file-manager stamp does not open the render
+        // route — which is what stops a v1 link, whose page only ever reveals, from being
+        // turned into a byte read by editing `__reveal` to `file` in the URL.
+        let reveal_stamp = signed_for(crate::html_export::sig::Cap::Reveal, &repo.join("a.rs"));
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("file", &reveal_stamp, true)).code,
+            "404 Not Found",
+            "a reveal stamp is not a licence to read"
         );
 
         // A directory is not contained at all (owner, 2026-08-31): it has no bytes to render,
@@ -3407,7 +3429,11 @@ mod tests {
             service_routes(
                 Some(&live),
                 &dir,
-                &get_request("__reveal", &signed(p), true),
+                &get_request(
+                    "__reveal",
+                    &signed_for(crate::html_export::sig::Cap::Reveal, p),
+                    true,
+                ),
             )
             .code
         };

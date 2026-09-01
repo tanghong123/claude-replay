@@ -27,6 +27,20 @@ which is why the `##taskq/v1` records in the transcript are the portable copy.
 Design docs argue, issues discuss, the queue tracks; don't trust a `design/*.md` status
 header alone — the tracker exists because those drift.
 
+## Serving local files
+A served page's file links are **capability-stamped**: the renderer signs each offered path
+with an HMAC (key at `<state>/file-sig-key`, 0600), and `/file` and `/__reveal` act only on a
+path carrying the stamp for THAT capability. So a route acts only on what was offered, and a
+reveal link cannot be edited into a byte read. `claude-replay-html/src/html_export/sig.rs` is
+the whole story.
+
+**Which paths may RENDER is a setting**, `<state>/render-policy.json`:
+`{"mode": "allowlist", "dirs": ["~/personal", "~/code"]}` — `mode` is `never`, `offered` (the
+default when the file is absent) or `allowlist`. It governs rendering bytes into the page, not
+revealing in the file manager: reveal hands over nothing and is the only thing a click can do
+on the pages that render nothing inline. The effective policy is folded into `render_flavor`,
+so changing it re-renders rather than leaving cached pages stamped under the old one.
+
 ## Test the TUI without a TTY
 - **Deterministic (preferred):** drive `view::View` under ratatui **`TestBackend`**
   — render to an in-memory buffer, call the view's methods, assert cells. See the

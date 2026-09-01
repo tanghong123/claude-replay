@@ -31,10 +31,32 @@ use std::time::{Duration, Instant};
 /// directory that every test wipes on entry means whichever starts second deletes the
 /// other's fixture mid-run.
 fn base(name: &str) -> PathBuf {
+    hermetic_state();
     let d = std::env::temp_dir().join(format!("cr-browser-follow-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// Point the whole binary's state dir at scratch, ONCE, before anything reads it.
+///
+/// `claude-replay-html` is an ordinary dependency here, not a `cfg(test)` build, so its
+/// signing key and its render policy come from the real state directory — which would make
+/// this suite mint a key into the developer's own `~/.local/state` and, worse, pass or fail
+/// according to a `render-policy.json` they wrote for their own machine. A developer whose
+/// policy is `never` would watch the artifact test fail for no reason they could see.
+///
+/// Both are resolved once per process behind a `OnceLock`, so this has to happen before the
+/// first test touches either — `base()` is the one call every test makes first.
+fn hermetic_state() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let d = std::env::temp_dir().join(format!("cr-browser-state-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        // The permissive setting: this suite is testing the click path, not the policy.
+        let _ = std::fs::write(d.join("render-policy.json"), b"{\"mode\":\"offered\"}");
+        std::env::set_var("CLAUDE_MONITOR_STATE", &d);
+    });
 }
 
 /// Serialize the suite.

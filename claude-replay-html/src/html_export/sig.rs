@@ -24,9 +24,7 @@
 //! only "this server offered this path".
 
 use sha2::{Digest, Sha256};
-#[cfg(not(test))]
 use std::path::PathBuf;
-#[cfg(not(test))]
 use std::sync::OnceLock;
 
 /// HMAC-SHA256 (RFC 2104) — written out rather than pulled in, because `sha2` is already in
@@ -62,7 +60,6 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 /// `claude_monitor::index::state_dir` uses — deliberately duplicated rather than depended on,
 /// since this crate sits BELOW the monitor and must not reach up. If the two ever disagreed
 /// the signature would simply fail to verify, which fails closed.
-#[cfg(not(test))]
 fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
@@ -138,6 +135,120 @@ fn key() -> Option<&'static [u8; 32]> {
     }
 }
 
+/// Which offered paths a page may RENDER — the bytes-into-the-browser capability. Three
+/// settings, and they are a filter on what gets a `Cap::File` stamp rather than a new access
+/// axis: since every route acts only on stamped paths, not stamping IS the restriction.
+///
+/// Revealing in the file manager is deliberately NOT governed here. It hands over no bytes and
+/// is the only thing a path click can do on the pages that render nothing inline
+/// (`agent-replay --html`, the v1 monitor), so restricting it would cost a real affordance to
+/// buy nothing.
+///
+/// Machine-wide rather than per-binary, and that is the point: the capability is governed by
+/// the policy, not by which page you happened to open. A restriction that applied only to the
+/// v2 front-end would be undone by opening the same session in v1.
+#[derive(Clone, PartialEq)]
+pub(crate) enum Policy {
+    /// No page renders a local file. Paths still reveal.
+    Never,
+    /// Every offered path may render — what shipped before this setting existed.
+    Offered,
+    /// Only offered paths under one of these directories, canonicalized.
+    Allow(Vec<PathBuf>),
+}
+
+/// `render-policy.json` in the state dir, beside the key:
+///
+/// ```json
+/// { "mode": "allowlist", "dirs": ["~/personal", "~/code"] }
+/// ```
+///
+/// `mode` is `never`, `offered` (the default when the file is absent or unreadable), or
+/// `allowlist`. `~` is expanded; a directory that does not resolve is dropped, and an
+/// allowlist that ends up empty renders nothing — an allowlist naming only paths that do not
+/// exist is a mistake, and the safe reading of a mistake is "no".
+///
+/// It lives in the STATE dir on purpose. Losing a widening config fails safe; losing a
+/// NARROWING one silently widens, and the cache is a directory designed to be wiped.
+fn policy() -> &'static Policy {
+    static POLICY: OnceLock<Policy> = OnceLock::new();
+    POLICY.get_or_init(|| {
+        let Ok(raw) = std::fs::read_to_string(state_dir().join("render-policy.json")) else {
+            return Policy::Offered;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Policy::Offered;
+        };
+        match v.get("mode").and_then(|m| m.as_str()) {
+            Some("never") => Policy::Never,
+            Some("allowlist") => Policy::Allow(
+                v.get("dirs")
+                    .and_then(|d| d.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .map(expand_tilde)
+                            .filter_map(|p| p.canonicalize().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            _ => Policy::Offered,
+        }
+    })
+}
+
+fn expand_tilde(s: &str) -> PathBuf {
+    match s.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| PathBuf::from(s)),
+        None => PathBuf::from(s),
+    }
+}
+
+/// Whether this offered path may be RENDERED. Canonicalized before the prefix test, so a
+/// symlink out of an allowed directory is outside it — the same rule containment applies, for
+/// the same reason.
+pub(crate) fn may_render(path: &str) -> bool {
+    decide(policy(), path)
+}
+
+/// The decision itself, taken apart from where the policy comes from so a test can put every
+/// setting through the real function instead of restating it.
+fn decide(policy: &Policy, path: &str) -> bool {
+    match policy {
+        Policy::Never => false,
+        Policy::Offered => true,
+        Policy::Allow(dirs) => {
+            let Ok(real) = PathBuf::from(path).canonicalize() else {
+                return false;
+            };
+            dirs.iter().any(|d| real.starts_with(d))
+        }
+    }
+}
+
+/// The EFFECTIVE policy, folded into `render_flavor` — not the file's bytes, so a comment or a
+/// reordering does not force a re-render, but a real change does. Without this a tightened
+/// policy would leave every already-cached page still carrying the stamps it minted when the
+/// policy was loose.
+pub(crate) fn policy_fingerprint() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match policy() {
+        Policy::Never => 0u8.hash(&mut h),
+        Policy::Offered => 1u8.hash(&mut h),
+        Policy::Allow(dirs) => {
+            2u8.hash(&mut h);
+            let mut ds: Vec<_> = dirs.iter().map(|d| d.display().to_string()).collect();
+            ds.sort();
+            ds.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// A short, non-secret fingerprint of the key, folded into `render_flavor` so that replacing
 /// the key invalidates the cached records that carry its signatures instead of leaving a page
 /// full of links that verify against nothing.
@@ -147,18 +258,46 @@ pub(crate) fn key_fingerprint() -> u64 {
     u64::from_le_bytes(d[..8].try_into().unwrap_or_default())
 }
 
-/// Stamp a path the renderer is about to offer. `None` when there is no key.
-pub(crate) fn sign(path: &str) -> Option<String> {
-    Some(to_hex(&hmac_sha256(key()?, path.as_bytes())))
+/// What a stamp permits. A stamp names a capability as well as a path, so a link minted for
+/// one route cannot be replayed against the other.
+///
+/// This is not hypothetical tidiness. Before it, the two routes shared one stamp, and a v1
+/// page's link — which its own JavaScript only ever sends to `/__reveal`, because v1 sets no
+/// `PageChrome::artifacts` — could be turned into a byte read by editing `__reveal` to `file`
+/// in the URL. Demonstrated on a live v1: same path, same stamp, 200 and the file's contents.
+/// Not an escalation (the caller already needs the pairing token and a same-origin request),
+/// but it meant "v1 only opens Finder" was a property of which JavaScript shipped rather than
+/// of the server — and a policy that restricts RENDERING cannot rest on that.
+#[derive(Clone, Copy)]
+pub(crate) enum Cap {
+    /// Serve the bytes to the page (`/file`).
+    File,
+    /// Open the OS file manager on it (`/__reveal`).
+    Reveal,
 }
 
-/// Whether `sig` is this server's stamp for `path`. Constant-time, and false without a key —
-/// no key, nothing offered, nothing served.
-pub(crate) fn verify(path: &str, sig: Option<&str>) -> bool {
-    let (Some(k), Some(sig)) = (key(), sig) else {
+impl Cap {
+    fn as_str(self) -> &'static str {
+        match self {
+            Cap::File => "file",
+            Cap::Reveal => "reveal",
+        }
+    }
+}
+
+/// Stamp a path the renderer is about to offer, for ONE capability. `None` when there is no
+/// key — an unsigned path is inert, which is the safe direction to fail.
+pub(crate) fn sign(cap: Cap, path: &str) -> Option<String> {
+    let msg = format!("{}:{path}", cap.as_str());
+    Some(to_hex(&hmac_sha256(key()?, msg.as_bytes())))
+}
+
+/// Whether `sig` is this server's stamp for `path` AND for this capability. Constant-time,
+/// and false without a key — no key, nothing offered, nothing served.
+pub(crate) fn verify(cap: Cap, path: &str, sig: Option<&str>) -> bool {
+    let (Some(want), Some(sig)) = (sign(cap, path), sig) else {
         return false;
     };
-    let want = to_hex(&hmac_sha256(k, path.as_bytes()));
     super::serve::ct_eq(want.as_bytes(), sig.as_bytes())
 }
 
@@ -190,21 +329,84 @@ mod tests {
     #[test]
     fn a_stamp_names_exactly_one_path() {
         let p = "/repo/src/lib.rs";
-        let s = sign(p).expect("a key");
+        let s = sign(Cap::File, p).expect("a key");
         assert_eq!(s.len(), 64, "hex-encoded SHA-256");
-        assert_eq!(sign(p).as_deref(), Some(s.as_str()), "deterministic");
-        assert!(verify(p, Some(&s)));
+        assert_eq!(
+            sign(Cap::File, p).as_deref(),
+            Some(s.as_str()),
+            "deterministic"
+        );
+        assert!(verify(Cap::File, p, Some(&s)));
         for other in [
             "/repo/src/lib.rs2",     // extended — the length-extension case
             "/repo/src/lib.r",       // truncated
             "/repo/src/../../etc/x", // a different path entirely
             "",
         ] {
-            assert!(!verify(other, Some(&s)), "{other} must not verify");
+            assert!(
+                !verify(Cap::File, other, Some(&s)),
+                "{other} must not verify"
+            );
         }
-        assert!(!verify(p, None), "no stamp is not a stamp");
-        assert!(!verify(p, Some("")), "nor is an empty one");
-        assert!(!verify(p, Some(&"f".repeat(64))), "nor a made-up one");
+        assert!(!verify(Cap::File, p, None), "no stamp is not a stamp");
+        assert!(!verify(Cap::File, p, Some("")), "nor is an empty one");
+        let made_up = "f".repeat(64);
+        assert!(!verify(Cap::File, p, Some(&made_up)), "nor a made-up one");
+    }
+
+    /// **A stamp names a capability too.** This is what stops a v1 link — minted for the file
+    /// manager, because v1 renders nothing inline — from being edited into a byte read by
+    /// changing `__reveal` to `file` in the URL.
+    #[test]
+    fn a_stamp_names_exactly_one_capability() {
+        let p = "/repo/src/lib.rs";
+        let reveal = sign(Cap::Reveal, p).expect("a key");
+        let file = sign(Cap::File, p).expect("a key");
+        assert_ne!(reveal, file, "one path, two capabilities, two stamps");
+        assert!(verify(Cap::Reveal, p, Some(&reveal)));
+        assert!(verify(Cap::File, p, Some(&file)));
+        assert!(
+            !verify(Cap::File, p, Some(&reveal)),
+            "a reveal stamp must not open the render route"
+        );
+        assert!(
+            !verify(Cap::Reveal, p, Some(&file)),
+            "…nor the other way round"
+        );
+    }
+
+    /// The render policy is a filter on which paths get a `Cap::File` stamp. Reveal is never
+    /// filtered: it hands over no bytes, and on a page that renders nothing inline it is the
+    /// only thing a click can do.
+    #[test]
+    fn the_policy_decides_only_what_may_render() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        let real = format!("{here}/Cargo.toml");
+        let gone = format!("{here}/no-such-file-here");
+        assert!(!decide(&Policy::Never, &real), "never means never");
+        assert!(
+            decide(&Policy::Offered, &real),
+            "offered means everything offered"
+        );
+        assert!(
+            decide(&Policy::Allow(vec![PathBuf::from(here)]), &real),
+            "inside an allowed directory"
+        );
+        assert!(
+            !decide(&Policy::Allow(vec![PathBuf::from("/")]), &gone),
+            "a path that does not resolve is not allowed, however wide the list"
+        );
+        assert!(
+            !decide(&Policy::Allow(vec![PathBuf::from(here).join("src")]), &real),
+            "outside every allowed directory"
+        );
+        assert!(
+            !decide(&Policy::Allow(vec![]), &real),
+            "an allowlist naming nothing allows nothing — the safe reading of a mistake"
+        );
+        // Whatever the policy says, REVEAL is still stamped: it is the capability the policy
+        // deliberately does not govern.
+        assert!(sign(Cap::Reveal, &real).is_some());
     }
 
     /// Hex is the wire form; it must round-trip a key exactly, and refuse anything else.
