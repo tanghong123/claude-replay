@@ -414,9 +414,10 @@ pub fn merged(oplog: &TaskList, disk: Option<TaskList>) -> TaskList {
     out
 }
 
-/// Fill the gaps a `taskq` task's text left in the op-log, from the queue's own files
-/// ([`queue_tasks`](crate::engine::taskq::queue_tasks)) — **enrich only**: this never adds a
-/// task, never removes one, and never overwrites text the transcript already carried.
+/// Bring a `taskq` task up to date from the queue's own files
+/// ([`queue_tasks`](crate::engine::taskq::queue_tasks)) — **enrich only** in the sense that
+/// this never adds a task and never removes one. It fills text the transcript lacks, and it
+/// takes STATUS from disk outright, because the queue is where a task's current state lives.
 ///
 /// Why the transcript has gaps at all: a `taskq create`'s record carries no description, so
 /// the fold reads it from the COMMAND — and a description built in a shell variable, a
@@ -441,8 +442,7 @@ pub fn merged(oplog: &TaskList, disk: Option<TaskList>) -> TaskList {
 /// would be inventing the identification, which is the same line [`merged`]'s doc draws.
 pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
     for item in &mut list.items {
-        if item.subject.is_empty() || (!item.description.is_empty() && !item.active_form.is_empty())
-        {
+        if item.subject.is_empty() {
             continue;
         }
         let Some(disk) = queue
@@ -458,6 +458,16 @@ pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
         if item.active_form.is_empty() {
             item.active_form = disk.active_form.clone();
         }
+        // STATUS comes from disk outright, not only when the op-log lacks one. A task is
+        // usually finished by a LATER session than the one that filed it — reported on a
+        // crux-web session whose transcript holds nothing but the creates, so the panel
+        // showed 12 tasks pending that the queue had long since completed.
+        //
+        // This is `merged`'s own rule ("disk wins per task id — it is the queue's current
+        // truth"), which enrichment could not follow while a taskq id was a bare number that
+        // might belong to a native task. Since ids are namespaced `q<n>` a match is
+        // unambiguous, so the reason for holding back is gone.
+        item.status = disk.status;
     }
 }
 
@@ -577,7 +587,7 @@ mod tests {
     /// numeric id collides across queues and across a session's own native tasks. Each guard
     /// below is a way that could go wrong.
     #[test]
-    fn the_queue_fills_empty_text_and_never_more() {
+    fn the_queue_supplies_status_and_fills_missing_text() {
         let item = |id: &str, subject: &str, desc: &str, active: &str| TaskItem {
             id: id.into(),
             subject: subject.into(),
@@ -608,7 +618,7 @@ mod tests {
                 ),
             ],
         };
-        let queue = TaskList {
+        let mut queue = TaskList {
             items: vec![
                 item("1", "Land the seam move", "the brief, in full", "Moving"),
                 item("2", "Wire codex", "the queue's copy", "Queued form"),
@@ -629,7 +639,34 @@ mod tests {
                 item("9", "Someone else's task", "not this session's", ""),
             ],
         };
+        // The queue also knows a status the transcript cannot: a task is usually FINISHED by
+        // a later session than the one that filed it. Reported on a crux-web session holding
+        // nothing but the creates, where 12 long-completed tasks rendered pending.
+        list.items
+            .push(item("6", "Filed here, finished elsewhere", "", ""));
+        queue.items.push(TaskItem {
+            status: TaskStatus::Completed,
+            ..item("6", "Filed here, finished elsewhere", "the brief", "")
+        });
+        // …but only where the subject agrees, exactly as for text.
+        list.items.push(item("7", "Ours", "", ""));
+        queue.items.push(TaskItem {
+            status: TaskStatus::Completed,
+            ..item("7", "Someone else's #7", "", "")
+        });
         enrich_from_queue(&mut list, &queue);
+        let by = |id: &str| list.items.iter().find(|t| t.id == id).unwrap().clone();
+        assert_eq!(
+            by("6").status,
+            TaskStatus::Completed,
+            "the queue is where a task's current state lives"
+        );
+        assert_eq!(
+            by("7").status,
+            TaskStatus::Pending,
+            "…and the subject still decides whether it is the same task"
+        );
+        list.items.retain(|t| t.id != "6" && t.id != "7");
         let seen: Vec<(&str, &str, &str)> = list
             .items
             .iter()
