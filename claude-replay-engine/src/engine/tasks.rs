@@ -442,16 +442,23 @@ pub fn merged(oplog: &TaskList, disk: Option<TaskList>) -> TaskList {
 /// would be inventing the identification, which is the same line [`merged`]'s doc draws.
 pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
     for item in &mut list.items {
-        if item.subject.is_empty() {
-            continue;
-        }
-        let Some(disk) = queue
-            .items
-            .iter()
-            .find(|d| d.id == item.id && same_subject(&item.subject, &d.subject))
-        else {
+        // A row with a subject must AGREE on it: that is what stops a queue task #7 with
+        // different text from overwriting yours. A row WITHOUT one — a #125 stub, left by a
+        // state op whose create this transcript never saw — matches on the id alone, and
+        // takes the subject too.
+        //
+        // That is safe now for the same reason status is: a taskq id is namespaced `q<n>`,
+        // so it cannot be a native task's number. The "a stub's subject is not recoverable"
+        // doctrine was written for the native tools, where a bare `5` really is ambiguous.
+        // Here the queue has exactly one #33, and it knows what it is called.
+        let Some(disk) = queue.items.iter().find(|d| {
+            d.id == item.id && (item.subject.is_empty() || same_subject(&item.subject, &d.subject))
+        }) else {
             continue;
         };
+        if item.subject.is_empty() {
+            item.subject = disk.subject.clone();
+        }
         if item.description.is_empty() {
             item.description = disk.description.clone();
         }
@@ -605,9 +612,9 @@ mod tests {
                 item("2", "Wire codex", "from the command line", ""),
                 // Same id, different task — another queue, or a native task. Not ours.
                 item("3", "Something else entirely", "", ""),
-                // A #125 stub: a state op with no create. No evidence of WHICH task —
-                // and the queue below holds a subjectless row at that id, so "both empty"
-                // must not read as "the same task".
+                // A #125 stub: a state op whose create this transcript never saw. The
+                // queue knows what #4 is called, and a `q`-namespaced id cannot belong to a
+                // native task, so the stub takes its name from disk.
                 item("4", "", "", ""),
                 // A subject the record truncated; disk has it in full.
                 item(
@@ -628,7 +635,7 @@ mod tests {
                     "not this one's text",
                     "No",
                 ),
-                item("4", "", "not attributable", "No"),
+                item("4", "Named by the queue", "its brief", "Doing it"),
                 item(
                     "5",
                     "A subject long enough that the record cut it off here",
@@ -684,10 +691,28 @@ mod tests {
                 ("1", "the brief, in full", "Moving"),
                 ("2", "from the command line", "Queued form"),
                 ("3", "", ""),
-                ("4", "", ""),
+                ("4", "its brief", "Doing it"),
                 ("5", "matched through the truncation", ""),
             ],
-            "gaps filled where the subject agrees; nothing overwritten, nothing added"
+            "gaps filled where the subject agrees (or the row has none); nothing added"
+        );
+        // …and the stub is NAMED, which is the half the tuple above does not show. A row
+        // with a `q` id and no subject can only be that queue's task of that number.
+        assert_eq!(
+            list.items
+                .iter()
+                .find(|t| t.id == "4")
+                .map(|t| t.subject.as_str()),
+            Some("Named by the queue"),
+            "a titleless stub takes its name from the queue"
+        );
+        assert_eq!(
+            list.items
+                .iter()
+                .find(|t| t.id == "3")
+                .map(|t| t.subject.as_str()),
+            Some("Something else entirely"),
+            "…while a row that HAS a name keeps it, and the disagreement still blocks the rest"
         );
         assert_eq!(
             list.items.len(),

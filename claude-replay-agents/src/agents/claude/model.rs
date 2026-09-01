@@ -2944,25 +2944,31 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // Three, in this order: the command's draft, then the record standing the task up on
-        // its own (so a create whose draft was lost is still a titled row), then the resolve
-        // that lands the draft over that stub.
-        assert_eq!(ops.len(), 3, "draft + record stub + resolve: {ops:#?}");
+        // Four, in this order: the command's draft; the HUMAN output line, which stands the
+        // task up even when the record was piped away; the record doing the same from the
+        // other side; and the resolve that lands the draft over both.
+        assert_eq!(
+            ops.len(),
+            4,
+            "draft + human line + record stub + resolve: {ops:#?}"
+        );
         assert!(
             matches!(ops[0], TaskOp::Create { subject, .. } if subject == "Scaffold"),
             "{:#?}",
             ops[0]
         );
+        for k in [1, 2] {
+            assert!(
+                matches!(ops[k], TaskOp::Update { task_id, subject: Some(s), .. }
+                    if task_id == "q1" && s == "Scaffold"),
+                "{:#?}",
+                ops[k]
+            );
+        }
         assert!(
-            matches!(ops[1], TaskOp::Update { task_id, subject: Some(s), .. }
-                if task_id == "q1" && s == "Scaffold"),
+            matches!(ops[3], TaskOp::Resolve { id: Some(id), .. } if id == "q1"),
             "{:#?}",
-            ops[1]
-        );
-        assert!(
-            matches!(ops[2], TaskOp::Resolve { id: Some(id), .. } if id == "q1"),
-            "{:#?}",
-            ops[2]
+            ops[3]
         );
     }
 

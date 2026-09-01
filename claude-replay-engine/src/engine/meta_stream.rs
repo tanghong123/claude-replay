@@ -143,7 +143,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// number. Two queues share the panel and both number from 1; a v23 stream holds whichever
 /// resolved last and silently lost the other (measured on a session running 115 native
 /// creates beside a 34-task queue: 7 of the 34 survived).
-pub const FOLD_VERSION: u16 = 24;
+///
+/// v25: `taskq` state is recovered from the COMMAND and from the human output line, not from
+/// the record alone. A mutation whose stdout was piped or redirected leaves no record — the
+/// skill forbids that and agents do it anyway (measured on the session that reported it: 17
+/// `done` commands, every one piped, 6 records surviving) — but the transcript keeps
+/// `input.command` whole, and `Task #12 created successfully:` has the opposite survival
+/// profile to the record it precedes. A v24 stream shows those tasks pending, or not at all.
+pub const FOLD_VERSION: u16 = 25;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

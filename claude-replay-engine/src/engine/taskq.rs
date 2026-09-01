@@ -95,6 +95,8 @@ struct TaskqCall {
     subject: String,
     description: String,
     active_form: String,
+    /// `update --status <s>`; empty for the verbs that imply their own.
+    status: String,
 }
 
 /// The `taskq` calls in one Bash command, in order — subject, description, active form.
@@ -137,7 +139,15 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             continue;
         }
         let verb = words[i].clone();
-        if !matches!(verb.as_str(), "create" | "update") {
+        // `create`/`update` for the TEXT a record does not carry, and the state verbs for the
+        // status a record carries but may never have reached the transcript — a mutation
+        // whose stdout was piped or redirected loses its record, and the skill's rule against
+        // that is a rule agents break. Measured on the session that reported it: 17 `done`
+        // commands, every one of them piped, 6 records surviving.
+        if !matches!(
+            verb.as_str(),
+            "create" | "update" | "done" | "claim" | "release" | "stop"
+        ) {
             i += 1;
             continue;
         }
@@ -146,9 +156,19 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             ..Default::default()
         };
         i += 1;
-        // `update` takes the id positionally, before its flags.
-        if call.verb == "update" && i < words.len() && !words[i].starts_with("--") {
+        // Every verb but `create` takes the id positionally, before its flags.
+        if call.verb != "create" && i < words.len() && !words[i].starts_with("--") {
             call.task = words[i].clone();
+            i += 1;
+        }
+        // `stop` takes bare flags rather than values; read them before the value loop.
+        while i < words.len() && matches!(words[i].as_str(), "--cancel" | "--release") {
+            call.status = if words[i] == "--cancel" {
+                "cancelled"
+            } else {
+                "pending"
+            }
+            .into();
             i += 1;
         }
         while i + 1 < words.len() && words[i].starts_with("--") {
@@ -161,6 +181,8 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
                 "--subject" => call.subject = value,
                 "--description" => call.description = value,
                 "--active-form" => call.active_form = value,
+                // `update --status`, and `stop`'s two directions.
+                "--status" => call.status = value,
                 _ => {}
             }
             i += 2;
@@ -244,23 +266,58 @@ pub fn taskq_create_ops(call_id: &str, cmd: &str) -> Vec<TaskOp> {
                 });
                 nth_create += 1;
             }
+            // A state verb says what it did, and the COMMAND survives what the record does
+            // not: a mutation whose stdout was piped or redirected leaves no record at all.
+            // Measured on the session that reported this — 17 `done` commands, all piped, 6
+            // records surviving, and 12 tasks the panel therefore showed as pending.
+            //
+            // Emitted at the CALL, so a record that DID survive lands after it and wins. The
+            // residual risk is a command that failed and left no record, whose status is then
+            // believed; the following successful retry overrides it, and on the machine that
+            // owns the queue `enrich_from_queue` corrects it outright.
+            "done" | "claim" | "release" | "stop" if !call.task.is_empty() => {
+                let status = match call.verb.as_str() {
+                    "done" => "completed",
+                    "claim" => "in_progress",
+                    // `release` returns it to the pool; `stop` does too unless it cancels.
+                    _ if call.status == "cancelled" => "cancelled",
+                    _ => "pending",
+                };
+                out.push(TaskOp::Update {
+                    task_id: queue_id(&call.task),
+                    status: Some(status.to_string()),
+                    subject: None,
+                    description: None,
+                    active_form: None,
+                    add_blocks: Vec::new(),
+                    add_blocked_by: Vec::new(),
+                });
+            }
             // An `update --description` carries the FULL new text; the record it prints
             // truncates it to ~120 chars with an ellipsis (design §9 — it is an audit line,
             // not a store), so the command is the only place the real text exists. Applied
             // here rather than from the record for exactly that reason.
             "update" if !call.task.is_empty() => {
                 let field = |s: String| (!s.is_empty()).then_some(s);
-                let (description, subject, active_form) = (
+                let (description, subject, active_form, status) = (
                     field(call.description),
                     field(call.subject),
                     field(call.active_form),
+                    field(call.status),
                 );
-                if description.is_none() && subject.is_none() && active_form.is_none() {
-                    continue; // a status-only update; the RECORD states that transition
+                if description.is_none()
+                    && subject.is_none()
+                    && active_form.is_none()
+                    && status.is_none()
+                {
+                    continue; // nothing this command says that the panel renders
                 }
                 out.push(TaskOp::Update {
                     task_id: queue_id(&call.task),
-                    status: None, // the record owns status; the command owns the text
+                    // `--status` is read here too. It used to be left to the record, on the
+                    // reasoning that the record states the transition — true, and useless
+                    // when the record was piped away with the rest of stdout.
+                    status,
                     subject,
                     description,
                     active_form,
@@ -309,6 +366,33 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
     let mut out = Vec::new();
     let mut nth_create = 0usize;
     for line in text.lines() {
+        // **The human line, for a create whose record did not survive.** `taskq create`
+        // prints `Task #12 created successfully: <subject>` BEFORE its record, so the two
+        // have opposite survival profiles: `| tail -1` keeps the record and drops this,
+        // `| head -30` keeps this and drops the record. Measured on the reported session: 39
+        // such lines, 24 of them in a result whose record was gone — 24 tasks that would
+        // otherwise have no row at all, since a draft never learns its id.
+        //
+        // It stands the row up, titled. It deliberately does NOT resolve a command-side
+        // draft: that pairing is by ordinal over create RECORDS, and mixing a second source
+        // into it would misalign every later ordinal. The description comes from the queue's
+        // own file where that is readable.
+        if let Some(rest) = line.strip_prefix("Task #") {
+            if let Some((id, subject)) = rest.split_once(" created successfully: ") {
+                let numeric = id.strip_prefix('u').unwrap_or(id);
+                if !numeric.is_empty() && numeric.bytes().all(|b| b.is_ascii_digit()) {
+                    out.push(TaskOp::Update {
+                        task_id: queue_id(id),
+                        status: Some("pending".to_string()),
+                        subject: Some(subject.trim().to_string()).filter(|s| !s.is_empty()),
+                        description: None,
+                        active_form: None,
+                        add_blocks: Vec::new(),
+                        add_blocked_by: Vec::new(),
+                    });
+                }
+            }
+        }
         // The sentinel must START the line, with no leading whitespace. taskq PRINTS its
         // record (`print(SENTINEL + " " + json)`), so a real one always begins a line;
         // anything indented is a QUOTATION — a doc's code block, a diff's context line, a
@@ -950,6 +1034,89 @@ mod tests {
             taskq_ops("b1", printed).len(),
             1,
             "column 0 is the CLI's own output"
+        );
+    }
+
+    /// **A mutation whose record was piped away is still in the COMMAND.** The transcript
+    /// records `input.command` whole whatever the shell does with the output, so a state verb
+    /// survives the redirection that loses its record.
+    ///
+    /// Measured on the session that reported this: 17 `done` commands, every one piped, six
+    /// records surviving — and twelve tasks the panel therefore showed as pending.
+    #[test]
+    fn a_state_verb_in_the_command_moves_the_task() {
+        let status = |cmd: &str| {
+            taskq_create_ops("b1", cmd)
+                .into_iter()
+                .find_map(|op| match op {
+                    TaskOp::Update {
+                        task_id, status, ..
+                    } => Some((task_id, status)),
+                    _ => None,
+                })
+        };
+        for (cmd, want) in [
+            ("taskq done 21 --outcome 'shipped'", "completed"),
+            ("taskq claim 21", "in_progress"),
+            ("taskq release 21", "pending"),
+            ("taskq stop 21 --release -m why", "pending"),
+            ("taskq stop 21 --cancel -m obsolete", "cancelled"),
+            ("taskq update 21 --status completed", "completed"),
+        ] {
+            assert_eq!(
+                status(cmd),
+                Some(("q21".to_string(), Some(want.to_string()))),
+                "{cmd}"
+            );
+        }
+        // The verb must be taskq's, and the command must have tokenized.
+        assert_eq!(status("gh issue close 21 && taskq_notes done 21"), None);
+        assert_eq!(
+            status("D=$(cat <<'EOF'\nCursor'd\nEOF\n)\ntaskq done 21"),
+            None,
+            "unclosed quoting: the id after it is a guess, so nothing is claimed"
+        );
+    }
+
+    /// **A create whose record was lost is still in the OUTPUT — as prose.** `taskq create`
+    /// prints `Task #12 created successfully: <subject>` before its record, so the two have
+    /// opposite survival profiles: `| tail -1` keeps the record, `| head -30` keeps this.
+    /// Measured on the reported session: 39 such lines, 24 in results whose record was gone.
+    #[test]
+    fn a_create_is_recoverable_from_its_human_output() {
+        let ops = taskq_ops(
+            "b1",
+            "Task #12 created successfully: Wire the exporter\n\
+             Task #u4 created successfully: A user-tier one\n\
+             note: Task #99 created successfully: quoted, not at the line start",
+        );
+        let rows: Vec<(String, Option<String>, Option<String>)> = ops
+            .into_iter()
+            .map(|op| match op {
+                TaskOp::Update {
+                    task_id,
+                    status,
+                    subject,
+                    ..
+                } => (task_id, status, subject),
+                _ => ("?".into(), None, None),
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "q12".to_string(),
+                    Some("pending".to_string()),
+                    Some("Wire the exporter".to_string())
+                ),
+                (
+                    "u4".to_string(),
+                    Some("pending".to_string()),
+                    Some("A user-tier one".to_string())
+                ),
+            ],
+            "the third is quoted mid-line, and a quotation is not something that happened"
         );
     }
 
