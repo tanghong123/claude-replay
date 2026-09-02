@@ -12,10 +12,24 @@ before picking anything up, `taskq claim <id>` before working, and close the loo
 `taskq done <id> --outcome "…"` — never leave a claim dangling. Park an item with
 `--meta deferred=true --meta deferred_reason="…"` rather than cancelling it.
 
-**Every mutation goes through the `taskq` CLI** (it ships with the `agentdev:taskq`
-skill) — the flock plus check-and-set is what makes concurrent agents safe, and the
-journal at `tasks/journal.ndjson` is what makes a decision readable afterwards. Editing
+**Load the `/agentdev:taskq` skill** — it is how this repo's tasks are managed, and it
+carries the routing rules (repo tier vs `--user`), the claim/pass etiquette and the full
+command surface. It announces the CLI's path when it loads; that binary is the only way to
+mutate the queue. The flock plus check-and-set is what makes concurrent agents safe, and
+the journal at `tasks/journal.ndjson` is what makes a decision readable afterwards. Editing
 `tasks/*.json` with file tools bypasses both. Reading them is fine.
+
+**Two habits the viewer cannot repair, both learned the hard way here:**
+
+- **Never pipe or redirect a mutation.** `taskq` prints a `##taskq/v1` record as the last
+  line of stdout, and that record is how the work shows up in the task panel of every
+  agent's transcript. `| tail`, `| head`, `> /dev/null`, `2>&1 |` all destroy it. Measured
+  on one session: 17 `done` commands, every one piped, 6 records surviving — and 12 tasks
+  still rendering as pending when the owner looked. v1.128.0 recovers much of it from the command line and
+  from taskq's own prose, but recovery is guesswork where the record was fact.
+- **Pass `--description` as a literal, never `"$D"`.** The shell expands the variable before
+  taskq sees it, so the file is right and the TRANSCRIPT holds `$D`. Multi-paragraph text in
+  single quotes is fine; a heredoc into a variable is the trap.
 
 **The queue is MACHINE-LOCAL and is never committed** (taskq rev 5, 2026-08-31; it
 untracked `tasks/` here in `fa5ea93` and self-ignores the directory). A committed queue is
