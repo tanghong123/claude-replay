@@ -10,10 +10,11 @@ taskq list --all      # includes the deferred/parked items
 taskq get <id>        # one task in full
 ```
 
-The `taskq` CLI ships with the `agentdev:taskq` skill; every mutation goes through it, never
-through an editor — the CLI is what makes concurrent agents safe (one flock + check-and-set)
-and what journals each change to `tasks/journal.ndjson`. Reading `tasks/*.json` directly is
-fine.
+Every mutation goes through the CLI, never through an editor — it is what makes concurrent
+agents safe (one flock + check-and-set) and what journals each change to
+`tasks/journal.ndjson`. Reading `tasks/*.json` directly is fine. Which tool provides the
+CLI, and how an agent is expected to drive it, is a local-agent concern and lives in the
+machine-level `CLAUDE.md`.
 
 ## Why the move
 

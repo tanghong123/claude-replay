@@ -6,40 +6,24 @@ brew installs symlink the old command names). It is **fully testable headless (n
 never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Work tracking
-**The `tasks/` taskq queue is the state of record for pending work** (owner, 2026-08-30;
-it replaced `BACKLOG.md`, now a pointer). Orient with `taskq list` / `taskq list --ready`
-before picking anything up, `taskq claim <id>` before working, and close the loop with
-`taskq done <id> --outcome "…"` — never leave a claim dangling. Park an item with
-`--meta deferred=true --meta deferred_reason="…"` rather than cancelling it.
+**The `tasks/` queue is the state of record for pending work** (owner, 2026-08-30; it
+replaced `BACKLOG.md`, now a pointer). Design docs argue, issues discuss, the queue tracks
+— don't trust a `design/*.md` status header alone, since the tracker exists because those
+drift. How the queue is driven is a local-agent concern and lives in the machine-level
+`CLAUDE.md`, not here.
 
-**Load the `/agentdev:taskq` skill** — it is how this repo's tasks are managed, and it
-carries the routing rules (repo tier vs `--user`), the claim/pass etiquette and the full
-command surface. It announces the CLI's path when it loads; that binary is the only way to
-mutate the queue. The flock plus check-and-set is what makes concurrent agents safe, and
-the journal at `tasks/journal.ndjson` is what makes a decision readable afterwards. Editing
-`tasks/*.json` with file tools bypasses both. Reading them is fine.
+**Two habits this repo cares about, because it is the thing that RENDERS the result.**
+Both are unrecoverable after the fact, and both were learned from real damage here:
 
-**Two habits the viewer cannot repair, both learned the hard way here:**
-
-- **Never pipe or redirect a mutation.** `taskq` prints a `##taskq/v1` record as the last
-  line of stdout, and that record is how the work shows up in the task panel of every
-  agent's transcript. `| tail`, `| head`, `> /dev/null`, `2>&1 |` all destroy it. Measured
-  on one session: 17 `done` commands, every one piped, 6 records surviving — and 12 tasks
-  still rendering as pending when the owner looked. v1.128.0 recovers much of it from the command line and
-  from taskq's own prose, but recovery is guesswork where the record was fact.
+- **Never pipe or redirect a mutation.** `taskq` prints its `##taskq/v1` record as the last
+  line of stdout, and that record is how the work reaches the task panel of every agent's
+  transcript. `| tail`, `| head`, `> /dev/null` and `2>&1 |` all destroy it. Measured on one
+  session: 17 `done` commands, every one piped, 6 records surviving — and 12 tasks still
+  rendering as pending when the owner looked. v1.128.0 recovers much of it from the command
+  line and from taskq's own prose, but recovery is guesswork where the record was fact.
 - **Pass `--description` as a literal, never `"$D"`.** The shell expands the variable before
-  taskq sees it, so the file is right and the TRANSCRIPT holds `$D`. Multi-paragraph text in
-  single quotes is fine; a heredoc into a variable is the trap.
-
-**The queue is MACHINE-LOCAL and is never committed** (taskq rev 5, 2026-08-31; it
-untracked `tasks/` here in `fa5ea93` and self-ignores the directory). A committed queue is
-a broadcast channel with an execution side: every clone that pulls it turns its agents
-loose on the same backlog, while the flock stops at the checkout boundary. So the queue
-does not travel — a transcript read on another machine has no `tasks/` to fall back on,
-which is why the `##taskq/v1` records in the transcript are the portable copy.
-
-Design docs argue, issues discuss, the queue tracks; don't trust a `design/*.md` status
-header alone — the tracker exists because those drift.
+  taskq sees it, so the task file is right and the TRANSCRIPT holds `$D`. Multi-paragraph
+  text in single quotes is fine; a heredoc into a variable is the trap.
 
 ## Serving local files
 A served page's file links are **capability-stamped**: the renderer signs each offered path
