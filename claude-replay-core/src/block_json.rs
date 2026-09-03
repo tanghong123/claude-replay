@@ -63,7 +63,11 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         Block::QueueEvent { text } => {
             o.insert("text".into(), json!(text));
         }
-        Block::AssistantMessage { text, phase } => {
+        Block::AssistantMessage {
+            text,
+            phase,
+            inferred,
+        } => {
             o.insert("text".into(), json!(text));
             o.insert(
                 "phase".into(),
@@ -72,6 +76,9 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
                     crate::model::AssistantPhase::Final => "final",
                 }),
             );
+            if *inferred {
+                o.insert("phaseInferred".into(), json!(true));
+            }
         }
         Block::Thinking {
             text,

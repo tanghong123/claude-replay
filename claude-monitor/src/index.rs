@@ -388,7 +388,10 @@ impl Index {
             // state pass does not re-run: hiding changes the view, not any state.
             if st.scanned_at.is_some() {
                 let snap = self.assemble(&st, &mut Vec::new());
-                st.snapshot = snap;
+                // …through the SAME enrichment the scan uses. Re-deriving the raw snapshot here
+                // and skipping it is how hiding one session silently stripped `agentState*` from
+                // every row until the next scan.
+                st.snapshot = enrich_agent_state(snap, &st.state_tracker);
             }
         }
         json!({ "ok": true, "ignored": st.ignored.len() }).to_string()
@@ -639,7 +642,7 @@ impl Index {
         self.prove_by_growth(st);
 
         let mut facts = Vec::new();
-        st.snapshot = self.assemble(st, &mut facts);
+        let snapshot = self.assemble(st, &mut facts);
         // Bank the per-session link the assemble pass resolved (#133) for the send
         // routes: pid (finished when None), tmux address, and proven-ness.
         st.send_links = facts
@@ -658,6 +661,7 @@ impl Index {
         // The agent-state pass (#194): derive busy/wait/idle from what this tick just
         // observed and dump transitions + the snapshot under `<cache_root>/state/`.
         st.state_tracker.tick(&self.cache_root, &facts);
+        st.snapshot = enrich_agent_state(snapshot, &st.state_tracker);
     }
 
     /// Bank the pairing that GROWTH proves (#146).
@@ -1115,6 +1119,58 @@ impl Index {
     }
 }
 
+/// Add the richer, hysteresis-gated agent verdict to each existing session row.
+///
+/// `state`/`conf` are the long-standing process/index fields and remain byte-for-byte in
+/// meaning.  The new names are deliberately separate: consumers can adopt busy/wait/idle and
+/// its reason without breaking an older client that switches on growing/idle/finished.
+fn enrich_agent_state(snapshot: String, tracker: &crate::state::StateTracker) -> String {
+    let Ok(mut root) = serde_json::from_str::<Value>(&snapshot) else {
+        return snapshot;
+    };
+    let Some(groups) = root.get_mut("groups").and_then(Value::as_array_mut) else {
+        return snapshot;
+    };
+    for row in groups
+        .iter_mut()
+        .filter_map(|g| g.get_mut("rows").and_then(Value::as_array_mut))
+        .flatten()
+    {
+        let Some(sid) = row.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some((verdict, since)) = tracker.current(sid) {
+            row["agentState"] = serde_json::to_value(verdict.state).unwrap_or(Value::Null);
+            row["stateReason"] = json!(verdict.reason.as_str());
+            row["stateDetail"] = json!(verdict.detail);
+            row["stateConfidence"] =
+                serde_json::to_value(verdict.confidence).unwrap_or(Value::Null);
+            row["stateSince"] = json!(since);
+        } else {
+            // Non-immediate states pass through a one-tick stability gate. Keep the additive
+            // wire shape deterministic during that first scan, while labeling the coarse
+            // legacy-state fallback as inferred rather than presenting it as a verdict.
+            let legacy = row
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("idle")
+                .to_owned();
+            row["agentState"] = json!(if legacy == "growing" { "busy" } else { "idle" });
+            row["stateReason"] = json!(if legacy == "finished" {
+                "exited"
+            } else if legacy == "growing" {
+                "starting"
+            } else {
+                "idle"
+            });
+            row["stateDetail"] = json!("state derivation is stabilizing");
+            row["stateConfidence"] = json!("inferred");
+            row["stateSince"] = Value::Null;
+        }
+    }
+    root.to_string()
+}
+
 /// Decode a `%XX`-percent-encoded query value (hide keys arrive via `encodeURIComponent` —
 /// a `p:<cwd>` key carries `/`, `:` and spaces). Unknown/short escapes pass through literally.
 pub fn percent_decode(s: &str) -> String {
@@ -1145,6 +1201,13 @@ pub fn percent_decode(s: &str) -> String {
 /// `agent-metrics`' matching lookup). The directory name follows [`renamed_dir`]'s
 /// migration rule: an existing `claude-monitor` keeps being used; fresh installs
 /// create `agent-monitor`.
+/// `state_dir()` reads PROCESS-GLOBAL env, and cargo runs a crate's tests in parallel threads
+/// of ONE process — so every test that redirects it must hold this lock, or it silently
+/// redirects the tests running beside it. (Observed: a `ui` test setting `AGENT_MONITOR_STATE`
+/// pointed `control`'s token test at the wrong directory, and only when run together.)
+#[cfg(test)]
+pub(crate) static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
@@ -2045,6 +2108,28 @@ mod tests {
         );
         assert_eq!(r["visited"], false);
         assert!(r.get("turns").is_none(), "no counters without a visit (R7)");
+        assert_eq!(
+            r["agentState"], "idle",
+            "the additive state contract comes from the shared tracker: {r}"
+        );
+        assert_eq!(r["stateReason"], "exited");
+        assert_eq!(r["stateConfidence"], "observed");
+        assert!(
+            r.get("stateDetail").is_some() && r.get("stateSince").is_some(),
+            "all agentState companion fields are present: {r}"
+        );
+
+        // Hiding re-derives the snapshot WITHOUT rescanning, and that second producer has to
+        // carry the same enrichment as the scan. It did not, so one click stripped `agentState*`
+        // off every row until the next scan happened to put them back.
+        idx.set_ignore("a:nothing-matches-this", true);
+        let r = find(&idx.sessions_json(|_| {}));
+        assert_eq!(
+            r["agentState"], "idle",
+            "a hide must not strip the state contract: {r}"
+        );
+        assert_eq!(r["stateReason"], "exited");
+        idx.set_ignore("a:nothing-matches-this", false);
 
         // A bare TOUCH — mtime moves, content clock does NOT — is not growth (the crux
         // bug: an attached idle client re-touches its weeks-old transcript).

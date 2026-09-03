@@ -1,7 +1,7 @@
 //! `agent-monitor` — every agent session on this machine, one page, over loopback HTTP
-//! (#98). The page is the RAIL (this crate's own markup) beside the existing claude-replay
-//! session view in an `<iframe src="/session?id=…">` — composition at the document level
-//! (§6.3), never a fork of the renderer (R10).
+//! (#98). The Codex-style app shell is the default frontend over the existing `/pull` +
+//! `/records` protocol; the former rail-and-iframe page remains temporarily available at
+//! `?ui=classic` as a rollback seam.
 //!
 //! Read-only, loopback only (§11). No fold on the index path (R7), no background sweep
 //! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
@@ -94,6 +94,10 @@ fn open_url(url: &str) {
         .spawn();
 }
 
+fn classic_ui_requested(query: &str) -> bool {
+    claude_monitor::ui::resolve(query) == claude_monitor::ui::Shell::Classic
+}
+
 /// The port out of a root lock's note, which is plain JSON here — the monitor has no serde
 /// derive and needs exactly one field.
 fn note_port(note: Option<&serde_json::Value>) -> Option<u16> {
@@ -159,6 +163,13 @@ USAGE:
                     browser cannot lift the gate meant to stop it.
 
 Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only, read-only.
+
+TWO INTERFACES, both supported:
+  the app shell (default) and the classic rail-and-iframe page. Each carries a
+  button that switches to the other and REMEMBERS the choice (stored in
+  <state_dir>/ui.json, shared with agent-monitor-v2). `?ui=classic` / `?ui=app`
+  on the URL override for one request without changing what is stored, which is
+  how you compare them. The classic page stays until the app shell is validated.
 
 CACHE ROOT:
   $AGENT_MONITOR_CACHE, else $CLAUDE_MONITOR_CACHE (legacy, still honored). With
@@ -245,6 +256,9 @@ fn main() -> Result<()> {
     // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
     // URL carries the token too: the second invocation is the same user, who can read the file.
     if let Claimed::Served(url) = claim_root(&root)? {
+        // The bare URL, deliberately: which shell `/` serves is the REMEMBERED preference
+        // (`ui::resolve`), and the running monitor is the one that answers it. Pinning a `ui=`
+        // here would override the user's own choice on every hand-off.
         let url = with_token(&url);
         eprintln!("agent-monitor is already running — opening {url}");
         if open_browser {
@@ -288,6 +302,7 @@ fn main() -> Result<()> {
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
     // The passcode lockout counter, owned by the handler (single-user → one global counter).
     let attempts = std::sync::Mutex::new(Attempts::default());
+    let paired = token.is_some();
     let handler = {
         let service = service.clone();
         let idx = idx.clone();
@@ -295,8 +310,23 @@ fn main() -> Result<()> {
         let scratch = scratch.clone();
         Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
             let (name, query) = (req.name, req.query);
+            if let Some(asset) = claude_monitor::ui::asset(name) {
+                return asset;
+            }
             match name {
-                "" | "index.html" => HttpResponse::html(rail.clone()),
+                "" | "index.html" => {
+                    if classic_ui_requested(query) {
+                        HttpResponse::html(rail.clone())
+                    } else {
+                        HttpResponse::html(claude_monitor::ui::app_page(
+                            env!("CARGO_PKG_VERSION"),
+                            paired,
+                        ))
+                    }
+                }
+                // Read or set which shell `/` serves. Both are supported while the app shell
+                // is validated; the toggle in each shell's header calls this and reloads.
+                "api/ui" => claude_monitor::ui::route(query),
                 "api/sessions" => {
                     let service = &service;
                     HttpResponse::json(idx.sessions_json(|path| {
@@ -390,6 +420,21 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn app_shell_is_default_with_classic_as_an_explicit_rollback() {
+        let app = claude_monitor::ui::page("test", false, true);
+        assert!(app.contains("/monitor-ui/app.js"));
+        assert!(app.contains("data-ui-default=\"true\""));
+        assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
+        assert!(claude_monitor::ui::asset("monitor-ui/components.js").is_some());
+        assert!(super::RAIL_TEMPLATE.contains("requestedSession"));
+        assert!(super::RAIL_TEMPLATE.contains("URLSearchParams(location.search)"));
+        assert!(super::help_text().contains("?ui=classic"));
+        assert!(!super::classic_ui_requested("ui=codex"));
+        assert!(!super::classic_ui_requested("ui=app"));
+        assert!(super::classic_ui_requested("ui=classic"));
+    }
 
     #[test]
     fn qoder_and_qoderwork_are_distinct_agent_filters() {

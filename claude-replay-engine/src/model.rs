@@ -73,8 +73,9 @@ impl Published {
 }
 
 /// The role an assistant prose message played in its turn. Some agents persist this distinction
-/// (Codex calls them `commentary` and `final_answer`); agents without it keep using unphased
-/// [`Block::AssistantText`].
+/// directly (Codex calls them `commentary` and `final_answer`); others expose an equivalent
+/// structural signal (Claude's `stop_reason`). When neither is conclusive the adapter keeps using
+/// unphased [`Block::AssistantText`] instead of guessing from the prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AssistantPhase {
     Commentary,
@@ -139,9 +140,23 @@ pub enum Block {
     QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
-    /// Assistant prose whose transcript identifies its turn phase. This stays distinct from
-    /// `AssistantText` so older/other agent formats do not invent phase information.
-    AssistantMessage { text: String, phase: AssistantPhase },
+    /// Assistant prose whose turn phase is known. This stays distinct from `AssistantText` so
+    /// older/other agent formats do not invent phase information.
+    ///
+    /// `inferred` separates the two ways a phase is known, because they do not license the same
+    /// presentation. Codex *states* it (`commentary` / `final_answer`), so a frontend may render
+    /// the two differently. Claude does not: the phase is derived from `stop_reason`, which is a
+    /// conclusive signal about the TURN but was never a statement about how the prose should
+    /// look — and Claude Code's own UI marks narration and final answer identically. So an
+    /// inferred phase is data for a consumer that wants it, and the renderers deliberately
+    /// present it exactly like `AssistantText` (#, this takeover). `#[serde(default)]` ⇒ `false`,
+    /// which is right for every record written before the field existed: only Codex made them.
+    AssistantMessage {
+        text: String,
+        phase: AssistantPhase,
+        #[serde(default)]
+        inferred: bool,
+    },
     /// A ✻ **work-span** block, coalesced like Claude Code (#57 — the empirically
     /// derived rule in `design/cc-activity-coalescing.md`): ALL consecutive thinking
     /// bursts + activity tool calls between two visible outputs fold into ONE of

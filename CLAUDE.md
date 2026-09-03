@@ -25,6 +25,28 @@ Both are unrecoverable after the fact, and both were learned from real damage he
   taskq sees it, so the task file is right and the TRANSCRIPT holds `$D`. Multi-paragraph
   text in single quotes is fine; a heredoc into a variable is the trap.
 
+## The monitor's two shells
+`agent-monitor` and `agent-monitor-v2` each serve **two** frontends and both are supported: the
+**app shell** (`claude-monitor/src/ui.rs` + `src/codex-ui/*`, the default) and the **classic**
+page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the choice at
+`<state_dir>/ui.json`, shared by both binaries; `?ui=classic` / `?ui=app` override for one
+request without disturbing it, which is what makes side-by-side comparison possible. The classic
+page is not deprecated — it goes when the app shell has been validated, and not before.
+
+`src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
+byte-for-byte from `design/agent-monitor-codex-demo.html` by
+`scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change
+the demo and re-run the script. Production-only chrome (the shell switch) is layered on at
+runtime from `app.js` so the extraction stays exact.
+
+`claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
+It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
+its own mandatory CI step.
+
+**Anything under `design/` is PUBLIC.** `.gitignore` keeps real session content out via `*.jsonl`
+and it cannot enforce that on an `.html` — a demo page carrying a real prompt timeline reached
+review this way. Design fixtures are written by hand.
+
 ## Serving local files
 A served page's file links are **capability-stamped**: the renderer signs each offered path
 with an HMAC (key at `<state>/file-sig-key`, 0600), and `/file` and `/__reveal` act only on a

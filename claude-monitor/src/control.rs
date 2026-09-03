@@ -451,14 +451,13 @@ pub fn consent_route(
 mod tests {
     use super::*;
 
-    /// `state_dir()` reads process-global env; serialize the token tests that set it.
-    static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// The token lives in the STATE dir at 0600, round-trips, and a second `ensure_token`
     /// is idempotent (#197 — pairing twice does not rotate).
     #[test]
     fn ensure_token_persists_0600_in_state_and_is_idempotent() {
-        let _g = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::index::STATE_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let state = std::env::temp_dir().join(format!("cm-tok-state-{}", std::process::id()));
         let cache = std::env::temp_dir().join(format!("cm-tok-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
@@ -562,7 +561,9 @@ mod tests {
     /// the state path without rotating, leaving the cache copy for a downgrade.
     #[test]
     fn a_cache_token_migrates_to_state_without_re_pairing() {
-        let _g = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::index::STATE_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let state = std::env::temp_dir().join(format!("cm-mig-state-{}", std::process::id()));
         let cache = std::env::temp_dir().join(format!("cm-mig-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);

@@ -230,6 +230,18 @@ session on *this* machine. It is single-machine on purpose and stays that way �
 and serves a switcher whose tabs are those monitors' own pages, unmodified, in iframes.
 
 ```bash
+cargo install --path claude-monitor   # → ~/.cargo/bin/agent-monitor
+agent-monitor                         # opens the app-shell monitor at 127.0.0.1:2727
+```
+
+Two interfaces ship, and both are supported. The **app shell** is the default: it consumes the
+structured session index and the `/records` pipeline directly, in one document. The **classic**
+rail-and-iframe page is still there. Each carries a button that switches to the other and
+remembers the choice; `?ui=classic` or `?ui=app` on the URL overrides for a single request
+without changing what is remembered, so the two can be compared side by side. The classic page
+stays until the app shell has been validated in real use.
+
+```bash
 cargo install --path claude-monitor-fleet   # → ~/.cargo/bin/agent-monitor-fleet
 agent-monitor-fleet discover --add         # find the monitors you have, and keep them
 agent-monitor-fleet up                     # tunnels + the page, opened in your browser

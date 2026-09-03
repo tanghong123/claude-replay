@@ -1,10 +1,14 @@
 use anyhow::{anyhow, Result};
-use claude_replay_engine::seam::{Agent, Candidate};
+use claude_replay_engine::seam::{Agent, Candidate, CardOutcome, SessionCard};
 use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
+#[cfg(target_os = "macos")]
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 #[cfg(test)]
@@ -300,6 +304,224 @@ fn first_user_snippet(path: &Path) -> String {
         }
     }
     fallback.unwrap_or_else(|| "(no user prompt)".to_string())
+}
+
+const SESSION_TITLE_CHARS: usize = 52;
+
+/// A picker/monitor title is an identity, not a second copy of the prompt. Codex Desktop can
+/// leave `threads.title` equal to the complete first user message (observed at 408 chars), and
+/// CLI-only sessions have no generated title at all. Keep a useful bounded fallback and reduce
+/// file URLs to the filename a person can actually recognise.
+fn compact_session_title(text: &str) -> String {
+    let mut readable = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some(relative) = text[cursor..].find("file://") {
+        let start = cursor + relative;
+        readable.push_str(&text[cursor..start]);
+        let tail = &text[start..];
+        let end = tail
+            .char_indices()
+            .find(|(_, ch)| {
+                ch.is_whitespace()
+                    || matches!(
+                        ch,
+                        '”' | '"' | '\'' | '`' | '）' | ')' | '】' | ']' | '，' | ',' | '。'
+                    )
+            })
+            .map(|(at, _)| at)
+            .unwrap_or(tail.len());
+        let path = percent_decode_title(tail[..end].trim_start_matches("file://"));
+        readable.push_str(
+            path.rsplit('/')
+                .find(|part| !part.is_empty())
+                .unwrap_or(&path),
+        );
+        cursor = start + end;
+    }
+    readable.push_str(&text[cursor..]);
+    let one_line = readable.split_whitespace().collect::<Vec<_>>().join(" ");
+    let focused = [
+        "帮我",
+        "请你",
+        "请帮",
+        "能否",
+        "能不能",
+        "可以帮",
+        "需要你",
+        "麻烦",
+    ]
+    .iter()
+    .filter_map(|marker| one_line.find(marker).map(|at| (at, marker.len())))
+    .min_by_key(|(at, _)| *at)
+    .map(|(at, len)| {
+        one_line[at + len..]
+            .trim_start_matches(|ch: char| ch.is_whitespace() || "，,:：。".contains(ch))
+    })
+    .filter(|candidate| candidate.chars().count() >= 8)
+    .unwrap_or(&one_line);
+    let all: Vec<char> = focused.chars().collect();
+    let mut end = all.len().min(SESSION_TITLE_CHARS);
+    if all.len() > SESSION_TITLE_CHARS {
+        // Prefer a clause boundary after enough identifying content. This turns a request like
+        // “帮我拆解对应一下，研发 demo 每一步的设计元素，在旧稿里…” into a title-sized
+        // “拆解对应一下，研发 demo 每一步的设计元素…” rather than cutting mid-phrase.
+        if let Some(boundary) = all[..end]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, ch)| *index >= 24 && matches!(ch, '，' | ',' | '；' | ';'))
+            .map(|(index, _)| index)
+        {
+            end = boundary;
+        }
+    }
+    let prefix: String = all[..end].iter().collect();
+    if end < all.len() {
+        format!("{}…", prefix.trim_end())
+    } else {
+        prefix
+    }
+}
+
+fn percent_decode_title(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[index + 1] as char).to_digit(16),
+                (bytes[index + 2] as char).to_digit(16),
+            ) {
+                out.push((hi * 16 + lo) as u8);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Codex does not currently persist the generated task title in its rollout. Its first
+/// genuine user prompt is nevertheless the stable, human-authored label used by the picker,
+/// and is much more discriminating than showing the repository name for every session.
+pub(crate) fn session_card(path: &Path) -> CardOutcome {
+    let prompt = first_user_snippet(path);
+    let title = codex_thread_title(path).map(|title| compact_session_title(&title));
+    if prompt == "(no user prompt)" || prompt.starts_with("↳ subagent") {
+        return match title {
+            Some(title) => CardOutcome::Fresh {
+                card: SessionCard {
+                    title: Some(title),
+                    last_prompt: None,
+                },
+                memo: None,
+            },
+            None => CardOutcome::Absent,
+        };
+    }
+    CardOutcome::Fresh {
+        card: SessionCard {
+            title: Some(title.unwrap_or_else(|| compact_session_title(&prompt))),
+            last_prompt: Some(prompt),
+        },
+        memo: None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ThreadTitleCache {
+    db: PathBuf,
+    modified: Option<(SystemTime, Option<SystemTime>)>,
+    by_rollout: HashMap<PathBuf, String>,
+}
+
+#[cfg(target_os = "macos")]
+static THREAD_TITLES: OnceLock<Mutex<ThreadTitleCache>> = OnceLock::new();
+
+/// Codex Desktop's thread catalog is the authoritative source for generated titles and
+/// explicit renames. Load it once per database mtime rather than opening SQLite for every row
+/// on every monitor scan; CLI-only installs simply fall through to the rollout prompt.
+///
+/// macOS-only for the same reason as QoderWork's reader (`agents/qoderwork/discover.rs`):
+/// rusqlite is the workspace's one C dependency and is declared under
+/// `cfg(target_os = "macos")`, so a Linux build must not reference it at all. Codex Desktop
+/// ships on macOS; elsewhere every session falls back to its first prompt, which is the same
+/// answer this returns when the catalog is simply absent.
+#[cfg(target_os = "macos")]
+fn codex_thread_title(path: &Path) -> Option<String> {
+    let db = codex_home().join("state_5.sqlite");
+    let db_modified = std::fs::metadata(&db)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    let wal_modified = std::fs::metadata(wal).and_then(|meta| meta.modified()).ok();
+    let modified = (db_modified, wal_modified);
+    let cache = THREAD_TITLES.get_or_init(|| Mutex::new(ThreadTitleCache::default()));
+    let mut cache = cache.lock().ok()?;
+    if cache.db != db || cache.modified != Some(modified) {
+        cache.db = db.clone();
+        cache.modified = Some(modified);
+        cache.by_rollout = read_thread_titles(&db);
+    }
+    cache.by_rollout.get(path).cloned()
+}
+
+#[cfg(target_os = "macos")]
+fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
+    let Ok(connection) = rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return HashMap::new();
+    };
+    // Newer catalogs expose `first_user_message`, which lets us reject the common non-title:
+    // `title` is merely the entire prompt copied verbatim. Explicit `name` always wins.
+    if let Ok(mut query) = connection.prepare(
+        "SELECT rollout_path, NULLIF(TRIM(name), ''), NULLIF(TRIM(title), ''), \
+         NULLIF(TRIM(first_user_message), '') FROM threads WHERE rollout_path IS NOT NULL",
+    ) {
+        if let Ok(rows) = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        }) {
+            return rows
+                .flatten()
+                .filter_map(|(path, name, title, first)| {
+                    let title =
+                        name.or_else(|| title.filter(|value| first.as_deref() != Some(value)));
+                    title.map(|title| (PathBuf::from(path), title))
+                })
+                .collect();
+        }
+    }
+    // Compatibility with pre-`first_user_message` catalogs.
+    let Ok(mut query) = connection.prepare(
+        "SELECT rollout_path, COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), '')) \
+         FROM threads WHERE rollout_path IS NOT NULL",
+    ) else {
+        return HashMap::new();
+    };
+    let Ok(rows) = query.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    rows.flatten()
+        .filter_map(|(path, title)| title.map(|title| (PathBuf::from(path), title)))
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn codex_thread_title(_path: &Path) -> Option<String> {
+    None
 }
 
 /// The archive Codex moves retired rollouts into (`~/.codex/archived_sessions`, flat).
@@ -923,6 +1145,10 @@ mod tests {
         );
         let candidates = candidates_in(&fixture.sessions, &cwd);
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
+        let CardOutcome::Fresh { card, .. } = session_card(&path) else {
+            panic!("a genuine user prompt should label the session");
+        };
+        assert_eq!(card.label(), Some("Fix the parser carefully"));
     }
 
     #[test]
@@ -943,6 +1169,98 @@ mod tests {
         let candidates = candidates_in(&fixture.sessions, &cwd);
 
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")] // the catalog reader is macOS-only; see `codex_thread_title`
+    fn thread_catalog_prefers_an_explicit_name_then_generated_title() {
+        let fixture = Fixture::new();
+        let db = fixture.root.join("state_5.sqlite");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE threads (rollout_path TEXT, name TEXT, title TEXT NOT NULL, first_user_message TEXT)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                (
+                    "/tmp/a.jsonl",
+                    "Renamed task",
+                    "Generated task",
+                    "Original prompt",
+                ),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                (
+                    "/tmp/b.jsonl",
+                    Option::<String>::None,
+                    "Generated task",
+                    "Original prompt",
+                ),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                (
+                    "/tmp/c.jsonl",
+                    Option::<String>::None,
+                    "The whole original prompt",
+                    "The whole original prompt",
+                ),
+            )
+            .unwrap();
+        drop(connection);
+
+        let titles = read_thread_titles(&db);
+        assert_eq!(titles[Path::new("/tmp/a.jsonl")], "Renamed task");
+        assert_eq!(titles[Path::new("/tmp/b.jsonl")], "Generated task");
+        assert!(!titles.contains_key(Path::new("/tmp/c.jsonl")));
+    }
+
+    /// The prompts are Chinese because the clause-boundary rule under test is; the PATHS are
+    /// synthetic because this repository is public and a fixture is not a place to leave
+    /// somebody's home directory and folder names.
+    #[test]
+    fn prompt_fallback_is_a_bounded_title_and_reduces_file_urls() {
+        let text = "你看下 file:///Users/example/docs/%E5%8D%8F%E4%BD%9C%E6%B5%81%E7%A8%8B.html，帮我梳理这个设计里的组件、状态和概念，并逐项对照研发版本中对应的实现细节。还需要标出没有对应上的部分。";
+        let title = compact_session_title(text);
+        // The file preamble is useful only when no task clause exists; here the action is the
+        // stronger identity and should win completely.
+        assert!(!title.contains("file://") && !title.contains("/Users/"));
+        assert!(
+            title.chars().count() <= SESSION_TITLE_CHARS + 1,
+            "bounded title: {title}"
+        );
+        assert!(
+            title.starts_with("梳理这个设计"),
+            "action-focused title: {title}"
+        );
+        let file_only = compact_session_title(
+            "查看 file:///Users/example/docs/%E5%8D%8F%E4%BD%9C%E6%B5%81%E7%A8%8B.html 的布局",
+        );
+        assert!(
+            file_only.contains("协作流程.html"),
+            "recognisable basename: {file_only}"
+        );
+    }
+
+    #[test]
+    fn prompt_fallback_skips_file_preamble_for_the_task_request() {
+        let text = "你看下，这个：“file:///Users/example/docs/design-flow.html”是一个带流程的设计稿，这个“file:///Users/example/downloads/%E8%AE%BE%E8%AE%A1/build.dc.html”也是研发版本，但我觉得很多组件已经设计了，你帮我各自拆解对应一下，研发 demo 每一步在之前设计稿里有没有对应，并标出缺失内容。";
+        let title = compact_session_title(text);
+        assert!(
+            title.starts_with("各自拆解对应一下"),
+            "action-focused title: {title}"
+        );
+        assert!(!title.contains("file://") && !title.contains("/Users/"));
+        assert!(title.chars().count() <= SESSION_TITLE_CHARS + 1);
     }
 
     #[test]

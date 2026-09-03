@@ -150,7 +150,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// `done` commands, every one piped, 6 records surviving) — but the transcript keeps
 /// `input.command` whole, and `Task #12 created successfully:` has the opposite survival
 /// profile to the record it precedes. A v24 stream shows those tasks pending, or not at all.
-pub const FOLD_VERSION: u16 = 25;
+///
+/// v26: Claude assistant prose carries a turn PHASE. `stop_reason=tool_use` means the prose
+/// introduced more work, `end_turn` closes the turn, and a tool call in the same content array
+/// settles the older fixtures that omit `stop_reason` — so a Claude block is now
+/// `AssistantMessage{phase, inferred: true}` where it was `AssistantText`. That is block output
+/// changing, which a v25 stream cannot be resumed across: everything folded before the upgrade
+/// would stay unphased and everything after would be phased, inside one session. The `inferred`
+/// flag is what keeps the change invisible in the TUI and in `export.css` — only a phase the
+/// transcript STATES (Codex) restyles the prose.
+pub const FOLD_VERSION: u16 = 26;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

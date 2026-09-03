@@ -1,0 +1,153 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
+import { attachmentCapability, promptShouldCollapse, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
+import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
+
+const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
+const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
+const referenceShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference-shell.html", import.meta.url), "utf8");
+const productionCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("\n</style>", demo.indexOf("<style>\n")))}\n`;
+const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
+assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
+assert.equal(referenceShell, extractedShell, "reference shell must remain an exact demo extraction");
+assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");
+assert.match(viewportSource, /USER_INTENT_MS/, "follow state must distinguish user scroll intent");
+assert.match(viewportSource, /captureDomAnchor/, "window changes must preserve a real DOM anchor");
+assert.match(viewportSource, /reconcile\(/, "scrolling must incrementally reconcile the bounded window");
+assert.doesNotMatch(viewportSource, /behavior:\s*smooth/, "tail following must converge without cancellable smooth scrolling");
+assert.match(productionCss, /markdown-table-scroll>table\{display:table!important;width:100%!important/, "production markdown tables must fill their scroll viewport");
+assert.match(productionCss, /\.prompt-attachments\{/, "production-only prompt attachments must have a dedicated layout");
+assert.match(productionCss, /\.input-request\{/, "native input history must not render as raw JSON");
+assert.match(productionCss, /\.turn\.proposed-plan\{/, "semantic proposed plans must have a dedicated surface");
+assert.match(productionCss, /\.fence-h\{/, "safe markdown fences must keep their toolbar inside the code surface");
+assert.match(productionCss, /\.image-lightbox\{/, "image attachments must have an in-page lightbox");
+assert.match(productionCss, /image-lightbox\[data-state="unavailable"\]/, "missing temporary images must collapse to a compact recovery state");
+assert.match(productionCss, /\.tree-project-more\{/, "projects with many sessions need an inline disclosure control");
+assert.match(productionCss, /\.prompt-copy-shell\.collapsed/, "long prompts need a bounded collapsed surface");
+assert.match(productionCss, /\.spot-link\{/, "message permalinks need a subtle production treatment");
+assert.match(appSource, /url\.hash = id/, "message permalinks must copy a session URL with a stable record hash");
+assert.match(appSource, /function landOnHash\(\)/, "record hashes must land through the virtual viewport");
+assert.match(viewportSource, /jumpToRecord\(recordIndex, reveal = "record"\)/, "deep links must materialize virtualized records before scrolling");
+assert.match(viewportSource, /reveal = "record"/, "navigation must carry an explicit reveal depth");
+assert.match(viewportSource, /processExpanded\.add\(process\.key\)/, "turn navigation must reveal the following process list");
+assert.match(viewportSource, /folds\.set\(target\.id, false\)/, "task, agent and search navigation must open the target execution block");
+assert.match(appSource, /SIDEBAR_SESSION_LIMIT = 5/, "the sidebar must initially bound each project to five sessions");
+assert.match(previewSource, /setSession\(sessionId\)/, "preview tabs must be scoped by session");
+assert.match(previewSource, /SESSION_CACHE_LIMIT = 6/, "restored preview state must remain session-bounded");
+assert.match(previewSource, /SESSION_CACHE_BYTES = 12 \* 1024 \* 1024/, "restored preview payloads must have a memory budget");
+assert.equal(promptShouldCollapse("short prompt"), false);
+assert.equal(promptShouldCollapse("x".repeat(561)), true);
+assert.equal(rendererStartsClosed({ renderer: "bash", running: false, interaction: null }), true);
+assert.equal(rendererStartsClosed({ renderer: "read", running: true, interaction: null }), false);
+assert.equal(rendererStartsClosed({ renderer: "tool", running: false, interaction: { kind: "request_user_input" } }), false);
+assert.equal(rendererStartsClosed({ renderer: "queue", running: false, interaction: null }), false);
+const embeddedImage = attachmentCapability({ att_kind: "image", att_name: "shot.png", att_datauri: "data:image/png;base64," });
+assert.equal(embeddedImage.action, "image");
+assert.match(embeddedImage.hint, /saved with the session/);
+assert.match(attachmentCapability({ att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_sig: "signed" }).hint, /temporary file/);
+assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "signed" }).action, "preview");
+assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz", att_sig: "signed" }).action, "download");
+assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz" }).action, "copy");
+
+for (const moduleName of ["app.js", "control-store.js", "preview.js"]) {
+  const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
+  for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
+    assert.match(referenceShell, new RegExp(`id=["']${id}["']`), `${moduleName} requires missing shell #${id}`);
+  }
+}
+
+const updates = [];
+const store = new RecordStore({ update: update => updates.push(update) });
+store.apply({ epoch: 1, committed_from: 0, committed: [
+  { t: "block", kind: "user", id: "u1", turn: 1, label: "First", body: [{ p: "md", h: "<p>First</p>" }] },
+  { t: "block", kind: "assistant", id: "c1", phase: "commentary", body: [{ p: "md", h: "<p>Working</p>" }] }
+], provisional_gen: 1, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+assert.deepEqual(store.records.map(record => record.id), ["u1", "c1"]);
+
+store.apply({ epoch: 1, committed_from: 2, committed: [], provisional_gen: 2, provisional_from: 0, provisional: [
+  { t: "block", kind: "bash", id: "b1", head: { name: "Bash" }, body: [{ p: "pre", x: "ok" }] },
+  { t: "block", kind: "assistant", id: "f1", phase: "final", body: [{ p: "md", h: "<p>Done</p>" }] }
+], meta: null });
+assert.deepEqual(store.records.map(record => record.id), ["u1", "c1", "b1", "f1"]);
+
+store.apply({ epoch: 1, committed_from: 2, committed: [], provisional_gen: 3, provisional_from: 0, provisional: [
+  { t: "block", kind: "think", id: "t2", body: [{ p: "think", h: "<p>Retry</p>" }] }
+], meta: null });
+assert.deepEqual(store.records.map(record => record.id), ["u1", "c1", "t2"], "generation rewrite truncates the stale provisional tail");
+
+store.apply({ epoch: 2, committed_from: 0, committed: [
+  { t: "block", kind: "user", id: "u2", turn: 1, body: [{ p: "md", h: "<p>New epoch</p>" }] }
+], provisional_gen: 0, provisional_from: 0, provisional: [], meta: null });
+assert.deepEqual(store.records.map(record => record.id), ["u2"], "epoch reset drops the previous stream");
+store.recover();
+assert.deepEqual(store.records, [], "409 recovery drops records tied to the stale epoch");
+assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
+
+const fixtures = [
+  "user", "assistant", "think", "act", "bash", "read", "write", "edit", "skill", "tool",
+  "agent", "task", "queue", "command", "compaction", "attachment", "unknown-kind"
+].map((kind, index) => ({ t: "block", kind, id: `r${index}`, phase: kind === "assistant" ? "final" : undefined, head: { name: kind }, body: [{ p: "md", h: `<p>${kind}</p>` }] }));
+const projection = new Projection();
+projection.rebuild(fixtures, 0);
+assert.ok(projection.units.length > 0);
+assert.equal(viewRecord(fixtures.at(-1)).renderer, "fallback");
+const claudeNested = viewRecord({ kind: "act", id: "thinking-run", head: { summary: "Thought, read 1 file" }, body: [{ p: "blocks", items: [{ kind: "read", id: "nested-read", head: { name: "Read", target: "src/main.rs" }, body: [{ p: "pre", x: "fn main() {}" }] }, { kind: "bash", id: "nested-bash", head: { name: "Bash", target: "cargo check" }, body: [{ p: "pre", x: "Finished" }] }] }] });
+assert.deepEqual(claudeNested.children.map(child => child.renderer), ["read", "bash"], "Claude thinking/activity keeps nested tool order and component types");
+const richProjection = new Projection();
+richProjection.rebuild([
+  { kind: "user", id: "prompt", turn: 1, label: "Inspect this", body: [{ p: "md", h: "<p>Inspect this</p>" }] },
+  { kind: "attachment", id: "image", head: { att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_sig: "signed" }, body: [] },
+  { kind: "assistant", id: "plan", phase: "final", head: { presentation: "proposed_plan" }, body: [{ p: "md", h: "<p>Plan</p>" }] },
+  { kind: "tool", id: "input", head: { name: "request_user_input", interaction: { kind: "request_user_input", resolved: true, answers: [{ id: "choice", label: "Use v2" }] } }, body: [{ p: "pre", x: "raw" }] }
+], 0);
+assert.equal(richProjection.units[0].attachments.length, 1, "adjacent attachments belong to their prompt instead of a fake process");
+assert.equal(richProjection.units[0].to, 1, "the prompt unit owns its attachment record for stable virtualization");
+assert.equal(richProjection.units[1].view.presentation, "proposed_plan");
+assert.equal(richProjection.units[2].views[0].view.interaction.answers[0].label, "Use v2");
+const incrementalPrompt = new Projection();
+const promptRecords = [{ kind: "user", id: "late-prompt", turn: 1, body: [{ p: "md", h: "<p>Prompt</p>" }] }];
+incrementalPrompt.rebuild(promptRecords, 0);
+promptRecords.push({ kind: "attachment", id: "late-image", head: { att_kind: "image", att_name: "late.png" }, body: [] });
+incrementalPrompt.rebuild(promptRecords, 1);
+assert.equal(incrementalPrompt.units.length, 1, "a later pull must rebuild only the owning prompt unit");
+assert.equal(incrementalPrompt.units[0].attachments[0].id, "late-image");
+assert.equal(taskStatus("Completed"), "completed");
+assert.equal(taskStatus("InProgress"), "in_progress");
+const taskTargets = taskRecordTargets(
+  [{ id: "0", subject: "Extract immutable demo CSS" }, { id: "1", subject: "Wire real sessions" }],
+  [{ kind: "tool", head: { name: "TodoWrite" }, body: [{ p: "pre", x: "Completed: Extract immutable demo CSS\nCompleted: Wire real sessions" }] }]
+);
+assert.deepEqual([...taskTargets.entries()], [["0", 0], ["1", 0]], "task rows navigate to their latest source record");
+const agentTargets = agentRecordTargets(
+  [{ id: "child-1" }, { id: "nested-child" }],
+  [
+    { kind: "agent", id: "spawn", head: { child_id: "child-1" }, body: [] },
+    { kind: "act", id: "run", body: [{ p: "blocks", items: [{ kind: "agent", id: "nested", head: { child: "?session=nested-child" }, body: [] }] }] }
+  ]
+);
+assert.deepEqual([...agentTargets.entries()], [["child-1", 0], ["nested-child", 1]], "agent outline rows resolve to their parent execution record");
+const navigationUnits = [
+  { type: "user", key: "user:1", turn: 1, from: 0, to: 0 },
+  { type: "process", key: "process:1", turn: 1, from: 1, to: 3, views: [
+    { index: 1, view: { id: "todo", t: "tool" } },
+    { index: 2, view: { id: "already-open", t: "tool" } }
+  ] }
+];
+const navigationState = { folds: new Map([["already-open", false]]), processFolds: new Map([["process:1", true]]), processExpanded: new Set(), promptExpanded: new Set() };
+revealNavigationContext(navigationUnits, 0, navigationState, 0, "turn");
+assert.equal(navigationState.processFolds.get("process:1"), false, "turn navigation opens its following process");
+assert.equal(navigationState.processExpanded.has("process:1"), true, "turn navigation reveals progressive events");
+assert.equal(navigationState.folds.get("already-open"), false, "navigation preserves a manual expand-all state");
+revealNavigationContext(navigationUnits, 1, navigationState, 1, "task");
+assert.equal(navigationState.folds.get("todo"), false, "task navigation opens the exact execution block");
+revealNavigationContext(navigationUnits, 0, navigationState, 0, "search");
+assert.equal(navigationState.promptExpanded.has("user:1"), true, "search reveals a long prompt before highlighting it");
+assert.ok(updates.length >= 4);
+
+console.log("ui contract fixtures passed");

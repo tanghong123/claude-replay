@@ -43,7 +43,11 @@ pub enum Message {
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
     /// Assistant prose with an explicitly persisted phase.
-    AssistantMessage { text: String, phase: AssistantPhase },
+    AssistantMessage {
+        text: String,
+        phase: AssistantPhase,
+        inferred: bool,
+    },
     /// Assistant thinking content item + this line's ts (the fold computes the duration
     /// as `ts − the previous line's ts` — CC's thinking clock, #57).
     Thinking {

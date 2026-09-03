@@ -19,8 +19,8 @@ use std::time::SystemTime;
 /// transcript *did*.
 ///
 /// Both fields are optional because agents differ: Claude records a user-set title, an
-/// agent-generated one and the most recent prompt; Codex records none of them. A consumer falls
-/// back to [`Candidate::snippet`] (the FIRST prompt), which always exists.
+/// agent-generated one and the most recent prompt; Codex exposes its first genuine prompt as
+/// the stable fallback label because current rollouts do not persist the generated task title.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionCard {
     /// A name for the session — the user's own if they set one, else the agent's.

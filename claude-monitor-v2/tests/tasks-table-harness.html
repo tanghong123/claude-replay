@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/reference.css">
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/production.css">
+<style>
+html,body{margin:0;height:100%;background:var(--bg)}
+#tasks{position:fixed;z-index:20;top:8px;left:8px;width:280px;padding:8px;background:var(--bg);border:1px solid var(--line)}
+.transcript{width:920px;height:620px;margin:20px 20px 20px 320px;overflow:auto;border:1px solid var(--line)}
+.transcript-inner{width:780px;padding:24px 0 80px}
+#metrics{position:fixed;z-index:20;right:8px;top:8px;max-width:400px;background:var(--bg)}
+</style>
+</head>
+<body>
+<aside id="tasks"></aside><pre id="metrics"></pre>
+<main class="transcript" id="transcript"><div class="transcript-inner" id="inner"></div></main>
+<script type="module">
+import { Projection, taskRecordTargets, taskStatus } from "/claude-monitor/src/codex-ui/view-model.js";
+import { Viewport } from "/claude-monitor/src/codex-ui/viewport.js";
+
+const tasks=[
+  {id:"0",subject:"Extract immutable demo CSS",status:"Completed"},
+  {id:"1",subject:"Wire real sessions",status:"InProgress"}
+];
+const records=[{kind:"user",id:"u1",turn:1,label:"Fixture",body:[{p:"md",h:"<p>Fixture</p>"}]}];
+for(let i=0;i<9;i++)records.push({kind:"tool",id:`tool-${i}`,head:{name:"Bash"},body:[{p:"pre",x:`output ${i}`} ]});
+records.push({kind:"tool",id:"plan-latest",head:{name:"TodoWrite"},body:[{p:"pre",x:"Completed: Extract immutable demo CSS\nInProgress: Wire real sessions"}]});
+records.push({kind:"assistant",id:"final",phase:"final",body:[{p:"md",h:'<p>Production table</p><table><thead><tr><th>record</th><th>component</th></tr></thead><tbody><tr><td><code>assistant</code></td><td>Final answer renderer</td></tr><tr><td><code>attachment</code></td><td>Secure preview component</td></tr></tbody></table>'}]});
+const projection=new Projection();projection.rebuild(records,0);
+const state={heights:new Map(),folds:new Map(),processFolds:new Map(),processExpanded:new Set(),promptExpanded:new Set(),following:true,newRecords:0};
+const viewport=new Viewport(document.getElementById("transcript"),document.getElementById("inner"),state,{});
+viewport.setUnits(projection.units,0);
+const targets=taskRecordTargets(tasks,records);
+document.getElementById("tasks").innerHTML=tasks.map(task=>{const status=taskStatus(task.status);return `<button class="work-task-head" data-task-record="${targets.get(task.id)}"><span class="task-state ${status==="in_progress"?"running":status}"></span>${task.subject}</button>`}).join("")+`<button id="show-table">Show table</button>`;
+document.getElementById("tasks").onclick=event=>{const task=event.target.closest("[data-task-record]");if(task)viewport.jumpToRecord(Number(task.dataset.taskRecord));if(event.target.id==="show-table")viewport.jumpToRecord(11)};
+window.harness={snapshot(){const table=document.querySelector("table"),wrap=document.querySelector(".markdown-table-scroll"),target=document.querySelector('[data-block-index="10"]');return {statuses:tasks.map(task=>taskStatus(task.status)),targets:[...targets.values()],processExpanded:state.processExpanded.size,taskVisible:!!target&&target.getClientRects().length>0,table:table?{width:Math.round(table.getBoundingClientRect().width),wrapper:Math.round(wrap.getBoundingClientRect().width),display:getComputedStyle(table).display}:null}}};
+setInterval(()=>document.getElementById("metrics").textContent=JSON.stringify(window.harness.snapshot()),30);
+</script>
+</body>
+</html>

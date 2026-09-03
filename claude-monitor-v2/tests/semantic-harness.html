@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Semantic component harness</title>
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/reference.css">
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/production.css">
+<style>body{margin:0;background:var(--bg)}.transcript{height:100vh}.transcript-inner{padding-bottom:60px}</style>
+</head>
+<body>
+<main class="transcript"><div class="transcript-inner" id="fixture"></div></main>
+<div class="toast" id="status"></div>
+<script type="module">
+import { bindComponentEvents, renderUnit } from "/claude-monitor/src/codex-ui/components.js";
+const state={folds:new Map(),processFolds:new Map(),processExpanded:new Set(),promptExpanded:new Set()};
+const image={t:"tool",renderer:"attachment",id:"image",name:"shot.png",attachment:{att_kind:"image",att_name:"shot.png",att_path:"/tmp/shot.png",att_sig:"signed",att_datauri:"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='360'%3E%3Crect width='100%25' height='100%25' fill='%23dbeafe'/%3E%3Cpath d='M80 260l130-130 90 90 70-70 190 190H80z' fill='%237da7db'/%3E%3C/svg%3E"}};
+const archive={t:"tool",renderer:"attachment",id:"archive",name:"sample.tgz",attachment:{att_kind:"file",att_name:"sample.tgz",att_path:"/tmp/sample.tgz",att_sig:"signed"}};
+const units=[
+ {type:"user",key:"user:prompt",from:0,to:1,turn:1,view:{id:"prompt",html:"<p>请检查这两张界面截图，并修复交互问题。</p>"},attachments:[image,archive]},
+ {type:"process",key:"process:input",from:2,to:2,turn:1,views:[{index:2,view:{t:"tool",renderer:"tool",id:"input",name:"request_user_input",summary:"Which UI should become the default entry?",state:"",interaction:{kind:"request_user_input",resolved:true,answers:[{id:"rollout_entry",label:"恢复 Classic 默认 (Recommended)"}]},children:[]}},{index:3,view:{t:"activity",renderer:"activity",id:"claude-thinking-tools",name:"Thinking",summary:"Thought, read 1 file and ran 1 command",state:"",children:[{t:"tool",renderer:"read",id:"nested-read",name:"Read",summary:"src/main.rs",state:"",html:"<pre>fn main() {}</pre>",children:[]},{t:"tool",renderer:"bash",id:"nested-bash",name:"Bash",summary:"cargo check",state:"",html:"<pre>Finished</pre>",children:[]}]}}]},
+ {type:"assistant",key:"assistant:plan",from:3,to:3,turn:1,view:{id:"plan",phase:"final",presentation:"proposed_plan",html:"<div class='md-h1'>迁移方案</div><p>保留安全协议，并替换展示投影层。</p><div class='fence'><div class='fence-h'><span class='fence-lang'>bash</span><button class='cpy'>copy</button></div><pre><code>cargo check --workspace</code></pre></div><ul><li>先验证 v2</li><li>保留 Classic 回退</li></ul><p><a href='/tmp/unsigned.md' target='_blank'>本地设计文档</a></p>"}}
+];
+const fixture=document.getElementById("fixture");
+for(const unit of units)fixture.append(renderUnit(unit,state));
+const status=document.getElementById("status");
+status.dataset.referenceClicks="0";status.dataset.attachmentClicks="0";
+bindComponentEvents(fixture,state,{rerender:()=>{},copySpot:(id,button)=>{status.dataset.spot=id;button.classList.add("copied");button.querySelector("span").textContent="✓"},openChild:()=>{},openAttachment:(_id,_path,_sig,action)=>{status.dataset.attachmentClicks=String(Number(status.dataset.attachmentClicks)+1);status.dataset.attachmentAction=action},openReference:()=>status.dataset.referenceClicks=String(Number(status.dataset.referenceClicks)+1),toast:message=>status.textContent=message});
+</script>
+</body>
+</html>

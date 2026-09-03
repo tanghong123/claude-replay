@@ -1,0 +1,168 @@
+export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+export const plainText = record => JSON.stringify(record).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+export function taskStatus(value) {
+  const status = String(value || "pending").replace(/[\s-]+/g, "_").toLowerCase();
+  if (status === "completed" || status === "done") return "completed";
+  if (status === "inprogress" || status === "in_progress" || status === "running") return "in_progress";
+  return "pending";
+}
+
+// Task meta deliberately carries current state, not a transcript position. Resolve each row to
+// the latest record that actually mentions its stable subject/id so Outline navigation remains
+// useful without inventing a second backend contract. Plan snapshots commonly resolve several
+// rows to the same TodoWrite/update_plan result; that is the honest source record for all of them.
+export function taskRecordTargets(tasks = [], records = []) {
+  const unresolved = tasks.map((task, index) => ({
+    key: String(task.id ?? index),
+    subject: String(task.subject || task.title || "").trim().toLowerCase(),
+    id: String(task.id ?? "").trim().toLowerCase()
+  }));
+  const targets = new Map();
+  for (let recordIndex = records.length - 1; recordIndex >= 0 && targets.size < unresolved.length; recordIndex--) {
+    const record = records[recordIndex];
+    const name = String(record?.head?.name || record?.tool || "").toLowerCase();
+    if (record?.kind !== "task" && record?.kind !== "tool" && !/task|todo|plan|goal/.test(name)) continue;
+    const text = plainText(record).toLowerCase();
+    for (const task of unresolved) {
+      if (targets.has(task.key)) continue;
+      const subjectHit = task.subject && text.includes(task.subject);
+      const idHit = task.id && new RegExp(`(?:^|[^a-z0-9])#${task.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`, "i").test(text);
+      if (subjectHit || idHit) targets.set(task.key, recordIndex);
+    }
+  }
+  return targets;
+}
+
+export function agentRecordTargets(agents = [], records = []) {
+  const wanted = new Set(agents.map(agent => String(agent.id || "")).filter(Boolean));
+  const targets = new Map();
+  const visit = (record, recordIndex) => {
+    if (!record || typeof record !== "object") return;
+    const head = record.head || {};
+    let child = String(head.child_id || "");
+    if (!child && head.child) {
+      try { child = new URL(String(head.child), "http://monitor.local/").searchParams.get("session") || ""; }
+      catch (_) { child = ""; }
+    }
+    if (wanted.has(child) && !targets.has(child)) targets.set(child, recordIndex);
+    for (const part of record.body || []) if (part?.p === "blocks") for (const item of part.items || []) visit(item, recordIndex);
+  };
+  records.forEach(visit);
+  return targets;
+}
+
+const toolKinds = new Set(["bash", "read", "write", "edit", "skill", "tool"]);
+const processKinds = new Set(["think", "act", "bash", "read", "write", "edit", "skill", "tool", "agent", "task", "queue", "command", "compaction", "attachment", "system", "context", "record", "file"]);
+
+export function viewRecord(record) {
+  const head = record.head || {};
+  if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };
+  if (record.kind === "assistant") return { t: "assistant", id: record.id, phase: record.phase || "unknown", presentation: head.presentation || "", html: partsHtml(record.body), markdown: true, source: record };
+  if (record.kind === "think") return rendererRecord(record, "thinking", "Thinking");
+  if (record.kind === "act") return rendererRecord(record, "activity", "Activity");
+  if (record.kind === "agent") return rendererRecord(record, "agent", head.name || head.badge || "Agent");
+  if (record.kind === "queue") return rendererRecord(record, "queue", "Queued input");
+  if (record.kind === "attachment") return rendererRecord(record, "attachment", head.att_name || "Attachment");
+  if (record.kind === "compaction") return rendererRecord(record, "context", "Context compacted");
+  if (record.kind === "command") return rendererRecord(record, "system", head.name || "Command");
+  if (record.kind === "task") return rendererRecord(record, "task", head.name || "Task");
+  if (toolKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.tool || record.kind);
+  if (processKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.kind);
+  return rendererRecord(record, "fallback", `Unknown · ${record.kind || "record"}`);
+}
+
+function rendererRecord(record, renderer, name) {
+  const head = record.head || {};
+  const children = [];
+  for (const part of record.body || []) if (part.p === "blocks") for (const item of part.items || []) children.push(viewRecord(item));
+  const chips = head.chips || [];
+  const chipText = chips.map(c => c.x).filter(Boolean).join(" · ");
+  return {
+    t: renderer === "thinking" ? "thinking" : renderer === "activity" ? "activity" : renderer === "task" ? "task" : renderer === "agent" ? "agent" : "tool",
+    renderer, id: record.id, name, summary: head.target || head.preview || head.summary || "",
+    state: chipText, error: chips.some(c => /fail|error/i.test(`${c.c || ""} ${c.x || ""}`)),
+    running: chips.some(c => /running|active/i.test(c.x || "")), duration: chipText,
+    html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
+    path: head.path || head.att_path, sig: head.sig || head.att_sig,
+    attachment: record.kind === "attachment" ? head : null,
+    interaction: head.interaction || null,
+    childId: head.child_id || childFrom(head.child), children
+  };
+}
+
+function childFrom(value) {
+  if (!value) return "";
+  try { return new URL(value, location.href).searchParams.get("session") || ""; }
+  catch (_) { return ""; }
+}
+
+export function partsHtml(parts = []) {
+  return parts.map(part => {
+    if (!part || typeof part !== "object") return `<pre class="fallback-raw">${escapeText(part)}</pre>`;
+    if (part.p === "md" || part.p === "think") return part.h || "";
+    if (part.p === "pre" || part.p === "raw") return `<pre>${escapeText(part.x || "")}</pre>`;
+    if (part.p === "note") return `<div class="renderer-note"><p>${escapeText(part.x || "")}</p></div>`;
+    if (part.p === "num" || part.p === "diff") return codeRows(part);
+    if (part.p === "blocks") return "";
+    return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>unknown part</span><code>${escapeText(JSON.stringify(part))}</code></div></div>`;
+  }).join("");
+}
+
+function codeRows(part) {
+  const rows = (part.rows || []).map(row => {
+    const kind = part.p === "diff" ? row[0] || "" : "";
+    const line = part.p === "num" ? row[0] : row[1];
+    const code = part.p === "num" ? row[1] : escapeText(row[2] || "");
+    return `<div class="line ${escapeText(kind)}"><span class="ln">${escapeText(line ?? "")}</span><span class="mark">${kind === "add" ? "+" : kind === "del" ? "−" : ""}</span><span class="codecell">${code || " "}</span></div>`;
+  }).join("");
+  return `<div class="codebox" data-codebox><div class="lines wrap">${rows}</div></div>`;
+}
+
+export class Projection {
+  constructor() { this.units = []; }
+  rebuild(records, changedFrom = 0) {
+    // Desktop attachments are separate canonical records immediately after their prompt. When
+    // one arrives in a later pull, rewind only that owning prompt unit; otherwise an incremental
+    // append would briefly project the attachment as a standalone Agent Process.
+    if (records[changedFrom]?.kind === "attachment") {
+      const owner = [...this.units].reverse().find(unit => unit.type === "user" && unit.to === changedFrom - 1);
+      if (owner) changedFrom = owner.from;
+    }
+    let keep = 0;
+    while (keep < this.units.length && this.units[keep].to < changedFrom) keep++;
+    if (keep < this.units.length) changedFrom = this.units[keep].from;
+    else if (this.units.length) changedFrom = this.units.at(-1).to + 1;
+    const prefix = this.units.slice(0, keep);
+    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0);
+    this.units = prefix.concat(units);
+    return keep;
+  }
+}
+
+function buildUnits(records, from, turn) {
+  const units = [];
+  let process = null;
+  const flush = () => { if (process) units.push(process); process = null; };
+  for (let i = from; i < records.length; i++) {
+    const record = records[i];
+    const view = viewRecord(record);
+    if (record.kind === "user") {
+      flush(); turn = Number(record.turn || turn + 1);
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
+    } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
+      const unit = units.at(-1);
+      const path = view.attachment?.att_path || "";
+      const duplicate = unit.attachments.some(item => path && item.attachment?.att_path === path);
+      if (!duplicate) unit.attachments.push(view);
+      unit.to = i;
+    } else if (record.kind === "assistant" && record.phase !== "commentary") {
+      flush(); units.push({ type: "assistant", key: `assistant:${record.id || i}`, from: i, to: i, turn, view });
+    } else {
+      if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [] };
+      process.to = i; process.views.push({ index: i, view });
+    }
+  }
+  flush();
+  return units;
+}

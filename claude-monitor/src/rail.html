@@ -183,6 +183,7 @@
       <button class="pill pchev" id="collapseall" title="Collapse all groups">▸▸</button>
       <button class="pill pchev" id="expandall" title="Expand all groups">▾▾</button>
       <span style="flex:1"></span>
+      <button class="pill" id="appshell" title="Switch to the app-shell interface — remembered until you switch back">App</button>
       <button class="pill picon" id="themebtn" title="Theme — set globally for the rail and the embedded view">◐</button>
       <span id="scan" title="live — the monitor re-scans every couple of seconds"><i></i></span>
       <button class="toggle" id="hiderail" title="Collapse the session list">«</button>
@@ -219,6 +220,14 @@
   var empty=document.getElementById("empty");
   var search=document.getElementById("search");
   var state={groups:[],sel:null,filter:"all",q:"",collapsed:{},expanded:{},famOpen:{},copied:null,dark:false,showHidden:false,ignoredCount:0};
+  var requestedSession=new URLSearchParams(location.search).get("session");
+  // The shell switch. Both frontends are supported while the app shell is validated, so the way
+  // ACROSS is a visible control in each of them; `/api/ui` remembers the choice, and a `?ui=`
+  // on the URL still overrides it for one request without disturbing what is stored.
+  document.getElementById("appshell").onclick=function(){
+    var b=this;b.disabled=true;
+    fetch("/api/ui?set=app",{cache:"no-store"}).then(function(){location.href="/"}).catch(function(){b.disabled=false});
+  };
   // #133 3b: whether this monitor is paired — the write route (/api/send) only works with a
   // token, so the compose affordance appears only when paired (server substitutes the flag).
   var PAIRED={{PAIRED}};
@@ -262,7 +271,7 @@
   function poll(){
     fetch("/api/sessions",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
       state.groups=d.groups||[];state.ignoredCount=d.ignoredCount||0;render();
-      if(!state.sel){var first=firstRow("growing")||firstRow(null);if(first){select(first.id,true);}}
+      if(!state.sel){var first=(requestedSession&&rowById(requestedSession))||firstRow("growing")||firstRow(null);requestedSession=null;if(first){select(first.id,true);}}
     }).catch(function(){});
   }
   function firstRow(st){

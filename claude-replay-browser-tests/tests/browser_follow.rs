@@ -1056,7 +1056,12 @@ fn the_v2_shell_keeps_the_document_scroller() {
         eprintln!("skip: no sessions on this machine to compose");
         return;
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2831/?session={id}"))
+    // `?ui=classic` explicitly: the app shell is the default at `/` now, and the layout
+    // contract this test holds — one document scroller, a rail that does not scroll away, no
+    // iframe — belongs to the CLASSIC splice shell. Both shells are supported while the new one
+    // is being validated, so this assertion names the one it is about instead of riding the
+    // default and going quiet the moment the default moves (it has gone quiet twice before).
+    tab.navigate_to(&format!("http://127.0.0.1:2831/?ui=classic&session={id}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     // A cold cache renders the whole session before there is anything to scroll — wait for

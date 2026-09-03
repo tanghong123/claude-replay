@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Transcript Component Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#fefefe;--side:#f6f7fb;--panel:#fafbfe;--surface:#fff;--ink:#26282f;
+  --sub:#697080;--faint:#9ba2b2;--line:#e8eaf0;--strong:#d9dde7;
+  --hover:#f0f2f7;--selected:#e8ebf4;--primary:#5965b3;--primary-soft:#eef0ff;
+  --success:#24865f;--success-soft:#eaf7f0;--warning:#b97820;--warning-soft:#fff6e7;
+  --danger:#bd4b57;--danger-soft:#fff0f1;--violet:#7654a7;--violet-soft:#f5effc;
+  --cyan:#267a8c;--cyan-soft:#eaf7f8;--code:#171b28;--code-ink:#e7ebf4;
+  --shadow:0 14px 44px rgba(45,52,83,.10);--nav:258px;--inspect:248px;--density:1;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+  --mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace
+}
+:root[data-theme="dark"]{
+  --bg:#17181c;--side:#1d1f25;--panel:#202229;--surface:#1b1d22;--ink:#eff0f4;
+  --sub:#a4a9b4;--faint:#747a88;--line:#30333b;--strong:#414650;
+  --hover:#282b33;--selected:#303440;--primary:#aab2ff;--primary-soft:#292d49;
+  --success:#65c395;--success-soft:#20382d;--warning:#e4ae62;--warning-soft:#3b3020;
+  --danger:#e4858d;--danger-soft:#40272b;--violet:#c3a1ef;--violet-soft:#342a43;
+  --cyan:#7bc4d1;--cyan-soft:#20363a;--code:#101116;--code-ink:#e7eaf2;
+  --shadow:0 18px 52px rgba(0,0,0,.3)
+}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--sans);letter-spacing:-.004em}button{font:inherit;color:inherit;border:0}.app{min-height:100vh;display:grid;grid-template-columns:var(--nav) minmax(560px,1fr) var(--inspect)}
+.side,.inspector{position:sticky;top:0;height:100vh;overflow:auto;background:var(--side)}.side{border-right:1px solid var(--line);padding:20px 14px}.brand{padding:2px 8px 20px}.kicker{font:600 9px var(--mono);letter-spacing:.14em;color:var(--primary);text-transform:uppercase}.brand h1{font-size:20px;line-height:1.1;letter-spacing:-.04em;margin:7px 0 6px}.brand p{font-size:12px;color:var(--sub);margin:0}.nav-group{margin:10px 0 19px}.nav-label{padding:0 9px 7px;font:600 9px var(--mono);color:var(--faint);letter-spacing:.09em;text-transform:uppercase}.nav-link{min-height:34px;padding:7px 9px;border-radius:9px;color:var(--sub);text-decoration:none;display:flex;align-items:center;gap:9px}.nav-link:hover{background:var(--hover);color:var(--ink)}.nav-link.active{background:var(--selected);color:var(--ink);font-weight:600}.nav-link i,.legend i{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none}.nav-link.active i{background:var(--primary)}.nav-link small{margin-left:auto;font:10px var(--mono);color:var(--faint)}.nav-foot{padding:16px 9px;border-top:1px solid var(--line);font-size:11px;color:var(--faint)}
+.main{min-width:0}.topbar{height:58px;position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:8px;padding:0 22px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--line)}.top-title{font-size:13px;font-weight:650}.top-sub{font-size:11px;color:var(--faint)}.spacer{flex:1}.page-switch,.process-switch{display:flex;gap:2px;padding:3px;background:var(--hover);border-radius:10px}.page-btn,.process-btn{height:26px;padding:0 9px;border-radius:7px;background:transparent;color:var(--sub);font-size:11px;white-space:nowrap;cursor:pointer}.page-btn.active,.process-btn.active{background:var(--surface);color:var(--ink);box-shadow:0 1px 4px rgba(45,52,83,.1)}.process-switch{display:none}.sample-mode .process-switch{display:flex}.process-label{align-self:center;padding:0 4px 0 2px;color:var(--faint);font:9px var(--mono);text-transform:uppercase;letter-spacing:.08em}.control{height:32px;border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:0 10px;cursor:pointer;color:var(--sub);font-size:12px;white-space:nowrap}.control:hover{background:var(--hover);color:var(--ink)}.control.active{background:var(--primary-soft);color:var(--primary)}
+.canvas{max-width:1000px;margin:auto;padding:56px 44px 120px}.intro{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(230px,.65fr);gap:40px;padding:8px 0 62px}.intro h2{font-size:38px;line-height:1.08;letter-spacing:-.052em;margin:12px 0 17px}.intro p{font-size:15px;line-height:1.7;color:var(--sub);margin:0}.principles{border-left:1px solid var(--line);padding-left:22px;align-self:end}.principles div{padding:8px 0;border-bottom:1px solid var(--line);display:flex;gap:10px}.principles b{font:600 10px var(--mono);color:var(--primary)}.principles span{font-size:12px;color:var(--sub)}
+.family{scroll-margin-top:78px;margin-bottom:76px}.family-head{display:flex;align-items:flex-end;gap:16px;padding-bottom:13px;margin-bottom:20px;border-bottom:1px solid var(--line)}.family-num{font:11px var(--mono);color:var(--primary)}.family-head h2{font-size:22px;letter-spacing:-.035em;margin:0 0 3px}.family-head p{font-size:12px;color:var(--sub);margin:0}.family-count{margin-left:auto;font:9px var(--mono);color:var(--faint)}
+.specimen{scroll-margin-top:78px;margin-bottom:28px}.spec-meta{display:flex;align-items:center;gap:8px;margin:0 3px 8px}.spec-name{font-size:13px;font-weight:650}.contract{font:9px var(--mono);padding:2px 6px;border-radius:5px;background:var(--primary-soft);color:var(--primary)}.contract.future{background:var(--warning-soft);color:var(--warning)}.scenario{margin-left:auto;font:9px var(--mono);color:var(--faint)}.stage{border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:calc(23px * var(--density));box-shadow:0 4px 17px rgba(45,52,83,.055)}.stage.narrow{padding-left:max(calc(23px * var(--density)),9%);padding-right:max(calc(23px * var(--density)),9%)}.hint{margin:9px 3px 0;color:var(--faint);font-size:11px}
+.turn{position:relative;margin:9px 0}.message{font-size:14px;line-height:1.7}.message p{margin:0 0 9px}.message p:last-child{margin:0}.user-row{display:flex;justify-content:flex-end}.user-bubble{max-width:min(78%,650px);background:#edf3ff;border:1px solid rgba(68,113,180,.08);color:#303540;border-radius:17px 17px 5px 17px;padding:12px 15px}:root[data-theme="dark"] .user-bubble{background:#252f42;color:#edf1f8;border-color:#303c54}.user-meta{display:flex;justify-content:flex-end;gap:8px;margin-top:5px;color:var(--faint);font:9px var(--mono)}.assistant{padding:10px 2px 10px 20px}.assistant:before{content:"";position:absolute;left:2px;top:19px;width:7px;height:7px;border-radius:50%;background:var(--ink);opacity:.72}.assistant.commentary{color:var(--sub)}.assistant.commentary:before{opacity:.28}.phase{display:inline-block;margin-bottom:5px;font:9px var(--mono);color:var(--faint);letter-spacing:.08em;text-transform:uppercase}.queued{display:flex;gap:9px;padding:8px 11px;color:var(--faint);font-size:12px;border-left:2px solid var(--strong)}.queued b{font:600 10px var(--mono);color:var(--warning);white-space:nowrap}.raw-source{display:none;margin:0;font:12px/1.6 var(--mono);white-space:pre-wrap}.user-bubble.raw .rendered{display:none}.user-bubble.raw .raw-source{display:block}.inline-actions{display:flex;align-items:center;gap:5px;margin-top:8px}.tiny{height:25px;padding:0 8px;border-radius:7px;background:transparent;color:var(--faint);border:1px solid var(--line);font-size:10px;cursor:pointer}.tiny:hover{background:var(--hover);color:var(--ink)}.md-code{font:12px var(--mono);background:var(--hover);padding:2px 5px;border-radius:5px}
+.fold{border:1px solid transparent;border-radius:12px;margin:7px 0;overflow:hidden}.fold.open{border-color:var(--line);background:var(--panel)}.fold-head{width:100%;min-height:42px;display:flex;align-items:flex-start;gap:9px;padding:10px 11px;background:transparent;text-align:left;cursor:pointer;border-radius:11px}.fold-head:hover{background:var(--hover)}.chev{width:14px;height:20px;display:grid;place-items:center;color:var(--faint);font-size:12px;transition:transform .16s;flex:none}.fold.open>.fold-head .chev,.command.open .chev{transform:rotate(90deg)}.type-dot{width:7px;height:7px;border-radius:50%;background:var(--primary);margin-top:7px;flex:none}.fold-title{font-size:13px;font-weight:630;line-height:20px;white-space:nowrap}.fold-target{min-width:0;flex:1;font:11px/20px var(--mono);color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips{display:flex;gap:5px;align-items:center;flex:none}.chip{font:9px/17px var(--mono);height:18px;padding:0 6px;border-radius:999px;color:var(--faint);border:1px solid var(--line)}.chip.ok,.chip.add{background:var(--success-soft);color:var(--success);border-color:transparent}.chip.warn{background:var(--warning-soft);color:var(--warning);border-color:transparent}.chip.fail,.chip.del{background:var(--danger-soft);color:var(--danger);border-color:transparent}.fold-body{display:none;margin:0 12px 12px 28px;padding:3px 0 2px 15px;border-left:1px solid var(--line)}.fold.open>.fold-body{display:block;animation:foldin .16s ease-out}@keyframes foldin{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}.fold.thinking .type-dot{background:var(--faint)}.fold.thinking .fold-title{color:var(--sub)}.fold.activity>.fold-head .type-dot,.fold.agent>.fold-head .type-dot,.fold.skill>.fold-head .type-dot{background:var(--violet)}.fold.activity>.fold-head .fold-title,.fold.agent>.fold-head .fold-title,.fold.skill>.fold-head .fold-title{color:var(--violet)}.fold.read>.fold-head .type-dot{background:var(--cyan)}.fold.read>.fold-head .fold-title{color:var(--cyan)}.fold.edit>.fold-head .type-dot,.fold.write>.fold-head .type-dot{background:var(--success)}.fold.edit>.fold-head .fold-title,.fold.write>.fold-head .fold-title{color:var(--success)}.fold.bash>.fold-head .fold-title,.fold.tool>.fold-head .fold-title{color:var(--primary)}.fold.nested{margin-left:2px}.fold.nested .fold-body{margin-left:21px}.thinking-copy{font-size:13px;color:var(--sub);padding:5px}.result{font:11.5px/1.7 var(--mono);color:var(--sub);white-space:pre-wrap;padding:5px}.terminal{background:var(--code);color:var(--code-ink);border-radius:9px;padding:13px 14px;font:11px/1.7 var(--mono);white-space:pre-wrap;overflow:auto}.terminal .prompt{color:#70d29b}.terminal .err{color:#ff909a}.terminal .dim{color:#7f8798}.progress{height:3px;border-radius:99px;background:var(--line);overflow:hidden;margin:8px 5px 3px}.progress i{display:block;width:68%;height:100%;background:var(--primary);animation:load 1.4s ease-in-out infinite alternate}@keyframes load{from{transform:translateX(-24%)}to{transform:translateX(48%)}}
+.codebox{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--surface)}.codebar{height:34px;display:flex;align-items:center;gap:4px;padding:0 7px 0 10px;border-bottom:1px solid var(--line);color:var(--faint);font:10px var(--mono)}.codebar .filename{color:var(--sub)}.code-action{width:26px;height:26px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;padding:0;border-radius:6px}.code-action:hover,.code-action:focus-visible{background:var(--hover);color:var(--ink)}.code-action[aria-pressed="true"]{color:var(--sub)}.code-action svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.45;stroke-linecap:round;stroke-linejoin:round}.lines{font:11px/1.65 var(--mono);overflow:auto}.line{display:grid;grid-template-columns:42px 18px minmax(max-content,1fr);min-height:19px}.ln{text-align:right;padding-right:9px;color:var(--faint);user-select:none}.mark{text-align:center;color:var(--faint);user-select:none}.codecell{white-space:pre;padding-right:12px}.lines.wrap .codecell{white-space:pre-wrap;overflow-wrap:anywhere}.line.add .mark,.line.add .ln{color:var(--success)}.line.add .codecell{background:var(--success-soft);color:var(--success)}.line.del .mark,.line.del .ln{color:var(--danger)}.line.del .codecell{background:var(--danger-soft);color:var(--danger)}.more-lines{width:100%;height:31px;background:var(--panel);border-top:1px solid var(--line);color:var(--faint);font:10px var(--mono);cursor:pointer}.hidden-lines{display:none}.codebox.expanded .hidden-lines{display:block}.codebox.expanded .more-lines{display:none}
+.command{border:1px solid var(--line);border-radius:13px;background:var(--panel);overflow:hidden}.command-head{display:flex;align-items:center;gap:9px;padding:11px 13px;cursor:pointer}.command-badge{font:600 10px var(--mono);padding:3px 7px;border-radius:6px;background:var(--primary-soft);color:var(--primary)}.command-preview{min-width:0;flex:1;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.command-body{display:none;padding:0 13px 13px}.command.open .command-body{display:block}
+.attachment{display:flex;align-items:center;gap:11px;border:1px solid var(--line);border-radius:11px;padding:11px 12px;background:var(--panel);margin:7px 0}.file-icon{width:36px;height:38px;display:grid;place-items:center;border-radius:8px;background:var(--primary-soft);color:var(--primary);font:600 9px var(--mono);flex:none}.attach-copy{min-width:0;flex:1}.attach-copy strong{display:block;font-size:12px}.attach-copy small{display:block;color:var(--faint);font:9px var(--mono);margin-top:2px}.attach-actions{display:flex;gap:3px}.iconbtn{width:30px;height:30px;border-radius:8px;background:transparent;color:var(--faint);cursor:pointer}.iconbtn:hover{background:var(--hover);color:var(--ink)}
+.image-grid{display:grid;grid-template-columns:1.45fr 1fr;gap:8px;margin-top:10px}.shot{position:relative;min-height:170px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:linear-gradient(145deg,#edf1fb,#fff);cursor:zoom-in}.shot.small{min-height:81px}.shot-stack{display:grid;gap:8px}.shot:before{content:"";position:absolute;inset:17px;background:var(--surface);border:1px solid rgba(67,75,101,.11);border-radius:8px;box-shadow:0 7px 25px rgba(55,63,91,.08)}.shot:after{content:"";position:absolute;left:33px;right:33px;top:38px;height:7px;border-radius:5px;background:linear-gradient(90deg,var(--primary) 0 36%,var(--line) 36% 70%,transparent 70%);box-shadow:0 20px 0 var(--line),0 40px 0 var(--line)}:root[data-theme="dark"] .shot{background:linear-gradient(145deg,#212738,#181a20)}.shot-label{position:absolute;left:10px;bottom:8px;padding:3px 6px;border-radius:5px;background:rgba(20,22,28,.72);color:#fff;font:9px var(--mono);z-index:2}
+.link-card{display:grid;grid-template-columns:66px minmax(0,1fr) auto;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:10px;background:var(--panel);text-decoration:none;color:inherit}.link-card:hover{border-color:var(--strong);box-shadow:var(--shadow)}.link-thumb{width:66px;height:50px;border-radius:8px;background:linear-gradient(145deg,var(--primary-soft),var(--surface));display:grid;place-items:center;color:var(--primary);font:700 16px var(--mono)}.link-copy{min-width:0}.link-copy strong,.link-copy span,.link-copy small{display:block}.link-copy strong{font-size:12px}.link-copy span{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.link-copy small{font:9px var(--mono);color:var(--faint);margin-top:2px}.external{color:var(--faint);font-size:16px;padding:8px}
+.plan-body,.compact-summary{display:none;margin-top:7px;padding:13px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:12px}.plan-body.open,.compact-summary.open{display:block}.plan-body ol{margin:5px 0;padding-left:20px}.compaction{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;color:var(--faint);font:10px var(--mono);margin:18px 0}.compaction:before,.compaction:after{content:"";height:1px;background:var(--line)}.compaction button{background:transparent;color:var(--faint);cursor:pointer}
+.approval{display:flex;align-items:flex-start;gap:11px;border:1px solid color-mix(in srgb,var(--warning) 28%,var(--line));background:var(--warning-soft);border-radius:12px;padding:13px}.approval-icon{width:27px;height:27px;border-radius:8px;background:color-mix(in srgb,var(--warning) 16%,transparent);display:grid;place-items:center;color:var(--warning);flex:none}.approval-copy{min-width:0;flex:1}.approval-copy strong{font-size:12px}.approval-copy p{font-size:11px;color:var(--sub);margin:3px 0 10px}.primary-btn,.secondary-btn{height:28px;padding:0 10px;border-radius:7px;font-size:11px;cursor:pointer}.primary-btn{background:var(--ink);color:var(--bg)}.secondary-btn{background:var(--surface);border:1px solid var(--line);margin-left:4px}.approval.resolved{border-color:var(--line);background:var(--panel)}.approval.resolved .approval-icon{background:var(--success-soft);color:var(--success)}
+.agent-result{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;padding:10px 5px}.agent-line{position:relative;width:22px}.agent-line:before{content:"";position:absolute;left:10px;top:-18px;bottom:-18px;border-left:1px solid var(--line)}.agent-line i{position:absolute;left:6px;top:7px;width:9px;height:9px;border-radius:50%;background:var(--violet);box-shadow:0 0 0 4px var(--violet-soft)}.agent-copy strong{font-size:12px}.agent-copy p{font-size:11px;color:var(--sub);margin:2px 0}.agent-cost{font:9px var(--mono);color:var(--faint)}
+.sample-mode{overflow:hidden}.sample-mode .app{display:block;height:100vh;min-height:0}.sample-mode .side,.sample-mode .inspector{display:none}.sample-mode .main{height:100vh;display:flex;flex-direction:column}.sample-mode .topbar{position:relative;flex:none}.sample-canvas{width:100%;max-width:none;height:calc(100vh - 58px);margin:0;padding:0;overflow:hidden}.monitor-sample{height:100%;display:grid;grid-template-columns:280px minmax(440px,1fr) 380px;background:var(--bg)}
+.monitor-side{min-width:0;display:flex;flex-direction:column;background:var(--side);border-right:1px solid var(--line);overflow:hidden}.monitor-brand{height:62px;display:flex;align-items:center;padding:0 18px;border-bottom:1px solid var(--line)}.monitor-brand strong{font-size:17px;letter-spacing:-.035em}.monitor-brand small{margin-left:7px;color:var(--faint);font:8px var(--mono);letter-spacing:.09em}.monitor-dots{display:flex;gap:6px;margin-right:14px}.monitor-dots i{width:9px;height:9px;border-radius:50%;background:#ff6058}.monitor-dots i:nth-child(2){background:#ffbd2e}.monitor-dots i:nth-child(3){background:#29c840}.monitor-nav{padding:12px 10px 7px}.monitor-nav button{width:100%;height:35px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:8px;background:transparent;color:var(--sub);cursor:pointer}.monitor-nav button.on{background:var(--selected);color:var(--ink)}.monitor-nav button span:last-child{margin-left:auto;color:var(--faint);font:9px var(--mono)}.monitor-tree-label{padding:13px 18px 7px;color:var(--faint);font:600 9px var(--mono);letter-spacing:.09em;text-transform:uppercase}.monitor-tree{padding:0 9px;overflow:auto}.monitor-tree-row{min-height:34px;display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;color:var(--sub);font-size:12px}.monitor-tree-row.agent{color:var(--ink);font-weight:620}.monitor-tree-row.project{padding-left:25px}.monitor-tree-row.session{margin-left:15px;padding-left:20px;position:relative}.monitor-tree-row.session:before{content:"";position:absolute;left:8px;top:-5px;bottom:-5px;border-left:1px solid var(--line)}.monitor-tree-row.selected{background:var(--selected);color:var(--ink)}.monitor-tree-row .state{width:6px;height:6px;border-radius:50%;background:var(--faint);flex:none}.monitor-tree-row .state.busy{background:var(--success);box-shadow:0 0 0 4px var(--success-soft)}.monitor-tree-row .age{margin-left:auto;color:var(--faint);font:9px var(--mono)}.monitor-side-foot{margin-top:auto;padding:12px;border-top:1px solid var(--line)}
+.monitor-workspace{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg)}.monitor-sessionbar{height:56px;display:flex;align-items:center;gap:9px;padding:0 17px;border-bottom:1px solid var(--line);flex:none}.monitor-session-title{min-width:0}.monitor-session-title strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.monitor-session-title small{display:block;color:var(--faint);font:9px var(--mono)}.monitor-status{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--success);font-size:10px;white-space:nowrap}.monitor-status i{width:6px;height:6px;border-radius:50%;background:var(--success)}.monitor-transcript{flex:1;min-height:0;overflow:auto}.sample-stream{width:min(820px,calc(100% - 58px));margin:auto;padding:22px 0 120px}.sample-turn{padding:18px 0}.sample-turn+.sample-turn{border-top:1px solid var(--line)}.sample-speaker{display:flex;align-items:center;gap:7px;margin-bottom:9px;color:var(--faint);font:9px var(--mono);letter-spacing:.07em;text-transform:uppercase}.sample-speaker i{width:6px;height:6px;border-radius:50%;background:var(--strong)}.sample-turn.user-turn .sample-speaker{justify-content:flex-end}.sample-block{position:relative;margin:3px 0}.sample-block.stage,.sample-block.stage.narrow{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}.sample-activity{margin:8px 0 2px;padding:3px 0 3px 16px;border-left:1px solid var(--line)}.sample-activity>.sample-block{margin:2px 0}.sample-system{margin:12px 0}.sample-divider{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--faint);font:9px var(--mono);text-transform:uppercase}.sample-divider:before,.sample-divider:after{content:"";height:1px;background:var(--line);flex:1}
+.monitor-preview{min-width:0;min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--surface)}.monitor-preview-head{height:56px;display:flex;align-items:center;gap:3px;padding:0 10px;border-bottom:1px solid var(--line);flex:none}.monitor-preview-head button{height:33px;padding:0 10px;border-radius:8px;background:transparent;color:var(--sub);font-size:11px}.monitor-preview-head button.on{background:var(--selected);color:var(--ink)}.monitor-preview-body{flex:1;min-height:0;overflow:auto}.monitor-preview-intro{padding:18px 18px 13px;border-bottom:1px solid var(--line)}.monitor-preview-intro .kicker{margin-bottom:5px}.monitor-preview-intro h3{font-size:16px;margin:0 0 4px}.monitor-preview-intro p{margin:0;color:var(--faint);font-size:11px}.monitor-preview-section{padding:15px 17px;border-bottom:1px solid var(--line)}.monitor-preview-label{margin-bottom:9px;color:var(--faint);font:600 9px var(--mono);letter-spacing:.08em;text-transform:uppercase}.monitor-preview .sample-block{margin:0 0 10px}.monitor-preview .image-grid{grid-template-columns:1fr}.monitor-preview .shot-stack{grid-template-columns:1fr 1fr}.monitor-preview .shot{min-height:130px}.monitor-preview .shot.small{min-height:82px}
+.inspector{border-left:1px solid var(--line);padding:18px 16px}.inspector h2{font-size:12px;margin:2px 0 14px}.inspect-card{border:1px solid var(--line);border-radius:11px;background:var(--surface);padding:12px;margin-bottom:10px}.inspect-label{font:600 9px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin-bottom:7px}.inspect-value{font-size:11px;color:var(--sub)}.inspect-value strong{color:var(--ink);font-size:12px}.inspect-code{font:10px/1.6 var(--mono);color:var(--primary);word-break:break-word}.legend{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--sub);margin:7px 0}.legend i{background:var(--primary)}.legend i.future{background:var(--warning)}.rules{margin:0;padding-left:17px;color:var(--sub);font-size:11px}.rules li{margin:5px 0}
+.lightbox{position:fixed;inset:0;z-index:100;background:rgba(11,13,18,.84);display:none;place-items:center;padding:28px}.lightbox.open{display:grid}.lightbox-card{width:min(980px,94vw);height:min(680px,86vh);border-radius:14px;background:linear-gradient(145deg,#dfe6f5,#fff);position:relative;box-shadow:var(--shadow)}.lightbox-card:after{content:"Prototype image preview";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font:12px var(--mono);color:#68728a}.lightbox-close{position:absolute;right:14px;top:14px;width:34px;height:34px;border-radius:50%;background:rgba(20,22,28,.72);color:#fff;cursor:pointer}.toast{position:fixed;left:50%;bottom:24px;z-index:120;transform:translate(-50%,18px);opacity:0;background:var(--ink);color:var(--bg);padding:8px 13px;border-radius:999px;font-size:11px;pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}
+body.compact{--density:.7}.compact .fold-head{min-height:36px;padding-top:7px;padding-bottom:7px}.compact .turn{margin:5px 0}
+@media(max-width:1140px){.app{grid-template-columns:220px minmax(520px,1fr)}.inspector{display:none}.intro{grid-template-columns:1fr}.principles{border-left:0;border-top:1px solid var(--line);padding:17px 0 0;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.principles div{border:0}.monitor-sample{grid-template-columns:240px minmax(440px,1fr)}.monitor-preview{display:none}}
+@media(max-width:760px){.app{display:block}.side{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--line)}.nav-group{display:flex;overflow:auto;margin:7px 0}.nav-label,.nav-foot{display:none}.nav-link{flex:none}.topbar{padding:0 10px;overflow-x:auto;scrollbar-width:none}.topbar::-webkit-scrollbar{display:none}.top-title{display:none}.spacer{min-width:2px}.canvas{padding:38px 16px 80px}.intro h2{font-size:30px}.stage{padding:16px}.user-bubble{max-width:92%}.chips,.family-count,.top-sub{display:none}.principles{grid-template-columns:1fr}.image-grid{grid-template-columns:1fr}.shot-stack{grid-template-columns:1fr 1fr}.shot.small{min-height:110px}.sample-canvas{padding:0;height:calc(100vh - 58px)}.monitor-sample{display:block}.monitor-side,.monitor-preview{display:none}.monitor-workspace{height:100%}.sample-stream{width:calc(100% - 28px);padding-top:10px}.monitor-sessionbar{padding:0 12px}.sample-turn{padding:14px 0}}
+
+/* Restraint pass: one reading line, one activity line, containers only for results. */
+.user-shell{position:relative;width:fit-content;max-width:min(78%,650px)}
+.user-shell .user-bubble{max-width:none}
+.user-hover-actions{position:absolute;right:calc(100% + 7px);top:6px;display:flex;gap:4px;opacity:0;pointer-events:none;transform:translateX(3px);transition:opacity .15s ease,transform .15s ease}
+.user-shell:hover .user-hover-actions,.user-shell:focus-within .user-hover-actions{opacity:1;pointer-events:auto;transform:none}
+.bubble-action{width:28px;height:28px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--faint);box-shadow:0 3px 12px rgba(20,24,32,.06);cursor:pointer}
+.bubble-action:hover,.bubble-action:focus-visible{color:var(--ink);background:var(--hover)}
+.bubble-action svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.assistant{padding:10px 2px}
+.assistant:before{display:none}
+
+.fold{border:0;border-radius:0;margin:2px 0;overflow:visible;background:transparent}
+.fold.open{border-color:transparent;background:transparent}
+.fold-head{min-height:38px;align-items:center;gap:8px;padding:7px 4px;border-radius:8px}
+.fold-head:hover{background:var(--hover)}
+.chev{height:20px;color:var(--faint)}
+.type-dot{display:none;width:7px;height:7px;margin-top:0;background:var(--surface);border:1.5px solid var(--strong)}
+.fold-title,.fold.thinking .fold-title,.fold.activity>.fold-head .fold-title,.fold.agent>.fold-head .fold-title,.fold.skill>.fold-head .fold-title,.fold.read>.fold-head .fold-title,.fold.edit>.fold-head .fold-title,.fold.write>.fold-head .fold-title,.fold.bash>.fold-head .fold-title,.fold.tool>.fold-head .fold-title{color:var(--ink)}
+.fold-target{color:var(--faint)}
+.chip{height:auto;padding:0;border:0;border-radius:0;background:transparent;font:9px/18px var(--mono);color:var(--faint)}
+.chip.ok{background:transparent;color:var(--faint)}
+.chip.warn{padding:0 6px;border-radius:999px;background:var(--warning-soft);color:var(--warning)}
+.chip.fail{padding:0 6px;border-radius:999px;background:var(--danger-soft);color:var(--danger)}
+.chip.add,.chip.del{padding:0 6px;border-radius:999px}
+.fold-body{margin:3px 0 10px 28px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.fold.activity.open>.fold-body{position:relative;margin:0 0 8px 11px;padding:3px 0 3px 22px;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent}
+.fold.activity>.fold-body>.fold.nested>.fold-head{position:relative}
+.fold.activity>.fold-body>.fold.nested>.fold-head .type-dot{display:block;position:absolute;left:-26px;background:var(--surface);border-color:var(--strong)}
+.fold:has(>.fold-head .chip.warn)>.fold-head .type-dot,.fold.activity>.fold-body>.fold:has(>.fold-head .chip.warn)>.fold-head .type-dot{display:block;border-color:var(--warning);background:var(--warning-soft)}
+.fold:has(>.fold-head .chip.fail)>.fold-head .type-dot,.fold.activity>.fold-body>.fold:has(>.fold-head .chip.fail)>.fold-head .type-dot{display:block;border-color:var(--danger);background:var(--danger)}
+.fold.nested{margin-left:0}
+.fold.nested .fold-body{margin-left:22px}
+.thinking-copy{padding:5px 4px 8px;color:var(--sub)}
+.agent-result{grid-template-columns:minmax(0,1fr);gap:10px;padding:2px 0}
+.agent-line{display:none}
+
+/* Transcript Lab.dc alignment: exact type scale, blue-grey palette and single-rail hierarchy. */
+:root{
+  --bg:#eef2f7;--side:#f7f9fc;--panel:#fafbfd;--surface:#fff;--ink:#16233a;
+  --sub:#5b6b82;--faint:#8b98ad;--line:#e9edf3;--strong:#d4dde9;
+  --hover:#f4f7fb;--selected:#e9eff9;--primary:#356fe8;--primary-soft:#edf3ff;
+  --success:#2f8f57;--success-soft:#eef9f1;--warning:#b07a12;--warning-soft:#fdf7ec;
+  --danger:#c14545;--danger-soft:#fdf0f0;--violet:#356fe8;--violet-soft:#edf3ff;
+  --cyan:#356f91;--cyan-soft:#edf6fa;--code:#141a24;--code-ink:#c8d2e0;
+  --shadow:0 1px 2px rgba(15,23,41,.04),0 8px 24px rgba(15,23,41,.04);
+  --sans:"IBM Plex Sans","Noto Sans SC","PingFang SC",sans-serif;
+  --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace
+}
+:root[data-theme="dark"]{
+  --bg:#121722;--side:#171e2a;--panel:#1a2230;--surface:#151c27;--ink:#e7edf7;
+  --sub:#aab7c9;--faint:#7f8da2;--line:#2a3444;--strong:#3b485c;--hover:#202a39;
+  --selected:#253249;--primary:#78a3ff;--primary-soft:#1d2b48;--success:#6dd58c;
+  --success-soft:#193326;--warning:#e3ad52;--warning-soft:#332a1b;--danger:#f08a8a;
+  --danger-soft:#3a2328;--violet:#78a3ff;--violet-soft:#1d2b48;--cyan:#78b9d4;
+  --cyan-soft:#17303b;--code:#0d121b;--code-ink:#c8d2e0;--shadow:0 12px 34px rgba(0,0,0,.22)
+}
+body{font-family:var(--sans);color:#0f1729;background:var(--bg);-webkit-font-smoothing:antialiased}:root[data-theme="dark"] body{color:var(--ink)}
+.side,.inspector{background:var(--side)}.main{background:var(--bg)}
+.topbar{background:color-mix(in srgb,var(--surface) 92%,transparent)}
+.canvas{max-width:1080px}.intro{padding-top:2px}.intro h2{color:var(--ink)}
+.principles,.stage,.inspect-card{background:var(--surface)}
+.principles{border:0;border-radius:10px;padding:14px 18px;box-shadow:0 0 0 1px rgba(19,32,56,.05)}
+.principles div{border-color:#f0f3f8}.family-head{border-color:#f0f3f8}.family-head h2{color:var(--ink)}
+.stage{border:0;border-radius:12px;padding:30px 34px;box-shadow:var(--shadow)}
+.spec-meta{margin-bottom:9px}.spec-name{color:var(--ink)}.contract{background:#edf3ff;color:#356fe8}.contract.future{background:#fdf7ec;color:#b07a12}
+.user-bubble{max-width:78%;padding:12px 18px;border:0;border-radius:12px;background:#f3f6fc;color:#20304a;font-size:14px;line-height:1.7}
+:root[data-theme="dark"] .user-bubble{background:#202b3e;color:#dce5f3;border:0}
+.message{font-size:15px;line-height:1.85;color:#33415a;text-wrap:pretty}:root[data-theme="dark"] .message{color:var(--sub)}
+.assistant{padding:8px 0}.assistant.commentary{color:#5b6b82}.phase{font-size:10px;font-weight:500;letter-spacing:.12em;color:#8b98ad}
+.fold{margin:0;overflow:visible}.fold-head{min-height:0;align-items:center;gap:9px;padding:5px 8px;margin-left:-8px;border-radius:6px}
+.fold-head:hover{background:#f4f7fb}:root[data-theme="dark"] .fold-head:hover{background:var(--hover)}
+.chev{width:11px;height:11px;font-size:12px;color:#b3bdcd}.fold-title{font-size:13px;font-weight:600;line-height:20px;color:#16233a!important}
+:root[data-theme="dark"] .fold-title{color:var(--ink)!important}.fold-target{font:12.5px/20px var(--mono);color:#7b8aa0}.chips{gap:7px}
+.chip,.chip.ok{height:auto;padding:0;border:0;border-radius:0;background:transparent;color:#a3aebf;font:11.5px/20px var(--mono)}
+.chip.warn,.chip.fail{padding:0;border:0;border-radius:0;background:transparent}.chip.warn{color:#b07a12}.chip.fail{color:#c14545}
+.chip.add,.chip.del{padding:0;border:0;border-radius:0;background:transparent}.chip.add{color:#2f8f57}.chip.del{color:#c14545}
+.type-dot{display:none;width:6px;height:6px;border:0;margin:0}.fold:has(>.fold-head .chip.warn)>.fold-head .type-dot,.fold.activity>.fold-body>.fold:has(>.fold-head .chip.warn)>.fold-head .type-dot{display:block;background:#f0a12e;border:0}
+.fold:has(>.fold-head .chip.fail)>.fold-head .type-dot,.fold.activity>.fold-body>.fold:has(>.fold-head .chip.fail)>.fold-head .type-dot{display:block;background:#e05252;border:0}
+.fold.agent:has(>.fold-head .chip.ok)>.fold-head .type-dot{display:block;background:#22a05b}
+.fold-body,.fold.activity.open>.fold-body{margin:3px 0 6px 3px;padding:2px 0 4px 17px;border:0;border-left:1px solid #e9edf3;border-radius:0;background:transparent}
+:root[data-theme="dark"] .fold-body,:root[data-theme="dark"] .fold.activity.open>.fold-body{border-left-color:var(--line)}
+.fold.activity>.fold-body{display:flex;flex-direction:column;gap:4px}.fold.nested .fold-body{margin-left:3px}.fold.nested{margin-left:0}
+.fold.activity>.fold-body>.fold.nested>.fold-head .type-dot{left:-25px;background:var(--surface);border:1px solid var(--strong)}
+.thinking-copy{padding:2px 0 4px;font-size:13.5px;line-height:1.8;color:#5b6b82;text-wrap:pretty}
+.result{padding:2px 0;font:12.5px/1.7 var(--sans);color:#8b98ad}.agent-copy p{font-size:13.5px;line-height:1.8;color:#5b6b82}
+.terminal{border-radius:8px;background:#141a24;color:#c8d2e0;padding:10px 13px;font:12.5px/1.8 var(--mono)}
+.terminal .prompt{color:#6dd58c}.terminal .err{color:#f08a8a}.terminal .dim{color:#8b98ad}.progress{height:2px;margin:0;background:#26303f}.progress i{height:2px;background:#4b7bd8}
+.codebox{border:0;border-radius:8px;background:var(--surface);box-shadow:0 0 0 1px #ecf0f6}.codebar{height:34px;padding:0 10px;background:#fafbfd;border-color:#f0f3f8;color:#9aa8bd;font-size:11.5px}
+:root[data-theme="dark"] .codebox{box-shadow:0 0 0 1px var(--line)}:root[data-theme="dark"] .codebar{background:var(--panel);border-color:var(--line)}
+.lines{padding:7px 0;font-size:12.5px;line-height:1.85;color:#3c4a5e}:root[data-theme="dark"] .lines{color:var(--code-ink)}
+.line{grid-template-columns:38px 16px minmax(max-content,1fr)}.ln{padding-right:8px;color:#c2cad6}.line.add .codecell{background:#eef9f1;color:#3c4a5e}.line.del .codecell{background:#fdf0f0;color:#3c4a5e}
+:root[data-theme="dark"] .line.add .codecell{background:var(--success-soft);color:var(--code-ink)}:root[data-theme="dark"] .line.del .codecell{background:var(--danger-soft);color:var(--code-ink)}
+.more-lines{height:31px;background:#fafbfd;border-color:#f0f3f8;color:#a3aebf;font-size:11.5px}
+.queued{align-items:center;gap:10px;padding:9px 12px;border:0;border-radius:8px;background:#fdf7ec;color:#5b4a2a;font-size:13.5px}.queued b{font-size:10.5px;font-weight:500;letter-spacing:.12em;color:#b07a12}
+:root[data-theme="dark"] .queued{background:var(--warning-soft);color:#e4cfaa}
+.streaming-card{padding-top:6px}.streaming-card .phase{color:#8b98ad}.streaming-card .phase:before{content:"";display:inline-block;width:6px;height:6px;margin-right:8px;border-radius:50%;background:#356fe8;vertical-align:1px}.streaming-card .message{font-size:15px;line-height:1.85;color:#33415a}.cursor{background:#356fe8}
+.command{border:0;border-radius:8px;background:#f7f9fc;box-shadow:0 0 0 1px #ecf0f6}.command-head{padding:9px 12px}.command-badge{background:#edf3ff;color:#356fe8}.command-preview{color:#5b6b82}
+.attachment,.link-card{border:0;border-radius:8px;background:#fafbfd;box-shadow:0 0 0 1px #ecf0f6}.attachment{padding:11px 12px}.file-icon{border-radius:7px;background:#edf3ff;color:#356fe8}.attach-copy strong,.link-copy strong{color:#16233a}:root[data-theme="dark"] .attach-copy strong,:root[data-theme="dark"] .link-copy strong{color:var(--ink)}
+.plan-body,.compact-summary{border:0;border-radius:8px;background:#fafbfd;box-shadow:0 0 0 1px #ecf0f6;color:#5b6b82}
+.link-thumb{background:#edf3ff;color:#356fe8}.link-card:hover{border:0;box-shadow:0 0 0 1px #b9cdf7,0 8px 24px rgba(15,23,41,.06)}
+.approval{border:0;border-radius:8px;background:#fdf7ec;box-shadow:0 0 0 1px #f1e3c7}.approval-icon{border-radius:6px;background:#f7e8c8;color:#b07a12}.approval-copy strong{color:#5b4a2a}.approval-copy p{color:#806c46}
+.primary-btn{background:#16233a;color:#fff}.secondary-btn{background:#fff;border-color:#eadfca}.approval.resolved{background:#eef9f1;box-shadow:0 0 0 1px #dcefe2}
+.compaction{color:#a3aebf}.compaction:before,.compaction:after{background:#e9edf3}.compaction button{color:#8b98ad}
+.sample-activity{border-color:#e9edf3}.sample-turn+.sample-turn{border-color:#f0f3f8}.sample-speaker{color:#8b98ad}.sample-speaker i{background:#b3bdcd}
+.monitor-side,.monitor-workspace,.monitor-preview{background:var(--surface)}.monitor-side{background:#f7f9fc}.monitor-tree-row.selected,.monitor-nav button.on,.monitor-preview-head button.on{background:#e9eff9}
+.monitor-sessionbar,.monitor-preview-head,.monitor-preview-intro,.monitor-preview-section{border-color:#e9edf3}.monitor-preview-label,.monitor-tree-label{color:#8b98ad}
+.sample-mode .topbar{background:var(--surface)}
+
+/*
+  Portable process-variant contract
+  Host:  [data-process-variant="plain|surface"]
+  Group: [data-process-group="activity|execution|collaboration"]
+  The DOM and primitives stay identical; only semantic tokens change.
+*/
+.sample-canvas{
+  --process-group-bg:transparent;--process-group-outline:transparent;--process-group-radius:0;
+  --process-group-padding:14px 0;--process-content-bg:var(--surface);
+  --process-content-subtle:#fafbfd;--process-content-border:#ecf0f6;
+  --process-rail:#e9edf3;--process-control-bg:transparent;--process-control-border:var(--line);
+  --process-control-hover:var(--hover)
+}
+.sample-canvas[data-process-variant="surface"]{
+  --process-group-bg:#fbfcfd;--process-group-outline:rgba(15,23,41,.018);--process-group-radius:8px;
+  --process-group-padding:14px;--process-content-bg:#fff;--process-content-subtle:#fff;
+  --process-content-border:#edf0f3;--process-rail:#e7eaee;--process-control-bg:#fff;
+  --process-control-border:#eef1f4;--process-control-hover:#f2f4f7
+}
+:root[data-theme="dark"] .sample-canvas{
+  --process-content-subtle:var(--panel);--process-content-border:var(--line);--process-rail:var(--line)
+}
+:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"]{
+  --process-group-bg:#1a2029;--process-group-outline:rgba(214,226,244,.04);
+  --process-content-bg:#141a23;--process-content-subtle:#202731;--process-content-border:#303946;
+  --process-rail:#343e4b;--process-control-bg:#202731;--process-control-border:#343e4b;
+  --process-control-hover:#29323e
+}
+/* Sample hierarchy cleanup: component semantics carry the timeline without repeated section labels. */
+.sample-turn{padding:14px 0}.sample-turn+.sample-turn{border-top:0}.sample-activity{margin:0;padding-left:0;border-left:0}
+.sample-speaker{display:none}
+.sample-turn.process-turn{padding:var(--process-group-padding);border-radius:var(--process-group-radius);background:var(--process-group-bg);box-shadow:inset 0 0 0 1px var(--process-group-outline);transition:background .18s ease,box-shadow .18s ease,padding .18s ease}
+/* Nested content remains a separate, quieter layer when the group has a surface. */
+.sample-turn.process-turn .fold-body{border-left-color:var(--process-rail)}
+.sample-turn.process-turn .codebox{background:var(--process-content-bg);box-shadow:0 0 0 1px var(--process-content-border)}
+.sample-turn.process-turn .codebar,.sample-turn.process-turn .more-lines{background:var(--process-content-subtle);border-color:var(--process-content-border)}
+.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .terminal{box-shadow:0 0 0 1px var(--process-content-border)}
+.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .fold-head:hover{background:rgba(15,23,41,.035)}
+.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .tiny,.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .code-action{background:var(--process-control-bg);border-color:var(--process-control-border);color:#667085}
+.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .tiny:hover,.sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .code-action:hover{background:var(--process-control-hover);color:#344054}
+:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .fold-head:hover{background:rgba(255,255,255,.035)}
+:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .tiny,:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .code-action{color:#aab7c9}
+:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .tiny:hover,:root[data-theme="dark"] .sample-canvas[data-process-variant="surface"] .sample-turn.process-turn .code-action:hover{color:#e7edf7}
+/* Light mode treats shell output as another white content surface; dark mode keeps the terminal. */
+:root:not([data-theme="dark"]) .terminal{background:#fff;color:#3c4a5e;box-shadow:0 0 0 1px #edf0f3}
+:root:not([data-theme="dark"]) .terminal .prompt{color:#2f8f57}:root:not([data-theme="dark"]) .terminal .err{color:#c14545}:root:not([data-theme="dark"]) .terminal .dim{color:#8b98ad}
+/* Transcript density pass: one clean metadata column and fewer status decorations. */
+.fold-head{display:grid;grid-template-columns:11px max-content minmax(0,1fr) 108px;column-gap:9px;align-items:center}
+.fold-target{width:auto}.chips{width:auto;min-width:0;justify-content:flex-end;gap:6px}.chip{white-space:nowrap}
+.fold-head .chip.warn{color:#7b8aa0}.fold-head .chip.warn:before{background:#7896c8}
+.fold-head .chip.fail:before,.fold.agent>.fold-head .chip.ok:before{content:none}.fold.agent>.fold-head .chip.ok{color:#8b98ad}
+.assistant.commentary,.assistant.commentary .message{color:#7b8798}.assistant.commentary .phase{color:#9aa5b5}
+.queued{gap:12px;padding:9px 12px;background:#f6f8fd;color:#5d6b80;box-shadow:inset 0 0 0 1px rgba(53,111,232,.045)}
+.queued b{min-width:56px;color:#5f7fbf}.queued b:before{content:none}
+:root[data-theme="dark"] .queued{background:#1b273c;color:#b8c4d8;box-shadow:inset 0 0 0 1px rgba(142,176,255,.08)}
+/* User uploads sit beside the prompt as consistent attachments, never inside its text bubble. */
+.user-upload-shell{width:min(88%,690px);display:flex;flex-direction:column;align-items:flex-end}.user-upload-shell .user-bubble{max-width:100%;width:fit-content}
+.user-uploads{display:flex;justify-content:flex-end;gap:6px;margin-top:6px;max-width:100%;flex-wrap:wrap}
+.user-upload{width:92px;padding:4px;border:1px solid #edf0f3;border-radius:8px;background:#fff;text-align:left;cursor:zoom-in;box-shadow:0 1px 2px rgba(15,23,41,.025)}
+.user-upload:hover{border-color:#d9e2f0;background:#fcfdff}.upload-preview{display:block;height:48px;border-radius:5px;background:linear-gradient(145deg,#f1f4fa,#f8fafc);position:relative;overflow:hidden}
+.upload-preview:before{content:"";position:absolute;inset:9px;background:#fff;border:1px solid #e8edf4;border-radius:4px}.upload-preview:after{content:"";position:absolute;left:18px;right:18px;top:18px;height:3px;border-radius:3px;background:#8ea9df;box-shadow:0 9px 0 #e2e7ef,0 17px 0 #e8ecf2}
+.upload-name{display:block;padding:4px 2px 1px;color:#667085;font:9px/1.2 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root[data-theme="dark"] .user-upload{background:var(--surface);border-color:var(--line)}:root[data-theme="dark"] .upload-preview{background:#202838}:root[data-theme="dark"] .upload-preview:before{background:#171e2a;border-color:#303a49}
+/* Permission is an action row, not a warning alert. */
+.approval{display:block;padding:13px 14px;border:0;border-radius:8px;background:#fbfcfe;box-shadow:0 0 0 1px #e9edf3}
+.approval-icon{display:none}.approval-copy{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:6px;align-items:center}.approval-copy strong{grid-column:1;color:#26354d;font-size:13px}.approval-copy p{grid-column:1;margin:3px 16px 0 0;color:#738096;font-size:11.5px}
+.approval-copy .primary-btn{grid-column:2;grid-row:1/3;align-self:center;background:#356fe8;color:#fff}.approval-copy .secondary-btn{grid-column:3;grid-row:1/3;align-self:center;margin:0;background:#fff;border-color:#e5eaf1;color:#667085}
+.approval.resolved{background:#fbfdfc;box-shadow:inset 2px 0 0 #8fc9a8,0 0 0 1px #e7eee9}.approval.resolved .approval-copy strong{color:#397356}
+@media(max-width:620px){.approval-copy{display:block}.approval-copy p{margin-bottom:10px}.approval-copy .secondary-btn{margin-left:4px}.user-upload-shell{width:94%}.user-upload{width:84px}}
+/* A drawn chevron avoids font-baseline drift across browsers and weights. */
+.chev{position:relative;display:grid;place-items:center;width:11px;height:20px;font-size:0;line-height:0;transform:none!important}
+.chev:before{content:"";width:5px;height:5px;border-right:1.5px solid #a6b2c4;border-bottom:1.5px solid #a6b2c4;transform:rotate(-45deg);transition:transform .18s cubic-bezier(.4,0,.2,1)}
+.fold.open>.fold-head .chev:before,.command.open .chev:before{transform:rotate(45deg)}
+/* Status belongs with its label, not as a detached dot in the title rail. */
+.type-dot{display:none!important}.fold-head .chip.warn:before,.fold-head .chip.fail:before,.fold.agent>.fold-head .chip.ok:before{content:"";display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;vertical-align:1px}
+.fold-head .chip.warn:before{background:#d9982f}.fold-head .chip.fail:before{background:#d96363}.fold.agent>.fold-head .chip.ok:before{background:#43a86c}
+/* Running is already explicit in the row; a large animated bar overstates ordinary progress. */
+.progress{display:none}
+/* Queued input is informational in the monitor, so it uses the restrained product blue. */
+.queued{background:#edf3ff;color:#415b82}.queued b{color:#356fe8}.queued b:before{content:"";display:inline-block;width:5px;height:5px;margin-right:7px;border-radius:50%;background:#6f95e8;vertical-align:1px}
+:root[data-theme="dark"] .queued{background:#1d2b48;color:#b8c9e8}:root[data-theme="dark"] .queued b{color:#8eb0ff}
+
+/* Final status policy: active gets one quiet blue dot; terminal states use text only. */
+.fold-head .chip.warn{color:#7b8aa0}.fold-head .chip.warn:before{background:#7896c8!important}
+.fold-head .chip.fail:before,.fold.agent>.fold-head .chip.ok:before{display:none!important}.fold.agent>.fold-head .chip.ok{color:#8b98ad}
+.queued{gap:12px;padding:9px 12px;background:#f6f8fd;color:#5d6b80;box-shadow:inset 0 0 0 1px rgba(53,111,232,.045)}
+.queued b{min-width:56px;color:#5f7fbf}.queued b:before{display:none!important}
+:root[data-theme="dark"] .queued{background:#1b273c;color:#b8c4d8;box-shadow:inset 0 0 0 1px rgba(142,176,255,.08)}:root[data-theme="dark"] .queued b{color:#8eb0ff}
+
+@media(max-width:760px){.user-shell{max-width:92%}.user-hover-actions{right:6px;top:6px}.user-shell .user-bubble{padding-right:76px}}
+@media(hover:none){.user-hover-actions{opacity:.72;pointer-events:auto;transform:none}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+.process-commentary-lab{position:relative;margin:2px 0 5px;padding:4px 3px 7px 23px;color:var(--sub)}.process-commentary-lab:before{content:"";position:absolute;left:3px;top:13px;width:6px;height:6px;border-radius:50%;background:color-mix(in srgb,var(--primary) 44%,var(--faint));box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 7%,transparent)}.process-commentary-lab .phase{margin-bottom:3px}.process-commentary-lab .message{font-size:13.5px;line-height:1.75;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+  <div class="brand"><div class="kicker">Design system / v0.1</div><h1>Transcript Lab</h1><p>语义组件、内容格式与交互状态的迁移基准。</p></div>
+  <nav>
+    <div class="nav-group"><div class="nav-label">Conversation</div><a class="nav-link active" href="#conversation"><i></i>消息与回复<small>4</small></a><a class="nav-link" href="#thinking"><i></i>思考与活动<small>3</small></a></div>
+    <div class="nav-group"><div class="nav-label">Execution</div><a class="nav-link" href="#tools"><i></i>工具与结果<small>6</small></a><a class="nav-link" href="#agents"><i></i>Agent 与任务<small>3</small></a></div>
+    <div class="nav-group"><div class="nav-label">Artifacts</div><a class="nav-link" href="#attachments"><i></i>附件与媒体<small>4</small></a><a class="nav-link" href="#system"><i></i>系统与中断<small>3</small></a></div>
+  </nav>
+  <div class="nav-foot">每个案例都有稳定组件名。迁移时按组件逐项替换，不复制整张实验页。</div>
+</aside>
+<main class="main">
+<header class="topbar"><span class="top-title">Transcript components</span><span class="top-sub">interactive reference</span><div class="page-switch" role="tablist" aria-label="Lab pages"><button class="page-btn active" id="libraryPageBtn" role="tab" aria-selected="true">Components</button><button class="page-btn" id="samplePageBtn" role="tab" aria-selected="false">Full sample</button></div><div class="process-switch" role="group" aria-label="Process background"><span class="process-label">Process</span><button class="process-btn active" id="processPlainBtn" aria-pressed="true">Plain</button><button class="process-btn" id="processSurfaceBtn" aria-pressed="false">Surface</button></div><span class="spacer"></span><button class="control" id="densityBtn">Compact</button><button class="control" id="foldBtn">Collapse all</button><button class="control" id="themeBtn">◐ Theme</button></header>
+<div class="canvas" id="libraryView" data-page-view="library">
+<section class="intro"><div><div class="kicker">Component migration surface</div><h2>先把对话的语言设计好，再把它装进产品。</h2><p>这里不模拟完整 Monitor。它只回答三件事：一条记录是什么、内部内容怎样排版、用户可以怎样操作。所有案例复用同一组 token 和基础折叠结构，后续可分别迁移到 HTML demo 与共享 renderer。</p></div><div class="principles"><div><b>01</b><span>语义先于工具名称</span></div><div><b>02</b><span>折叠层级最多清晰到三层</span></div><div><b>03</b><span>颜色只辅助，不独自表达状态</span></div></div></section>
+
+<section class="family" id="conversation">
+  <div class="family-head"><span class="family-num">01</span><div><h2>消息与回复</h2><p>用户输入与 Final 构成阅读主线；中间进度归入同一 Agent process。</p></div><span class="family-count">4 COMPONENTS</span></div>
+  <article class="specimen" data-contract="user" data-layer="semantic + markdown/raw" data-interaction="hover / focus 显示原文与复制图标；图片进入附件流">
+    <div class="spec-meta"><span class="spec-name">User message</span><span class="contract">renderer: user</span><span class="scenario">rendered / raw</span></div>
+    <div class="stage narrow"><div class="turn user-row"><div class="user-shell"><div class="user-bubble" data-raw-card><div class="rendered">把 Agent 的思考和工具调用放在同一组里，但不要让三级嵌套看起来像三层卡片。路径 <span class="md-code">design/transcript.md</span> 应该可以直接定位。</div><pre class="raw-source">把 Agent 的思考和工具调用放在同一组里，
+但不要让三级嵌套看起来像三层卡片。
+路径 design/transcript.md 应该可以直接定位。</pre></div><div class="user-hover-actions" aria-label="消息操作"><button class="bubble-action" data-raw-toggle title="查看原文" aria-label="查看原文"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 5-3 5 3 5M13 5l3 5-3 5M11.5 3 8.5 17"/></svg></button><button class="bubble-action" data-copy title="复制" aria-label="复制"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 0 1 1-1h9v1"/></svg></button></div><div class="user-meta"><span>YOU</span><span>10:42</span></div></div></div></div>
+    <p class="hint">用户输入靠右；只有内容本身成气泡，时间和原文操作保持安静。</p>
+  </article>
+  <article class="specimen" data-contract="assistant phase" data-layer="turn + process + markdown" data-interaction="final 前的 commentary / thinking / tools 共用一个可折叠 process surface">
+    <div class="spec-meta"><span class="spec-name">Agent process → Final answer</span><span class="contract">renderer: assistant phase</span><span class="scenario">one process per turn</span></div>
+    <div class="stage narrow"><div class="fold activity open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Agent process</span><span class="fold-target">Progress · Thinking · Bash</span><span class="chips"><span class="chip ok">3 events</span></span></button><div class="fold-body"><div class="process-commentary-lab"><span class="phase">Progress</span><div class="message"><p>我先把层级收敛为 Activity → Tool → Result，避免每一层都重复边框。</p></div></div><div class="fold thinking nested" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Thinking</span><span class="fold-target">确认分组边界与 fallback</span><span class="chips"><span class="chip">12s</span></span></button><div class="fold-body"><div class="thinking-copy">Final 之前的执行信息属于同一个工作跨度。</div></div></div><div class="fold bash nested" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Bash</span><span class="fold-target">npm run visual-check</span><span class="chips"><span class="chip ok">exit 0</span></span></button><div class="fold-body"><div class="terminal"><span class="prompt">$</span> npm run visual-check<br><span class="dim">✓ layout stable</span></div></div></div></div></div><div class="turn assistant"><span class="phase">Final answer</span><div class="message"><p>最终方案保留三层信息，但只使用一个外层容器。内部工具以细线和缩进建立关系，结果贴着对应工具出现。</p><p>这样既能看出执行路径，也不会形成“卡片套卡片”的视觉噪音。</p></div></div></div>
+  </article>
+  <article class="specimen" data-contract="queue" data-layer="semantic + markdown" data-interaction="只表达已经排队；无折叠、无 Turn 导航">
+    <div class="spec-meta"><span class="spec-name">Queued prompt</span><span class="contract">renderer: queue</span><span class="scenario">in-flight</span></div><div class="stage narrow"><div class="queued"><b>QUEUED</b><span>测试完成后，再把 Diff 的长行切换为横向滚动。</span></div></div>
+  </article>
+  <article class="specimen" data-contract="command" data-layer="semantic + markdown/output" data-interaction="作为用户发起的特殊 Turn；默认折叠">
+    <div class="spec-meta"><span class="spec-name">Slash command</span><span class="contract">renderer: command</span><span class="scenario">collapsed → output</span></div><div class="stage narrow"><div class="command" data-command><div class="command-head" data-command-toggle><span class="chev">›</span><span class="command-badge">/review</span><span class="command-preview">检查当前改动的可访问性与交互一致性</span><span class="chip">2 lines</span></div><div class="command-body"><div class="message"><p>重点检查键盘操作与折叠层级。</p></div><div class="result">⎿ Review prepared · 6 findings</div></div></div></div>
+  </article>
+</section>
+
+<section class="family" id="thinking">
+  <div class="family-head"><span class="family-num">02</span><div><h2>思考与活动</h2><p>思考是弱内容，Activity 是执行容器；嵌套关系用轨道而不是重复卡片表达。</p></div><span class="family-count">3 COMPONENTS</span></div>
+  <article class="specimen" data-contract="think" data-layer="semantic + markdown" data-interaction="默认折叠；摘要说明思考主题和耗时">
+    <div class="spec-meta"><span class="spec-name">Thinking</span><span class="contract">renderer: think</span><span class="scenario">quiet fold</span></div><div class="stage"><div class="fold thinking" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Thinking</span><span class="fold-target">比较三种层级表达，优先减少容器噪音</span><span class="chips"><span class="chip">18s</span></span></button><div class="fold-body"><div class="thinking-copy">三级执行结构是必要信息，但三级视觉容器不是。使用轨道、缩进和类型色即可保留父子关系。</div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="act" data-layer="container + nested blocks" data-interaction="外层控制整段活动；每个工具仍可独立展开">
+    <div class="spec-meta"><span class="spec-name">Activity group</span><span class="contract">renderer: act</span><span class="scenario">3-level nesting</span></div>
+    <div class="stage"><div class="fold activity open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Activity</span><span class="fold-target">检查 renderer 类型并验证视觉层级</span><span class="chips"><span class="chip ok">3 completed</span><span class="chip">24s</span></span></button><div class="fold-body">
+      <div class="thinking-copy">先确认现有类型，再用最少的组件覆盖相同语义。</div>
+      <div class="fold read nested open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Read</span><span class="fold-target">claude-replay-html/src/html/export.js</span><span class="chips"><span class="chip">3271 lines</span></span></button><div class="fold-body"><div class="result">⎿ Located renderBlock(), attachment handling and nested block recursion.</div></div></div>
+      <div class="fold agent nested open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Agent</span><span class="fold-target">interaction-audit · inspect three-level folding</span><span class="chips"><span class="chip ok">completed</span></span></button><div class="fold-body"><div class="agent-result"><span class="agent-line"><i></i></span><div class="agent-copy"><strong>interaction-audit</strong><p>父 Activity 使用一个边框，内部工具只保留缩进轨道。</p></div></div><div class="fold bash nested" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Bash</span><span class="fold-target">npm run visual-check</span><span class="chips"><span class="chip ok">exit 0</span></span></button><div class="fold-body"><div class="terminal"><span class="prompt">$</span> npm run visual-check
+<span class="dim">✓ 16 components · no overflow</span></div></div></div></div></div>
+    </div></div></div>
+    <p class="hint">第 1 层 Activity 有容器；第 2 层工具只用轨道；第 3 层结果贴附工具，不再新增大卡片。</p>
+  </article>
+  <article class="specimen" data-contract="assistant phase" data-layer="streaming state" data-interaction="生成中保留正文位置；完成时无跳变">
+    <div class="spec-meta"><span class="spec-name">Streaming prose</span><span class="contract future">proposed state</span><span class="scenario">live tail</span></div><div class="stage narrow"><div class="turn assistant commentary"><span class="phase">Generating · 11s</span><div class="message"><p>正在合并视觉 token，并检查嵌套折叠的键盘路径 ▍</p></div><div class="progress"><i></i></div></div></div>
+  </article>
+</section>
+
+<section class="family" id="tools">
+  <div class="family-head"><span class="family-num">03</span><div><h2>工具与结果</h2><p>共享一个 Fold 骨架；类型色、状态 chip 和内容格式负责区别。</p></div><span class="family-count">6 COMPONENTS</span></div>
+  <article class="specimen" data-contract="bash" data-layer="tool + plain output" data-interaction="运行中、成功、失败共用结构；状态永远有文字">
+    <div class="spec-meta"><span class="spec-name">Bash</span><span class="contract">renderer: bash</span><span class="scenario">running + failed</span></div><div class="stage">
+      <div class="fold bash open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Bash</span><span class="fold-target">cargo test -p claude-replay-html</span><span class="chips"><span class="chip warn">running · 42s</span></span></button><div class="fold-body"><div class="terminal"><span class="prompt">$</span> cargo test -p claude-replay-html
+<span class="dim">running 184 tests</span>
+test html_export::diff_rows ... ok</div><div class="progress"><i></i></div></div></div>
+      <div class="fold bash open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Bash</span><span class="fold-target">npm run lint</span><span class="chips"><span class="chip fail">exit 1</span></span></button><div class="fold-body"><div class="terminal"><span class="prompt">$</span> npm run lint
+<span class="err">error  button must have an accessible name</span>
+<span class="dim">src/components/ToolFold.tsx:84:7</span></div></div></div>
+    </div>
+  </article>
+  <article class="specimen" data-contract="read" data-layer="tool + numbered code" data-interaction="路径动作与折叠动作分离；代码可换行和复制">
+    <div class="spec-meta"><span class="spec-name">Read / numbered code</span><span class="contract">renderer: read</span><span class="scenario">path + controls</span></div><div class="stage"><div class="fold read open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Read</span><span class="fold-target">design/agent-states.md</span><span class="chips"><span class="chip">256 lines</span></span></button><div class="fold-body"><div class="codebox"><div class="codebar"><span class="filename">agent-states.md</span><span class="spacer"></span><button class="code-action" data-wrap title="关闭自动换行" aria-label="关闭自动换行" aria-pressed="true"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M3.5 9.5h9a3 3 0 0 1 0 6H9.5"/><path d="m11.5 13.5-2 2 2 2"/></svg></button><button class="code-action" data-copy title="复制代码" aria-label="复制代码"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 0 1 1-1h9v1"/></svg></button></div><div class="lines wrap"><div class="line"><span class="ln">18</span><span class="mark"></span><span class="codecell">| State | Meaning | Reader's action |</span></div><div class="line"><span class="ln">19</span><span class="mark"></span><span class="codecell">| busy  | More progress is coming without attention. |</span></div><div class="line"><span class="ln">20</span><span class="mark"></span><span class="codecell">| wait  | A simple user action resumes progress. |</span></div><div class="line"><span class="ln">21</span><span class="mark"></span><span class="codecell">| idle  | Read the context and decide what happens next. |</span></div></div></div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="edit" data-layer="tool + diff" data-interaction="增删摘要常驻；长 Diff 分段展开；代码列着色">
+    <div class="spec-meta"><span class="spec-name">Edit / Diff</span><span class="contract">renderer: edit</span><span class="scenario">long tail</span></div><div class="stage"><div class="fold edit open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Edit</span><span class="fold-target">src/components/ActivityFold.tsx</span><span class="chips"><span class="chip add">+12</span><span class="chip del">−7</span></span></button><div class="fold-body"><div class="codebox"><div class="codebar"><span class="filename">ActivityFold.tsx</span><span class="spacer"></span><button class="code-action" data-wrap title="关闭自动换行" aria-label="关闭自动换行" aria-pressed="true"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M3.5 9.5h9a3 3 0 0 1 0 6H9.5"/><path d="m11.5 13.5-2 2 2 2"/></svg></button><button class="code-action" data-copy title="复制代码" aria-label="复制代码"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 0 1 1-1h9v1"/></svg></button></div><div class="lines wrap"><div class="line"><span class="ln">41</span><span class="mark"></span><span class="codecell">return (</span></div><div class="line del"><span class="ln">42</span><span class="mark">−</span><span class="codecell">  &lt;Card&gt;&lt;Card&gt;&lt;ToolCall /&gt;&lt;/Card&gt;&lt;/Card&gt;</span></div><div class="line add"><span class="ln">42</span><span class="mark">+</span><span class="codecell">  &lt;ActivityRail depth={depth}&gt;</span></div><div class="line add"><span class="ln">43</span><span class="mark">+</span><span class="codecell">    &lt;ToolCall compact /&gt;</span></div><div class="hidden-lines"><div class="line add"><span class="ln">44</span><span class="mark">+</span><span class="codecell">  &lt;/ActivityRail&gt;</span></div><div class="line"><span class="ln">45</span><span class="mark"></span><span class="codecell">);</span></div></div></div><button class="more-lines" data-more-lines>⋯ 2 more lines · to line 45</button></div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="write" data-layer="tool + numbered code or diff" data-interaction="新建显示完整内容；覆盖复用 Diff">
+    <div class="spec-meta"><span class="spec-name">Write new file</span><span class="contract">renderer: write</span><span class="scenario">new artifact</span></div><div class="stage"><div class="fold write" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Write</span><span class="fold-target">design/transcript-component-lab.html</span><span class="chips"><span class="chip add">842 lines</span><span class="chip ok">created</span></span></button><div class="fold-body"><div class="result">⎿ Wrote a standalone component reference with portable CSS and JS.</div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="skill + tool" data-layer="tool + markdown/output" data-interaction="Skill 使用独特色；未知工具降级到通用 Fold">
+    <div class="spec-meta"><span class="spec-name">Skill and generic tool</span><span class="contract">renderer: skill/tool</span><span class="scenario">known + fallback</span></div><div class="stage"><div class="fold skill" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Skill</span><span class="fold-target">browser · local visual QA</span><span class="chips"><span class="chip ok">loaded</span></span></button><div class="fold-body"><div class="result">⎿ Browser testing instructions loaded.</div></div></div><div class="fold tool" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">MCP · design/tokens</span><span class="fold-target">export semantic color map</span><span class="chips"><span class="chip">14 rows</span></span></button><div class="fold-body"><div class="result">⎿ success, warning, danger and informational roles exported.</div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="tool result" data-layer="plain output" data-interaction="没有对应调用时仍能独立阅读">
+    <div class="spec-meta"><span class="spec-name">Orphan tool result</span><span class="contract">renderer: tool result</span><span class="scenario">fallback</span></div><div class="stage"><div class="fold tool" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Result</span><span class="fold-target">The originating tool call is unavailable</span><span class="chips"><span class="chip warn">unpaired</span></span></button><div class="fold-body"><div class="result">⎿ The operation completed before this replay segment began.</div></div></div></div>
+  </article>
+</section>
+
+<section class="family" id="agents">
+  <div class="family-head"><span class="family-num">04</span><div><h2>Agent 与任务</h2><p>启动和完成是同一对象的两个事件；层级、状态与跳转同时可见。</p></div><span class="family-count">3 COMPONENTS</span></div>
+  <article class="specimen" data-contract="agent" data-layer="semantic + nested transcript link" data-interaction="展开任务描述；进入子 Transcript；新标签打开">
+    <div class="spec-meta"><span class="spec-name">Sub-agent lifecycle</span><span class="contract">renderer: agent</span><span class="scenario">running → completed</span></div><div class="stage"><div class="fold agent open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Agent</span><span class="fold-target">visual-audit · inspect spacing and fold hierarchy</span><span class="chips"><span class="chip warn">running</span><span class="chip">2m 14s</span></span></button><div class="fold-body"><div class="agent-result"><span class="agent-line"><i></i></span><div class="agent-copy"><strong>visual-audit</strong><p>正在检查桌面宽度、移动端和暗色主题。</p><div class="inline-actions"><button class="tiny" data-toast="打开子 Agent Transcript">Open transcript ↗</button><button class="tiny" data-toast="已复制 Agent ID">Copy ID</button></div></div></div></div></div><div class="fold agent" data-fold><button class="fold-head" data-fold-toggle aria-expanded="false"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Agent</span><span class="fold-target">interaction-audit · keyboard and focus review</span><span class="chips"><span class="chip ok">completed</span></span></button><div class="fold-body"><div class="result">⎿ All fold headers are keyboard reachable; focus remains on the toggled header.</div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="tasks metadata" data-layer="session-side panel" data-interaction="状态分组；运行任务自动居中；点击展开详情">
+    <div class="spec-meta"><span class="spec-name">Task summary</span><span class="contract">renderer: tasks</span><span class="scenario">compact entry</span></div><div class="stage"><div class="attachment"><span class="file-icon">3/5</span><div class="attach-copy"><strong>Session tasks</strong><small>2 running · 1 pending · 2 completed</small></div><div class="attach-actions"><button class="tiny" data-toast="任务面板已打开">Open tasks</button></div></div></div>
+  </article>
+  <article class="specimen" data-contract="agent error" data-layer="semantic + result" data-interaction="错误不只靠红色；保留重试和来源跳转">
+    <div class="spec-meta"><span class="spec-name">Agent failed</span><span class="contract future">proposed variant</span><span class="scenario">recoverable</span></div><div class="stage"><div class="fold agent open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Agent</span><span class="fold-target">browser-qa · connection closed before report</span><span class="chips"><span class="chip fail">failed</span></span></button><div class="fold-body"><div class="result">The child stopped without a final result. Completed checks remain available.</div><div class="inline-actions"><button class="tiny" data-toast="重试为交互原型">Retry</button><button class="tiny" data-toast="打开最后一条记录">Last event</button></div></div></div></div>
+  </article>
+</section>
+
+<section class="family" id="attachments">
+  <div class="family-head"><span class="family-num">05</span><div><h2>附件与媒体</h2><p>文件是可操作对象；图片优先预览；链接卡片是建议新增的数据类型。</p></div><span class="family-count">4 COMPONENTS</span></div>
+  <article class="specimen" data-contract="attachment:file" data-layer="attachment" data-interaction="下载、Finder 定位、进入右侧预览">
+    <div class="spec-meta"><span class="spec-name">File attachment</span><span class="contract">renderer: attachment</span><span class="scenario">text file</span></div><div class="stage"><div class="attachment"><span class="file-icon">MD</span><div class="attach-copy"><strong>agent-states.md</strong><small>Markdown · 12.4 KB · transcript snapshot</small></div><div class="attach-actions"><button class="iconbtn" data-toast="在右侧预览文件">◫</button><button class="iconbtn" data-toast="在 Finder 中显示">⌖</button><button class="iconbtn" data-toast="开始下载">↓</button></div></div></div>
+  </article>
+  <article class="specimen" data-contract="attachment:image" data-layer="attachment + image grid" data-interaction="单图/多图布局；灯箱；右侧预览；下载">
+    <div class="spec-meta"><span class="spec-name">User image attachments</span><span class="contract">renderer: image</span><span class="scenario">3 images · consistent tiles</span></div><div class="stage narrow"><div class="turn user-row"><div class="user-upload-shell"><div class="user-bubble"><div>这三个尺寸下的折叠层级看起来一致吗？</div></div><div class="user-uploads" aria-label="3 个图片附件"><button class="user-upload" data-lightbox aria-label="打开桌面截图"><span class="upload-preview"></span><span class="upload-name">desktop.png</span></button><button class="user-upload" data-lightbox aria-label="打开平板截图"><span class="upload-preview"></span><span class="upload-name">tablet.png</span></button><button class="user-upload" data-lightbox aria-label="打开移动端截图"><span class="upload-preview"></span><span class="upload-name">mobile.png</span></button></div><div class="user-meta"><span>3 attachments</span><span>11:08</span></div></div></div></div>
+  </article>
+  <article class="specimen" data-contract="attachment:plan" data-layer="attachment + expandable text" data-interaction="正文就地展开；同时可进入完整预览">
+    <div class="spec-meta"><span class="spec-name">Plan attachment</span><span class="contract">renderer: plan</span><span class="scenario">expand inline</span></div><div class="stage"><div class="attachment"><span class="file-icon">PLAN</span><div class="attach-copy"><strong>Transcript renderer redesign</strong><small>5 steps · updated just now</small></div><div class="attach-actions"><button class="tiny" data-plan-toggle>View plan</button></div></div><div class="plan-body" data-plan-body><ol><li>Freeze semantic component names.</li><li>Review interaction states in this lab.</li><li>Port tokens and primitives into the HTML demo.</li><li>Map renderer records to the same primitives.</li><li>Run accessibility and visual gates.</li></ol></div></div>
+  </article>
+  <article class="specimen" data-contract="link" data-layer="structured link metadata" data-interaction="预览信息、复制地址、外部打开；不猜测不可信 URL">
+    <div class="spec-meta"><span class="spec-name">Rich link</span><span class="contract future">proposed type</span><span class="scenario">verified local link</span></div><div class="stage"><a class="link-card" href="#" data-link-card><span class="link-thumb">AM</span><span class="link-copy"><strong>Agent Monitor preview</strong><span>本机 Session 状态与 Transcript 组件预览</span><small>127.0.0.1:2727 · verified local</small></span><span class="external">↗</span></a></div><p class="hint">普通 Markdown 链接仍保持行内；只有明确带元数据的链接才升级为卡片。</p>
+  </article>
+</section>
+
+<section class="family" id="system">
+  <div class="family-head"><span class="family-num">06</span><div><h2>系统与中断</h2><p>它们改变阅读节奏，但不应该伪装成用户或 Assistant 消息。</p></div><span class="family-count">3 COMPONENTS</span></div>
+  <article class="specimen" data-contract="compaction" data-layer="epoch divider + markdown summary" data-interaction="轻量分隔；摘要按需展开">
+    <div class="spec-meta"><span class="spec-name">Context compaction</span><span class="contract">renderer: compaction</span><span class="scenario">epoch seam</span></div><div class="stage narrow"><div class="compaction"><button data-compaction-toggle>Context compacted · 148K → 31K tokens · view summary</button></div><div class="compact-summary" data-compaction-body>保留了组件分类、三层折叠原则、迁移约束以及尚未决定的 Link 与 Approval 类型。</div></div>
+  </article>
+  <article class="specimen" data-contract="interactive tool" data-layer="wait state + action" data-interaction="一个明确动作恢复进度；确认后原位变成已解决状态">
+    <div class="spec-meta"><span class="spec-name">Permission / approval</span><span class="contract future">proposed renderer</span><span class="scenario">wait → resolved</span></div><div class="stage"><div class="approval" data-approval><span class="approval-icon">!</span><div class="approval-copy"><strong data-approval-title>需要允许本地浏览器检查</strong><p data-approval-copy>将打开本地 HTML 并读取页面可见结构，不会提交外部数据。</p><button class="primary-btn" data-approve>允许并继续</button><button class="secondary-btn" data-deny>暂不</button></div></div></div>
+  </article>
+  <article class="specimen" data-contract="error state" data-layer="tool result + recovery" data-interaction="错误摘要常驻；诊断详情折叠；恢复动作就近">
+    <div class="spec-meta"><span class="spec-name">Recoverable error</span><span class="contract future">proposed variant</span><span class="scenario">failure + recovery</span></div><div class="stage"><div class="fold tool open" data-fold><button class="fold-head" data-fold-toggle aria-expanded="true"><span class="chev">›</span><span class="type-dot"></span><span class="fold-title">Browser</span><span class="fold-target">Could not connect to the selected tab</span><span class="chips"><span class="chip fail">connection lost</span></span></button><div class="fold-body"><div class="result">The local page is still available. Reconnect to continue visual QA without restarting the task.</div><div class="inline-actions"><button class="tiny" data-toast="正在重新连接">Reconnect</button><button class="tiny" data-toast="诊断信息已复制">Copy diagnostics</button></div></div></div></div>
+  </article>
+</section>
+</div>
+<div class="canvas sample-canvas" id="sampleView" data-page-view="sample" data-process-variant="plain" hidden>
+  <section class="monitor-sample" aria-label="Agent Monitor 完整样例">
+    <aside class="monitor-side">
+      <div class="monitor-brand"><span class="monitor-dots"><i></i><i></i><i></i></span><strong>Agent Monitor</strong><small>LOCAL</small></div>
+      <div class="monitor-nav"><button class="on">Sessions <span>9</span></button><button>Needs attention <span>3</span></button></div>
+      <div class="monitor-tree-label">Local agents</div>
+      <div class="monitor-tree">
+        <div class="monitor-tree-row agent">⌄ Claude Code <span class="age">3</span></div>
+        <div class="monitor-tree-row project">⌄ claude-replay</div>
+        <div class="monitor-tree-row session selected"><span class="state busy"></span>重构 Transcript renderer <span class="age">刚刚</span></div>
+        <div class="monitor-tree-row session"><span class="state"></span>验证 release gate <span class="age">2m</span></div>
+        <div class="monitor-tree-row session"><span class="state"></span>整理导出文档 <span class="age">昨天</span></div>
+        <div class="monitor-tree-row agent">› Codex <span class="age">2</span></div>
+        <div class="monitor-tree-row agent">› QoderWork <span class="age">1</span></div>
+      </div>
+      <div class="monitor-side-foot" id="sampleTaskSlot"></div>
+    </aside>
+    <section class="monitor-workspace">
+      <header class="monitor-sessionbar"><div class="monitor-session-title"><strong>重构 Transcript renderer</strong><small>Claude Code · claude-replay</small></div><span class="monitor-status"><i></i>工作中 · 正在运行视觉检查</span></header>
+      <div class="monitor-transcript"><div class="sample-stream" id="sampleStream"></div></div>
+    </section>
+    <aside class="monitor-preview">
+      <header class="monitor-preview-head"><button class="on">Artifacts</button><button>Session info</button></header>
+      <div class="monitor-preview-body">
+        <div class="monitor-preview-intro"><div class="kicker">Session context</div><h3>会话产物</h3><p>文件、图片、计划和链接从 Transcript 汇总到这里。</p></div>
+        <div id="sampleArtifactStream"></div>
+      </div>
+    </aside>
+  </section>
+</div>
+</main>
+<aside class="inspector">
+  <h2>Migration inspector</h2>
+  <div class="inspect-card"><div class="inspect-label">Selected specimen</div><div class="inspect-value" id="inspectName"><strong>User message</strong><br>点击任意案例查看迁移契约。</div></div>
+  <div class="inspect-card"><div class="inspect-label">Stable mapping</div><div class="inspect-code" id="inspectContract">user</div></div>
+  <div class="inspect-card"><div class="inspect-label">Composition</div><div class="inspect-value" id="inspectLayer">semantic + markdown/raw</div></div>
+  <div class="inspect-card"><div class="inspect-label">Interaction contract</div><div class="inspect-value" id="inspectInteraction">长内容收起；单条原文切换；图片进入附件流</div></div>
+  <div class="inspect-card"><div class="inspect-label">Legend</div><div class="legend"><i></i>现有 renderer 有真实数据</div><div class="legend"><i class="future"></i>建议新增协议或状态</div></div>
+  <div class="inspect-card"><div class="inspect-label">Migration rule</div><ol class="rules"><li>先迁 token，不复制页面布局。</li><li>再迁 Fold、Code、Attachment 基础组件。</li><li>最后按稳定语义名逐类接入。</li><li>Future 类型必须先定义真实数据来源。</li></ol></div>
+</aside>
+</div>
+<div class="lightbox" id="lightbox"><div class="lightbox-card"><button class="lightbox-close" id="lightboxClose">×</button></div></div><div class="toast" id="toast"></div>
+<script>
+const q=(s,r=document)=>r.querySelector(s),qa=(s,r=document)=>Array.from(r.querySelectorAll(s));
+function setFold(f,open){f.classList.toggle('open',open);const b=q(':scope > [data-fold-toggle]',f);if(b)b.setAttribute('aria-expanded',String(open))}
+function toast(message){const n=q('#toast');n.textContent=message;n.classList.add('show');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>n.classList.remove('show'),1600)}
+function inspect(s){const name=q('.spec-name',s)?.textContent||'Component';q('#inspectName').innerHTML='<strong>'+name+'</strong><br>当前案例的稳定迁移接口。';q('#inspectContract').textContent=s.dataset.contract||'—';q('#inspectLayer').textContent=s.dataset.layer||'—';q('#inspectInteraction').textContent=s.dataset.interaction||'—'}
+function buildSample(){
+  const stream=q('#sampleStream'),artifacts=q('#sampleArtifactStream'),task=q('#sampleTaskSlot');stream.replaceChildren();artifacts.replaceChildren();task.replaceChildren();
+  const source=contract=>qa('#libraryView .specimen').find(s=>s.dataset.contract===contract);
+  const clone=contract=>{const specimen=source(contract),stage=q(':scope > .stage',specimen).cloneNode(true);stage.classList.add('sample-block');stage.dataset.sourceContract=contract;return stage};
+  const assistantPart=part=>{const stage=clone('assistant');qa(':scope > .turn',stage).forEach(turn=>{const keep=part==='progress'?turn.classList.contains('commentary'):!turn.classList.contains('commentary');if(!keep)turn.remove()});stage.dataset.samplePart=part;return stage};
+  const turn=(speaker,contracts,kind='assistant')=>{const section=document.createElement('section');section.className='sample-turn '+kind+'-turn';section.setAttribute('aria-label',speaker);contracts.forEach(c=>section.appendChild(clone(c)));stream.appendChild(section);return section};
+  turn('You',['user'],'user');
+  const progressTurn=document.createElement('section');progressTurn.className='sample-turn assistant-turn';progressTurn.setAttribute('aria-label','Assistant progress');progressTurn.appendChild(assistantPart('progress'));stream.appendChild(progressTurn);
+  const activity=document.createElement('div');activity.className='sample-activity';['think','act','assistant phase'].forEach(c=>activity.appendChild(clone(c)));const activityTurn=document.createElement('section');activityTurn.className='sample-turn assistant-turn process-turn';activityTurn.dataset.processGroup='activity';activityTurn.setAttribute('aria-label','Agent activity');activityTurn.appendChild(activity);stream.appendChild(activityTurn);
+  turn('Queued input',['queue','command'],'user');
+  const executionTurn=turn('Execution',['bash','read','edit','write','skill + tool','tool result']);executionTurn.classList.add('process-turn');executionTurn.dataset.processGroup='execution';
+  const collaborationTurn=turn('Agent collaboration',['agent','agent error']);collaborationTurn.classList.add('process-turn');collaborationTurn.dataset.processGroup='collaboration';
+  const finalTurn=document.createElement('section');finalTurn.className='sample-turn assistant-turn';finalTurn.setAttribute('aria-label','Assistant final');finalTurn.appendChild(assistantPart('final'));stream.appendChild(finalTurn);
+  turn('You · follow-up attachment',['attachment:image'],'user');
+  const seam=document.createElement('div');seam.className='sample-system';seam.appendChild(clone('compaction'));stream.appendChild(seam);
+  turn('System · action required',['interactive tool','error state']);
+  task.appendChild(clone('tasks metadata'));
+  [['Files','attachment:file'],['Plan','attachment:plan'],['Links','link']].forEach(([label,contract])=>{const section=document.createElement('section');section.className='monitor-preview-section';section.innerHTML='<div class="monitor-preview-label">'+label+'</div>';section.appendChild(clone(contract));artifacts.appendChild(section)});
+}
+function routePage(){
+  const sample=location.hash==='#sample';
+  q('#libraryView').hidden=sample;q('#sampleView').hidden=!sample;document.body.classList.toggle('sample-mode',sample);
+  q('#libraryPageBtn').classList.toggle('active',!sample);q('#samplePageBtn').classList.toggle('active',sample);
+  q('#libraryPageBtn').setAttribute('aria-selected',String(!sample));q('#samplePageBtn').setAttribute('aria-selected',String(sample));
+  q('.top-title').textContent=sample?'Full transcript sample':'Transcript components';
+  if(sample){buildSample();q('#inspectName').innerHTML='<strong>Monitor integration sample</strong><br>23 个 specimen 被装配进三栏产品布局。';q('#inspectContract').textContent='live clone of component specimens';q('#inspectLayer').textContent='session tree + transcript + artifacts';q('#inspectInteraction').textContent='克隆组件继续走同一事件代理；刷新后重新同步结构。';requestAnimationFrame(()=>window.scrollTo({top:0,behavior:'auto'}))}
+}
+document.addEventListener('click',e=>{
+  const fold=e.target.closest('[data-fold-toggle]');if(fold){const f=fold.closest('[data-fold]');setFold(f,!f.classList.contains('open'));return}
+  const raw=e.target.closest('[data-raw-toggle]');if(raw){const c=raw.closest('.user-shell').querySelector('[data-raw-card]');const showingRaw=c.classList.toggle('raw');const label=showingRaw?'查看排版':'查看原文';raw.title=label;raw.setAttribute('aria-label',label);return}
+  const command=e.target.closest('[data-command-toggle]');if(command){command.closest('[data-command]').classList.toggle('open');return}
+  const more=e.target.closest('[data-more-lines]');if(more){more.closest('.codebox').classList.add('expanded');return}
+  const wrap=e.target.closest('[data-wrap]');if(wrap){const lines=wrap.closest('.codebox').querySelector('.lines');const isWrapped=lines.classList.toggle('wrap');const label=isWrapped?'关闭自动换行':'开启自动换行';wrap.title=label;wrap.setAttribute('aria-label',label);wrap.setAttribute('aria-pressed',String(isWrapped));return}
+  const plan=e.target.closest('[data-plan-toggle]');if(plan){const body=plan.closest('.stage').querySelector('[data-plan-body]');body.classList.toggle('open');plan.textContent=body.classList.contains('open')?'Hide plan':'View plan';return}
+  const comp=e.target.closest('[data-compaction-toggle]');if(comp){comp.closest('.stage').querySelector('[data-compaction-body]').classList.toggle('open');return}
+  if(e.target.closest('[data-lightbox]')){q('#lightbox').classList.add('open');return}
+  if(e.target.closest('[data-copy]')){toast('已复制示例内容');return}
+  const signal=e.target.closest('[data-toast]');if(signal){toast(signal.dataset.toast);return}
+  if(e.target.closest('[data-link-card]')){e.preventDefault();toast('真实接入时打开已验证链接');return}
+  const approve=e.target.closest('[data-approve],[data-deny]');if(approve){const card=approve.closest('[data-approval]');card.classList.add('resolved');q('.approval-icon',card).textContent='✓';q('[data-approval-title]',card).textContent=approve.hasAttribute('data-approve')?'已允许，Agent 正在继续':'暂未允许，可以稍后重试';q('[data-approval-copy]',card).textContent='状态变化保留在原位置，避免操作后内容突然消失。';qa('button',card).forEach(b=>b.remove());return}
+  const specimen=e.target.closest('.specimen');if(specimen)inspect(specimen)
+});
+q('#themeBtn').onclick=()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'';localStorage.setItem('transcript-lab-theme',dark?'dark':'light')};if(localStorage.getItem('transcript-lab-theme')==='dark')document.documentElement.dataset.theme='dark';
+q('#libraryPageBtn').onclick=()=>{location.hash='conversation'};q('#samplePageBtn').onclick=()=>{location.hash='sample'};window.addEventListener('hashchange',routePage);
+function setProcessSurface(surface){q('#sampleView').dataset.processVariant=surface?'surface':'plain';q('#processPlainBtn').classList.toggle('active',!surface);q('#processSurfaceBtn').classList.toggle('active',surface);q('#processPlainBtn').setAttribute('aria-pressed',String(!surface));q('#processSurfaceBtn').setAttribute('aria-pressed',String(surface));localStorage.setItem('transcript-lab-process-surface',surface?'surface':'plain')}
+q('#processPlainBtn').onclick=()=>setProcessSurface(false);q('#processSurfaceBtn').onclick=()=>setProcessSurface(true);setProcessSurface(localStorage.getItem('transcript-lab-process-surface')==='surface');
+q('#densityBtn').onclick=()=>{document.body.classList.toggle('compact');q('#densityBtn').classList.toggle('active',document.body.classList.contains('compact'));q('#densityBtn').textContent=document.body.classList.contains('compact')?'Comfortable':'Compact'};
+let collapsed=false;q('#foldBtn').onclick=()=>{collapsed=!collapsed;qa('[data-fold]').forEach(f=>setFold(f,!collapsed));qa('[data-command]').forEach(c=>c.classList.toggle('open',!collapsed));q('#foldBtn').textContent=collapsed?'Expand all':'Collapse all'};
+q('#lightboxClose').onclick=()=>q('#lightbox').classList.remove('open');q('#lightbox').onclick=e=>{if(e.target===q('#lightbox'))q('#lightbox').classList.remove('open')};document.addEventListener('keydown',e=>{if(e.key==='Escape')q('#lightbox').classList.remove('open')});
+const observer=new IntersectionObserver(entries=>{const visible=entries.filter(x=>x.isIntersecting).sort((a,b)=>b.intersectionRatio-a.intersectionRatio)[0];if(!visible)return;qa('.nav-link').forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+visible.target.id))},{rootMargin:'-18% 0px -68% 0px',threshold:[0,.1,.3]});qa('.family').forEach(f=>observer.observe(f));
+qa('.specimen').forEach(s=>s.addEventListener('focusin',()=>inspect(s)));
+routePage();
+</script>
+</body>
+</html>

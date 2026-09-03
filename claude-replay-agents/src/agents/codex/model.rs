@@ -1112,6 +1112,8 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 Some("message") => {
                     let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
                     if matches!(role, "user" | "assistant") {
+                        let mut pending_image: Option<(String, String)> = None;
+                        let mut declared_files: Vec<(String, String)> = Vec::new();
                         for item in payload
                             .get("content")
                             .and_then(Value::as_array)
@@ -1125,9 +1127,18 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                             !text.trim().is_empty() && !is_host_context(text)
                                         })
                                     {
-                                        msgs.push(Message::UserText {
-                                            text: text.to_string(),
-                                        });
+                                        if let Some((request, files)) = desktop_prompt(text) {
+                                            msgs.push(Message::UserText {
+                                                text: request.to_string(),
+                                            });
+                                            declared_files.extend(files);
+                                        } else if let Some(image) = desktop_image_marker(text) {
+                                            pending_image = Some(image);
+                                        } else if text.trim() != "</image>" {
+                                            msgs.push(Message::UserText {
+                                                text: text.to_string(),
+                                            });
+                                        }
                                     }
                                 }
                                 Some("output_text") if role == "assistant" => {
@@ -1140,6 +1151,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                             msgs.push(Message::AssistantMessage {
                                                 text: text.to_string(),
                                                 phase,
+                                                inferred: false,
                                             });
                                         } else {
                                             msgs.push(Message::AssistantText(text.to_string()));
@@ -1147,11 +1159,27 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                     }
                                 }
                                 Some("input_image") if role == "user" => {
-                                    if let Some(attachment) = input_image_attachment(item) {
+                                    if let Some(mut attachment) = input_image_attachment(item) {
+                                        if let Some((name, path)) = pending_image.take() {
+                                            declared_files
+                                                .retain(|(_, declared)| declared != &path);
+                                            attachment.name = name;
+                                            attachment.path = Some(path);
+                                        }
                                         msgs.push(Message::Attachment(attachment));
                                     }
                                 }
                                 _ => {}
+                            }
+                        }
+                        if role == "user" {
+                            for (name, path) in declared_files {
+                                msgs.push(Message::Attachment(Attachment {
+                                    kind: AttachmentKind::Ref,
+                                    name,
+                                    path: Some(path),
+                                    content: AttachmentContent::None,
+                                }));
                             }
                         }
                     }
@@ -1501,6 +1529,48 @@ fn input_image_attachment(item: &Value) -> Option<Attachment> {
     })
 }
 
+/// Codex Desktop wraps a human prompt that has local files in a presentation envelope. The
+/// envelope is host transport, not authored prompt text; the following `input_image` items carry
+/// the real attachments. Keep this deliberately strict so a user-authored heading is untouched.
+fn desktop_prompt(text: &str) -> Option<(&str, Vec<(String, String)>)> {
+    let text = text.trim();
+    let rest = text.strip_prefix("# Files mentioned by the user:")?;
+    let (files, request) = rest.split_once("\n## My request:\n")?;
+    let request = request.trim();
+    if request.is_empty() {
+        return None;
+    }
+    let files = files
+        .lines()
+        .filter_map(|line| {
+            let (name, path) = line.trim().strip_prefix("## ")?.split_once(": ")?;
+            let (name, path) = (name.trim(), path.trim());
+            (!name.is_empty() && !path.is_empty()).then(|| (name.to_string(), path.to_string()))
+        })
+        .collect();
+    Some((request, files))
+}
+
+/// The Desktop host places this metadata item immediately before the corresponding
+/// `input_image`. It is not a second user turn. Carry its safe display name/path onto the
+/// canonical attachment; the served renderer will still sign the path before exposing actions.
+fn desktop_image_marker(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    let rest = text.strip_prefix("<image name=[")?;
+    let (_, path) = rest.split_once("] path=\"")?;
+    let path = path.strip_suffix("\">")?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|part| part.to_str())
+        .filter(|part| !part.is_empty())
+        .unwrap_or("image")
+        .to_string();
+    Some((name, path.to_string()))
+}
+
 fn deferred_image(mime: &str) -> Attachment {
     let ext = match mime {
         "image/jpeg" => "jpg",
@@ -1769,31 +1839,72 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     if !matches!(role, "user" | "assistant") {
         return;
     }
-    let wanted = if role == "user" {
-        "input_text"
-    } else {
-        "output_text"
-    };
-    for text in payload
+    let mut pending_image: Option<(String, String)> = None;
+    let mut declared_files: Vec<(String, String)> = Vec::new();
+    for item in payload
         .get("content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some(wanted))
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .filter(|text| !text.trim().is_empty())
-        .filter(|text| role != "user" || !is_host_context(text))
     {
-        if role == "user" {
-            out.push(Block::UserText(text.to_string()));
-        } else if let Some(phase) = assistant_phase(payload) {
-            out.push(Block::AssistantMessage {
-                text: text.to_string(),
-                phase,
-            });
-        } else {
-            out.push(Block::AssistantText(text.to_string()));
+        match item.get("type").and_then(Value::as_str) {
+            Some("input_text") if role == "user" => {
+                let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty() && !is_host_context(text))
+                else {
+                    continue;
+                };
+                if let Some((request, files)) = desktop_prompt(text) {
+                    out.push(Block::UserText(request.to_string()));
+                    declared_files.extend(files);
+                } else if let Some(image) = desktop_image_marker(text) {
+                    pending_image = Some(image);
+                } else if text.trim() != "</image>" {
+                    out.push(Block::UserText(text.to_string()));
+                }
+            }
+            Some("input_image") if role == "user" => {
+                if let Some(mut attachment) = input_image_attachment(item) {
+                    if let Some((name, path)) = pending_image.take() {
+                        declared_files.retain(|(_, declared)| declared != &path);
+                        attachment.name = name;
+                        attachment.path = Some(path);
+                    }
+                    out.push(Block::Attachment(attachment));
+                }
+            }
+            Some("output_text") if role == "assistant" => {
+                let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                else {
+                    continue;
+                };
+                if let Some(phase) = assistant_phase(payload) {
+                    out.push(Block::AssistantMessage {
+                        text: text.to_string(),
+                        phase,
+                        inferred: false,
+                    });
+                } else {
+                    out.push(Block::AssistantText(text.to_string()));
+                }
+            }
+            _ => {}
         }
+    }
+    if role == "user" {
+        out.extend(declared_files.into_iter().map(|(name, path)| {
+            Block::Attachment(Attachment {
+                kind: AttachmentKind::Ref,
+                name,
+                path: Some(path),
+                content: AttachmentContent::None,
+            })
+        }));
     }
 }
 
@@ -1854,6 +1965,17 @@ fn call_details(
         .and_then(patch_target)
         .map(|path| relativize(&path, cwd))
         .unwrap_or_else(|| input_target(input, cwd));
+    if target.is_empty() && raw_name.eq_ignore_ascii_case("request_user_input") {
+        target = input
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(|question| question.get("question"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+    }
     if target.is_empty() {
         if let Value::String(text) = input {
             target = text.replace('\n', " ");
@@ -3038,7 +3160,7 @@ not json
         assert_eq!(
             blocks
                 .iter()
-                .filter(|block| matches!(block, Block::AssistantMessage { text, phase: AssistantPhase::Final } if text == "Done"))
+                .filter(|block| matches!(block, Block::AssistantMessage { text, phase: AssistantPhase::Final, inferred: false } if text == "Done"))
                 .count(),
             1
         );
@@ -3052,11 +3174,65 @@ not json
         );
         assert!(matches!(
             &blocks[0],
-            Block::AssistantMessage { text, phase: AssistantPhase::Commentary } if text == "Working"
+            Block::AssistantMessage { text, phase: AssistantPhase::Commentary, inferred: false } if text == "Working"
         ));
         assert!(matches!(
             &blocks[1],
-            Block::AssistantMessage { text, phase: AssistantPhase::Final } if text == "Done"
+            Block::AssistantMessage { text, phase: AssistantPhase::Final, inferred: false } if text == "Done"
+        ));
+    }
+
+    #[test]
+    fn desktop_file_envelope_becomes_one_clean_turn_with_named_attachment() {
+        let blocks = parse_codex(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\n# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\n\n## My request:\nPlease inspect this\n"},{"type":"input_text","text":"<image name=[Image #1] path=\"/tmp/shot.png\">"},{"type":"input_image","image_url":"data:image/png;base64,YQ=="},{"type":"input_text","text":"</image>"}]}}"##,
+        );
+        assert!(matches!(&blocks[0], Block::UserText(text) if text == "Please inspect this"));
+        assert!(matches!(
+            &blocks[1],
+            Block::Attachment(Attachment { kind: AttachmentKind::Image, name, path: Some(path), .. })
+                if name == "shot.png" && path == "/tmp/shot.png"
+        ));
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| matches!(block, Block::UserText(_)))
+                .count(),
+            1,
+            "host image markers must not become fake turns"
+        );
+    }
+
+    #[test]
+    fn request_user_input_keeps_its_question_as_the_tool_target() {
+        let (_, target, _) = call_details(
+            "request_user_input",
+            &serde_json::json!({
+                "questions": [{
+                    "id": "rollout_entry",
+                    "question": "Which UI should be the default?",
+                    "options": []
+                }]
+            }),
+            "/repo",
+        );
+        assert_eq!(target, "Which UI should be the default?");
+    }
+
+    #[test]
+    fn desktop_non_image_file_survives_as_a_path_only_attachment() {
+        let blocks = parse_codex(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# Files mentioned by the user:\n\n## notes.md: /tmp/notes.md\n\n## My request:\nSummarize it"}]}}"##,
+        );
+        assert!(matches!(&blocks[0], Block::UserText(text) if text == "Summarize it"));
+        assert!(matches!(
+            &blocks[1],
+            Block::Attachment(Attachment {
+                kind: AttachmentKind::Ref,
+                name,
+                path: Some(path),
+                content: AttachmentContent::None,
+            }) if name == "notes.md" && path == "/tmp/notes.md"
         ));
     }
 

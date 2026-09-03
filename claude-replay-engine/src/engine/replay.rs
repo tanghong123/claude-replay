@@ -201,10 +201,15 @@ impl<'a> Replayer<'a> {
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
                 }
-                Message::AssistantMessage { text, phase } => {
+                Message::AssistantMessage {
+                    text,
+                    phase,
+                    inferred,
+                } => {
                     self.out.push(Block::AssistantMessage {
                         text: text.clone(),
                         phase: *phase,
+                        inferred: *inferred,
                     });
                 }
                 Message::Thinking { text, ts } => {

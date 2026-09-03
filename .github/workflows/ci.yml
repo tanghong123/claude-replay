@@ -28,6 +28,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      # The frontend's own contract checks. `cargo test` runs these too (via
+      # claude-monitor-v2/tests/ui_contract.rs), but that harness SKIPS when node is missing —
+      # here it is mandatory, so a machine without node cannot quietly drop the check.
+      - name: Frontend contract
+        run: node claude-monitor-v2/tests/ui_contract.mjs
 
   guard:
     name: secrets · blocked emails

@@ -66,6 +66,26 @@ fn injection_of(v: &Value) -> Injected {
     }
 }
 
+/// Normalize Claude Code's assistant prose into the same presentation phases Codex persists
+/// explicitly. Claude does not write a `phase` field, but the completed message carries an
+/// equally strong structural signal: `stop_reason=tool_use` means the prose introduced more
+/// work in the current turn, while `stop_reason=end_turn` closes the turn. Some older fixtures
+/// omit `stop_reason`; a tool call in the same content array is still conclusive commentary.
+/// Everything else stays unphased rather than guessing from wording or an incomplete live tail.
+fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
+    match v.pointer("/message/stop_reason").and_then(Value::as_str) {
+        Some("tool_use") => Some(AssistantPhase::Commentary),
+        Some("end_turn") => Some(AssistantPhase::Final),
+        _ if content
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use")) =>
+        {
+            Some(AssistantPhase::Commentary)
+        }
+        _ => None,
+    }
+}
+
 /// L1 classification of a plain-string `user` message into the **structured** message the
 /// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
@@ -947,12 +967,21 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
                 return;
             };
+            let phase = assistant_phase(&v, content);
             for blk in content {
                 match blk.get("type").and_then(|t| t.as_str()) {
                     Some("text") => {
                         if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                             if !t.trim().is_empty() {
-                                msgs.push(Message::AssistantText(t.to_string()));
+                                if let Some(phase) = phase {
+                                    msgs.push(Message::AssistantMessage {
+                                        text: t.to_string(),
+                                        phase,
+                                        inferred: true,
+                                    });
+                                } else {
+                                    msgs.push(Message::AssistantText(t.to_string()));
+                                }
                             }
                         }
                     }
@@ -1489,12 +1518,21 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
                     continue;
                 };
+                let phase = assistant_phase(&v, content);
                 for blk in content {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
                                 if !t.trim().is_empty() {
-                                    out.push(Block::AssistantText(t.to_string()));
+                                    if let Some(phase) = phase {
+                                        out.push(Block::AssistantMessage {
+                                            text: t.to_string(),
+                                            phase,
+                                            inferred: true,
+                                        });
+                                    } else {
+                                        out.push(Block::AssistantText(t.to_string()));
+                                    }
                                 }
                             }
                         }
@@ -3454,6 +3492,34 @@ mod tests {
             vec!["read", "bash"],
             "both preserved in the run"
         );
+    }
+
+    #[test]
+    fn assistant_prose_uses_stop_reason_and_same_message_tools_for_phase() {
+        let blocks = parse(
+            r#"
+{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"I will inspect it first."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Now I will run it."},{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Still streaming"}]}}
+"#,
+        );
+        assert!(matches!(
+            &blocks[0],
+            Block::AssistantMessage { text, phase: AssistantPhase::Commentary, inferred: true }
+                if text == "I will inspect it first."
+        ));
+        assert!(matches!(
+            &blocks[1],
+            Block::AssistantMessage { text, phase: AssistantPhase::Commentary, inferred: true }
+                if text == "Now I will run it."
+        ));
+        assert!(matches!(
+            &blocks[3],
+            Block::AssistantMessage { text, phase: AssistantPhase::Final, inferred: true }
+                if text == "Done."
+        ));
+        assert!(matches!(&blocks[4], Block::AssistantText(text) if text == "Still streaming"));
     }
 
     #[test]

@@ -1,0 +1,231 @@
+//! Shared Codex-style monitor UI assets.
+//!
+//! The visual reference is extracted byte-for-byte from the immutable design demo. Both
+//! monitor binaries call this module, so there is one frontend and one rollback boundary.
+
+use claude_replay_html::{query_get, HttpResponse};
+use std::path::PathBuf;
+
+const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
+const REFERENCE_SHELL: &str = include_str!("codex-ui/reference-shell.html");
+const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
+
+/// Which frontend `/` serves. BOTH are supported while the app shell is being validated —
+/// this is not a one-release escape hatch, and the classic shell is not deprecated until the
+/// owner says it is. `Classic` is the rail (v1) / the splice shell (v2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shell {
+    App,
+    Classic,
+}
+
+impl Shell {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Shell::App => "app",
+            Shell::Classic => "classic",
+        }
+    }
+
+    /// Parse a `ui=` value. `codex` is accepted for the app shell because that is what the
+    /// rollout called it and what already-published links carry.
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "classic" => Some(Shell::Classic),
+            "app" | "codex" => Some(Shell::App),
+            _ => None,
+        }
+    }
+}
+
+/// The remembered choice: `<state_dir>/ui.json`, beside `ignored.json` and for the same reason
+/// (#197) — it is user INTENT that cannot be recomputed, so it is state, not cache. Shared by
+/// both monitor binaries deliberately: it answers "which shell do I want", not "what is this
+/// process". A `?ui=` on the URL still overrides it for one request without disturbing it, which
+/// is what makes side-by-side comparison possible while the setting stays put.
+fn preference_path() -> PathBuf {
+    crate::index::state_dir().join("ui.json")
+}
+
+/// The stored preference, or the app shell when nothing is stored or the file is unreadable.
+pub fn preference() -> Shell {
+    std::fs::read_to_string(preference_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("ui").and_then(|v| v.as_str()).and_then(Shell::parse))
+        .unwrap_or(Shell::App)
+}
+
+fn set_preference(shell: Shell) {
+    let path = preference_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        &path,
+        serde_json::json!({ "ui": shell.as_str() }).to_string(),
+    );
+}
+
+/// Which shell this request wants: an explicit `?ui=` wins, else the remembered choice.
+pub fn resolve(query: &str) -> Shell {
+    query_get(query, "ui")
+        .and_then(Shell::parse)
+        .unwrap_or_else(preference)
+}
+
+/// `GET /api/ui` reads the preference; `?set=classic|app` writes it. Same shape and same
+/// justification as `/api/ignore`: a GET with a query param, because the loopback listener
+/// parses only the request line, and persisting a local UI choice at the monitor's own state
+/// dir is UI state rather than agent control — inside the read-only contract (R8).
+pub fn route(query: &str) -> HttpResponse {
+    if let Some(shell) = query_get(query, "set").and_then(Shell::parse) {
+        set_preference(shell);
+        return HttpResponse::json(
+            serde_json::json!({ "ok": true, "ui": shell.as_str() }).to_string(),
+        );
+    }
+    HttpResponse::json(serde_json::json!({ "ok": true, "ui": preference().as_str() }).to_string())
+}
+
+/// The app shell for ONE request. `data-ui-default` says whether the app shell is also the
+/// remembered preference, which is what lets the page emit clean session links (`?session=…`)
+/// when it is, and pin `?ui=app` when it is not — a link copied out of this shell reopens this
+/// shell either way. Built per request because the preference is a live setting: the toggle
+/// writes it and reloads, so a page minted once at startup would answer with a stale flag.
+pub fn app_page(version: &str, paired: bool) -> String {
+    page(version, paired, preference() == Shell::App)
+}
+
+pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
+    let head = PAGE_HEAD
+        .replace("{{VERSION}}", version)
+        .replace("{{PAIRED}}", if paired { "true" } else { "false" })
+        .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" });
+    format!("{head}{REFERENCE_SHELL}{PAGE_TAIL}")
+}
+
+pub fn asset(name: &str) -> Option<HttpResponse> {
+    let (content_type, bytes) = match name {
+        "monitor-ui/reference.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("codex-ui/reference.css").as_slice(),
+        ),
+        "monitor-ui/production.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("codex-ui/production.css").as_slice(),
+        ),
+        "monitor-ui/app.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/app.js").as_slice(),
+        ),
+        "monitor-ui/icons.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/icons.js").as_slice(),
+        ),
+        "monitor-ui/state.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/state.js").as_slice(),
+        ),
+        "monitor-ui/record-store.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/record-store.js").as_slice(),
+        ),
+        "monitor-ui/session-index-store.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-index-store.js").as_slice(),
+        ),
+        "monitor-ui/view-model.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/view-model.js").as_slice(),
+        ),
+        "monitor-ui/components.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/components.js").as_slice(),
+        ),
+        "monitor-ui/viewport.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/viewport.js").as_slice(),
+        ),
+        "monitor-ui/control-store.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/control-store.js").as_slice(),
+        ),
+        "monitor-ui/preview.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/preview.js").as_slice(),
+        ),
+        "monitor-ui/attachment-viewer.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/attachment-viewer.js").as_slice(),
+        ),
+        _ => return None,
+    };
+    let mut response = HttpResponse::ok(content_type, bytes.to_vec());
+    // The monitor is commonly rebuilt and restarted on the same loopback port. Keeping an
+    // older ES module in the browser cache can mix two UI revisions in one page, so assets
+    // deliberately follow the live record APIs' no-store behavior.
+    response.headers.push("Cache-Control: no-store".into());
+    Some(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_is_the_reference_shell_without_mock_runtime() {
+        let page = page("test", false, true);
+        assert!(page.contains(REFERENCE_SHELL));
+        assert!(page.contains("/monitor-ui/app.js"));
+        assert!(!page.contains("sample-transcript-data.js"));
+        assert!(!page.contains("REAL_TRANSCRIPT"));
+    }
+
+    /// `?ui=` overrides for ONE request; the stored preference answers everything else. That
+    /// pair is what lets both shells stay reachable: the setting is how you choose, the param is
+    /// how you look at the other one without changing your mind.
+    #[test]
+    fn an_explicit_ui_param_overrides_the_remembered_preference() {
+        let _g = crate::index::STATE_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("ui-pref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("AGENT_MONITOR_STATE", &dir);
+
+        assert_eq!(preference(), Shell::App, "app shell with nothing stored");
+        assert_eq!(resolve(""), Shell::App);
+        assert_eq!(resolve("ui=classic"), Shell::Classic);
+
+        let reply = route("set=classic");
+        assert!(String::from_utf8_lossy(&reply.body).contains("\"ui\":\"classic\""));
+        assert_eq!(preference(), Shell::Classic, "the choice persisted");
+        assert_eq!(resolve(""), Shell::Classic, "and answers a bare request");
+        assert_eq!(
+            resolve("ui=codex"),
+            Shell::App,
+            "…while an explicit param still overrides it"
+        );
+        assert_eq!(
+            preference(),
+            Shell::Classic,
+            "and overriding does NOT rewrite the preference"
+        );
+
+        route("set=app");
+        assert_eq!(preference(), Shell::App);
+        std::env::remove_var("AGENT_MONITOR_STATE");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serves_the_production_attachment_viewer() {
+        let response = asset("monitor-ui/attachment-viewer.js").unwrap();
+        assert!(response
+            .headers
+            .iter()
+            .any(|header| header == "Cache-Control: no-store"));
+    }
+}

@@ -95,6 +95,19 @@ struct Staged {
 }
 
 impl StateTracker {
+    /// The latest published verdict for `sid`.
+    ///
+    /// The monitor index exposes this as additive `agentState*` fields in its existing
+    /// `/api/sessions` rows.  Keeping the accessor here means the browser consumes the same
+    /// hysteresis-gated verdict that is written to `state/current.json`; it never grows a
+    /// second, UI-only state classifier.
+    pub(crate) fn current(&self, sid: &str) -> Option<(&Verdict, &str)> {
+        self.staged
+            .get(sid)
+            .and_then(|s| s.published.as_ref())
+            .map(|(verdict, since)| (verdict, since.as_str()))
+    }
+
     /// One tick: derive every interesting session's state, publish transitions, and
     /// rewrite the snapshot. `facts` is what the scan's assemble pass observed.
     pub(crate) fn tick(&mut self, cache_root: &Path, facts: &[RowFacts]) {

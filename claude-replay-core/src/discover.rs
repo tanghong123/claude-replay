@@ -520,6 +520,9 @@ mod tests {
         std::env::set_var("QODERWORK_PROJECTS_DIR", &qw);
         std::env::set_var("QODER_PROJECTS_DIR", &empty);
         std::env::set_var("CODEX_SESSIONS_DIR", &empty);
+        // Codex's machine-wide store also includes `<CODEX_HOME>/archived_sessions`.
+        // Isolate that root as well so this fixture never reads the developer's archive.
+        std::env::set_var("CODEX_HOME", base.join("codex"));
         let all = store_all(None);
         let claude_only = store_all(Some(Agent::CLAUDE));
         for v in [
@@ -527,6 +530,7 @@ mod tests {
             "QODERWORK_PROJECTS_DIR",
             "QODER_PROJECTS_DIR",
             "CODEX_SESSIONS_DIR",
+            "CODEX_HOME",
         ] {
             std::env::remove_var(v);
         }

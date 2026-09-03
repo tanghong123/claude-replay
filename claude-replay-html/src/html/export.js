@@ -696,10 +696,14 @@
 
     // Assistant prose — always open, no fold chrome.
     if (b.kind === "assistant") {
-      var phase = b.phase ? " phase-" + b.phase : "";
+      // Only a phase the TRANSCRIPT STATED may restyle the prose. Claude's is inferred from
+      // `stop_reason` (`phaseInferred`), and Claude Code itself marks narration and final
+      // answer the same, so an inferred phase stays available as data and changes nothing here.
+      var stated = b.phase && !b.phaseInferred;
+      var phase = stated ? " phase-" + b.phase : "";
       var ab = el("div", "ablock blk" + phase);
       ab.id = b.id;
-      if (b.phase) ab.title = "assistant " + b.phase;
+      if (stated) ab.title = "assistant " + b.phase;
       ab.appendChild(el("span", "adot"));
       var prose = el("div", "prose");
       body.forEach(function (p) { renderPart(p, prose); });

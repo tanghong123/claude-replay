@@ -17,6 +17,13 @@
 }
 #v2head { flex: none; padding: 9px 12px; border-bottom: 1px solid var(--border); }
 #v2titlebar { display: flex; align-items: center; gap: 9px; height: 30px; }
+/* The shell switch: both frontends stay supported while the app shell is validated, so each
+   one carries a visible way across. `/api/ui` remembers it; `?ui=` overrides for one request. */
+#v2appshell { margin-left: auto; font: inherit; font-size: 10px; font-weight: 600; letter-spacing: .02em;
+  color: var(--dim); background: none; border: 1px solid var(--border); border-radius: 5px;
+  padding: 1px 6px; cursor: pointer; }
+#v2appshell:hover { color: var(--fg); }
+#v2appshell[disabled] { opacity: .4; pointer-events: none; }
 #v2mark { flex: none; font: 600 13px var(--sans); color: var(--fg); letter-spacing: -.01em; }
 #v2mark i { font-style: normal; color: var(--faint); font: 9.5px var(--mono); }
 #v2scan { margin-left: auto; font: 9.5px var(--mono); color: var(--faint); display: inline-flex; align-items: center; gap: 5px; }
@@ -128,6 +135,7 @@
   <div id="v2head">
     <div id="v2titlebar">
       <div id="v2mark">agent-monitor <i>v2 · {{VERSION}}</i></div>
+      <button id="v2appshell" title="Switch to the app-shell interface — remembered until you switch back">App</button>
       <div id="v2scan"><i></i><span id="v2count"></span></div>
     </div>
     <div id="v2find"><span>&#9906;</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span><span class="v2nav" id="v2prev" title="Previous match (⇧⏎)">&#9650;</span><span class="v2nav" id="v2next" title="Next match (⏎)">&#9660;</span></div>
@@ -148,6 +156,10 @@
   var hits = document.getElementById("v2hits");
   var countEl = document.getElementById("v2count");
   var current = new URLSearchParams(location.search).get("session") || "";
+  document.getElementById("v2appshell").onclick = function () {
+    var b = this; b.disabled = true;
+    fetch("/api/ui?set=app", { cache: "no-store" }).then(function () { location.href = "/"; }).catch(function () { b.disabled = false; });
+  };
   // #133: the write routes need a token, so the compose affordance exists only when paired —
   // offering it unpaired would offer a dead end. The server substitutes the flag.
   var PAIRED = {{PAIRED}};
@@ -209,7 +221,7 @@
       if (!collapsed[g.label]) {
         rows.forEach(function (r) {
           var a = el("a", "v2row" + (r.state === "growing" ? " grow" : "") + (r.hidden ? " hid" : ""));
-          a.href = "/?session=" + encodeURIComponent(r.id);
+          a.href = "/?ui=classic&session=" + encodeURIComponent(r.id);
           if (r.id === current) a.setAttribute("aria-current", "true");
           var r1 = el("div", "v2r1");
           // `conf` is the index's own word for how the process↔session link was made:

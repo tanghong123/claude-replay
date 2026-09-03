@@ -1,11 +1,8 @@
 //! `agent-monitor-v2` — every agent session on this machine in ONE document.
 //!
-//! v1 (`agent-monitor`) composes at the document level: its rail owns the page and the
-//! session view lives in an `<iframe src="/session?id=…">`. That frame is doing two jobs —
-//! layout, and lifecycle (a session switch is `view.src = …`, which disposes of the view's
-//! whole JS context for free). v2 drops it for one shell, and pays for the second job with a
-//! full navigation per switch (the reload-first decision); a native `init`/`destroy` for the
-//! view's module state is deferred until the reload proves too coarse.
+//! The default frontend is the Codex-style app shell: it consumes the existing structured
+//! `/pull` + `/records` projection and renders it through its own component registry.  The
+//! previous splice-based v2 frontend remains at `?ui=classic` as a one-release rollback seam.
 //!
 //! **This is a front-end, not a second implementation.** The session page comes from the same
 //! public backend (`SessionService::page`) with this crate's shell spliced in, and every other
@@ -36,9 +33,8 @@ use std::sync::Arc;
 /// developed against the sessions a person is actually working in.
 const DEFAULT_PORT: u16 = 2828;
 
-/// The shell fragment: this crate's markup, styles and script, injected INTO the session
-/// document. `{{VERSION}}` and `{{RAIL_W}}` are the substitutions.
-const SHELL: &str = include_str!("shell.html");
+/// The previous splice frontend, retained behind `?ui=classic` for rollback.
+const CLASSIC_SHELL: &str = include_str!("shell.html");
 
 /// The rail's width, in CSS pixels — ONE number, used twice: it sizes `#v2rail` in the
 /// shell's own stylesheet, and it is the inset v2 asks the session page to make for it
@@ -148,7 +144,7 @@ fn main() -> Result<()> {
         ensure_token(&root)?;
     }
     let token = read_token(&root);
-    let shell = SHELL
+    let classic_shell = CLASSIC_SHELL
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
         .replace("{{RAIL_W}}", &RAIL_W.to_string())
         // The compose affordance exists only when paired: unpaired, every write route 401s,
@@ -156,20 +152,34 @@ fn main() -> Result<()> {
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
     // The passcode lockout counter, owned by the handler — one per process, one user.
     let attempts = std::sync::Mutex::new(Attempts::default());
+    let paired = token.is_some();
     let handler = {
         let service = service.clone();
         let idx = idx.clone();
-        let shell = shell.clone();
+        let classic_shell = classic_shell.clone();
         let scratch = scratch.clone();
         Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
             let (name, query) = (req.name, req.query);
+            if let Some(asset) = claude_monitor::ui::asset(name) {
+                return asset;
+            }
             match name {
-                // The shell. With a session, it IS that session's page with the rail spliced
-                // in — one document, one scroller, no frame.
+                // Read or set which shell `/` serves — shared with v1 (one preference, both
+                // binaries), so a `?ui=` override is what you use to compare them side by side.
+                "api/ui" => claude_monitor::ui::route(query),
                 "" | "index.html" => {
+                    if claude_monitor::ui::resolve(query) != claude_monitor::ui::Shell::Classic {
+                        return HttpResponse::html(claude_monitor::ui::app_page(
+                            env!("CARGO_PKG_VERSION"),
+                            paired,
+                        ));
+                    }
+                    // Rollback frontend: with a session it IS the legacy session page with
+                    // the old rail spliced in.  Its routes and data are still the same ones
+                    // the new shell consumes.
                     let id = query_get(query, "session").unwrap_or("");
                     if id.is_empty() {
-                        return HttpResponse::html(empty_shell(&shell));
+                        return HttpResponse::html(empty_shell(&classic_shell));
                     }
                     // `artifacts`: v2 serves clicked file paths through the browser
                     // (goal 3) rather than opening Finder on the server.
@@ -195,8 +205,8 @@ fn main() -> Result<()> {
                         service.page(id, Some(&chrome))
                     });
                     match page {
-                        Some(page) => HttpResponse::html(splice(&page, &shell)),
-                        None => HttpResponse::html(empty_shell(&shell)),
+                        Some(page) => HttpResponse::html(splice(&page, &classic_shell)),
+                        None => HttpResponse::html(empty_shell(&classic_shell)),
                     }
                 }
                 // The session list — the shared index's, so a row's liveness, its counters,
@@ -293,9 +303,80 @@ USAGE:
 Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only. Reads are open to the
 same user; writing (and reading a local FILE through the page) needs pairing.
 
-v1 (`agent-monitor`, port 2727) is untouched and can run at the same time: this app has its
-own port and its own cache root (~/.cache/agent-monitor-v2). It shares v1's backend, its
-session index, and its control plane — the same token, passcode and consent grants.
+`agent-monitor` (port 2727) and this binary both serve the app shell by default and keep their
+previous pages as a supported second interface — a button in each switches and remembers the
+choice, and `?ui=classic` / `?ui=app` override for one request. This binary uses its own cache
+root (~/.cache/agent-monitor-v2) for parallel comparison while sharing the backend and control
+plane — the token, passcode, consent grants, and the shell preference.
 "
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let from = source.find(start).expect("reference start marker") + start.len();
+        let to = source[from..].find(end).expect("reference end marker") + from;
+        &source[from..to]
+    }
+
+    #[test]
+    fn production_reference_assets_are_exact_demo_extractions() {
+        let demo = include_str!("../../design/agent-monitor-codex-demo.html");
+        let css = format!("{}\n", between(demo, "<style>\n", "\n</style>"));
+        let shell = between(
+            demo,
+            "<body>\n",
+            "<script src=\"sample-transcript-data.js\"></script>",
+        );
+        assert_eq!(
+            include_str!("../../claude-monitor/src/codex-ui/reference.css"),
+            css
+        );
+        assert_eq!(
+            include_str!("../../claude-monitor/src/codex-ui/reference-shell.html"),
+            shell
+        );
+    }
+
+    #[test]
+    fn codex_app_is_a_production_pull_client_with_a_classic_rollback() {
+        let app = claude_monitor::ui::page("test", false, true);
+        assert!(app.contains("/monitor-ui/app.js"));
+        assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
+        assert!(CLASSIC_SHELL.contains("v2rail"));
+        assert!(!app.contains("sample-transcript-data"));
+        assert!(!app.contains("REAL_TRANSCRIPT"));
+    }
+
+    #[test]
+    fn every_wire_family_has_a_renderer_or_the_readable_fallback() {
+        for kind in ["user", "assistant", "queue", "compaction", "attachment"] {
+            assert!(
+                include_str!("../../claude-monitor/src/codex-ui/view-model.js").contains(kind),
+                "missing {kind}"
+            );
+        }
+        for kind in [
+            "think", "act", "bash", "read", "write", "edit", "skill", "tool", "agent", "command",
+        ] {
+            assert!(
+                include_str!("../../claude-monitor/src/codex-ui/view-model.js").contains(kind),
+                "missing {kind}"
+            );
+        }
+        assert!(
+            include_str!("../../claude-monitor/src/codex-ui/components.js").contains("fallback")
+        );
+    }
+
+    #[test]
+    fn interactive_html_preview_is_opaque_and_network_denied() {
+        let preview = include_str!("../../claude-monitor/src/codex-ui/preview.js");
+        assert!(preview.contains("sandbox=\"allow-scripts\""));
+        assert!(preview.contains("connect-src \\'none\\'"));
+        assert!(!preview.contains("allow-same-origin"));
+    }
 }

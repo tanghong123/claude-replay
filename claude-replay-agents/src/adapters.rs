@@ -237,6 +237,13 @@ impl TranscriptAdapter for CodexAdapter {
     fn subagent_sources(&self, root: &Path, ids: &[&str]) -> Vec<Option<PathBuf>> {
         agents::codex::discover::subagent_sources(root, ids)
     }
+    fn session_card(
+        &self,
+        path: &Path,
+        _memo: Option<&claude_replay_engine::seam::CardMemo>,
+    ) -> claude_replay_engine::seam::CardOutcome {
+        agents::codex::discover::session_card(path)
+    }
 }
 
 /// Qoder CLI adapter — a Claude-Code-format terminal agent with its own store

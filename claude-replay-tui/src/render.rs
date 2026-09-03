@@ -521,9 +521,14 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             }
         }
         Block::AssistantText(t) => out.extend(assistant_lines(t, width, None)),
-        Block::AssistantMessage { text, phase } => {
-            out.extend(assistant_lines(text, width, Some(*phase)))
-        }
+        // An INFERRED phase does not change the drawing: Claude Code marks narration and final
+        // answer identically, and deriving the phase from `stop_reason` is not a licence to
+        // depart from that. Only a transcript that STATES the phase gets the phased treatment.
+        Block::AssistantMessage {
+            text,
+            phase,
+            inferred,
+        } => out.extend(assistant_lines(text, width, (!*inferred).then_some(*phase))),
         Block::Thinking {
             text,
             tools,
@@ -955,10 +960,15 @@ fn render_header(b: &Block) -> Line<'static> {
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
         ]),
-        Block::AssistantMessage { text, phase } => {
-            let (marker, style) = match phase {
-                AssistantPhase::Commentary => ("•", theme::thinking()),
-                AssistantPhase::Final => ("⏺", theme::assistant_marker()),
+        Block::AssistantMessage {
+            text,
+            phase,
+            inferred,
+        } => {
+            // As above: an inferred phase collapses to the plain assistant marker.
+            let (marker, style) = match (inferred, phase) {
+                (false, AssistantPhase::Commentary) => ("•", theme::thinking()),
+                _ => ("⏺", theme::assistant_marker()),
             };
             Line::from(vec![
                 Span::styled(marker, style),
@@ -1894,10 +1904,12 @@ mod tests {
         let commentary = Block::AssistantMessage {
             text: "working".into(),
             phase: AssistantPhase::Commentary,
+            inferred: false,
         };
         let final_answer = Block::AssistantMessage {
             text: "done".into(),
             phase: AssistantPhase::Final,
+            inferred: false,
         };
         let commentary_text = texts(&render_one(&commentary, 80, Hl::Styled)).join("\n");
         let final_text = texts(&render_one(&final_answer, 80, Hl::Styled)).join("\n");
@@ -1906,6 +1918,26 @@ mod tests {
             "{commentary_text}"
         );
         assert!(final_text.starts_with("⏺ done"), "{final_text}");
+    }
+
+    /// …and an INFERRED phase draws exactly like unphased assistant prose. Claude's phase comes
+    /// from `stop_reason`, which says what the turn did, not how the prose should look — Claude
+    /// Code marks narration and final answer with the same `⏺`, and so do we.
+    #[test]
+    fn an_inferred_phase_draws_like_plain_assistant_text() {
+        for phase in [AssistantPhase::Commentary, AssistantPhase::Final] {
+            let inferred = Block::AssistantMessage {
+                text: "working".into(),
+                phase,
+                inferred: true,
+            };
+            let plain = Block::AssistantText("working".into());
+            assert_eq!(
+                texts(&render_one(&inferred, 80, Hl::Styled)),
+                texts(&render_one(&plain, 80, Hl::Styled)),
+                "inferred {phase:?} must be indistinguishable from AssistantText"
+            );
+        }
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.

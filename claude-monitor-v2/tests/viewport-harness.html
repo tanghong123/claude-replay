@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/reference.css">
+<link rel="stylesheet" href="/claude-monitor/src/codex-ui/production.css">
+<style>
+html,body{margin:0;height:100%;background:var(--bg)}
+.transcript{width:900px;height:640px;margin:20px auto;overflow:auto;border:1px solid var(--line)}
+.transcript-inner{width:760px;padding:24px 0 80px}
+</style>
+</head>
+<body>
+<nav style="position:fixed;z-index:20;top:6px;left:6px;display:flex;gap:4px"><button id="middle">Scroll middle</button><button id="append">Append</button><button id="bottom">Bottom</button></nav>
+<pre id="metrics" style="position:fixed;z-index:20;right:6px;top:6px;max-width:420px;white-space:pre-wrap;background:white"></pre>
+<main class="transcript" id="transcript"><div class="transcript-inner" id="inner"></div></main>
+<script type="module">
+import { Viewport } from "/claude-monitor/src/codex-ui/viewport.js";
+
+const state = { heights:new Map(), folds:new Map(), processFolds:new Map(), processExpanded:new Set(), promptExpanded:new Set(), following:true, newRecords:0 };
+const units = [];
+const make = index => ({
+  type:index % 3 === 0 ? "user" : "assistant", key:`unit:${index}`, from:index, to:index, turn:index + 1,
+  view:{ phase:"final", html:`<p>Record ${index}</p>${"<p>Measured variable-height content.</p>".repeat(index % 7)}` }
+});
+for(let index=0;index<240;index++) units.push(make(index));
+const viewport = new Viewport(document.getElementById("transcript"), document.getElementById("inner"), state, {});
+viewport.showEmpty("加载 Session…", "正在读取归一化 record stream。");
+viewport.setUnits(units, 0);
+
+let added=0, removed=0;
+new MutationObserver(entries => entries.forEach(entry => { added += entry.addedNodes.length; removed += entry.removedNodes.length; }))
+  .observe(viewport.window,{childList:true});
+const wait = ms => new Promise(resolve => setTimeout(resolve,ms));
+const anchor = () => {
+  const top=document.getElementById("transcript").getBoundingClientRect().top;
+  const child=[...viewport.window.children].find(node=>node.getBoundingClientRect().bottom>top+1);
+  return child?{key:child.dataset.unitKey,top:Math.round(child.getBoundingClientRect().top-top)}:null;
+};
+window.harness = {
+  viewport,state,units,wait,anchor,
+  snapshot:()=>{const scroller=document.getElementById("transcript");return {top:Math.round(scroller.scrollTop),height:Math.round(scroller.scrollHeight),gap:Math.round(scroller.scrollHeight-scroller.clientHeight-scroller.scrollTop),following:state.following,dom:viewport.window.childElementCount,lo:viewport.lo,hi:viewport.hi,total:Math.round(viewport.prefix.at(-1)),loaderVisible:viewport.empty.getClientRects().length>0,added,removed,anchor:anchor()};},
+  userScroll:async delta=>{const scroller=document.getElementById("transcript");scroller.dispatchEvent(new WheelEvent("wheel",{deltaY:delta}));scroller.scrollTop+=delta;await wait(30);return window.harness.snapshot();},
+  append:async count=>{const from=units.length;for(let i=0;i<count;i++)units.push(make(from+i));viewport.setUnits(units,from);await wait(80);return window.harness.snapshot();},
+  bottom:async()=>{viewport.toBottom();await wait(80);return window.harness.snapshot();}
+};
+document.getElementById("middle").onclick=async()=>{const scroller=document.getElementById("transcript");await window.harness.userScroll(-Math.round(scroller.scrollHeight/2));};
+document.getElementById("append").onclick=()=>window.harness.append(8);
+document.getElementById("bottom").onclick=()=>window.harness.bottom();
+setInterval(()=>{document.getElementById("metrics").textContent=JSON.stringify(window.harness.snapshot());},25);
+</script>
+</body>
+</html>

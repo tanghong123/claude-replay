@@ -1,9 +1,12 @@
 /target
+.DS_Store
 
 # Golden fixtures + captured transcripts live in the private claude-replay-eval
 # repo, NOT here — they may contain real Claude session content. Never commit.
 /golden/
 *.jsonl
+/design/sample-transcript-data.js
+/examples/sample-agent-monitor.html
 
 # …and the same hazard from the other direction: `--dump` writes its render beside you as
 # <stem>.txt + <stem>.ansi, `--dump --json` writes <stem>.json, `--dump-html` writes

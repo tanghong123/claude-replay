@@ -404,6 +404,38 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     out
 }
 
+fn proposed_plan_body(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let inner = text.strip_prefix("<proposed_plan>\n")?;
+    let inner = inner.strip_suffix("\n</proposed_plan>")?.trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn request_user_input_projection(output: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(output.trim()).ok()?;
+    let answers = value.get("answers")?.as_object()?;
+    let rows = answers
+        .iter()
+        .flat_map(|(id, answer)| {
+            answer
+                .get("answers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(move |value| {
+                    value
+                        .as_str()
+                        .map(|label| json!({ "id": id, "label": label }))
+                })
+        })
+        .collect::<Vec<_>>();
+    Some(json!({
+        "kind": "request_user_input",
+        "resolved": !rows.is_empty(),
+        "answers": rows,
+    }))
+}
+
 fn fence_html(lang: &str, body: &str) -> String {
     let token = lang.split_whitespace().next().unwrap_or("");
     let code = highlight_lines(body.trim_end_matches('\n'), token).join("\n");
@@ -700,9 +732,19 @@ impl Emitter<'_> {
             }
             Block::AssistantText(text) => {
                 o.insert("id".into(), json!(self.block_id()));
-                body.push(json!({ "p": "md", "h": md_html(text) }));
+                let rendered = if let Some(plan) = proposed_plan_body(text) {
+                    head.insert("presentation".into(), json!("proposed_plan"));
+                    plan
+                } else {
+                    text
+                };
+                body.push(json!({ "p": "md", "h": md_html(rendered) }));
             }
-            Block::AssistantMessage { text, phase } => {
+            Block::AssistantMessage {
+                text,
+                phase,
+                inferred,
+            } => {
                 o.insert("id".into(), json!(self.block_id()));
                 o.insert(
                     "phase".into(),
@@ -711,7 +753,19 @@ impl Emitter<'_> {
                         AssistantPhase::Final => "final",
                     }),
                 );
-                body.push(json!({ "p": "md", "h": md_html(text) }));
+                // The phase is data for whoever wants it; `phaseInferred` says whether it was
+                // STATED by the transcript. Only a stated phase may change how the prose looks
+                // (`.ablock.phase-*` in export.css) — see `Block::AssistantMessage`.
+                if *inferred {
+                    o.insert("phaseInferred".into(), json!(true));
+                }
+                let rendered = if let Some(plan) = proposed_plan_body(text) {
+                    head.insert("presentation".into(), json!("proposed_plan"));
+                    plan
+                } else {
+                    text
+                };
+                body.push(json!({ "p": "md", "h": md_html(rendered) }));
             }
             // A dim, always-open `⧗ queued: …` marker (kind "queue") — an in-flight
             // mid-turn prompt not yet picked up. Not a turn (no sidebar entry). The
@@ -875,6 +929,16 @@ impl Emitter<'_> {
                 }
                 head.insert("name".into(), json!(display_name(name)));
                 head.insert("target".into(), json!(target));
+                if name.eq_ignore_ascii_case("request_user_input") {
+                    head.insert(
+                        "interaction".into(),
+                        json!({
+                            "kind": "request_user_input",
+                            "resolved": false,
+                            "answers": [],
+                        }),
+                    );
+                }
                 head.insert(
                     "dot".into(),
                     json!(matches!(kind, "edit" | "write" | "skill" | "agent")),
@@ -993,6 +1057,11 @@ impl Emitter<'_> {
                         if let Some(out) = output {
                             let n = out.lines().count();
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
+                            if name.eq_ignore_ascii_case("request_user_input") {
+                                if let Some(interaction) = request_user_input_projection(out) {
+                                    head.insert("interaction".into(), interaction);
+                                }
+                            }
                             body.push(pre_part(out));
                         }
                     }
@@ -2150,15 +2219,28 @@ mod tests {
             Block::AssistantMessage {
                 text: "working".into(),
                 phase: AssistantPhase::Commentary,
+                inferred: false,
             },
             Block::AssistantMessage {
                 text: "done".into(),
                 phase: AssistantPhase::Final,
+                inferred: false,
+            },
+            Block::AssistantMessage {
+                text: "narrating".into(),
+                phase: AssistantPhase::Commentary,
+                inferred: true,
             },
         ];
         let out = stream(&blocks, &FoldPolicy::none());
         assert_eq!(out[0]["phase"], json!("commentary"));
         assert_eq!(out[1]["phase"], json!("final"));
+        assert!(out[0].get("phaseInferred").is_none());
+        assert!(out[1].get("phaseInferred").is_none());
+        // An inferred phase is still DATA — it just carries the flag that stops `export.js`
+        // from restyling the prose, so a Claude session keeps looking like Claude Code.
+        assert_eq!(out[2]["phase"], json!("commentary"));
+        assert_eq!(out[2]["phaseInferred"], json!(true));
     }
 
     #[test]
@@ -3350,6 +3432,48 @@ mod tests {
             "payload </script> broken up"
         );
         assert!(page.contains("<\\/script>"));
+    }
+
+    #[test]
+    fn proposed_plan_is_projected_without_literal_transport_tags() {
+        let out = stream(
+            &[Block::AssistantMessage {
+                text: "<proposed_plan>\n# Safe migration\n\n- Keep fallback\n</proposed_plan>"
+                    .into(),
+                phase: AssistantPhase::Final,
+                inferred: false,
+            }],
+            &FoldPolicy::none(),
+        );
+        assert_eq!(out[0]["head"]["presentation"], "proposed_plan");
+        let html = out[0]["body"][0]["h"].as_str().unwrap();
+        assert!(html.contains("Safe migration"));
+        assert!(!html.contains("proposed_plan"));
+    }
+
+    #[test]
+    fn request_user_input_answer_has_a_structured_projection() {
+        let block = Block::ToolUse {
+            name: "request_user_input".into(),
+            target: String::new(),
+            diffs: vec![],
+            output: Some(
+                r#"{"answers":{"rollout_entry":{"answers":["恢复 Classic 默认 (Recommended)"]}}}"#
+                    .into(),
+            ),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+        };
+        let out = stream(&[block], &FoldPolicy::none());
+        assert_eq!(out[0]["head"]["interaction"]["kind"], "request_user_input");
+        assert_eq!(out[0]["head"]["interaction"]["resolved"], true);
+        assert_eq!(
+            out[0]["head"]["interaction"]["answers"][0]["label"],
+            "恢复 Classic 默认 (Recommended)"
+        );
     }
 
     #[test]
