@@ -23,98 +23,12 @@
 
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Each test gets its OWN scratch: cargo runs them on parallel threads, and a shared
-/// directory that every test wipes on entry means whichever starts second deletes the
-/// other's fixture mid-run.
-fn base(name: &str) -> PathBuf {
-    hermetic_state();
-    let d = std::env::temp_dir().join(format!("cr-browser-follow-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-/// Point the whole binary's state dir at scratch, ONCE, before anything reads it.
-///
-/// `claude-replay-html` is an ordinary dependency here, not a `cfg(test)` build, so its
-/// signing key and its render policy come from the real state directory — which would make
-/// this suite mint a key into the developer's own `~/.local/state` and, worse, pass or fail
-/// according to a `render-policy.json` they wrote for their own machine. A developer whose
-/// policy is `never` would watch the artifact test fail for no reason they could see.
-///
-/// Both are resolved once per process behind a `OnceLock`, so this has to happen before the
-/// first test touches either — `base()` is the one call every test makes first.
-fn hermetic_state() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let d = std::env::temp_dir().join(format!("cr-browser-state-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        // The permissive setting: this suite is testing the click path, not the policy.
-        let _ = std::fs::write(d.join("render-policy.json"), b"{\"mode\":\"offered\"}");
-        std::env::set_var("CLAUDE_MONITOR_STATE", &d);
-    });
-}
-
-/// Serialize the suite.
-///
-/// Every test here points the run at its own cache root with `std::env::set_var`, and that is
-/// PROCESS-global — so two tests in parallel overwrite each other's root and one of them ends up
-/// serving from a directory the other is tearing down. `base(name)` gave each test its own
-/// directory; it could not give them their own environment. The tests are each tens of seconds
-/// of real browser work, so serializing costs little and removes a flake that reads like a
-/// viewport regression.
-/// Reaps a spawned monitor when the test ends — INCLUDING by panic. Without it a failed
-/// assertion strands the server on its port, the next run's spawn cannot bind, and the tab
-/// talks to the stale server with the wrong token: every later run fails for a reason that
-/// has nothing to do with the code under test.
-struct Reap(std::process::Child);
-impl Drop for Reap {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn user(t: &str, s: u32) -> String {
-    format!(
-        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
-    )
-}
-fn assistant(t: &str, s: u32) -> String {
-    format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":8}}}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
-    )
-}
-fn tool_open(id: &str, s: u32) -> String {
-    format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {id}\"}}}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
-    )
-}
-fn tool_result(id: &str, s: u32) -> String {
-    format!(
-        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
-    )
-}
-fn thinking(t: &str, s: u32) -> String {
-    format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"thinking\",\"thinking\":\"{t}\"}}]}},\"timestamp\":\"2026-08-21T10:{s:02}:00Z\"}}\n"
-    )
-}
-
-fn append(path: &Path, s: &str) {
-    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
-    f.write_all(s.as_bytes()).unwrap();
-    f.flush().unwrap();
-}
+mod harness;
+use harness::{
+    append, assistant, base, serial, thinking, tool_open, tool_result, user, Kind, Monitor, Stores,
+};
 
 /// Evaluate `expr` (may be an async IIFE when `await_promise`) and return its value.
 /// Everything is passed through `JSON.stringify` on the page side, so only string
@@ -997,47 +911,10 @@ fn the_v2_shell_keeps_the_document_scroller() {
     // v2 lists sessions from the real store, so point it at this fixture by deep link: the
     // shell route registers an unknown id on demand. It needs the transcript inside a store
     // it scans, so this test drives the id the server reports for the file it was given.
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    // Its OWN state dir, and `--pair` so it has a token: since pairing landed, every route
-    // 401s unpaired, and this test then found no sessions and skipped — silently taking the
-    // layout assertion below out of service. `CLAUDE_MONITOR_STATE` keeps the scratch token
-    // well away from the user's real one.
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let mut child = std::process::Command::new(&bin)
-        .args(["--port", "2831", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2831, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    // Bootstrap the cookie through `?token=` — the server 302s to bare `/` with a
-    // `Set-Cookie`, which is what every later fetch on this origin rides.
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2831/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     // Any session the machine has will do — the assertion is about LAYOUT, not content.
     tab.navigate_to("http://127.0.0.1:2831/api/sessions")
         .unwrap();
@@ -1063,8 +940,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
         .ok()
         .and_then(|v| v["groups"][0]["rows"][0]["id"].as_str().map(str::to_string));
     let Some(id) = id else {
-        let _ = child.kill();
-        let _ = child.wait(); // reap it: a killed child left unwaited is a zombie for the run
+        drop(monitor);
         eprintln!("skip: no sessions on this machine to compose");
         return;
     };
@@ -1118,8 +994,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
         .and_then(|r| r.value)
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
-    let _ = child.kill();
-    let _ = child.wait(); // reap it: a killed child left unwaited is a zombie for the run
+    drop(monitor);
     let v: serde_json::Value = serde_json::from_str(&seen).unwrap_or(serde_json::Value::Null);
     assert_eq!(v["ok"], true, "the shell composed both panes: {seen}");
     assert_eq!(v["docScrolls"], true, "the document scrolls: {seen}");
@@ -1149,45 +1024,10 @@ fn the_v2_shell_keeps_the_document_scroller() {
 fn the_app_shell_hides_and_restores_a_session() {
     let _serial = serial();
     let base = base("appshell-hide");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let child = std::process::Command::new(&bin)
-        .args(["--port", "2832", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    let child = Reap(child);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2832, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    // Bootstrap the cookie, then let the FIRST cold scan finish behind a blocking fetch —
-    // the same shape as the v2 layout test — so "no rows yet" below can only mean an empty
-    // store, never a scan that outran the wait. A skip must stay distinguishable from a
-    // shell that threw before painting (this assertion family has gone quiet before).
-    tab.navigate_to(&format!("http://127.0.0.1:2832/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2832/api/sessions")
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -1305,7 +1145,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     )
     .as_i64()
     .unwrap_or(-1);
-    drop(child);
+    drop(monitor);
     assert!(gone, "the hidden row left the tree");
     let v: serde_json::Value = serde_json::from_str(after_hide.as_str().unwrap_or("null"))
         .unwrap_or(serde_json::Value::Null);
@@ -1331,41 +1171,10 @@ fn the_app_shell_hides_and_restores_a_session() {
 fn the_app_shell_walks_a_child_back_to_its_parent() {
     let _serial = serial();
     let base = base("appshell-parent");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let child = std::process::Command::new(&bin)
-        .args(["--port", "2833", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    let child = Reap(child);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2833, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2833/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -1479,7 +1288,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    drop(child);
+    drop(monitor);
     assert!(
         live,
         "the parent control went live for child {child_id} of {parent}: {header}"
@@ -1513,41 +1322,10 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
 fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let _serial = serial();
     let base = base("appshell-scroll");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let child = std::process::Command::new(&bin)
-        .args(["--port", "2834", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    let child = Reap(child);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2834, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2834/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -1648,7 +1426,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    drop(child);
+    drop(monitor);
     assert!(
         at_tail,
         "a followed session comes back following, at the tail"
@@ -1663,41 +1441,10 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
 fn the_app_shell_keys_step_turns_and_heads() {
     let _serial = serial();
     let base = base("appshell-keys");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let child = std::process::Command::new(&bin)
-        .args(["--port", "2835", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    let child = Reap(child);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2835, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2835/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -1786,7 +1533,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
     eval(&tab, "document.getElementById('transcriptSearchInput').dispatchEvent(new KeyboardEvent('keydown', {key: ']', bubbles: true, cancelable: true})); 'ok'");
     std::thread::sleep(std::time::Duration::from_millis(400));
     let while_typing = unit_index(&tab);
-    drop(child);
+    drop(monitor);
     assert!(
         after_one > start,
         "`]` moved to a later unit: {start} -> {after_one}"
@@ -1813,41 +1560,10 @@ fn the_app_shell_keys_step_turns_and_heads() {
 fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let _serial = serial();
     let base = base("appshell-layout");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let child = std::process::Command::new(&bin)
-        .args(["--port", "2836", "--pair"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("v2 starts");
-    let child = Reap(child);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let monitor = Monitor::spawn(Kind::V2, 2836, &base, None, true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2836/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -1907,7 +1623,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
       });
     })()"#;
     let seen = eval(&tab, probe);
-    drop(child);
+    drop(monitor);
     assert!(at_tail, "a fresh open lands pinned at the tail");
     let v: serde_json::Value =
         serde_json::from_str(seen.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
@@ -2083,14 +1799,6 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
 fn the_compose_affordance_appears_only_once_paired() {
     let _serial = serial();
     let base = base("v2pair");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor-v2");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor-v2 --release first");
-        return;
-    }
     let browser = headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
             .headless(true)
@@ -2101,49 +1809,23 @@ fn the_compose_affordance_appears_only_once_paired() {
 
     // `paired` says whether to pass `--pair`; both runs share an isolated state dir, so the
     // second one finds the token the first never minted.
-    let probe = |paired: bool, port: &str| -> (bool, i64) {
-        let mut cmd = std::process::Command::new(&bin);
-        cmd.args(["--port", port])
-            .env("XDG_CACHE_HOME", &base)
-            .env("AGENT_MONITOR_STATE", base.join("state"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        if paired {
-            cmd.arg("--pair");
-        }
-        let mut child = cmd.spawn().expect("v2 starts");
-        std::thread::sleep(std::time::Duration::from_millis(1800));
+    let probe = |paired: bool, port: u16| -> (bool, i64) {
+        let m = Monitor::spawn(Kind::V2, port, &base, None, paired);
         let tab = browser.new_tab().unwrap();
-        // Paired, the bare URL 401s — the token file is the one the run just minted, and it
-        // rides the URL exactly as the printed one does.
-        let token = std::fs::read_to_string(base.join("state").join("auth-token"))
-            .map(|t| format!("?token={}", t.trim()))
-            .unwrap_or_default();
-        tab.navigate_to(&format!("http://127.0.0.1:{port}/{token}"))
-            .unwrap();
-        tab.wait_until_navigated().unwrap();
+        m.pair(&tab);
         std::thread::sleep(std::time::Duration::from_millis(2500));
-        // `PAIRED` is a closure-local var in the shell's IIFE, so the AFFORDANCE is what gets
-        // counted — which is the thing the rule is actually about anyway.
-        let buttons = tab
-            .evaluate("document.querySelectorAll('.v2send').length", true)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
+        let buttons = harness::eval(&tab, "document.querySelectorAll('.v2send').length")
+            .as_i64()
             .unwrap_or(-1);
-        let rows = tab
-            .evaluate("document.querySelectorAll('.v2row').length", true)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
+        let rows = harness::eval(&tab, "document.querySelectorAll('.v2row').length")
+            .as_i64()
             .unwrap_or(0);
         let _ = tab.close(true);
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(m);
         (rows > 0, buttons)
     };
 
-    let (had_rows, unpaired_buttons) = probe(false, "2841");
+    let (had_rows, unpaired_buttons) = probe(false, 2841);
     if !had_rows {
         eprintln!("skip: no sessions on this machine to compose with");
         return;
@@ -2152,7 +1834,7 @@ fn the_compose_affordance_appears_only_once_paired() {
         unpaired_buttons, 0,
         "unpaired: every write route 401s, so no row offers to send"
     );
-    let (_, paired_buttons) = probe(true, "2842");
+    let (_, paired_buttons) = probe(true, 2842);
     assert!(
         paired_buttons > 0,
         "paired: the sessions that can be resumed or injected offer it ({paired_buttons})"
@@ -2285,65 +1967,6 @@ fn the_artifact_roster_groups_republishes_by_url() {
     let _ = tab2.close(true);
 }
 
-/// A hermetic QoderWork store holding one fork FAMILY (#142): a root session and a session
-/// forked from it, related through the `<sid>-session.json` sidecar's `fork_from`, both past
-/// the adapter's junk-size gate. Every store env var points into `base`, so the machine's own
-/// sessions never reach the monitor under test (the knobs claude-monitor's index tests use).
-/// Returns `(stores, root_id, fork_id)`; the caller passes `stores` on through [`store_envs`].
-fn qoderwork_family_store(base: &Path) -> (PathBuf, &'static str, &'static str) {
-    let stores = base.join("stores");
-    let qw = stores.join("qoderwork").join("-r");
-    std::fs::create_dir_all(&qw).unwrap();
-    for other in ["claude", "qoder", "codex"] {
-        std::fs::create_dir_all(stores.join(other)).unwrap();
-    }
-    let root_id = "aaaaaaaa-0000-4000-8000-000000000001";
-    let fork_id = "aaaaaaaa-0000-4000-8000-000000000002";
-    let transcript = |salt: &str| -> String {
-        let mut out = String::new();
-        for i in 0..30u32 {
-            out += &user(
-                &format!("prompt {salt} {i} — a line long enough to matter"),
-                i,
-            );
-            out += &assistant(
-                &format!("reply {salt} {i} — a line long enough to matter"),
-                i,
-            );
-        }
-        assert!(
-            out.len() > 4096,
-            "past QoderWork's MIN_TRANSCRIPT_BYTES gate"
-        );
-        out
-    };
-    std::fs::write(qw.join(format!("{root_id}.jsonl")), transcript("root")).unwrap();
-    std::fs::write(
-        qw.join(format!("{root_id}-session.json")),
-        r#"{"title":"Family root","updated_at":1756800000000}"#,
-    )
-    .unwrap();
-    std::fs::write(qw.join(format!("{fork_id}.jsonl")), transcript("fork")).unwrap();
-    std::fs::write(
-        qw.join(format!("{fork_id}-session.json")),
-        format!(
-            r#"{{"title":"Family root (Fork)","fork_from":"{root_id}","updated_at":1756800100000}}"#
-        ),
-    )
-    .unwrap();
-    (stores, root_id, fork_id)
-}
-
-/// The env that makes a monitor see ONLY the fixture stores under `stores`.
-fn store_envs(stores: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![
-        ("CLAUDE_PROJECTS_DIR", stores.join("claude")),
-        ("QODERWORK_PROJECTS_DIR", stores.join("qoderwork")),
-        ("QODER_PROJECTS_DIR", stores.join("qoder")),
-        ("CODEX_HOME", stores.join("codex")),
-    ]
-}
-
 /// The classic rail (v1 `agent-monitor`, `?ui=classic`) on the hermetic family store: rows
 /// render, the fork family clusters into ONE row whose ⑂ chip opens the fork, and hide /
 /// restore round-trip through `/api/ignore` — the server's `hidden` flag flips, the rail's
@@ -2354,41 +1977,11 @@ fn store_envs(stores: &Path) -> Vec<(&'static str, PathBuf)> {
 fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
     let _serial = serial();
     let base = base("rail-family");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor --release first");
-        return;
-    }
-    let (stores, root_id, fork_id) = qoderwork_family_store(&base);
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.args(["--port", "2837", "--pair", "--no-open"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_CACHE", base.join("cache"))
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    for (k, v) in store_envs(&stores) {
-        cmd.env(k, v);
-    }
-    let child = Reap(cmd.spawn().expect("v1 starts"));
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let stores = Stores::new(&base);
+    let (root_id, fork_id) = stores.qoderwork_family();
+    let monitor = Monitor::spawn(Kind::V1, 2837, &base, Some(&stores), true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -2422,11 +2015,7 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
         eval(tab, &js).as_bool()
     };
 
-    // `?token=` bootstraps the cookie and redirects to a bare `/`, dropping every other
-    // query — so pair first, then ask for the classic page.
-    tab.navigate_to(&format!("http://127.0.0.1:2837/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2837/?ui=classic")
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -2556,7 +2145,7 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
         Some(false),
         "the server restored the root"
     );
-    drop(child);
+    drop(monitor);
 }
 
 /// The classic page after #45: `]` still steps to the next turn, `w` still toggles wrapping —
@@ -2671,25 +2260,6 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
     drop(server);
 }
 
-/// A hermetic Claude store with one FINISHED session (old timestamps, no process) — the shape
-/// the compose affordance resumes. Returns `(stores, sid)`; pass `stores` through [`store_envs`].
-fn claude_finished_store(base: &Path) -> (PathBuf, &'static str) {
-    let stores = base.join("stores");
-    let proj = stores.join("claude").join("-r");
-    std::fs::create_dir_all(&proj).unwrap();
-    for other in ["qoderwork", "qoder", "codex"] {
-        std::fs::create_dir_all(stores.join(other)).unwrap();
-    }
-    let sid = "bbbbbbbb-0000-4000-8000-000000000001";
-    let mut out = String::new();
-    for i in 0..12u32 {
-        out += &user(&format!("prompt {i} — a line long enough to matter"), i);
-        out += &assistant(&format!("reply {i} — a line long enough to matter"), i);
-    }
-    std::fs::write(proj.join(format!("{sid}.jsonl")), out).unwrap();
-    (stores, sid)
-}
-
 /// The classic rail's compose bar after #48: paired, a finished Claude session offers ✎; the
 /// bar opens with the shared protocol's words ("Send to: …", "Send prompt"), and a send runs
 /// the shared flow — against a stubbed /api/send, so nothing is resumed — and reports the
@@ -2699,41 +2269,11 @@ fn claude_finished_store(base: &Path) -> (PathBuf, &'static str) {
 fn the_classic_rail_composes_through_the_shared_protocol() {
     let _serial = serial();
     let base = base("rail-compose");
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/release/agent-monitor");
-    if !bin.is_file() {
-        eprintln!("skip: build agent-monitor --release first");
-        return;
-    }
-    let (stores, sid) = claude_finished_store(&base);
-    let state = base.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.args(["--port", "2838", "--pair", "--no-open"])
-        .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_CACHE", base.join("cache"))
-        .env("CLAUDE_MONITOR_STATE", &state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    for (k, v) in store_envs(&stores) {
-        cmd.env(k, v);
-    }
-    let child = Reap(cmd.spawn().expect("v1 starts"));
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
+    let stores = Stores::new(&base);
+    let sid = stores.claude_finished();
+    let monitor = Monitor::spawn(Kind::V1, 2838, &base, Some(&stores), true);
+    let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
-    let token = std::fs::read_to_string(state.join("auth-token"))
-        .expect("--pair minted a token")
-        .trim()
-        .to_string();
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -2750,9 +2290,7 @@ fn the_classic_rail_composes_through_the_shared_protocol() {
         let seen = eval(tab, "(document.getElementById('composemsg') || {}).textContent + ' | ' + [...document.querySelectorAll('.row')].map(r => r.dataset.id + ':' + r.innerHTML.length).join(' ')");
         panic!("timed out waiting for {what}; seen: {seen}");
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2838/?token={token}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
+    monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2838/?ui=classic")
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -2804,5 +2342,5 @@ fn the_classic_rail_composes_through_the_shared_protocol() {
         format!("[[\"/api/send?target={sid}\",\"carry on\"]]"),
         "one send, the shared query, the prompt as the body"
     );
-    drop(child);
+    drop(monitor);
 }
