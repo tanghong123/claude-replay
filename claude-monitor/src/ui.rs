@@ -290,6 +290,10 @@ mod tests {
                 "shared/control-protocol.js",
                 claude_replay_html::shared_source("control-protocol").unwrap(),
             ),
+            (
+                "shared/record-stream.js",
+                claude_replay_html::shared_source("record-stream").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

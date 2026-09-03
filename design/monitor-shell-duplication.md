@@ -1,6 +1,6 @@
 # The monitor's two shells: where the logic forks, and the seams that would stop it
 
-Status: **accepted, executing** (task #40; reviewed and corrected 2026-09-03 — see "Review
+Status: **accepted; executed in v1.140.0–v1.147.0 (#42–#49)** (task #40; reviewed and corrected 2026-09-03 — see "Review
 notes" at the end). Measured against `main` at v1.139.0. Steps are queue tasks #42–#49.
 
 ## Why now

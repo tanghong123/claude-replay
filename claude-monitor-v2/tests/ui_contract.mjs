@@ -14,6 +14,7 @@ import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { REASONS, denoteState, displayState, needsPerson, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
+import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
 import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
@@ -530,4 +531,46 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   } finally { rmSync(tmp, { recursive: true, force: true }); }
   assert.ok(checked >= 15, `parsed ${checked} modules`);
   console.log(`module parse cases passed (${checked} modules)`);
+}
+
+// Seam (e) (#49): one two-zone reducer. Both clients apply the plan it returns; neither keeps
+// cursor arithmetic of its own.
+{
+  assert.equal(cursorText(freshCursor()), "0.0.0.0", "a fresh cursor's epoch 0 resyncs on the first pull");
+  assert.equal(pullQuery("s 1", { epoch: 2, committed: 5, gen: 1, index: 3 }), "session=s%201&cursor=2.5.1.3");
+  assert.equal(recordsQuery("s1", { offset: 10, len: 20 }, 2), "session=s1&from=10&len=20&epoch=2");
+  assert.deepEqual(parseRecords('{"a":1}\n\n{"b":2}\n'), [{ a: 1 }, { b: 2 }]);
+  const idle = reducePull({ epoch: 2, committed: 5, gen: 1, index: 0 }, 5, { epoch: 2, committed: [], committed_from: 5, provisional_gen: 1, provisional_from: 0, provisional: [] });
+  assert.equal(idle.idle, true); assert.deepEqual(idle.steps, []); assert.equal(idle.changedFrom, Infinity); assert.equal(idle.length, 5);
+  const resync = reducePull(freshCursor(), 0, { epoch: 1, committed: [{ id: "a" }, { id: "b" }], committed_from: 0, provisional_gen: 0, provisional_from: 0, provisional: [{ id: "p" }] });
+  assert.equal(resync.resync, true); assert.equal(resync.changedFrom, 0);
+  assert.deepEqual(resync.steps.map(s => s.op), ["truncate", "truncate", "append", "truncate", "append"], "resync, then commit, then provisional");
+  assert.deepEqual(resync.cursor, { epoch: 1, committed: 2, gen: 0, index: 1 }); assert.equal(resync.length, 3);
+  const extend = reducePull(resync.cursor, resync.length, { epoch: 1, committed: [], committed_from: 2, provisional_gen: 0, provisional_from: 1, provisional: [{ id: "q" }] });
+  assert.equal(extend.idle, false); assert.deepEqual(extend.steps, [{ op: "truncate", to: 3 }, { op: "append", records: [{ id: "q" }] }], "a same-gen append keeps the provisional prefix");
+  assert.equal(extend.changedFrom, 3); assert.deepEqual(extend.cursor, { epoch: 1, committed: 2, gen: 0, index: 2 }); assert.equal(extend.length, 4);
+  const replace = reducePull(extend.cursor, extend.length, { epoch: 1, committed: [], committed_from: 2, provisional_gen: 1, provisional_from: 0, provisional: [{ id: "r" }] });
+  assert.deepEqual(replace.steps, [{ op: "truncate", to: 2 }, { op: "append", records: [{ id: "r" }] }], "a gen bump replaces the provisional zone");
+  assert.equal(replace.changedFrom, 2); assert.deepEqual(replace.cursor, { epoch: 1, committed: 2, gen: 1, index: 1 });
+  const commit = reducePull(replace.cursor, replace.length, { epoch: 1, committed: [{ id: "c" }], committed_from: 2, provisional_gen: 2, provisional_from: 0, provisional: [] });
+  assert.deepEqual(commit.steps, [{ op: "truncate", to: 2 }, { op: "append", records: [{ id: "c" }] }], "a commit lands at committed_from and empties the provisional zone (already at the prefix)");
+  assert.equal(commit.changedFrom, 2); assert.deepEqual(commit.cursor, { epoch: 1, committed: 3, gen: 2, index: 0 }); assert.equal(commit.length, 3);
+  const shrink = reducePull({ epoch: 1, committed: 3, gen: 2, index: 2 }, 5, { epoch: 1, committed: [], committed_from: 3, provisional_gen: 2, provisional_from: 1, provisional: [] });
+  assert.deepEqual(shrink.steps, [{ op: "truncate", to: 4 }], "a shorter provisional zone truncates even with nothing to append");
+  // `idle` is the classic page's early-return rule (both zones empty); `changedFrom` is what a
+  // store must repaint. Deliberately different questions: this reply is idle AND changes the
+  // store — the app shell's update gate reads changedFrom, never idle.
+  assert.equal(shrink.idle, true); assert.equal(shrink.changedFrom, 4);
+  const storeSrc0 = readFileSync(new URL("../../claude-monitor/src/codex-ui/record-store.js", import.meta.url), "utf8");
+  assert.match(storeSrc0, /if \(plan\.changedFrom !== Infinity \|\| reply\.meta\) this\.handlers\.update/, "the store repaints on changedFrom, not on the idle rule");
+  const bump = reducePull({ epoch: 1, committed: 3, gen: 2, index: 0 }, 3, { epoch: 2, committed: [{ id: "x" }], committed_from: 0, provisional_gen: 0, provisional_from: 0, provisional: [] });
+  assert.equal(bump.resync, true); assert.equal(bump.changedFrom, 0); assert.deepEqual(bump.cursor, { epoch: 2, committed: 1, gen: 0, index: 0 });
+  const exportSrc2 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(exportSrc2, /shared\.reducePull\(pc, records\.length, r\)/, "the classic page applies the shared plan");
+  assert.doesNotMatch(exportSrc2, /pc\.committed \+ r\.provisional_from|pc\.committed\+\+/, "…and keeps no cursor arithmetic of its own");
+  assert.match(exportSrc2, /shared\.pullQuery\(|shared\.recordsQuery\(|shared\.parseRecords\(/, "…nor its own queries");
+  const storeSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/record-store.js", import.meta.url), "utf8");
+  assert.match(storeSrc, /reducePull\(this\.cursor, this\.records\.length, reply\)/, "the app shell's store applies the shared plan");
+  assert.doesNotMatch(storeSrc, /c\.committed \+ reply\.provisional_from|c\.committed\+\+/, "…and keeps no cursor arithmetic of its own");
+  console.log("seam (e) cases passed");
 }

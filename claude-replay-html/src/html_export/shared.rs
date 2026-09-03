@@ -33,6 +33,10 @@ pub const SHARED: &[(&str, &str)] = &[
         "control-protocol",
         include_str!("../html/shared/control-protocol.js"),
     ),
+    (
+        "record-stream",
+        include_str!("../html/shared/record-stream.js"),
+    ),
 ];
 
 /// The source of one shared module, for serving it as a module.

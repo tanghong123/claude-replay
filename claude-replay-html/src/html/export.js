@@ -1524,32 +1524,29 @@
   // {epoch, committed_id, provisional_gen, provisional_index}. We are a CONTENT-BLIND client:
   // we apply committed appends and the provisional truncate/extend by position, never inspecting
   // a block. `pc` is our cursor; epoch 0 ⇒ the first pull resyncs. See `cache::stream` / serve.rs.
-  var pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+  // #49: the cursor, the queries and the two-zone REDUCER are the shared module's
+  // (html/shared/record-stream.js); this page applies the plan to its own store below.
+  var pc = shared.freshCursor();
   function cursorStr() {
-    return pc.epoch + "." + pc.committed + "." + pc.gen + "." + pc.index;
+    return shared.cursorText(pc);
   }
   function putBlock(b) {
     pushRecord(b);
   }
   function consumePull(r) {
-    // Idle tick (same epoch, both zones empty): nothing to do.
-    if (r.epoch === pc.epoch && !r.committed.length && !r.provisional.length) return false;
-    if (r.epoch !== pc.epoch) { resetFrom(0); pc.committed = 0; } // resync
+    var plan = shared.reducePull(pc, records.length, r);
+    // Idle tick (same epoch, both zones empty): nothing to do — an idle reply's meta is null.
+    if (plan.idle) return false;
     if (r.meta) renderMeta(r.meta);
-    // A commit (or resync): committed grew — drop everything at/after committed_from, then append
-    // the new permanent blocks. `committed_from <= pc.committed` always.
-    if (r.committed.length) {
-      resetFrom(r.committed_from);
-      pc.committed = r.committed_from;
-      for (var i = 0; i < r.committed.length; i++) { putBlock(r.committed[i]); pc.committed++; }
+    // The plan, in order: a resync truncates to 0; a commit truncates at committed_from and
+    // appends the permanent blocks; the provisional zone truncates to the committed prefix +
+    // provisional_from and appends the suffix. `resetFrom` is a no-op past the end.
+    for (var i = 0; i < plan.steps.length; i++) {
+      var step = plan.steps[i];
+      if (step.op === "truncate") { resetFrom(step.to); continue; }
+      for (var j = 0; j < step.records.length; j++) putBlock(step.records[j]);
     }
-    // Provisional: truncate to the committed prefix + provisional_from, then append the suffix
-    // (a same-gen append keeps the prefix; a gen bump/commit sends provisional_from = 0 ⇒ replace).
-    resetFrom(pc.committed + r.provisional_from);
-    for (var j = 0; j < r.provisional.length; j++) putBlock(r.provisional[j]);
-    pc.epoch = r.epoch;
-    pc.gen = r.provisional_gen;
-    pc.index = r.provisional_from + r.provisional.length;
+    pc = plan.cursor;
     postRender();
     return true;
   }
@@ -2151,7 +2148,7 @@
       var pullTick = function () {
         if (inflightP) return;
         inflightP = true;
-        fetch("pull?session=" + encodeURIComponent(sess) + "&cursor=" + cursorStr(), { cache: "no-store" })
+        fetch("pull?" + shared.pullQuery(sess, pc), { cache: "no-store" })
           .then(function (r) { return r.json(); })
           .then(function (reply) {
             // Not a feed: this session lives on another server, or cannot be served at all.
@@ -2161,14 +2158,13 @@
             if (reply.t === "error") { clearInterval(pullTimer); showFatal(reply.message); return null; }
             var ext = reply.committed_ext;
             if (!ext || !ext.len) { reply.committed = []; return reply; }
-            return fetch("records?session=" + encodeURIComponent(sess) + "&from=" + ext.offset +
-                         "&len=" + ext.len + "&epoch=" + reply.epoch, { cache: "no-store" })
+            return fetch("records?" + shared.recordsQuery(sess, ext, reply.epoch), { cache: "no-store" })
               .then(function (rr) {
                 if (!rr.ok) throw new Error("stale records"); // 409 ⇒ drop the reply, re-pull
                 return rr.text();
               })
               .then(function (text) {
-                reply.committed = text.split("\n").filter(function (l) { return l.trim(); }).map(JSON.parse);
+                reply.committed = shared.parseRecords(text);
                 return reply;
               });
           })
@@ -2185,7 +2181,7 @@
               // state, exactly what a manual reload does.
               console.error("pull apply failed; resyncing", err);
               resetFrom(0);
-              pc = { epoch: 0, committed: 0, gen: 0, index: 0 };
+              pc = shared.freshCursor();
               return;
             }
             if (changed) settleAfterApply(anchor, records.length - before);
