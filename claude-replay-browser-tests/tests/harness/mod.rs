@@ -122,6 +122,22 @@ pub fn thinking_at(t: &str, ts: &str) -> String {
     )
 }
 
+/// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
+pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Agent\",\"input\":{{\"subagent_type\":\"{subagent_type}\",\"description\":\"look around\",\"prompt\":\"look around\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        stamp(s)
+    )
+}
+/// The spawn's result, naming the child `agent_id` whose transcript lives at
+/// `<sid>/subagents/agent-<agent_id>.jsonl` — what links a parent to its child.
+pub fn agent_result(call_id: &str, agent_id: &str, subagent_type: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"user\",\"toolUseResult\":{{\"kind\":\"agent-result\",\"agentId\":\"{agent_id}\",\"agentType\":\"{subagent_type}\",\"content\":\"done\"}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"done\"}}]}},\"timestamp\":\"{}\"}}\n",
+        stamp(s)
+    )
+}
+
 /// An ISO timestamp `secs_ago` seconds before now — for records that must read as live.
 pub fn now_minus(secs_ago: u64) -> String {
     let t = std::time::SystemTime::now() - Duration::from_secs(secs_ago);
@@ -532,4 +548,173 @@ pub fn classic_view_state(tab: &headless_chrome::Tab) -> serde_json::Value {
             blocks: (document.getElementById("stream") || {childElementCount:-1}).childElementCount
         })"#,
     )
+}
+
+// ── the two surfaces, one vocabulary ────────────────────────────────────────────────────────
+// A scenario is written once and run against both pages. The classic page (the html server's
+// `export.js`, the reference) scrolls the DOCUMENT and marks turns with `data-turn` on the
+// turn card; the app shell scrolls `.transcript`, virtualizes units and marks user turns with
+// `data-turn` on `.turn.user`. The probes below speak in USER-TURN ORDINALS, which both name,
+// never in pixels or DOM indexes.
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    /// `export.js` on the html server: the reference.
+    Classic,
+    /// The monitor's app shell (`?ui=app`).
+    AppShell,
+}
+
+impl Surface {
+    /// The scroller's JS expression.
+    pub fn scroller(self) -> &'static str {
+        match self {
+            Surface::Classic => "document.scrollingElement",
+            Surface::AppShell => "document.querySelector('.transcript')",
+        }
+    }
+    /// The element whose children carry the turns.
+    fn turns_root(self) -> &'static str {
+        match self {
+            Surface::Classic => "document.getElementById('stream')",
+            Surface::AppShell => "document.querySelector('.virtual-window')",
+        }
+    }
+    /// The fold headers a reader opens: the classic page's `.fold-h`, the app shell's
+    /// interactive `button.renderer-head`.
+    pub fn fold_head(self) -> &'static str {
+        match self {
+            Surface::Classic => ".fold-h",
+            Surface::AppShell => "button.renderer-head",
+        }
+    }
+}
+
+/// The user-turn ordinal at the viewport top: the first `[data-turn]` element at (or within a
+/// line above) the top edge of the scroller. -1 when nothing is mounted there yet.
+pub fn turn_at_top(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let (scroller, root) = (surface.scroller(), surface.turns_root());
+    let top = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{scroller}.getBoundingClientRect().top"),
+    };
+    eval(tab, &format!("(function(){{ var root = {root}; if (!root) return -1; var top = {top}; var els = root.querySelectorAll('[data-turn]'); for (var e of els) {{ if (e.getBoundingClientRect().top >= top - 24) return Number(e.dataset.turn); }} return -1; }})()"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// Whether the scroller sits at its tail (within 2px).
+pub fn at_tail(tab: &headless_chrome::Tab, surface: Surface) -> bool {
+    let s = surface.scroller();
+    eval(tab, &format!("(function(){{ var s = {s}; if (!s) return false; return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; }})()"))
+        .as_bool()
+        .unwrap_or(false)
+}
+
+/// The reader's scroll: a wheel event first (intent — a bare programmatic scroll reads as the
+/// renderer's own and the follow logic re-pins), then a scroll by `dy` pixels.
+pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
+    let s = surface.scroller();
+    let target = match surface {
+        Surface::Classic => "window",
+        Surface::AppShell => s,
+    };
+    eval(tab, &format!("(function(){{ var s = {s}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTop = Math.max(0, s.scrollTop + ({dy})); return 'ok'; }})()"));
+}
+
+/// Jump to the end the way the page offers it: the classic page's pill / a scroll to the
+/// bottom with intent; the app shell's jump-to-bottom control.
+pub fn jump_to_end(tab: &headless_chrome::Tab, surface: Surface) {
+    match surface {
+        Surface::Classic => {
+            eval(tab, "(function(){ window.dispatchEvent(new WheelEvent('wheel', {deltaY: 120})); window.scrollTo(0, document.scrollingElement.scrollHeight); return 'ok'; })()");
+        }
+        Surface::AppShell => {
+            eval(tab, "(function(){ var b = document.getElementById('jumpToBottom'); if (b) b.click(); else { var s = document.querySelector('.transcript'); s.scrollTop = s.scrollHeight; } return 'ok'; })()");
+        }
+    }
+}
+
+/// Open the LAST fold header currently in the DOM (near the end after a jump) and return the
+/// turn it belongs to, or -1 when there is none mounted.
+pub fn open_last_fold(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let head = surface.fold_head();
+    eval(tab, &format!("(function(){{ var hs = document.querySelectorAll('{head}'); if (!hs.length) return -1; var h = hs[hs.length - 1]; var t = h.closest('[data-turn]'); h.click(); return t ? Number(t.dataset.turn) : -2; }})()"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// The number of user turns mounted right now (the app shell mounts a window; the classic
+/// page mounts everything it has rendered).
+pub fn mounted_turns(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let root = surface.turns_root();
+    eval(tab, &format!("(function(){{ var r = {root}; return r ? r.querySelectorAll('[data-turn]').length : -1; }})()"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+// ── live growth ─────────────────────────────────────────────────────────────────────────────
+
+/// A transcript growing while a page watches it: a thread appends the script's records one
+/// per `interval`. The interval must exceed the slower consumer's poll (the app shell's
+/// record store polls every 1 s; the classic page's tick is its POLL_MS) or assertions race
+/// the apply. The thread stops on drop — drop the driver before the next case takes
+/// [`serial`], or it appends into a store another case is measuring.
+pub struct LiveGrowth {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    pub appended: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl LiveGrowth {
+    pub fn start(path: PathBuf, script: Vec<String>, interval: Duration) -> LiveGrowth {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let appended = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (stop2, appended2) = (stop.clone(), appended.clone());
+        let thread = std::thread::spawn(move || {
+            for record in script {
+                if stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(interval);
+                if stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                append(&path, &record);
+                appended2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        LiveGrowth {
+            stop,
+            thread: Some(thread),
+            appended,
+        }
+    }
+
+    /// How many records have been appended so far.
+    pub fn count(&self) -> usize {
+        self.appended.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Wait until the whole script has been appended (or `timeout`).
+    pub fn finish(mut self, timeout: Duration) -> usize {
+        let t0 = Instant::now();
+        while self.thread.as_ref().map_or(false, |t| !t.is_finished()) && t0.elapsed() < timeout {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        self.count()
+    }
+}
+
+impl Drop for LiveGrowth {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }

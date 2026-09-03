@@ -911,39 +911,16 @@ fn the_v2_shell_keeps_the_document_scroller() {
     // v2 lists sessions from the real store, so point it at this fixture by deep link: the
     // shell route registers an unknown id on demand. It needs the transcript inside a store
     // it scans, so this test drives the id the server reports for the file it was given.
-    let monitor = Monitor::spawn(Kind::V2, 2831, &base, None, true);
+    let stores = Stores::new(&base);
+    // A hermetic tall session: the assertion is about LAYOUT, not content.
+    let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
+    stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2831, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
     // Any session the machine has will do — the assertion is about LAYOUT, not content.
-    tab.navigate_to("http://127.0.0.1:2831/api/sessions")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    let listing = tab
-        .evaluate("document.body.innerText", true)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
-    // Parse FIRST and assert on it: an auth or route regression makes this unparsable, and
-    // folding that into the same "no sessions" skip below is how the whole assertion went
-    // quiet for a release. Only a genuinely empty store may skip.
-    let parsed = serde_json::from_str::<serde_json::Value>(&listing);
-    assert!(
-        parsed.is_ok(),
-        "/api/sessions did not answer with JSON — paired? got: {listing}"
-    );
-    // `{groups:[{rows:[{id}]}]}` — the shape v2 inherited when it started sharing v1's
-    // `Index` instead of its own `sessions_json`. Reading the old `sessions[0].id` found
-    // nothing and skipped, which is the second half of why this assertion went quiet.
-    let id = parsed
-        .ok()
-        .and_then(|v| v["groups"][0]["rows"][0]["id"].as_str().map(str::to_string));
-    let Some(id) = id else {
-        drop(monitor);
-        eprintln!("skip: no sessions on this machine to compose");
-        return;
-    };
+    let id = sid.clone();
     // `?ui=classic` explicitly: the app shell is the default at `/` now, and the layout
     // contract this test holds — one document scroller, a rail that does not scroll away, no
     // iframe — belongs to the CLASSIC splice shell. Both shells are supported while the new one
@@ -1024,38 +1001,16 @@ fn the_v2_shell_keeps_the_document_scroller() {
 fn the_app_shell_hides_and_restores_a_session() {
     let _serial = serial();
     let base = base("appshell-hide");
-    let monitor = Monitor::spawn(Kind::V2, 2832, &base, None, true);
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "cccccccc-0000-4000-8000-000000000001",
+        &harness::long_session(12, harness::Shape::default()),
+    );
+    let store_rows = 1;
+    let monitor = Monitor::spawn(Kind::V2, 2832, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2832/api/sessions")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    let listing = tab
-        .evaluate("document.body.innerText", true)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
-    let parsed = serde_json::from_str::<serde_json::Value>(&listing);
-    assert!(
-        parsed.is_ok(),
-        "/api/sessions did not answer with JSON — paired? got: {listing}"
-    );
-    let store_rows = parsed
-        .ok()
-        .and_then(|v| {
-            v["groups"].as_array().map(|g| {
-                g.iter()
-                    .map(|x| x["rows"].as_array().map_or(0, |r| r.len()))
-                    .sum::<usize>()
-            })
-        })
-        .unwrap_or(0);
-    if store_rows == 0 {
-        eprintln!("skip: no sessions on this machine to hide");
-        return;
-    }
     tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -1171,7 +1126,23 @@ fn the_app_shell_hides_and_restores_a_session() {
 fn the_app_shell_walks_a_child_back_to_its_parent() {
     let _serial = serial();
     let base = base("appshell-parent");
-    let monitor = Monitor::spawn(Kind::V2, 2833, &base, None, true);
+    let stores = Stores::new(&base);
+    // A parent with one sub-agent child, related by PATH alone (<sid>/subagents/agent-<id>.jsonl).
+    let parent = "dddddddd-0000-4000-8000-000000000001".to_string();
+    // The parent SPAWNS the child (an `Agent` call whose result names the agent id): that is
+    // what lists it under `meta.children`; the file under `<sid>/subagents/` is where the
+    // child is then read from.
+    let mut transcript = harness::long_session(6, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_1", "Explore", 7);
+    transcript += &harness::agent_result("call_1", "aExplore-1", "Explore", 7);
+    transcript += &harness::long_session(6, harness::Shape::default());
+    stores.claude_session(&parent, &transcript);
+    stores.claude_child(
+        &parent,
+        "aExplore-1",
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2833, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
@@ -1183,74 +1154,17 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     };
     // Find a parent with children by asking the same routes the shell uses — first the
     // listing (blocking on the cold scan), then `/pull` per session for its meta.
-    tab.navigate_to("http://127.0.0.1:2833/api/sessions")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    let listing = eval(&tab, "document.body.innerText");
-    let ids: Vec<String> =
-        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
-            .ok()
-            .and_then(|v| {
-                v["groups"].as_array().map(|g| {
-                    g.iter()
-                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
-                        .filter_map(|r| r["id"].as_str().map(str::to_string))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-    assert!(
-        !ids.is_empty() || {
-            eprintln!("skip: no sessions on this machine");
-            true
-        }
-    );
-    if ids.is_empty() {
-        return;
-    }
     tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
-    // A parent with a child the server can actually serve: a child listed in a parent's meta
-    // may have no readable transcript any more (the file is gone, the store moved on), and
-    // that is a legitimate "cannot read this session" — not what this case is about. Probe
-    // the child's own `/pull` the way the shell will, and take the first pair that answers.
-    let mut pair: Option<(String, String)> = None;
-    'outer: for id in ids.iter().take(40) {
-        let js = format!(
-            "fetch('/pull?session={}&cursor=', {{cache:'no-store'}}).then(r => r.json()).then(j => JSON.stringify((j.meta && j.meta.children || []).map(c => c.id))).catch(() => '[]')",
-            id
-        );
-        let v = tab
-            .evaluate(&js, true)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_else(|| "[]".into());
-        let children: Vec<String> = serde_json::from_str(&v).unwrap_or_default();
-        for child_id in children.iter().take(4) {
-            let probe = format!(
-                "fetch('/pull?session={}&cursor=', {{cache:'no-store'}}).then(r => r.ok ? r.json() : null).then(j => String(!!(j && j.meta && j.meta.ancestors && j.meta.ancestors.length))).catch(() => 'false')",
-                child_id
-            );
-            let readable = tab
-                .evaluate(&probe, true)
-                .ok()
-                .and_then(|r| r.value)
-                .and_then(|v| v.as_str().map(|s| s == "true"))
-                .unwrap_or(false);
-            if readable {
-                pair = Some((id.clone(), child_id.clone()));
-                break 'outer;
-            }
-        }
-    }
-    let Some((parent, child_id)) = pair else {
-        eprintln!(
-            "skip: none of the first {} sessions has a sub-agent child",
-            ids.len().min(40)
-        );
-        return;
-    };
+    // The child's id is whatever the index gave the sub-agent transcript: read it off the
+    // parent's meta rather than guessing the naming.
+    let listed = eval(&tab, &format!("fetch('/pull?session={parent}&cursor=', {{cache:'no-store'}}).then(r => r.json()).then(j => JSON.stringify((j.meta && j.meta.children || []).map(c => c.id))).catch(() => '[]')"));
+    let children: Vec<String> =
+        serde_json::from_str(listed.as_str().unwrap_or("[]")).unwrap_or_default();
+    let child_id = children
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("the fixture parent lists its sub-agent child: {listed}"));
     tab.navigate_to(&format!("http://127.0.0.1:2833/?ui=app&session={child_id}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -1322,7 +1236,10 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
 fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let _serial = serial();
     let base = base("appshell-scroll");
-    let monitor = Monitor::spawn(Kind::V2, 2834, &base, None, true);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
+    stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2834, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
@@ -1332,49 +1249,10 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to("http://127.0.0.1:2834/api/sessions")
+    tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
-    let listing = eval(&tab, "document.body.innerText");
-    let ids: Vec<String> =
-        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
-            .ok()
-            .and_then(|v| {
-                v["groups"].as_array().map(|g| {
-                    g.iter()
-                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
-                        .filter_map(|r| r["id"].as_str().map(str::to_string))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-    if ids.is_empty() {
-        eprintln!("skip: no sessions on this machine");
-        return;
-    }
-    // A session tall enough to scroll: the first of the newest few whose transcript mounts
-    // more than a viewport's worth of units within a short wait.
-    let tall_enough = "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
-    let mut sid = String::new();
-    for id in ids.iter().take(6) {
-        tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={id}"))
-            .unwrap();
-        tab.wait_until_navigated().unwrap();
-        for _ in 0..40 {
-            if eval(&tab, tall_enough).as_bool() == Some(true) {
-                sid = id.clone();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        if !sid.is_empty() {
-            break;
-        }
-    }
-    if sid.is_empty() {
-        eprintln!("skip: none of the newest sessions is tall enough to scroll");
-        return;
-    }
+    harness::until(&tab, "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
     // Scroll with USER intent (the viewport only treats a scroll as the reader's after a
     // wheel/pointer event), to roughly the middle, and read the viewport's own anchor.
     let anchor_js = r#"(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r=c.getBoundingClientRect(); if (r.bottom > top + 1) return JSON.stringify({key: c.dataset.unitKey, top: Math.round(r.top - top)}); } return 'null'; })()"#;
@@ -1441,7 +1319,20 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
 fn the_app_shell_keys_step_turns_and_heads() {
     let _serial = serial();
     let base = base("appshell-keys");
-    let monitor = Monitor::spawn(Kind::V2, 2835, &base, None, true);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
+    stores.claude_session(
+        &sid,
+        &harness::long_session(
+            40,
+            harness::Shape {
+                tool_every: 2,
+                think_every: 5,
+                prose_repeat: 6,
+            },
+        ),
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2835, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
@@ -1451,48 +1342,10 @@ fn the_app_shell_keys_step_turns_and_heads() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to("http://127.0.0.1:2835/api/sessions")
+    tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
-    let listing = eval(&tab, "document.body.innerText");
-    let ids: Vec<String> =
-        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
-            .ok()
-            .and_then(|v| {
-                v["groups"].as_array().map(|g| {
-                    g.iter()
-                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
-                        .filter_map(|r| r["id"].as_str().map(str::to_string))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-    if ids.is_empty() {
-        eprintln!("skip: no sessions on this machine");
-        return;
-    }
-    // A session with several turns and at least one tool head.
-    let ready = "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()";
-    let mut sid = String::new();
-    for id in ids.iter().take(6) {
-        tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={id}"))
-            .unwrap();
-        tab.wait_until_navigated().unwrap();
-        for _ in 0..40 {
-            if eval(&tab, ready).as_bool() == Some(true) {
-                sid = id.clone();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        if !sid.is_empty() {
-            break;
-        }
-    }
-    if sid.is_empty() {
-        eprintln!("skip: none of the newest sessions has three turns and a tool head mounted");
-        return;
-    }
+    harness::until(&tab, "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()", "three user turns and a tool head mounted", std::time::Duration::from_secs(20), "document.querySelectorAll('.virtual-window .turn.user').length + ' turns, ' + document.querySelectorAll('.virtual-window button.renderer-head').length + ' heads'");
     let key = |k: &str, shift: bool| {
         format!("document.dispatchEvent(new KeyboardEvent('keydown', {{key: {k:?}, shiftKey: {shift}, bubbles: true, cancelable: true}})); 'ok'")
     };
@@ -1560,7 +1413,10 @@ fn the_app_shell_keys_step_turns_and_heads() {
 fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let _serial = serial();
     let base = base("appshell-layout");
-    let monitor = Monitor::spawn(Kind::V2, 2836, &base, None, true);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
+    stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2836, &base, Some(&stores), true);
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
@@ -1570,34 +1426,10 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to("http://127.0.0.1:2836/api/sessions")
+    tab.navigate_to(&format!("http://127.0.0.1:2836/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
-    let rows = eval(&tab, "(function(){ try { var j = JSON.parse(document.body.innerText); return (j.groups||[]).reduce((n,g)=>n+(g.rows||[]).length,0); } catch(e) { return -1; } })()").as_i64().unwrap_or(-1);
-    assert!(
-        rows >= 0,
-        "/api/sessions did not answer with JSON — paired?"
-    );
-    if rows == 0 {
-        eprintln!("skip: no sessions on this machine");
-        return;
-    }
-    // A fresh open of the app shell: the first session, tall enough to scroll.
-    tab.navigate_to("http://127.0.0.1:2836/?ui=app").unwrap();
-    tab.wait_until_navigated().unwrap();
-    let tall = "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()";
-    let mut ready = false;
-    for _ in 0..80 {
-        if eval(&tab, tall).as_bool() == Some(true) {
-            ready = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    if !ready {
-        eprintln!("skip: the first session is not tall enough to scroll");
-        return;
-    }
+    harness::until(&tab, "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
     // Landed pinned at the tail, on its own, without anyone scrolling.
     let mut at_tail = false;
     for _ in 0..40 {
@@ -1799,6 +1631,8 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
 fn the_compose_affordance_appears_only_once_paired() {
     let _serial = serial();
     let base = base("v2pair");
+    let stores = Stores::new(&base);
+    stores.claude_finished();
     let browser = headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
             .headless(true)
@@ -1810,9 +1644,12 @@ fn the_compose_affordance_appears_only_once_paired() {
     // `paired` says whether to pass `--pair`; both runs share an isolated state dir, so the
     // second one finds the token the first never minted.
     let probe = |paired: bool, port: u16| -> (bool, i64) {
-        let m = Monitor::spawn(Kind::V2, port, &base, None, paired);
+        let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), paired);
         let tab = browser.new_tab().unwrap();
         m.pair(&tab);
+        // The affordance under test is the classic splice's: ask for it by name, since the
+        // app shell is what `/` serves by default.
+        m.open(&tab, "?ui=classic");
         std::thread::sleep(std::time::Duration::from_millis(2500));
         let buttons = harness::eval(&tab, "document.querySelectorAll('.v2send').length")
             .as_i64()
@@ -1826,10 +1663,7 @@ fn the_compose_affordance_appears_only_once_paired() {
     };
 
     let (had_rows, unpaired_buttons) = probe(false, 2841);
-    if !had_rows {
-        eprintln!("skip: no sessions on this machine to compose with");
-        return;
-    }
+    assert!(had_rows, "the fixture session is listed");
     assert_eq!(
         unpaired_buttons, 0,
         "unpaired: every write route 401s, so no row offers to send"
