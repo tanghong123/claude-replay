@@ -47,7 +47,7 @@ struct Opened {
     tab: std::sync::Arc<headless_chrome::Tab>,
     _browser: headless_chrome::Browser,
     _server: Option<claude_replay_html::LiveServer>,
-    _monitor: Option<Monitor>,
+    monitor: Option<Monitor>,
 }
 
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
@@ -78,7 +78,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
                 tab,
                 _browser: browser,
                 _server: Some(server),
-                _monitor: None,
+                monitor: None,
             }
         }
         Surface::AppShell => {
@@ -99,10 +99,58 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
                 tab,
                 _browser: browser,
                 _server: None,
-                _monitor: Some(monitor),
+                monitor: Some(monitor),
             }
         }
     }
+}
+
+/// Both surfaces on ONE v2 monitor, so a server restart can be driven: the classic page is the
+/// splice (`?ui=classic&session=`, the same export.js DOM in the document), the app shell is
+/// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
+fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+    monitor.pair(&tab);
+    let (query, ready, diag) = match surface {
+        Surface::Classic => (format!("?ui=classic&session={SID}"), "document.querySelectorAll('#stream [data-turn]').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
+        Surface::AppShell => (format!("?ui=app&session={SID}"), "document.querySelectorAll('.virtual-window [data-turn]').length >= 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
+    };
+    monitor.open(&tab, &query);
+    harness::until(
+        &tab,
+        ready,
+        "the page to render the fixture",
+        Duration::from_secs(30),
+        diag,
+    );
+    Opened {
+        tab,
+        _browser: browser,
+        _server: None,
+        monitor: Some(monitor),
+    }
+}
+
+/// Kill the page's monitor and start a new one on the same port over the same state and
+/// stores — a server restart under a watching page.
+fn restart_monitor(page: &mut Opened, fx: &Fixture, port: u16) {
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    page.monitor = None; // reaped
+    std::thread::sleep(Duration::from_millis(800));
+    page.monitor = Some(Monitor::spawn(
+        Kind::V2,
+        port,
+        &fx.base,
+        Some(&stores),
+        true,
+    ));
 }
 
 fn settle() {
@@ -175,13 +223,9 @@ fn app_shell_holds_the_viewport_when_a_fold_toggles_near_the_end() {
 
 // ── scenario: the tail pin holds through growth; an unpinned reader is not moved ────────────
 
-/// A fresh open lands pinned at the tail and STAYS there while the transcript grows; after the
-/// reader scrolls up, growth leaves the turn at the top where it was.
-fn scenario_growth(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
-    jump_to_end(tab, surface);
-    await_tail(tab, surface, "a fresh open to land at the tail");
-    let last_before = last_mounted_turn(tab, surface);
-    let script: Vec<String> = (0..4)
+/// The growth script: four live turns, timestamps a minute back from now.
+fn growth_script() -> Vec<String> {
+    (0..4)
         .flat_map(|k| {
             vec![
                 user_at(
@@ -197,10 +241,28 @@ fn scenario_growth(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
                 ),
             ]
         })
-        .collect();
-    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(2600));
-    let appended = growth.finish(Duration::from_secs(40));
-    assert_eq!(appended, 8, "the driver appended the whole script");
+        .collect()
+}
+
+/// A fresh open lands pinned at the tail and STAYS there while the transcript grows.
+fn scenario_follows_the_tail_when_pinned(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let last_before = last_mounted_turn(tab, surface);
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growth_script(),
+        Duration::from_millis(2600),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(40)),
+        8,
+        "the driver appended the whole script"
+    );
     // > every consumer's poll: the last apply lands.
     std::thread::sleep(Duration::from_millis(4000));
     let last_after = last_mounted_turn(tab, surface);
@@ -212,6 +274,12 @@ fn scenario_growth(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
         at_tail(tab, surface),
         "pinned: the tail followed the growth (last turn {last_before} -> {last_after})"
     );
+}
+
+/// A reader who scrolled up is NOT moved by growth, and is not re-pinned.
+fn scenario_holds_when_unpinned(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
     let last = turn_at_top(tab, surface);
     scroll_by(tab, surface, -900);
     scroll_by(tab, surface, -900);
@@ -221,18 +289,17 @@ fn scenario_growth(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
         held >= 0 && held < last.max(1),
         "the reader scrolled up: top turn {last} -> {held}"
     );
-    let more: Vec<String> = (0..3)
-        .map(|k| {
-            assistant_at(
-                &format!("later tail {k}: {}", "more prose. ".repeat(12)),
-                &now_minus(20 - k * 5),
-            )
-        })
-        .collect();
-    let growth = LiveGrowth::start(fx.path.clone(), more, Duration::from_millis(2600));
-    let appended = growth.finish(Duration::from_secs(30));
-    assert_eq!(appended, 3);
-    std::thread::sleep(Duration::from_millis(3000));
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growth_script(),
+        Duration::from_millis(2600),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(40)),
+        8,
+        "the driver appended the whole script"
+    );
+    std::thread::sleep(Duration::from_millis(4000));
     let after = turn_at_top(tab, surface);
     assert_eq!(
         after, held,
@@ -243,20 +310,38 @@ fn scenario_growth(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_follows_the_tail_when_pinned_and_holds_when_not() {
+fn classic_page_follows_the_tail_when_pinned() {
     let _serial = serial();
-    let fx = fixture("scenario-growth-classic", 40);
+    let fx = fixture("scenario-pinned-classic", 40);
     let page = open(Surface::Classic, &fx, 0);
-    scenario_growth(&page.tab, Surface::Classic, &fx);
+    scenario_follows_the_tail_when_pinned(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_follows_the_tail_when_pinned_and_holds_when_not_known_red_70() {
+fn app_shell_follows_the_tail_when_pinned_known_red_70() {
     let _serial = serial();
-    let fx = fixture("scenario-growth-app", 40);
+    let fx = fixture("scenario-pinned-app", 40);
     let page = open(Surface::AppShell, &fx, 2852);
-    scenario_growth(&page.tab, Surface::AppShell, &fx);
+    scenario_follows_the_tail_when_pinned(&page.tab, Surface::AppShell, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_when_unpinned_through_growth() {
+    let _serial = serial();
+    let fx = fixture("scenario-unpinned-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_holds_when_unpinned(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_when_unpinned_through_growth() {
+    let _serial = serial();
+    let fx = fixture("scenario-unpinned-app", 40);
+    let page = open(Surface::AppShell, &fx, 2858);
+    scenario_holds_when_unpinned(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: stepping and paging from the top ──────────────────────────────────────────────
@@ -512,4 +597,62 @@ fn app_shell_keeps_the_tail_through_a_resize() {
     let fx = fixture("scenario-resize-app", 60);
     let page = open(Surface::AppShell, &fx, 2857);
     scenario_resize_while_pinned(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a server restart under a watching page — resume, position kept ────────────────
+
+/// The server dies and comes back on the same port. A page pinned at the tail is at the tail
+/// again with every record back; a page scrolled up keeps the turn it was reading.
+fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
+    let tab = page.tab.clone();
+    jump_to_end(&tab, surface);
+    await_tail(&tab, surface, "a fresh open to land at the tail");
+    let last = last_mounted_turn(&tab, surface);
+    assert!(
+        last >= fx.turns as i64 - 1,
+        "the whole fixture is there before the restart ({last} of {})",
+        fx.turns
+    );
+    restart_monitor(page, fx, port);
+    let t0 = std::time::Instant::now();
+    let mut back = false;
+    while t0.elapsed() < Duration::from_secs(25) {
+        if last_mounted_turn(&tab, surface) >= last && at_tail(&tab, surface) {
+            back = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(back, "pinned: after the restart the records are back and the page is at the tail (last {}, at tail {})", last_mounted_turn(&tab, surface), at_tail(&tab, surface));
+    // Unpinned: scroll up, restart again, the reader keeps their turn.
+    scroll_by(&tab, surface, -900);
+    scroll_by(&tab, surface, -900);
+    settle();
+    let held = turn_at_top(&tab, surface);
+    assert!(held >= 0 && held < last, "the reader scrolled up ({held})");
+    restart_monitor(page, fx, port);
+    std::thread::sleep(Duration::from_millis(6000));
+    let after = turn_at_top(&tab, surface);
+    assert!(
+        (after - held).abs() <= 1,
+        "unpinned: the restart kept the reader's turn ({held} -> {after})"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_resumes_after_a_server_restart_known_red_72() {
+    let _serial = serial();
+    let fx = fixture("scenario-restart-classic", 40);
+    let mut page = open_on_v2(Surface::Classic, &fx, 2859);
+    scenario_restart_resumes(&mut page, Surface::Classic, &fx, 2859);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_resumes_after_a_server_restart() {
+    let _serial = serial();
+    let fx = fixture("scenario-restart-app", 40);
+    let mut page = open_on_v2(Surface::AppShell, &fx, 2860);
+    scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
 }

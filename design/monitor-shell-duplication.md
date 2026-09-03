@@ -113,7 +113,7 @@ only, but it belongs beside its peers), and later `record-store`. `components.js
 | b | `capabilities.js` — extract `attachmentCapability`, `referenceAction`, `revealQuery` from `components.js` | `export.js`'s inline `fsig ? openArtifact : reveal` at the tool header and in `fileview` | Medium: the first module export.js consumes through seam 0, so it proves the inliner; the byte gate diffs on every HTML output (the embedded source changes) and must be verified as "source lines only", the method used for v1.129.x. |
 | c | `control-store.js` | the three compose/consent copies | Medium: three UIs, one protocol; the store already separates state from DOM. |
 | d | `keymap.js` (exists) + `reading.js` (exists) | `rail.html` keydown, `export.js` `onKey`/`setMono`/`setWrap`/`setWide` | Low: tables and setters; export.js keeps its actions. |
-| e | `record-store.js` | `export.js` `consumePull`/`ingest` | **High** — export.js's client carries the epoch/zone and durable-cache resume logic and is byte-gated; do it last, or accept two clients and pin both with the browser harness. |
+| e | `record-stream.js` — the two-zone REDUCER (`reducePull(cursor, length, reply)` → a plan: resync / truncate / append committed / provisional truncate + append / the next cursor / `changedFrom` / `idle`, plus the `pull` and `records` query builders and `parseRecords`) | `export.js` `consumePull` and `record-store.js` `apply` become "apply the plan to my store" | **Decided (#49, 2026-09-03): one reducer, two transports.** The protocol semantics — epoch bump ⇒ resync, `committed_from` truncate + append, provisional truncate to the committed prefix + `provisional_from` then append, the cursor arithmetic, and what changed from where — live once. Each page keeps its fetch loop (export.js: interval + inflight guard + self-heal resync on a torn apply; the store: a 1 s timer), its DOM (`resetFrom`/`putBlock` vs array ops + `handlers.update`), its meta rule (both ignore an idle reply's meta, which the server sends as null), and export.js keeps its OFFLINE modes (`#session-data`, the static bundle) untouched — they never touch the reducer. Pinned by the harness on both surfaces: tail pin / unpinned hold through growth, search through growth, and a server restart with resume (#53). |
 | f | `state-labels.js` — the busy/wait/idle label table | `rail.html` `gStatusTip`, `app.js` `displayState` | Trivial once (a) is in. |
 
 Theme: one `theme.js` with `apply(dark)` that also posts into an iframe when there is one —
@@ -155,7 +155,7 @@ If the classic shell were dropped next month, most of the sharing would be delet
 so the order also sorts by horizon. **Worth doing regardless:** seam 0 (it is what lets
 export.js and the app shell ever share logic, classic or not), the route table (2), and
 compose (c) — that protocol moves with the control plane and is written three times today.
-**Worth doing only while classic lives:** (a), (d), (f), and (e). The owner accepted the full
+**Worth doing only while classic lives:** (a), (d), (f), and (e) — for (e), the reducer half is worth keeping even after: it is the protocol, and the app shell's store consumes it. The owner accepted the full
 list on 2026-09-03; the horizon-independent steps are the ones to keep if that changes.
 
 ### Gates per step
