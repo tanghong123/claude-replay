@@ -27,6 +27,11 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
   (only the intended change — structural jsonl comparison by record kind helps),
   re-baseline the changed files into `BASE` with `/bin/cp -f` (bundles: `cp -Rf`),
   re-run to PASS, and document the verified diff in the commit message.
+- **A shared-module edit** (`claude-replay-html/src/html/shared/*.js`) changes the inlined
+  `<script>` block in EVERY HTML output (pages and bundles alike). Verify that BASE and NOW are
+  byte-identical outside that block (under the same version normalization) and that NOW's block
+  is exactly the transform of the new source (`html_export/shared.rs`); then re-baseline all of
+  them at once.
 - **Lost BASE** (e.g. `/tmp` cleared): `rebaseline.sh <known-good-binary>` — use the
   released binary of the last shipped version, not the working tree, so the gate
   still measures your changes. If a frozen input is also gone, re-freezing changes the

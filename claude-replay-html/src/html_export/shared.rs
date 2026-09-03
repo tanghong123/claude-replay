@@ -14,10 +14,16 @@
 //! below hold every shared module to the convention.
 
 /// Every shared module: `(name, source)`, name without the `.js`.
-pub const SHARED: &[(&str, &str)] = &[(
-    "session-visibility",
-    include_str!("../html/shared/session-visibility.js"),
-)];
+pub const SHARED: &[(&str, &str)] = &[
+    (
+        "session-visibility",
+        include_str!("../html/shared/session-visibility.js"),
+    ),
+    (
+        "state-labels",
+        include_str!("../html/shared/state-labels.js"),
+    ),
+];
 
 /// The source of one shared module, for serving it as a module.
 pub fn shared_source(name: &str) -> Option<&'static str> {

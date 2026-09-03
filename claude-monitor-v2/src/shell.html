@@ -229,6 +229,7 @@
         rows.forEach(function (r) {
           var a = el("a", "v2row" + (r.state === "growing" ? " grow" : "") + (r.hidden ? " hid" : ""));
           a.href = "/?ui=classic&session=" + encodeURIComponent(r.id);
+          a.title = window.__shared.stateTip(r);  // #44: the same words as the rail and the app shell
           if (r.id === current) a.setAttribute("aria-current", "true");
           var r1 = el("div", "v2r1");
           // `conf` is the index's own word for how the process↔session link was made:

@@ -7,6 +7,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
+import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./reading.js";
 import { bindKeymap, hintFor } from "./keymap.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
@@ -179,22 +180,10 @@ function toast(message) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => element.classList.remove("show"), 1900);
 }
 
-function displayState(row) {
-  const state = row.agentState || (row.state === "growing" ? "busy" : "idle");
-  const reason = row.stateReason || (row.state === "finished" ? "exited" : row.state);
-  const labels = { busy: "Running", wait: "Needs you", idle: "Idle", permission: "Awaiting permission", question: "Awaiting an answer", "plan-approval": "Awaiting approval", done: "Done", error: "Failed", stalled: "Stalled", "ended-question": "Awaiting a reply", exited: "Done", "exited-mid-work": "Exited abnormally", thinking: "Thinking", tool: "Running a tool", starting: "Starting" };
-  return { state, reason, label: labels[reason] || labels[state] || reason };
-}
-function needs(row) { const s = displayState(row); return s.state === "wait" || ["question", "ended-question", "error", "stalled", "exited-mid-work", "permission", "plan-approval"].includes(s.reason); }
-function stateDenote(row) {
-  const s = displayState(row);
-  if (s.state === "busy") return { label: "Running", tone: "busy" };
-  if (s.state === "wait") return { label: s.label, tone: `wait${row.stateConfidence === "inferred" ? " inferred" : ""}` };
-  if (["question", "ended-question"].includes(s.reason)) return { label: "Awaiting reply", tone: "attention" };
-  if (["error", "stalled", "exited-mid-work"].includes(s.reason)) return { label: s.label, tone: "danger" };
-  if ((row.activityTs || 0) > Number(indexState.read[row.id] || 0)) return { label: "New result", tone: "unread" };
-  return null;
-}
+// The state words come from the shared table (shared/state-labels.js, #44) — the rail's
+// tooltip and this shell's chips read the same label for the same verdict. `stateDenote`
+// adds the one input that is this viewer's: the read mark.
+function stateDenote(row) { return denoteState(row, Number(indexState.read[row.id] || 0)); }
 
 function loadSessions() { return sessionIndex.refresh(); }
 

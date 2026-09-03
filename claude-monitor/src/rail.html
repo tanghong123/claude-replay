@@ -400,22 +400,9 @@
     if(c)t+="\n\nClick to copy:  "+c;
     return t;
   }
-  function rowTitle(r){
-    // #145: an idle row linked by cwd is the COMMON case — most agents are launched without
-    // a session id — so the tooltip says what is actually known rather than just "unconfirmed".
-    // When the directory holds several sessions the count is the size of the doubt: `--resume`
-    // offers a picker, so the live agent may be driving any of them.
-    var t=r.state==="growing"?"growing — the transcript grew since the last scan"
-      :r.state==="idle"?(r.conf==="unconfirmed"
-        ?(r.ambig>1
-          ?"idle · a live agent is in this directory — but it was started without a session id, "
-            +"and `--resume` picks from a list, so it may be driving any of these "+r.ambig+" sessions"
-          :"idle · alive — the only session in this directory, and a live agent is in it")
-        :"idle · alive — a live process names this session")
-      :"finished — no growth, no process";
-    if(!r.visited)t+="  ·  counters appear after first open (lazy fold)";
-    return t;
-  }
+  // #145/#44: the row tooltip — the state label the app shell shows for the same verdict,
+  // then the evidence for it — is the shared table's (shared/state-labels.js).
+  function rowTitle(r){return shared.stateTip(r);}
   // #142: fork families. Forking COPIES the conversation, so a family's members are
   // 82–99% the same transcript; the rail shows ONE row for the family and opens to the
   // rest. The server tags every row with its family root (a session with no forks is a

@@ -2447,6 +2447,35 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
     assert_eq!(first["chip"], "⑂ 1", "the chip counts one fork: {first}");
     assert_eq!(first["forkrows"], 0, "no fork row open: {first}");
 
+    // 1b. Seam (f) (#44): the rail's tooltip opens with the same state label the app shell's
+    //     info pane shows for the same row — one table, both shells, one server.
+    let tip = eval(
+        &tab,
+        &format!(
+            "(document.querySelector('{}') || {{}}).title || ''",
+            row(root_id)
+        ),
+    );
+    let tip = tip.as_str().unwrap_or("").to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2837/?ui=app&session={root_id}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(&tab, "!![...document.querySelectorAll('#navigatorSession .session-info-row')].find(r => r.querySelector('span') && r.querySelector('span').textContent === 'status')", "the app shell's info pane");
+    let status = eval(&tab, "([...document.querySelectorAll('#navigatorSession .session-info-row')].find(r => r.querySelector('span').textContent === 'status') || {}).querySelector('strong').textContent");
+    let status = status.as_str().unwrap_or("").to_string();
+    assert!(
+        !status.is_empty() && tip.starts_with(&format!("{status} — ")),
+        "one state table: rail tooltip {tip:?} vs app-shell status {status:?}"
+    );
+    tab.navigate_to("http://127.0.0.1:2837/?ui=classic")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "document.querySelectorAll('.row[data-id]').length >= 1",
+        "the rail again",
+    );
+
     // 2. The chip opens the family: the fork appears as an indented member row.
     eval(
         &tab,

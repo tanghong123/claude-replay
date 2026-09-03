@@ -8,6 +8,7 @@ import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewReco
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
+import { REASONS, denoteState, displayState, needsPerson, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
@@ -359,4 +360,40 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(railSource, /shared\.groupVisible\(/, "the rail's group filter is the shared predicate");
   assert.match(spliceSource, /__shared\.rowVisible\(/, "the splice's hidden filter is the shared predicate");
   console.log("seam (a) cases passed");
+}
+
+// Seam (f) (#44): one state-label table. Every reason claude-replay-engine's StateReason
+// emits is worded once; the app shell's chip/status and the rail's tooltip read that word.
+{
+  const engineReasons = ["exited", "exited-mid-work", "question", "plan-approval", "queued-prompt", "tool", "thinking", "permission", "ended-question", "error", "done", "starting", "stalled"];
+  assert.deepEqual([...REASONS].sort(), [...engineReasons].sort(), "the table lists exactly the engine's reasons (StateReason::as_str)");
+  for (const reason of engineReasons) {
+    const { label } = displayState({ agentState: "idle", stateReason: reason });
+    assert.ok(label && label !== reason, `${reason} has wording`);
+  }
+  assert.deepEqual(displayState({ state: "growing" }), { state: "busy", reason: "growing", label: "Running" }, "legacy growing reads as busy");
+  assert.deepEqual(displayState({ state: "finished" }), { state: "idle", reason: "exited", label: "Done" }, "legacy finished reads as exited");
+  assert.equal(displayState({ agentState: "wait", stateReason: "permission" }).label, "Awaiting permission");
+  assert.equal(needsPerson({ agentState: "wait", stateReason: "permission" }), true);
+  assert.equal(needsPerson({ agentState: "idle", stateReason: "stalled" }), true);
+  assert.equal(needsPerson({ agentState: "busy", stateReason: "tool" }), false);
+  assert.deepEqual(denoteState({ agentState: "busy", stateReason: "tool" }), { label: "Running", tone: "busy" });
+  assert.deepEqual(denoteState({ agentState: "wait", stateReason: "question", stateConfidence: "inferred" }), { label: "Awaiting an answer", tone: "wait inferred" });
+  assert.deepEqual(denoteState({ agentState: "idle", stateReason: "ended-question" }), { label: "Awaiting reply", tone: "attention" });
+  assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited-mid-work" }), { label: "Exited abnormally", tone: "danger" });
+  assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 5), { label: "New result", tone: "unread" });
+  assert.equal(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 10), null, "read rows carry no marker");
+  assert.equal(stateTip({ state: "finished", visited: true }), "Done — no growth, no process");
+  assert.equal(stateTip({ state: "growing", visited: true }), "Running — the transcript grew since the last scan");
+  assert.equal(stateTip({ state: "idle", conf: "unconfirmed", ambig: 3, visited: true }), "Idle — a live agent is in this directory — but it was started without a session id, and `--resume` picks from a list, so it may be driving any of these 3 sessions");
+  assert.equal(stateTip({ state: "idle", agentState: "wait", stateReason: "permission", visited: true }), "Awaiting permission — alive — a live process names this session");
+  assert.match(stateTip({ state: "finished" }), /lazy fold\)$/, "an unvisited row says its counters are not folded yet");
+  assert.match(appSource, /from "\.\/shared\/state-labels\.js"/, "the shell imports the shared table");
+  assert.doesNotMatch(appSource, /const labels = \{ busy:/, "the shell keeps no label table of its own");
+  const railSrc = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+  assert.match(railSrc, /shared\.stateTip\(/, "the rail's tooltip is the shared one");
+  assert.doesNotMatch(railSrc, /finished — no growth, no process/, "the rail keeps no tooltip wording of its own");
+  const spliceSrc = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
+  assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
+  console.log("seam (f) cases passed");
 }

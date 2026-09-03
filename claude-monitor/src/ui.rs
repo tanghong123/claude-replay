@@ -280,6 +280,10 @@ mod tests {
                 "shared/session-visibility.js",
                 claude_replay_html::shared_source("session-visibility").unwrap(),
             ),
+            (
+                "shared/state-labels.js",
+                claude_replay_html::shared_source("state-labels").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
@@ -324,5 +328,47 @@ mod tests {
             .headers
             .iter()
             .any(|header| header == "Cache-Control: no-store"));
+    }
+}
+
+#[cfg(test)]
+mod state_label_tests {
+    /// Every reason the tracker can emit has wording in the shared state-label table (#44):
+    /// the JS side is held to the Rust enum, so a new `StateReason` cannot ship unlabelled.
+    /// The list is exhaustive by construction — the `match` fails to compile the day a
+    /// variant is added without being listed here.
+    #[test]
+    fn every_tracker_reason_has_a_label() {
+        use claude_replay_core::state::StateReason;
+        use StateReason::*;
+        let all = [
+            Exited,
+            ExitedMidWork,
+            Question,
+            PlanApproval,
+            QueuedPrompt,
+            Tool,
+            Thinking,
+            Permission,
+            EndedQuestion,
+            Error,
+            Done,
+            Starting,
+            Stalled,
+        ];
+        let table = claude_replay_html::shared_source("state-labels").expect("registered");
+        for reason in all {
+            let _exhaustive = match reason {
+                Exited | ExitedMidWork | Question | PlanApproval | QueuedPrompt | Tool
+                | Thinking | Permission | EndedQuestion | Error | Done | Starting | Stalled => (),
+            };
+            let key = StateReason::as_str(reason);
+            let quoted = format!("\"{key}\":");
+            let bare = format!("\n  {key}:");
+            assert!(
+                table.contains(&quoted) || table.contains(&bare),
+                "state-labels.js has no label for the tracker reason `{key}`"
+            );
+        }
     }
 }
