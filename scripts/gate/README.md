@@ -8,7 +8,8 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
 - **Scripts** live here (in git). **Data** — `BASE/`, `NOW/`, and the frozen inputs —
   lives in `$SC_GATE_DIR` (default `~/.cache/claude-replay-gate`, set in one place by
   `gate-dir.sh`), out of git: the fixtures embed real session content.
-- **Every input is FROZEN** (`frozen_self`, `frozen_claude_sa`, `frozen_codex`), never a
+- **Every input is FROZEN** (`frozen_self`, `frozen_claude_sa`, `frozen_codex`,
+  `frozen_codex_desktop`), never a
   path into a live agent store (#147). The gate must measure the BINARY; an input that can
   take a turn mid-run measures the machine instead. Observed before this rule: `claude_sa`
   pointed at a session still in use, and one turn landing during a run reported the dumps,
@@ -35,3 +36,7 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
   `$SC_GATE_DIR/frozen_<name>.jsonl` (plus its `subagents/` tree as
   `$SC_GATE_DIR/frozen_<name>/subagents/` for a Claude session), run the gate, confirm the
   only diffs are the path/title/id, then re-baseline those files.
+- **`frozen_codex_desktop` is synthetic** — the Codex Desktop prompt-envelope fixture from
+  `docs/adapter-rendering-validation.md`, tracked at
+  `claude-replay-agents/tests/fixtures/codex-desktop.jsonl` and copied into `$SC_GATE_DIR`
+  by `gate.sh` when missing. It is the one input that CAN be regenerated from the repo.

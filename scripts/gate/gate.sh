@@ -19,7 +19,13 @@ fi
 # Guard the INPUTS too, symmetrically. Without this the dumps below write 0 bytes and the
 # run reports a whole-file DIFF — a missing fixture masquerading as a huge regression.
 # ALL of them are frozen copies (#147): the gate measures the binary, never the machine.
-for f in frozen_self frozen_claude_sa frozen_codex; do
+# `codex_desktop` is SYNTHETIC (docs/adapter-rendering-validation.md — it carries no session
+# content), so its source of truth is tracked in the repo and the frozen copy is regenerated
+# from it whenever it is missing; the other inputs are real sessions and live only in $GATE_DIR.
+if [ ! -f "$GATE_DIR/frozen_codex_desktop.jsonl" ]; then
+  /bin/cp -f claude-replay-agents/tests/fixtures/codex-desktop.jsonl "$GATE_DIR/frozen_codex_desktop.jsonl"
+fi
+for f in frozen_self frozen_claude_sa frozen_codex frozen_codex_desktop; do
   if [ ! -f "$GATE_DIR/$f.jsonl" ]; then
     echo "NO INPUT at $GATE_DIR/$f.jsonl — the frozen fixture is gone."
     echo "  re-freeze + regenerate BASE from a known-good binary:"

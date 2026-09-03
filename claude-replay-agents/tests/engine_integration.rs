@@ -1935,3 +1935,127 @@ fn a_fleet_that_grows_after_its_turn_commits_is_still_served() {
         "yet the very next header carries the late member"
     );
 }
+
+/// Adapter rendering validation (docs/adapter-rendering-validation.md, layer 4) for the Codex
+/// Desktop prompt envelope: a synthetic Desktop rollout and a Claude-shaped reference with the
+/// equivalent actions go through the same pipeline and must land on the same shared vocabulary.
+/// The fixtures are synthetic and tracked — they carry no session content — and the Codex one is
+/// also frozen into the byte gate (`scripts/gate/verify.sh`, `codex_desktop`).
+///
+/// What must match: the person's request, not the transport envelope, as the user text; the
+/// pasted image as an image attachment; the question tool folded by default and answered in
+/// full; the same closing line. What legitimately differs: the Desktop envelope also DECLARES
+/// a file it did not inline, which becomes a `Ref` attachment the Claude shape cannot express;
+/// and the answer arrives as the host's JSON on one side and prose on the other.
+#[test]
+fn a_codex_desktop_envelope_lands_on_the_same_vocabulary_as_a_claude_reference() {
+    use claude_replay_core::model::{Attachment, AttachmentKind, Block};
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let codex = claude_replay_core::parse_session_as(
+        claude_replay_core::Agent::CODEX,
+        &dir.join("codex-desktop.jsonl"),
+    )
+    .expect("codex fixture parses");
+    let claude = claude_replay_core::parse_session_as(
+        claude_replay_core::Agent::CLAUDE,
+        &dir.join("claude-reference.jsonl"),
+    )
+    .expect("claude reference parses");
+    let (codex, claude) = (codex.blocks(), claude.blocks());
+
+    let user = |blocks: &[Block]| {
+        blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::UserText(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("a user turn")
+    };
+    assert_eq!(
+        user(&codex),
+        "Please inspect this design",
+        "the envelope is transport, not the prompt"
+    );
+    assert_eq!(user(&claude), user(&codex));
+
+    let attachments = |blocks: &[Block]| -> Vec<(AttachmentKind, String)> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Attachment(Attachment { kind, name, .. }) => Some((*kind, name.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let codex_att = attachments(&codex);
+    assert_eq!(
+        codex_att[0],
+        (AttachmentKind::Image, "shot.png".into()),
+        "the Desktop marker names the pasted image: {codex_att:?}"
+    );
+    assert!(
+        codex_att.contains(&(AttachmentKind::Ref, "notes.md".into())),
+        "a declared, non-inlined file is a Ref: {codex_att:?}"
+    );
+    assert_eq!(
+        attachments(&claude).len(),
+        1,
+        "the reference pasted one image"
+    );
+    assert_eq!(attachments(&claude)[0].0, AttachmentKind::Image);
+
+    let question = |blocks: &[Block]| {
+        blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::ToolUse {
+                    name,
+                    target,
+                    output,
+                    ..
+                } => Some((
+                    name.clone(),
+                    target.clone(),
+                    output.clone().unwrap_or_default(),
+                )),
+                _ => None,
+            })
+            .expect("a question tool block")
+    };
+    let (cname, ctarget, cout) = question(&codex);
+    let (rname, _rtarget, rout) = question(&claude);
+    assert_eq!(cname, "request_user_input");
+    assert_eq!(rname, "AskUserQuestion");
+    assert_eq!(
+        ctarget, "Which UI should be the default?",
+        "the question is the tool's target"
+    );
+    assert!(
+        cout.contains("Use v2") && rout.contains("Use v2"),
+        "both answers survived: {cout:?} / {rout:?}"
+    );
+
+    let last_text = |blocks: &[Block]| {
+        blocks
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                Block::AssistantText(t) | Block::AssistantMessage { text: t, .. } => {
+                    Some(t.clone())
+                }
+                _ => None,
+            })
+            .expect("a closing line")
+    };
+    assert_eq!(last_text(&codex), last_text(&claude));
+    // No fake turns from the host's `<image …>` / `</image>` markers: exactly one user turn each.
+    let users = |blocks: &[Block]| {
+        blocks
+            .iter()
+            .filter(|b| matches!(b, Block::UserText(_)))
+            .count()
+    };
+    assert_eq!(users(&codex), 1);
+    assert_eq!(users(&claude), 1);
+}

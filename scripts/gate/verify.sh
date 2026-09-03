@@ -19,7 +19,7 @@ W=120
 # `claude_self` used to be rendered here from a 107 MB live transcript and then SKIPPED by
 # gate.sh's comparison — four renders per run for no signal. `self` already covers a Claude
 # session of this shape from a frozen copy, so the redundant one is gone (#147).
-for name in claude_sa codex; do
+for name in claude_sa codex codex_desktop; do
   T="$GATE_DIR/frozen_${name}.jsonl"
   # A frozen fixture can still go missing (a cache wiped, a machine changed). Fail loudly:
   # rendering a MISSING input writes 0 bytes, which the gate would otherwise report as a
