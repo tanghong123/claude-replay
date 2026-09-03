@@ -123,7 +123,12 @@ by itself:
 2. Copy them into a clone of `alibrew/artifacts` at `<tool>/<version>-<os>-<arch>/`
    (`darwin|linux` × `arm64|amd64`), keeping the release's own filename. Clone it
    `--filter=blob:none --no-checkout`, then `sparse-checkout init --cone` + `set` the sixteen
-   NEW directories and check out `master` — a plain clone pulls every binary ever published. **Exactly two levels** — brew writes a single-line cone
+   NEW directories and check out `master` — a plain clone pulls every binary ever published.
+   In that clone, never run anything that needs blob SIZES or contents outside the cone —
+   `git lfs ls-files`, `ls-tree -l`, `git show HEAD:<big file>` — each missing blob is lazily
+   fetched over one ssh round-trip (measured: 178 MB / 51 packs in 14 minutes before it was
+   killed). The LFS guard is `grep filter=lfs .gitattributes` plus `git check-attr` on the new
+   files; both read metadata only. **Exactly two levels** — brew writes a single-line cone
    sparse-checkout pattern and cone mode materializes NOTHING deeper. Never LFS-track that
    repo. Push to `master` and take the commit sha.
 3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) — the installed tap
