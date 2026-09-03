@@ -149,6 +149,10 @@
   <div id="v2cfoot"><span id="v2cmsg"></span><button id="v2csend">Send prompt</button></div>
 </div>
 <script>
+// The shared modules, inlined at serve time (#43). The session page spliced in below carries
+// its own copy of this block: the IIFE and `window.__shared || {}` make the second run
+// idempotent, so the duplicate is harmless — do not "fix" it into a module import, which
+// would race the first render.
 {{SHARED}}
 </script>
 <script>

@@ -46,7 +46,11 @@ html crate INLINES each into its self-contained pages ahead of `export.js`
 (`html_export/shared.rs`), where export.js reads it as `window.__shared.<name>`. The inliner is
 textual, so a shared module keeps two conventions, held by tests: no imports, and exactly one
 trailing `export { … };` line. A new module is one row in `SHARED` (`shared.rs`); the monitor's
-import-closure test and the html crate's convention test cover the rest.
+import-closure test and the html crate's convention test cover the rest. The classic rail
+(`claude-monitor/src/rail.html`) and the v2 splice shell (`claude-monitor-v2/src/shell.html`) take the
+same inlined block at serve time through their `{{SHARED}}` placeholder
+(`claude_replay_html::shared_inline_all()`), so `window.__shared` there is a template substitution,
+not an import (#43).
 
 `claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
@@ -89,7 +93,10 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   APP SHELL's cases (`the_app_shell_*`: layout, hide/restore, child→parent, scroll memory, the
   keymap) against `agent-monitor-v2 --release` on ports 2831–2836 with scratch state; a
   behaviour change in `codex-ui/` extends those the same way, and a served module the shell
-  imports must be registered in `ui::asset()` (an import-closure test walks the graph). The crate sits OUTSIDE
+  imports must be registered in `ui::asset()` (an import-closure test walks the graph). The classic-rail
+  case (`the_classic_rail_*`) needs `agent-monitor --release` (v1) on port 2837 and builds a hermetic
+  QoderWork family store (`qoderwork_family_store`/`store_envs`); without the v1 binary it SKIPS, and a
+  skip passes vacuously. The crate sits OUTSIDE
   `default-members` — its `headless_chrome` dep is the heaviest thing the workspace compiles,
   so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve it and
   never compile-check it. CI's `cargo test --all` does span every member, so a break in the

@@ -96,8 +96,7 @@ constants (`include_str!`), and:
   so export.js reads `window.__shared.<name>`. A unit test asserts the assembled page carries
   no `export` or `import` token; the byte gate proves the output.
 - the classic pages (`rail.html`, `shell.html`) are classic `<script>`s, not modules; they get
-  one `<script type="module">` that imports the shared modules and assigns them to
-  `window.__shared`. Module scripts run after the inline classic script, so the rail must call
+ The rails take the same inlined block at serve time through a `{{SHARED}}` placeholder (`shared_inline_all()`), so `window.__shared` is there synchronously — a module script would race the first render (shipped this way in #43).__shared`. Module scripts run after the inline classic script, so the rail must call
   shared functions lazily — from `poll()` and handlers, never at top level — which is how it
   already runs.
 
