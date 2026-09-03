@@ -42,6 +42,12 @@ attachment actions (image lightbox, download, copy) and prompt attachments; the
 `request_user_input` projection; the proposed-plan surface; per-process fold surfaces; sticky
 headers; spot links; a mobile layout; and the shell switch itself.
 
+## Decisions (owner, 2026-09-03)
+
+Yes → queued: 1 (#32), 2 (#33), 3 + 4 (#34), 6 (#35), 7 + 8 (#36), 11 (#37) — each pinned to
+the app shell's own surfaces and idiom, execution on the owner's go. Deferred, held on #31:
+5, 9, 10, 12, 13, 14.
+
 ## Suggested order for closing the gaps before "validated"
 
 1 (a data trap, not a convenience) → 2 (and it is the policy-withheld fallback) → 11 → 3 + 4
