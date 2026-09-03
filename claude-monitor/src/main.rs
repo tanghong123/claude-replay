@@ -1,7 +1,8 @@
 //! `agent-monitor` — every agent session on this machine, one page, over loopback HTTP
 //! (#98). The Codex-style app shell is the default frontend over the existing `/pull` +
-//! `/records` protocol; the former rail-and-iframe page remains temporarily available at
-//! `?ui=classic` as a rollback seam.
+//! `/records` protocol. The rail-and-iframe page is the SECOND SUPPORTED shell, not a rollback
+//! seam: `ui::preference` remembers which one you want, each carries a button to the other, and
+//! `?ui=` overrides for one request. It goes when the app shell has been validated.
 //!
 //! Read-only, loopback only (§11). No fold on the index path (R7), no background sweep
 //! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
@@ -422,7 +423,7 @@ fn main() -> Result<()> {
 mod tests {
 
     #[test]
-    fn app_shell_is_default_with_classic_as_an_explicit_rollback() {
+    fn app_shell_is_the_default_and_classic_stays_reachable() {
         let app = claude_monitor::ui::page("test", false, true);
         assert!(app.contains("/monitor-ui/app.js"));
         assert!(app.contains("data-ui-default=\"true\""));

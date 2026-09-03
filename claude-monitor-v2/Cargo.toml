@@ -7,8 +7,8 @@ repository.workspace = true
 publish = false
 description = "The v2 monitor: one app-shell over every agent session on this machine — no iframe, one search box, artifacts served over HTTP."
 
-# A SEPARATE compatibility app retained for rollout comparison. Both binaries now default to
-# the precise app shell and retain a Classic rollback URL, while this crate keeps its own
+# A SEPARATE app, kept for side-by-side comparison. Both binaries serve the app shell by default
+# and keep their previous page as a supported second shell, while this crate keeps its own
 # port/cache root so they can still run side by side against real sessions. Both use the SAME
 # public backend and control plane.
 [[bin]]

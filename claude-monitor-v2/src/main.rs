@@ -2,7 +2,8 @@
 //!
 //! The default frontend is the Codex-style app shell: it consumes the existing structured
 //! `/pull` + `/records` projection and renders it through its own component registry.  The
-//! previous splice-based v2 frontend remains at `?ui=classic` as a one-release rollback seam.
+//! splice-based v2 frontend is the second supported shell, reached at `?ui=classic` or by the
+//! switch in each shell's header, which remembers the choice (`claude_monitor::ui`).
 //!
 //! **This is a front-end, not a second implementation.** The session page comes from the same
 //! public backend (`SessionService::page`) with this crate's shell spliced in, and every other
@@ -33,7 +34,8 @@ use std::sync::Arc;
 /// developed against the sessions a person is actually working in.
 const DEFAULT_PORT: u16 = 2828;
 
-/// The previous splice frontend, retained behind `?ui=classic` for rollback.
+/// The splice frontend — the second supported shell, served at `?ui=classic` or when that is
+/// the remembered preference.
 const CLASSIC_SHELL: &str = include_str!("shell.html");
 
 /// The rail's width, in CSS pixels — ONE number, used twice: it sizes `#v2rail` in the
@@ -342,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_app_is_a_production_pull_client_with_a_classic_rollback() {
+    fn the_app_shell_is_a_production_pull_client_beside_the_classic_one() {
         let app = claude_monitor::ui::page("test", false, true);
         assert!(app.contains("/monitor-ui/app.js"));
         assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());

@@ -124,8 +124,10 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     /// the markup changed, the schema did not, and the session that motivated the fix went on
     /// serving the version without it. If a change alters what any block CARRIES, it lands
     /// here too.
-    // v13: Codex Desktop prompt envelopes now project as clean user text + named attachment;
-    // proposed plans and request_user_input records carry semantic presentation metadata.
+    // v13: assistant records carry `phase` (+ `phaseInferred` when it was derived rather than
+    // stated by the transcript, which is every Claude record — see `Block::AssistantMessage`);
+    // Codex Desktop prompt envelopes project as clean user text + a named attachment; proposed
+    // plans and request_user_input records carry semantic presentation metadata.
     const RECORD_SCHEMA: u16 = 13;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);

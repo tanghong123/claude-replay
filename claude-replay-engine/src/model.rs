@@ -149,7 +149,7 @@ pub enum Block {
     /// conclusive signal about the TURN but was never a statement about how the prose should
     /// look — and Claude Code's own UI marks narration and final answer identically. So an
     /// inferred phase is data for a consumer that wants it, and the renderers deliberately
-    /// present it exactly like `AssistantText` (#, this takeover). `#[serde(default)]` ⇒ `false`,
+    /// present it exactly like `AssistantText`. `#[serde(default)]` ⇒ `false`,
     /// which is right for every record written before the field existed: only Codex made them.
     AssistantMessage {
         text: String,
