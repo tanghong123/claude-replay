@@ -1482,6 +1482,157 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     assert_eq!(landed, parent, "Back landed on the parent");
 }
 
+/// The app shell remembers where a session was scrolled to and lands there again after a
+/// reload (parity #6) — unless the reader was following the tail, in which case the tail is
+/// the position and it comes back following. Only a real engine can say this: the memory is
+/// the viewport's own DOM anchor, and the restore has to wait for that unit to stream in.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_restores_the_scroll_position_across_a_reload() {
+    let _serial = serial();
+    let base = base("appshell-scroll");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["--port", "2834", "--pair"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    let child = Reap(child);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2834/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    tab.navigate_to("http://127.0.0.1:2834/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let listing = eval(&tab, "document.body.innerText");
+    let ids: Vec<String> =
+        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
+            .ok()
+            .and_then(|v| {
+                v["groups"].as_array().map(|g| {
+                    g.iter()
+                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
+                        .filter_map(|r| r["id"].as_str().map(str::to_string))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+    if ids.is_empty() {
+        eprintln!("skip: no sessions on this machine");
+        return;
+    }
+    // A session tall enough to scroll: the first of the newest few whose transcript mounts
+    // more than a viewport's worth of units within a short wait.
+    let tall_enough = "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
+    let mut sid = String::new();
+    for id in ids.iter().take(6) {
+        tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={id}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        for _ in 0..40 {
+            if eval(&tab, tall_enough).as_bool() == Some(true) {
+                sid = id.clone();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !sid.is_empty() {
+            break;
+        }
+    }
+    if sid.is_empty() {
+        eprintln!("skip: none of the newest sessions is tall enough to scroll");
+        return;
+    }
+    // Scroll with USER intent (the viewport only treats a scroll as the reader's after a
+    // wheel/pointer event), to roughly the middle, and read the viewport's own anchor.
+    let anchor_js = r#"(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r=c.getBoundingClientRect(); if (r.bottom > top + 1) return JSON.stringify({key: c.dataset.unitKey, top: Math.round(r.top - top)}); } return 'null'; })()"#;
+    eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel', {deltaY: 1})); s.scrollTop = Math.floor(s.scrollHeight * 0.45); return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    let before = eval(&tab, anchor_js);
+    let b: serde_json::Value =
+        serde_json::from_str(before.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        b["key"].is_string(),
+        "an anchor was captured before the reload: {before}"
+    );
+    tab.reload(false, None).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mut after = serde_json::Value::Null;
+    for _ in 0..80 {
+        let v = eval(&tab, anchor_js);
+        let a: serde_json::Value =
+            serde_json::from_str(v.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+        if a["key"] == b["key"] {
+            after = a;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert_eq!(
+        after["key"], b["key"],
+        "after the reload the same unit is at the top: before {before} after {after}"
+    );
+    let drift = (after["top"].as_i64().unwrap_or(9999) - b["top"].as_i64().unwrap_or(0)).abs();
+    assert!(
+        drift <= 6,
+        "…within a few pixels: before {before} after {after}"
+    );
+    // Now follow the tail, reload, and come back following: at the bottom, not the old offset.
+    eval(
+        &tab,
+        "document.getElementById('jumpToBottom').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    tab.reload(false, None).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mut at_tail = false;
+    for _ in 0..80 {
+        let gap = eval(&tab, "(function(){ var s=document.querySelector('.transcript'); if (!s || !document.querySelector('.virtual-window').children.length) return 1e9; return s.scrollHeight - s.clientHeight - s.scrollTop; })()");
+        if gap.as_f64().map(|g| g <= 2.0) == Some(true) {
+            at_tail = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    drop(child);
+    assert!(
+        at_tail,
+        "a followed session comes back following, at the tail"
+    );
+}
+
 /// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
 /// `data-artifacts` on `<body>`), clicking a file path in a tool header SHOWS the file's
 /// bytes over the page instead of asking the server to open a Finder window.

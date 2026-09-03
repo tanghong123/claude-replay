@@ -319,7 +319,7 @@ function selectSession(id, push) {
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
   renderTree(); renderHeader(); controls.paint();
   const url = new URL(location.href); url.searchParams.set("session", id); if (document.body.dataset.uiDefault === "true") url.searchParams.delete("ui"); else url.searchParams.set("ui", "app"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
-  recordState.session = id; recordStore.open(id);
+  recordState.session = id; viewport.beginSession(id); recordStore.open(id);
 }
 function sessionGone() { recordStore.stop(); preview.setSession(""); indexState.selected = ""; recordState.session = ""; viewport.showEmpty("Session is gone", "It may have been deleted or moved. The list keeps scanning.", true); }
 

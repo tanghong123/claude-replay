@@ -155,6 +155,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/preview.js").as_slice(),
         ),
+        "monitor-ui/view-memory.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/view-memory.js").as_slice(),
+        ),
         "monitor-ui/session-visibility.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-visibility.js").as_slice(),
@@ -260,6 +264,7 @@ mod tests {
                 include_str!("codex-ui/session-visibility.js"),
             ),
             ("state.js", include_str!("codex-ui/state.js")),
+            ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
             ("viewport.js", include_str!("codex-ui/viewport.js")),
         ];
@@ -292,7 +297,7 @@ mod tests {
                 }
             }
         }
-        assert!(seen.len() >= 12, "walked the graph: {seen:?}");
+        assert!(seen.len() >= 13, "walked the graph: {seen:?}");
     }
 
     #[test]

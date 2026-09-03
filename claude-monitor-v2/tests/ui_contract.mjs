@@ -6,6 +6,7 @@ import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewReco
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-monitor/src/codex-ui/session-visibility.js";
+import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
 const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
@@ -267,3 +268,18 @@ assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control rea
 assert.match(productionCss, /\.session-parent\.is-live\{display:grid\}/, "the reference parent control is shown by a production state, not by editing the shell");
 console.log("sub-agent navigation cases passed");
 assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.values\(\)\]/, "a ?session= deep link to a non-row id (a sub-agent child) opens that id, not the first row");
+
+// Scroll position across reloads (parity #6): following is the position; an anchor is a unit
+// key plus its offset; anything else is not a memory at all.
+{
+  assert.equal(viewMemoryKey("s1"), "am-view:s1");
+  assert.deepEqual(parseViewMemory(serializeViewMemory({ following: true })), { following: true });
+  assert.deepEqual(parseViewMemory(serializeViewMemory({ following: false, key: "user:b12", top: 17.6 })), { following: false, key: "user:b12", top: 18 }, "an anchor round-trips, rounded to the pixel");
+  assert.equal(parseViewMemory(""), null); assert.equal(parseViewMemory("nope"), null); assert.equal(parseViewMemory('{"key":"","top":1}'), null); assert.equal(parseViewMemory('{"key":"x","top":"1"}'), null, "a non-numeric offset is rejected");
+  assert.equal(parseViewMemory('{"following":false}'), null, "not following without an anchor is nothing to restore");
+  assert.match(viewportSource, /beginSession\(session\)/, "the viewport reads the memory when a session opens");
+  assert.match(viewportSource, /addEventListener\("pagehide", \(\) => this\.remember\(\)\)/, "the last position is written on the way out");
+  assert.match(viewportSource, /this\.state\.following = !this\.pending/, "a remembered anchor holds following off until it is applied, so the tail never flashes past");
+  assert.match(appSource, /viewport\.beginSession\(id\); recordStore\.open\(id\)/, "the memory is read before the stream starts");
+  console.log("view memory cases passed");
+}

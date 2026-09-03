@@ -21,7 +21,10 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
 // This adapter carries the original viewer's three scroll invariants into the demo's
 // `.transcript` scroller: incremental materialization, DOM-identity anchoring, and an
 // explicit follow mode changed only by user input.
+import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "./view-memory.js";
+
 const ESTIMATE = 132;
+const REMEMBER_MS = 250;
 const OVERSCAN = 1500;
 const HOLD_SLACK = 80;
 const ACQUIRE_SLACK = 2;
@@ -41,6 +44,13 @@ export class Viewport {
     this.pendingMeasure = false;
     this.lastUserInput = -1e9;
     this.bottomTimer = 0;
+    // Per-session position memory (parity #6): the session this viewport is showing, the
+    // remembered anchor still to be applied once its unit has streamed in, and a debounce.
+    this.session = "";
+    this.pending = null;
+    this.pendingTries = 0;
+    this.rememberTimer = 0;
+    addEventListener("pagehide", () => this.remember());
 
     this.top = document.createElement("div");
     this.top.className = "virtual-pad";
@@ -65,6 +75,34 @@ export class Viewport {
     scroller.addEventListener("scroll", () => this.onScroll(), { passive: true });
   }
 
+  /** A session is opening: read what was remembered for it. A remembered anchor is applied by
+   *  `setUnits` once its unit has streamed in (the stream arrives in batches); until then the
+   *  viewport does not follow, so the tail never flashes past before the restore. Nothing
+   *  remembered — or "following" remembered — means the tail, as it always did. */
+  beginSession(session) {
+    this.session = session || "";
+    this.pendingTries = 0;
+    let memory = null;
+    try { memory = parseViewMemory(sessionStorage.getItem(viewMemoryKey(this.session))); } catch (_) {}
+    this.pending = memory && !memory.following ? memory : null;
+    this.state.following = !this.pending;
+    this.state.newRecords = 0;
+  }
+
+  /** Remember the current position for this session: following, or the anchor. */
+  remember() {
+    clearTimeout(this.rememberTimer);
+    if (!this.session || this.pending) return;
+    const value = this.state.following ? { following: true } : this.captureDomAnchor();
+    if (!value) return;
+    try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? value : { following: false, key: value.key, top: value.top })); } catch (_) {}
+  }
+
+  scheduleRemember() {
+    clearTimeout(this.rememberTimer);
+    this.rememberTimer = setTimeout(() => this.remember(), REMEMBER_MS);
+  }
+
   setUnits(units, changedUnit = 0) {
     this.empty.hidden = true;
     const following = this.state.following;
@@ -79,6 +117,22 @@ export class Viewport {
     if (!units.length) {
       this.clearWindow();
       return;
+    }
+    if (this.pending) {
+      const index = units.findIndex(unit => unit.key === this.pending.key);
+      if (index >= 0) {
+        const memory = this.pending;
+        this.pending = null;
+        this.state.following = false;
+        const range = this.rangeAround(index);
+        this.reconcile(range.lo, range.hi, changedUnit, false, null);
+        this.restoreDomAnchor({ key: memory.key, top: memory.top });
+        this.updateWindow(index);
+        this.actions.followChanged?.();
+        return;
+      }
+      // Not streamed in yet — keep waiting a few batches, then give the tail up as lost.
+      if (++this.pendingTries > 12) { this.pending = null; this.state.following = true; }
     }
     if (following) {
       const range = this.rangeAround(units.length - 1);
@@ -268,6 +322,7 @@ export class Viewport {
         if (following) this.state.newRecords = 0;
         this.actions.followChanged?.();
       }
+      this.scheduleRemember();
     } else if (this.state.following && this.gapToBottom() > HOLD_SLACK) {
       this.convergeBottom();
     }
@@ -298,6 +353,7 @@ export class Viewport {
     this.state.newRecords = 0;
     this.actions.followChanged?.();
     this.convergeBottom();
+    this.remember();
   }
 
   jumpToRecord(recordIndex, reveal = "record") {
@@ -323,6 +379,7 @@ export class Viewport {
     }
     this.actions.followChanged?.();
     this.window.querySelector(`[data-block-index="${recordIndex}"]`)?.classList.add("source-flash");
+    this.scheduleRemember();
     return true;
   }
 
