@@ -218,8 +218,10 @@ page is a session-list rail beside the html crate's session view in an iframe; s
 cards in `src/index.rs`, the rail in `src/rail.html`; lazy population — a session's durable
 entry (at the monitor's OWN root, `~/.cache/claude-monitor`) is written by VISITING it,
 never by a sweep. It is **lib + bin**: `src/lib.rs` exposes `index` (the scan and the send
-DECISIONS), `consent` (grants + the passcode), `cost`, `state`, and `control` (the pairing
-token and the two send transports, #133), so `claude-monitor-v2/` reuses them rather than
+DECISIONS), `consent` (grants + the passcode), `cost`, `state`, `control` (the pairing
+token and the two send transports, #133), and `routes` (THE route table, #47: the five API
+arms, the assets and the service fallthrough, with each binary's classic page and v1's
+`chrome=embed` session arm as named parameters), so `claude-monitor-v2/` reuses them rather than
 forking them — one implementation of "may this prompt be injected into that pane", two
 front-ends. Both monitors share the state dir (token, passcode, consent) because the
 `cmauth` cookie is host-scoped, not port-scoped; they keep separate CACHE roots. Each

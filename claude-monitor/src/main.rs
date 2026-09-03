@@ -11,11 +11,11 @@
 use claude_monitor::control::{
     ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
 };
-use claude_monitor::{control, index};
+use claude_monitor::index;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;
-use claude_replay_html::{query_get, service_routes, HttpResponse, RootLock, ServiceConfig};
+use claude_replay_html::{service_routes, HttpResponse, RootLock, ServiceConfig};
 use claude_replay_present::cache::Presentation;
 use std::sync::Arc;
 
@@ -95,6 +95,7 @@ fn open_url(url: &str) {
         .spawn();
 }
 
+#[cfg(test)]
 fn classic_ui_requested(query: &str) -> bool {
     claude_monitor::ui::resolve(query) == claude_monitor::ui::Shell::Classic
 }
@@ -305,86 +306,45 @@ fn main() -> Result<()> {
         // #133 3b: the compose affordance only exists when paired — an unpaired monitor
         // has no write capability (the route 401s), so the UI must not offer it.
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
-    // The passcode lockout counter, owned by the handler (single-user → one global counter).
-    let attempts = std::sync::Mutex::new(Attempts::default());
     let paired = token.is_some();
-    let handler = {
-        let service = service.clone();
-        let idx = idx.clone();
-        let rail = rail.clone();
-        let scratch = scratch.clone();
-        Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
-            let (name, query) = (req.name, req.query);
-            if let Some(asset) = claude_monitor::ui::asset(name) {
-                return asset;
-            }
-            match name {
-                "" | "index.html" => {
-                    if classic_ui_requested(query) {
-                        HttpResponse::html(rail.clone())
-                    } else {
-                        HttpResponse::html(claude_monitor::ui::app_page(
-                            env!("CARGO_PKG_VERSION"),
-                            paired,
-                        ))
-                    }
-                }
-                // Read or set which shell `/` serves. Both are supported while the app shell
-                // is validated; the toggle in each shell's header calls this and reloads.
-                "api/ui" => claude_monitor::ui::route(query),
-                "api/sessions" => {
-                    let service = &service;
-                    HttpResponse::json(idx.sessions_json(|path| {
-                        service.register_root(path);
-                    }))
-                }
-                // #113: toggle a hide key (`s:<sid>` / `p:<cwd>` / `a:<label>`). A GET with a
-                // query param, because the loopback listener only parses the request line —
-                // no method, no body (serve.rs). Persisting a local hide preference at the
-                // monitor's own root is UI state, not agent/terminal control, so it stays
-                // inside the read-only contract (R8).
-                "api/ignore" => {
-                    let resp = match (query_get(query, "add"), query_get(query, "remove")) {
-                        (Some(k), _) => idx.set_ignore(&index::percent_decode(k), true),
-                        (_, Some(k)) => idx.set_ignore(&index::percent_decode(k), false),
-                        _ => r#"{"ok":false}"#.to_string(),
-                    };
-                    HttpResponse::json(resp)
-                }
-                // #133 idle slice: send a prompt to a FINISHED session by resuming it.
-                // A WRITE — gated by `deny_write` (POST + same-origin + a token, so a stock
-                // unpaired binary cannot reach it) — then by the idle/project-inactive rules
-                // in `resolve_send`. The resume is an autonomous agent turn (skip-permissions,
-                // owner-authorized). Body is the raw prompt; `?target=<sid>` is the session.
-                "api/send" => control::send_route(&idx, req),
-                // #133 tmux slice: grant/revoke consent to inject into a live session's pane.
-                // A WRITE (deny_write-gated). `?op=revoke` clears a session's grants (always
-                // allowed — removes stale consent); otherwise a grant requires the session to
-                // resolve as a PROVEN live tmux link (`resolve_tmux_send`), so consent can only
-                // be granted for a target that could actually be injected.
-                "api/consent" => control::consent_route(&idx, req, &attempts),
-                // The monitor ONLY ever serves the view EMBEDDED. The view navigates
-                // sub-agents with a relative `?session=<child>` href that drops the
-                // `chrome=embed` param, so default it back here — a drilled-in child keeps
-                // embed chrome instead of flashing the full claude-replay brand (#124).
-                "session" if query_get(query, "chrome").is_none() => {
-                    let q = if query.is_empty() {
+    // The route table is the library's (claude_monitor::routes, #47); this binary contributes
+    // its rail as the classic page and its `chrome=embed`-defaulting session arm.
+    let backend = Arc::new(claude_monitor::routes::Backend {
+        service: service.clone(),
+        idx: idx.clone(),
+        scratch: scratch.clone(),
+        // The passcode lockout counter, owned by the handler (single-user → one global counter).
+        attempts: std::sync::Mutex::new(Attempts::default()),
+    });
+    let handler = claude_monitor::routes::handler(
+        backend,
+        claude_monitor::routes::Frontend {
+            version: env!("CARGO_PKG_VERSION"),
+            paired,
+            classic: {
+                let rail = rail.clone();
+                Arc::new(move |_query: &str| HttpResponse::html(rail.clone()))
+            },
+            // The monitor ONLY ever serves the view EMBEDDED. The view navigates sub-agents
+            // with a relative `?session=<child>` href that drops the `chrome=embed` param, so
+            // default it back here — a drilled-in child keeps embed chrome instead of flashing
+            // the full claude-replay brand (#124).
+            session: Some(Arc::new(
+                |req: &claude_replay_html::Request, backend: &claude_monitor::routes::Backend| {
+                    let q = if req.query.is_empty() {
                         "chrome=embed".to_string()
                     } else {
-                        format!("{query}&chrome=embed")
+                        format!("{}&chrome=embed", req.query)
                     };
                     service_routes(
-                        Some(&service),
-                        &scratch,
+                        Some(&backend.service),
+                        &backend.scratch,
                         &claude_replay_html::Request { query: &q, ..*req },
                     )
-                }
-                // Everything else is the session service's own wire surface —
-                // /session, /pull, /records, /__reveal, static assets (§6.3).
-                _ => service_routes(Some(&service), &scratch, req),
-            }
-        })
-    };
+                },
+            )),
+        },
+    );
 
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
     let gate = match &token {

@@ -21,11 +21,10 @@ use anyhow::{Context, Result};
 use claude_monitor::control::{
     ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
 };
-use claude_monitor::{control, index};
+use claude_monitor::index;
 use claude_replay_core::{discover, Agent};
 use claude_replay_html::{
-    query_get, service_routes, AuthGate, HttpResponse, PageChrome, RootLock, ServiceConfig,
-    SessionService,
+    query_get, AuthGate, HttpResponse, PageChrome, RootLock, ServiceConfig, SessionService,
 };
 use claude_replay_present::cache::Presentation;
 use std::sync::Arc;
@@ -155,30 +154,26 @@ fn main() -> Result<()> {
         // The compose affordance exists only when paired: unpaired, every write route 401s,
         // so offering the button would be offering a dead end (v1's `{{PAIRED}}` rule).
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
-    // The passcode lockout counter, owned by the handler — one per process, one user.
-    let attempts = std::sync::Mutex::new(Attempts::default());
     let paired = token.is_some();
-    let handler = {
-        let service = service.clone();
-        let idx = idx.clone();
-        let classic_shell = classic_shell.clone();
-        let scratch = scratch.clone();
-        Arc::new(move |req: &claude_replay_html::Request| -> HttpResponse {
-            let (name, query) = (req.name, req.query);
-            if let Some(asset) = claude_monitor::ui::asset(name) {
-                return asset;
-            }
-            match name {
-                // Read or set which shell `/` serves — shared with v1 (one preference, both
-                // binaries), so a `?ui=` override is what you use to compare them side by side.
-                "api/ui" => claude_monitor::ui::route(query),
-                "" | "index.html" => {
-                    if claude_monitor::ui::resolve(query) != claude_monitor::ui::Shell::Classic {
-                        return HttpResponse::html(claude_monitor::ui::app_page(
-                            env!("CARGO_PKG_VERSION"),
-                            paired,
-                        ));
-                    }
+    // The route table is the library's (claude_monitor::routes, #47) — the same five API
+    // arms, assets and service fallthrough as v1; this binary contributes only its classic
+    // page: the splice shell with the session spliced in.
+    let backend = Arc::new(claude_monitor::routes::Backend {
+        service: service.clone(),
+        idx: idx.clone(),
+        scratch: scratch.clone(),
+        // The passcode lockout counter, owned by the handler — one per process, one user.
+        attempts: std::sync::Mutex::new(Attempts::default()),
+    });
+    let handler = claude_monitor::routes::handler(
+        backend,
+        claude_monitor::routes::Frontend {
+            version: env!("CARGO_PKG_VERSION"),
+            paired,
+            classic: {
+                let classic_shell = classic_shell.clone();
+                let service = service.clone();
+                Arc::new(move |query: &str| {
                     // Rollback frontend: with a session it IS the legacy session page with
                     // the old rail spliced in.  Its routes and data are still the same ones
                     // the new shell consumes.
@@ -213,39 +208,11 @@ fn main() -> Result<()> {
                         Some(page) => HttpResponse::html(splice(&page, &classic_shell)),
                         None => HttpResponse::html(empty_shell(&classic_shell)),
                     }
-                }
-                // The session list — the shared index's, so a row's liveness, its counters,
-                // its family and its `injectable`/`consented` facts are ONE derivation. The
-                // register callback is what makes `?session=<id>` resolvable: the shell renders
-                // by id, and the service only knows the ids it has been shown.
-                "api/sessions" => {
-                    let service = &service;
-                    HttpResponse::json(idx.sessions_json(|path| {
-                        service.register_root(path);
-                    }))
-                }
-                // Hide/restore a session or a project (#113). A local UI preference at this
-                // monitor's own root — not agent control, so it stays a GET like v1's.
-                "api/ignore" => {
-                    let resp = match (query_get(query, "add"), query_get(query, "remove")) {
-                        (Some(k), _) => idx.set_ignore(&index::percent_decode(k), true),
-                        (_, Some(k)) => idx.set_ignore(&index::percent_decode(k), false),
-                        _ => r#"{"ok":false}"#.to_string(),
-                    };
-                    HttpResponse::json(resp)
-                }
-                // The two WRITE routes (#133), verbatim from the shared control plane: send a
-                // prompt into a session (resume it if finished, inject into its tmux pane if
-                // live and proven and consented), and grant/revoke that consent. Both are
-                // `deny_write`-gated inside — POST, same-origin, and a token.
-                "api/send" => control::send_route(&idx, req),
-                "api/consent" => control::consent_route(&idx, req, &attempts),
-                // Everything else — /pull, /records, /session, /__reveal, assets — is the
-                // shared backend, unchanged.
-                _ => service_routes(Some(&service), &scratch, req),
-            }
-        })
-    };
+                })
+            },
+            session: None,
+        },
+    );
 
     // Paired, the listener enforces the token; unpaired it is D3b (same-user on Linux,
     // same-machine on macOS) — v1's rule exactly, from the same gate.

@@ -10,5 +10,6 @@ pub mod consent;
 pub mod control;
 pub mod cost;
 pub mod index;
+pub mod routes;
 pub mod state;
 pub mod ui;
