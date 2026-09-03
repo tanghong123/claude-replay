@@ -76,7 +76,11 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   lives in renderer-fired scroll events, layout clamping and native scroll anchoring, which
   only a real engine has. `#[ignore]`d (needs a local Chrome); run
   `cargo test -p claude-replay-browser-tests --test browser_follow -- --ignored`.
-  Scroll/viewport changes to `export.js` must extend this harness. The crate sits OUTSIDE
+  Scroll/viewport changes to `export.js` must extend this harness. The same file holds the
+  APP SHELL's cases (`the_app_shell_*`: layout, hide/restore, child→parent, scroll memory, the
+  keymap) against `agent-monitor-v2 --release` on ports 2831–2836 with scratch state; a
+  behaviour change in `codex-ui/` extends those the same way, and a served module the shell
+  imports must be registered in `ui::asset()` (an import-closure test walks the graph). The crate sits OUTSIDE
   `default-members` — its `headless_chrome` dep is the heaviest thing the workspace compiles,
   so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve it and
   never compile-check it. CI's `cargo test --all` does span every member, so a break in the

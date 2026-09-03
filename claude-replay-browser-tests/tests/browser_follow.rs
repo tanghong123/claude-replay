@@ -1797,6 +1797,127 @@ fn the_app_shell_keys_step_turns_and_heads() {
     );
 }
 
+/// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
+/// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
+/// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.
+/// The other app-shell cases exercise hide/restore, child→parent, scroll memory and the keys;
+/// this one is the plain "it composes" assertion that was missing.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
+    let _serial = serial();
+    let base = base("appshell-layout");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["--port", "2836", "--pair"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    let child = Reap(child);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2836/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    tab.navigate_to("http://127.0.0.1:2836/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let rows = eval(&tab, "(function(){ try { var j = JSON.parse(document.body.innerText); return (j.groups||[]).reduce((n,g)=>n+(g.rows||[]).length,0); } catch(e) { return -1; } })()").as_i64().unwrap_or(-1);
+    assert!(
+        rows >= 0,
+        "/api/sessions did not answer with JSON — paired?"
+    );
+    if rows == 0 {
+        eprintln!("skip: no sessions on this machine");
+        return;
+    }
+    // A fresh open of the app shell: the first session, tall enough to scroll.
+    tab.navigate_to("http://127.0.0.1:2836/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+    let tall = "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()";
+    let mut ready = false;
+    for _ in 0..80 {
+        if eval(&tab, tall).as_bool() == Some(true) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    if !ready {
+        eprintln!("skip: the first session is not tall enough to scroll");
+        return;
+    }
+    // Landed pinned at the tail, on its own, without anyone scrolling.
+    let mut at_tail = false;
+    for _ in 0..40 {
+        let gap = eval(&tab, "(function(){ var s=document.querySelector('.transcript'); return s.scrollHeight - s.clientHeight - s.scrollTop; })()");
+        if gap.as_f64().map(|g| g <= 2.0) == Some(true) {
+            at_tail = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let probe = r#"(function () {
+      var s = document.querySelector('.transcript'), side = document.querySelector('.sidebar'), head = document.querySelector('header');
+      var before = { side: side.getBoundingClientRect().top, head: head.getBoundingClientRect().top, doc: window.scrollY };
+      s.dispatchEvent(new WheelEvent('wheel', {deltaY: -1}));
+      s.scrollTop = Math.max(0, s.scrollTop - 600);
+      var after = { side: side.getBoundingClientRect().top, head: head.getBoundingClientRect().top, doc: window.scrollY, moved: s.scrollTop };
+      return JSON.stringify({
+        transcriptScrolls: after.moved < s.scrollHeight - s.clientHeight,   // the TRANSCRIPT moved
+        documentStill: before.doc === 0 && after.doc === 0,                  // …the document did not
+        sideFixed: Math.abs(after.side - before.side) < 1,
+        headFixed: Math.abs(after.head - before.head) < 1,
+        noFrame: document.querySelectorAll('iframe').length === 0
+      });
+    })()"#;
+    let seen = eval(&tab, probe);
+    drop(child);
+    assert!(at_tail, "a fresh open lands pinned at the tail");
+    let v: serde_json::Value =
+        serde_json::from_str(seen.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        v["transcriptScrolls"], true,
+        "the transcript is the scroller: {seen}"
+    );
+    assert_eq!(
+        v["documentStill"], true,
+        "the document does not scroll: {seen}"
+    );
+    assert_eq!(v["sideFixed"], true, "the sidebar stays put: {seen}");
+    assert_eq!(v["headFixed"], true, "the header stays put: {seen}");
+    assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
+}
+
 /// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
 /// `data-artifacts` on `<body>`), clicking a file path in a tool header SHOWS the file's
 /// bytes over the page instead of asking the server to open a Finder window.
