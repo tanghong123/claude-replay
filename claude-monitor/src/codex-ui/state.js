@@ -5,7 +5,7 @@ const json = (key, fallback) => {
 
 export const indexState = {
   groups: [], rows: new Map(), selected: "", attention: false,
-  collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0,
+  collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
   expandedProjects: new Set(json("am-prod-expanded-projects", [])),
   sidebarOpen: localStorage.getItem("am-demo-sidebar") !== "0",
   read: json("am-prod-read", {})

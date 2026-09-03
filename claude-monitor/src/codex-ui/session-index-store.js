@@ -1,4 +1,5 @@
 import { indexState } from "./state.js";
+import { groupSessions } from "./session-visibility.js";
 
 export class SessionIndexStore {
   constructor(handlers) { this.handlers = handlers; this.timer = 0; this.loading = false; }
@@ -28,16 +29,5 @@ export class SessionIndexStore {
     } catch (error) { this.handlers.error?.(error); }
     finally { this.loading = false; this.timer = setTimeout(() => this.refresh(), 5000); }
   }
-  grouped() {
-    const agents = new Map();
-    for (const group of indexState.groups) for (const row of group.rows || []) {
-      const agentId = row.agent || "other";
-      if (!agents.has(agentId)) agents.set(agentId, { id: agentId, projects: new Map() });
-      const agent = agents.get(agentId);
-      const projectId = group.kind === "agent" ? `${agentId}:desktop` : group.ignoreKey || group.label;
-      if (!agent.projects.has(projectId)) agent.projects.set(projectId, { id: projectId, name: group.kind === "agent" ? "Desktop sessions" : group.label, path: group.secondary || "", sessions: [] });
-      agent.projects.get(projectId).sessions.push(row);
-    }
-    return [...agents.values()].map(agent => ({ ...agent, projects: [...agent.projects.values()] }));
-  }
+  grouped() { return groupSessions(indexState.groups); }
 }

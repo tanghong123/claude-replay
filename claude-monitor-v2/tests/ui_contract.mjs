@@ -5,6 +5,7 @@ import { attachmentCapability, promptShouldCollapse, rendererStartsClosed } from
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
+import { groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-monitor/src/codex-ui/session-visibility.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
 const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
@@ -181,3 +182,44 @@ assert.equal(policyIndex(""), 0, "an empty artifact is just the policy");
 assert.match(PREVIEW_CSP, /connect-src 'none'/);
 assert.match(PREVIEW_CSP, /default-src 'none'/);
 console.log("sandbox document cases passed");
+
+// Hide / restore (parity #1): hidden is the server's state and a VIEW filter here — a hidden
+// row is never dropped from the model, only from the tree, and the keys are the server's.
+{
+  const groups = [
+    { kind: "project", label: "repo", secondary: "/w/repo", ignoreKey: "p:/w/repo", hidden: false, rows: [
+      { id: "s1", agent: "claude", name: "one", ignoreKey: "s:s1", hidden: false, state: "growing" },
+      { id: "s2", agent: "claude", name: "two", ignoreKey: "s:s2", hidden: true, state: "finished" }
+    ] },
+    { kind: "project", label: "old", secondary: "/w/old", ignoreKey: "p:/w/old", hidden: true, rows: [
+      { id: "s3", agent: "claude", name: "three", ignoreKey: "s:s3", hidden: true, state: "finished" }
+    ] },
+    { kind: "agent", label: "QoderWork", ignoreKey: "a:QoderWork", hidden: false, rows: [
+      { id: "q1", agent: "qoderwork", name: "desk", ignoreKey: "s:q1", hidden: false, state: "finished" }
+    ] }
+  ];
+  const agents = groupSessions(groups);
+  const claude = agents.find(a => a.id === "claude");
+  assert.deepEqual(claude.projects.map(p => [p.id, p.ignoreKey, p.hidden]), [["p:/w/repo", "p:/w/repo", false], ["p:/w/old", "p:/w/old", true]], "projects carry the server's key and hidden flag verbatim");
+  const desk = agents.find(a => a.id === "qoderwork").projects[0];
+  assert.equal(desk.name, "Desktop sessions"); assert.equal(desk.kind, "agent"); assert.equal(desk.ignoreKey, "a:QoderWork", "an agent-kind group keeps its a: key so it can be hidden and restored");
+  assert.equal(claude.projects[1].sessions.length, 1, "a hidden row stays in the model");
+
+  const shown = visibleTree(agents);
+  assert.deepEqual(shown.find(a => a.id === "claude").projects.map(p => [p.id, p.rows.map(r => r.id)]), [["p:/w/repo", ["s1"]]], "by default a hidden row and a hidden project vanish");
+  const revealed = visibleTree(agents, { showHidden: true });
+  assert.deepEqual(revealed.find(a => a.id === "claude").projects.map(p => [p.id, p.rows.map(r => r.id)]), [["p:/w/repo", ["s1", "s2"]], ["p:/w/old", ["s3"]]], "Hidden (n) reveals both");
+  const needy = visibleTree(agents, { showHidden: true, attention: true, needs: r => r.id === "s2" });
+  assert.deepEqual(needy.map(a => a.id), ["claude"]); assert.deepEqual(needy[0].projects.map(p => p.rows.map(r => r.id)), [["s2"]], "attention composes with reveal");
+  assert.deepEqual(visibleTree(agents, { attention: true, needs: r => r.id === "s2" }), [], "…but never resurrects a hidden row on its own");
+
+  assert.deepEqual(hideAction({ ignoreKey: "s:s1", hidden: false }), { op: "add", key: "s:s1", title: "Hide this session", icon: "x" });
+  assert.deepEqual(hideAction({ ignoreKey: "p:/w/old", hidden: true }, "project"), { op: "remove", key: "p:/w/old", title: "Restore this project", icon: "back" });
+  assert.equal(hideAction({ ignoreKey: "a:QoderWork", hidden: false }, "agent").title, "Hide this agent");
+  assert.equal(ignoreQuery({ op: "add", key: "p:/w/my repo" }), "/api/ignore?add=p%3A%2Fw%2Fmy%20repo", "the key travels verbatim, encoded once");
+  console.log("session visibility cases passed");
+}
+assert.match(appSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and restores through /api/ignore with the server's key");
+assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
+assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
+assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");

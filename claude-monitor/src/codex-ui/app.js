@@ -6,6 +6,7 @@ import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
+import { hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -197,26 +198,32 @@ function groupedSessions() {
 const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork" })[id] || id;
 const SIDEBAR_SESSION_LIMIT = 5;
 
+// Hide / restore (parity #1). The control lives ON the row, where the shell keeps row-level
+// actions, and appears on hover or focus — except on a hidden row, where "restore" is the
+// whole point of showing it. The key is the server's (`ignoreKey`), passed through verbatim.
+function treeAction(target, kind) {
+  const action = hideAction(target, kind);
+  return `<button class="tree-action" type="button" data-ignore-op="${action.op}" data-ignore-key="${escapeText(action.key)}" title="${escapeText(action.title)}" aria-label="${escapeText(action.title)}">${svg(action.icon)}</button>`;
+}
+
 function sessionTreeRow(row) {
   const denote = stateDenote(row);
   const marker = denote ? `<span class="session-state ${escapeText(denote.tone)}" role="img" aria-label="${escapeText(denote.label)}" title="${escapeText(denote.label)}"></span>` : "";
-  return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${marker}<span class="session-age">${escapeText(row.activity || "")}</span></span></div>`;
+  return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(row.activity || "")}</span></span></div>`;
 }
 
 function renderTree() {
   const agents = groupedSessions(); let html = ""; let attention = 0;
   indexState.rows.forEach(row => { if (!row.hidden && needs(row)) attention++; });
-  for (const agent of agents) {
-    const visible = agent.projects.flatMap(project => project.sessions).filter(row => !row.hidden && (!indexState.attention || needs(row)));
-    if (!visible.length) continue;
+  const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, attention: indexState.attention, needs });
+  for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
     html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}</div>`;
     if (!openAgent) continue;
     for (const project of agent.projects) {
-      const rows = project.sessions.filter(row => !row.hidden && (!indexState.attention || needs(row)));
-      if (!rows.length) continue;
+      const rows = project.rows;
       const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
-      html += `<div class="tree-row project" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span></div>`;
+      html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
       if (!openProject) continue;
       const overflowKey = `${agent.id}:${project.id}`;
       const expanded = indexState.expandedProjects.has(overflowKey);
@@ -228,8 +235,9 @@ function renderTree() {
       if (rows.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
     }
   }
-  tree.innerHTML = html || '<div class="no-results">Nothing needs attention</div>';
+  tree.innerHTML = html || `<div class="no-results">${indexState.attention ? "Nothing needs attention" : "No sessions"}</div>`;
   byId("attentionCount").textContent = String(attention);
+  renderHiddenControl();
   byId("sidebarMiniAttentionBadge").hidden = !attention;
   byId("sidebarMiniAttentionBadge").textContent = String(attention);
   const attentionSummary = `Filter to sessions awaiting a reply, a grant, or that failed or stalled · ${attention}`;
@@ -238,7 +246,43 @@ function renderTree() {
   byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${first.id === indexState.selected ? "selected" : ""}" data-mini-agent-session="${escapeText(first.id)}" title="${escapeText(agent.name)}">${agentLogo(agent.id)}</button>` : ""; }).join("");
 }
 
+// "Hidden (n)" — the way back for anything hidden. A navbtn beside the attention filter, in
+// the same anatomy (icon · label · count), present only while something IS hidden, exactly as
+// the classic rail's toggle; the mini rail gets the matching badge. Reveal is a view state
+// (not persisted, like classic), so a reload starts clean.
+const hiddenBtn = document.createElement("button");
+hiddenBtn.className = "navbtn hidden-filter"; hiddenBtn.id = "hiddenBtn"; hiddenBtn.type = "button"; hiddenBtn.hidden = true;
+hiddenBtn.setAttribute("aria-pressed", "false");
+hiddenBtn.innerHTML = `${svg("x")}<span class="label">Hidden</span><span class="count attention-count" id="hiddenCount">0</span>`;
+const hiddenCount = hiddenBtn.querySelector(".count");
+byId("attentionBtn").after(hiddenBtn);
+const hiddenMini = document.createElement("button");
+hiddenMini.className = "sidebar-mini-button hidden-mini"; hiddenMini.id = "sidebarMiniHidden"; hiddenMini.type = "button"; hiddenMini.hidden = true;
+hiddenMini.innerHTML = `${svg("x")}<span class="sidebar-mini-badge" id="sidebarMiniHiddenBadge"></span>`;
+byId("sidebarMiniAttention").after(hiddenMini);
+function renderHiddenControl() {
+  const n = indexState.ignoredCount;
+  if (!n) indexState.showHidden = false;
+  hiddenBtn.hidden = !n; hiddenMini.hidden = !n;
+  hiddenCount.textContent = String(n);
+  hiddenBtn.classList.toggle("on", indexState.showHidden);
+  hiddenBtn.setAttribute("aria-pressed", String(indexState.showHidden));
+  hiddenBtn.title = indexState.showHidden ? "Hide them again" : `Show ${n} hidden session${n === 1 ? "" : "s"}, projects and agents`;
+  hiddenMini.setAttribute("aria-label", `${n} hidden`); hiddenMini.title = hiddenBtn.title;
+}
+hiddenBtn.onclick = () => { indexState.showHidden = !indexState.showHidden; renderTree(); };
+hiddenMini.onclick = () => { indexState.showHidden = true; byId("sidebarMiniExpand").click(); renderTree(); };
+async function applyIgnore(op, key) {
+  try {
+    const response = await fetch(ignoreQuery({ op, key }), { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    toast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
+    await sessionIndex.refresh();
+  } catch (error) { toast(`Could not ${op === "add" ? "hide" : "restore"}: ${error.message}`); }
+}
+
 tree.onclick = event => {
+  const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
   const session = event.target.closest("[data-session]"); if (session) { selectSession(session.dataset.session, true); return; }
   const more = event.target.closest("[data-project-more]"); if (more) { const key = more.dataset.projectMore; indexState.expandedProjects.has(key) ? indexState.expandedProjects.delete(key) : indexState.expandedProjects.add(key); persist(); renderTree(); return; }
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }

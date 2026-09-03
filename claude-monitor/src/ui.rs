@@ -155,6 +155,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/preview.js").as_slice(),
         ),
+        "monitor-ui/session-visibility.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-visibility.js").as_slice(),
+        ),
         "monitor-ui/sandbox.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/sandbox.js").as_slice(),
@@ -222,6 +226,73 @@ mod tests {
         assert_eq!(preference(), Shell::App);
         std::env::remove_var("AGENT_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every `./x.js` a served module imports must itself be served. The list above is
+    /// explicit, so a new module that is imported but not registered 404s in the browser and
+    /// the WHOLE module graph fails to load — the shell paints nothing, and no node-side test
+    /// can see it, because node resolves the same import from disk. That is exactly what
+    /// happened with `session-visibility.js` (2026-09-03): the contract test passed and the
+    /// page was blank. This walks the closure from the entry point.
+    #[test]
+    fn every_module_the_shell_imports_is_served() {
+        let sources: &[(&str, &str)] = &[
+            ("app.js", include_str!("codex-ui/app.js")),
+            (
+                "attachment-viewer.js",
+                include_str!("codex-ui/attachment-viewer.js"),
+            ),
+            ("components.js", include_str!("codex-ui/components.js")),
+            (
+                "control-store.js",
+                include_str!("codex-ui/control-store.js"),
+            ),
+            ("icons.js", include_str!("codex-ui/icons.js")),
+            ("preview.js", include_str!("codex-ui/preview.js")),
+            ("record-store.js", include_str!("codex-ui/record-store.js")),
+            ("sandbox.js", include_str!("codex-ui/sandbox.js")),
+            (
+                "session-index-store.js",
+                include_str!("codex-ui/session-index-store.js"),
+            ),
+            (
+                "session-visibility.js",
+                include_str!("codex-ui/session-visibility.js"),
+            ),
+            ("state.js", include_str!("codex-ui/state.js")),
+            ("view-model.js", include_str!("codex-ui/view-model.js")),
+            ("viewport.js", include_str!("codex-ui/viewport.js")),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut todo = vec!["app.js".to_string()];
+        while let Some(name) = todo.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            assert!(
+                asset(&format!("monitor-ui/{name}")).is_some(),
+                "{name} is imported by the shell but `asset()` does not serve it — register it"
+            );
+            let src = sources
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(|| {
+                    panic!("{name} is served but not listed in this test's sources")
+                });
+            for line in src.lines() {
+                let line = line.trim();
+                if !(line.starts_with("import ") || line.starts_with("export ")) {
+                    continue;
+                }
+                if let Some(rest) = line.split(" from \"./").nth(1) {
+                    if let Some(dep) = rest.split('"').next() {
+                        todo.push(dep.to_string());
+                    }
+                }
+            }
+        }
+        assert!(seen.len() >= 12, "walked the graph: {seen:?}");
     }
 
     #[test]

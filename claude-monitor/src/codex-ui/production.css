@@ -26,3 +26,14 @@
 .iconbtn.shell-toggle{width:auto;padding:0 8px;font-size:11px;font-weight:600;letter-spacing:.02em;opacity:.72}
 .iconbtn.shell-toggle:hover{opacity:1}
 .iconbtn.shell-toggle[disabled]{opacity:.4;pointer-events:none}
+
+/* Hide / restore (parity #1). The action sits on the row and shows on hover or focus; a hidden
+   row, revealed by "Hidden (n)", is dimmed and shows its restore action outright. */
+.tree-action{width:22px;height:22px;flex:none;padding:0;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;opacity:0;transition:opacity .12s}
+.tree-action .icon{width:14px;height:14px}
+.tree-action:hover{background:var(--hover);color:var(--ink)}
+.tree-row:hover .tree-action,.tree-row:focus-within .tree-action,.tree-row.is-hidden .tree-action,.tree-action:focus-visible{opacity:1}
+.tree-row.project .tree-action{margin-left:auto}
+.tree-row.is-hidden{opacity:.55}
+.tree-row.is-hidden.selected{opacity:.8}
+.navbtn.hidden-filter[hidden],.sidebar-mini-button.hidden-mini[hidden]{display:none}

@@ -67,6 +67,18 @@ fn hermetic_state() {
 /// directory; it could not give them their own environment. The tests are each tens of seconds
 /// of real browser work, so serializing costs little and removes a flake that reads like a
 /// viewport regression.
+/// Reaps a spawned monitor when the test ends — INCLUDING by panic. Without it a failed
+/// assertion strands the server on its port, the next run's spawn cannot bind, and the tab
+/// talks to the stale server with the wrong token: every later run fails for a reason that
+/// has nothing to do with the code under test.
+struct Reap(std::process::Child);
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -1118,6 +1130,188 @@ fn the_v2_shell_keeps_the_document_scroller() {
         "the transcript clears the rail: {seen}"
     );
     assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
+}
+
+/// The app shell can hide a session and get it back (parity #1). The classic rail always
+/// could; the first app shell filtered `row.hidden` out with no control in either direction,
+/// which made hiding a one-way trap. This drives the real thing: the row action calls
+/// `/api/ignore` with the server's key, the tree re-polls and the row is gone; "Hidden (n)"
+/// appears, reveals it dimmed, and its restore action brings it back. Hide state lives in
+/// the scratch STATE dir, never the user's, so nothing on the machine is actually hidden.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_hides_and_restores_a_session() {
+    let _serial = serial();
+    let base = base("appshell-hide");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["--port", "2832", "--pair"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    let child = Reap(child);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    // Bootstrap the cookie, then let the FIRST cold scan finish behind a blocking fetch —
+    // the same shape as the v2 layout test — so "no rows yet" below can only mean an empty
+    // store, never a scan that outran the wait. A skip must stay distinguishable from a
+    // shell that threw before painting (this assertion family has gone quiet before).
+    tab.navigate_to(&format!("http://127.0.0.1:2832/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to("http://127.0.0.1:2832/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let listing = tab
+        .evaluate("document.body.innerText", true)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let parsed = serde_json::from_str::<serde_json::Value>(&listing);
+    assert!(
+        parsed.is_ok(),
+        "/api/sessions did not answer with JSON — paired? got: {listing}"
+    );
+    let store_rows = parsed
+        .ok()
+        .and_then(|v| {
+            v["groups"].as_array().map(|g| {
+                g.iter()
+                    .map(|x| x["rows"].as_array().map_or(0, |r| r.len()))
+                    .sum::<usize>()
+            })
+        })
+        .unwrap_or(0);
+    if store_rows == 0 {
+        eprintln!("skip: no sessions on this machine to hide");
+        return;
+    }
+    tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let mut first = String::new();
+    for _ in 0..120 {
+        let v = eval(
+            &tab,
+            "(document.querySelector('.tree-row.session[data-session]')||{}).dataset?.session||''",
+        );
+        if let Some(id) = v.as_str().filter(|s| !s.is_empty()) {
+            first = id.to_string();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    // On failure say WHICH module the browser could not load: a served-list miss 404s one
+    // import and takes the whole graph down, and nothing on the node side can see it.
+    let painted = eval(&tab, "JSON.stringify({hiddenBtn: !!document.getElementById('hiddenBtn'), tree: (document.getElementById('tree')||{innerHTML:''}).innerHTML.slice(0, 160), modules: performance.getEntriesByType('resource').filter(e => e.name.includes('/monitor-ui/')).map(e => [e.name.split('/').pop(), e.responseStatus])})");
+    assert!(
+        !first.is_empty(),
+        "the store has {store_rows} rows but the app shell painted none in 30s — did app.js throw? {painted}"
+    );
+    let row = format!("document.querySelector('.tree-row.session[data-session=\"{first}\"]')");
+    let before = eval(
+        &tab,
+        "Number(document.getElementById('hiddenCount').textContent)||0",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    // Hide it through the row's own action (it is a real button; hover only affects opacity).
+    eval(
+        &tab,
+        &format!("{row}.querySelector('[data-ignore-op=\"add\"]').click(); 'ok'"),
+    );
+    let mut gone = false;
+    for _ in 0..40 {
+        if eval(&tab, &format!("{row} === null")).as_bool() == Some(true) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let after_hide = eval(&tab, "JSON.stringify({shown: !document.getElementById('hiddenBtn').hidden, n: Number(document.getElementById('hiddenCount').textContent)||0})");
+    // Reveal, then restore through the revealed row's action.
+    eval(&tab, "document.getElementById('hiddenBtn').click(); 'ok'");
+    let mut revealed = false;
+    for _ in 0..20 {
+        if eval(
+            &tab,
+            &format!("!!({row}) && {row}.classList.contains('is-hidden')"),
+        )
+        .as_bool()
+            == Some(true)
+        {
+            revealed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    eval(
+        &tab,
+        &format!("{row}.querySelector('[data-ignore-op=\"remove\"]').click(); 'ok'"),
+    );
+    let mut restored = false;
+    for _ in 0..40 {
+        if eval(
+            &tab,
+            &format!("!!({row}) && !{row}.classList.contains('is-hidden')"),
+        )
+        .as_bool()
+            == Some(true)
+        {
+            restored = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let after_restore = eval(
+        &tab,
+        "Number(document.getElementById('hiddenCount').textContent)||0",
+    )
+    .as_i64()
+    .unwrap_or(-1);
+    drop(child);
+    assert!(gone, "the hidden row left the tree");
+    let v: serde_json::Value = serde_json::from_str(after_hide.as_str().unwrap_or("null"))
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(v["shown"], true, "Hidden (n) appeared: {after_hide}");
+    assert_eq!(
+        v["n"].as_i64().unwrap_or(-1),
+        before + 1,
+        "the count rose by one: {after_hide}"
+    );
+    assert!(revealed, "the reveal showed the row, dimmed");
+    assert!(restored, "restore brought it back undimmed");
+    assert_eq!(after_restore, before, "the count fell back");
 }
 
 /// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
