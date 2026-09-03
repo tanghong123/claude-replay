@@ -5,7 +5,7 @@ import { attachmentCapability, promptShouldCollapse, referenceAction, rendererSt
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
-import { groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-monitor/src/codex-ui/session-visibility.js";
+import { families, groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-monitor/src/codex-ui/session-visibility.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
 const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
@@ -239,3 +239,31 @@ assert.match(appSource, /referenceAction\(\{ fileSig, revealSig \}\)/, "referenc
 assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8"), /revealQuery\(\{ path: item\.path, sig: item\.sig \}\)/, "reveal calls /__reveal with the REVEAL stamp, never the file stamp");
 assert.match(productionCss, /\.renderer-target-link\{/, "stamped tool-header paths read as references");
 console.log("reveal cases passed");
+
+// Fork families (parity #4): one representative per shared root, the root itself when it is
+// among the rows, else the newest member; growing and activity are the family's, not the rep's.
+{
+  const rows = [
+    { id: "root", family: "root", activityTs: 100, state: "finished" },
+    { id: "fork1", family: "root", isFork: true, activityTs: 300, state: "growing" },
+    { id: "fork2", family: "root", isFork: true, activityTs: 200, state: "finished" },
+    { id: "lone", family: "lone", activityTs: 50, state: "finished" },
+    { id: "orphanFork", family: "gone-root", isFork: true, activityTs: 10, state: "finished" },
+    { id: "orphanFork2", family: "gone-root", isFork: true, activityTs: 20, state: "finished" }
+  ];
+  const fams = families(rows);
+  assert.deepEqual(fams.map(f => [f.key, f.rep.id, f.forks.map(r => r.id), f.growing, f.latest]), [
+    ["root", "root", ["fork1", "fork2"], true, 300],
+    ["lone", "lone", [], false, 50],
+    ["gone-root", "orphanFork2", ["orphanFork"], false, 20]
+  ], "root represents; a family without its root is represented by its newest member; order is first appearance");
+  assert.equal(families([]).length, 0);
+  assert.equal(families([{ id: "x" }])[0].key, "x", "a row without a family field is a family of one, keyed by its id");
+  console.log("family cases passed");
+}
+assert.match(appSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
+assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
+assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
+assert.match(productionCss, /\.session-parent\.is-live\{display:grid\}/, "the reference parent control is shown by a production state, not by editing the shell");
+console.log("sub-agent navigation cases passed");
+assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.values\(\)\]/, "a ?session= deep link to a non-row id (a sub-agent child) opens that id, not the first row");

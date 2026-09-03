@@ -1314,6 +1314,174 @@ fn the_app_shell_hides_and_restores_a_session() {
     assert_eq!(after_restore, before, "the count fell back");
 }
 
+/// A sub-agent child opened directly has a way back up, and stays open (parity #3). The
+/// child is never a list row, so the first app shell declared it "gone" on the next index
+/// poll — a child could be looked at for at most five seconds. Now the parent control goes
+/// live from the child's own meta, Back lands on the parent, and the poll leaves a child
+/// alone. Needs a parent with children in the real store; skips, with a diagnostic, when
+/// none of the first sessions has one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_walks_a_child_back_to_its_parent() {
+    let _serial = serial();
+    let base = base("appshell-parent");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["--port", "2833", "--pair"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    let child = Reap(child);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2833/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    // Find a parent with children by asking the same routes the shell uses — first the
+    // listing (blocking on the cold scan), then `/pull` per session for its meta.
+    tab.navigate_to("http://127.0.0.1:2833/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let listing = eval(&tab, "document.body.innerText");
+    let ids: Vec<String> =
+        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
+            .ok()
+            .and_then(|v| {
+                v["groups"].as_array().map(|g| {
+                    g.iter()
+                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
+                        .filter_map(|r| r["id"].as_str().map(str::to_string))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+    assert!(
+        !ids.is_empty() || {
+            eprintln!("skip: no sessions on this machine");
+            true
+        }
+    );
+    if ids.is_empty() {
+        return;
+    }
+    tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mut pair: Option<(String, String)> = None;
+    for id in ids.iter().take(40) {
+        let js = format!(
+            "fetch('/pull?session={}&cursor=', {{cache:'no-store'}}).then(r => r.json()).then(j => JSON.stringify((j.meta && j.meta.children || []).map(c => c.id))).catch(() => '[]')",
+            id
+        );
+        let v = tab
+            .evaluate(&js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "[]".into());
+        let children: Vec<String> = serde_json::from_str(&v).unwrap_or_default();
+        if let Some(first) = children.first() {
+            pair = Some((id.clone(), first.clone()));
+            break;
+        }
+    }
+    let Some((parent, child_id)) = pair else {
+        eprintln!(
+            "skip: none of the first {} sessions has a sub-agent child",
+            ids.len().min(40)
+        );
+        return;
+    };
+    tab.navigate_to(&format!("http://127.0.0.1:2833/?ui=app&session={child_id}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mut live = false;
+    for _ in 0..80 {
+        if eval(
+            &tab,
+            "document.getElementById('sessionParent').classList.contains('is-live')",
+        )
+        .as_bool()
+            == Some(true)
+        {
+            live = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let header = eval(&tab, "JSON.stringify({title: document.getElementById('sessionTitle').textContent, crumb: document.getElementById('sessionCrumb').textContent, parent: document.getElementById('sessionParent').dataset.parent})");
+    // Outlive one index poll (5 s): the child must still be the open session afterwards.
+    std::thread::sleep(std::time::Duration::from_millis(6500));
+    let survived = eval(&tab, "JSON.stringify({sel: new URLSearchParams(location.search).get('session'), title: document.getElementById('sessionTitle').textContent, gone: !!document.querySelector('.monitor-empty:not([hidden])')})");
+    eval(
+        &tab,
+        "document.getElementById('sessionParent').click(); 'ok'",
+    );
+    let mut landed = String::new();
+    for _ in 0..40 {
+        let v = eval(
+            &tab,
+            "new URLSearchParams(location.search).get('session') || ''",
+        );
+        if v.as_str() == Some(parent.as_str()) {
+            landed = parent.clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    drop(child);
+    assert!(
+        live,
+        "the parent control went live for child {child_id} of {parent}: {header}"
+    );
+    let h: serde_json::Value =
+        serde_json::from_str(header.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        h["parent"], parent,
+        "the control points at the parent: {header}"
+    );
+    assert_ne!(
+        h["title"], "Agent Monitor",
+        "the child has its own title, not the empty header: {header}"
+    );
+    let s: serde_json::Value = serde_json::from_str(survived.as_str().unwrap_or("null"))
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        s["sel"], child_id,
+        "the child stayed selected across an index poll: {survived}"
+    );
+    assert_eq!(s["gone"], false, "…and was not declared gone: {survived}");
+    assert_eq!(landed, parent, "Back landed on the parent");
+}
+
 /// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
 /// `data-artifacts` on `<body>`), clicking a file path in a tool header SHOWS the file's
 /// bytes over the page instead of asking the server to open a Finder window.

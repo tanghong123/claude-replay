@@ -62,3 +62,31 @@ export function hideAction(target, kind = "session") {
 
 /** The `/api/ignore` query for an action, verbatim key — the server owns the grammar. */
 export const ignoreQuery = ({ op, key }) => `/api/ignore?${op}=${encodeURIComponent(key)}`;
+
+/**
+ * Fork families (#142): rows sharing a `family` root are one conversation forked — they
+ * overlap heavily, so the list shows one representative with a fork count, and the other
+ * members on demand. The representative is the root (the member that is not a fork); when
+ * the root is not among the rows (filtered, hidden, or its transcript gone) the most recently
+ * active member speaks for the family. A family is growing if any member is, and its
+ * activity is its newest member's. Order follows first appearance, so it is stable across
+ * polls. (Sub-agent CHILDREN are not rows at all — they are reached through a session's
+ * `children` and come back through its `ancestors`; see the parent control.)
+ */
+export function families(rows = []) {
+  const by = new Map();
+  for (const row of rows) {
+    const key = row.family || row.id;
+    if (!by.has(key)) by.set(key, { key, rep: null, members: [], growing: false, latest: 0 });
+    const family = by.get(key);
+    family.members.push(row);
+    family.latest = Math.max(family.latest, row.activityTs || 0);
+    if (row.state === "growing") family.growing = true;
+    if (!row.isFork && !family.rep) family.rep = row;
+  }
+  for (const family of by.values()) {
+    if (!family.rep) family.rep = [...family.members].sort((a, b) => (b.activityTs || 0) - (a.activityTs || 0))[0];
+    family.forks = family.members.filter(row => row !== family.rep);
+  }
+  return [...by.values()];
+}

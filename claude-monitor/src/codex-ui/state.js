@@ -6,6 +6,10 @@ const json = (key, fallback) => {
 export const indexState = {
   groups: [], rows: new Map(), selected: "", attention: false,
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
+  // Fork families opened in the tree (view state, like classic famOpen), and whether the
+  // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
+  // declared gone by the index poll for that reason.
+  openFamilies: new Set(), selectedWasRow: false,
   expandedProjects: new Set(json("am-prod-expanded-projects", [])),
   sidebarOpen: localStorage.getItem("am-demo-sidebar") !== "0",
   read: json("am-prod-read", {})

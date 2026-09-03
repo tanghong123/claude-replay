@@ -6,7 +6,7 @@ import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
-import { hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
+import { families, hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -153,11 +153,14 @@ const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.ope
 const controls = new ControlStore({ toast, refreshIndex: loadSessions });
 const sessionIndex = new SessionIndexStore({
   update: () => {
-    if (indexState.selected && !selectedRow()) sessionGone();
+    if (indexState.selected && indexState.selectedWasRow && !selectedRow()) sessionGone();
     renderTree(); renderHeader(); controls.paint();
     if (!indexState.selected) {
+      // A requested id is honoured even when it is not a list row: a sub-agent child never is,
+      // and a link to one must open it, not the first session. A bad id shows "Cannot read
+      // this session" from the record store rather than silently opening something else.
       const requested = new URLSearchParams(location.search).get("session");
-      const first = requested && indexState.rows.has(requested) ? requested : [...indexState.rows.values()].find(row => !row.hidden)?.id;
+      const first = requested || [...indexState.rows.values()].find(row => !row.hidden)?.id;
       if (first) selectSession(first, false);
     }
   },
@@ -207,10 +210,17 @@ function treeAction(target, kind) {
   return `<button class="tree-action" type="button" data-ignore-op="${action.op}" data-ignore-key="${escapeText(action.key)}" title="${escapeText(action.title)}" aria-label="${escapeText(action.title)}">${svg(action.icon)}</button>`;
 }
 
-function sessionTreeRow(row) {
-  const denote = stateDenote(row);
+// A row, or a fork family's representative (`fam`): the family's state and age, not just the
+// rep's — a forked conversation is "running" when any fork is — plus a fork count that opens
+// the other members, indented, the way the classic rail's ⑂ chip does (#142).
+function sessionTreeRow(row, fam = null, member = false) {
+  const forked = fam && fam.forks.length ? fam : null;
+  const denote = forked && forked.growing && stateDenote(row)?.tone !== "busy" ? { label: "A fork is running", tone: "busy" } : stateDenote(row);
+  const newest = forked ? forked.members.reduce((a, b) => ((b.activityTs || 0) > (a.activityTs || 0) ? b : a), row) : row;
   const marker = denote ? `<span class="session-state ${escapeText(denote.tone)}" role="img" aria-label="${escapeText(denote.label)}" title="${escapeText(denote.label)}"></span>` : "";
-  return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(row.activity || "")}</span></span></div>`;
+  const open = forked && (indexState.openFamilies.has(forked.key) || forked.forks.some(r => r.id === indexState.selected));
+  const chip = forked ? `<button class="tree-forks" type="button" data-family-toggle="${escapeText(forked.key)}" aria-expanded="${!!open}" title="${forked.forks.length} fork${forked.forks.length === 1 ? "" : "s"} of this session — forking copies the conversation, so they overlap heavily">⑂ ${forked.forks.length}</button>` : "";
+  return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
 
 function renderTree() {
@@ -228,12 +238,17 @@ function renderTree() {
       if (!openProject) continue;
       const overflowKey = `${agent.id}:${project.id}`;
       const expanded = indexState.expandedProjects.has(overflowKey);
-      let shown = expanded ? rows : rows.slice(0, SIDEBAR_SESSION_LIMIT);
-      const selected = rows.find(row => row.id === indexState.selected);
-      if (!expanded && selected && !shown.includes(selected)) shown = shown.concat(selected);
-      for (const row of shown) html += sessionTreeRow(row);
-      const hidden = rows.filter(row => !shown.includes(row)).length;
-      if (rows.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
+      const fams = families(rows);
+      let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
+      const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
+      if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
+      for (const fam of shown) {
+        html += sessionTreeRow(fam.rep, fam);
+        const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
+        if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
+      }
+      const hidden = fams.filter(fam => !shown.includes(fam)).length;
+      if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
     }
   }
   tree.innerHTML = html || `<div class="no-results">${indexState.attention ? "Nothing needs attention" : "No sessions"}</div>`;
@@ -284,6 +299,7 @@ async function applyIgnore(op, key) {
 
 tree.onclick = event => {
   const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
+  const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
   const session = event.target.closest("[data-session]"); if (session) { selectSession(session.dataset.session, true); return; }
   const more = event.target.closest("[data-project-more]"); if (more) { const key = more.dataset.projectMore; indexState.expandedProjects.has(key) ? indexState.expandedProjects.delete(key) : indexState.expandedProjects.add(key); persist(); renderTree(); return; }
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
@@ -291,9 +307,14 @@ tree.onclick = event => {
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
 byId("sidebarMiniAgents").onclick = event => { const button = event.target.closest("[data-mini-agent-session]"); if (button) selectSession(button.dataset.miniAgentSession, true); };
 
+function sessionUrl(id) {
+  const url = new URL(location.href); url.searchParams.set("session", id);
+  if (document.body.dataset.uiDefault === "true") url.searchParams.delete("ui"); else url.searchParams.set("ui", "app");
+  url.hash = ""; return url;
+}
 function selectSession(id, push) {
   if (!id || (id === indexState.selected && recordStore.session === id)) return;
-  indexState.selected = id; app.classList.add("mobile-detail");
+  indexState.selected = id; indexState.selectedWasRow = indexState.rows.has(id); app.classList.add("mobile-detail");
   preview.setSession(id);
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
   renderTree(); renderHeader(); controls.paint();
@@ -302,8 +323,41 @@ function selectSession(id, push) {
 }
 function sessionGone() { recordStore.stop(); preview.setSession(""); indexState.selected = ""; recordState.session = ""; viewport.showEmpty("Session is gone", "It may have been deleted or moved. The list keeps scanning.", true); }
 
+// The parent control (parity #3): live only while the open session has an ancestor in its
+// meta — a sub-agent child, which is never a list row. Back IS the parent: clicking it selects
+// the last ancestor, and a deep-linked child gets a synthesized history entry for it, so the
+// browser's own Back does the same (the classic view's `synthesizeBack`).
+const parentBtn = byId("sessionParent");
+parentBtn.onclick = () => { if (parentBtn.dataset.parent) selectSession(parentBtn.dataset.parent, true); };
+let synthesizedFor = "";
+function renderParent(meta) {
+  const parent = recordState.session === indexState.selected ? meta?.ancestors?.at(-1) : null;
+  parentBtn.classList.toggle("is-live", !!parent);
+  parentBtn.dataset.parent = parent?.id || "";
+  parentBtn.title = parent ? `Back to the parent session: ${parent.title || parent.id}` : "Back to the parent session";
+  if (parent && synthesizedFor !== indexState.selected && history.length <= 1) {
+    try { const child = location.href; history.replaceState({}, "", sessionUrl(parent.id)); history.pushState({}, "", child); } catch (_) {}
+    synthesizedFor = indexState.selected;
+  }
+  return parent;
+}
 function renderHeader() {
   const row = selectedRow();
+  const liveMeta = recordState.session === indexState.selected ? recordState.meta : null;
+  const parent = renderParent(liveMeta);
+  if (!row && liveMeta && parent) {
+    // A sub-agent child: not a row, so everything the header shows comes from its own meta.
+    byId("sessionTitle").textContent = liveMeta.title || liveMeta.sid || indexState.selected;
+    byId("sessionCrumb").textContent = `${agentName(liveMeta.agent)} · sub-agent of ${parent.title || parent.id}`;
+    byId("statusChip").className = "status-chip idle";
+    byId("statusChip").textContent = liveMeta.agent_type ? `Sub-agent · ${liveMeta.agent_type}` : "Sub-agent";
+    byId("statusChip").title = "";
+    sessionTitle.tabIndex = 0;
+    sessionCopyMenu.hidden = false;
+    sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = liveMeta.sid || indexState.selected;
+    sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = liveMeta.path || "available once the session loads";
+    return;
+  }
   if (!row) {
     byId("sessionTitle").textContent = "Agent Monitor";
     byId("sessionCrumb").textContent = "Scanning sessions";
@@ -334,7 +388,9 @@ function renderHeader() {
 let lastRecordCount = 0;
 function updateRecords({ records, meta, changedFrom }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
+  const metaArrived = meta && meta !== recordState.meta;
   recordState.records = records; recordState.meta = meta;
+  if (metaArrived) renderHeader();
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
   recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
   const changedUnit = projection.rebuild(records, changedFrom);

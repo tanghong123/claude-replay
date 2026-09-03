@@ -46,3 +46,12 @@
 .artifact-actions{margin-left:auto;flex:none;display:flex;align-items:center;gap:6px}
 .artifact-link-secondary{margin-left:14px;color:var(--faint)}
 .artifact-link-secondary:hover{color:var(--ink)}
+
+/* Sub-agent navigation (parity #3 + #4). The parent control is in the reference header, shown
+   only while the open session has an ancestor; fork families show one representative with a
+   ⑂ count, and their other members indented one level deeper than a session row. */
+.session-parent.is-live{display:grid}
+.tree-forks{height:18px;padding:0 6px;border-radius:5px;border:1px solid var(--line);background:transparent;color:var(--faint);font:11px var(--mono);cursor:pointer;flex:none}
+.tree-forks:hover,.tree-forks[aria-expanded="true"]{color:var(--ink);background:var(--hover)}
+.tree-row.session.is-member{padding-left:62px}
+.tree-row.session.is-member .tree-title{font-weight:400;color:var(--sub)}
