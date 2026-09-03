@@ -1,6 +1,22 @@
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 export const plainText = record => JSON.stringify(record).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 
+/** The user-turn index the reader is AT: the last user turn at or before the unit `atKey`
+ *  (the unit at the viewport top), or -1 when none is. DOM-free — the outline's focus (#52)
+ *  and the `]`/`[` stepping share it, so the pane and the keys agree on "the current turn". */
+export function currentTurnIndex(units = [], atKey = null) {
+  const at = atKey == null ? -1 : units.findIndex(unit => unit.key === atKey);
+  let current = -1;
+  let turn = -1;
+  for (let i = 0; i < units.length; i++) {
+    if (units[i].type !== "user") continue;
+    turn++;
+    if (i <= at) current = turn;
+    else break;
+  }
+  return current;
+}
+
 export function taskStatus(value) {
   const status = String(value || "pending").replace(/[\s-]+/g, "_").toLowerCase();
   if (status === "completed" || status === "done") return "completed";

@@ -11,8 +11,12 @@ import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session
 import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
+
+// The outline row currently marked (#52) — declared ahead of the init code below, which
+// renders the navigator before the module's later statements have run.
+let outlineCurrent = null;
 
 const byId = id => document.getElementById(id);
 const app = byId("app");
@@ -119,8 +123,8 @@ sessionCopyMenu.addEventListener("click", async event => {
 });
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
-  afterRender: () => { applyFilters(); markSearch(); updateStickyHeaders(); },
-  afterScroll: updateStickyHeaders,
+  afterRender: () => { applyFilters(); markSearch(); updateStickyHeaders(); updateOutlineFocus(); },
+  afterScroll: () => { updateStickyHeaders(); updateOutlineFocus(); },
   followChanged: paintJump
 });
 // Delegate from the stable scroll host: the virtual window may replace all of its children
@@ -420,6 +424,8 @@ function renderNavigator() {
   const runningTasks = tasks.filter(task => taskStatus(task.status) === "in_progress").length;
   const doneTasks = tasks.filter(task => taskStatus(task.status) === "completed").length;
   byId("navigatorWorkCount").innerHTML = outlineSummary(runningTasks, doneTasks, tasks.length);
+  outlineCurrent = null; // the rows were rebuilt: mark and reveal the current one afresh
+  updateOutlineFocus();
   byId("outlineTaskDot").hidden = !runningTasks;
   byId("navigatorWork").innerHTML = tasks.map((task, index) => {
     const key = String(task.id ?? index), target = recordState.taskTargets.get(key), status = taskStatus(task.status);
@@ -627,12 +633,40 @@ function unitAtTop() {
   return null;
 }
 function currentUserUnitIndex() {
-  const key = unitAtTop();
-  const at = key ? recordState.units.findIndex(unit => unit.key === key) : -1;
-  const turns = userUnits(); if (!turns.length) return -1;
-  let current = -1;
-  for (let i = 0; i < turns.length; i++) if (recordState.units.indexOf(turns[i]) <= at) current = i; else break;
-  return current;
+  return currentTurnIndex(recordState.units, unitAtTop());
+}
+// The pane follows the transcript (#52): the outline row of the turn at the viewport top is the
+// current one — marked (`current`, `aria-current`) on every scroll and render, and revealed in
+// the pane's OWN scroller (never the transcript's), only when the current row changes, so the
+// spy never fights the reader. The click direction — a row jumps the transcript to its turn —
+// lands that turn at the top, so the spy then names the row that was clicked.
+function updateOutlineFocus() {
+  const rows = byId("navigatorTurns").querySelectorAll(".outline-turn-row");
+  if (!rows.length) { outlineCurrent = null; return; }
+  const index = currentTurnIndex(recordState.units, unitAtTop());
+  const unit = index >= 0 ? userUnits()[index] : null;
+  const key = unit ? String(unit.from) : null;
+  let target = null;
+  rows.forEach(row => {
+    const on = key != null && row.dataset.turnRecord === key;
+    row.classList.toggle("current", on);
+    if (on) { row.setAttribute("aria-current", "true"); target = row; } else row.removeAttribute("aria-current");
+  });
+  if (key === outlineCurrent) return;
+  outlineCurrent = key;
+  if (target) revealInPane(target);
+}
+function revealInPane(row) {
+  let pane = row.parentElement;
+  while (pane && pane !== document.body) {
+    const overflow = getComputedStyle(pane).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) break;
+    pane = pane.parentElement;
+  }
+  if (!pane || pane === document.body || pane.contains(transcript)) return;
+  const bounds = pane.getBoundingClientRect(); const rect = row.getBoundingClientRect();
+  if (rect.top < bounds.top) pane.scrollTop -= bounds.top - rect.top;
+  else if (rect.bottom > bounds.bottom) pane.scrollTop += rect.bottom - bounds.bottom;
 }
 function stepTurn(delta) {
   const turns = userUnits(); if (!turns.length) return;

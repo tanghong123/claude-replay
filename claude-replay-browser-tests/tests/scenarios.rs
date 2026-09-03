@@ -418,6 +418,24 @@ fn scenario_pane_follows_the_transcript(
         (focus - top).abs() <= 1,
         "the pane names the turn at the top: pane {focus}, viewport {top}"
     );
+    // The other direction: choosing a turn in the pane moves the transcript there, and the
+    // pane then names exactly that turn — the spy does not overwrite the choice.
+    assert!(
+        harness::jump_to_turn(tab, surface, 3),
+        "the pane lists turn 3"
+    );
+    settle();
+    settle();
+    let landed = turn_at_top(tab, surface);
+    let named = harness::pane_focus_turn(tab, surface);
+    assert!(
+        (landed - 3).abs() <= 1,
+        "the pane's choice moved the transcript: top {landed}"
+    );
+    assert_eq!(
+        named, 3,
+        "…and the pane names the chosen turn (viewport {landed})"
+    );
 }
 
 #[test]
@@ -431,7 +449,7 @@ fn classic_page_pane_follows_the_transcript() {
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_pane_follows_the_transcript_known_red_52() {
+fn app_shell_pane_follows_the_transcript() {
     let _serial = serial();
     let fx = fixture("scenario-pane-app", 40);
     let page = open(Surface::AppShell, &fx, 2854);

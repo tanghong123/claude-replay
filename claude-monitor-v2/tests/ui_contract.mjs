@@ -8,7 +8,7 @@ import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../c
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -573,4 +573,27 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(storeSrc, /reducePull\(this\.cursor, this\.records\.length, reply\)/, "the app shell's store applies the shared plan");
   assert.doesNotMatch(storeSrc, /c\.committed \+ reply\.provisional_from|c\.committed\+\+/, "…and keeps no cursor arithmetic of its own");
   console.log("seam (e) cases passed");
+}
+
+// #52: the pane follows the transcript. The rule for "the current turn" is one DOM-free
+// function shared by the outline's focus and the `]`/`[` stepping.
+{
+  const units = [
+    { key: "u0", type: "user" }, { key: "p0", type: "process" }, { key: "a0", type: "assistant" },
+    { key: "u1", type: "user" }, { key: "a1", type: "assistant" },
+    { key: "u2", type: "user" }, { key: "a2", type: "assistant" }
+  ];
+  assert.equal(currentTurnIndex(units, "u0"), 0, "at the first turn");
+  assert.equal(currentTurnIndex(units, "a0"), 0, "inside the first turn's reply: still the first turn");
+  assert.equal(currentTurnIndex(units, "u1"), 1);
+  assert.equal(currentTurnIndex(units, "a2"), 2, "at the tail: the last turn");
+  assert.equal(currentTurnIndex(units, null), -1, "nothing at the top yet");
+  assert.equal(currentTurnIndex(units, "nope"), -1, "an unknown unit names no turn");
+  assert.equal(currentTurnIndex([{ key: "p", type: "process" }], "p"), -1, "no user turn at or before");
+  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); \}/, "the spy runs on every scroll");
+  assert.match(appSource, /row\.classList\.toggle\("current", on\)/, "the current row carries the reference CSS's `current` class");
+  assert.match(appSource, /row\.setAttribute\("aria-current", "true"\)/, "…and aria-current");
+  assert.match(appSource, /return currentTurnIndex\(recordState\.units, unitAtTop\(\)\);/, "the keys step from the same rule");
+  assert.match(appSource, /pane\.contains\(transcript\)\) return;/, "the reveal never scrolls the transcript");
+  console.log("#52 outline focus cases passed");
 }
