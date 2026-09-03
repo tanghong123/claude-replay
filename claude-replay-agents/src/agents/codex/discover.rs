@@ -293,6 +293,19 @@ fn first_user_snippet(path: &Path) -> String {
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
             .filter_map(|item| item.get("text").and_then(Value::as_str))
             .filter(|text| !super::model::is_host_context(text))
+            // The same three rules the transcript decode applies to a Desktop prompt: the
+            // `# Files mentioned by the user: … ## My request:` envelope is transport, so only
+            // the request is the prompt; an `<image …>` marker and its `</image>` close are the
+            // host's, not the person's. Without this the card read "# Files mentioned by the
+            // user: ## shot.png…" and could run out of SNIPPET_CHARS before the request
+            // (found by the review bot on the takeover MR).
+            .filter(|text| super::model::desktop_image_marker(text).is_none())
+            .filter(|text| text.trim() != "</image>")
+            .map(|text| {
+                super::model::desktop_prompt(text)
+                    .map(|(request, _)| request)
+                    .unwrap_or(text)
+            })
             .collect::<Vec<_>>()
             .join(" ");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1261,6 +1274,31 @@ mod tests {
         );
         assert!(!title.contains("file://") && !title.contains("/Users/"));
         assert!(title.chars().count() <= SESSION_TITLE_CHARS + 1);
+    }
+
+    /// A Codex Desktop prompt with attachments arrives wrapped in a transport envelope. The
+    /// picker snippet and the session card must show the person's request, not the envelope.
+    #[test]
+    fn picker_snippet_and_card_use_the_request_inside_a_desktop_envelope() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let path = fixture.rollout("2026/08/30", "desk", &cwd, "codex-desktop");
+        // The Desktop host's whole first turn: envelope, image marker, the image, the close.
+        let turn = r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\n# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\n\n## plan.md: /tmp/plan.md\n\n## My request:\nPlease inspect this design\n"},{"type":"input_text","text":"<image name=[Image #1] path=\"/tmp/shot.png\">"},{"type":"input_image","image_url":"data:image/png;base64,YQ=="},{"type":"input_text","text":"</image>"}]}}"##;
+        {
+            use std::io::Write;
+            let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(f, "{turn}").unwrap();
+        }
+        assert_eq!(first_user_snippet(&path), "Please inspect this design");
+        let CardOutcome::Fresh { card, .. } = session_card(&path) else {
+            panic!("a Desktop prompt still labels the session");
+        };
+        assert_eq!(card.label(), Some("Please inspect this design"));
+        assert_eq!(
+            card.last_prompt.as_deref(),
+            Some("Please inspect this design")
+        );
     }
 
     #[test]

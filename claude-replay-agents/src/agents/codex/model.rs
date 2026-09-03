@@ -1532,7 +1532,7 @@ fn input_image_attachment(item: &Value) -> Option<Attachment> {
 /// Codex Desktop wraps a human prompt that has local files in a presentation envelope. The
 /// envelope is host transport, not authored prompt text; the following `input_image` items carry
 /// the real attachments. Keep this deliberately strict so a user-authored heading is untouched.
-fn desktop_prompt(text: &str) -> Option<(&str, Vec<(String, String)>)> {
+pub(crate) fn desktop_prompt(text: &str) -> Option<(&str, Vec<(String, String)>)> {
     let text = text.trim();
     let rest = text.strip_prefix("# Files mentioned by the user:")?;
     let (files, request) = rest.split_once("\n## My request:\n")?;
@@ -1554,7 +1554,7 @@ fn desktop_prompt(text: &str) -> Option<(&str, Vec<(String, String)>)> {
 /// The Desktop host places this metadata item immediately before the corresponding
 /// `input_image`. It is not a second user turn. Carry its safe display name/path onto the
 /// canonical attachment; the served renderer will still sign the path before exposing actions.
-fn desktop_image_marker(text: &str) -> Option<(String, String)> {
+pub(crate) fn desktop_image_marker(text: &str) -> Option<(String, String)> {
     let text = text.trim();
     let rest = text.strip_prefix("<image name=[")?;
     let (_, path) = rest.split_once("] path=\"")?;
