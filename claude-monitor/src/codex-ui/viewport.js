@@ -64,6 +64,18 @@ export class Viewport {
     inner.replaceChildren(this.top, this.window, this.bottom, this.empty);
 
     this.observer = new ResizeObserver(() => this.scheduleMeasure());
+    // Displacement is a HEIGHT signal, not a scroll signal (the classic page's rule, #89 —
+    // followed here per #70): a late reflow — fonts arriving, an estimate replaced by a real
+    // height, chrome around the window — grows the content below the viewport WITHOUT firing
+    // a scroll event, and a pinned view is silently parked a few pixels above the tail until
+    // the next apply happens to converge. The per-unit observer above only hears a unit's own
+    // height change; observing the content as a whole hears every displacement, and any size
+    // change while following that leaves the bottom is healed on the spot. Converging moves
+    // scroll, not size — no feedback loop.
+    this.contentObserver = new ResizeObserver(() => {
+      if (this.state.following && this.units.length && this.gapToBottom() > 1) this.convergeBottom();
+    });
+    this.contentObserver.observe(inner);
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
       if (event.type === "pointermove" && !event.buttons) return;

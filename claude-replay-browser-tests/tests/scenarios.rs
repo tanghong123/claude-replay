@@ -319,7 +319,7 @@ fn classic_page_follows_the_tail_when_pinned() {
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_follows_the_tail_when_pinned_known_red_70() {
+fn app_shell_follows_the_tail_when_pinned() {
     let _serial = serial();
     let fx = fixture("scenario-pinned-app", 40);
     let page = open(Surface::AppShell, &fx, 2852);
