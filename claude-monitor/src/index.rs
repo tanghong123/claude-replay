@@ -387,11 +387,12 @@ impl Index {
             // rescan needed — hiding is a view filter, not a discovery change). The
             // state pass does not re-run: hiding changes the view, not any state.
             if st.scanned_at.is_some() {
-                let snap = self.assemble(&st, &mut Vec::new());
-                // …through the SAME enrichment the scan uses. Re-deriving the raw snapshot here
-                // and skipping it is how hiding one session silently stripped `agentState*` from
-                // every row until the next scan.
-                st.snapshot = enrich_agent_state(snap, &st.state_tracker);
+                // …finished the SAME way the scan finishes it. Re-deriving the raw snapshot here
+                // and skipping the state annotation is how hiding one session silently stripped
+                // `agentState*` from every row until the next scan.
+                let mut snap = self.assemble(&st, &mut Vec::new());
+                annotate_agent_state(&mut snap, &st.state_tracker);
+                st.snapshot = snap.to_string();
             }
         }
         json!({ "ok": true, "ignored": st.ignored.len() }).to_string()
@@ -642,7 +643,7 @@ impl Index {
         self.prove_by_growth(st);
 
         let mut facts = Vec::new();
-        let snapshot = self.assemble(st, &mut facts);
+        let mut snapshot = self.assemble(st, &mut facts);
         // Bank the per-session link the assemble pass resolved (#133) for the send
         // routes: pid (finished when None), tmux address, and proven-ness.
         st.send_links = facts
@@ -661,7 +662,8 @@ impl Index {
         // The agent-state pass (#194): derive busy/wait/idle from what this tick just
         // observed and dump transitions + the snapshot under `<cache_root>/state/`.
         st.state_tracker.tick(&self.cache_root, &facts);
-        st.snapshot = enrich_agent_state(snapshot, &st.state_tracker);
+        annotate_agent_state(&mut snapshot, &st.state_tracker);
+        st.snapshot = snapshot.to_string();
     }
 
     /// Bank the pairing that GROWTH proves (#146).
@@ -721,7 +723,7 @@ impl Index {
 
     /// Rows → grouped JSON. Grouping is per agent KIND (§4.2): workspace-anchored agents by
     /// project, desktop agents under the agent itself.
-    fn assemble(&self, st: &State, facts: &mut Vec<crate::state::RowFacts>) -> String {
+    fn assemble(&self, st: &State, facts: &mut Vec<crate::state::RowFacts>) -> Value {
         #[derive(Default)]
         struct Group {
             kind: &'static str,
@@ -1115,21 +1117,22 @@ impl Index {
                 })
             })
             .collect();
-        json!({ "groups": out, "ignoredCount": hidden_count }).to_string()
+        json!({ "groups": out, "ignoredCount": hidden_count })
     }
 }
 
-/// Add the richer, hysteresis-gated agent verdict to each existing session row.
+/// Add the richer, hysteresis-gated agent verdict to each session row of an assembled
+/// snapshot, IN PLACE — the tracker's verdicts exist only after its tick, which needs the
+/// facts `assemble` gathers, so annotation is the last step before the one serialization.
+/// (It used to take the serialized string, parse the whole machine-wide index back into a
+/// tree, add five fields per row and re-emit it — on every scan tick. #26.)
 ///
 /// `state`/`conf` are the long-standing process/index fields and remain byte-for-byte in
 /// meaning.  The new names are deliberately separate: consumers can adopt busy/wait/idle and
 /// its reason without breaking an older client that switches on growing/idle/finished.
-fn enrich_agent_state(snapshot: String, tracker: &crate::state::StateTracker) -> String {
-    let Ok(mut root) = serde_json::from_str::<Value>(&snapshot) else {
-        return snapshot;
-    };
+fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) {
     let Some(groups) = root.get_mut("groups").and_then(Value::as_array_mut) else {
-        return snapshot;
+        return;
     };
     for row in groups
         .iter_mut()
@@ -1168,7 +1171,6 @@ fn enrich_agent_state(snapshot: String, tracker: &crate::state::StateTracker) ->
             row["stateSince"] = Value::Null;
         }
     }
-    root.to_string()
 }
 
 /// Decode a `%XX`-percent-encoded query value (hide keys arrive via `encodeURIComponent` —
@@ -2616,8 +2618,7 @@ mod tests {
         st.rows.insert("b".into(), b);
         st.rows.insert("solo".into(), solo);
 
-        let json = idx.assemble(&st, &mut Vec::new());
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v: Value = idx.assemble(&st, &mut Vec::new());
         let groups = v["groups"].as_array().unwrap();
 
         let repo = groups
