@@ -758,8 +758,10 @@ pub fn search(tab: &headless_chrome::Tab, surface: Surface, query: &str) -> i64 
     search_count(tab, surface, count)
 }
 
+/// The TOTAL the page reports: "N hits" / "N matches", or the total of a "k/N" navigation
+/// display (the classic page shows the current hit's position once the reader steps).
 fn search_count(tab: &headless_chrome::Tab, _surface: Surface, count_id: &str) -> i64 {
-    eval(tab, &format!("(function(){{ var t = (document.getElementById('{count_id}') || {{}}).textContent || ''; var m = t.match(/(\\d+)/); return m ? Number(m[1]) : -1; }})()"))
+    eval(tab, &format!("(function(){{ var t = (document.getElementById('{count_id}') || {{}}).textContent || ''; var nav = t.match(/(\\d+)\\s*\\/\\s*(\\d+)/); if (nav) return Number(nav[2]); var m = t.match(/(\\d+)/); return m ? Number(m[1]) : -1; }})()"))
         .as_i64()
         .unwrap_or(-1)
 }

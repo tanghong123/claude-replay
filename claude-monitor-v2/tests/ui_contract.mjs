@@ -609,3 +609,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /if \(reply\.t === "redirect"\) \{ clearInterval\(pullTimer\);/, "a hand-off still stops this feed: it is a navigation");
   console.log("#72 transient feed error cases passed");
 }
+
+// #71: the classic page's hit count follows the records — counted on arrival, dropped on a
+// tail rewrite, painted by one painter that keeps a stepping reader's "k/N" form.
+{
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(src, /countNewRecord\(records\.length - 1\);\n  \}/, "pushRecord counts an arriving record");
+  assert.match(src, /dropHitsFrom\(from\);\n    records\.length = from;/, "resetFrom drops the hits a rewrite takes");
+  assert.match(src, /function paintQCount\(\) \{/, "one painter for the count");
+  assert.doesNotMatch(src, /\$\("qcount"\)\.textContent =\n\s*\(hr\.start/, "stepHit paints through it too");
+  console.log("#71 hit-count cases passed");
+}

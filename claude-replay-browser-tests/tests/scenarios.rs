@@ -496,7 +496,7 @@ fn scenario_search_through_growth(tab: &headless_chrome::Tab, surface: Surface, 
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_search_survives_growth_known_red_71() {
+fn classic_page_search_survives_growth() {
     let _serial = serial();
     let fx = fixture("scenario-search-classic", 30);
     let page = open(Surface::Classic, &fx, 0);

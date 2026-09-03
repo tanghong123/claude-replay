@@ -539,6 +539,7 @@
     indexIds(b, records.length - 1);
     if (b.turn != null) addTurn(b);
     else if (b.epoch) addEpoch(b);
+    countNewRecord(records.length - 1);
   }
   // Walk a top-level record's tree to the node with `id`, applying `fn` to every
   // container on the path (for open-chains) and to the node itself.
@@ -1499,6 +1500,7 @@
   // sidebar turn entries, so the re-emitted records rebuild them cleanly.
   function resetFrom(from) {
     if (records.length <= from) return;
+    dropHitsFrom(from);
     records.length = from;
     recHeights.length = from;
     recText.length = from;
@@ -3123,10 +3125,69 @@
     matEls().forEach(function (e) {
       if (searchInScope(+e.dataset.idx)) markHits(e, lc, lc.length, whole);
     });
-    qc.textContent = totalHits + " hit" + (totalHits === 1 ? "" : "s")
-      + (scopeLetters(searchScope).length ? " in " + scopeLetters(searchScope).join("") : "")
-      + (whole ? " · whole words" : "");
+    paintQCount();
+  }
+  // The count the box shows: "N hits" (with the scope letters and the whole-word note), or
+  // the current hit's position "k/N" while the reader is stepping. One painter, so a count
+  // that changes under a stepping reader keeps the form they were looking at (#71).
+  function paintQCount() {
+    var qc = $("qcount");
+    if (!searchNeedle) { qc.textContent = ""; showQNav(false); return; }
+    var whole = !!(searchScope && searchScope.w);
+    var hr = curHit && navPos >= 0 ? hitRecs[navPos] : null;
+    qc.textContent = hr
+      ? (hr.start + Math.min(navMark, hr.count - 1) + 1) + "/" + totalHits
+      : totalHits + " hit" + (totalHits === 1 ? "" : "s")
+        + (scopeLetters(searchScope).length ? " in " + scopeLetters(searchScope).join("") : "")
+        + (whole ? " · whole words" : "");
     showQNav(totalHits > 0);
+  }
+  // Hits follow the RECORDS as they arrive and retreat (#71): a record appended while a
+  // needle is set is counted on the spot, and a tail rewrite drops the hits it took with it —
+  // the count the box shows is always the count over the records the page holds, without
+  // re-running the search over all of them on every apply.
+  function countNewRecord(i) {
+    if (!searchNeedle) return;
+    var whole = !!(searchScope && searchScope.w);
+    if (classCounts) {
+      ensureRecText(i);
+      recSearchParts[i].forEach(function (part) {
+        var partHits = countOcc(recText[i].slice(part.start, part.end), searchNeedle, whole);
+        if (!partHits) return;
+        ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+          if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
+        });
+      });
+    }
+    var n = countRec(i, searchScope, searchNeedle, whole);
+    if (!n) return;
+    hitRecs.push({ rec: i, count: n, start: totalHits });
+    totalHits += n;
+    updateScopeCounts();
+    paintQCount();
+  }
+  function dropHitsFrom(from) {
+    if (!searchNeedle || !hitRecs.length || hitRecs[hitRecs.length - 1].rec < from) return;
+    while (hitRecs.length && hitRecs[hitRecs.length - 1].rec >= from) hitRecs.pop();
+    var last = hitRecs[hitRecs.length - 1];
+    totalHits = last ? last.start + last.count : 0;
+    if (navPos >= hitRecs.length) { navPos = -1; navMark = -1; curHit = null; }
+    if (classCounts) {
+      var whole = !!(searchScope && searchScope.w);
+      classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+      hitRecs.forEach(function (h) {
+        ensureRecText(h.rec);
+        recSearchParts[h.rec].forEach(function (part) {
+          var partHits = countOcc(recText[h.rec].slice(part.start, part.end), searchNeedle, whole);
+          if (!partHits) return;
+          ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+            if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
+          });
+        });
+      });
+      updateScopeCounts();
+    }
+    paintQCount();
   }
   // Materialize record `ti`'s region and return its element (shared by hit nav).
   function matRecord(ti) {
@@ -3271,8 +3332,7 @@
     // The flat position of THIS landing within the total: mark-poor records advance
     // it by their whole count on the boundary cross — honest about occurrences the
     // DOM cannot address individually.
-    $("qcount").textContent =
-      (hr.start + Math.min(navMark, hr.count - 1) + 1) + "/" + totalHits;
+    paintQCount();
     if (m) {
       m.classList.add("cur");
       revealMark(m); // #102 — expand caps/clamps BEFORE goTo reads the rect
