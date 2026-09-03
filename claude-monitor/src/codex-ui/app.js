@@ -1,6 +1,6 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
-import { bindComponentEvents } from "./components.js";
+import { bindComponentEvents, referenceAction } from "./components.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -142,12 +142,13 @@ bindComponentEvents(transcript, recordState, {
     }, 1400);
   },
   openChild: id => selectSession(id, true),
-  openAttachment: (id, path, fsig, action) => openAttachment(id, path, fsig, action),
+  openAttachment: (id, path, fsig, action, sig) => openAttachment(id, path, fsig, action, sig),
   openReference: path => openReference(path),
+  openReferenceOffer: offer => openReferenceOffer(offer),
   toast
 });
 
-const preview = new Preview({ layoutChanged: () => viewport.remeasure(), toast });
+const preview = new Preview({ layoutChanged: () => viewport.remeasure(), toast, reveal: item => attachmentViewer.reveal(item) });
 const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.open(item), toast });
 const controls = new ControlStore({ toast, refreshIndex: loadSessions });
 const sessionIndex = new SessionIndexStore({
@@ -467,35 +468,46 @@ byId("searchTabs").onclick = event => { const tab = event.target.closest("[data-
 byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open"); if (row.sid) selectSession(row.sid, true); else if (row.record != null) viewport.jumpToRecord(row.record, "search"); };
 byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
 
-function openAttachment(id, path, fsig, action = "preview") {
+function openAttachment(id, path, fsig, action = "preview", sig = "") {
   const record = findRecord(id); const head = record?.head || {};
-  const item = { id: `attachment:${id || path}`, name: head.att_name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
+  const item = { id: `attachment:${id || path}`, name: head.att_name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
   item.source = item.data || (item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "");
   if (action === "image") attachmentViewer.openImage(item);
   else if (action === "download") attachmentViewer.download(item);
   else if (action === "copy") attachmentViewer.copyPath(item);
+  else if (action === "reveal") attachmentViewer.reveal(item);
   else preview.open(item);
+}
+// A path the server offered with stamps — from a tool header, an attachment, or a link that
+// matched one. `referenceAction` decides by capability: file stamp → preview, reveal stamp →
+// file manager, neither → the path goes to the clipboard.
+function openReferenceOffer({ path, fileSig = "", revealSig = "", record = null }) {
+  const head = record?.head || {};
+  const item = { id: `reference:${path}`, name: head.att_name || path.split("/").pop() || "file", path, fsig: fileSig, sig: revealSig, text: head.att_text, data: head.att_datauri };
+  const action = referenceAction({ fileSig, revealSig });
+  if (action === "preview") preview.open(item);
+  else if (action === "reveal") attachmentViewer.reveal(item);
+  else attachmentViewer.copyPath(item);
 }
 function openReference(path) {
   let decoded = path;
   try { decoded = decodeURI(path); } catch (_) {}
   const withoutLocation = decoded.replace(/:\d+(?::\d+)?$/, "");
   const candidates = new Set([decoded, withoutLocation]);
+  // The best offer any record made for this path: a file stamp beats a reveal stamp.
   let offered = null;
   const visit = record => {
-    if (!record || offered) return;
+    if (!record || offered?.fileSig) return;
     const head = record.head || {};
     const offeredPath = head.att_path || head.path;
-    const offeredFsig = head.att_fsig || head.fsig;
-    if (candidates.has(offeredPath) && offeredFsig) offered = { record, path: offeredPath, fsig: offeredFsig };
+    if (candidates.has(offeredPath)) {
+      const fileSig = head.att_fsig || head.fsig || "", revealSig = head.att_sig || head.sig || "";
+      if (fileSig || (revealSig && !offered)) offered = { record, path: offeredPath, fileSig, revealSig };
+    }
     for (const part of record.body || []) if (part.p === "blocks") for (const child of part.items || []) visit(child);
   };
   recordState.records.forEach(visit);
-  if (offered) {
-    const head = offered.record.head || {};
-    preview.open({ id: `reference:${offered.path}`, name: head.att_name || offered.path.split("/").pop() || "file", path: offered.path, fsig: offered.fsig, text: head.att_text, data: head.att_datauri });
-    return;
-  }
+  if (offered) { openReferenceOffer(offered); return; }
   const copy = navigator.clipboard?.writeText(decoded);
   if (copy) copy.then(
     () => toast("That path carries no capability signature — copied instead; open it from a terminal or your file manager"),

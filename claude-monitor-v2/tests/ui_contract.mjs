@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { attachmentCapability, promptShouldCollapse, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
+import { attachmentCapability, promptShouldCollapse, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -55,7 +55,19 @@ assert.match(embeddedImage.hint, /saved with the session/);
 assert.match(attachmentCapability({ att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_fsig: "file-signed" }).hint, /temporary file/);
 assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_fsig: "file-signed" }).action, "preview");
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz", att_fsig: "file-signed" }).action, "download");
-assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "reveal-only" }).action, "copy", "a reveal signature must never authorize /file");
+{
+  // Reveal (parity #2): a reveal stamp alone yields the file-manager action — never anything
+  // that would call /file — and no stamp at all still degrades to copying the path.
+  const revealOnly = attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "reveal-only" });
+  assert.equal(revealOnly.action, "reveal", "a reveal signature must never authorize /file");
+  assert.equal(attachmentCapability({ att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_sig: "reveal-only" }).action, "reveal", "…for images too");
+  assert.ok(!["preview", "download", "image"].includes(revealOnly.action));
+  assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_fsig: "file-signed", att_sig: "reveal-signed" }).action, "preview", "with both stamps the readable action stays primary");
+  assert.equal(referenceAction({ fileSig: "f", revealSig: "r" }), "preview");
+  assert.equal(referenceAction({ fileSig: "", revealSig: "r" }), "reveal");
+  assert.equal(referenceAction({}), "copy");
+  assert.equal(revealQuery({ path: "/w/my repo/a.rs", sig: "s+1" }), "/__reveal?path=%2Fw%2Fmy%20repo%2Fa.rs&sig=s%2B1", "the path and stamp travel verbatim, encoded once");
+}
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz" }).action, "copy");
 
 for (const moduleName of ["app.js", "control-store.js", "preview.js"]) {
@@ -223,3 +235,7 @@ assert.match(appSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and res
 assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
 assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
 assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");
+assert.match(appSource, /referenceAction\(\{ fileSig, revealSig \}\)/, "reference clicks dispatch on the tested precedence");
+assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8"), /revealQuery\(\{ path: item\.path, sig: item\.sig \}\)/, "reveal calls /__reveal with the REVEAL stamp, never the file stamp");
+assert.match(productionCss, /\.renderer-target-link\{/, "stamped tool-header paths read as references");
+console.log("reveal cases passed");

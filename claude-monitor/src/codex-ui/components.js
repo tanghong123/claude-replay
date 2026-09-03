@@ -35,7 +35,7 @@ function rendererBody(view) {
   if (view.attachment) {
     const h = view.attachment;
     const capability = attachmentCapability(h);
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}">${escapeText(capability.label)} →</button></div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${view.html || "No output recorded"}</span></div>`;
   return view.html || `<div class="renderer-note"><p>No additional details recorded.</p></div>`;
@@ -53,7 +53,7 @@ function renderRenderer(view, index, state) {
   const status = view.error ? "failed" : view.running ? "running" : view.state || (view.renderer === "thinking" ? "reasoning" : "completed");
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="Thinking recorded"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span><span class="renderer-target"></span><span class="renderer-state"></span></div>`
-    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span><span class="renderer-target">${escapeText(view.summary || "")}</span><span class="renderer-state" title="${escapeText(status)}">${escapeText(status === "completed" ? view.duration || "" : status)}</span></button>`;
+    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${view.path && (view.fileSig || view.revealSig) ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${referenceAction(view) === "preview" ? "Open in the preview pane" : "Reveal in file manager"}">${escapeText(view.summary || "")}</span>` : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`}<span class="renderer-state" title="${escapeText(status)}">${escapeText(status === "completed" ? view.duration || "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
   return `<div class="turn assistant renderer-turn" data-kind="${escapeText(view.t)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}">${head}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view)}</div>${children}</div>`}</div></div>`;
 }
@@ -115,7 +115,7 @@ function renderPromptAttachments(attachments = []) {
     const capability = attachmentCapability(h);
     const isImage = capability.action === "image";
     const source = h.att_datauri || (h.att_path && h.att_fsig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}` : "");
-    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}"`;
+    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
     if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy"><strong>${escapeText(h.att_name || "image")}</strong><small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
@@ -134,8 +134,25 @@ export function attachmentCapability(head = {}) {
   if (image && hasSource) return { action: "image", label: "Enlarge", hint: head.att_datauri != null ? "image · saved with the session" : "image · temporary file" };
   if (head.att_text != null || (TEXT_FILE.test(name) && head.att_path && head.att_fsig)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
   if (head.att_datauri != null || (head.att_path && head.att_fsig)) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
+  // The render policy withheld the file stamp (or the bytes are not the kind the page shows),
+  // but the server offered the REVEAL stamp: the file manager can still show the file. This is
+  // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
+  // keeps every path actionable under `render-policy.json` mode "never".
+  if (head.att_path && head.att_sig) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
   return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };
 }
+
+/** What a clicked path reference does, from the stamps the server offered for it. The two
+ *  stamps are different capabilities — a reveal stamp never authorizes `/file` — so the
+ *  precedence is by what the page may DO, not by which stamp happens to be present. */
+export function referenceAction({ fileSig, revealSig } = {}) {
+  if (fileSig) return "preview";
+  if (revealSig) return "reveal";
+  return "copy";
+}
+
+/** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
+export const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
 
 const strip = html => String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -157,6 +174,12 @@ export function bindComponentEvents(root, state, actions) {
       }
       return;
     }
+    const offered = event.target.closest("[data-reference-path]");
+    if (offered) {
+      event.preventDefault(); event.stopPropagation();
+      actions.openReferenceOffer?.({ path: offered.dataset.referencePath, fileSig: offered.dataset.referenceFsig || "", revealSig: offered.dataset.referenceSig || "" });
+      return;
+    }
     const reference = event.target.closest(".markdown a");
     if (reference) {
       const href = reference.getAttribute("href") || "";
@@ -169,7 +192,7 @@ export function bindComponentEvents(root, state, actions) {
     const child = event.target.closest("[data-child-session]");
     if (child) { actions.openChild(child.dataset.childSession); return; }
     const attachment = event.target.closest("[data-attachment]");
-    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction); return; }
+    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
     if (prompt) { const key = prompt.dataset.promptToggle; state.promptExpanded.has(key) ? state.promptExpanded.delete(key) : state.promptExpanded.add(key); actions.rerender(); return; }
     const process = event.target.closest("[data-process-surface]");

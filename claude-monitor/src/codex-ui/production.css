@@ -37,3 +37,12 @@
 .tree-row.is-hidden{opacity:.55}
 .tree-row.is-hidden.selected{opacity:.8}
 .navbtn.hidden-filter[hidden],.sidebar-mini-button.hidden-mini[hidden]{display:none}
+
+/* Reveal in file manager (parity #2). A tool-header path the server stamped is a reference:
+   underlined the way the shell marks "this goes somewhere", inside the head button. The preview
+   toolbar and the attachment note carry reveal as the secondary action beside the primary. */
+.renderer-target-link{cursor:pointer;text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 45%,transparent);text-underline-offset:3px}
+.renderer-target-link:hover{color:var(--ink);text-decoration-style:solid}
+.artifact-actions{margin-left:auto;flex:none;display:flex;align-items:center;gap:6px}
+.artifact-link-secondary{margin-left:14px;color:var(--faint)}
+.artifact-link-secondary:hover{color:var(--ink)}

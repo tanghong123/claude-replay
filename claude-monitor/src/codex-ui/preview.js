@@ -85,8 +85,10 @@ export class Preview {
     if (data) { this.objectUrl = data.startsWith("blob:") ? data : ""; body.innerHTML = `<div class="artifact-surface"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`; body.querySelector("img").src = data; return; }
     const html = /\.html?$/i.test(item.name || "");
     if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div>${item.path && item.sig ? '<div class="artifact-actions"><button class="smallbtn" type="button" data-preview-reveal>Reveal in file manager</button></div>' : ""}</div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";
+    const reveal = body.querySelector("[data-preview-reveal]");
+    if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
   }
 }
 
