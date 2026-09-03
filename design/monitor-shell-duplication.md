@@ -92,7 +92,7 @@ constants (`include_str!`), and:
   the app shell imports them as it imports its own modules;
 - the html crate's page assembly inlines them ahead of `export.js` through one deterministic
   transform — the trailing `export { a, b };` becomes
-  `Object.assign(window.__shared ||= {}, { a, b });` and the body is wrapped in an IIFE —
+  `window.__shared = window.__shared || {}; Object.assign(window.__shared, { a, b });` and the body is wrapped in an IIFE —
   so export.js reads `window.__shared.<name>`. A unit test asserts the assembled page carries
   no `export` or `import` token; the byte gate proves the output.
 - the classic pages (`rail.html`, `shell.html`) are classic `<script>`s, not modules; they get
