@@ -342,7 +342,7 @@ mod tests {
                                         || l.starts_with(&format!("export class {local}"))
                                         || l.starts_with(&format!("export let {local}"))
                                         || (l.starts_with("export {")
-                                            && l.split('{').nth(1).map_or(false, |inner| {
+                                            && l.split('{').nth(1).is_some_and(|inner| {
                                                 inner
                                                     .split('}')
                                                     .next()
@@ -404,10 +404,11 @@ mod state_label_tests {
         ];
         let table = claude_replay_html::shared_source("state-labels").expect("registered");
         for reason in all {
-            let _exhaustive = match reason {
+            // Exhaustive by construction: a new variant fails to compile here until listed.
+            match reason {
                 Exited | ExitedMidWork | Question | PlanApproval | QueuedPrompt | Tool
                 | Thinking | Permission | EndedQuestion | Error | Done | Starting | Stalled => (),
-            };
+            }
             let key = StateReason::as_str(reason);
             let quoted = format!("\"{key}\":");
             let bare = format!("\n  {key}:");

@@ -120,8 +120,7 @@ mod tests {
             assert!(block.contains(&format!("/* shared: {name} */")));
             for n in exported_names(source).unwrap() {
                 assert!(
-                    block.contains(&format!("Object.assign(window.__shared, {{ "))
-                        && block.contains(n),
+                    block.contains("Object.assign(window.__shared, { ") && block.contains(n),
                     "{name}: {n} is not published"
                 );
             }
