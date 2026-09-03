@@ -1,5 +1,5 @@
 import { indexState } from "./state.js";
-import { groupSessions } from "./session-visibility.js";
+import { groupSessions } from "./shared/session-visibility.js";
 
 export class SessionIndexStore {
   constructor(handlers) { this.handlers = handlers; this.timer = 0; this.loading = false; }

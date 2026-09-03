@@ -106,6 +106,17 @@ pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
 }
 
 pub fn asset(name: &str) -> Option<HttpResponse> {
+    // Shared modules (seam 0): ONE source in the html crate, served here unchanged as ES
+    // modules and inlined by that crate into its own pages. Anything under `shared/` the html
+    // crate does not know is a 404, like any other unregistered asset.
+    if let Some(rest) = name.strip_prefix("monitor-ui/shared/") {
+        let module = rest.strip_suffix(".js")?;
+        let source = claude_replay_html::shared_source(module)?;
+        let mut response =
+            HttpResponse::ok("text/javascript; charset=utf-8", source.as_bytes().to_vec());
+        response.headers.push("Cache-Control: no-store".into());
+        return Some(response);
+    }
     let (content_type, bytes) = match name {
         "monitor-ui/reference.css" => (
             "text/css; charset=utf-8",
@@ -166,10 +177,6 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/view-memory.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-memory.js").as_slice(),
-        ),
-        "monitor-ui/session-visibility.js" => (
-            "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/session-visibility.js").as_slice(),
         ),
         "monitor-ui/sandbox.js" => (
             "text/javascript; charset=utf-8",
@@ -270,8 +277,8 @@ mod tests {
                 include_str!("codex-ui/session-index-store.js"),
             ),
             (
-                "session-visibility.js",
-                include_str!("codex-ui/session-visibility.js"),
+                "shared/session-visibility.js",
+                claude_replay_html::shared_source("session-visibility").unwrap(),
             ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),

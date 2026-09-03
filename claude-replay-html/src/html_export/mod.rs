@@ -33,6 +33,7 @@ use std::path::Path;
 mod bundle;
 mod record_store;
 mod serve;
+pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
 pub use bundle::{dump_all_html, dump_html};
 pub use serve::{
@@ -1380,6 +1381,10 @@ fn build_page(
         ),
         _ => String::new(),
     };
+    // The shared modules, inlined ahead of export.js (html_export/shared.rs): this page must
+    // stand alone from file://, so what the monitor serves as ES modules arrives here as a
+    // classic script publishing the same names on `window.__shared`.
+    let shared_js = shared::inline_all();
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -1493,6 +1498,9 @@ fn build_page(
 <div id="livechip">⤓ following live</div>
 <script id="session-data" type="application/jsonl">
 {jsonl_esc}
+</script>
+<script>
+{shared_js}
 </script>
 <script>
 {JS}

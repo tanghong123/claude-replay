@@ -1107,7 +1107,9 @@ fn the_v2_shell_keeps_the_document_scroller() {
         docScrolls: scrolled > 0,                       // the DOCUMENT is the scroller
         railFixed: Math.abs(after - before) < 1,        // …and the rail does not move with it
         streamOffset: stream.getBoundingClientRect().left >= rail.getBoundingClientRect().right - 1,
-        noFrame: document.querySelectorAll('iframe').length === 0
+        noFrame: document.querySelectorAll('iframe').length === 0,
+        // seam 0: the served classic page carries the inlined shared modules.
+        shared: typeof (window.__shared && window.__shared.groupSessions) === 'function'
       });
     })()"#;
     let seen = tab
@@ -1130,6 +1132,10 @@ fn the_v2_shell_keeps_the_document_scroller() {
         "the transcript clears the rail: {seen}"
     );
     assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
+    assert_eq!(
+        v["shared"], true,
+        "the inlined shared modules reach the served page: {seen}"
+    );
 }
 
 /// The app shell can hide a session and get it back (parity #1). The classic rail always

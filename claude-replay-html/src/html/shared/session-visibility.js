@@ -1,3 +1,7 @@
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…) and the
+// classic session page (inlined into the self-contained export by the html crate — see
+// html_export/shared.rs). Conventions this file must keep, because the inliner relies on
+// them: no imports, and exactly one trailing `export { … };` line.
 // Grouping and visibility of the session list — pure functions over the `/api/sessions`
 // shape, with no DOM and no imports, so the contract test runs them under node.
 //
@@ -8,7 +12,7 @@
 // filter, toggled by "Hidden (n)", exactly as the classic rail treats it (#113).
 
 /** agents → projects → sessions, from the `/api/sessions` groups. */
-export function groupSessions(groups = []) {
+function groupSessions(groups = []) {
   const agents = new Map();
   for (const group of groups) for (const row of group.rows || []) {
     const agentId = row.agent || "other";
@@ -37,7 +41,7 @@ export function groupSessions(groups = []) {
  * hidden as a whole unless `showHidden`, even when a row inside it is not individually
  * hidden — the server marks such rows hidden too, so both filters agree.
  */
-export function visibleTree(agents, { showHidden = false, attention = false, needs = () => true } = {}) {
+function visibleTree(agents, { showHidden = false, attention = false, needs = () => true } = {}) {
   const keep = row => (showHidden || !row.hidden) && (!attention || needs(row));
   const out = [];
   for (const agent of agents) {
@@ -53,7 +57,7 @@ export function visibleTree(agents, { showHidden = false, attention = false, nee
 }
 
 /** What the row action does for a session or a project, and how it is labelled. */
-export function hideAction(target, kind = "session") {
+function hideAction(target, kind = "session") {
   const noun = kind === "agent" ? "agent" : kind === "project" ? "project" : "session";
   return target.hidden
     ? { op: "remove", key: target.ignoreKey, title: `Restore this ${noun}`, icon: "back" }
@@ -61,7 +65,7 @@ export function hideAction(target, kind = "session") {
 }
 
 /** The `/api/ignore` query for an action, verbatim key — the server owns the grammar. */
-export const ignoreQuery = ({ op, key }) => `/api/ignore?${op}=${encodeURIComponent(key)}`;
+const ignoreQuery = ({ op, key }) => `/api/ignore?${op}=${encodeURIComponent(key)}`;
 
 /**
  * Fork families (#142): rows sharing a `family` root are one conversation forked — they
@@ -73,7 +77,7 @@ export const ignoreQuery = ({ op, key }) => `/api/ignore?${op}=${encodeURICompon
  * polls. (Sub-agent CHILDREN are not rows at all — they are reached through a session's
  * `children` and come back through its `ancestors`; see the parent control.)
  */
-export function families(rows = []) {
+function families(rows = []) {
   const by = new Map();
   for (const row of rows) {
     const key = row.family || row.id;
@@ -90,3 +94,5 @@ export function families(rows = []) {
   }
   return [...by.values()];
 }
+
+export { groupSessions, visibleTree, hideAction, ignoreQuery, families };

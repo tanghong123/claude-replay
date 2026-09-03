@@ -6,7 +6,7 @@ import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
-import { families, hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
+import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./reading.js";
 import { bindKeymap, hintFor } from "./keymap.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";

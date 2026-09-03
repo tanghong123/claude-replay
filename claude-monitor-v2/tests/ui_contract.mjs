@@ -7,7 +7,7 @@ import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-monitor/sr
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
-import { families, groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-monitor/src/codex-ui/session-visibility.js";
+import { families, groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");

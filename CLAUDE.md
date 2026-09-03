@@ -39,6 +39,15 @@ byte-for-byte from `design/agent-monitor-codex-demo.html` by
 the demo and re-run the script. Production-only chrome (the shell switch) is layered on at
 runtime from `app.js` so the extraction stays exact.
 
+**Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
+`design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor
+serves each unchanged as an ES module at `/monitor-ui/shared/<name>.js` (`ui::asset()`), and the
+html crate INLINES each into its self-contained pages ahead of `export.js`
+(`html_export/shared.rs`), where export.js reads it as `window.__shared.<name>`. The inliner is
+textual, so a shared module keeps two conventions, held by tests: no imports, and exactly one
+trailing `export { … };` line. A new module is one row in `SHARED` (`shared.rs`); the monitor's
+import-closure test and the html crate's convention test cover the rest.
+
 `claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
 its own mandatory CI step.
