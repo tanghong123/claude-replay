@@ -467,8 +467,10 @@ pub trait TranscriptAdapter: Sync {
     /// transcripts under-reports by whatever the sub-agents burned (measured on one Codex
     /// project: 95% of the total). The parent id is what lets the consumer bank each
     /// sub-agent's cost onto the ROOT session's account, chasing parent ids for nested
-    /// spawns. Defaulted empty: an agent whose sub-agent activity lives INSIDE the main
-    /// transcript (Claude's sidechains) has nothing separate to report.
+    /// spawns. Defaulted empty for an agent with nothing separate to report; Codex reports
+    /// its sub-agent rollouts, and Claude-format stores (Claude Code, Qoder) report the
+    /// `<project>/<sid>/subagents/agent-<id>.jsonl` files a modern store writes per spawn —
+    /// a consumer folding only main transcripts missed everything those burned.
     fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
         Vec::new()
     }

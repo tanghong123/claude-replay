@@ -453,7 +453,11 @@ function renderSessionInfo(turns, agents) {
     byId("navigatorSession").innerHTML = '<div class="activity-empty">No session selected</div>';
     return;
   }
-  byId("navigatorSessionSummary").textContent = row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : usage.cost || "—";
+  // A sub-agent roll-up shows SPLIT (own + sub-agents), the total in the hover: the own share
+  // is what the transcript's usage panel reports, so one opaque total read as a mismatch.
+  const summary = byId("navigatorSessionSummary");
+  if (row.cost != null && row.costSubs) { const own = Number(row.cost) - Number(row.costSubs); summary.textContent = `~$${own.toFixed(2)} + $${Number(row.costSubs).toFixed(2)} sub-agents`; summary.title = `total ~$${Number(row.cost).toFixed(2)} = this session $${own.toFixed(2)} + sub-agents $${Number(row.costSubs).toFixed(2)}`; }
+  else { summary.textContent = row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : usage.cost || "—"; summary.title = ""; }
   const group = (label, rows) => `<div class="session-info-group"><div class="session-info-label">${label}</div>${rows.map(([key, value]) => `<div class="session-info-row"><span>${escapeText(key)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("")}</div>`;
   byId("navigatorSession").innerHTML = `<div class="session-info">${group("Session", [["title", row.name || row.id], ["agent", agentName(row.agent)], ["project", row._group?.label], ["status", displayState(row).label], ["turns", turns], ["children", agents]])}${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ["context", usage.context || "not provided by this protocol"], ["effort", meta.effort || "not provided by this protocol"], ["sandbox", meta.sandbox || "not provided by this protocol"], ["permission", meta.permission || "not provided by this protocol"]])}</div>`;
 }
