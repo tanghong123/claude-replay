@@ -52,6 +52,10 @@ It needs a local Chrome (headless_chrome finds it on PATH). CI runs the same com
 - Every case takes `serial()` first — fixed ports, a shared state dir.
 - Nothing a case measures comes from this machine's sessions: build the world in `Stores`.
 - A wait is `until(…)`, which panics with what it last saw. A skip is a failure.
+- A one-off diagnostic (a timeline probe over a real transcript, say) is not a file under
+  `tests/`: cargo runs every test target there, and a probe that panics on a missing env var
+  ends the gate before the scenarios file runs. Keep probes outside the crate and pass
+  `--test <file>` explicitly.
 - When a shell times out with nothing rendered, read Chrome's console before diagnosing:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`
   with the file and line.
