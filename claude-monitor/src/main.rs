@@ -298,6 +298,10 @@ fn main() -> Result<()> {
 
     let rail = RAIL_TEMPLATE
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        // Seam 0 (#43): the shared frontend modules, inlined ahead of the rail's own script
+        // exactly as the html crate inlines them into its pages, so `window.__shared` is
+        // there synchronously — no module import to race the first render.
+        .replace("{{SHARED}}", &claude_replay_html::shared_inline_all())
         // #133 3b: the compose affordance only exists when paired — an unpaired monitor
         // has no write capability (the route 401s), so the UI must not offer it.
         .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
@@ -430,6 +434,13 @@ mod tests {
         assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
         assert!(claude_monitor::ui::asset("monitor-ui/components.js").is_some());
         assert!(super::RAIL_TEMPLATE.contains("requestedSession"));
+        // #43: the rail's grouping, hiding and fork families are the shared module's.
+        assert!(super::RAIL_TEMPLATE.contains("{{SHARED}}"));
+        let served =
+            super::RAIL_TEMPLATE.replace("{{SHARED}}", &claude_replay_html::shared_inline_all());
+        assert!(served.contains("Object.assign(window.__shared, { "));
+        assert!(served.contains("shared.families") && served.contains("shared.hideAction("));
+        assert!(!served.contains("function clusterKey("));
         assert!(super::RAIL_TEMPLATE.contains("URLSearchParams(location.search)"));
         assert!(super::help_text().contains("?ui=classic"));
         assert!(!super::classic_ui_requested("ui=codex"));

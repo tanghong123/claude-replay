@@ -148,6 +148,9 @@ fn main() -> Result<()> {
     let token = read_token(&root);
     let classic_shell = CLASSIC_SHELL
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        // Seam 0 (#43): the shared frontend modules inlined ahead of the shell's script, as
+        // v1's rail and the html crate's pages carry them.
+        .replace("{{SHARED}}", &claude_replay_html::shared_inline_all())
         .replace("{{RAIL_W}}", &RAIL_W.to_string())
         // The compose affordance exists only when paired: unpaired, every write route 401s,
         // so offering the button would be offering a dead end (v1's `{{PAIRED}}` rule).
@@ -349,6 +352,12 @@ mod tests {
         assert!(app.contains("/monitor-ui/app.js"));
         assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
         assert!(CLASSIC_SHELL.contains("v2rail"));
+        // #43: the splice's hidden filter is the shared predicate, inlined at serve time.
+        assert!(CLASSIC_SHELL.contains("{{SHARED}}"));
+        assert!(CLASSIC_SHELL.contains("__shared.rowVisible("));
+        assert!(CLASSIC_SHELL
+            .replace("{{SHARED}}", &claude_replay_html::shared_inline_all())
+            .contains("Object.assign(window.__shared, { "));
         assert!(!app.contains("sample-transcript-data"));
         assert!(!app.contains("REAL_TRANSCRIPT"));
     }

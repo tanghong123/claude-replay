@@ -211,8 +211,15 @@
 <div id="empty">select a session</div>
 <iframe id="view" style="display:none"></iframe>
 <script>
+{{SHARED}}
+</script>
+<script>
 (function(){
   "use strict";
+  // The shared session-visibility module (html/shared/session-visibility.js), inlined above by
+  // the server: grouping, hide/restore and fork families read the same predicates here as in
+  // the app shell (#43).
+  var shared=window.__shared;
   var THEME_KEY="agent-monitor-theme";
   var root=document.documentElement;
   var list=document.getElementById("list");
@@ -419,40 +426,9 @@
   // if any member is, and a root can be older than the fork that continued past it.
   // Counters are deliberately NOT summed: 82–99% of every fork replays the root, so adding
   // them would count the same tokens once per member.
-  // #153: what counts as ONE row. For most agents that is the fork family (#142). For
-  // QoderWork it is the TITLE: measured, its 37 sessions carry 19 distinct titles, and six
-  // titles span SEPARATE fork families — four sessions of one interview-prep task in four
-  // families — which family grouping cannot merge because they are not forks of each other.
-  // A title is a label rather than an identity, so two genuinely distinct chats sharing a
-  // name will cluster; they are indistinguishable to the reader anyway, and the row expands.
-  function clusterKey(r){
-    if((r.agent||"").toLowerCase().indexOf("qoder")>=0){
-      var t=(r.name||"").replace(" (Fork)","").trim();
-      if(t)return "t:"+t;
-    }
-    return r.family||r.id;
-  }
-  function families(rows){
-    var by={},order=[];
-    for(var r of rows){
-      var k=clusterKey(r);
-      if(!by[k]){by[k]={key:k,rep:null,members:[],latest:0,growing:false};order.push(k);}
-      var f=by[k];
-      f.members.push(r);
-      if((r.activityTs||0)>f.latest)f.latest=r.activityTs||0;
-      if(r.state==="growing")f.growing=true;
-      if(!r.isFork&&!f.rep)f.rep=r;
-    }
-    return order.map(function(k){
-      var f=by[k];
-      // No root among the visible members (filtered out, or its transcript is gone):
-      // the most recently active member speaks for the family.
-      if(!f.rep){
-        f.rep=f.members.slice().sort(function(a,b){return (b.activityTs||0)-(a.activityTs||0)})[0];
-      }
-      return f;
-    });
-  }
+  // #153/#142: what counts as ONE row — the fork family, or for QoderWork the title — is the
+  // shared module's rule, so this rail and the app shell cluster identically.
+  var families=shared.families;
   function rowHtml(r,g,fam){
     var members=fam?fam.members.length:1;
     // The family's state, not just the representative's.
@@ -462,10 +438,9 @@
     var dot="dot "+st+(r.conf==="unconfirmed"&&r.ambig>1?" unconfirmed":"");
     // #113: a row hidden by its OWN key gets a restore; a visible row gets a hide. A row
     // hidden because its whole GROUP is hidden shows nothing — the group header owns it.
+    var rx=shared.hideAction(r,"session");
     var rowx=g.hidden?""
-      :(r.hidden
-        ?'<button class="rowx" data-show="'+esc(r.ignoreKey)+'" title="Restore this session">↩</button>'
-        :'<button class="rowx" data-hide="'+esc(r.ignoreKey)+'" title="Hide this session">×</button>');
+      :'<button class="rowx" data-'+(rx.op==="add"?"hide":"show")+'="'+esc(rx.key)+'" title="'+esc(rx.title)+'">'+(rx.op==="add"?"×":"↩")+'</button>';
     var forks=members>1
       ?'<button class="forks" data-fam="'+esc(fam.key)+'" title="'+(members-1)+' fork'+(members>2?"s":"")
         +' of this session — forking copies the conversation, so they overlap heavily">⑂ '+(members-1)
@@ -495,13 +470,13 @@
     var scroll=list.scrollTop;
     var html="";
     for(var g of state.groups){
-      if(g.hidden&&!state.showHidden)continue;  // #113: a hidden group vanishes until revealed
+      if(!shared.groupVisible(g,{showHidden:state.showHidden}))continue;  // #113: a hidden group vanishes until revealed
       var gkey=g.kind+":"+g.label+":"+g.secondary;
       var collapsed=!!state.collapsed[gkey];
       var expanded=!!state.expanded[gkey];
       var multi=g.rows.some(function(r){return r.agent!==g.rows[0].agent})&&g.kind!=="agent";
       var vis=g.rows.filter(function(r){
-        var okHidden=state.showHidden||!r.hidden;
+        var okHidden=shared.rowVisible(r,{showHidden:state.showHidden});
         var okState=state.filter==="all"||r.state===state.filter;
         var okText=!state.q||(r.name+" "+g.label+" "+r.agent).toLowerCase().indexOf(state.q)>=0;
         return okHidden&&okState&&okText;
@@ -542,9 +517,8 @@
       if(!collapsed&&(hidden>0||expanded)){
         rowsHtml+="<div class=\"showmore\" data-more=\""+esc(gkey)+"\">"+(expanded?"show less":"show "+hidden+" more")+"</div>";
       }
-      var ghx=g.hidden
-        ?'<button class="ghx" data-show="'+esc(g.ignoreKey)+'" title="Restore this '+(g.kind==="agent"?"agent":"project")+'">↩</button>'
-        :'<button class="ghx" data-hide="'+esc(g.ignoreKey)+'" title="Hide this '+(g.kind==="agent"?"agent":"project")+'">×</button>';
+      var gx=shared.hideAction(g,g.kind==="agent"?"agent":"project");
+      var ghx='<button class="ghx" data-'+(gx.op==="add"?"hide":"show")+'="'+esc(gx.key)+'" title="'+esc(gx.title)+'">'+(gx.op==="add"?"×":"↩")+'</button>';
       html+='<div class="group'+(collapsed?" gcol":"")+(g.hidden?" ghidden":"")+'" data-g="'+esc(gkey)+'">'
         +'<div class="ghead"><span class="chev">▼</span>'
         +'<span class="gdot '+(g.growing?'growing':g.idle?'idle':'finished')+'" title="'+esc(gStatusTip(g))+'"></span>'
@@ -596,7 +570,7 @@
   // #113: hide/restore. The server persists the key and re-emits everything with
   // hidden flags; the click only toggles the key and re-polls.
   function ignore(key,add){
-    fetch("/api/ignore?"+(add?"add":"remove")+"="+encodeURIComponent(key),{cache:"no-store"})
+    fetch(shared.ignoreQuery({op:add?"add":"remove",key:key}),{cache:"no-store"})
       .then(function(){poll();}).catch(function(){});
   }
   list.addEventListener("click",function(e){

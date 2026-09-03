@@ -42,18 +42,32 @@ function groupSessions(groups = []) {
  * hidden — the server marks such rows hidden too, so both filters agree.
  */
 function visibleTree(agents, { showHidden = false, attention = false, needs = () => true } = {}) {
-  const keep = row => (showHidden || !row.hidden) && (!attention || needs(row));
+  const keep = row => rowVisible(row, { showHidden, attention, needs });
   const out = [];
   for (const agent of agents) {
     const projects = [];
     for (const project of agent.projects) {
-      if (project.hidden && !showHidden) continue;
+      if (!groupVisible(project, { showHidden })) continue;
       const rows = project.sessions.filter(keep);
       if (rows.length) projects.push({ ...project, rows });
     }
     if (projects.length) out.push({ ...agent, projects });
   }
   return out;
+}
+
+/**
+ * Whether a row is shown: a hidden row only under `showHidden`; with `attention`, only the
+ * rows `needs` says need a person. The classic rail's `okHidden` and the app shell's tree
+ * filter are this one predicate (#113).
+ */
+function rowVisible(row, { showHidden = false, attention = false, needs = () => true } = {}) {
+  return (showHidden || !row.hidden) && (!attention || needs(row));
+}
+
+/** Whether a group — a project, or a desktop agent — is shown at all: hidden only under `showHidden`. */
+function groupVisible(group, { showHidden = false } = {}) {
+  return showHidden || !group.hidden;
 }
 
 /** What the row action does for a session or a project, and how it is labelled. */
@@ -77,10 +91,28 @@ const ignoreQuery = ({ op, key }) => `/api/ignore?${op}=${encodeURIComponent(key
  * polls. (Sub-agent CHILDREN are not rows at all — they are reached through a session's
  * `children` and come back through its `ancestors`; see the parent control.)
  */
+/**
+ * What counts as ONE row (#153). For most agents that is the fork family (#142): the server's
+ * `family` root, else the row itself. For QoderWork it is the TITLE, " (Fork)" stripped —
+ * measured on one store, 37 sessions carried 19 distinct titles, and six titles spanned
+ * SEPARATE fork families (four sessions of one interview-prep task in four families), which
+ * family grouping cannot merge because they are not forks of each other. A title is a label
+ * rather than an identity, so two genuinely distinct chats sharing a name will cluster; they
+ * are indistinguishable to the reader anyway, and the row expands. The classic rail's rule,
+ * now the one rule.
+ */
+function familyKey(row) {
+  if ((row.agent || "").toLowerCase().includes("qoder")) {
+    const title = (row.name || "").replace(" (Fork)", "").trim();
+    if (title) return `t:${title}`;
+  }
+  return row.family || row.id;
+}
+
 function families(rows = []) {
   const by = new Map();
   for (const row of rows) {
-    const key = row.family || row.id;
+    const key = familyKey(row);
     if (!by.has(key)) by.set(key, { key, rep: null, members: [], growing: false, latest: 0 });
     const family = by.get(key);
     family.members.push(row);
@@ -95,4 +127,4 @@ function families(rows = []) {
   return [...by.values()];
 }
 
-export { groupSessions, visibleTree, hideAction, ignoreQuery, families };
+export { groupSessions, visibleTree, rowVisible, groupVisible, hideAction, ignoreQuery, familyKey, families };

@@ -149,6 +149,9 @@
   <div id="v2cfoot"><span id="v2cmsg"></span><button id="v2csend">Send prompt</button></div>
 </div>
 <script>
+{{SHARED}}
+</script>
+<script>
 (function () {
   "use strict";
   var listEl = document.getElementById("v2list");
@@ -196,7 +199,7 @@
     var shown = 0, total = 0;
     groups.forEach(function (g) {
       var rows = g.rows.filter(function (r) {
-        if (r.hidden && !showHidden) return false;
+        if (!window.__shared.rowVisible(r, { showHidden: showHidden })) return false;
         return !f || (r.name + " " + r.agent + " " + g.label).toLowerCase().indexOf(f) >= 0;
       });
       total += g.rows.length;

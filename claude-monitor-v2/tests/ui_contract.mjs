@@ -7,7 +7,7 @@ import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-monitor/sr
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
-import { families, groupSessions, hideAction, ignoreQuery, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
+import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
@@ -323,4 +323,40 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
   assert.match(appSource, /viewport\.lastUserInput = performance\.now\(\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back");
   console.log("keymap cases passed");
+}
+
+// Seam (a) (#43): the classic rail and the v2 splice read the SAME predicates as the app
+// shell — clustering, the hidden filter, the hide/restore action and its query — inlined
+// into their pages at serve time, so none of them keeps a copy.
+{
+  assert.equal(familyKey({ id: "q1", agent: "qoderwork", name: "Plan the thing (Fork)" }), "t:Plan the thing", "QoderWork clusters by title, the rail's #153 rule");
+  assert.equal(familyKey({ id: "q2", agent: "QoderWork", name: "  ", family: "root" }), "root", "an empty title falls back to the family root");
+  assert.equal(familyKey({ id: "c1", agent: "claude", name: "Anything (Fork)", family: "c0" }), "c0", "other agents use the server's family");
+  assert.equal(familyKey({ id: "c2", agent: "claude" }), "c2", "a row without a family is its own");
+  const titled = families([
+    { id: "q1", agent: "qoderwork", name: "Plan (Fork)", isFork: true, activityTs: 5 },
+    { id: "q0", agent: "qoderwork", name: "Plan", activityTs: 3 }
+  ]);
+  assert.equal(titled.length, 1, "one family under the title");
+  assert.equal(titled[0].rep.id, "q0", "the root represents it");
+  assert.equal(titled[0].latest, 5, "the family's age is its newest member's");
+  assert.equal(rowVisible({ hidden: true }), false);
+  assert.equal(rowVisible({ hidden: true }, { showHidden: true }), true);
+  assert.equal(rowVisible({ id: "a" }, { attention: true, needs: r => r.id === "b" }), false);
+  assert.equal(groupVisible({ hidden: true }), false);
+  assert.equal(groupVisible({ hidden: true }, { showHidden: true }), true);
+  assert.equal(groupVisible({}), true);
+  const railSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+  const spliceSource = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
+  for (const [name, src] of [["rail.html", railSource], ["shell.html", spliceSource]]) {
+    assert.match(src, /\{\{SHARED\}\}/, `${name} carries the inlined shared modules`);
+    assert.doesNotMatch(src, /function (families|clusterKey)\(/, `${name} keeps no clustering of its own`);
+  }
+  assert.match(railSource, /var families=shared\.families;/, "the rail clusters through the shared function");
+  assert.match(railSource, /shared\.hideAction\(/, "the rail's hide/restore controls come from hideAction");
+  assert.match(railSource, /shared\.ignoreQuery\(/, "the rail hides and restores through the shared query");
+  assert.match(railSource, /shared\.rowVisible\(/, "the rail's row filter is the shared predicate");
+  assert.match(railSource, /shared\.groupVisible\(/, "the rail's group filter is the shared predicate");
+  assert.match(spliceSource, /__shared\.rowVisible\(/, "the splice's hidden filter is the shared predicate");
+  console.log("seam (a) cases passed");
 }

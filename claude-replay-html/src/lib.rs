@@ -7,7 +7,7 @@
 
 pub mod html_export;
 
-pub use html_export::shared::{shared_source, SHARED};
+pub use html_export::shared::{inline_all as shared_inline_all, shared_source, SHARED};
 
 pub use html_export::{
     display_title, dump_all_html, dump_html, existing_server, get_request, handoff_url, mint_token,
