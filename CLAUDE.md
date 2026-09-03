@@ -128,7 +128,9 @@ by itself:
    `git lfs ls-files`, `ls-tree -l`, `git show HEAD:<big file>` — each missing blob is lazily
    fetched over one ssh round-trip (measured: 178 MB / 51 packs in 14 minutes before it was
    killed). The LFS guard is `grep filter=lfs .gitattributes` plus `git check-attr` on the new
-   files; both read metadata only. **Exactly two levels** — brew writes a single-line cone
+   files; both read metadata only. The repo is SHARED (other tools publish to it): `git fetch
+   origin master && git rebase origin/master` right before the push, or it is rejected as
+   non-fast-forward — a knack release landed between clone and push on 2026-09-03. **Exactly two levels** — brew writes a single-line cone
    sparse-checkout pattern and cone mode materializes NOTHING deeper. Never LFS-track that
    repo. Push to `master` and take the commit sha.
 3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) — the installed tap
