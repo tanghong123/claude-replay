@@ -240,9 +240,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn session_card(
         &self,
         path: &Path,
-        _memo: Option<&claude_replay_engine::seam::CardMemo>,
+        memo: Option<&claude_replay_engine::seam::CardMemo>,
     ) -> claude_replay_engine::seam::CardOutcome {
-        agents::codex::discover::session_card(path)
+        agents::codex::discover::session_card(path, memo)
     }
 }
 

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use claude_replay_engine::seam::{Agent, Candidate, CardOutcome, SessionCard};
+use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard};
 use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
@@ -417,20 +417,63 @@ fn percent_decode_title(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Codex does not currently persist the generated task title in its rollout. Its first
-/// genuine user prompt is nevertheless the stable, human-authored label used by the picker,
-/// and is much more discriminating than showing the repository name for every session.
-pub(crate) fn session_card(path: &Path) -> CardOutcome {
-    let prompt = first_user_snippet(path);
+/// The Codex card's memo (#25). What a card depends on: the rollout's length (its FIRST user
+/// prompt never changes once written, so a file that has not grown cannot change its prompt),
+/// the prompt itself once found, and the Desktop catalog's stamp (a rename or a generated
+/// title lands there, not in the rollout). With the memo in hand a repeat call touches
+/// `metadata()` and nothing else; without it every monitor scan re-read the head of every
+/// Codex transcript. Versioned and validated like every memo: unreadable or foreign → cold.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Memo {
+    v: u8,
+    len: u64,
+    /// `Some` once a genuine prompt was read; `None` while the rollout had none yet.
+    prompt: Option<String>,
+    stamp: (u64, u64),
+}
+const MEMO_V: u8 = 1;
+
+/// Codex does not persist the generated task title in its rollout; the Desktop catalog does,
+/// when there is one. The first genuine user prompt is otherwise the stable, human-authored
+/// label — far more discriminating than the repository name on every row.
+pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
+        return CardOutcome::Absent;
+    };
+    let stamp = catalog_stamp();
+    let prev: Option<Memo> =
+        CardMemo::decode(memo).filter(|m: &Memo| m.v == MEMO_V && m.len <= len);
+    if let Some(m) = &prev {
+        // Nothing appended and the catalog unchanged: the card cannot have changed. The memo
+        // still comes back — its length is what keeps the NEXT call this cheap.
+        if m.len == len && m.stamp == stamp {
+            return CardOutcome::Unchanged {
+                memo: CardMemo::encode(m).unwrap_or_else(|| CardMemo::new(serde_json::Value::Null)),
+            };
+        }
+    }
+    // A prompt already found is final; otherwise (cold, or a rollout that had no prompt yet
+    // and has since grown) read the head again.
+    let prompt = match prev.as_ref().and_then(|m| m.prompt.clone()) {
+        Some(prompt) => prompt,
+        None => first_user_snippet(path),
+    };
+    let genuine = prompt != "(no user prompt)" && !prompt.starts_with("↳ subagent");
+    let memo = CardMemo::encode(&Memo {
+        v: MEMO_V,
+        len,
+        prompt: genuine.then(|| prompt.clone()),
+        stamp,
+    });
     let title = codex_thread_title(path).map(|title| compact_session_title(&title));
-    if prompt == "(no user prompt)" || prompt.starts_with("↳ subagent") {
+    if !genuine {
         return match title {
             Some(title) => CardOutcome::Fresh {
                 card: SessionCard {
                     title: Some(title),
                     last_prompt: None,
                 },
-                memo: None,
+                memo,
             },
             None => CardOutcome::Absent,
         };
@@ -440,7 +483,33 @@ pub(crate) fn session_card(path: &Path) -> CardOutcome {
             title: Some(title.unwrap_or_else(|| compact_session_title(&prompt))),
             last_prompt: Some(prompt),
         },
-        memo: None,
+        memo,
+    }
+}
+
+/// The Desktop catalog's modification stamp — `(db, wal)` mtimes in seconds — so a memo can
+/// tell "a title may have changed" without opening the database. `(0, 0)` where there is no
+/// catalog (Linux, or a CLI-only install), which is a stable stamp too.
+fn catalog_stamp() -> (u64, u64) {
+    #[cfg(target_os = "macos")]
+    {
+        let db = codex_home().join("state_5.sqlite");
+        let secs = |p: &Path| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        };
+        (
+            secs(&db),
+            secs(&PathBuf::from(format!("{}-wal", db.display()))),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (0, 0)
     }
 }
 
@@ -1158,7 +1227,7 @@ mod tests {
         );
         let candidates = candidates_in(&fixture.sessions, &cwd);
         assert_eq!(candidates[0].snippet, "Fix the parser carefully");
-        let CardOutcome::Fresh { card, .. } = session_card(&path) else {
+        let CardOutcome::Fresh { card, .. } = session_card(&path, None) else {
             panic!("a genuine user prompt should label the session");
         };
         assert_eq!(card.label(), Some("Fix the parser carefully"));
@@ -1291,13 +1360,65 @@ mod tests {
             writeln!(f, "{turn}").unwrap();
         }
         assert_eq!(first_user_snippet(&path), "Please inspect this design");
-        let CardOutcome::Fresh { card, .. } = session_card(&path) else {
+        let CardOutcome::Fresh { card, .. } = session_card(&path, None) else {
             panic!("a Desktop prompt still labels the session");
         };
         assert_eq!(card.label(), Some("Please inspect this design"));
         assert_eq!(
             card.last_prompt.as_deref(),
             Some("Please inspect this design")
+        );
+    }
+
+    /// The memo makes a repeat call answer from `metadata()` alone: nothing appended and the
+    /// catalog untouched → `Unchanged`, carrying the memo; a rollout with no prompt yet is
+    /// re-read once it grows; a found prompt is final and is never re-read.
+    #[test]
+    fn card_memo_short_circuits_an_unchanged_rollout_and_rereads_only_when_it_must() {
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let path = fixture.rollout("2026/08/30", "memo", &cwd, "codex-tui");
+        // No prompt yet: the card is Absent (no catalog here), but the memo still records the length.
+        let cold = session_card(&path, None);
+        assert!(
+            matches!(cold, CardOutcome::Absent),
+            "no prompt, no catalog: nothing to name"
+        );
+        Fixture::append_user(&path, "First real prompt");
+        let CardOutcome::Fresh { card, memo } = session_card(&path, None) else {
+            panic!("a prompt names the session");
+        };
+        assert_eq!(card.label(), Some("First real prompt"));
+        let memo = memo.expect("a memo comes back with the card");
+        // Same length, same catalog stamp → Unchanged, and the memo is preserved.
+        let again = session_card(&path, Some(&memo));
+        let CardOutcome::Unchanged { memo: kept } = again else {
+            panic!("nothing changed, so the card must be kept: {again:?}");
+        };
+        let decoded: Memo = CardMemo::decode(Some(&kept)).expect("memo decodes");
+        assert_eq!(decoded.prompt.as_deref(), Some("First real prompt"));
+        // Appending does not change the FIRST prompt: Fresh again (the caller re-derives), but
+        // from the memo's prompt, not a re-read — the second user line must not win.
+        Fixture::append_user(&path, "A later prompt");
+        let CardOutcome::Fresh { card, .. } = session_card(&path, Some(&kept)) else {
+            panic!("a grown file re-derives");
+        };
+        assert_eq!(card.label(), Some("First real prompt"));
+        // A memo from a longer file than the one on disk (rewritten) is ignored, not trusted.
+        let stale = CardMemo::encode(&Memo {
+            v: MEMO_V,
+            len: u64::MAX,
+            prompt: Some("ghost".into()),
+            stamp: (0, 0),
+        })
+        .unwrap();
+        let CardOutcome::Fresh { card, .. } = session_card(&path, Some(&stale)) else {
+            panic!("a stale memo falls back to a cold read");
+        };
+        assert_eq!(
+            card.label(),
+            Some("First real prompt"),
+            "the cold read wins over a ghost memo"
         );
     }
 
