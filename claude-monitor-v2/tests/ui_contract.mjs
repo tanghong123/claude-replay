@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
@@ -10,6 +13,7 @@ import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewp
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { REASONS, denoteState, displayState, needsPerson, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
+import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
@@ -451,4 +455,79 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(componentsSrc, /function attachmentCapability|function referenceAction|const revealQuery =/, "components.js keeps no copy of the rule");
   assert.match(componentsSrc, /from "\.\/shared\/capabilities\.js"/);
   console.log("seam (b) cases passed");
+}
+
+// Seam (c) (#48): one control protocol. The rule for who may be composed to, the words, the
+// queries and the meaning of every server answer are shared; each shell keeps its markup.
+{
+  assert.deepEqual(composeCapability({ injectable: true }, false), { inject: false, resume: false, mode: null }, "unpaired: nothing");
+  assert.deepEqual(composeCapability({ injectable: true, state: "growing", agent: "claude" }, true), { inject: true, resume: false, mode: "tmux" });
+  assert.deepEqual(composeCapability({ state: "finished", agent: "codex" }, true), { inject: false, resume: true, mode: "resume" });
+  assert.equal(composeCapability({ state: "finished", agent: "codex", projActive: true }, true).mode, null, "constraint 2: another live session in the project → neither");
+  assert.equal(composeCapability({ state: "finished", agent: "qoderwork" }, true).mode, null, "resume is claude/codex only");
+  assert.deepEqual(composeCopy("tmux", false, "S"), { target: "Inject into: S", placeholder: "Type a prompt — it is pasted into the live tmux pane and submitted", notice: "Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts.", button: "Grant & send", revoke: false });
+  assert.equal(composeCopy("tmux", true).button, "Send to pane"); assert.equal(composeCopy("tmux", true).revoke, true);
+  assert.equal(composeCopy("resume", false, "S").target, "Send to: S"); assert.equal(composeCopy("resume", false).button, "Send prompt"); assert.equal(composeCopy("resume", false).notice, "");
+  assert.equal(sendQuery("a b"), "/api/send?target=a%20b"); assert.equal(consentQuery("s1"), "/api/consent?target=s1"); assert.equal(consentQuery("s1", "revoke"), "/api/consent?op=revoke&target=s1");
+  assert.equal(grantOutcome({ code: "passcode-required" }).kind, "passcode-required"); assert.equal(grantOutcome({ code: "bad-passcode" }).tone, "err");
+  assert.equal(grantOutcome({ code: "locked", error: "wait" }).message, "wait"); assert.equal(grantOutcome({ ok: true }).kind, "granted"); assert.equal(grantOutcome(null).kind, "error");
+  assert.deepEqual(sendOutcome({ ok: true }, "resume"), { kind: "sent", tone: "ok", message: "sent — the session is resuming" });
+  assert.equal(sendOutcome({ code: "no-consent" }, "tmux").kind, "no-consent"); assert.equal(sendOutcome({ error: "x" }, "tmux").message, "x");
+  // The flow: an unconsented pane grants first — the passcode dance — then sends.
+  const calls = [];
+  const fakePost = answers => async (url, body) => { calls.push([url, body]); return answers.shift(); };
+  let r = await runSend({ target: "s1", mode: "tmux", consented: false, prompt: "hi", post: fakePost([{ code: "passcode-required" }]) });
+  assert.deepEqual([r.step, r.outcome.kind, r.consented], ["grant", "passcode-required", false]);
+  assert.deepEqual(calls, [["/api/consent?target=s1", ""]], "the grant went first, with an empty passcode body");
+  calls.length = 0;
+  r = await runSend({ target: "s1", mode: "tmux", consented: false, prompt: "hi", passcode: "pw", post: fakePost([{ ok: true }, { ok: true }]) });
+  assert.deepEqual([r.step, r.outcome.kind, r.consented], ["send", "sent", true]);
+  assert.deepEqual(calls, [["/api/consent?target=s1", "pw"], ["/api/send?target=s1", "hi"]], "granted with the passcode in the BODY, then sent");
+  calls.length = 0;
+  r = await runSend({ target: "s1", mode: "resume", consented: false, prompt: "go", post: fakePost([{ ok: true }]) });
+  assert.deepEqual(calls, [["/api/send?target=s1", "go"]], "resume never grants");
+  r = await runSend({ target: "s1", mode: "tmux", consented: true, prompt: "hi", post: fakePost([{ code: "no-consent" }]) });
+  assert.deepEqual([r.outcome.kind, r.consented], ["no-consent", false], "a lapsed grant re-offers itself");
+  r = await runSend({ target: "s1", mode: "tmux", consented: true, prompt: "hi", post: async () => { throw new Error("down"); } });
+  assert.equal(r.outcome.kind, "unreachable");
+  assert.equal((await runRevoke({ target: "s1", post: async () => ({ ok: true }) })).kind, "revoked");
+  // Code lines only: the shells' comments still describe the protocol in prose.
+  const codeOf = src => src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../src/shell.html"], ["control-store.js", "../../claude-monitor/src/codex-ui/control-store.js"]]) {
+    const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
+    assert.match(src, /runSend\(\{/, `${name} sends through the shared flow`);
+    assert.match(src, /runRevoke\(\{/, `${name} revokes through the shared flow`);
+    assert.doesNotMatch(src, /\.code\s*===?\s*"(passcode-required|bad-passcode|locked|no-consent)"/, `${name} reads no raw server code of its own — the outcomes are the protocol's`);
+    assert.doesNotMatch(src, /\/api\/(send|consent)\?/, `${name} builds no /api query of its own`);
+  }
+  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../src/shell.html"]]) {
+    const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
+    assert.match(src, /composeCopy\(/, `${name} takes its words from the shared table`);
+    assert.doesNotMatch(src, /"(Grant & send|Send to pane|Send prompt|Inject into: |Send to: )"/, `${name} keeps no compose wording of its own`);
+  }
+  const stateSrc2 = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSrc2, /composeCapability\(row, controlState\.paired\)/, "the app shell's canInject/canResume are the shared rule");
+  console.log("seam (c) cases passed");
+}
+
+// Every module the shells load must PARSE as an ES module. `node --check` reads a `.js` file as
+// CommonJS and passed control-store.js with a stray brace (#48); Chrome then refused the whole
+// module graph and the app shell rendered blank. Checking each file as `.mjs` is the honest parse.
+{
+  const dirs = [new URL("../../claude-monitor/src/codex-ui/", import.meta.url), new URL("../../claude-replay-html/src/html/shared/", import.meta.url)];
+  const tmp = mkdtempSync(join(tmpdir(), "ui-contract-parse-"));
+  let checked = 0;
+  try {
+    for (const dir of dirs) {
+      for (const name of readdirSync(dir).filter(n => n.endsWith(".js"))) {
+        const copy = join(tmp, name.replace(/\.js$/, ".mjs"));
+        writeFileSync(copy, readFileSync(new URL(name, dir), "utf8"));
+        const result = spawnSync(process.execPath, ["--check", copy], { encoding: "utf8" });
+        assert.equal(result.status, 0, `${name} does not parse as an ES module:\n${result.stderr}`);
+        checked++;
+      }
+    }
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  assert.ok(checked >= 15, `parsed ${checked} modules`);
+  console.log(`module parse cases passed (${checked} modules)`);
 }

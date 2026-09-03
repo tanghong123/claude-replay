@@ -29,6 +29,10 @@ pub const SHARED: &[(&str, &str)] = &[
         "capabilities",
         include_str!("../html/shared/capabilities.js"),
     ),
+    (
+        "control-protocol",
+        include_str!("../html/shared/control-protocol.js"),
+    ),
 ];
 
 /// The source of one shared module, for serving it as a module.

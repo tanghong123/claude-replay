@@ -1,4 +1,5 @@
 import { DEFAULT_READING, READING_KEY, parseReading } from "./shared/reading.js";
+import { composeCapability } from "./shared/control-protocol.js";
 
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
@@ -56,6 +57,7 @@ export function persist() {
 }
 
 export const selectedRow = () => indexState.rows.get(indexState.selected) || null;
-export const canInject = row => controlState.paired && !!row?.injectable;
-export const canResume = row => controlState.paired && row?.state === "finished" && !row?.projActive && ["claude", "codex"].includes(row?.agent);
+// Who may be composed to is the shared protocol's rule (shared/control-protocol.js, #48).
+export const canInject = row => composeCapability(row, controlState.paired).inject;
+export const canResume = row => composeCapability(row, controlState.paired).resume;
 export const canCompose = row => canInject(row) || canResume(row);

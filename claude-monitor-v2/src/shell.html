@@ -392,74 +392,44 @@
     var revoke = document.getElementById("v2crevoke");
     var target = null, mode = "resume", consented = false;
 
-    function updateButton() {
-      sendBtn.textContent = mode === "tmux" ? (consented ? "Send to pane" : "Grant & send") : "Send prompt";
+    // #48: the words, the queries and the meaning of every server answer are the shared
+    // protocol's (html/shared/control-protocol.js); this bar keeps its markup and its paint.
+    var shared = window.__shared;
+    function paint() {
+      var copy = shared.composeCopy(mode, consented);
+      sendBtn.textContent = copy.button; revoke.hidden = !copy.revoke;
     }
-    function updateRevoke() { revoke.hidden = !(mode === "tmux" && consented); }
     function revealPass() { pass.hidden = false; pass.focus(); }
     function hidePass() { pass.hidden = true; pass.value = ""; }
     function close() { bar.hidden = true; target = null; hidePass(); }
     function asJson(r) { return r.json().catch(function () { return { ok: false, error: "HTTP " + r.status }; }); }
-    function postSend(prompt) {
-      return fetch("/api/send?target=" + encodeURIComponent(target),
-        { method: "POST", body: prompt, cache: "no-store" }).then(asJson);
-    }
-    // The passcode rides the BODY, never the query string — a query can be logged.
-    function postGrant(passcode) {
-      return fetch("/api/consent?target=" + encodeURIComponent(target),
-        { method: "POST", body: passcode || "", cache: "no-store" }).then(asJson);
-    }
-    function doSend(prompt) {
-      sendBtn.disabled = true; msg.className = ""; msg.textContent = "sending…";
-      postSend(prompt).then(function (d) {
-        sendBtn.disabled = false;
-        if (d && d.ok) {
-          msg.className = "ok";
-          msg.textContent = mode === "tmux" ? "sent into the pane" : "sent — the session is resuming";
-          setTimeout(close, 900); load();
-        } else if (d && d.code === "no-consent") {
-          // The grant lapsed between opening and sending (the pid changed) — re-offer it.
-          consented = false; updateButton(); updateRevoke();
-          msg.className = "err"; msg.textContent = "this pane needs consent — press “Grant & send”";
-        } else {
-          msg.className = "err"; msg.textContent = (d && d.error) || "could not send";
-        }
-      }).catch(function () {
-        sendBtn.disabled = false; msg.className = "err"; msg.textContent = "could not reach the monitor";
-      });
-    }
+    function post(url, body) { return fetch(url, { method: "POST", body: body, cache: "no-store" }).then(asJson); }
+    function show(outcome) { msg.className = outcome.tone || ""; msg.textContent = outcome.message || ""; }
     function send() {
       var prompt = text.value.trim();
       if (!prompt || !target) return;
-      if (mode !== "tmux" || consented) { doSend(prompt); return; }
-      sendBtn.disabled = true; msg.className = "";
-      msg.textContent = pass.hidden ? "granting…" : "authorising…";
-      postGrant(pass.value.trim()).then(function (g) {
-        sendBtn.disabled = false;
-        if (g && g.code === "passcode-required") {
-          revealPass(); msg.className = ""; msg.textContent = "Enter your passcode to authorise this pane."; return;
+      sendBtn.disabled = true;
+      shared.runSend({
+        target: target, mode: mode, consented: consented, prompt: prompt,
+        passcode: pass.hidden ? "" : pass.value.trim(), post: post,
+        status: function (t) { msg.className = ""; msg.textContent = t; }
+      }).then(function (r) {
+        sendBtn.disabled = false; consented = r.consented;
+        if (r.step === "grant") {
+          if (r.outcome.kind === "passcode-required") { revealPass(); show(r.outcome); return; }
+          if (r.outcome.kind === "bad-passcode") { revealPass(); show(r.outcome); pass.select(); return; }
+          show(r.outcome); return;
         }
-        if (g && g.code === "bad-passcode") {
-          revealPass(); msg.className = "err"; msg.textContent = "Incorrect passcode."; pass.select(); return;
-        }
-        if (g && g.code === "locked") {
-          msg.className = "err"; msg.textContent = g.error || "too many attempts — wait a moment."; return;
-        }
-        if (!g || !g.ok) { msg.className = "err"; msg.textContent = (g && g.error) || "could not grant consent"; return; }
-        consented = true; hidePass(); updateButton(); updateRevoke();
-        doSend(prompt);
-      }).catch(function () {
-        sendBtn.disabled = false; msg.className = "err"; msg.textContent = "could not reach the monitor";
+        if (r.outcome.kind === "sent") { show(r.outcome); hidePass(); paint(); setTimeout(close, 900); load(); return; }
+        // The grant lapsed between opening and sending (the pid changed) — re-offer it.
+        paint(); show(r.outcome);
       });
     }
     revoke.addEventListener("click", function () {
       if (!target) return;
-      fetch("/api/consent?op=revoke&target=" + encodeURIComponent(target), { method: "POST", cache: "no-store" })
-        .then(asJson).then(function (d) {
-          consented = false; updateButton(); updateRevoke();
-          msg.className = ""; msg.textContent = (d && d.ok) ? "consent revoked" : "could not revoke";
-          load();
-        });
+      shared.runRevoke({ target: target, post: post }).then(function (outcome) {
+        consented = false; paint(); show(outcome); load();
+      });
     });
     sendBtn.addEventListener("click", send);
     document.getElementById("v2cx").addEventListener("click", close);
@@ -475,15 +445,10 @@
 
     return function (id, name, m, isConsented) {
       target = id; mode = (m === "tmux" ? "tmux" : "resume"); consented = !!isConsented;
-      to.textContent = (mode === "tmux" ? "Inject into: " : "Send to: ") + (name || id);
-      text.placeholder = mode === "tmux"
-        ? "Type a prompt — it is pasted into the live tmux pane and submitted"
-        : "Send a prompt — the session resumes and runs it (permissions skipped)";
-      msg.className = "";
-      msg.textContent = (mode === "tmux" && !consented)
-        ? "Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts."
-        : "";
-      hidePass(); updateButton(); updateRevoke();
+      var copy = shared.composeCopy(mode, consented, name || id);
+      to.textContent = copy.target; text.placeholder = copy.placeholder;
+      msg.className = ""; msg.textContent = copy.notice;
+      hidePass(); paint();
       bar.hidden = false; text.value = ""; text.focus();
     };
   })();

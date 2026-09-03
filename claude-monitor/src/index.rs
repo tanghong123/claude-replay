@@ -2065,6 +2065,10 @@ mod tests {
     /// appearing at the monitor root turns the row visited with folded counters.
     #[test]
     fn index_end_to_end_on_a_fixture_store() {
+        // The store env vars are process-global: hold the same lock every env-setting test
+        // holds (ui, control, routes), or a concurrent test's scratch stores replace the
+        // fixture mid-scan.
+        let _lock = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!("cm-index-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let store = base.join("projects");

@@ -96,8 +96,8 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   keymap) against `agent-monitor-v2 --release` on ports 2831–2836 with scratch state; a
   behaviour change in `codex-ui/` extends those the same way, and a served module the shell
   imports must be registered in `ui::asset()` (an import-closure test walks the graph). The classic-rail
-  case (`the_classic_rail_*`) needs `agent-monitor --release` (v1) on port 2837 and builds a hermetic
-  QoderWork family store (`qoderwork_family_store`/`store_envs`); without the v1 binary it SKIPS, and a
+  case (`the_classic_rail_*`) needs `agent-monitor --release` (v1) on ports 2837–2838 and builds hermetic
+  stores (`qoderwork_family_store`, `claude_finished_store`, `store_envs`); without the v1 binary it SKIPS, and a
   skip passes vacuously. The crate sits OUTSIDE
   `default-members` — its `headless_chrome` dep is the heaviest thing the workspace compiles,
   so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve it and

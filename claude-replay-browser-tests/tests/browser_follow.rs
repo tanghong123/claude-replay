@@ -2670,3 +2670,139 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
     );
     drop(server);
 }
+
+/// A hermetic Claude store with one FINISHED session (old timestamps, no process) — the shape
+/// the compose affordance resumes. Returns `(stores, sid)`; pass `stores` through [`store_envs`].
+fn claude_finished_store(base: &Path) -> (PathBuf, &'static str) {
+    let stores = base.join("stores");
+    let proj = stores.join("claude").join("-r");
+    std::fs::create_dir_all(&proj).unwrap();
+    for other in ["qoderwork", "qoder", "codex"] {
+        std::fs::create_dir_all(stores.join(other)).unwrap();
+    }
+    let sid = "bbbbbbbb-0000-4000-8000-000000000001";
+    let mut out = String::new();
+    for i in 0..12u32 {
+        out += &user(&format!("prompt {i} — a line long enough to matter"), i);
+        out += &assistant(&format!("reply {i} — a line long enough to matter"), i);
+    }
+    std::fs::write(proj.join(format!("{sid}.jsonl")), out).unwrap();
+    (stores, sid)
+}
+
+/// The classic rail's compose bar after #48: paired, a finished Claude session offers ✎; the
+/// bar opens with the shared protocol's words ("Send to: …", "Send prompt"), and a send runs
+/// the shared flow — against a stubbed /api/send, so nothing is resumed — and reports the
+/// shared outcome ("sent — the session is resuming").
+#[test]
+#[ignore]
+fn the_classic_rail_composes_through_the_shared_protocol() {
+    let _serial = serial();
+    let base = base("rail-compose");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor --release first");
+        return;
+    }
+    let (stores, sid) = claude_finished_store(&base);
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(["--port", "2838", "--pair", "--no-open"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_CACHE", base.join("cache"))
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in store_envs(&stores) {
+        cmd.env(k, v);
+    }
+    let child = Reap(cmd.spawn().expect("v1 starts"));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let until = |tab: &headless_chrome::Tab, js: &str, what: &str| {
+        for _ in 0..40 {
+            if eval(tab, js).as_bool() == Some(true) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let seen = eval(tab, "(document.getElementById('composemsg') || {}).textContent + ' | ' + [...document.querySelectorAll('.row')].map(r => r.dataset.id + ':' + r.innerHTML.length).join(' ')");
+        panic!("timed out waiting for {what}; seen: {seen}");
+    };
+    tab.navigate_to(&format!("http://127.0.0.1:2838/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to("http://127.0.0.1:2838/?ui=classic")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let row = format!(".row[data-id=\"{sid}\"]");
+    until(
+        &tab,
+        &format!("!!document.querySelector('{row} button.rowsend[data-compose]')"),
+        "the finished session's ✎ (paired, resumable)",
+    );
+    // No real send: /api/send is answered in the page, so the flow's outcome is what is measured.
+    eval(&tab, "window.__sent = []; const orig = window.fetch.bind(window); window.fetch = (u, o) => { const url = String(u); if (url.startsWith('/api/send')) { window.__sent.push([url, o && o.body]); return Promise.resolve(new Response('{\"ok\":true}', { status: 200, headers: { 'Content-Type': 'application/json' } })); } return orig(u, o); }; 'ok'");
+    eval(
+        &tab,
+        &format!("document.querySelector('{row} button.rowsend').click(); 'ok'"),
+    );
+    until(
+        &tab,
+        "!document.getElementById('composebar').hidden",
+        "the compose bar to open",
+    );
+    let words = eval(&tab, "JSON.stringify({to: document.getElementById('composeto').textContent, button: document.getElementById('composesend').textContent, notice: document.getElementById('composemsg').textContent, placeholder: document.getElementById('composetext').placeholder})");
+    let words: serde_json::Value =
+        serde_json::from_str(words.as_str().unwrap_or("null")).unwrap_or_default();
+    assert!(
+        words["to"].as_str().unwrap_or("").starts_with("Send to: "),
+        "the shared words: {words}"
+    );
+    assert_eq!(words["button"], "Send prompt", "{words}");
+    assert_eq!(
+        words["notice"], "",
+        "a resume carries no consent notice: {words}"
+    );
+    assert!(
+        words["placeholder"]
+            .as_str()
+            .unwrap_or("")
+            .contains("resumes"),
+        "{words}"
+    );
+    eval(&tab, "document.getElementById('composetext').value = 'carry on'; document.getElementById('composesend').click(); 'ok'");
+    until(
+        &tab,
+        "document.getElementById('composemsg').textContent === 'sent — the session is resuming'",
+        "the shared outcome",
+    );
+    let sent = eval(&tab, "JSON.stringify(window.__sent)");
+    assert_eq!(
+        sent.as_str().unwrap_or(""),
+        format!("[[\"/api/send?target={sid}\",\"carry on\"]]"),
+        "one send, the shared query, the prompt as the body"
+    );
+    drop(child);
+}

@@ -1,7 +1,12 @@
 import { canCompose, canInject, controlState, selectedRow } from "./state.js";
+// The /api/send + /api/consent protocol is the shared module's (#48): this store keeps the
+// app shell's markup, its confirm dialog and its toasts, and asks the protocol what a server
+// answer means.
+import { runRevoke, runSend } from "./shared/control-protocol.js";
 
 const byId = id => document.getElementById(id);
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+const post = (url, body) => fetch(url, { method: "POST", body, cache: "no-store" }).then(json);
 
 export class ControlStore {
   constructor(actions) {
@@ -86,39 +91,39 @@ export class ControlStore {
   async grantAndSend() {
     const passcode = document.querySelector(".passcode-input")?.value || "";
     this.closeConfirm();
-    const response = await fetch(`/api/consent?target=${encodeURIComponent(controlState.row.id)}`, { method: "POST", body: passcode, cache: "no-store" });
-    const result = await json(response);
-    if (["passcode-required", "bad-passcode"].includes(result.code)) {
-      const dialog = byId("confirmLayer").querySelector(".dialog");
-      let input = dialog.querySelector(".passcode-input");
-      if (!input) { input = document.createElement("input"); input.className = "passcode-input"; input.type = "password"; input.placeholder = "Monitor passcode"; dialog.insertBefore(input, dialog.querySelector(".dialog-actions")); }
-      byId("confirmText").textContent = result.code === "bad-passcode" ? "Passcode incorrect — try again." : "This monitor requires a passcode before granting write access.";
-      byId("confirmLayer").classList.add("production-open"); input.focus(); return;
-    }
-    if (!result.ok) { this.actions.toast(result.error || "Grant failed"); return; }
-    controlState.consented = true;
-    await this.send(controlState.pending);
+    await this.send(controlState.pending, passcode);
   }
   async revoke() {
     if (!controlState.row || controlState.mode !== "tmux") return;
-    const response = await fetch(`/api/consent?op=revoke&target=${encodeURIComponent(controlState.row.id)}`, { method: "POST", cache: "no-store" });
-    const result = await json(response);
-    if (!result.ok) { this.actions.toast(result.error || "Revoking the grant failed"); return; }
+    const outcome = await runRevoke({ target: controlState.row.id, post });
+    if (outcome.kind !== "revoked") { this.actions.toast(outcome.kind === "unreachable" ? outcome.message : "Revoking the grant failed"); return; }
     controlState.consented = false;
     this.revokeButton.hidden = true;
     this.actions.toast("Pane grant revoked");
     this.actions.refreshIndex();
   }
-  async send(text) {
+  // The passcode dialog: the grant asked for one (or refused the one given).
+  askPasscode(outcome) {
+    const dialog = byId("confirmLayer").querySelector(".dialog");
+    let input = dialog.querySelector(".passcode-input");
+    if (!input) { input = document.createElement("input"); input.className = "passcode-input"; input.type = "password"; input.placeholder = "Monitor passcode"; dialog.insertBefore(input, dialog.querySelector(".dialog-actions")); }
+    byId("confirmText").textContent = outcome.kind === "bad-passcode" ? "Passcode incorrect — try again." : "This monitor requires a passcode before granting write access.";
+    byId("confirmLayer").classList.add("production-open"); input.focus();
+  }
+  async send(text, passcode = "") {
     byId("sendBtn").disabled = true;
     try {
-      const response = await fetch(`/api/send?target=${encodeURIComponent(controlState.row.id)}`, { method: "POST", body: text, cache: "no-store" });
-      const result = await json(response);
-      if (!result.ok) { if (result.code === "no-consent") controlState.consented = false; throw new Error(result.error || "Send failed"); }
+      const result = await runSend({ target: controlState.row.id, mode: controlState.mode, consented: controlState.consented, prompt: text, passcode, post });
+      controlState.consented = result.consented;
+      if (result.step === "grant") {
+        if (["passcode-required", "bad-passcode"].includes(result.outcome.kind)) { this.askPasscode(result.outcome); return; }
+        this.actions.toast(result.outcome.kind === "unreachable" ? result.outcome.message : (result.outcome.message || "Grant failed"));
+        return;
+      }
+      if (result.outcome.kind !== "sent") { this.actions.toast(result.outcome.kind === "no-consent" ? "This pane needs consent again" : result.outcome.message); return; }
       byId("composeInput").value = "";
       this.actions.toast(controlState.mode === "tmux" ? "Sent to the pane" : "Resuming the session");
       this.close(); this.actions.refreshIndex();
-    } catch (error) { this.actions.toast(error.message); }
-    finally { byId("sendBtn").disabled = false; }
+    } finally { byId("sendBtn").disabled = false; }
   }
 }

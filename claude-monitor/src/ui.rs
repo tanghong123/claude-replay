@@ -286,6 +286,10 @@ mod tests {
                 "shared/capabilities.js",
                 claude_replay_html::shared_source("capabilities").unwrap(),
             ),
+            (
+                "shared/control-protocol.js",
+                claude_replay_html::shared_source("control-protocol").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
