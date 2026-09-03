@@ -5,6 +5,9 @@
 # repo, NOT here — they may contain real Claude session content. Never commit.
 /golden/
 *.jsonl
+# The agents crate's SYNTHETIC fixtures (hand-written; no real session content — see
+# docs/adapter-rendering-validation.md) are the one exception: CI's integration tests read them.
+!claude-replay-agents/tests/fixtures/*.jsonl
 /design/sample-transcript-data.js
 /examples/sample-agent-monitor.html
 
