@@ -1,3 +1,5 @@
+import { DEFAULT_READING, parseReading } from "./reading.js";
+
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
   catch (_) { return fallback; }
@@ -20,6 +22,7 @@ export const recordState = {
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
   following: true, newRecords: 0, search: "", matches: [], match: -1,
+  rawTurns: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };
 
@@ -28,7 +31,8 @@ export const uiState = {
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), toolFilters: new Set(),
-  globalResults: [], globalIndex: 0
+  globalResults: [], globalIndex: 0,
+  reading: parseReading(localStorage.getItem("am-prod-reading")) || { ...DEFAULT_READING }
 };
 
 export const controlState = {
@@ -43,6 +47,7 @@ export function persist() {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
+  localStorage.setItem("am-prod-reading", JSON.stringify(uiState.reading));
 }
 
 export const selectedRow = () => indexState.rows.get(indexState.selected) || null;

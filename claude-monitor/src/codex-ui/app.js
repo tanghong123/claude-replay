@@ -7,6 +7,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
+import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./reading.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -167,7 +168,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = 0; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = 0; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -500,6 +501,34 @@ function applyFilters() {
     element.classList.toggle("filter-dim", !!dim);
   });
 }
+// Reading controls (parity #7), in the options popover where the shell keeps view preferences:
+// a third section after Scope and Tool types, in the popover's own row anatomy. They apply as
+// custom properties and two classes on the app root (see production.css), persist with the
+// other production preferences, and are also what the `w` / `-` / `+` keys drive.
+const readingSection = document.createElement("div");
+readingSection.className = "reading-section";
+readingSection.innerHTML = `<div class="scope-menu-divider"></div><div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
+<div class="reading-row"><span>Code size</span><span class="reading-step"><button type="button" data-reading-size="-1" aria-label="Smaller code">−</button><span class="reading-value" data-reading-value></span><button type="button" data-reading-size="1" aria-label="Larger code">+</button></span></div>
+<div class="reading-row"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines" aria-checked="false"><span></span></button></div>
+<div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>`;
+byId("navigatorOptions").append(readingSection);
+function applyReading() {
+  const prefs = uiState.reading;
+  for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
+  app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
+  readingSection.querySelector("[data-reading-value]").textContent = `${clampSize(prefs.size)} px`;
+  for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
+  readingSection.querySelector('[data-reading-size="-1"]').disabled = prefs.size <= SIZE_MIN;
+  readingSection.querySelector('[data-reading-size="1"]').disabled = prefs.size >= SIZE_MAX;
+  viewport.remeasure();
+}
+function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; persist(); applyReading(); }
+readingSection.onclick = event => {
+  const step = event.target.closest("[data-reading-size]"); if (step) { setReading({ size: uiState.reading.size + Number(step.dataset.readingSize) * SIZE_STEP }); return; }
+  const toggle = event.target.closest("[data-reading-toggle]"); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }
+  if (event.target.closest("[data-reading-reset]")) setReading({ size: 12, wrap: false, wide: false });
+};
+applyReading();
 byId("filterTranscriptBtn").onclick = () => { byId("navigatorOptions").classList.toggle("open"); renderFilterMenu(); };
 byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { uiState.searchScopes.has(scope.dataset.scope) ? uiState.searchScopes.delete(scope.dataset.scope) : uiState.searchScopes.add(scope.dataset.scope); renderFilterMenu(); applyFilters(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyFilters(); } };
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(["u", "a", "t", "o", "b", "r", "e"]); renderFilterMenu(); };

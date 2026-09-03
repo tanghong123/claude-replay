@@ -1395,8 +1395,12 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     }
     tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
+    // A parent with a child the server can actually serve: a child listed in a parent's meta
+    // may have no readable transcript any more (the file is gone, the store moved on), and
+    // that is a legitimate "cannot read this session" — not what this case is about. Probe
+    // the child's own `/pull` the way the shell will, and take the first pair that answers.
     let mut pair: Option<(String, String)> = None;
-    for id in ids.iter().take(40) {
+    'outer: for id in ids.iter().take(40) {
         let js = format!(
             "fetch('/pull?session={}&cursor=', {{cache:'no-store'}}).then(r => r.json()).then(j => JSON.stringify((j.meta && j.meta.children || []).map(c => c.id))).catch(() => '[]')",
             id
@@ -1408,9 +1412,21 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "[]".into());
         let children: Vec<String> = serde_json::from_str(&v).unwrap_or_default();
-        if let Some(first) = children.first() {
-            pair = Some((id.clone(), first.clone()));
-            break;
+        for child_id in children.iter().take(4) {
+            let probe = format!(
+                "fetch('/pull?session={}&cursor=', {{cache:'no-store'}}).then(r => r.ok ? r.json() : null).then(j => String(!!(j && j.meta && j.meta.ancestors && j.meta.ancestors.length))).catch(() => 'false')",
+                child_id
+            );
+            let readable = tab
+                .evaluate(&probe, true)
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_str().map(|s| s == "true"))
+                .unwrap_or(false);
+            if readable {
+                pair = Some((id.clone(), child_id.clone()));
+                break 'outer;
+            }
         }
     }
     let Some((parent, child_id)) = pair else {
@@ -1437,7 +1453,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    let header = eval(&tab, "JSON.stringify({title: document.getElementById('sessionTitle').textContent, crumb: document.getElementById('sessionCrumb').textContent, parent: document.getElementById('sessionParent').dataset.parent})");
+    let header = eval(&tab, "JSON.stringify({title: document.getElementById('sessionTitle').textContent, crumb: document.getElementById('sessionCrumb').textContent, parent: document.getElementById('sessionParent').dataset.parent, empty: (document.querySelector('.monitor-empty:not([hidden])')||{}).textContent || ''})");
     // Outlive one index poll (5 s): the child must still be the open session afterwards.
     std::thread::sleep(std::time::Duration::from_millis(6500));
     let survived = eval(&tab, "JSON.stringify({sel: new URLSearchParams(location.search).get('session'), title: document.getElementById('sessionTitle').textContent, gone: !!document.querySelector('.monitor-empty:not([hidden])')})");

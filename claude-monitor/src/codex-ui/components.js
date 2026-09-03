@@ -82,20 +82,30 @@ function renderProcess(unit, state) {
   return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 
+/** A turn shown as the record the wire carried (parity #8) — the classic `{}` toggle. What the
+ *  page has is the record, not markdown source, so "raw" is the record itself, exactly as the
+ *  fallback renderer already shows an unknown kind. */
+export const rawTurnHtml = record => `<pre class="turn-raw">${escapeText(JSON.stringify(record ?? {}, null, 2))}</pre>`;
+
 export function renderUnit(unit, state) {
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";
+  const raw = !!state.rawTurns?.has(unit.key);
+  const rawToggle = unit.view?.source && (unit.type === "user" || unit.type === "assistant")
+    ? `<button class="spot-link raw-toggle ${raw ? "on" : ""}" type="button" data-raw-toggle="${escapeText(unit.key)}" aria-pressed="${raw}" aria-label="${raw ? "Show this turn rendered" : "Show this turn as the raw record"}" title="${raw ? "Show this turn rendered" : "Show this turn as the raw record"}"><span aria-hidden="true">{}</span></button>`
+    : "";
+  const body = raw ? rawTurnHtml(unit.view.source) : unit.view?.html;
   let html;
   if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
     const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${unit.view.html}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${spot}</div>`;
+    html = `<div class="turn user" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${spot}${rawToggle}</div>`;
   }
   else if (unit.type === "assistant") {
     const final = unit.view.phase === "final";
     const plan = unit.view.presentation === "proposed_plan";
-    html = `<div class="turn assistant ${final ? "final-answer" : "assistant-unknown"} ${plan ? "proposed-plan" : ""}" data-kind="assistant" data-phase="${escapeText(unit.view.phase)}" data-block-index="${unit.from}">${plan ? `<div class="proposed-plan-head"><span class="proposed-plan-icon">${svg("turns")}</span><div><span>Proposed plan</span><small>Review before implementation</small></div></div>` : final ? "" : '<span class="assistant-phase-label">Assistant message</span>'}<div class="body markdown">${unit.view.html}</div>${spot}</div>`;
+    html = `<div class="turn assistant ${final ? "final-answer" : "assistant-unknown"} ${plan ? "proposed-plan" : ""}" data-kind="assistant" data-phase="${escapeText(unit.view.phase)}" data-block-index="${unit.from}">${plan ? `<div class="proposed-plan-head"><span class="proposed-plan-icon">${svg("turns")}</span><div><span>Proposed plan</span><small>Review before implementation</small></div></div>` : final ? "" : '<span class="assistant-phase-label">Assistant message</span>'}<div class="body markdown">${body}</div>${spot}${rawToggle}</div>`;
   } else html = renderProcess(unit, state);
   const root = element(html);
   // The record id is the renderer's stable deep-link contract (`b<N>` today). Virtualized
@@ -158,6 +168,8 @@ const strip = html => String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g
 
 export function bindComponentEvents(root, state, actions) {
   root.addEventListener("click", event => {
+    const rawToggle = event.target.closest("[data-raw-toggle]");
+    if (rawToggle) { event.preventDefault(); event.stopPropagation(); const key = rawToggle.dataset.rawToggle; state.rawTurns.has(key) ? state.rawTurns.delete(key) : state.rawTurns.add(key); actions.rerender(); return; }
     const spot = event.target.closest("[data-spot-link]");
     if (spot) { event.preventDefault(); event.stopPropagation(); actions.copySpot?.(spot.dataset.spotLink, spot); return; }
     const copy = event.target.closest(".cpy");

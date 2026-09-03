@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { attachmentCapability, promptShouldCollapse, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
+import { attachmentCapability, promptShouldCollapse, rawTurnHtml, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
+import { DEFAULT_READING, clampSize, parseReading, readingVars } from "../../claude-monitor/src/codex-ui/reading.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -282,4 +283,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewportSource, /this\.state\.following = !this\.pending/, "a remembered anchor holds following off until it is applied, so the tail never flashes past");
   assert.match(appSource, /viewport\.beginSession\(id\); recordStore\.open\(id\)/, "the memory is read before the stream starts");
   console.log("view memory cases passed");
+}
+
+// Reading controls (parity #7) and the raw toggle (parity #8).
+{
+  assert.deepEqual(parseReading(""), DEFAULT_READING); assert.deepEqual(parseReading("garbage"), DEFAULT_READING);
+  assert.deepEqual(parseReading('{"size":"14.3","wrap":true,"wide":"yes"}'), { size: 14.5, wrap: true, wide: false }, "size snaps to half steps; flags must be real booleans");
+  assert.equal(clampSize(3), 10); assert.equal(clampSize(99), 16); assert.equal(clampSize(undefined), 12);
+  assert.deepEqual(readingVars({ size: 11, wide: true }), { "--code-size": "11px", "--measure": "1240px" });
+  assert.deepEqual(readingVars(DEFAULT_READING), { "--code-size": "12px", "--measure": "820px" });
+  const raw = rawTurnHtml({ kind: "user", body: [{ p: "md", h: "<p>x</p>" }] });
+  assert.match(raw, /^<pre class="turn-raw">/); assert.ok(raw.includes("&lt;p&gt;x&lt;\/p&gt;") || raw.includes("&lt;p&gt;x&lt;/p&gt;"), "the raw record is escaped, never re-entered as markup");
+  assert.match(productionCss, /#app\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the app root");
+  assert.match(productionCss, /#app\.wrap-code \.markdown pre/, "wrap is a class on the app root");
+  assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /am-prod-reading/, "reading preferences persist with the other production preferences");
+  assert.match(appSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
+  console.log("reading + raw cases passed");
 }
