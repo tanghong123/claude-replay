@@ -1,3 +1,6 @@
+// The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
+// (html/shared/capabilities.js, #46), read here and by the classic page alike.
+import { attachmentCapability, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { escapeText } from "./view-model.js";
 
@@ -133,36 +136,6 @@ function renderPromptAttachments(attachments = []) {
   }).join("");
   return `<div class="prompt-attachments" aria-label="Prompt attachments">${cards}</div>`;
 }
-
-const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
-const TEXT_FILE = /\.(txt|md|mdx|rs|js|mjs|cjs|ts|tsx|jsx|json|jsonl|toml|ya?ml|html?|css|scss|py|rb|go|java|kt|swift|sh|zsh|fish|sql|csv|tsv|log|diff|patch|xml|ini|conf)$/i;
-
-export function attachmentCapability(head = {}) {
-  const name = head.att_name || head.att_path || "";
-  const image = head.att_kind === "image" || IMAGE_FILE.test(name);
-  const hasSource = head.att_datauri != null || (head.att_path && head.att_fsig);
-  if (image && hasSource) return { action: "image", label: "Enlarge", hint: head.att_datauri != null ? "image · saved with the session" : "image · temporary file" };
-  if (head.att_text != null || (TEXT_FILE.test(name) && head.att_path && head.att_fsig)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
-  if (head.att_datauri != null || (head.att_path && head.att_fsig)) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
-  // The render policy withheld the file stamp (or the bytes are not the kind the page shows),
-  // but the server offered the REVEAL stamp: the file manager can still show the file. This is
-  // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
-  // keeps every path actionable under `render-policy.json` mode "never".
-  if (head.att_path && head.att_sig) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
-  return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };
-}
-
-/** What a clicked path reference does, from the stamps the server offered for it. The two
- *  stamps are different capabilities — a reveal stamp never authorizes `/file` — so the
- *  precedence is by what the page may DO, not by which stamp happens to be present. */
-export function referenceAction({ fileSig, revealSig } = {}) {
-  if (fileSig) return "preview";
-  if (revealSig) return "reveal";
-  return "copy";
-}
-
-/** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
-export const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
 
 const strip = html => String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 

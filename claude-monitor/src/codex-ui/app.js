@@ -1,6 +1,7 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
-import { bindComponentEvents, referenceAction } from "./components.js";
+import { bindComponentEvents } from "./components.js";
+import { referenceAction } from "./shared/capabilities.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";

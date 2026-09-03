@@ -282,6 +282,10 @@ mod tests {
                 "shared/reading.js",
                 claude_replay_html::shared_source("reading").unwrap(),
             ),
+            (
+                "shared/capabilities.js",
+                claude_replay_html::shared_source("capabilities").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
@@ -311,6 +315,46 @@ mod tests {
                 }
                 if let Some(rest) = line.split(" from \"./").nth(1) {
                     if let Some(dep) = rest.split('"').next() {
+                        // The names this import asks for must be exported by the module it
+                        // names — a module moved into shared/ (or a symbol lifted out of a
+                        // module) otherwise links to nothing and the shell renders blank,
+                        // which no other test sees before real Chrome does (#46).
+                        if let Some(list) = line
+                            .strip_prefix("import {")
+                            .and_then(|l| l.split('}').next())
+                        {
+                            let target = sources
+                                .iter()
+                                .find(|(n, _)| *n == dep)
+                                .map(|(_, src)| *src)
+                                .unwrap_or("");
+                            for binding in list.split(',').map(str::trim).filter(|n| !n.is_empty())
+                            {
+                                let local = binding.split(" as ").next().unwrap_or(binding).trim();
+                                let exported = target.lines().any(|l| {
+                                    let l = l.trim_start();
+                                    l.starts_with(&format!("export function {local}"))
+                                        || l.starts_with(&format!("export const {local}"))
+                                        || l.starts_with(&format!("export class {local}"))
+                                        || l.starts_with(&format!("export let {local}"))
+                                        || (l.starts_with("export {")
+                                            && l.split('{').nth(1).map_or(false, |inner| {
+                                                inner
+                                                    .split('}')
+                                                    .next()
+                                                    .unwrap_or("")
+                                                    .split(',')
+                                                    .any(|n| n.trim() == local)
+                                            }))
+                                        || (l.starts_with("export const ")
+                                            && l.contains(&format!(", {local} =")))
+                                });
+                                assert!(
+                                    exported,
+                                    "{name} imports `{binding}` from {dep}, which does not export it"
+                                );
+                            }
+                        }
                         todo.push(dep.to_string());
                     }
                 }

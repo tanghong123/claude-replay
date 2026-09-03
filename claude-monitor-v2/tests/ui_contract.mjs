@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { attachmentCapability, promptShouldCollapse, rawTurnHtml, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
+import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
+import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -433,4 +434,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(exportSource, /\n  applyMono\(ms\);\n  applyWide\(wide\);/, "the classic page applies stored prefs at load without persisting them");
   assert.doesNotMatch(exportSource, /\n  setMono\(ms\);|\n  setWide\(wide\);/, "…never through the persisting setters");
   console.log("seam (d) cases passed");
+}
+
+// Seam (b) (#46): the two-stamp file rule is shared, and the classic page's two click sites
+// call it — the first export.js consumer of seam 0.
+{
+  assert.equal(stampQuery({ path: "/w/my repo/a.txt", sig: "s1" }), "path=%2Fw%2Fmy%20repo%2Fa.txt&sig=s1");
+  assert.equal(stampQuery({ path: "/w/a.txt" }), "path=%2Fw%2Fa.txt", "no stamp, no sig parameter");
+  assert.equal(revealQuery({ path: "/w/a.txt", sig: "s1" }), "/__reveal?" + stampQuery({ path: "/w/a.txt", sig: "s1" }), "the app shell's query is the same form behind the route");
+  assert.equal(referenceAction({ fileSig: null, revealSig: "r" }), "reveal", "a reveal stamp never authorizes /file");
+  const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.equal((exportSrc.match(/shared\.referenceAction\(\{ fileSig: ARTIFACTS \? /g) || []).length, 3, "the attachment card, the path link's title and the path click all ask the rule");
+  assert.doesNotMatch(exportSrc, /ARTIFACTS && fsig|ARTIFACTS && tp\.dataset\.fsig/, "no inline stamp precedence remains");
+  assert.match(exportSrc, /shared\.stampQuery\(/, "the classic page builds its stamped queries through the shared helper");
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.doesNotMatch(componentsSrc, /function attachmentCapability|function referenceAction|const revealQuery =/, "components.js keeps no copy of the rule");
+  assert.match(componentsSrc, /from "\.\/shared\/capabilities\.js"/);
+  console.log("seam (b) cases passed");
 }

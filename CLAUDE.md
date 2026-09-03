@@ -50,7 +50,9 @@ import-closure test and the html crate's convention test cover the rest. The cla
 (`claude-monitor/src/rail.html`) and the v2 splice shell (`claude-monitor-v2/src/shell.html`) take the
 same inlined block at serve time through their `{{SHARED}}` placeholder
 (`claude_replay_html::shared_inline_all()`), so `window.__shared` there is a template substitution,
-not an import (#43).
+not an import (#43). `claude-monitor/src/codex-ui/shared` is a SYMLINK to that directory, there so
+node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
+relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
 `claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as

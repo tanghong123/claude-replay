@@ -1,4 +1,4 @@
-import { revealQuery } from "./components.js";
+import { revealQuery } from "./shared/capabilities.js";
 
 const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/g, "-");
 

@@ -641,12 +641,12 @@
                 // Two stamps, because they permit different things: `sig` reveals the
                 // path, `fsig` renders its bytes and exists only when the render policy
                 // allows that path. A route refuses the other's stamp, so a link cannot be
-                // edited from one capability into the other.
-                var stamped = function (s) {
-                    return "path=" + encodeURIComponent(path) + (s ? "&sig=" + encodeURIComponent(s) : "");
-                };
-                var reveal = function () { fetch("__reveal?" + stamped(sig)); };
-                if (ARTIFACTS && fsig) openArtifact(stamped(fsig), reveal); else reveal();
+                // edited from one capability into the other. Which one a click uses is the
+                // shared rule's call (html/shared/capabilities.js, #46) — the same rule the
+                // app shell applies; a host that serves no artifacts offers no file stamp.
+                var reveal = function () { fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })); };
+                var action = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig });
+                if (action === "preview") openArtifact(shared.stampQuery({ path: path, sig: fsig }), reveal); else reveal();
             };
         }
         ac.appendChild(an);
@@ -794,7 +794,7 @@
           a.dataset.path = head.path;
           if (head.sig) a.dataset.sig = head.sig;
           if (head.fsig) a.dataset.fsig = head.fsig;
-          a.title = (ARTIFACTS ? "Open " : "Reveal ") + head.path;
+          a.title = (shared.referenceAction({ fileSig: ARTIFACTS ? head.fsig : null, revealSig: head.sig }) === "preview" ? "Open " : "Reveal ") + head.path;
           h.appendChild(a);
         } else {
           h.appendChild(el("span", "tool-target", head.target));
@@ -2838,19 +2838,17 @@
       if (location.protocol === "file:") return; // native file:// link works standalone
       e.preventDefault(); // served page: http→file:// is blocked, so ask the server
       var orig = tp.textContent;
-      var stamped = function (s) {
-        return "path=" + encodeURIComponent(tp.dataset.path)
-          + (s ? "&sig=" + encodeURIComponent(s) : "");
-      };
       var reveal = function () {
-        fetch("__reveal?" + stamped(tp.dataset.sig))
+        fetch("__reveal?" + shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.sig }))
           .then(function (r) {
             tp.textContent = r.ok ? "revealed ✓" : "not found";
             setTimeout(function () { tp.textContent = orig; }, 1000);
           })
           .catch(function () { /* server gone */ });
       };
-      if (ARTIFACTS && tp.dataset.fsig) openArtifact(stamped(tp.dataset.fsig), reveal); else reveal();
+      // #46: the shared two-stamp rule decides, as it does for the attachment card above.
+      var action = shared.referenceAction({ fileSig: ARTIFACTS ? tp.dataset.fsig : null, revealSig: tp.dataset.sig });
+      if (action === "preview") openArtifact(shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.fsig }), reveal); else reveal();
       return;
     }
     // The agent-transcript link navigates (full page load to `?session=<id>`); let the
