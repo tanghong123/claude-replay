@@ -2284,3 +2284,248 @@ fn the_artifact_roster_groups_republishes_by_url() {
     assert_eq!(bare["rows"].as_array().map(|r| r.len()), Some(0));
     let _ = tab2.close(true);
 }
+
+/// A hermetic QoderWork store holding one fork FAMILY (#142): a root session and a session
+/// forked from it, related through the `<sid>-session.json` sidecar's `fork_from`, both past
+/// the adapter's junk-size gate. Every store env var points into `base`, so the machine's own
+/// sessions never reach the monitor under test (the knobs claude-monitor's index tests use).
+/// Returns `(stores, root_id, fork_id)`; the caller passes `stores` on through [`store_envs`].
+fn qoderwork_family_store(base: &Path) -> (PathBuf, &'static str, &'static str) {
+    let stores = base.join("stores");
+    let qw = stores.join("qoderwork").join("-r");
+    std::fs::create_dir_all(&qw).unwrap();
+    for other in ["claude", "qoder", "codex"] {
+        std::fs::create_dir_all(stores.join(other)).unwrap();
+    }
+    let root_id = "aaaaaaaa-0000-4000-8000-000000000001";
+    let fork_id = "aaaaaaaa-0000-4000-8000-000000000002";
+    let transcript = |salt: &str| -> String {
+        let mut out = String::new();
+        for i in 0..30u32 {
+            out += &user(
+                &format!("prompt {salt} {i} — a line long enough to matter"),
+                i,
+            );
+            out += &assistant(
+                &format!("reply {salt} {i} — a line long enough to matter"),
+                i,
+            );
+        }
+        assert!(
+            out.len() > 4096,
+            "past QoderWork's MIN_TRANSCRIPT_BYTES gate"
+        );
+        out
+    };
+    std::fs::write(qw.join(format!("{root_id}.jsonl")), transcript("root")).unwrap();
+    std::fs::write(
+        qw.join(format!("{root_id}-session.json")),
+        r#"{"title":"Family root","updated_at":1756800000000}"#,
+    )
+    .unwrap();
+    std::fs::write(qw.join(format!("{fork_id}.jsonl")), transcript("fork")).unwrap();
+    std::fs::write(
+        qw.join(format!("{fork_id}-session.json")),
+        format!(
+            r#"{{"title":"Family root (Fork)","fork_from":"{root_id}","updated_at":1756800100000}}"#
+        ),
+    )
+    .unwrap();
+    (stores, root_id, fork_id)
+}
+
+/// The env that makes a monitor see ONLY the fixture stores under `stores`.
+fn store_envs(stores: &Path) -> Vec<(&'static str, PathBuf)> {
+    vec![
+        ("CLAUDE_PROJECTS_DIR", stores.join("claude")),
+        ("QODERWORK_PROJECTS_DIR", stores.join("qoderwork")),
+        ("QODER_PROJECTS_DIR", stores.join("qoder")),
+        ("CODEX_HOME", stores.join("codex")),
+    ]
+}
+
+/// The classic rail (v1 `agent-monitor`, `?ui=classic`) on the hermetic family store: rows
+/// render, the fork family clusters into ONE row whose ⑂ chip opens the fork, and hide /
+/// restore round-trip through `/api/ignore` — the server's `hidden` flag flips, the rail's
+/// "Hidden (n)" toggle reveals the row, and restoring puts the family back. The first rail
+/// case (#43): the baseline the shared-module change is measured against.
+#[test]
+#[ignore]
+fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
+    let _serial = serial();
+    let base = base("rail-family");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor --release first");
+        return;
+    }
+    let (stores, root_id, fork_id) = qoderwork_family_store(&base);
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(["--port", "2837", "--pair", "--no-open"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_CACHE", base.join("cache"))
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in store_envs(&stores) {
+        cmd.env(k, v);
+    }
+    let child = Reap(cmd.spawn().expect("v1 starts"));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    // Poll a predicate: the rail re-renders on its own 2.5 s poll and right after an ignore.
+    let until = |tab: &headless_chrome::Tab, js: &str, what: &str| {
+        for _ in 0..40 {
+            if eval(tab, js).as_bool() == Some(true) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let rows = eval(tab, "[...document.querySelectorAll('.row')].map(r => r.dataset.id + ':' + r.className).join(' | ')");
+        panic!("timed out waiting for {what}; rows: {rows}");
+    };
+    // An OBJECT result comes back by value only as JSON text, so probes stringify it.
+    let probe = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        serde_json::from_str(
+            eval(tab, &format!("JSON.stringify({js})"))
+                .as_str()
+                .unwrap_or("null"),
+        )
+        .unwrap_or(serde_json::Value::Null)
+    };
+    let row = |id: &str| format!(".row[data-id=\"{id}\"]");
+    // The server's word on a row, fetched from the page so the rail's own state is untouched.
+    let server_hidden = |tab: &headless_chrome::Tab, id: &str| -> Option<bool> {
+        let js = format!("(async () => {{ const j = await (await fetch('/api/sessions', {{cache: 'no-store'}})).json(); for (const g of j.groups || []) for (const r of g.rows || []) if (r.id === {id:?}) return !!r.hidden; return null; }})()");
+        eval(tab, &js).as_bool()
+    };
+
+    // `?token=` bootstraps the cookie and redirects to a bare `/`, dropping every other
+    // query — so pair first, then ask for the classic page.
+    tab.navigate_to(&format!("http://127.0.0.1:2837/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to("http://127.0.0.1:2837/?ui=classic")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+
+    // 1. Rows render, and the two sessions are ONE family row: the root represents it, the
+    //    ⑂ chip counts the fork, and no fork row is open yet.
+    until(
+        &tab,
+        "document.querySelectorAll('.row[data-id]').length >= 1",
+        "the rail's first render",
+    );
+    let first = probe(&tab, "(function(){ var rows=[...document.querySelectorAll('.row')]; var chip=document.querySelector('.row button.forks'); return {rows: rows.length, rep: rows[0] && rows[0].dataset.id, chip: chip ? chip.textContent.trim() : null, forkrows: document.querySelectorAll('.row.forkrow').length}; })()");
+    assert_eq!(first["rows"], 1, "one row for the family: {first}");
+    assert_eq!(
+        first["rep"], root_id,
+        "the root represents the family: {first}"
+    );
+    assert_eq!(first["chip"], "⑂ 1", "the chip counts one fork: {first}");
+    assert_eq!(first["forkrows"], 0, "no fork row open: {first}");
+
+    // 2. The chip opens the family: the fork appears as an indented member row.
+    eval(
+        &tab,
+        "document.querySelector('.row button.forks').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "document.querySelectorAll('.row.forkrow').length === 1",
+        "the fork row to open",
+    );
+    let open = probe(&tab, "(function(){ var f=document.querySelector('.row.forkrow'); return {id: f && f.dataset.id, rows: document.querySelectorAll('.row').length}; })()");
+    assert_eq!(open["id"], fork_id, "the member row is the fork: {open}");
+    assert_eq!(open["rows"], 2, "root + fork: {open}");
+
+    // 3. Hide the root: the server records it (/api/ignore), the row leaves the list, and the
+    //    fork — the family's only visible member — now represents it, without a chip.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector('{} button.rowx[data-hide]').click(); 'ok'",
+            row(root_id)
+        ),
+    );
+    until(
+        &tab,
+        &format!(
+            "!document.querySelector('{}') && !!document.querySelector('{}')",
+            row(root_id),
+            row(fork_id)
+        ),
+        "the root to hide and the fork to represent",
+    );
+    assert_eq!(
+        server_hidden(&tab, root_id),
+        Some(true),
+        "the server hid the root"
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "document.querySelectorAll('.row button.forks').length"
+        ),
+        0,
+        "a family of one visible member has no chip"
+    );
+    let toggle = probe(&tab, "(function(){ var t=document.getElementById('hiddentoggle'); return {shown: getComputedStyle(t).display !== 'none', text: t.textContent.trim()}; })()");
+    assert_eq!(
+        toggle["shown"], true,
+        "the reveal toggle appears once something is hidden: {toggle}"
+    );
+    assert_eq!(toggle["text"], "Hidden (1)", "{toggle}");
+
+    // 4. Reveal: the hidden root comes back dimmed, with a restore control.
+    eval(
+        &tab,
+        "document.getElementById('hiddentoggle').click(); 'ok'",
+    );
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector('{}.hidden button.rowx[data-show]')",
+            row(root_id)
+        ),
+        "the hidden root to show with a restore control",
+    );
+
+    // 5. Restore: the server forgets the key, the root is plain again and represents the family.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector('{} button.rowx[data-show]').click(); 'ok'",
+            row(root_id)
+        ),
+    );
+    until(&tab, &format!("(function(){{ var r=document.querySelector('{}'); return !!r && !r.classList.contains('hidden') && !!r.querySelector('button.forks'); }})()", row(root_id)), "the root to be restored with its chip");
+    assert_eq!(
+        server_hidden(&tab, root_id),
+        Some(false),
+        "the server restored the root"
+    );
+    drop(child);
+}
