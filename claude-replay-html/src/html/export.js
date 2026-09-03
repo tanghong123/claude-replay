@@ -2139,11 +2139,25 @@
       // A reply the page cannot act on, said out loud. The pull loop's own `.catch` retries
       // quietly forever, which is right for a mid-write or a stale range and exactly wrong for
       // "this session is not servable" — that used to render as a blank page with no clue.
+      // A reply the page cannot act on is said out loud ONCE and the poll goes on (#72): a
+      // server that restarted under this page knows no session until its list is fetched
+      // again — the rail beside this page does that every few seconds — so "not served" is
+      // usually a spell, not a verdict. Stopping the feed on it left a pinned reader parked
+      // above a box that never went away; the first feed reply after the spell removes the
+      // box, and the apply's own settle lands a following view back at the tail.
+      var unservedBox = null;
       var showFatal = function (msg) {
+        if (unservedBox) { unservedBox.querySelector(".pre").textContent = String(msg || "no reason given"); return; }
         var box = el("div", "ablock blk");
         box.appendChild(el("div", "blk-h", "This session is not being served here"));
         box.appendChild(el("div", "pre", String(msg || "no reason given")));
         stream.appendChild(box);
+        unservedBox = box;
+      };
+      var clearFatal = function () {
+        if (!unservedBox) return;
+        unservedBox.remove();
+        unservedBox = null;
       };
       var pullTick = function () {
         if (inflightP) return;
@@ -2155,7 +2169,8 @@
             // A full navigation, never a transparent redirect — our cursor was minted against
             // THIS server's record stream and means nothing to another one.
             if (reply.t === "redirect") { clearInterval(pullTimer); location.replace(reply.url); return null; }
-            if (reply.t === "error") { clearInterval(pullTimer); showFatal(reply.message); return null; }
+            if (reply.t === "error") { showFatal(reply.message); return null; } // transient: keep polling
+            clearFatal();
             var ext = reply.committed_ext;
             if (!ext || !ext.len) { reply.committed = []; return reply; }
             return fetch("records?" + shared.recordsQuery(sess, ext, reply.epoch), { cache: "no-store" })

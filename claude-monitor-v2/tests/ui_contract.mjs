@@ -597,3 +597,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /pane\.contains\(transcript\)\) return;/, "the reveal never scrolls the transcript");
   console.log("#52 outline focus cases passed");
 }
+
+// #72: a feed error is a spell, not a verdict — the classic page keeps polling and clears
+// the notice on the first feed reply after it.
+{
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(src, /if \(reply\.t === "error"\) \{ showFatal\(reply\.message\); return null; \}/, "an error reply shows the notice and returns");
+  assert.doesNotMatch(src, /reply\.t === "error"\) \{ clearInterval/, "…without stopping the feed");
+  assert.match(src, /var clearFatal = function \(\) \{/, "the notice can be cleared");
+  assert.match(src, /return null; \} \/\/ transient: keep polling\n\s*clearFatal\(\);/, "…and is, on the next feed reply");
+  assert.match(src, /if \(reply\.t === "redirect"\) \{ clearInterval\(pullTimer\);/, "a hand-off still stops this feed: it is a navigation");
+  console.log("#72 transient feed error cases passed");
+}

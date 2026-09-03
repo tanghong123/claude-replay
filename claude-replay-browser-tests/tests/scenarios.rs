@@ -659,7 +659,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn classic_page_resumes_after_a_server_restart_known_red_72() {
+fn classic_page_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-classic", 40);
     let mut page = open_on_v2(Surface::Classic, &fx, 2859);
